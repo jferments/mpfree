@@ -57,7 +57,9 @@ fn self_test() -> Result<ProbeSummary, &'static str> {
 }
 
 fn main() {
-    if std::env::args().skip(1).collect::<Vec<_>>() != ["--self-test"] {
+    let mut args = std::env::args();
+    let _program = args.next();
+    if args.next().as_deref() != Some("--self-test") || args.next().is_some() {
         eprintln!("Usage: mpfree-device-smoke --self-test");
         std::process::exit(64);
     }
