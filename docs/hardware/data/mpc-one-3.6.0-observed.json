@@ -22,6 +22,12 @@
         "sha256": "d25be98aea6e90cc0328c0af4d29c505106dcd26704da7dc1f6f5bd59cec317e",
         "local_only": true,
         "document": "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md"
+      },
+      {
+        "collected_utc": "2026-11-09T05:30:31Z",
+        "sha256": "1ea9eb27f837e5602cd5548db71622adf2f8c6aef52553f2aafd22e035a34b76",
+        "local_only": true,
+        "document": "docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md"
       }
     ]
   },
@@ -174,7 +180,7 @@
       "snd_soc_rockchip_inmusic_jp07",
       "snd_soc_rockchip_i2s"
     ],
-    "sample_rates_verified": false,
+    "sample_rates_verified": true,
     "audio_owner_verified": true,
     "confidence": "OBSERVED",
     "alsa_pcm_at_survey": {
@@ -193,7 +199,47 @@
       "negotiated_format_rate_channels_verified": false,
       "shared_access_possible_verified": false,
       "confidence": "OBSERVED"
-    }
+    },
+    "active_pcm_snapshot": {
+      "sampling_date_utc": "2026-11-09T05:30:31Z",
+      "playback": {
+        "card": 1,
+        "device": 0,
+        "access": "RW_INTERLEAVED",
+        "format": "S32_LE",
+        "channels": 2,
+        "rate_hz": 44100,
+        "period_frames": 128,
+        "buffer_frames": 384,
+        "avail_min_frames": 128,
+        "start_threshold": 1610612736,
+        "stop_threshold": 384,
+        "state": "RUNNING",
+        "owner_unit": "acvs.service"
+      },
+      "capture": {
+        "card": 1,
+        "device": 0,
+        "access": "RW_INTERLEAVED",
+        "format": "S32_LE",
+        "channels": 2,
+        "rate_hz": 44100,
+        "period_frames": 128,
+        "buffer_frames": 256,
+        "avail_min_frames": 128,
+        "start_threshold": 1073741824,
+        "stop_threshold": 256,
+        "state": "RUNNING",
+        "owner_unit": "acvs.service"
+      },
+      "period_ms": 2.9024943310657596,
+      "playback_buffer_ms": 8.707482993197278,
+      "capture_buffer_ms": 5.804988662131519,
+      "full_driver_capabilities_tested": false,
+      "end_to_end_latency_measured": false,
+      "confidence": "OBSERVED"
+    },
+    "sample_rate_scope": "only the stock application's negotiated 44100 Hz, NOT the driver's full capability matrix"
   },
   "midi": {
     "device": "/dev/snd/midiC0D0",
@@ -222,7 +268,66 @@
       "bnum_interfaces": 2
     },
     "factory_application_open_fd_count_at_survey": 3,
-    "open_fds_do_not_establish_rawmidi_port_mapping": true
+    "open_fds_do_not_establish_rawmidi_port_mapping": true,
+    "kernel_rawmidi_byte_counters_at_snapshot": {
+      "output": [
+        6036856,
+        29775,
+        0
+      ],
+      "input": [
+        0,
+        49837,
+        0
+      ],
+      "input1_overruns": 0,
+      "rate_measurement": false,
+      "message_semantics_identified": false
+    },
+    "usb_interfaces": [
+      {
+        "interface": "1-1:1.0",
+        "class_hex": "01",
+        "subclass_hex": "01",
+        "protocol_hex": "00",
+        "endpoints": 0,
+        "bound_driver": "snd-usb-audio"
+      },
+      {
+        "interface": "1-1:1.1",
+        "class_hex": "01",
+        "subclass_hex": "03",
+        "protocol_hex": "00",
+        "endpoints": 2,
+        "bound_driver": "snd-usb-audio"
+      }
+    ],
+    "alsa_sequencer_clients_at_survey": [
+      {
+        "id": 0,
+        "label": "System"
+      },
+      {
+        "id": 16,
+        "label": "MPC One MIDI"
+      },
+      {
+        "id": 128,
+        "label": "JUCE"
+      },
+      {
+        "id": 129,
+        "label": "MPC"
+      }
+    ],
+    "alsa_seq_connections_at_survey": [
+      "16:2 -> 129:0",
+      "129:2 -> 16:2",
+      "128:3 -> 129:1",
+      "128:2 -> 129:4",
+      "129:3 -> 128:1",
+      "129:5 -> 128:0"
+    ]
   },
   "display": {
     "framebuffer": "/dev/fb0",
@@ -309,28 +414,71 @@
         "service": "az01-script-runner.service",
         "exec_start": "/usr/bin/az01-script-runner"
       }
-    ]
+    ],
+    "process": {
+      "exe_symlink": "/usr/bin/MPC",
+      "main_pid_at_snapshot": 311,
+      "threads": 38,
+      "virtual_size_kb": 1044072,
+      "locked_virtual_kb": 1040052,
+      "resident_kb": 1043768,
+      "high_water_rss_kb": 1047696,
+      "main_thread_cpus_allowed_list": "0",
+      "thread_scheduling_policies_verified": false,
+      "uses_juce_named_threads": true,
+      "audio_worker_names": [
+        "AudioWorker0",
+        "AudioWorker1",
+        "AudioWorker2",
+        "AudioWorker3"
+      ],
+      "confidence": "OBSERVED"
+    },
+    "service_properties": {
+      "type": "simple",
+      "restart": "always",
+      "requires": [
+        "sysinit.target",
+        "system.slice"
+      ],
+      "wants": [
+        "az01-script-runner.service"
+      ],
+      "note": "future stop/restore must account for Restart=always"
+    }
   },
   "unknowns": [
-    "ACVA actual negotiated PCM hw_params and its full supported formats/rates",
-    "Physical audio codec, mixing/routing, latency, and verified exclusive vs shared ALSA semantics",
-    "Physical pad/encoder/private MIDI message layouts and safe LED control",
-    "Touchscreen ABS axis range and UI rotation transform",
-    "Factory process thread scheduling and owner(s) of the large locked RAM region",
-    "A/B boot selection and verified independent restore from a failed boot",
-    "MPC ELF header interpreter/ABI (the attempted BusyBox probe failed)",
-    "Recovery and compatibility for other MPC firmware and hardware"
+    "All supported ALSA formats/rates/channels beyond the observed 44.1kHz stereo S32_LE",
+    "Physical codec, routing, end-to-end playback/capture latency, and xruns under load",
+    "Actual pad/encoder/private MIDI messages and safe LED feedback protocol",
+    "Thread priority/scheduler policy and per-audio-worker CPU affinity",
+    "Touchscreen coordinate rotation, absolute ranges and UI composition",
+    "Full boot ROM/U-Boot chain and tested recovery if Linux cannot boot",
+    "PT_INTERP and minimum glibc symbol versions for an independent sysroot",
+    "Inter-model and inter-firmware compatibility"
   ],
   "references": [
     "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md",
     "docs/hardware/DEVELOPER_ACCESS.md",
-    "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md"
+    "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md",
+    "docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md"
   ],
   "abi": {
     "installed_loader": "/lib/ld-linux-armhf.so.3",
     "installed_alsa_lib": "/usr/lib/libasound.so.2",
+    "mpc_elf_header": {
+      "magic": "7f454c46",
+      "class": "ELF32",
+      "endianness": "little",
+      "type": "ET_DYN",
+      "machine": "EM_ARM",
+      "eabi_version": 5,
+      "flags_hex": "0x05000400",
+      "abi_float": "hard",
+      "confidence": "OBSERVED"
+    },
     "mpc_elf_interpreter_verified": false,
-    "failed_probe": "BusyBox head -c and od -An unavailable",
+    "glibc_symbol_versions_verified": false,
     "confidence": "OBSERVED"
   }
 }
