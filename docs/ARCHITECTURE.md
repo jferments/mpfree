@@ -30,7 +30,7 @@ Touchscreen UI + hardware workflow (candidate: Qt Quick/QML or SDL)
                    MPC One
 ```
 
-**Decisions not yet made:** the project is evaluating **Rust-first with small C/C++ integration modules** rather than pure C++; [ADR-0001](engineering/ADR-0001-RUST-FIRST-HYBRID.md) proposes the decision and names verification gates. The C++ M0 engine is a validated baseline, **not** yet rewritten. Qt vs SDL/Slint for UI, direct ALSA vs JACK/PipeWire, actual plugin ABI, sample streaming, boot integration, and factory-content compatibility remain open and require target-level evidence.
+**Language choice ACCEPTED:** [ADR-0001](engineering/ADR-0001-RUST-FIRST-HYBRID.md) establishes **Rust-first with narrow C/C++ compatibility modules**. [Rust M1](engineering/RUST_M1_PARITY.md) has a working native core and desktop WAV renderer with C++ parity and ARMv7 hard-float cross-build checks. The C++ M0 engine is retained as a tested reference, while az0x binary execution is not yet validated. Still undecided: UI framework (Qt, SDL, Slint or custom), direct ALSA vs JACK/PipeWire, plugin ABI, sample streaming implementation, boot integration, and factory-content import details.
 
 ### Real-time boundary
 
