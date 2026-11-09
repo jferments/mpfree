@@ -31,12 +31,15 @@ This is a proposal, not a promise of parity or a timeline.
 - [ ] **Future experimental screen takeover:** requires independently proven full factory boot recovery and a separate supervised, owner-consented stock-app stop → timed DRM test-card → verified stock-app restore. Not implemented or authorized in current work.
 - [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
 - [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
-- [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate).
+- [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate). **Proposed replacement:** a three-tier gate (session-only / persistent files on SD / boot chain), see [recovery and OS strategy](engineering/RECOVERY_AND_OS_STRATEGY.md); awaiting owner adoption.
+- [x] **Persistent SSH** (owner-built, kept by owner decision 2026-11-09): early-boot `mpfree-sshd.service` in rootfs, keys under `/data/mpfree/ssh`; recorded as MOD-001/MOD-002 in [device modifications](hardware/DEVICE_MODIFICATIONS.md).
+- [ ] Read-only `--boot-map` survey: boot chain, U-Boot env, partition hashes, write counters, kexec support, update path metadata (tool added; owner run pending).
+- [ ] Track B research: test a non-Akai kernel with **zero eMMC writes** (kexec, U-Boot removable-media scan, or MaskROM RAM boot) before any persistent boot change.
 - [ ] Demonstrate controller input and safe ALSA playback **on actual MPC** after verifying factory service handoff and recovery.
 - [ ] Port host-only Python network-audio datagram model to Rust; add bounded real packet pacing/clock-drift simulation before any MPC audio ingress.
 - [ ] Implement user-provided sample importer and genuine sequencer editing, projects, MIDI and hardware HAL.
 
-These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No new software has been installed onto the MPC, and the original `acvs.service` still owns PCM and display resources. For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
+These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. MPFree itself has not been installed onto the MPC, and the original `acvs.service` still owns PCM and display resources. **The reference unit is not stock, though:** persistent SSH added a unit to the rootfs and keys under `/data` (see [device modifications](hardware/DEVICE_MODIFICATIONS.md)). For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
 
 ## Phase 0 — Evidence and risk reduction
 - [ ] Record exact target model and factory firmware version.

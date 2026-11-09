@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: proven M5/M6/M7 native Rust computation on physical original MPC One, independent sequencer/sampler/null-audio timing harness, and initial Rust host-only offscreen GUI prototype.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
+**Status: proven M5/M6/M7 native Rust computation on physical original MPC One, independent sequencer/sampler/null-audio timing harness, and initial Rust host-only offscreen GUI prototype.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced, but the reference unit now has a persistent SSH service added to its rootfs ([device modifications](docs/hardware/DEVICE_MODIFICATIONS.md)).
 
 ## Vision
 
@@ -50,6 +50,8 @@ Start here for reproducible hardware/firmware development:
 - [Host-only network audio datagram prototype](tools/mpc-one/host_audio_packet.py) — sample-frame-stamped, MTU-checked S32_LE packet format and bounded deadline simulation, tested offline; not a live network receiver.
 - [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
+- [Recovery tiers, firmware updates and the path to an MPFree OS](docs/engineering/RECOVERY_AND_OS_STRATEGY.md) — proposed three-tier recovery gate, what an Akai update overwrites, and how to test another OS with zero eMMC writes.
+- [Reference unit device modifications](docs/hardware/DEVICE_MODIFICATIONS.md) — every persistent change made to the reference MPC One (currently: persistent SSH), with verification and undo steps.
 
 A **read-only** automated survey, run on the *workstation*, is available as:
 
@@ -57,6 +59,7 @@ A **read-only** automated survey, run on the *workstation*, is available as:
 - [tools/mpc-one/read-only-inventory.sh](tools/mpc-one/read-only-inventory.sh) — POSIX shell survey streamed over SSH without installation or deliberate MPC writes.
 - [tools/mpc-one/read-only-detail.sh](tools/mpc-one/read-only-detail.sh) — focused service/resource inventory, verified on target.
 - [tools/mpc-one/read-only-runtime.sh](tools/mpc-one/read-only-runtime.sh) — targeted process threads and ALSA PCM procfs observation; successfully exercised on MPC.
+- [tools/mpc-one/read-only-boot-map.sh](tools/mpc-one/read-only-boot-map.sh) — `--boot-map`: read-only boot chain, U-Boot env (redacted), boot-partition hashes, eMMC write counters, kexec support, update-path metadata and the recorded persistent-SSH files.
 - [tools/mpc-one/read-only-io.sh](tools/mpc-one/read-only-io.sh) — **passive** sysfs and optional read-only ethtool report for Ethernet link/PHY and USB host/gadget capabilities.
 - [tools/mpc-one/network-bench.py](tools/mpc-one/network-bench.py) — **explicit opt-in active** 20-ping and 4 MiB each direction SSH goodput check; workstation-hosted, writes no MPC files.
 - [tools/collect-hardware-info.sh](tools/collect-hardware-info.sh) — original lightweight device-local manual survey.
