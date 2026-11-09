@@ -222,6 +222,11 @@ jobs:
           assert 'std::process::Command' not in touch_main
           assert 'systemctl stop' not in touch_main
           assert '"--touch-abs")' not in wrapper
+          for m11 in ("mt", "pointer", "gesture"):
+              m11_source = Path(f"rust/mpfree-touch/src/{m11}.rs").read_text()
+              assert not any(needle in m11_source for needle in (
+                  'std::fs', 'std::os', 'std::net', 'std::process', '/dev/', 'unsafe', 'ioctl',
+              )), m11
           session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
           assert '#![forbid(unsafe_code)]' in session_source
           assert 'NullAudioBackend' in session_source
