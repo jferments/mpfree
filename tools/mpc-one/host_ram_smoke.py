@@ -106,6 +106,21 @@ PROFILES = {
             "frames": "4096", "beats": "1", "status": "PASS",
         },
     },
+    "session": {
+        # M7 is a *finite* 2-second NULL-audio timing test. It never opens
+        # factory ALSA/DRM/evdev devices and never stops stock services.
+        "binary": "mpfree-session",
+        "sentinel": "MPFREE_SESSION_V1",
+        "watchdog": "MPFREE_SESSION_RUST_WATCHDOG_7S_ARMED",
+        "expected": {
+            "os": "linux", "arch": "arm", "backend": "null",
+            "pacing": "monotonic", "sample_rate_hz": "44100",
+            "period_frames": "128", "frames": "88200",
+            "callback_count": "690", "groove_events": "12",
+            "sampler_notes": "4",
+            "checksum_fnv1a64": "3dc4d6dabbb17fbd", "status": "PASS",
+        },
+    },
     "headless": {
         "binary": "mpfree-headless",
         "sentinel": "MPFREE_HEADLESS_V1",
@@ -296,6 +311,27 @@ def parse_results(stdout, stderr, code, profile="device-smoke"):
             raise RuntimeError("missing or invalid headless audio peak") from None
         if not (0 < peak <= 1):
             raise RuntimeError("headless audio peak outside normalized PCM range")
+    if profile == "session":
+        # A synthetic deadline miss is valid measurement DATA, not a failure
+        # to execute. Do not reject nonzero counts, unlike wrong PCM.
+        metrics = (
+            "deadline_misses", "late_starts", "max_callback_us",
+            "p99_callback_us", "max_start_lateness_us",
+            "total_render_us", "wall_elapsed_us",
+        )
+        for metric in metrics:
+            value = fields.get(metric, "")
+            if not re.fullmatch(r"[0-9]+", value):
+                raise RuntimeError(f"invalid M7 synthetic timing field {metric}: {value!r}")
+        count = int(fields["callback_count"])
+        if int(fields["deadline_misses"]) > count or int(fields["late_starts"]) > count:
+            raise RuntimeError("M7 misses/late starts exceed callback count")
+        if int(fields["p99_callback_us"]) > int(fields["max_callback_us"]):
+            raise RuntimeError("M7 p99 duration exceeds maximum callback duration")
+        if not 1_700_000 <= int(fields["wall_elapsed_us"]) < 7_000_000:
+            raise RuntimeError("M7 paced session did not complete in bounded wall time")
+        if int(fields["total_render_us"]) <= 0:
+            raise RuntimeError("M7 measured zero render work")
     return fields
 
 
@@ -381,6 +417,15 @@ def main(argv=None):
         f"PASS: {a.profile} ran on MPC through null-only userspace; "
         "factory devices untouched."
     )
+    if a.profile == "session":
+        print("M7 NULL-audio synthetic callback statistics on actual MPC:")
+        for key in (
+            "callback_count", "deadline_misses", "late_starts",
+            "max_callback_us", "p99_callback_us",
+            "max_start_lateness_us", "total_render_us", "wall_elapsed_us",
+        ):
+            print(f"M7_{key}={fields[key]}")
+        print("CAUTION: synthetic scheduler wakeups, NOT real ACVA ALSA callback/xruns.")
     if a.profile == "headless":
         duration_seconds = int(fields["frames"]) / 44_100
         elapsed_us = int(fields["elapsed_us"])
