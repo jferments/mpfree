@@ -58,10 +58,11 @@ class GuardTests(unittest.TestCase):
         for marker in (
             '/run', 'tmpfs', "mktemp -d /run/mpfree-smoke.",
             'trap cleanup 0', 'timeout 5 nice -n 10', "sha256sum", digest,
-            'chmod 0500', 'cat > "$stage/probe"',
+            'chmod 0500', 'cat > "$stage/probe"', 'ulimit -c 0',
+            'ulimit -f 0', "systemctl is-active acvs.service",
         ):
             self.assertIn(marker, program)
-        for forbidden in ("systemctl", "mount -o", "dd if=", "/dev/snd",
+        for forbidden in ("systemctl stop", "systemctl restart", "mount -o", "dd if=", "/dev/snd",
                           "/dev/dri", "/dev/input", "reboot", "fw_setenv"):
             self.assertNotIn(forbidden, program)
         for bad in ("", "a" * 63, "a" * 65, "'; reboot", "not-a-digest"):
