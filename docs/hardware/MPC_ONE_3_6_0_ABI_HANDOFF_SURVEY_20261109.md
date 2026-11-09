@@ -6,6 +6,8 @@
 | --- | --- |
 | `mpc-one-abi-20261109T073912Z-55Jk6w.txt` | `4e1155cc7f559eda9b8579eacbbd50b337c7cc2d51b43a95e456eba92d93d2f8` |
 | `mpc-one-handoff-preflight-20261109T073912Z-Plo0RY.txt` | `4c7b7c491fbe7231ef41e0ee6d6d05c18a0d78ab91cf8a50489089939e4e3cd0` |
+| `mpc-one-abi-20261109T080714Z-L6g2wV.txt` (explicit libc release banner) | `85bc82f87687e2e9bee029b7954ae9b6e5782b5494b176cb114b9a5f7ab258e2` |
+| `mpc-one-rtthreads-20261109T080714Z-0A3BwY.txt` (factory task affinity) | `3e108a9aae4ad09ba4f7a1848799aa864b48e44c162ef9e7ce2919a03ee9142b` |
 
 **Publication rule:** This document contains sanitized technical observations only. No boot PARTUUID, unique ID, MAC address, account path, SSH keys, IP addresses, raw console logs or exact device-report attachment is committed.
 
@@ -78,6 +80,36 @@ Memory snapshot:
 **Practical implication:** the factory locks roughly 1 GiB of RAM while running. MPFree should not assume a desktop-style memory budget, oversubscribe RAM during coexistence, or assume all lockable memory is released immediately after the factory process exits. 64 MiB prepared-sample caps remain conservative; monitor complete process memory + page cache before allocating audio pools. System available memory is a snapshot, not an MPFree allocation guarantee.
 
 Storage snapshot: root `/dev/root` mounted read-only; `/run` and `/tmp` are tmpfs; `/data` is read-write; **`/etc` and `/var` are persistent read-write overlays backed by `/data`**. **A tool touching those overlays is not volatile.** eMMC partition and boot metadata remain unchanged by the surveys.
+
+## Subsequent owner-run evidence: explicit glibc 2.39 and all-core factory workload
+
+The second owner-run `--abi` read-only survey **explicitly identified the installed C library**:
+
+~~~text
+GNU libc release banner: GNU C Library (GNU libc) stable release version 2.39.
+~~~
+
+This is **stronger than merely observing a `GLIBC_2.39` symbol string**. The target device's libc declares release **2.39**, agreeing with the upstream Scarthgap baseline. Still verify each ARMv7 candidate binary's `PT_INTERP`, `DT_NEEDED`, versioned symbol needs and expected NEON/VFP support before execution. The dynamic linker file, ALSA/DRM/GBM/EGL/GLES and standard C++ library SONAMEs are present, not yet proven to be suitable for every candidate dependency.
+
+The second owner-run `--rtthreads` survey lists **38 threads** across all four CPU cores. It reports:
+
+| CPU allowed | Factory thread roles (selected) |
+| --- | --- |
+| CPU0 | Main thread, JUCE Message, JUCE MIDI Input, AudioWatchdog, AudioWorker0, GUI/file-browser |
+| CPU1 | AudioWorker1, Background 1, Background_high, FileIO, directory watches |
+| CPU2 | AudioWorker2, Background 2, MIDI Out, MIDI |
+| CPU3 | **Audio Processing**, AudioWorker3 |
+| CPU0–1 | sentry-http |
+
+The presence of `isolcpus=2-3` therefore **does not mean 50% of CPU cores are occupied by or inaccessible to MPFree because of Linux**. The vendor intentionally places its own workers on isolated cores. CPU affinity is a set of eligible cores, not CPU time consumption; actual utilization is not measured in this report.
+
+The initial scheduling probe did **not** show policy or RT priority for the threads (task `sched` debug fields were absent or not usable). The revised `--rtthreads` script now derives the Linux `policy`, `rt_priority`, and last-used CPU from each task's documented `stat` fields 39–41, requiring another **read-only** run to measure these values.
+
+**Important memory accounting pitfall:** `VmRSS: 1043768 kB` appears in every task's `/proc/PID/task/TID/status` because the threads share the **same process address space**. It is **not** 1 GiB *per thread* and must never be multiplied by 38. The factory process has ~1,019 MiB resident and ~1,016 MiB locked, representing roughly **half the ~2,019 MiB RAM** in Linux; that is **factory application memory**, not Linux's reserved memory. A new `--capacity` probe reads `smaps_rollup` to distinguish proportional/private memory and samples CPU counters over two seconds to measure workload utilization rather than making assumptions from CPU affinity.
+
+Systemd reported `LimitMEMLOCK=8388608` (8 MiB), while the stock application's `VmLck` was ~1,016 MiB. **This discrepancy is not resolved**; process privileges/capabilities, inherited locks or alternative memory-mapping APIs could matter, but should not be assumed as the cause. A read-only process capability and memory-map inspection would be needed before attributing the mechanism.
+
+The long-term strategy is to reclaim hardware resources **first by replacing the factory application while reusing the working kernel/drivers**, then optionally build a minimal, independent MPFree Linux userspace only after recovery is proven. See [hardware ownership strategy](../engineering/HARDWARE_OWNERSHIP_STRATEGY.md).
 
 ## Recovery blocker and next observations
 
