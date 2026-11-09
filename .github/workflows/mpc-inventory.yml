@@ -33,6 +33,7 @@ jobs:
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
+          sh -n tools/mpc-one/read-only-io.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -46,6 +47,7 @@ jobs:
               Path("tools/mpc-one/read-only-inventory.sh"),
               Path("tools/mpc-one/read-only-detail.sh"),
               Path("tools/mpc-one/read-only-runtime.sh"),
+              Path("tools/mpc-one/read-only-io.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -76,8 +78,19 @@ jobs:
           assert 'dd if=/usr/bin/MPC bs=64 count=1' in detail
           wrapper = Path("tools/mpc-one/collect-over-ssh.sh").read_text()
           assert '"--runtime")' in wrapper
+          assert '"--io")' in wrapper and '"--netbench")' in wrapper
+          io = paths[3].read_text()
+          assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
+          assert '/sys/class/udc/' in io
+          assert 'serial' not in "\n".join(x for x in io.splitlines() if 'usb/devices/' in x)
+          bench = Path("tools/mpc-one/network-bench.py").read_text()
+          assert 'TRANSFER = 4 * 1024 * 1024' in bench
           print("Static checks passed (not a proof of semantic read-only behavior).")
           PY
+      - name: Validate optional network bench without contacting MPC
+        run: |
+          python3 -m py_compile tools/mpc-one/network-bench.py
+          python3 -m unittest discover -s tests -p test_network_bench.py -v
       - name: Validate sanitized observed hardware JSON
         run: |
           python3 - <<'PY'
