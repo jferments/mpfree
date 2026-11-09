@@ -29,6 +29,8 @@
 | Library SONAMEs present | `libasound.so.2`, `libdrm.so.2`, `libEGL.so.1`, `libGLESv2.so.2`, `libgbm.so.1`, `libstdc++.so.6` | ALSA, DRM and GPU userspace building blocks exist; exact APIs, driver stacks and compatibility remain unverified |
 | Build tools on MPC | `readelf`, `objdump`, `ldd` and `pkg-config` absent; `strings` present | Perform ELF inspection and linking on developer host; do NOT install build tools on MPC |
 
+**External corroboration:** The official [Yocto 5.0 Scarthgap release notes](https://docs.yoctoproject.org/5.0/migration-guides/release-notes-5.0.html) specify **glibc 2.39** as their baseline. Combined with this vendor-derived az0x distro's Scarthgap declaration and observed `GLIBC_2.39` string, this strongly increases confidence that the installed libc is 2.39-based. **A custom inMusic build can still differ from the default Yocto recipe**; the exact release remains explicitly unverified until the on-device libc banner or target ABI is independently inspected.
+
 **Correction to the earlier checker:** the original `check-arm-abi.py` aborted without `getconf`, which is absent on the device. A revised checker now distinguishes **explicit getconf/release-banner confirmation** from the weaker `GLIBC_*` string ceiling. If only the strings are present, it provides a useful explanatory *NOT QUALIFIED* result (exit 4) rather than converting 2.39 into an asserted release version. An updated `--abi` survey tries to read an embedded GNU libc release banner **as read-only text** without executing libc. See [ABI comparison runbook](../engineering/ARMV7_USERSPACE_COMPATIBILITY.md).
 
 ## Factory service graph and lifecycle
