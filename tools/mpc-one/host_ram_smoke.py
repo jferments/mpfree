@@ -266,6 +266,8 @@ def parse_results(stdout, stderr, code, profile="device-smoke"):
     for line in lines:
         if "=" in line:
             key, value = line.split("=", 1)
+            if key == "STAGE":
+                continue  # Many legitimate shell phases use STAGE=...
             if key in fields:
                 raise RuntimeError(f"duplicate remote output field: {key}")
             fields[key] = value
