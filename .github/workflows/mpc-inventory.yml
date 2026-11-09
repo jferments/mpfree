@@ -60,6 +60,22 @@ jobs:
           assert 'app_hardware_links' in detail and 'usb_metadata' in detail
           print("Static checks passed (not a proof of semantic read-only behavior).")
           PY
+      - name: Validate sanitized observed hardware JSON
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("docs/hardware/data/mpc-one-3.6.0-observed.json")
+          d = json.loads(p.read_text())
+          assert d["provenance"]["hardware_serial_redacted"] is True
+          assert d["provenance"]["raw_report_in_repo"] is False
+          assert d["board"]["compatible"][-1] == "rockchip,rk3288"
+          assert d["cpu"]["logical_cpus"] == 4
+          assert d["factory_application"]["service"] == "acvs.service"
+          assert len(d["storage"]["partitions"]) == 8
+          assert all("serial" not in str(x).lower() for x in d["midi"]["interfaces"])
+          print("Redacted device map structure validated (no hardware-access claim).")
+          PY
       - name: Verify archived reference USB scripts parse and retain exact source bytes
         run: |
           python3 - <<'PY'
