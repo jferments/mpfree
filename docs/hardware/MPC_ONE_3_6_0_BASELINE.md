@@ -13,6 +13,8 @@ Every claim should carry one of these designations:
 
 This document records OBSERVED facts and explicitly labels remaining unknowns. The **2026-11-09 survey** extends the original SSH/mount observations with SoC/CPU, eMMC labels, ALSA devices, MIDI endpoints, graphics and touchscreen evidence. For exact values, commands, confidence and redacted evidence see [MPC One 2026-11-09 detailed survey](MPC_ONE_3_6_0_SURVEY_20261109.md).
 
+> **Since this baseline:** the reference unit received persistent SSH (rootfs unit + `/data/mpfree/ssh`). It is no longer a stock 3.6.0 rootfs. See [DEVICE_MODIFICATIONS.md](DEVICE_MODIFICATIONS.md).
+
 ## 1. Entry point and verified access
 
 The reference workstation and MPC were connected directly by Ethernet; their addresses are laboratory-specific, not universal defaults.
