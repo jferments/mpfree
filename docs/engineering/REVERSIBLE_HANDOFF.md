@@ -65,6 +65,8 @@ There are deliberately **no executable stop/start commands here**. Handoff remai
 
 **As of today gates 1, 4, 5 and 6 are NOT proven. Any device takeover is blocked.**
 
+**Proposed (awaiting owner adoption):** [RECOVERY_AND_OS_STRATEGY.md](RECOVERY_AND_OS_STRATEGY.md) scopes gate 1 by tier. A session-only takeover with no eMMC writes (Tier 1) would need a full off-device backup and measured zero writes to `p1`–`p6`, not MaskROM-level recovery. Gates 2–6 are unchanged.
+
 ## A pure-Rust mock state machine now exists (SIMULATION ONLY)
 
 The new `rust/mpfree-handoff-model` crate implements the following *simulated* guarded transitions:
