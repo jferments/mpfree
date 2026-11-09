@@ -1,0 +1,6 @@
+# Only track source code and documentation, never local probe artifacts.
+/*-armhf
+/gpu-bench-*.log
+/gpu-bench-*.ppm
+/gpu-bench-*.png
+/gpu-qualification-*.log
