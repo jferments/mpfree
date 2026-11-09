@@ -9,7 +9,21 @@
     "distribution_version": "5.0.8",
     "source_report_sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
     "raw_report_in_repo": false,
-    "hardware_serial_redacted": true
+    "hardware_serial_redacted": true,
+    "surveys": [
+      {
+        "collected_utc": "2026-11-09T05:00:46Z",
+        "sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
+        "local_only": true,
+        "document": "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md"
+      },
+      {
+        "collected_utc": "2026-11-09T05:21:06Z",
+        "sha256": "d25be98aea6e90cc0328c0af4d29c505106dcd26704da7dc1f6f5bd59cec317e",
+        "local_only": true,
+        "document": "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md"
+      }
+    ]
   },
   "board": {
     "model": "Akai Professional MPC One",
@@ -36,7 +50,14 @@
       "idivt"
     ],
     "midr_family_note": "RK3288 part 0xC0D: Cortex-A12 vs Cortex-A17 nomenclature ambiguous in external cpuinfo sources",
-    "confidence": "OBSERVED"
+    "confidence": "OBSERVED",
+    "clock_at_survey": {
+      "governor": "performance",
+      "cur_khz": 1608000,
+      "max_khz": 1608000,
+      "all_4_logical_cpus": true,
+      "confidence": "OBSERVED"
+    }
   },
   "memory": {
     "reported_total_kb": 2067188,
@@ -154,8 +175,25 @@
       "snd_soc_rockchip_i2s"
     ],
     "sample_rates_verified": false,
-    "audio_owner_verified": false,
-    "confidence": "OBSERVED"
+    "audio_owner_verified": true,
+    "confidence": "OBSERVED",
+    "alsa_pcm_at_survey": {
+      "playback": {
+        "node": "/dev/snd/pcmC1D0p",
+        "subdevices_count": 1,
+        "subdevices_avail": 0,
+        "held_by": "acvs.service"
+      },
+      "capture": {
+        "node": "/dev/snd/pcmC1D0c",
+        "subdevices_count": 1,
+        "subdevices_avail": 0,
+        "held_by": "acvs.service"
+      },
+      "negotiated_format_rate_channels_verified": false,
+      "shared_access_possible_verified": false,
+      "confidence": "OBSERVED"
+    }
   },
   "midi": {
     "device": "/dev/snd/midiC0D0",
@@ -174,7 +212,17 @@
       }
     ],
     "pad_protocol_verified": false,
-    "confidence": "OBSERVED"
+    "confidence": "OBSERVED",
+    "usb_device": {
+      "vendor_id": "09e8",
+      "product_id": "0046",
+      "manufacturer": "Akai Pro",
+      "product": "MPC One MIDI",
+      "speed_mbit_s": 12,
+      "bnum_interfaces": 2
+    },
+    "factory_application_open_fd_count_at_survey": 3,
+    "open_fds_do_not_establish_rawmidi_port_mapping": true
   },
   "display": {
     "framebuffer": "/dev/fb0",
@@ -187,8 +235,26 @@
     "render_node": "/dev/dri/renderD128",
     "backlight_name": "mipi-backlight",
     "gpu_kernel_irq_label": "panfrost-gpu",
-    "display_mode_verified": false,
-    "confidence": "OBSERVED"
+    "display_mode_verified": true,
+    "confidence": "OBSERVED",
+    "drm_mode_px": {
+      "width": 800,
+      "height": 1280,
+      "orientation_correction_verified": false
+    },
+    "virtual_framebuffer_px": {
+      "width": 800,
+      "height": 3840,
+      "bits_per_pixel": 32
+    },
+    "gpu": {
+      "driver": "panfrost",
+      "dt_compatible": [
+        "rockchip,rk3288-mali",
+        "arm,mali-t760"
+      ],
+      "confidence": "OBSERVED"
+    }
   },
   "input": {
     "touch": {
@@ -201,7 +267,17 @@
       "device": "/dev/input/event1"
     },
     "touch_axes_verified": false,
-    "confidence": "OBSERVED"
+    "confidence": "OBSERVED",
+    "factory_app_holds_evdev": [
+      {
+        "node": "/dev/input/event0",
+        "device": "ILI2117 Touchscreen"
+      },
+      {
+        "node": "/dev/input/event1",
+        "device": "gpio-keys"
+      }
+    ]
   },
   "factory_application": {
     "binary": "/usr/bin/MPC",
@@ -209,22 +285,52 @@
     "launcher_path": "/usr/bin/az01-launch-MPC",
     "service": "acvs.service",
     "service_state": "active running",
-    "main_pid_verified": false,
-    "hardware_fd_ownership_verified": false,
-    "confidence": "OBSERVED"
+    "main_pid_verified": true,
+    "hardware_fd_ownership_verified": true,
+    "confidence": "OBSERVED",
+    "verified_service_main_pid_command": "systemctl show acvs.service -p MainPID",
+    "process_pid_transient_not_to_hardcode": true,
+    "open_device_nodes": [
+      "/dev/dri/card0",
+      "/dev/snd/seq",
+      "/dev/snd/midiC0D0",
+      "/dev/snd/controlC1",
+      "/dev/snd/pcmC1D0p",
+      "/dev/snd/pcmC1D0c",
+      "/dev/input/event0",
+      "/dev/input/event1"
+    ],
+    "related_running_units": [
+      {
+        "service": "az01-network-midi.service",
+        "exec_start": "/usr/bin/start-remote-midi.sh"
+      },
+      {
+        "service": "az01-script-runner.service",
+        "exec_start": "/usr/bin/az01-script-runner"
+      }
+    ]
   },
   "unknowns": [
-    "Exact external codec and ALSA PCM rates/periods/latency",
-    "Physical pad/encoder/LED MIDI messages",
-    "GPU identity/driver binding and display resolution",
-    "Touch ABS axis range",
-    "A/B boot selection and recoverability",
-    "Hard-float ABI and dynamic loader",
-    "MPC app service main PID and device fd ownership",
-    "Cross-firmware compatibility"
+    "ACVA actual negotiated PCM hw_params and its full supported formats/rates",
+    "Physical audio codec, mixing/routing, latency, and verified exclusive vs shared ALSA semantics",
+    "Physical pad/encoder/private MIDI message layouts and safe LED control",
+    "Touchscreen ABS axis range and UI rotation transform",
+    "Factory process thread scheduling and owner(s) of the large locked RAM region",
+    "A/B boot selection and verified independent restore from a failed boot",
+    "MPC ELF header interpreter/ABI (the attempted BusyBox probe failed)",
+    "Recovery and compatibility for other MPC firmware and hardware"
   ],
   "references": [
     "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md",
-    "docs/hardware/DEVELOPER_ACCESS.md"
-  ]
+    "docs/hardware/DEVELOPER_ACCESS.md",
+    "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md"
+  ],
+  "abi": {
+    "installed_loader": "/lib/ld-linux-armhf.so.3",
+    "installed_alsa_lib": "/usr/lib/libasound.so.2",
+    "mpc_elf_interpreter_verified": false,
+    "failed_probe": "BusyBox head -c and od -An unavailable",
+    "confidence": "OBSERVED"
+  }
 }
