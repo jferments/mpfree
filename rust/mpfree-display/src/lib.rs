@@ -146,7 +146,7 @@ fn draw_label(canvas: &mut RgbCanvas, x: usize, y: usize, label: &str) {
             let x0 = x + glyph_index * 6 * SCALE;
             for (row, bits) in rows.iter().enumerate() {
                 for col in 0..5 {
-                    if bits & (1 << (4 - col)) != 0 {
+                    if (*bits & (1 << (4 - col))) != 0 {
                         canvas.fill_rect(
                             x0 + col * SCALE, y + row * SCALE,
                             SCALE, SCALE, [238, 246, 255],
@@ -199,7 +199,7 @@ pub fn map_raw_touch(
         if range.max <= range.min || raw < range.min || raw > range.max {
             return None;
         }
-        let numerator = i64::from(raw - range.min) * (pixels as i64 - 1);
+        let numerator = (i64::from(raw) - i64::from(range.min)) * (pixels as i64 - 1);
         let denominator = i64::from(range.max) - i64::from(range.min);
         Some((numerator / denominator) as usize)
     }
