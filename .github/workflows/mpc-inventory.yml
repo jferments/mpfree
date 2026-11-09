@@ -108,6 +108,9 @@ jobs:
           for forbidden in ("kexec -l", "kexec -e", "fw_setenv", "mount ", "systemctl start", "rkdeveloptool", "unsquashfs"):
               assert forbidden not in bootmap_exec, f"boot-map must stay read-only: {forbidden}"
           assert "redact" in bootmap and "<REDACTED>" in bootmap, "boot-map identifier redaction missing"
+          # az0x BusyBox od lacks -A/-t and tr classes may be unsupported (observed 2026-11-09).
+          for unsupported in ("od -A", "od -t", "[:print:]"):
+              assert unsupported not in bootmap_exec, f"boot-map uses BusyBox-unsupported syntax: {unsupported}"
           procmap=Path("tools/mpc-one/read-only-process-map.sh").read_text()
           assert 'systemctl show "$unit"' in procmap
           assert 'systemctl list-units --type=service' in procmap

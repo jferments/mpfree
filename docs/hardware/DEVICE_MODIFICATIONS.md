@@ -37,7 +37,7 @@ unplugged and reconnected.
 reference lab address (`10.42.0.141`). The private key stays on the workstation.
 Never commit key material or host keys.
 
-**Risk this carried:** remounting the read-only, ~96%-full rootfs and writing
+**Risk this carried:** the rootfs is ext4 mounted **without a journal**, so a power loss during the read-write window could have corrupted it. Remounting the read-only, ~96%-full rootfs and writing
 to it is a boot-critical write (Tier 3 in the
 [recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md)). It succeeded,
 and the unit has booted cleanly since. That success does not make it a pattern
@@ -53,8 +53,11 @@ SHA-256 of both rootfs paths and the names (not contents) under
 
 | Path | SHA-256 |
 | --- | --- |
-| `/usr/lib/systemd/system/mpfree-sshd.service` | *pending first `--boot-map` run* |
-| `multi-user.target.wants/mpfree-sshd.service` (link target) | *pending* |
+| `/usr/lib/systemd/system/mpfree-sshd.service` (375 bytes, mtime 2026-11-09 19:49) | `062881f29f27acca7dc1434538af841073f6ccf101bc4c6b9fd66714ec5f9eaa` |
+| `multi-user.target.wants/mpfree-sshd.service` | symlink → `../mpfree-sshd.service` (same hash) |
+| `p6` rootfs whole-partition hash with MOD-001 | `fa2ca12bfac82f5ca69238f8b85c1f1df18994486b385086ebdda26ae61b2350` |
+
+Recorded from the owner's `--boot-map` run on 2026-11-09 22:04 UTC. The unit was `enabled` and `active`. `/data/mpfree/ssh/` held `authorized_keys`, `host_ed25519`, `host_ed25519.pub` and `sshd_config` (only the names were read).
 
 **Effect of an official Akai firmware update:** an update rewrites `p6`, so it
 will almost certainly **remove MOD-001**. SSH then falls back to USB autorun,
