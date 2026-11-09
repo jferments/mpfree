@@ -41,6 +41,7 @@ jobs:
           sh -n tools/mpc-one/read-only-process-map.sh
           sh -n tools/mpc-one/read-only-touchscreen.sh
           sh -n tools/mpc-one/read-only-touch-axes-env.sh
+          sh -n tools/mpc-one/read-only-touch-capture-env.sh
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
@@ -218,11 +219,31 @@ jobs:
           assert 'std::process::Command' not in touch_main
           assert 'systemctl stop' not in touch_main
           assert '"--touch-abs")' not in wrapper
-          for m11 in ("mt", "pointer", "gesture"):
+          for m11 in ("mt", "pointer", "gesture", "calibrate"):
               m11_source = Path(f"rust/mpfree-touch/src/{m11}.rs").read_text()
               assert not any(needle in m11_source for needle in (
                   'std::fs', 'std::os', 'std::net', 'std::process', '/dev/', 'unsafe', 'ioctl',
               )), m11
+          # M12 capture: read-only, no grab, no ioctl, no unsafe, fixed path.
+          capture_src = Path("rust/mpfree-touch/src/bin/capture.rs").read_text()
+          capture_code = "\n".join(x for x in capture_src.splitlines()
+              if not x.lstrip().startswith("//"))
+          assert '#![forbid(unsafe_code)]' in capture_src
+          assert 'const DEVICE: &str = "/dev/input/event0";' in capture_src
+          assert capture_code.count('/dev/') == 1
+          assert '.read(true)' in capture_code
+          for needle in ('unsafe {', 'ioctl', 'EVIOCGRAB', '.write(true)', '.append(true)',
+                         '.create(', 'std::process::Command', 'std::net', 'fs::write',
+                         'systemctl', 'event1', '/dev/i2c', '/dev/dri'):
+              assert needle not in capture_code, needle
+          capture_host = Path("tools/mpc-one/host_touch_capture.py").read_text()
+          assert 'MPFREE_ACCEPT_TOUCH_CAPTURE=YES "$stage/probe" --capture' in capture_host
+          assert 'ulimit -f 0' in capture_host and 'ulimit -t 15' in capture_host
+          for needle in ('EVIOCGRAB', 'systemctl stop', 'systemctl restart', 'fw_setenv',
+                         'mount -o', 'dd if', 'dd of', '/dev/mmcblk'):
+              assert needle not in capture_host, needle
+          assert '"${MPFREE_ACCEPT_TOUCH_CAPTURE:-}" != \'YES\'' in wrapper
+          assert '"${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != \'YES\'' in wrapper
           session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
           assert '#![forbid(unsafe_code)]' in session_source
           assert 'NullAudioBackend' in session_source
@@ -252,7 +273,7 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py tools/mpc-one/host_null_session_supervisor.py
+          python3 -m py_compile tools/mpc-one/host_touch_capture.py tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py tools/mpc-one/host_null_session_supervisor.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
@@ -436,6 +457,19 @@ jobs:
             exit 1
           fi
           echo "PASS: no evdev open in M9 synthetic mode; live mode not deployed"
+          rust/target/release/mpfree-touch-capture --self-test > /tmp/mpfree-capture-selftest.out
+          grep -q '^MPFREE_TOUCH_CAPTURE_SELFTEST_V1$' /tmp/mpfree-capture-selftest.out
+          grep -q '^device_opened=no$' /tmp/mpfree-capture-selftest.out
+          grep -q '^status=PASS$' /tmp/mpfree-capture-selftest.out
+          if env -u MPFREE_ACCEPT_TOUCH_CAPTURE rust/target/release/mpfree-touch-capture --capture; then
+            echo "FAIL: M12 capture permitted without explicit opt-in" >&2
+            exit 1
+          fi
+          rust/target/release/mpfree-touch-analyze --self-test > /tmp/mpfree-analyze-selftest.out
+          grep -q '^MPFREE_TOUCH_ANALYZE_SELFTEST_V1$' /tmp/mpfree-analyze-selftest.out
+          grep -q '^orientations_recovered=8$' /tmp/mpfree-analyze-selftest.out
+          grep -q '^status=PASS$' /tmp/mpfree-analyze-selftest.out
+          echo "PASS: M12 capture refuses without opt-in; analyzer recovers all 8 orientations"
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -600,6 +634,24 @@ jobs:
               r"GLIBC_(\d+)\.(\d+)",touch_versions)]
           assert glibcs and max(glibcs)<=(2,39)
           print("PASS: M9 touch EVIOCGABS metadata helper ARMv7 ELF glibc<=2.39; NOT DEPLOYED")
+          capture=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-touch-capture")
+          assert capture.is_file() and capture.stat().st_size < 2 * 1024 * 1024
+          for marker in (b"MPFREE_TOUCH_CAPTURE_V1", b"MPFREE_TOUCH_CAPTURE_ARMED",
+                         b"MPFREE_TOUCH_CAPTURE_WATCHDOG_70S_ARMED"):
+              assert marker in capture.read_bytes(), marker
+          def cap_elf(*args):
+              return subprocess.run(["arm-linux-gnueabihf-readelf", *args, str(capture)],
+                                    check=True, capture_output=True, text=True).stdout
+          assert re.search(r"Class:\s*ELF32", cap_elf("-h"))
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI", cap_elf("-h"))
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in cap_elf("-l")
+          cap_glibc=[tuple(map(int,m)) for m in re.findall(r"GLIBC_(\d+)\.(\d+)", cap_elf("-W", "--version-info"))]
+          assert cap_glibc and max(cap_glibc)<=(2,39)
+          # The binary must not even link ioctl, so it cannot grab event0.
+          imports={line.split()[7].split("@")[0] for line in cap_elf("-W", "--dyn-syms").splitlines()
+                   if len(line.split()) >= 8 and line.split()[6] == "UND"}
+          assert "ioctl" not in imports, "M12 capture binary imports ioctl"
+          print("PASS: M12 capture ARMv7 ELF, glibc<=2.39, no ioctl import; NOT DEPLOYED")
           headless=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-headless")
           assert headless.is_file() and headless.stat().st_size < 2 * 1024 * 1024
           assert b"MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED" in headless.read_bytes()
