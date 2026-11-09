@@ -61,9 +61,7 @@ this plan existed. See DEVICE_MODIFICATIONS.md.
 | `p6` rootfs | Akai Update Mode: FULL LEVEL + BROWSE + PAD BANK C/G at power-on ([Akai walkthrough](https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough)) | **Probably** `p1`–`p3` **and** `p6` (see inference below) | No |
 | `p1`–`p5`, `boot0/1` | RK3288 MaskROM + `rkdeveloptool` writing the backup image back | USB-B port reaching the RK3288 OTG controller; a way to force MaskROM | No |
 
-**Key inference to verify:** there is no kernel partition, so the kernel and
-device tree most likely live in `p6:/boot`, and the update RAM disk
-(`/opt/ramfs-update.squashfs`) is also inside `p6`. If so, Akai's Update Mode
+**Confirmed by `--boot-map` (2026-11-09):** the kernel, DTBs and U-Boot's boot script live in `p6:/boot`, and `boot0/boot1` are empty, so the device boots from the user-area loader at sector 64. See [boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md). **Still to verify:** whether Update Mode also boots from `p6`. If so, Akai's Update Mode
 can reinstall a rootfs but **cannot** revive a unit whose `p6` is unreadable,
 and MaskROM is the only true brick recovery. `--boot-map` checks this.
 
@@ -73,8 +71,8 @@ These options boot a non-Akai kernel while leaving every eMMC byte
 untouched. A power-cycle returns the stock OS. All three still need to be checked on this
 unit, in order of increasing effort:
 
-1. **kexec from the running stock Linux.** If the vendor kernel has
-   `CONFIG_KEXEC`, a cross-built `kexec` can load our kernel and initramfs into
+1. **kexec from the running stock Linux. Available:** the vendor kernel has
+   `CONFIG_KEXEC=y` and `CONFIG_KEXEC_FILE=y`, and `/usr/sbin/kexec` is installed. It can load our kernel and initramfs into
    RAM and jump to it. There are no eMMC writes, and a reboot returns to stock. Risk: drivers left
    in odd states by the first kernel. `--boot-map` reports kexec support.
 2. **U-Boot scanning removable media.** If the vendor U-Boot environment
@@ -122,7 +120,7 @@ Policy:
 
 Steps 1–5 are read-only or offline. Step 6 changes device state and needs the owner's go-ahead.
 
-1. Run `bash tools/mpc-one/collect-over-ssh.sh --boot-map` and record the sanitized findings and MOD-001 hashes.
+1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). Re-run the revised version to capture the U-Boot environment and `boot.scr` text that the first run missed.
 2. Copy `/opt/ramfs-update.squashfs` to the workstation (a read on the device), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.

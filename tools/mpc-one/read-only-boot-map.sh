@@ -61,23 +61,40 @@ else
   echo 'No hash tool available'
 fi
 
-section 'Rockchip loader signatures (first bytes only)'
-for name in mmcblk0p1 mmcblk0boot0 mmcblk0boot1; do
+section 'Rockchip loader signatures (first 16 bytes only)'
+# BusyBox od on az0x lacks -A/-t; use -x (16-bit little-endian words) and -c.
+for name in mmcblk0p1 mmcblk0p3 mmcblk0boot0 mmcblk0boot1; do
   [ -b "/dev/$name" ] || continue
-  printf '%s first 16 bytes: ' "$name"
-  dd if="/dev/$name" bs=16 count=1 2>/dev/null | od -A n -t x1 | tr -s ' ' | head -n 1
+  echo "--- $name ---"
+  dd if="/dev/$name" bs=16 count=1 2>/dev/null | od -x | head -n 1
+  dd if="/dev/$name" bs=16 count=1 2>/dev/null | od -c | head -n 1
 done
-printf 'Whole-disk sector 64 (Rockchip idbloader offset) first 16 bytes: '
-dd if=/dev/mmcblk0 bs=512 skip=64 count=1 2>/dev/null | od -A n -t x1 | head -n 1 | tr -s ' '
+echo '--- whole-disk sector 64 (Rockchip idbloader offset) ---'
+dd if=/dev/mmcblk0 bs=512 skip=64 count=1 2>/dev/null | od -x | head -n 1
 
 section 'U-Boot environment (p2) as text, identifiers redacted'
+# Raw read of p2: a 4-byte CRC, then NUL-separated name=value pairs.
+# No tr character classes: the device BusyBox may not support them.
 if [ -b /dev/mmcblk0p2 ]; then
+  echo '--- raw p2 (CRC bytes may prefix the first line) ---'
   dd if=/dev/mmcblk0p2 bs=8192 count=1 2>/dev/null | tr '\000' '\n' |
-    tr -cd '[:print:]\n' | grep -E '^[A-Za-z0-9_#.-]+=' | redact | head -n 200
+    grep -E '[A-Za-z0-9_#.-]+=' | redact | head -n 200
 fi
-echo '--- fw_env tooling (presence only) ---'
-command -v fw_printenv 2>/dev/null || echo 'fw_printenv: absent'
+echo '--- partuuid symlinks (to match fw_env.config to a partition) ---'
+ls -l /dev/disk/by-partuuid/ 2>/dev/null || :
 [ -r /etc/fw_env.config ] && { echo '/etc/fw_env.config:'; cat /etc/fw_env.config; }
+echo '--- fw_printenv (read-only print of the same environment) ---'
+if command -v fw_printenv >/dev/null 2>&1; then
+  fw_printenv 2>&1 | redact | head -n 200
+else
+  echo 'fw_printenv: absent'
+fi
+
+section 'U-Boot boot script /boot/boot.scr.uimg (text after the 72-byte uImage script header)'
+if [ -r /boot/boot.scr.uimg ]; then
+  dd if=/boot/boot.scr.uimg bs=72 skip=1 2>/dev/null | tr -d '\000' | redact
+  echo
+fi
 
 section 'Kernel and boot files in rootfs /boot (names and sizes)'
 if [ -d /boot ]; then
@@ -94,7 +111,7 @@ section 'Update path (metadata only; nothing is mounted or executed)'
 if [ -f /opt/ramfs-update.squashfs ]; then
   ls -la /opt/ramfs-update.squashfs
   [ -n "$hash_cmd" ] && $hash_cmd /opt/ramfs-update.squashfs
-  printf 'squashfs magic: '; dd if=/opt/ramfs-update.squashfs bs=4 count=1 2>/dev/null | od -A n -c | head -n 1
+  printf 'squashfs magic (expect h s q s): '; dd if=/opt/ramfs-update.squashfs bs=4 count=1 2>/dev/null | od -c | head -n 1
 fi
 ls -la /opt 2>/dev/null || :
 for d in /lib/systemd/system /usr/lib/systemd/system /etc/systemd/system; do

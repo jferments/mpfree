@@ -51,6 +51,7 @@ Start here for reproducible hardware/firmware development:
 - [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 - [Recovery tiers, firmware updates and the path to an MPFree OS](docs/engineering/RECOVERY_AND_OS_STRATEGY.md) — proposed three-tier recovery gate, what an Akai update overwrites, and how to test another OS with zero eMMC writes.
+- [Boot chain and recovery map (owner-run --boot-map)](docs/hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md) — exact eMMC layout, boot-critical hashes, empty boot0/boot1, kernel in rootfs, kexec available, OTG controller in peripheral mode.
 - [Reference unit device modifications](docs/hardware/DEVICE_MODIFICATIONS.md) — every persistent change made to the reference MPC One (currently: persistent SSH), with verification and undo steps.
 
 A **read-only** automated survey, run on the *workstation*, is available as:
