@@ -128,7 +128,7 @@ def parse_touch_output(stdout, stderr, code):
         if fields.get(key) != value:
             raise RuntimeError(f"invalid touch result field {key}: {fields.get(key)!r}")
 
-    allowed = set(fixed) | {
+    allowed = set(fixed) | {"multitouch_slots"} | {
         f"{axis}_{prop}" for axis in AXES for prop in PROPERTIES
     }
     unknown = set(fields) - allowed
