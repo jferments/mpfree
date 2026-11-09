@@ -1,6 +1,6 @@
 # M6: independent headless MPFree engine with null audio
 
-**Status:** M6 native Rust tests and ARMv7 cross-build passed on the owner's ML-tower. A separately allowlisted **read-only `--headless-check`** and **dual-opt-in RAM-only `--headless-smoke`** launch procedure is implemented; **the physical MPC has not yet executed M6**. Original **M5** Rust on-target smoke is proven successful (owner-run, 2026-11-09). The factory application retains ownership of audio/MIDI/display/input. M6 is a finite, hardware-free null-output test, **not a persistent daemon, real-time driver, or factory handoff**.
+**Status:** M6 native tests, ARMv7 cross-build and **physical MPC One execution all passed** (owner-run 2026-11-09). The double-opt-in RAM-only `--headless-smoke` returned `status=PASS`, 88,200 frames, 12 groove events, 4 sampled notes, 30,565 µs offline render time (**65.43×**), 1,792 KiB current/peak RSS and the previously verified x86-64 PCM checksum. The factory application remained active in the launcher checks and retains audio/MIDI/display/input ownership. M6 remains a finite null-output test, **not a persistent daemon, real-time driver, or factory handoff**. See [M7 timing architecture](M7_SYNTHETIC_TIMING_AND_HOST_SUPERVISOR.md).
 
 ## M5 completed on original MPC One — actual owner evidence
 
@@ -151,7 +151,7 @@ STAGE=RUST_EXECUTED
 MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED
 ~~~
 
-The host reports `headless_audio_seconds=2.000` and `headless_offline_throughput_x=...`; this is a **batch-processing ratio**, not an xrun-free playback guarantee. The `peak_rss_kib` high-water mark includes shared libraries and thread stacks but is not PSS; the synthetic sample bank alone was ~94 KiB on x86-64.
+The owner measured `headless_audio_seconds=2.000` and `headless_offline_throughput_x=65.43`; this is a **batch-processing ratio**, not an xrun-free playback guarantee. The `peak_rss_kib` high-water mark includes shared libraries and thread stacks but is not PSS; the synthetic sample bank alone was ~94 KiB on x86-64.
 
 On successful completion, verify that the **factory touchscreen, pads and sound still work**. Retain private reports in the ignored `research/` folder, with identifying information redacted before sharing. The launcher does not intentionally modify anything outside RAM-backed `/run`, but system SSH/PAM logging may independently make ordinary writes; an interrupted SSH connection may prevent immediate cleanup. Avoid forcibly killing the device.
 
