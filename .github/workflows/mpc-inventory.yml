@@ -36,6 +36,8 @@ jobs:
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
           sh -n tools/mpc-one/read-only-io.sh
+          sh -n tools/mpc-one/read-only-abi.sh
+          sh -n tools/mpc-one/read-only-handoff-preflight.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -50,6 +52,8 @@ jobs:
               Path("tools/mpc-one/read-only-detail.sh"),
               Path("tools/mpc-one/read-only-runtime.sh"),
               Path("tools/mpc-one/read-only-io.sh"),
+              Path("tools/mpc-one/read-only-abi.sh"),
+              Path("tools/mpc-one/read-only-handoff-preflight.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -80,6 +84,8 @@ jobs:
           assert 'dd if=/usr/bin/MPC bs=64 count=1' in detail
           wrapper = Path("tools/mpc-one/collect-over-ssh.sh").read_text()
           assert '"--runtime")' in wrapper
+          assert '"--abi")' in wrapper
+          assert '"--handoff-preflight")' in wrapper
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
@@ -91,7 +97,7 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
@@ -202,6 +208,32 @@ jobs:
                      for i in range(0, len(pcm), 8)), "Stereo channels differ"
           print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
           PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
       - name: Build independent C++ reference
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -221,7 +253,7 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-render -p mpfree-groove
+            --target armv7-unknown-linux-gnueabihf --workspace
           target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
           file "$target"
           arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
