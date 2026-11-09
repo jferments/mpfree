@@ -89,8 +89,8 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py
-          python3 -m unittest discover -s tests -p test_network_bench.py -v
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
           python3 - <<'PY'
