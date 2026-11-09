@@ -103,6 +103,14 @@ jobs:
           assert '--env-script' in host
           assert 'check_remote_environment(env_out)' in host
           assert 'MPC missing required RAM-smoke utilities' in host
+          assert 'ulimit -t 3' in host, "kernel CPU-time limit must remain"
+          assert 'RUST_WATCHDOG_MARKER' in host, "Rust self-watchdog proof required"
+          assert 'shell_scheduler_policy' in host, "normal-priority guard required"
+          rust_smoke = Path("rust/mpfree-device-smoke/src/main.rs").read_text()
+          assert "#![forbid(unsafe_code)]" in rust_smoke
+          assert 'arm_self_watchdog()' in rust_smoke
+          assert 'std::process::abort()' in rust_smoke
+          assert 'WALL_WATCHDOG_SECONDS: u64 = 5' in rust_smoke
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
@@ -203,6 +211,12 @@ jobs:
           grep -q '^frames=4096$' /tmp/mpfree-smoke-native.txt
           grep -q '^beats=1$' /tmp/mpfree-smoke-native.txt
           grep -q '^status=PASS$' /tmp/mpfree-smoke-native.txt
+          # The self-watchdog marker is emitted to stderr at process start.
+          # This runs on the CI host, never on the hardware MPC.
+          cargo run --manifest-path rust/Cargo.toml --release --locked \
+            -p mpfree-device-smoke -- --self-test > /tmp/mpfree-watchdog-native.out 2>/tmp/mpfree-watchdog-native.err
+          grep -q '^WATCHDOG=RUST_5S_ARMED$' /tmp/mpfree-watchdog-native.err
+          grep -q '^status=PASS$' /tmp/mpfree-watchdog-native.out
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -312,6 +326,9 @@ jobs:
           path="rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke"
           binary=Path(path)
           assert binary.is_file() and binary.stat().st_size < 2 * 1024 * 1024
+          assert b"WATCHDOG=RUST_5S_ARMED" in binary.read_bytes(), (
+              "ARM binary must contain self-watchdog startup marker"
+          )
           def readelf(*args):
               return subprocess.run(
                   ["arm-linux-gnueabihf-readelf", *args, path],

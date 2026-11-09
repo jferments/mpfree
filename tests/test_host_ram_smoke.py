@@ -28,12 +28,15 @@ tool.awk=present
 tool.mktemp=present
 tool.cat=present
 tool.sha256sum=present
-tool.timeout=present
-tool.nice=present
+tool.timeout=MISSING
+tool.nice=MISSING
 tool.chmod=present
 tool.rm=present
 tool.rmdir=present
 tool.systemctl=present
+=== Shell CPU-time limit and inherited scheduling (read-only) ===
+shell_cpu_limit=present
+shell_scheduler_policy=0
 === Factory application (read-only) ===
 factory_service_active=active
 factory_main_pid=present
@@ -78,7 +81,8 @@ class GuardTests(unittest.TestCase):
 
     def test_read_only_prerequisites_report_all_ten_utilities(self):
         self.assertIn("PASS", smoke.check_remote_environment(ENV_REPORT))
-        for missing in ("mktemp", "timeout", "nice", "sha256sum", "systemctl"):
+        self.assertIn("timeout/nice not required", smoke.check_remote_environment(ENV_REPORT))
+        for missing in ("mktemp", "cat", "sha256sum", "systemctl"):
             with self.subTest(tool=missing):
                 modified = ENV_REPORT.replace(
                     f"tool.{missing}=present", f"tool.{missing}=MISSING"
@@ -92,6 +96,8 @@ class GuardTests(unittest.TestCase):
             ("factory_service_active=active", "factory_service_active=inactive"),
             ("factory_main_pid=present", "factory_main_pid=unavailable"),
             ("armhf_interpreter=present", "armhf_interpreter=MISSING"),
+            ("shell_cpu_limit=present", "shell_cpu_limit=unsupported"),
+            ("shell_scheduler_policy=0", "shell_scheduler_policy=2"),
         ):
             with self.subTest(attribute=a):
                 with self.assertRaises(RuntimeError):
@@ -105,9 +111,9 @@ class GuardTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "duplicate"):
             smoke.check_remote_environment(
                 ENV_REPORT.replace(
-                    "tool.timeout=present",
-                    "tool.timeout=present\n"
-                    "tool.timeout=present",
+                    "tool.sha256sum=present",
+                    "tool.sha256sum=present\n"
+                    "tool.sha256sum=present",
                 )
             )
 
@@ -120,17 +126,26 @@ class GuardTests(unittest.TestCase):
         else:
             self.fail("exit 127 must fail closed and reveal the last phase")
 
+    def test_optional_timeout_and_nice_may_be_missing(self):
+        self.assertIn("PASS", smoke.check_remote_environment(ENV_REPORT))
+        for name in ("timeout", "nice"):
+            report = ENV_REPORT.replace(
+                f"tool.{name}=MISSING", f"tool.{name}=present"
+            )
+            self.assertIn("PASS", smoke.check_remote_environment(report))
+
     def test_remote_script_is_fixed_tmpfs_only_and_checks_checksum(self):
         digest = "a" * 64
         program = smoke.remote_run_script(digest)
         for marker in (
             '/run', 'tmpfs', "mktemp -d /run/mpfree-smoke.",
-            'trap cleanup 0', 'timeout 5 nice -n 10', "sha256sum", digest,
+            'trap cleanup 0', 'ulimit -t 3', "sha256sum", digest,
             'chmod 0500', 'cat > "$stage/probe"', 'ulimit -c 0',
             'ulimit -f 0', "systemctl is-active acvs.service",
         ):
             self.assertIn(marker, program)
-        for forbidden in ("systemctl stop", "systemctl restart", "mount -o", "dd if=", "/dev/snd",
+        for forbidden in ("systemctl stop", "systemctl restart", "timeout 5 nice",
+                          "mount -o", "dd if=", "/dev/snd",
                           "/dev/dri", "/dev/input", "reboot", "fw_setenv"):
             self.assertNotIn(forbidden, program)
         for bad in ("", "a" * 63, "a" * 65, "'; reboot", "not-a-digest"):
@@ -138,7 +153,9 @@ class GuardTests(unittest.TestCase):
                 smoke.remote_run_script(bad)
 
     def test_must_see_hash_arch_frames_and_pass(self):
-        smoke.parse_results(PASS_OUTPUT, "", 0)
+        smoke.parse_results(PASS_OUTPUT, "WATCHDOG=RUST_5S_ARMED\n", 0)
+        with self.assertRaisesRegex(RuntimeError, "Rust watchdog armed"):
+            smoke.parse_results(PASS_OUTPUT, "", 0)
         with self.assertRaises(RuntimeError):
             smoke.parse_results(PASS_OUTPUT, "", 1)
         for marker in ("MPFREE_VOLATILE_STAGE_SHA256_OK", "status=PASS",
