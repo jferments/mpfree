@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Platform-independent MPFree sample-frame metronome core"
+
+[lib]
+path = "src/lib.rs"

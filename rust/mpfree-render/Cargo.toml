@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-render"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-only WAV reference renderer, no device access"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }

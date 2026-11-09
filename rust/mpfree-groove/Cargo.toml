@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-groove"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-only step sequencer and bounded 16-voice drum sampler demonstration"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }

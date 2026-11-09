@@ -1,0 +1,28 @@
+# Local MPC research output — may contain device IDs, UUIDs and proprietary paths.
+# Only publish reviewed, redacted evidence under docs/hardware/.
+research/
+**/research/raw/
+*.img
+*.img.gz
+*.img.zst
+*.wic
+*.wic.gz
+*.wic.zst
+*.sdcard
+*.squashfs
+*.key
+*.pem
+id_ed25519
+id_rsa
+.env
+.env.*
+__pycache__/
+*.pyc
+
+# Local CMake build and rendered offline audio tests.
+build/
+cmake-build-*/
+*.wav
+
+# Rust workspace build outputs (retain rust/Cargo.lock for reproducible builds).
+rust/target/

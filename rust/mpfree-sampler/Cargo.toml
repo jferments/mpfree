@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-sampler"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bounded Rust WAV sampler with zero-alloc render and note-off fades"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }

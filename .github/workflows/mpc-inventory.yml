@@ -1,0 +1,264 @@
+name: MPC read-only inventory checks
+
+on:
+  pull_request:
+    paths:
+      - "tools/mpc-one/**"
+      - "src/**"
+      - "rust/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/mpc-inventory.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/mpc-one/**"
+      - "src/**"
+      - "rust/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/mpc-inventory.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Shell syntax and static no-write checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          bash -n tools/mpc-one/collect-over-ssh.sh
+          sh -n tools/mpc-one/read-only-inventory.sh
+          sh -n tools/mpc-one/read-only-detail.sh
+          sh -n tools/mpc-one/read-only-runtime.sh
+          sh -n tools/mpc-one/read-only-io.sh
+          sh -n tools/mpc-one/read-only-abi.sh
+          sh -n tools/mpc-one/read-only-handoff-preflight.sh
+          bash -n tools/mpc-one/lib/neighbor-identity.sh
+          bash -n tools/mpc-one/tests/test-neighbor-identity.sh
+      - name: Test neighbor MAC extraction against deterministic fixtures
+        run: bash tools/mpc-one/tests/test-neighbor-identity.sh
+      - name: Check the remote survey contains no known destructive operations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          paths = [
+              Path("tools/mpc-one/read-only-inventory.sh"),
+              Path("tools/mpc-one/read-only-detail.sh"),
+              Path("tools/mpc-one/read-only-runtime.sh"),
+              Path("tools/mpc-one/read-only-io.sh"),
+              Path("tools/mpc-one/read-only-abi.sh"),
+              Path("tools/mpc-one/read-only-handoff-preflight.sh"),
+          ]
+          prohibited = (
+              r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
+              r"\bdd\s+.*\bof\s*=",
+              r"\bsystemctl\s+(?:stop|disable|restart|mask)\b",
+              r"\bmount\s+-o\s+remount",
+              r"\b(?:parted|sfdisk|fdisk)\b",
+              r">\s*/dev/(?:mmcblk|sd)",
+          )
+          for p in paths:
+              text = p.read_text()
+              # Do not interpret safety comments like "dd without of=" as commands.
+              executable_lines = "\n".join(line for line in text.splitlines()
+                                           if not line.lstrip().startswith("#"))
+              for pattern in prohibited:
+                  assert not re.search(pattern, executable_lines), f"Potential mutation in {p}: {pattern}"
+          baseline = paths[0].read_text()
+          assert "section 'ALSA kernel devices'" in baseline
+          assert "section 'Input device enumeration'" in baseline
+          assert 'awk "!/^Serial[[:space:]]*:/" /proc/cpuinfo' in baseline, "CPU serial redaction missing"
+          assert "section 'Factory MPC application unit'" in baseline
+          detail = paths[1].read_text()
+          assert 'app_hardware_links' in detail and 'usb_metadata' in detail
+          runtime = paths[2].read_text()
+          assert 'alsa_active_procfs' in runtime and 'app_threads' in runtime
+          assert 'dd if=/usr/bin/MPC bs=64 count=1' in runtime
+          assert 'smaps_rollup' not in "\n".join(line for line in runtime.splitlines() if not line.lstrip().startswith("#"))
+          assert 'dd if=/usr/bin/MPC bs=64 count=1' in detail
+          wrapper = Path("tools/mpc-one/collect-over-ssh.sh").read_text()
+          assert '"--runtime")' in wrapper
+          assert '"--abi")' in wrapper
+          assert '"--handoff-preflight")' in wrapper
+          assert '"--io")' in wrapper and '"--netbench")' in wrapper
+          io = paths[3].read_text()
+          assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
+          assert '/sys/class/udc/' in io
+          assert 'serial' not in "\n".join(x for x in io.splitlines() if 'usb/devices/' in x)
+          bench = Path("tools/mpc-one/network-bench.py").read_text()
+          assert 'TRANSFER = 4 * 1024 * 1024' in bench
+          print("Static checks passed (not a proof of semantic read-only behavior).")
+          PY
+      - name: Validate optional network bench without contacting MPC
+        run: |
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate sanitized observed hardware JSON
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("docs/hardware/data/mpc-one-3.6.0-observed.json")
+          d = json.loads(p.read_text())
+          assert d["provenance"]["hardware_serial_redacted"] is True
+          assert d["provenance"]["raw_report_in_repo"] is False
+          assert d["board"]["compatible"][-1] == "rockchip,rk3288"
+          assert d["cpu"]["logical_cpus"] == 4
+          assert d["factory_application"]["service"] == "acvs.service"
+          assert len(d["storage"]["partitions"]) == 8
+          assert all("serial" not in str(x).lower() for x in d["midi"]["interfaces"])
+          print("Redacted device map structure validated (no hardware-access claim).")
+          PY
+      - name: Verify archived reference USB scripts parse and retain exact source bytes
+        run: |
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          paths = (
+              Path("tools/mpc-one/reference-lab/prepare_mpc_one_usb.py"),
+              Path("tools/mpc-one/reference-lab/verify_mpc_one_usb.py"),
+          )
+          for path in paths:
+              ast.parse(path.read_text(), filename=str(path))
+              print("PASS:", path)
+          PY
+          test "$(git hash-object tools/mpc-one/reference-lab/prepare_mpc_one_usb.py)" = "45721099d111608d19fe9d49a0aa1f8b06a99fdd"
+          test "$(git hash-object tools/mpc-one/reference-lab/verify_mpc_one_usb.py)" = "23d013fc8ca5acaa7ff4a01374cb601bf2d04efe"
+
+  core:
+    name: Deterministic core build, tests and offline WAV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure C++ core
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Run deterministic engine tests and WAV smoke
+        run: ctest --test-dir build --output-on-failure
+      - name: Validate rendered WAV format and exact size
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p = Path("build/mpfree-test.wav")
+          data = p.read_bytes()
+          assert data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+          assert data[12:16] == b"fmt " and data[36:40] == b"data"
+          fmt = struct.unpack_from("<HHIIHH", data, 20)
+          assert fmt == (1, 2, 44100, 44100 * 8, 8, 32), fmt
+          data_length = struct.unpack_from("<I", data, 40)[0]
+          assert data_length == 44100 * 2 * 4
+          assert len(data) == 44 + data_length
+          assert any(data[44:]), "Rendered WAV is silent"
+          print("Valid 44.1kHz stereo S32_LE 1s offline demo; 0 MPC hardware access")
+          PY
+
+
+  rust:
+    name: Rust host parity and ARMv7 hard-float cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable with ARMv7 target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add armv7-unknown-linux-gnueabihf
+          rustc --version
+          cargo --version
+      - name: Test Rust core in native release and debug
+        run: |
+          cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+          cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: Validate offline 16-step groove audio and RIFF PCM encoding
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf --workspace
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
