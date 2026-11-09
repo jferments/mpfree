@@ -125,6 +125,11 @@ jobs:
           assert '"--ram-smoke")' in wrapper
           assert '"--headless-check")' in wrapper
           assert '"--headless-smoke")' in wrapper
+          assert '"--session-check")' in wrapper
+          assert '"--session-smoke")' in wrapper
+          assert 'MPFREE_ACCEPT_SESSION_EXEC' in wrapper
+          assert '/release/mpfree-session' in wrapper
+          assert 'smoke_profile="session"' in wrapper
           assert 'MPFREE_ACCEPT_HEADLESS_EXEC' in wrapper
           assert '--profile "$smoke_profile"' in wrapper
           assert '/release/mpfree-headless' in wrapper
@@ -139,6 +144,11 @@ jobs:
           assert 'RUST_WATCHDOG_MARKER' in host, "Rust self-watchdog proof required"
           assert 'shell_scheduler_policy' in host, "normal-priority guard required"
           assert '"headless": {' in host
+          assert '"session": {' in host
+          assert '"binary": "mpfree-session"' in host
+          assert '"pacing": "monotonic"' in host
+          assert 'M7 synthetic timing field' in host
+          assert 'int(fields["deadline_misses"]) > count' in host
           assert '"binary": "mpfree-headless"' in host
           assert '"backend": "null"' in host
           assert '"sample_rate_hz": "44100"' in host
@@ -155,6 +165,8 @@ jobs:
           assert 'NullAudioBackend' in session_source
           assert 'std::thread::sleep' in session_source
           assert '/dev/snd' not in session_source and 'std::net' not in session_source
+          assert 'backend=null' in Path("rust/mpfree-session/src/main.rs").read_text()
+          assert 'MPFREE_SESSION_RUST_WATCHDOG_7S_ARMED' in Path("rust/mpfree-session/src/main.rs").read_text()
           assert 'systemctl' not in session_source
           host_supervisor=Path("tools/mpc-one/host_null_session_supervisor.py").read_text()
           assert 'start_new_session=True' in host_supervisor
