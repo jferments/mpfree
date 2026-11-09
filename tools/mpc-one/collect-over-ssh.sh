@@ -23,6 +23,8 @@ case "${1:-}" in
   "--io") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-io.sh"; REPORT_KIND="mpc-one-io" ;;
   "--abi") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-abi.sh"; REPORT_KIND="mpc-one-abi" ;;
   "--handoff-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-handoff-preflight.sh"; REPORT_KIND="mpc-one-handoff-preflight" ;;
+  "--process-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-process-map.sh"; REPORT_KIND="mpc-one-process-map" ;;
+  "--touchscreen") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-touchscreen.sh"; REPORT_KIND="mpc-one-touchscreen" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
@@ -30,8 +32,10 @@ case "${1:-}" in
   "--ram-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-execution" ;;
   "--headless-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-headless-preflight" ;;
   "--headless-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-headless-execution" ;;
+  "--session-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-session-preflight" ;;
+  "--session-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-session-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -47,7 +51,7 @@ command -v sha256sum >/dev/null 2>&1 || die 'sha256sum missing on workstation'
 if [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
-elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" ]]; then
+elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-check" || "${1:-}" == "--session-smoke" ]]; then
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for RAM smoke check'
   command -v arm-linux-gnueabihf-readelf >/dev/null 2>&1 || die 'ARM GNU readelf not installed on workstation'
   [[ -r "$SCRIPT_DIR/host_ram_smoke.py" ]] || die 'Missing guarded RAM smoke orchestrator'
@@ -57,6 +61,9 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}"
   if [[ "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" ]]; then
     smoke_binary="$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-headless"
     smoke_profile="headless"
+  elif [[ "${1:-}" == "--session-check" || "${1:-}" == "--session-smoke" ]]; then
+    smoke_binary="$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-session"
+    smoke_profile="session"
   else
     smoke_binary="$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke"
     smoke_profile="device-smoke"
@@ -70,6 +77,11 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}"
         "${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != 'YES' ||
         "${MPFREE_ACCEPT_HEADLESS_EXEC:-}" != 'YES' ) ]]; then
     die 'Explicit dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_HEADLESS_EXEC=YES bash tools/mpc-one/collect-over-ssh.sh --headless-smoke'
+  fi
+  if [[ "${1:-}" == "--session-smoke" && (
+        "${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != 'YES' ||
+        "${MPFREE_ACCEPT_SESSION_EXEC:-}" != 'YES' ) ]]; then
+    die 'Explicit dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_SESSION_EXEC=YES bash tools/mpc-one/collect-over-ssh.sh --session-smoke'
   fi
 else
   [[ -f "$REMOTE_SCRIPT" && -r "$REMOTE_SCRIPT" ]] || die "Missing read-only inventory script: $REMOTE_SCRIPT"
@@ -147,9 +159,9 @@ REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXX
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
 if [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
-elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--headless-check" ]]; then
+elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--headless-check" || "${1:-}" == "--session-check" ]]; then
   echo "READ-ONLY ELF/ABI compatibility preflight (no remote upload) to $REPORT"
-elif [[ "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-smoke" ]]; then
+elif [[ "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-smoke" ]]; then
   echo "Explicit VOLATILE /run Rust execution, ONLY after live ABI validation: $REPORT"
 else
   echo "Collecting passive/read-only report to $REPORT"
@@ -165,7 +177,7 @@ if [[ "${1:-}" == "--netbench" ]]; then
     sed -n '1,50p' "$REPORT" >&2
     exit 1
   fi
-elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" ]]; then
+elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-check" || "${1:-}" == "--session-smoke" ]]; then
   smoke_args=(
     --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY"
     --binary "$smoke_binary" --profile "$smoke_profile"
@@ -173,7 +185,7 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}"
     --abi-checker "$SCRIPT_DIR/check-arm-abi.py"
     --env-script "$SCRIPT_DIR/read-only-ram-smoke-env.sh"
   )
-  if [[ "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-smoke" ]]; then smoke_args+=(--execute); fi
+  if [[ "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-smoke" ]]; then smoke_args+=(--execute); fi
   if ! timeout 90 python3 "$SCRIPT_DIR/host_ram_smoke.py" "${smoke_args[@]}" > "$REPORT" 2>&1; then
     echo "RAM smoke failed/blocked; PRIVATE report retained: $REPORT" >&2
     sed -n '1,35p' "$REPORT" >&2

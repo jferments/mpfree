@@ -60,6 +60,32 @@ status=PASS
 STAGE=RUST_EXECUTED
 """
 
+SESSION_OUTPUT = """STAGE=VERIFY_SHA256
+MPFREE_VOLATILE_STAGE_SHA256_OK
+STAGE=EXECUTE_RUST
+MPFREE_SESSION_V1
+os=linux
+arch=arm
+backend=null
+pacing=monotonic
+sample_rate_hz=44100
+period_frames=128
+frames=88200
+callback_count=690
+deadline_misses=1
+late_starts=689
+max_callback_us=500
+p99_callback_us=300
+max_start_lateness_us=700
+total_render_us=30000
+wall_elapsed_us=2000123
+groove_events=12
+sampler_notes=4
+checksum_fnv1a64=3dc4d6dabbb17fbd
+status=PASS
+STAGE=RUST_EXECUTED
+"""
+
 HEADLESS_OUTPUT = """STAGE=VERIFY_SHA256
 MPFREE_VOLATILE_STAGE_SHA256_OK
 STAGE=EXECUTE_RUST
@@ -225,6 +251,38 @@ class GuardTests(unittest.TestCase):
             smoke.parse_results(valid, stderr, 0, "headless")["peak_rss_kib"],
             "unavailable"
         )
+
+    def test_M7_separate_session_profile_and_paced_null_only_result(self):
+        p = smoke.get_profile("session")
+        self.assertEqual(p["binary"], "mpfree-session")
+        self.assertNotEqual(p["watchdog"], smoke.get_profile("headless")["watchdog"])
+        values = smoke.parse_results(
+            SESSION_OUTPUT, "MPFREE_SESSION_RUST_WATCHDOG_7S_ARMED\n", 0,
+            "session"
+        )
+        self.assertEqual(values["deadline_misses"], "1")  # valid measured data
+        self.assertEqual(values["p99_callback_us"], "300")
+
+    def test_M7_rejects_wiped_null_gate_or_corrupt_metrics(self):
+        err = "MPFREE_SESSION_RUST_WATCHDOG_7S_ARMED\n"
+        for a, b in (
+            ("backend=null", "backend=alsa"),
+            ("pacing=monotonic", "pacing=offline"),
+            ("callback_count=690", "callback_count=689"),
+            ("checksum_fnv1a64=3dc4d6dabbb17fbd",
+             "checksum_fnv1a64=1234567890123456"),
+            ("late_starts=689", "late_starts=691"),
+            ("deadline_misses=1", "deadline_misses=691"),
+            ("p99_callback_us=300", "p99_callback_us=501"),
+            ("max_callback_us=500", "max_callback_us=nan"),
+            ("wall_elapsed_us=2000123", "wall_elapsed_us=5"),
+            ("wall_elapsed_us=2000123", "wall_elapsed_us=9000000"),
+            ("total_render_us=30000", "total_render_us=0"),
+        ):
+            with self.subTest(field=a), self.assertRaises(RuntimeError):
+                smoke.parse_results(SESSION_OUTPUT.replace(a, b), err, 0, "session")
+        with self.assertRaisesRegex(RuntimeError, "watchdog"):
+            smoke.parse_results(SESSION_OUTPUT, "", 0, "session")
 
     def test_remote_script_is_fixed_tmpfs_only_and_checks_checksum(self):
         digest = "a" * 64

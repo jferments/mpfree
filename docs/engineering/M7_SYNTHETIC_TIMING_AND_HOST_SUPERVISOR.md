@@ -1,6 +1,6 @@
 # M7: null-audio timing and independent HOST supervisor foundations
 
-**Status:** Owner's physical MPC One **M6 test passed** (2026-11-09). M7 is a **host-only** benchmark and independently supervised process prototype with ARMv7 cross-build qualification. **M7 is not authorized for hardware deployment and does not add a device launch mode.** It does not stop, restart or signal the factory MPC application, take device ownership, or install a persistent service.
+**Status:** Owner's physical MPC One **M6 test passed** (2026-11-09). M7's native null-audio timing test and independent HOST supervisor both passed on ML-tower. A separate **read-only `--session-check`** and dual-opt-in **`--session-smoke`** (2-second RAM-only null audio) have now been implemented, but **M7 has NOT run on physical MPC**. No factory service stop, device takeover or persistent service is implemented. See [M7 ARM acceptance](M7_ARM_NULL_TIMING_ACCEPTANCE.md).
 
 ## M6 on actual hardware — observed facts (do not confuse with host CI)
 
@@ -83,7 +83,7 @@ checksum_fnv1a64=3dc4d6dabbb17fbd
 status=PASS
 ~~~
 
-**Do not execute `mpfree-session` on the MPC yet.** There is no on-device M7 launcher or dedicated safety preflight in this milestone; the validated M5/M6 modes remain unchanged.
+**Do not execute M7 except through the separately reviewed `--session-check` then dual-opt-in `--session-smoke` pathway** after CI/merge. Those new modes preserve M5/M6 safety checks; no factory device access is permitted. The existing M5/M6 modes remain unchanged.
 
 ## Next hardware-safe acceptance gates
 
