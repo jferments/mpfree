@@ -59,12 +59,13 @@ fn self_test() -> Result<(), String> {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match args.as_slice() {
-        [_] | [_, flag] if flag == "--self-test" => self_test(),
-        [_, flag, path] if flag == "--preview-logical" =>
+        [_] => self_test(),
+        [_, flag] if flag.as_str() == "--self-test" => self_test(),
+        [_, flag, path] if flag.as_str() == "--preview-logical" =>
             save_ppm(path, None),
-        [_, flag, path] if flag == "--preview-cw" =>
+        [_, flag, path] if flag.as_str() == "--preview-cw" =>
             save_ppm(path, Some(QuarterTurn::Clockwise)),
-        [_, flag, path] if flag == "--preview-ccw" =>
+        [_, flag, path] if flag.as_str() == "--preview-ccw" =>
             save_ppm(path, Some(QuarterTurn::CounterClockwise)),
         _ => Err("usage: mpfree-display --self-test | \
           --preview-logical NEW_FILE.ppm | --preview-cw NEW_FILE.ppm | \
