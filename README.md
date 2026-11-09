@@ -32,6 +32,7 @@ Start here for reproducible hardware/firmware development:
 - [Verified az0x ABI and factory handoff report (sanitized)](docs/hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md) — real owner-run ABI/service data, CPU affinity and ~1 GiB locked process memory, with source SHA-256 fingerprints; raw device reports excluded.
 - [Safe Rust handoff state-machine simulator](rust/mpfree-handoff-model/src/lib.rs) — guarded stock/MPFree transition model, mocked watchdog/crash/recovery failure tests; **no systemd, files, PCM or hardware calls**.
 - [Hardware ownership strategy: independent MPFree Linux userspace first](docs/engineering/HARDWARE_OWNERSHIP_STRATEGY.md) — distinguishes factory application RSS from OS overhead and core affinity from real CPU utilization, with staged RAM-only tests, restore-before-stop gates and eventual optional custom rootfs.
+- [M5: first RAM-only Rust executable on the MPC](docs/engineering/ARMV7_VOLATILE_SMOKE.md) — cross-built bounded Rust audio computation; live board/az0x 5.0.8/glibc 2.39/ELF checks; opt-in temporary `/run` execution with timeouts, SHA-256 validation and cleanup. Factory app remains active, with no PCM/MIDI/DRM acquisition.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -185,6 +186,14 @@ bash tools/mpc-one/collect-over-ssh.sh --rtthreads
 ~~~
 
 These operations are research-only; **no factory services or device owners are changed**. Any stock-app handoff remains blocked until independent full factory recovery is proven.
+
+### First ARMv7 Rust coexistence test (M5, opt-in)
+
+The next proof of independent MPFree userspace is `mpfree-device-smoke`, a minimal Rust application that calculates 4,096 frames with the existing `ClickEngine`, reports a checksum, and exits. It does not open audio, MIDI, display, files or sockets.
+
+An identity-guarded host runner provides a **read-only** live ARM ABI/ELF preflight, followed only on explicit owner opt-in by a **RAM-only** binary upload, SHA-256 verification, bounded timeout, and cleanup under `/run`; the factory application must remain active. This is *not* a factory service handoff or a custom OS installation.
+
+See [full developer and safety commands](docs/engineering/ARMV7_VOLATILE_SMOKE.md). In particular, never run the execution mode until `--ram-smoke-check` passes and you've saved the current MPC project.
 
 ### Architecture and project milestones
 

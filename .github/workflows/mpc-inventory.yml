@@ -92,6 +92,9 @@ jobs:
           assert '"--handoff-preflight")' in wrapper
           assert '"--rtthreads")' in wrapper
           assert '"--capacity")' in wrapper
+          assert '"--ram-smoke-check")' in wrapper
+          assert '"--ram-smoke")' in wrapper
+          assert 'MPFREE_ACCEPT_VOLATILE_EXEC' in wrapper
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
@@ -103,7 +106,7 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
@@ -184,6 +187,14 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
           cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: Test host-native Rust MPC userspace coexistence self-test
+        run: |
+          cargo run --manifest-path rust/Cargo.toml --release --locked \
+            -p mpfree-device-smoke -- --self-test | tee /tmp/mpfree-smoke-native.txt
+          grep -q '^MPFREE_ARMV7_SMOKE_V1$' /tmp/mpfree-smoke-native.txt
+          grep -q '^frames=4096$' /tmp/mpfree-smoke-native.txt
+          grep -q '^beats=1$' /tmp/mpfree-smoke-native.txt
+          grep -q '^status=PASS$' /tmp/mpfree-smoke-native.txt
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -284,4 +295,32 @@ jobs:
           grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
           grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
           grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
-          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
+          smoke=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke
+          file "$smoke"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          path="rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke"
+          binary=Path(path)
+          assert binary.is_file() and binary.stat().st_size < 2 * 1024 * 1024
+          def readelf(*args):
+              return subprocess.run(
+                  ["arm-linux-gnueabihf-readelf", *args, path],
+                  check=True, capture_output=True, text=True
+              ).stdout
+          header=readelf("-h")
+          phdr=readelf("-l")
+          versions=readelf("-W", "--version-info")
+          assert re.search(r"Class:\s*ELF32", header)
+          assert re.search(r"Machine:\s*ARM", header)
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI", header)
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in phdr
+          needs=[tuple(map(int, groups)) for groups in
+                 re.findall(r"GLIBC_(\d+)\.(\d+)", versions)]
+          assert needs, "no versioned glibc requirements found"
+          assert max(needs) <= (2, 39), f"Requires newer glibc than MPC: {max(needs)}"
+          print("PASS: ARMv7 ELF32 EABI5 hard-float and GLIBC <=2.39")
+          PY
+          echo "No executables uploaded or run on MPC by CI."
+

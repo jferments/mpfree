@@ -7,6 +7,13 @@ name = "mpfree-core"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-device-smoke"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]
+
+[[package]]
 name = "mpfree-groove"
 version = "0.1.0"
 dependencies = [

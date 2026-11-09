@@ -3,6 +3,14 @@
 # apart from ordinary installed query tools; no library files modified.
 set -u
 printf 'MPFREE ARMV7 USERSPACE ABI SURVEY - READ ONLY\n'
+printf '=== Exact board model and compatibility (no serial) ===\n'
+if [ -r /proc/device-tree/model ]; then
+  printf 'board_model='
+  tr -d '\000' < /proc/device-tree/model
+  printf '\n'
+else
+  printf 'board_model=unavailable\n'
+fi
 printf '=== Kernel and CPU ===\n'
 uname -a 2>&1 || :
 if [ -r /proc/cpuinfo ]; then
@@ -37,7 +45,11 @@ for path in /lib/ld-linux-armhf.so.3 /lib/libc.so.6 \
   /usr/lib/libEGL.so* /lib/libEGL.so* \
   /usr/lib/libGLESv2.so* /lib/libGLESv2.so* \
   /usr/lib/libgbm.so* /lib/libgbm.so* \
-  /usr/lib/libstdc++.so* /lib/libstdc++.so*; do
+  /usr/lib/libstdc++.so* /lib/libstdc++.so* \
+  /usr/lib/libgcc_s.so* /lib/libgcc_s.so* \
+  /usr/lib/libatomic.so* /lib/libatomic.so* \
+  /usr/lib/librt.so* /lib/librt.so* \
+  /usr/lib/libdl.so* /lib/libdl.so*; do
   [ -e "$path" ] || [ -L "$path" ] || continue
   printf '%s -> ' "$path"
   if [ -L "$path" ]; then readlink "$path" 2>/dev/null || :; else echo '(regular file)'; fi
