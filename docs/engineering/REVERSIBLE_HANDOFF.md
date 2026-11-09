@@ -114,11 +114,11 @@ Every transition needs an explicit guard and finite timeout. On an error after r
 | Experiment | Current state |
 | --- | --- |
 | Passive service dependency/ExecStop/KillMode/Restart and fd map | **Owner ran report; sanitized evidence documented** |
-| Determine current kernel and runtime ABI compatibility | **Owner ran initial ABI survey: GLIBC_2.39 tag evidence; exact libc still unverified** |
+| Determine current kernel and runtime ABI compatibility | **Owner ran updated ABI survey; installed GNU libc release banner confirms version 2.39; per-binary dynamic linking remains unproven** |
 | Mock service graph / watchdog timeout / restore test | **Implemented pure Rust simulator + unit tests; no real service manipulation** |
 | Verify independent unbootable-device recovery | **Not done; hard blocker** |
 | Consented manual session-only stock release/restore | **BLOCKED** |
 | Use ACVA/DRM/MIDI with MPFree on actual MPC | **BLOCKED** |
 | Persistent end-user installer or automatic USB takeover | **BLOCKED** |
 
-**Next safe action:** owner runs the new `--rtthreads` read-only survey and repeats `--abi` for an explicit libc release banner. **Do not stop the stock service yet.** Independent recovery is still the critical blocker.
+**Next safe action:** owner runs the *revised* `--rtthreads` read-only survey for the missing scheduler policy/RT-priority fields and `--capacity` for actual CPU utilization and process memory proportions. The updated `--abi` has already explicitly confirmed libc 2.39. **Do not stop the stock service yet.** Independent recovery remains the critical blocker.
