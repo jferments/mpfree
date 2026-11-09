@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: design / hardware discovery.** This repository does **not** yet contain a working replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
+**Status: hardware discovery plus an initial desktop-testable independent audio core.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
 
 ## Vision
 
@@ -22,6 +22,8 @@ Start here for reproducible hardware/firmware development:
 - [Hardware reverse-engineering research matrix](docs/hardware/RESEARCH_MATRIX.md) — subsystem-by-subsystem mapping plan with evidence labels and safety gates.
 - [November 2026 in-device hardware survey](docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md) — verified Rockchip RK3288 CPU/SoC, eMMC partition map, ACVA ALSA and USB-MIDI, DRM/Panfrost, ILI2117 touchscreen, process/service names, constraints and remaining questions.
 - [Focused MPC process/device ownership survey](docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md) — actual `/proc/<acvs MainPID>/fd` links for PCM, MIDI, DRM, and evdev; 800x1280 DSI connector, Mali-T760-compatible GPU, 1.608 GHz clocks, USB identifiers and known BusyBox ELF probe limitation.
+- [Active 44.1-kHz audio/ABI/JUCE/MIDI survey](docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md) — confirmed S32_LE stereo 128-frame PCM, independent playback/capture ring sizes, 38 stock app threads, high locked RAM, sequencer routing, EABI5 hard-float header.
+- [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — C++17, deterministic metronome rendering and host-only stereo S32_LE WAV; tested without accessing MPC hardware.
 - [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 
@@ -46,6 +48,22 @@ bash tools/mpc-one/collect-over-ssh.sh
 ~~~
 
 Raw survey output goes into local `research/`, which is ignored by Git. **Never commit unredacted hardware logs, private keys, factory firmware, sample archives or images.**
+
+### First functional code: desktop-only MPFree audio engine
+
+This repository now contains an **independent** sample-frame metronome core with no Akai firmware dependencies. Build and test on your workstation, **not on the MPC**:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 4
+ctest --test-dir build --output-on-failure
+./build/mpfree-render /tmp/mpfree-metronome.wav 4 120
+file /tmp/mpfree-metronome.wav
+~~~
+
+The resulting WAV is **44,100 Hz / stereo / signed 32-bit little-endian PCM**, matching the observed ACVA stream format. A WAV written to ML-tower is not MPC playback; the ACVA device remains owned by the factory software. See [M0 implementation and safety gates](docs/engineering/FIRST_AUDIO_CORE.md).
 
 ### Architecture and project milestones
 
