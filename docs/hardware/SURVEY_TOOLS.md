@@ -19,7 +19,7 @@ bash tools/mpc-one/collect-over-ssh.sh            # baseline inventory
 bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables below
 ~~~
 
-**Read-only surveys.** These read procfs, sysfs and config files only. They open no audio, MIDI or display devices and change no services.
+**Read-only surveys.** These read procfs, sysfs and config files only, except `--boot-map`, which also reads the raw boot partitions with `dd` to hash them (reads only, no writes). They open no audio, MIDI or display devices and change no services.
 
 | Mode | Script | What it reports |
 |---|---|---|
@@ -33,6 +33,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--touchscreen` | [`read-only-touchscreen.sh`](../../tools/mpc-one/read-only-touchscreen.sh) | ILI2117, DRM and input metadata |
 | `--rtthreads` | [`read-only-rtthreads.sh`](../../tools/mpc-one/read-only-rtthreads.sh) | Per-task RT policy, priority and affinity |
 | `--capacity` | [`read-only-capacity.sh`](../../tools/mpc-one/read-only-capacity.sh) | Two-second CPU and memory sample |
+| `--boot-map` | [`read-only-boot-map.sh`](../../tools/mpc-one/read-only-boot-map.sh) | Boot chain, U-Boot environment (identifiers redacted), boot-partition SHA-256 hashes, eMMC write counters, kexec support, update-path metadata |
 | `--ram-smoke-env` | [`read-only-ram-smoke-env.sh`](../../tools/mpc-one/read-only-ram-smoke-env.sh) | Utilities available for RAM-only tests |
 
 **Milestone preflights and RAM-only runs.** Each `-check` mode is read-only. The matching run mode copies a checksummed binary to `/run` (RAM), runs it under a watchdog and removes it. Run modes require explicit opt-in environment variables; the wrapper prints the exact command if they are missing. See each milestone's doc for the procedure.

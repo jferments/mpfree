@@ -20,6 +20,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Developer access](hardware/DEVELOPER_ACCESS.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](hardware/SURVEY_TOOLS.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](hardware/USB_AUTORUN_REFERENCE.md): the exact lab tooling used to first get SSH. Not a general installer.
+- [Device modifications](hardware/DEVICE_MODIFICATIONS.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 
 ## Milestones
 
@@ -42,6 +43,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 
 ## Research and strategy
 
+- [Recovery tiers and the path to an MPFree OS](engineering/RECOVERY_AND_OS_STRATEGY.md): the proposed three-tier recovery gate, what an Akai firmware update overwrites, and how to test another OS with zero eMMC writes.
 - [Hardware ownership strategy](engineering/HARDWARE_OWNERSHIP_STRATEGY.md): win back hardware resources in userspace first, custom Linux later.
 - [Reversible factory handoff](engineering/REVERSIBLE_HANDOFF.md): safety design for stopping and restoring the factory app.
 - [Factory GUI handoff research](engineering/FACTORY_GUI_HANDOFF_RESEARCH.md): factory processes and what a screen takeover needs.
@@ -57,5 +59,6 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 - [ABI and handoff survey](hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md): userspace ABI, CPU affinity and locked memory.
 - [Ethernet and USB](hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md): gigabit link, USB roles and measured throughput.
 - [Touchscreen and display](hardware/MPC_ONE_TOUCHSCREEN_ILI2117_RESEARCH.md): ILI2117 driver, evdev, DSI panel and Panfrost.
+- [Boot chain and recovery map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
 - [Research matrix](hardware/RESEARCH_MATRIX.md): subsystem-by-subsystem mapping plan and safety gates.
 - [Observed data (JSON)](hardware/data/mpc-one-3.6.0-observed.json): redacted, machine-readable observations.
