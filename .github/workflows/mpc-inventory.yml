@@ -172,6 +172,36 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
           cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: Validate offline 16-step groove audio and RIFF PCM encoding
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
       - name: Build independent C++ reference
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -191,7 +221,7 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-render
+            --target armv7-unknown-linux-gnueabihf -p mpfree-render -p mpfree-groove
           target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
           file "$target"
           arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
