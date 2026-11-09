@@ -1,6 +1,6 @@
 # Full eMMC backup over SSH (`--backup`)
 
-**Status:** tool added 2026-11-09, tested against a fake device in CI. Not yet run on the MPC.
+**Status:** first owner run **verified** on 2026-11-09 (see [First run](#first-run-2026-11-09)). Tested against a fake device in CI.
 
 A verified, off-device copy of the whole eMMC is the first condition of the Tier 1 recovery gate in the [recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md), and every later recovery path ends with "write the backup back." The reference unit is not stock ([device modifications](DEVICE_MODIFICATIONS.md)), so Akai's installer cannot recreate its current state. Only this backup can.
 
@@ -18,7 +18,7 @@ A verified, off-device copy of the whole eMMC is the first condition of the Tier
 
 Nothing is mounted, written, synced or restarted. No `dd` has an output file on the MPC. CI checks the fixed command list, scans both scripts for write operations, and runs the whole flow against a fake MPC under BusyBox, including a fake `ssh` that rejects any other command.
 
-Expect the copy to take roughly 10 minutes. That estimate comes from the 2026-11-09 SSH goodput test (about 16 MB/s) and hasn't been measured on a full copy yet. The MPC's own app keeps running, but keep it idle (no playback or recording) while the copy runs.
+The first full copy took 193 s at 40.5 MB/s, so expect about 4 minutes including the preflight. The MPC's own app keeps running, but keep it idle (no playback or recording) while the copy runs.
 
 ## Running it
 
@@ -59,9 +59,29 @@ A new folder `~/mpfree-backups/mpc-one-emmc-<UTC time>-<random>/`, files read-on
 Make a second copy on a different disk and check it there:
 
 ```bash
-cp -a ~/mpfree-backups/mpc-one-emmc-<…> /path/to/other/disk/ && \
-cd /path/to/other/disk/mpc-one-emmc-<…> && sha256sum -c SHA256SUMS
+SRC="$(ls -d ~/mpfree-backups/mpc-one-emmc-*/SHA256SUMS | tail -n 1)" && \
+SRC="${SRC%/SHA256SUMS}" && \
+DEST=/path/to/other/disk && \
+cp -a "$SRC" "$DEST/" && \
+cd "$DEST/$(basename "$SRC")" && \
+sha256sum -c SHA256SUMS
 ```
+
+`SRC` is the newest folder that has a `SHA256SUMS`, which only verified backups get.
+
+## First run (2026-11-09)
+
+Owner-run at 23:36 UTC on the reference MPC One (firmware 3.6.0, state `MOD-001+MOD-002`). Log SHA-256 `6b69ad44dd357fd4d1109977be2e85d727396c7e9d161939f9c760e41e58f809` (kept privately on the workstation, not committed).
+
+- **Verified.** All checks passed, exit status 0.
+- `p1`, `p3`–`p6`, `boot0` and `boot1` match the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) hashes exactly. The MPC's own hashes of the MBR/GPT, `p1`–`p6` and both boot areas match the copied data.
+- Zero writes or discards on `p1`–`p6` and both boot areas during the copy, and no reboot.
+- `p7`: no writes during the copy. `p8`: 96 sectors (48 KiB) written during the copy, most likely the factory app saving settings or logs (not checked), so `p8` is captured like a power-loss snapshot.
+- 7,457 MiB in 193 s (40.5 MB/s). The 4 MiB boot areas took under a second each.
+- EXT_CSD was readable and is saved in the private manifest.
+- A second copy on a separate disk passed `sha256sum -c`.
+
+Whole-image, `p2`, GPT, `p7` and `p8` hashes are left out here because they cover per-device and user data.
 
 ## Keep it private
 

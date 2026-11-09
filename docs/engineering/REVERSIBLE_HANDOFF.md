@@ -118,11 +118,11 @@ Every transition needs an explicit guard and finite timeout. On an error after r
 | Passive service dependency/ExecStop/KillMode/Restart and fd map | **Owner ran report; sanitized evidence documented** |
 | Determine current kernel and runtime ABI compatibility | **Owner ran updated ABI survey; installed GNU libc release banner confirms version 2.39; per-binary dynamic linking remains unproven** |
 | Mock service graph / watchdog timeout / restore test | **Implemented pure Rust simulator + unit tests; no real service manipulation** |
-| Tier 1 gate: verified full eMMC backup (`--backup`) | **Tool added 2026-11-09; owner run pending** |
+| Tier 1 gate: verified full eMMC backup (`--backup`) | **Done 2026-11-09:** verified, boot partitions match the boot map, second copy verified on another disk ([details](../hardware/emmc-backup.md#first-run-2026-11-09)) |
 | Tier 1 gate: stub stop → start rehearsal with zero writes to `p1`–`p6` | **Not done; needs owner go-ahead after the backup** |
 | Tier 3 gate: MaskROM recovery proven on this unit | **Not done; blocks any boot-chain or rootfs write** |
 | Consented manual session-only stock release/restore | **BLOCKED until the Tier 1 gate passes** |
 | Use ACVA/DRM/MIDI with MPFree on actual MPC | **BLOCKED** |
 | Persistent end-user installer or automatic USB takeover | **BLOCKED** |
 
-**Next safe action:** owner runs the read-only `--backup` and keeps a second verified copy. Separately, the *revised* `--rtthreads` and `--capacity` surveys are still useful. The updated `--abi` has already confirmed libc 2.39. **Do not stop the stock service yet.** The first stop → start is the Tier 1 rehearsal, which needs the backup and the owner's go-ahead.
+**Next safe action:** the verified backup exists (2026-11-09). Next is a written Tier 1 stop → start rehearsal plan for the owner to review. Separately, the *revised* `--rtthreads` and `--capacity` surveys are still useful. The updated `--abi` has already confirmed libc 2.39. **Do not stop the stock service yet.** The first stop → start is the Tier 1 rehearsal, and it needs the owner's go-ahead.
