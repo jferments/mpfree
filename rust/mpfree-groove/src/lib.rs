@@ -70,6 +70,14 @@ pub enum ConfigError {
     ChannelLengthMismatch,
 }
 
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 #[derive(Debug, Clone, Copy)]
 pub struct GrooveConfig {
     pub sample_rate: u32,
