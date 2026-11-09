@@ -19,6 +19,30 @@ VERSION="5.0.8 (scarthgap)"
 === GNU libc embedded release banner (read-only strings) ===
 GNU libc release banner: GNU C Library (GNU libc) stable release version 2.39.
 """
+ENV_REPORT = """MPFREE RAM SMOKE ENVIRONMENT READ ONLY
+No software is installed, uploaded, started or modified by this survey.
+=== /run mount type (exact mount point) ===
+run_mount_type=tmpfs
+=== Required external utilities ===
+tool.awk=present
+tool.mktemp=present
+tool.cat=present
+tool.sha256sum=present
+tool.timeout=present
+tool.nice=present
+tool.chmod=present
+tool.rm=present
+tool.rmdir=present
+tool.systemctl=present
+=== Factory application (read-only) ===
+factory_service_active=active
+factory_main_pid=present
+=== Interpreter and target kernel (read-only) ===
+kernel_machine=armv7l
+armhf_interpreter=present
+END MPFREE RAM SMOKE ENVIRONMENT
+"""
+
 PASS_OUTPUT = """MPFREE_VOLATILE_STAGE_SHA256_OK
 MPFREE_ARMV7_SMOKE_V1
 os=linux
@@ -51,6 +75,50 @@ class GuardTests(unittest.TestCase):
             "ForwardAgent=no", "ClearAllForwardings=yes", "ConnectTimeout=8",
         ):
             self.assertIn(requirement, argv)
+
+    def test_read_only_prerequisites_report_all_ten_utilities(self):
+        self.assertIn("PASS", smoke.check_remote_environment(ENV_REPORT))
+        for missing in ("mktemp", "timeout", "nice", "sha256sum", "systemctl"):
+            with self.subTest(tool=missing):
+                modified = ENV_REPORT.replace(
+                    f"tool.{missing}=present", f"tool.{missing}=MISSING"
+                )
+                with self.assertRaisesRegex(RuntimeError, missing):
+                    smoke.check_remote_environment(modified)
+
+    def test_invalid_tmpfs_or_stock_service_never_allows_upload(self):
+        for a, b in (
+            ("run_mount_type=tmpfs", "run_mount_type=overlay"),
+            ("factory_service_active=active", "factory_service_active=inactive"),
+            ("factory_main_pid=present", "factory_main_pid=unavailable"),
+            ("armhf_interpreter=present", "armhf_interpreter=MISSING"),
+        ):
+            with self.subTest(attribute=a):
+                with self.assertRaises(RuntimeError):
+                    smoke.check_remote_environment(ENV_REPORT.replace(a, b))
+
+    def test_incomplete_and_duplicate_prerequisite_reports_rejected(self):
+        with self.assertRaises(RuntimeError):
+            smoke.check_remote_environment(ENV_REPORT.replace(
+                "END MPFREE RAM SMOKE ENVIRONMENT", ""
+            ))
+        with self.assertRaisesRegex(RuntimeError, "duplicate"):
+            smoke.check_remote_environment(
+                ENV_REPORT.replace(
+                    "tool.timeout=present",
+                    "tool.timeout=present\n"
+                    "tool.timeout=present",
+                )
+            )
+
+    def test_exit_127_reports_stdout_phase_even_when_stderr_empty(self):
+        try:
+            smoke.parse_results("STAGE=CHECK_UTILITIES\n", "", 127)
+        except RuntimeError as exc:
+            self.assertIn("127", str(exc))
+            self.assertIn("STAGE=CHECK_UTILITIES", str(exc))
+        else:
+            self.fail("exit 127 must fail closed and reveal the last phase")
 
     def test_remote_script_is_fixed_tmpfs_only_and_checks_checksum(self):
         digest = "a" * 64
