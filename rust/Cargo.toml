@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network"]
+members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler"]
 resolver = "2"
 
 [profile.release]
