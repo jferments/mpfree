@@ -185,7 +185,10 @@ jobs:
           assert 'fn eviocgabs(' in touch_main
           assert 'fn ioctl(' in touch_main
           assert 'fn read(' not in touch_main
-          assert 'EVIOCGRAB,' not in touch_main
+          executable_touch_lines="\n".join(x for x in touch_main.splitlines()
+              if not x.lstrip().startswith("//"))
+          assert 'EVIOCGRAB,' not in executable_touch_lines
+          assert 'std::fs::write(' not in executable_touch_lines
           assert 'std::process::Command' not in touch_main
           assert 'systemctl stop' not in touch_main
           assert '"--touch-abs")' not in wrapper
