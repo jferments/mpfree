@@ -197,11 +197,11 @@ bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
 
 Local reports are saved under `research/mpc-one-abi-*.txt` and `research/mpc-one-handoff-preflight-*.txt`, plus SHA-256 sidecars. **Redact boot args, local IP/MAC, serials and unit environment information before public sharing**; raw reports must stay off GitHub.
 
-`--abi` lists user-space loader/libc/ALSA/DRM/EGL paths and glibc version. [ARM compatibility guide](../engineering/ARMV7_USERSPACE_COMPATIBILITY.md) explains how to use the host-only ELF comparison script after receipt. `--handoff-preflight` maps systemd unit behavior, fds and rollback dependencies; [reversible handoff design](../engineering/REVERSIBLE_HANDOFF.md) explicitly prohibits any live takeover until independent recovery and a watchdog-backed restoration test are proven. **The owner successfully ran both original read-only probes on 2026-11-09 UTC**. The sanitized results and raw report SHA-256 fingerprints are in [MPC One ABI/handoff survey](MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). Exact libc release remains unverified because `getconf` is missing.
+`--abi` lists user-space loader/libc/ALSA/DRM/EGL paths and glibc version. [ARM compatibility guide](../engineering/ARMV7_USERSPACE_COMPATIBILITY.md) explains how to use the host-only ELF comparison script after receipt. `--handoff-preflight` maps systemd unit behavior, fds and rollback dependencies; [reversible handoff design](../engineering/REVERSIBLE_HANDOFF.md) explicitly prohibits any live takeover until independent recovery and a watchdog-backed restoration test are proven. **The owner successfully ran both original read-only probes on 2026-11-09 UTC**. The sanitized results and raw report SHA-256 fingerprints are in [MPC One ABI/handoff survey](MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). **The second owner-run `--abi` successfully read the embedded GNU libc release banner: version 2.39**, despite `getconf` being absent. Runtime compatibility of specific ARM binaries is still unverified.
 
 ### New passive factory per-thread scheduling probe
 
-The factory app's 38-thread leader was CPU0-affined while the kernel advertises `isolcpus=2-3`. That alone does not establish the scheduling of the audio threads. The new *read-only* probe enumerates individual threads and their `/proc/<pid>/task/<tid>/sched` scheduling policy/priority and `Cpus_allowed_list`:
+The owner-run `--rtthreads` showed all **38 factory threads distributed over cores 0–3**, including `Audio Processing` on CPU3 and `AudioWorker0..3` on cores 0..3. `isolcpus=2-3` is not proof of core loss. The original report did **not** include scheduling-policy/RT-priority values, so the improved read-only `/proc/task/stat` collector is needed. The new *read-only* probe enumerates individual threads and their `/proc/<pid>/task/<tid>/sched` scheduling policy/priority and `Cpus_allowed_list`:
 
 ~~~bash
 cd /home/jesse/code/mpfree-hardware-survey
@@ -211,7 +211,7 @@ sh -n tools/mpc-one/read-only-rtthreads.sh
 bash tools/mpc-one/collect-over-ssh.sh --rtthreads
 ~~~
 
-The script **does not change** affinity, priorities, memory locks, service lifecycle or device handles. Save/redact the local `research/mpc-one-rtthreads-*.txt` file before sharing. We use its evidence to plan a bounded MPFree audio callback, but **no actual factory resource takeover is authorized**.
+The script **does not change** affinity, priorities, memory locks, service lifecycle or device handles. Save/redact the local `research/mpc-one-rtthreads-*.txt` file before sharing. The original affinity survey succeeded; the updated script additionally reports per-task numeric policy/priority from `/proc/task/stat`, still awaiting execution. We use its evidence to plan a bounded MPFree audio callback, but **no actual factory resource takeover is authorized**.
 
 ### Execute the automated read-only inventory
 
