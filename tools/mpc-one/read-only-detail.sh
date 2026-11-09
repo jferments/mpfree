@@ -94,9 +94,12 @@ cpu_metadata() {
   done
 }
 elf_metadata() {
-  if [ -r /usr/bin/MPC ] && command -v od >/dev/null 2>&1; then
-    echo '/usr/bin/MPC — first 32 ELF header bytes only:'
-    head -c 32 /usr/bin/MPC | od -An -tx1
+  # BusyBox head lacks -c and BusyBox od lacks -An; dd without of= is READ ONLY.
+  # Only the first 64 ELF header bytes are examined; never copy factory binary.
+  if [ -r /usr/bin/MPC ] && command -v dd >/dev/null 2>&1 &&
+     command -v od >/dev/null 2>&1; then
+    echo '/usr/bin/MPC — first 64 ELF header bytes (octal bytes, no executable copied):'
+    dd if=/usr/bin/MPC bs=64 count=1 2>/dev/null | od -b
   fi
   ls -ld /lib/ld-linux* /lib/libc* /usr/lib/libasound* 2>/dev/null | head -n 30 || :
 }
