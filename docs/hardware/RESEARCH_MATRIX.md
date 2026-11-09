@@ -38,13 +38,15 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 | UI-01 | Display | **OBSERVED:** DRM `card0-DSI-1` enabled `800x1280`, framebuffer virtual `800x3840` @ 32 bpp, Mali-T760-compatible Panfrost GPU | Physical panel orientation, transforms, compositor ownership | DRM sysfs, `/proc/<pid>/fd`, later GUI isolation tests | DRM/KMS display backend |
 | UI-02 | Touchscreen | **OBSERVED:** ILI2117 `event0` opened by factory app; touch capability bitmasks captured | Absolute ranges, calibration/rotation, multi-touch tracking | sysfs/device tree; later non-interfering opt-in capture | Touch adapter |
 | UI-03 | Hardware keys | **OBSERVED:** `gpio-keys` `event1` opened by factory app; no separate pad evdev observed | Determine GPIO keys and internal MIDI controller mapping | Read-only node metadata; later consented event capture | Button/encoder adapter |
-| IO-01 | External MIDI/USB | **OBSERVED:** Akai USB `09e8:0046` internal MIDI; PNY `154b:1006` removable research USB; DWC/EHCI/OHCI controllers | Inspect interface subclass/protocol; distinguish control and external data ports | `/sys/bus/usb/devices/*`, `/proc/asound` | I/O backend |
-| NET-01 | Ethernet | **OBSERVED:** `end0`, direct IPv4; stmmac-like PHY IRQ label | Driver details, link config, factory default discovery | `/sys/class/net/end0`, `/proc/interrupts` | Discovery/network API |
+| IO-01 | USB host / device mode | **OBSERVED:** internal Akai USB MIDI `09e8:0046` at 12 Mbit/s, PNY removable USB and DWC/EHCI/OHCI controllers; actual port capability **unverified** | USB negotiated speeds, drivers, USB-B UDC/gadget availability, safe laptop interconnect | Read-only `--io` sysfs/USB descriptor survey; no USB storage I/O | Optional USB gadget/audio network backend |
+| NET-01 | Ethernet + DSP offload | **OBSERVED:** `end0`, direct IPv4 + functioning SSH, no on-device PHY speed or jitter measured | Actual PHY line rate/duplex/driver, error counters, USB competition, opt-in SSH goodput & RTT | Read-only `--io` first, explicitly opt-in bounded `--netbench` | Bounded, authenticated auxiliary-compute transport and jitter buffer |
 | CONTENT-01 | Factory content | p7 content mounted; formats UNKNOWN | User content paths/formats and provenance? | filenames/metadata only, local user-authorized inspection | Local-only importer |
 
 ## Current implemented software milestone
 
-**M0 (host-only) is implemented:** [Deterministic audio core and WAV renderer](../engineering/FIRST_AUDIO_CORE.md). A C++17 sample-frame click engine with a bounded, precomputed wavetable and saturating float-to-S32 converter; offline WAV demo and CI tests. Does not access MPC devices. This is a software foundation, not a proof of audio-driver takeover or ROM recovery.
+**M0 (host-only) is implemented and owner-validated on ML-tower:** [Deterministic audio core and WAV renderer](../engineering/FIRST_AUDIO_CORE.md). A C++17 sample-frame click engine with a bounded, precomputed wavetable and saturating float-to-S32 converter; offline WAV demo and CI tests. Does not access MPC devices. This is a software foundation, not a proof of audio-driver takeover or ROM recovery.
+
+[Ethernet/USB capability and auxiliary compute design](../engineering/AUXILIARY_COMPUTE_AND_IO.md) covers device-role constraints, link/USB speed probes, optional small benchmark and raw PCM bandwidth/latency model. **None of the device interface speeds or transport performance have been measured by the new tools yet.**
 
 ## Research order
 
