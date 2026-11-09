@@ -14,7 +14,15 @@ MPC_USER="${MPC_USER:-root}"
 MPC_KEY="${MPC_KEY:-/home/jesse/.ssh/mpc_one_autorun_ed25519}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"
+# Only the two reviewed, repository-local scripts are executable remotely.
+# No arbitrary user-supplied script path or remote command is accepted.
+case "${1:-}" in
+  "") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"; REPORT_KIND="mpc-one" ;;
+  "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
+  *) die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+     die "Unknown mode. Use no arguments for baseline, or --detail for focused follow-up." ;;
+esac
+[ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 MPC_REPORT_DIR="${MPC_REPORT_DIR:-$REPO_ROOT/research}"
 
@@ -94,7 +102,7 @@ if [[ "$found_mac" != "${MPC_EXPECT_MAC,,}" ]]; then
 fi
 
 mkdir -p -- "$MPC_REPORT_DIR"
-REPORT="$(mktemp "$MPC_REPORT_DIR/mpc-one-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
+REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
 echo "Collecting read-only report to $REPORT"
 
