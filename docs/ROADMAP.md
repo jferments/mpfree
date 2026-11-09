@@ -18,7 +18,7 @@ This is a proposal, not a promise of parity or a timeline.
 - [x] **M6 integrated engine:** `mpfree-headless` combines real GrooveEngine + WAV Sampler with preallocated 128-frame mixing and `NullAudioBackend`; deterministic one-bar PCM hash and ARMv7 code now **verified on physical MPC**. Long-running event loop and production daemon remain unimplemented.
 - [x] **M6 on-device acceptance:** owner ran `--headless-check` and double-opt-in `--headless-smoke` successfully on MPC One with stock app active: 88,200 frames, 12 groove events, 4 sampler notes, exact PCM hash `3dc4d6dabbb17fbd`, 30,565 µs elapsed (65.43× offline throughput), 1,792 KiB RSS/peak RSS, SHA-256 verified and cleanup reported. This proves null-audio coexistence computation, **not** hardware playback.
 - [x] **M7 host foundation:** `mpfree-session` runs finite 128-frame synthetic wall-paced null-audio callbacks; separately launched HOST supervisor enforces timeout/cancel and output integrity. Physical M7 execution is now separately qualified and owner-validated below.
-- [x] **M7 host validation:** owner's ML-tower passed all Rust tests, 690 paced callbacks, 0 synthetic deadline misses, p99=10µs/max=28µs, max wakeup lateness=81µs, PCM checksum unchanged. Not physical ALSA/xrun proof.
+- [x] **M7 host validation:** owner's workstation passed all Rust tests, 690 paced callbacks, 0 synthetic deadline misses, p99=10µs/max=28µs, max wakeup lateness=81µs, PCM checksum unchanged. Not physical ALSA/xrun proof.
 - [x] **M7 physical MPC acceptance:** owner ran `--session-check` and separately dual-opted-in to `--session-smoke` on the original MPC One. **PASS**: 690 paced callbacks at 128f/44.1k, 0 synthetic deadline misses, p99=66µs/max=165µs, max wake lateness=167µs, render total=26.859ms/2s, exact PCM hash; SHA256 guard and `/run` cleanup verified. **No ALSA, PCM opens or real driver deadlines tested**.
 - [x] **GUI/handoff owner-run discovery:** read-only `--process-map` and `--touchscreen` both passed on original MPC One. Confirmed `DeviceControlServer.bin` independent in network MIDI service, separate power service reading `KEY_POWER` on event1, main MPC process owning DRM and touch/PCM/raw MIDI, direct ILI2117 I²C4/0x26 kernel driver, multitouch slots/tracking IDs, 800×1280 DSI and Panfrost GPU.
 - [x] **M8 host-only GUI rehearsal:** new std-only `mpfree-display` Rust module creates distinct-color four-corner test card and checked RGB888 1280×800 logical → 800×1280 native CW/CCW previews with range-supplied touch coordinate transforms; no DRM/evdev I/O.
@@ -27,7 +27,8 @@ This is a proposal, not a promise of parity or a timeline.
 - [x] **M10 physical touchscreen metadata PASSED (2026-11-09):** owner ran `--touch-axes-check` and double-opt-in `--touch-axes` on original MPC One. Actual ILI2117 `ABS_X/Y` and `ABS_MT_POSITION_X/Y` **0..=2048**, `ABS_MT_SLOT=0..=9` (**10 reported slots**), tracking IDs `0..=65535`; all fuzz/flat/resolution 0. Checked read-only fd, no event consumption/grab, ARM ELF+SHA/watchdog and active stock unit afterward. **Rotation, actual ten-finger reliability, and stock UI functionality after test remain unverified.**
 - [x] **M10 owner hardware execution completed:** read-only preflight and volatile metadata query both returned PASS. Host-only M8 mapping regression now covers observed inclusive 0..=2048 range under both CW/CCW candidates; physical orientation **unknown**. See `docs/hardware/MPC_ONE_ILI2117_EVIOCGABS_VALIDATED_20261109.md`.
 - [ ] **M10 post-run functional confirmation:** owner manually verifies factory GUI, touchscreen, pads and power controls still behave normally (not established by service-active check alone).
-- [ ] **Later:** build independently approved non-grabbing touch gesture calibration; full factory GUI stop/restore remains blocked on tested recovery.
+- [x] **M11 host-only multitouch:** `mpfree-touch` gains a Type-B decoder (slots, tracking ids, SYN_REPORT frames, SYN_DROPPED resync with or without an `EVIOCGMTSLOTS` snapshot), an eight-orientation raw-to-logical pointer map and a toolkit-neutral tap/drag/long-press/two-finger recognizer, tested against synthetic streams. No device reads. See [M11](engineering/M11_MULTITOUCH_DECODER.md).
+- [ ] **Later (M12):** build independently approved non-grabbing touch gesture calibration; full factory GUI stop/restore remains blocked on tested recovery.
 - [ ] **Future experimental screen takeover:** requires independently proven full factory boot recovery and a separate supervised, owner-consented stock-app stop → timed DRM test-card → verified stock-app restore. Not implemented or authorized in current work.
 - [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
 - [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
@@ -36,14 +37,14 @@ This is a proposal, not a promise of parity or a timeline.
 - [ ] Port host-only Python network-audio datagram model to Rust; add bounded real packet pacing/clock-drift simulation before any MPC audio ingress.
 - [ ] Implement user-provided sample importer and genuine sequencer editing, projects, MIDI and hardware HAL.
 
-These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No new software has been installed onto the MPC, and the original `acvs.service` still owns PCM and display resources. For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
+These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No MPFree software is installed persistently on the MPC, and the original `acvs.service` still owns PCM and display resources. For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
 
 ## Phase 0 — Evidence and risk reduction
-- [ ] Record exact target model and factory firmware version.
-- [ ] Review licensing and choose a repository license.
-- [ ] Inventory kernel, audio devices, controller MIDI endpoints, touchscreen, graphics, storage, and recovery options.
-- [ ] Identify a reversible, offline, non-destructive way to launch a custom userspace application.
-- [ ] Define a desktop simulator for the hardware inputs and display.
+- [x] Record exact target model and factory firmware version. (MPC One, 3.6.0: [baseline](hardware/MPC_ONE_3_6_0_BASELINE.md))
+- [x] Review licensing and choose a repository license. (MIT, 2026-11-09; `LICENSE` file still to be added)
+- [ ] Inventory kernel, audio devices, controller MIDI endpoints, touchscreen, graphics, storage, and recovery options. (Everything except recovery options is inventoried; see the [survey](hardware/MPC_ONE_3_6_0_SURVEY_20261109.md).)
+- [x] Identify a reversible, offline, non-destructive way to launch a custom userspace application. (RAM-only `/run` execution over SSH, proven in M5–M7 and M10.)
+- [ ] Define a desktop simulator for the hardware inputs and display. (Partial: M8 offscreen test card and M11 synthetic touch streams.)
 
 **Gate:** We can document an accurate hardware map and a safe way back to the factory application.
 
