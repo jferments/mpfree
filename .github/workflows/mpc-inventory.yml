@@ -5,6 +5,7 @@ on:
     paths:
       - "tools/mpc-one/**"
       - "src/**"
+      - "rust/**"
       - "tests/**"
       - "CMakeLists.txt"
       - ".github/workflows/mpc-inventory.yml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "tools/mpc-one/**"
       - "src/**"
+      - "rust/**"
       - "tests/**"
       - "CMakeLists.txt"
       - ".github/workflows/mpc-inventory.yml"
@@ -151,3 +153,50 @@ jobs:
           assert any(data[44:]), "Rendered WAV is silent"
           print("Valid 44.1kHz stereo S32_LE 1s offline demo; 0 MPC hardware access")
           PY
+
+
+  rust:
+    name: Rust host parity and ARMv7 hard-float cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable with ARMv7 target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add armv7-unknown-linux-gnueabihf
+          rustc --version
+          cargo --version
+      - name: Test Rust core in native release and debug
+        run: |
+          cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+          cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-render
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
