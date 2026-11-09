@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: design / hardware discovery.** This repository does **not** yet contain a working replacement application or firmware image.
+**Status: design / hardware discovery.** This repository does **not** yet contain a working replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
 
 ## Vision
 
@@ -12,12 +12,40 @@ An offline-first, hardware-focused sampler, sequencer, arranger, synth/effects h
 
 We are beginning with a **userspace application**, not a replacement kernel, bootloader, or destructive firmware installer. We will first validate the hardware and build a reversible demonstration that can read a pad and output audio.
 
-Read:
+### Evidence-backed MPC One research
+
+Start here for reproducible hardware/firmware development:
+
+- [Verified MPC One 3.6.0 hardware/software baseline](docs/hardware/MPC_ONE_3_6_0_BASELINE.md) — observed ARMv7/PREEMPT_RT kernel, inMusic az0x distribution, storage mounts/overlays, and explicit unknowns.
+- [Verified USB autorun and SSH developer access](docs/hardware/DEVELOPER_ACCESS.md) — upstream byte-sensitive autorun files, tested SSH approach, exact reference Ethernet lab settings, failure recovery.
+- [Hardware reverse-engineering research matrix](docs/hardware/RESEARCH_MATRIX.md) — subsystem-by-subsystem mapping plan with evidence labels and safety gates.
+- [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
+
+A **read-only** automated survey, run on the *workstation*, is available as:
+
+- [tools/mpc-one/collect-over-ssh.sh](tools/mpc-one/collect-over-ssh.sh) — checks interface/IP, network route, expected device MAC and SSH host key; writes report locally.
+- [tools/mpc-one/read-only-inventory.sh](tools/mpc-one/read-only-inventory.sh) — POSIX shell survey streamed over SSH without installation or deliberate MPC writes.
+- [tools/collect-hardware-info.sh](tools/collect-hardware-info.sh) — original lightweight device-local manual survey.
+
+The SSH wrapper defaults to the **already-tested reference lab** (`eno1np0`, `10.42.0.141:2222`, and the existing dedicated developer key). Other users must set their own verified addresses, interface, MAC and key as described in the runbook.
+
+Run this from a cloned copy of the branch containing these files (before merging architecture PR #1, that branch is `bootstrap/architecture-and-hardware-survey`):
+
+~~~sh
+bash tools/mpc-one/collect-over-ssh.sh
+~~~
+
+Raw survey output goes into local `research/`, which is ignored by Git. **Never commit unredacted hardware logs, private keys, factory firmware, sample archives or images.**
+
+### Architecture and project milestones
+
 - [Architecture proposal](docs/ARCHITECTURE.md)
 - [Roadmap and milestone gates](docs/ROADMAP.md)
 - [Factory content and plugin compatibility policy](docs/FACTORY_CONTENT.md)
 
-A read-only [hardware survey script](tools/collect-hardware-info.sh) is available for manual execution on a device you own or are authorized to inspect. Review and redact its output before sharing.
+## Installation caution
+
+There is **no MPFree end-user installation image yet**. Root SSH through the community autorun route is a research bootstrap specific to tested combinations and is not a universal firmware jailbreak. The MPC reference unit has a **read-only root but persistent writable overlays** on `/etc` and `/var`; careless edits can still persist or prevent normal startup. Do not repartition, flash, remount read-write or modify the factory boot chain during initial research.
 
 ## Legal and technical boundaries
 
