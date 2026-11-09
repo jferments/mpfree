@@ -138,6 +138,34 @@ The thread-policy query returned names but **not** the policy/priority fields; d
 
 Full reproducible evidence, interpretation, tables and missing capabilities: [third survey](MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md). This provided the parameters for [MPFree's first separate host-only metronome core](../engineering/FIRST_AUDIO_CORE.md).
 
+### New interface survey: Ethernet and USB, plus optional bounded data-transfer benchmark
+
+The owner requested research into using a connected Linux laptop or desktop as an **auxiliary DSP computer**, sending generated audio back to an MPC. The architecture, raw PCM bandwidth/latency model and hardware limitations are documented in [Auxiliary Compute and I/O](../engineering/AUXILIARY_COMPUTE_AND_IO.md).
+
+**First run the passive probe** from ML-tower on the same established Ethernet/SSH configuration:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash -n tools/mpc-one/collect-over-ssh.sh
+sh -n tools/mpc-one/read-only-io.sh
+bash tools/mpc-one/collect-over-ssh.sh --io
+~~~
+
+The passive `--io` mode checks the wired `end0` link rate/duplex, PHY and driver metadata, interface error counters, enumerated USB-device speeds, host-controller bindings and whether a Linux USB device/gadget controller is registered. It **does not** change link speed, mount/remount storage, open audio devices or start listeners. All output is under locally ignored `research/mpc-one-io-*.txt`.
+
+**Then, only if the MPC is idle and you're comfortable with a small CPU/network load, optionally run:**
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+bash tools/mpc-one/collect-over-ssh.sh --netbench
+~~~
+
+This is an **active** test; it performs 20 ICMP pings and transfers **4 MiB in each direction over key-authenticated, non-compressed SSH**. The remote only reads `/dev/zero` or writes to `/dev/null` (a sink, not a storage filesystem). It does not install software, alter the MPC OS or open ALSA, MIDI or DRM. It can temporarily burden CPU/network, so **do not run while playing, recording or performing**. The benchmark explicitly reports encrypted SSH throughput with handshake/crypto cost, **not** raw wire speed. Reports are saved in `research/mpc-one-netbench-*.txt`.
+
+Both commands retain the same verified `eno1np0`/MPC MAC identity gates and strict SSH host-key checking as previous successful probes. **The new probes still require first real-device verification**; CI shell syntax and safety heuristics are not proof that firmware exposes every optional file.
+
 ### Execute the automated read-only inventory
 
 This repository contains:
