@@ -124,6 +124,17 @@ jobs:
           assert 'MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED' in headless
           assert 'std::fs::read_to_string("/proc/self/status")' in headless
           assert not any(s in headless for s in ('/dev/snd', '/dev/dri', '/dev/input', 'systemctl stop', 'std::net::'))
+          session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
+          assert '#![forbid(unsafe_code)]' in session_source
+          assert 'NullAudioBackend' in session_source
+          assert 'std::thread::sleep' in session_source
+          assert '/dev/snd' not in session_source and 'std::net' not in session_source
+          assert 'systemctl' not in session_source
+          host_supervisor=Path("tools/mpc-one/host_null_session_supervisor.py").read_text()
+          assert 'start_new_session=True' in host_supervisor
+          assert 'os.killpg(process.pid' in host_supervisor
+          assert 'ssh -T' not in host_supervisor
+          assert 'BINARY = REPO_ROOT' in host_supervisor
           rust_smoke = Path("rust/mpfree-device-smoke/src/main.rs").read_text()
           assert "#![forbid(unsafe_code)]" in rust_smoke
           assert 'arm_self_watchdog()' in rust_smoke
@@ -140,7 +151,7 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py tools/mpc-one/host_null_session_supervisor.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
@@ -250,6 +261,23 @@ jobs:
           grep -Eq '^rss_kib=[0-9]+$' /tmp/mpfree-headless.out
           grep -Eq '^elapsed_us=[0-9]+$' /tmp/mpfree-headless.out
           cat /tmp/mpfree-headless.out
+      - name: Validate M7 synthetic callback timing and host parent supervisor (NO MPC)
+        run: |
+          cargo run --manifest-path rust/Cargo.toml --release --locked \
+            -p mpfree-session -- --offline-check > /tmp/mpfree-session-offline.out 2>/tmp/mpfree-session-offline.err
+          grep -q '^MPFREE_SESSION_V1$' /tmp/mpfree-session-offline.out
+          grep -q '^backend=null$' /tmp/mpfree-session-offline.out
+          grep -q '^pacing=offline$' /tmp/mpfree-session-offline.out
+          grep -q '^callback_count=690$' /tmp/mpfree-session-offline.out
+          grep -q '^deadline_misses=0$' /tmp/mpfree-session-offline.out
+          grep -q '^checksum_fnv1a64=3dc4d6dabbb17fbd$' /tmp/mpfree-session-offline.out
+          grep -q '^status=PASS$' /tmp/mpfree-session-offline.out
+          python3 tools/mpc-one/host_null_session_supervisor.py > /tmp/mpfree-session-supervised.out
+          grep -q '^MPFREE_M7_HOST_PARENT_SUPERVISOR_V1$' /tmp/mpfree-session-supervised.out
+          grep -q '^hardware_access=none$' /tmp/mpfree-session-supervised.out
+          grep -q '^callback_count=690$' /tmp/mpfree-session-supervised.out
+          grep -q '^status=PASS$' /tmp/mpfree-session-supervised.out
+          cat /tmp/mpfree-session-supervised.out
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -362,6 +390,33 @@ jobs:
           assert b"WATCHDOG=RUST_5S_ARMED" in binary.read_bytes(), (
               "ARM binary must contain self-watchdog startup marker"
           )
+          session=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-session")
+          assert session.is_file() and session.stat().st_size < 2 * 1024 * 1024
+          assert b"MPFREE_SESSION_V1" in session.read_bytes()
+          assert b"MPFREE_SESSION_RUST_WATCHDOG_7S_ARMED" in session.read_bytes()
+          session_header=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-h", str(session)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          session_phdr=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-l", str(session)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          session_version=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-W", "--version-info", str(session)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          assert re.search(r"Class:\s*ELF32", session_header)
+          assert re.search(r"Machine:\s*ARM", session_header)
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI", session_header)
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in session_phdr
+          required=[tuple(map(int,m)) for m in re.findall(
+              r"GLIBC_(\d+)\.(\d+)", session_version
+          )]
+          assert required and max(required)<=(2,39), (
+              f"M7 ARM binary requires unsupported glibc {max(required)}"
+          )
+          print("PASS: M7 ARMv7 hard-float ABI and glibc<=2.39; NO deployment")
           headless=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-headless")
           assert headless.is_file() and headless.stat().st_size < 2 * 1024 * 1024
           assert b"MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED" in headless.read_bytes()
