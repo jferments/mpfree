@@ -95,7 +95,8 @@ device_tree_audio() {
   have find || { echo 'find unavailable; skipping device-tree walk'; return 0; }
   n=0
   # Only nodes whose compatible names audio/I2S/codec/DMA hardware.
-  find /proc/device-tree -maxdepth 4 -name compatible 2>/dev/null | while read -r c; do
+  # /proc/device-tree is a symlink: the trailing slash makes find descend into it.
+  find /proc/device-tree/ -maxdepth 4 -name compatible 2>/dev/null | while read -r c; do
     if tr '\000' ' ' < "$c" 2>/dev/null |
        grep -i -q -E 'acva|jp07|inmusic|i2s|audio|codec|sound|pdma|dmac|spdif'; then
       n=$((n+1))
