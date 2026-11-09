@@ -1,4 +1,6 @@
 //! Desktop-only PCM WAV reference. Never opens MPC/ALSA/MIDI/network devices.
+#![forbid(unsafe_code)]
+
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use std::env;
 use std::error::Error;
