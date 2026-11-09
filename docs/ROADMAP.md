@@ -2,6 +2,19 @@
 
 This is a proposal, not a promise of parity or a timeline.
 
+## Incremental host-only progress (not Phase 1/2 MPC acceptance)
+
+- [x] **M0:** deterministic C++ sample-frame click and 44.1-kHz stereo S32_LE WAV; owner confirmed audible desktop playback.
+- [x] **M1:** Rust-first metronome with native debug/release tests, three-tempo **zero-difference** WAV parity against C++, and ARMv7 EABI5 hard-float CI **cross-build**. This is not a runtime compatibility or MPC sound-device test.
+- [x] **M2:** Rust 16-step pattern compiler, timestamped note events, synthetic kick/snare/hat source bank and bounded 16-voice playback; desktop-only generated groove WAV and CI validation.
+- [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
+- [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
+- [ ] Demonstrate controller input and safe ALSA playback **on actual MPC** after verifying factory service handoff and recovery.
+- [ ] Port host-only Python network-audio datagram model to Rust; add bounded real packet pacing/clock-drift simulation before any MPC audio ingress.
+- [ ] Implement user-provided sample importer and genuine sequencer editing, projects, MIDI and hardware HAL.
+
+These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No new software has been installed onto the MPC, and the original `acvs.service` still owns PCM and display resources. For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
+
 ## Phase 0 — Evidence and risk reduction
 - [ ] Record exact target model and factory firmware version.
 - [ ] Review licensing and choose a repository license.
@@ -57,7 +70,7 @@ Prioritize low menu depth, immediate physical control, reliable audio, reversibl
 
 ## Open decisions
 
-- Engine: Rust vs C++ (benchmark and review real-time guarantees).
+- Engine language: **DECIDED — Rust-first**, retaining C/C++ compatibility adapters for established instruments, DSP and plugin hosting; see [ADR-0001](engineering/ADR-0001-RUST-FIRST-HYBRID.md). Hardware real-time performance remains unqualified.
 - UI: Qt Quick vs SDL or other lightweight renderer.
 - Audio: ALSA direct vs JACK/PipeWire (measure on device).
 - Licensing: GPL-3.0-or-later, MPL-2.0, or other approved FOSS license.
