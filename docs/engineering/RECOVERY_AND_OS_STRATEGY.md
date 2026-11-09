@@ -1,10 +1,10 @@
 # Recovery tiers, firmware updates and the path to an MPFree OS
 
-**Status:** proposed plan, 2026-11-09. Owner direction is recorded below. The
-tiered gate replaces the single "independent unbootable-device recovery"
-blocker in [REVERSIBLE_HANDOFF.md](REVERSIBLE_HANDOFF.md) and
-[HARDWARE_OWNERSHIP_STRATEGY.md](HARDWARE_OWNERSHIP_STRATEGY.md) **once the owner
-adopts it**. Until then, those documents' gates still apply.
+**Status:** the tiered gate was **adopted by the owner on 2026-11-09**. It
+replaces the single "independent unbootable-device recovery" blocker in
+[REVERSIBLE_HANDOFF.md](REVERSIBLE_HANDOFF.md) and
+[HARDWARE_OWNERSHIP_STRATEGY.md](HARDWARE_OWNERSHIP_STRATEGY.md). Owner direction
+is recorded below.
 
 ## Owner direction (Jay, 2026-11-09)
 
@@ -19,6 +19,8 @@ adopts it**. Until then, those documents' gates still apply.
    existing bootloader well enough to boot and test another OS **without
    damaging the existing one**.
 4. **Keep developing the custom userspace on the stock OS** in parallel.
+5. **Adopt the three recovery tiers** below in place of the single recovery gate
+   (decided 2026-11-09).
 
 ## Two tracks
 
@@ -28,7 +30,7 @@ adopts it**. Until then, those documents' gates still apply.
 | Boot chain | Untouched | Must be understood first; tested without eMMC writes |
 | Delivery | USB autorun → install to SD/`/data` → SSH | USB/SD image, eventually an installer |
 | Gate tier | Tier 1 → Tier 2 | Tier 3 |
-| Next step | Tier 1 session handoff | Read-only `--boot-map` survey |
+| Next step | Full eMMC backup, then the Tier 1 rehearsal | Read-only kexec preflight, then a RAM-only kexec test plan |
 
 Track A delivers a usable instrument early. Track B starts as read-only
 research and runs alongside it.
@@ -128,7 +130,8 @@ Steps 1–5 are read-only or offline. Step 6 changes device state and needs the 
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
-   Label it `MOD-001+MOD-002`.
+   Label it `MOD-001+MOD-002`. **Tool added:** [`--backup`](../hardware/emmc-backup.md), read-only on the MPC;
+   owner run pending.
 4. Host-side write-counter diff tool: fails if `p1`–`p6` show writes between two `--boot-map` snapshots.
 5. Board photos to locate a MaskROM button or eMMC clock test point. Opening the case is the owner's decision.
 6. **Owner go-ahead required:** first Tier 1 rehearsal. Stop and start `acvs.service` with no MPFree

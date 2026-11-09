@@ -23,7 +23,7 @@ Separate these deliverables clearly:
 | A+: Persistent developer SSH | early-boot SSH unit in rootfs + keys in `/data/mpfree/ssh` | **Yes: rootfs and `/data`** ([MOD-001/002](hardware/DEVICE_MODIFICATIONS.md)) | **DONE** on reference unit; owner decision to keep. Not an end-user pattern: a rootfs write is Tier 3 |
 | B: Portable proof of concept | RAM-backed MPFree binary/config; data from removable storage | None to internal partitions | Need actual sysroot, device map, runtime loader and executable-mount tests |
 | C: Reversible MPFree userspace | versioned files on known safe storage with opt-in launch, stock OS fallback | May write a dedicated MPFree directory if explicitly authorized | Verified backups + recovery + transactional install |
-| D: Independent Linux image | alternate kernel/rootfs or boot arrangement | Potentially boot-critical internal changes | **Out of scope until real recovery is validated** |
+| D: Independent Linux image | alternate kernel/rootfs or boot arrangement | Potentially boot-critical internal changes | **Out of scope until the Tier 3 recovery gate passes** ([recovery strategy](engineering/RECOVERY_AND_OS_STRATEGY.md)) |
 
 A portable application running on the vendor Linux base is **not** an independent firmware distribution. Use the correct terminology in every release and guide.
 
