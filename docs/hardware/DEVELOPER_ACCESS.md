@@ -79,6 +79,27 @@ cat /proc/bus/input/devices
 
 Never use `mount -o remount,rw /`, `fw_setenv`, `flashcp`, `dd of=/dev/mmcblk...`, `systemctl disable`, or factory update flows during inventory.
 
+### Verified first inventory and the focused follow-up
+
+The reference device's first baseline inventory succeeded on **2026-11-09 05:00:46 UTC** after loading the dedicated private key into `ssh-agent`. Local report SHA-256: `4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b`. It revealed the Rockchip RK3288 SoC, real eMMC partition labels, ACVA ALSA, three USB MIDI endpoints, DRM/Panfrost and ILI2117 input, and the real factory application unit **`acvs.service`**. See [the redacted field report](MPC_ONE_3_6_0_SURVEY_20261109.md).
+
+**First collector limitation:** BusyBox rejected some GNU-style utilities; `ps -eo ... | head` produced empty output without activating its fallback, the expected `inmusic-mpc.service` did not exist, and `aplay`/`arecord`/`aconnect` were not installed. New builds use `/proc` for process names, query `acvs.service`, distinguish missing userspace tools, and **redact the unique `Serial:` field from `/proc/cpuinfo`**.
+
+Run on the **workstation** after fetching the latest existing PR #1 branch; no need to recreate the USB or network:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash -n tools/mpc-one/collect-over-ssh.sh
+sh -n tools/mpc-one/read-only-detail.sh
+bash tools/mpc-one/collect-over-ssh.sh --detail
+~~~
+
+The `--detail` mode uses the *same strict SSH host-key, wired interface, route and MPC MAC checks* as the baseline. It sends only the repository-shipped `read-only-detail.sh` program. The narrowed survey reads running process and service metadata, hardware fd **symlinks** (does not open devices), ALSA card metadata, display modes, input capabilities, USB vendor/product descriptors excluding serials, CPU frequency and a short executable ELF header. It does **not** control audio, transmit MIDI, stop services or write internal storage.
+
+The report is written locally under `research/mpc-one-detail-<timestamp>-<random>.txt`, with a companion SHA-256 file. Always review/redact report contents before posting or uploading anywhere. The original baseline report **contained a private hardware serial** and is **not** stored in Git.
+
 ### Execute the automated read-only inventory
 
 This repository contains:
