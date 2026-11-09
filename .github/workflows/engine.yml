@@ -1,0 +1,24 @@
+name: Native sequencer engine
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Render offline demo
+        run: ./build/mpfree_demo ./build/mpfree-demo.wav
+      - name: Check demo WAV is readable
+        run: python3 -c "import wave; w=wave.open('build/mpfree-demo.wav'); assert w.getnchannels()==1; assert w.getframerate()==48000; assert w.getnframes()==192000; w.close()"
