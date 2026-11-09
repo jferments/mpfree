@@ -11,10 +11,15 @@ USB is also worth investigating, but **USB-A is a host port and a laptop USB-A/U
 
 ## 1. Source evidence and confidence labels
 
-- **OBSERVED on actual MPC:** direct 10.42.0.x Ethernet link works and responds with low ICMP latency (previous short runs); USB MIDI device 09e8:0046 runs at **12 Mbit/s**; a separate removable research USB appears on another USB bus; active ACVA PCM runs **44,100 Hz, stereo, interleaved S32_LE, 128-frame period**, playback ring 384 frames and capture ring 256 frames. These data come from the first three surveys, **not** from the new link-speed tests.
-- **UNKNOWN UNTIL NEXT SURVEY:** MPC `end0` negotiated line speed (10/100/1000), full/half duplex, PHY model, max advertised modes, error counters, actual USB removable-device speed, exposed USB host-controller max speed, USB-B UDC/gadget availability, TCP/UDP sustained goodput and latency/jitter under load.
-- **EXTERNAL PRODUCT DOCUMENTATION:** Akai's original MPC One FAQ states **USB 2.0**, one USB Type-A and one Type-B port; see https://support.akaipro.com/en/support/solutions/articles/69000816149-akai-pro-mpc-one-frequently-asked-questions . Rockchip RK3288 **SoC** specifications support up to gigabit GMAC using RGMII and 10/100 using RMII, but that **does not prove the MPC One PCB's PHY supports 1 Gbit/s**; see https://rockchip.fr/RK3288%20TRM/rk3288-chapter-41-gmac-ethernet-interface.pdf .
-- **KERNEL REFERENCE:** `/sys/bus/usb/devices/<device>/speed` is the *negotiated USB device speed in Mbit/s*, NOT guaranteed payload throughput. See https://kernel.org/doc/html/latest/admin-guide/abi-stable.html .
+**The owner's passive and active Ethernet/USB tests have now been executed successfully.** The redacted, evidence-backed results, exact hashes, chipset IDs and limitations are documented in [MPC One 2026-11-09 Ethernet/USB survey](../hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md).
+
+- **OBSERVED on this MPC:** `end0` negotiated **1000 Mbit/s full-duplex** through `rk_gmac-dwmac` (Rockchip controller at `ff290000.ethernet`) to a **Realtek RTL8211E** gigabit PHY (RGMII); MTU 1500; no RX/TX error/drop counters at the time of sampling.
+- **OBSERVED short test:** 20/20 ICMP replies with min/average/max/mdev **0.251/0.272/0.315/0.015 ms**; 4 MiB MPC→host at **126.66 Mbit/s SSH goodput**, 4 MiB host→MPC at **47.05 Mbit/s SSH goodput**. Encryption/handshake and short transfers make these *application measurements*, not 1000BASE-T saturation tests or native UDP jitter bounds.
+- **OBSERVED USB:** internal Akai MIDI enumerated at 12 Mbit/s; removable PNY USB storage at **480 Mbit/s** on EHCI high-speed bus; host root controllers DWC2/EHCI/OHCI. The stick's product name includes “USB 3.2.1,” but the **MPC connection is USB 2.0 high-speed**.
+- **OBSERVED USB gadget:** DWC2 UDC `ff580000.usb`, maximum `high-speed`, state `not attached`, current speed `UNKNOWN`; kernel ConfigFS USB gadget directory exists. **Unverified:** connection to a physical USB-B port, available ECM/NCM/UAC function drivers, and safe behavior with factory software.
+- **OBSERVED stock audio:** ACVA ALSA 44.1 kHz, stereo S32_LE, 128-frame periods, output buffer 384 frames, capture buffer 256 frames. The stock process still owns the only exposed PCM subdevices.
+- **EXTERNAL reference:** the Linux kernel documents configfs gadget creation and UDC binding: https://www.kernel.org/doc/html/latest/usb/gadget_configfs.html . Merely finding the ConfigFS directory does **not** demonstrate that a particular function is compiled into this device's kernel.
+- **NOT MEASURED:** native UDP or network audio timing under load, worst-case audio delivery deadline, effective USB payload throughput, remote DSP execution time, round-trip analog latency, sustained CPU/hardware throughput. These require separate controlled tests.
 
 ## 2. Safe diagnostics added to MPFree
 
@@ -82,6 +87,14 @@ Then:
 For reference a 100-Mbit/s link's **nominal physical serialization** for a 1,024-byte payload, ignoring all headers and inter-frame gaps, is `1024×8/100e6 = 81.92 μs`. **This is not end-to-end latency**. At 1 Gbit/s that bare serialization drops to 8.192 μs. If the link negotiates 100 Mbps, even stereo bidirectional raw PCM (~5.64 Mbit/s application payload) fits comfortably in nominal bandwidth. Actual usable bandwidth will be lower due to Ethernet/IP/UDP headers, pacing, competing traffic, hardware interrupts and scheduling.
 
 The stock MPC's **128-frame audio period = 128/44100 ≈ 2.9025 ms**, while its **384-frame playback ring ≈ 8.7075 ms**. These numbers are configuration observations, not a guaranteed 2.9-ms processing callback latency or 8.7-ms round-trip audio latency.
+
+### Measured vs inferred throughput: critical distinction
+
+Our actual physical link is now **1,000 Mbit/s full duplex**, whereas the short encrypted SSH application results are **126.66 Mbit/s in MPC→workstation** and **47.05 Mbit/s in workstation→MPC**. A 4 MiB burst is too small to distinguish persistent cipher CPU limits from TCP windowing/SSH startup. The downstream result should not be used to rank the two Ethernet directions as fundamentally different hardware links.
+
+A single stereo S32_LE stream at 44.1 kHz needs **2.8224 Mbit/s** payload; a 128-frame packet contains **1,024 B** of PCM, comfortably under the measured 1,500 B Ethernet MTU *when combined with a modest UDP and application header*. Multichannel 128-frame packets may exceed MTU and must be framed appropriately. UDP loss, jitter, buffer underruns and actual audio delay have not yet been measured; do not declare a “0.272-ms audio latency” based on ping.
+
+**Hardware decision update:** gigabit Ethernet is now the verified primary network-transport target, not just the preferred hypothesis. USB device-mode networking remains a promising *unverified* secondary transport because the DWC2 UDC is registered.
 
 ## 4. Proposed MPFree Auxiliary Compute architecture
 
@@ -151,8 +164,8 @@ For *laptop-generated instrument audio* delivered to MPC, define:
 
 | Gate | Result | Current status |
 | --- | --- | --- |
-| IO-1 | Read-only Ethernet PHY/link rate, duplex, MTU, error stats, USB port speed/gadget map | **Tool committed, measurements pending** |
-| IO-2 | Optional 4+4 MiB SSH encrypted goodput and 20-ping RTT baseline | **Tool committed, opt-in only** |
+| IO-1 | Read-only Ethernet PHY/link rate, duplex, MTU, error stats, USB port speed/gadget map | **Measured: gigabit full duplex, RTL8211E; USB-A 480 Mbps; UDC high-speed** |
+| IO-2 | Optional 4+4 MiB SSH encrypted goodput and 20-ping RTT baseline | **Measured: 0.272 ms average ping, 126.66/47.05 Mbit/s SSH** |
 | IO-3 | Native short UDP timestamp/pacing and jitter diagnostics (no audio devices) | Planned, requires independent process-safety review |
 | IO-4 | Desktop-to-desktop framed PCM relay and ring-buffer tests | Planned; no MPC modifications |
 | IO-5 | Audio stream receiver on MPC **without** opening ACVA, validating parsing/clock drift only | Blocked on compatible loader and defined noninterference |
