@@ -58,28 +58,31 @@ this plan existed. See DEVICE_MODIFICATIONS.md.
 | --- | --- | --- | --- |
 | Running session | Restart `acvs` / power-cycle | Nothing persistent changed | No |
 | `/data` (`p8`) | Restore from off-device backup; factory reset as last resort | Booting `p6` | No |
-| `p6` rootfs | Akai Update Mode: FULL LEVEL + BROWSE + PAD BANK C/G at power-on ([Akai walkthrough](https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough)) | **Probably** `p1`–`p3` **and** `p6` (see inference below) | No |
+| `p6` rootfs, `p7`, `p8` | Akai Update Mode: FULL LEVEL + BROWSE + PAD BANK C/G at power-on ([Akai walkthrough](https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough)). This is U-Boot `fastboot 0` | `p1`–`p3` only (**confirmed from the U-Boot environment**). Does **not** need `p6` | No |
 | `p1`–`p5`, `boot0/1` | RK3288 MaskROM + `rkdeveloptool` writing the backup image back | USB-B port reaching the RK3288 OTG controller; a way to force MaskROM | No |
 
-**Confirmed by `--boot-map` (2026-11-09):** the kernel, DTBs and U-Boot's boot script live in `p6:/boot`, and `boot0/boot1` are empty, so the device boots from the user-area loader at sector 64. See [boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md). **Still to verify:** whether Update Mode also boots from `p6`. If so, Akai's Update Mode
-can reinstall a rootfs but **cannot** revive a unit whose `p6` is unreadable,
-and MaskROM is the only true brick recovery. `--boot-map` checks this.
+**Confirmed by `--boot-map` (2026-11-09):** the kernel, DTBs and U-Boot's boot script live in `p6:/boot`, and `boot0/boot1` are empty, so the device boots from the user-area loader at sector 64. See [boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md). **Confirmed by the second run:** Update Mode is U-Boot's own `fastboot 0`, entered before `p6` is read, so it can reflash a destroyed rootfs. **The real brick surface is therefore `p1` (idbloader), `p3` (U-Boot) and possibly `p2` (environment).** Only MaskROM recovers those. MPFree must never write them before Tier 3.
 
 ## Testing another OS without touching the existing one
 
-These options boot a non-Akai kernel while leaving every eMMC byte
-untouched. A power-cycle returns the stock OS. All three still need to be checked on this
-unit, in order of increasing effort:
+Options 1, 2 and 4 boot a non-Akai kernel while leaving every eMMC byte
+untouched; a power-cycle returns the stock OS. Option 3 does not. Listed in order of
+increasing effort:
 
 1. **kexec from the running stock Linux. Available:** the vendor kernel has
    `CONFIG_KEXEC=y` and `CONFIG_KEXEC_FILE=y`, and `/usr/sbin/kexec` is installed. It can load our kernel and initramfs into
    RAM and jump to it. There are no eMMC writes, and a reboot returns to stock. Risk: drivers left
    in odd states by the first kernel. `--boot-map` reports kexec support.
-2. **U-Boot scanning removable media.** If the vendor U-Boot environment
-   (`p2`) already checks SD/USB for `extlinux.conf` or `boot.scr` before eMMC
-   (generic distro boot), an SD card alone boots our OS. `--boot-map` prints
-   the environment as text.
-3. **MaskROM RAM boot.** `rkdeveloptool db` loads a Rockchip loader into RAM
+2. **Fastboot RAM boot (to evaluate).** Update Mode is U-Boot fastboot. Many
+   U-Boot fastboot builds accept `fastboot boot <image>`, which loads a kernel into
+   RAM and boots it without flashing. Whether Akai's build allows this is unknown.
+   The first step would be only `fastboot getvar all` (read-only) while in
+   Update Mode, with Akai's desktop updater closed. No `flash`, `erase`,
+   `oem` or `format` command is ever part of this.
+3. **SD-card boot. Not available without a write:** U-Boot scans the eMMC
+   before the SD slot (`boot_targets=mmc0 mmc1`), so an SD card is booted only if
+   the eMMC boot fails. Making the SD card boot first needs a `p2` write, which is Tier 3.
+4. **MaskROM RAM boot.** `rkdeveloptool db` loads a Rockchip loader into RAM
    over USB without writing flash. From there a RAM-loaded U-Boot can boot
    our kernel. This is also the Tier 3 recovery path, so proving it pays twice.
 
@@ -120,7 +123,7 @@ Policy:
 
 Steps 1–5 are read-only or offline. Step 6 changes device state and needs the owner's go-ahead.
 
-1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). Re-run the revised version to capture the U-Boot environment and `boot.scr` text that the first run missed.
+1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). The second run captured the U-Boot environment and boot script.
 2. Copy `/opt/ramfs-update.squashfs` to the workstation (a read on the device), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.

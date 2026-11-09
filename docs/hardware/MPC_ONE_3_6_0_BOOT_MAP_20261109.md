@@ -46,12 +46,73 @@ there means something wrote boot-critical storage.
 `/boot` on `p6` holds `zImage-6.6.95-az01-2025-06-27-rt55` (5.6 MiB), a 535-byte
 U-Boot script `boot.scr.uimg`, and 15 board DTBs (`rk3288-az01-*`,
 `rk3288-az05-*`). There is no separate kernel partition. **Confirmed:** U-Boot loads
-the kernel from `p6`. **Still an inference:** Akai's Update Mode also depends on
-`p6`. The script's text (printed by the revised `--boot-map`) should settle this.
+the kernel from `p6`. Update Mode does **not** depend on `p6`. It lives in U-Boot
+(see the next section).
 
 Kernel command line: `root=PARTUUID=… rootwait ro rfkill.default_state=0 fsck.repair=yes isolcpus=2-3`.
 Device tree: model `Akai Professional MPC One`, compatible
 `inmusic,acva inmusic,az01 rockchip,rk3288`.
+
+## U-Boot environment and boot flow (second run, 22:13 UTC)
+
+Raw report SHA-256 of the second run:
+`cfb92f8d1dd8af0a2d50b96c276c2f2d57852e9b2d2d62ce7956fc3f605342db`. All hashes
+matched the first run, and `p1`–`p6` again showed zero sectors written. The raw
+`p2` read and `fw_printenv` agree. `ethaddr` and `serial#` are redacted, and
+partition UUIDs are left out here.
+
+```text
+bootcmd=run az01_bootcmd
+az01_bootcmd=if test x${dorecovery} = x1; then run az01_recovercmd; fi;
+             run distro_bootcmd; echo 'Boot failed, resetting to bootloader...'; reset_bootloader
+az01_recovercmd=echo 'Starting fastboot...'; fastboot 0
+boot_targets=mmc0 mmc1
+boot_prefixes=/ /boot/
+boot_scripts=boot.scr.uimg boot.scr
+fastboot.partition-type:{rootfs,content,data}=ext4
+bootdelay=0   stdin=serial,gpio-keys   stdout=serial (DT: serial2 115200n8)
+partitions=<full GPT template: uboot-spl, env, uboot, splash, recoverysplash,
+            rootfs (bootable), content, data>
+```
+
+`/boot/boot.scr.uimg` loads `zImage` and `${fdtfile}` from the same
+partition. It applies `rk3288-az01b.dtbo` only when `board_name=az01b` (here it
+is `az01`), appends `fsck.repair=yes`, and runs `bootz`. `fdtfile` and
+`dorecovery` are not stored in the environment, so U-Boot's board code sets
+them at runtime (inference).
+
+What this establishes:
+
+1. **Akai's Update Mode is U-Boot fastboot, stored in `p1`/`p3`.** When
+   `dorecovery=1` (most likely set by the documented button combination),
+   U-Boot runs `fastboot 0` before it touches `p6`. The fastboot partition types
+   name `rootfs`, `content` and `data`. **So a damaged or unbootable `p6` can
+   still be reflashed by Akai's updater, as long as `p1`–`p3` are intact.**
+   This corrects the earlier inference that Update Mode depended on `p6`.
+2. **Boot order is eMMC first, then the SD slot.** `distro_bootcmd` scans `mmc0`
+   (eMMC) and then `mmc1`. The Linux DT aliases map `mmc1` to the SD
+   controller `dwmmc@ff0c0000`; U-Boot's numbering is assumed to match.
+   On each device it checks `extlinux/extlinux.conf`, then `boot.scr.uimg`,
+   under `/` and `/boot/`. A healthy eMMC always wins, so **an SD card is only
+   booted if the eMMC boot fails.** Making the SD card boot first would need an
+   environment write (Tier 3).
+3. **When every target fails, U-Boot calls `reset_bootloader`** rather than
+   hanging. What that command does on this board is not known.
+4. **The bootloader carries a full GPT template** (`partitions=`), which is what
+   `gpt write` and fastboot use. This suggests the partition table itself can be
+   rebuilt from Update Mode (inference).
+5. **The serial console runs on UART2 at 115200 baud**, but `bootdelay=0`. A
+   UART header on the board, if one exists, would give a non-destructive
+   U-Boot and kernel console.
+
+### Loader headers
+
+- `p1` / whole-disk sector 64 starts `3b 8c dc fc be 9f 9d 51 eb 30 34 ce 24 51 1f 98`.
+  That is the standard RC4-scrambled Rockchip ID-block header, so a normal
+  Rockchip idbloader sits at sector 64.
+- `p3` starts `27 05 19 56`, the legacy U-Boot uImage magic, so U-Boot proper is
+  stored as a uImage.
+- `boot0`/`boot1`: zeros.
 
 ## kexec is available (zero-eMMC-write path to another kernel)
 
@@ -67,8 +128,10 @@ gives us the exact vendor kernel config to start an MPFree kernel from.
 controller, the one the boot ROM uses for MaskROM. It is configured
 `dr_mode = peripheral`, status `okay`, and the UDC is `not attached`. The other DWC2
 (`ff540000`) runs as a host. **Inference:** the USB-B port on the back is wired
-to the OTG controller, which makes it the MaskROM port. This needs physical
-confirmation.
+to the OTG controller, which makes it the MaskROM port. This is now stronger:
+Akai's Update Mode is U-Boot `fastboot 0`, which runs over a USB device-mode
+controller, and the desktop updater connects through the USB-B port. Physical
+confirmation is still needed.
 
 ## Update path
 
@@ -79,7 +142,7 @@ confirmation.
   `xmos-update.service` (`xmosdfu --auto`, only when no I²S sound node exists).
   An MPFree distribution must keep or deliberately replace these.
 
-## Survey defects fixed after this run
+## Survey defects found in the first run (fixed, confirmed by the second run)
 
 - BusyBox `od` on az0x has no `-A`/`-t`. Loader bytes and the squashfs magic
   printed usage errors. Fixed to use `od -x`/`od -c`.
