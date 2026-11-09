@@ -1,0 +1,14 @@
+# Do not commit locally imported or extracted content.
+content/
+imports/
+factory-content/
+*.img
+*.iso
+*.xpn
+*.xpk
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
