@@ -44,11 +44,17 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
+      - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends busybox
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'
@@ -67,6 +73,7 @@ jobs:
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-boot-map.sh"),
+              Path("tools/mpc-one/read-only-backup-preflight.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
           ]
           prohibited = (
@@ -103,6 +110,23 @@ jobs:
           assert '"--process-map")' in wrapper
           assert '"--touchscreen")' in wrapper
           assert '"--boot-map")' in wrapper
+          assert '"--backup")' in wrapper
+          # The backup must only read on the MPC: fixed remote commands, dd input only.
+          import sys
+          sys.path.insert(0, "tools/mpc-one")
+          import host_emmc_backup as backup
+          assert set(backup.PREFLIGHT_COMMANDS.values()) == {"sh -s hash", "sh -s stat"}
+          for cmd in backup.STREAM_COMMANDS.values():
+              assert re.fullmatch(r"dd if=/dev/mmcblk0(?:boot[01])? bs=1048576", cmd), cmd
+          helper_exec = "\n".join(line for line in Path("tools/mpc-one/host_emmc_backup.py").read_text().splitlines()
+                                   if not line.lstrip().startswith("#"))
+          assert not re.search(r"\bof\s*=", helper_exec), "backup helper must not name a dd output file"
+          preflight = Path("tools/mpc-one/read-only-backup-preflight.sh").read_text()
+          preflight_exec = [line for line in preflight.splitlines() if not line.lstrip().startswith("#")]
+          for line in preflight_exec:
+              assert ">" not in line.replace("2>/dev/null", ""), f"backup preflight redirects output: {line}"
+              for forbidden in ("mount", "sync", "fsfreeze", "blockdev", "hdparm", "mmc ", "fw_setenv", "tee", "rm ", "mv ", "cp "):
+                  assert forbidden not in line, f"backup preflight must stay read-only: {forbidden}"
           bootmap = Path("tools/mpc-one/read-only-boot-map.sh").read_text()
           bootmap_exec = "\n".join(line for line in bootmap.splitlines() if not line.lstrip().startswith("#"))
           for forbidden in ("kexec -l", "kexec -e", "fw_setenv", "mount ", "systemctl start", "rkdeveloptool", "unsquashfs"):

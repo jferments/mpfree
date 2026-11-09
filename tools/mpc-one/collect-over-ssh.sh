@@ -28,6 +28,7 @@ case "${1:-}" in
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
   "--boot-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-boot-map.sh"; REPORT_KIND="mpc-one-boot-map" ;;
+  "--backup") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-emmc-backup" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
   "--ram-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-execution" ;;
@@ -38,12 +39,14 @@ case "${1:-}" in
   "--touch-axes-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-preflight" ;;
   "--touch-axes") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 MPC_REPORT_DIR="${MPC_REPORT_DIR:-$REPO_ROOT/research}"
+MPC_BACKUP_DIR="${MPC_BACKUP_DIR:-$REPO_ROOT/research/backups}"
+BACKUP_BASELINE="$SCRIPT_DIR/baselines/mpc-one-3.6.0-reference.txt"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 command -v ip >/dev/null 2>&1 || die 'iproute2 not installed on workstation'
@@ -67,6 +70,12 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
         "${MPFREE_ACCEPT_TOUCH_AXES:-}" != 'YES' ) ]]; then
     die 'M10 dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_TOUCH_AXES=YES bash tools/mpc-one/collect-over-ssh.sh --touch-axes'
   fi
+elif [[ "${1:-}" == "--backup" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required for --backup on workstation'
+  for helper in host_emmc_backup.py read-only-backup-preflight.sh; do
+    [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing backup helper: $helper"
+  done
+  [[ -r "$BACKUP_BASELINE" ]] || die "missing backup baseline: $BACKUP_BASELINE"
 elif [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
@@ -178,6 +187,8 @@ REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXX
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
 if [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
+elif [[ "${1:-}" == "--backup" ]]; then
+  echo "READ-ONLY on the MPC: full eMMC backup. Log: $REPORT"
 elif [[ "${1:-}" == "--touch-axes-check" ]]; then
   echo "READ-ONLY M10 exact MPC/ILI2117/ARM ABI preflight (NO upload): $REPORT"
 elif [[ "${1:-}" == "--touch-axes" ]]; then
@@ -209,6 +220,20 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
     exit 1
   fi
   sed -n '1,85p' "$REPORT"
+elif [[ "${1:-}" == "--backup" ]]; then
+  echo "Copies the whole eMMC (about 7.3 GiB) and both boot areas into a new folder under $MPC_BACKUP_DIR."
+  echo "The MPC only reads. Expect roughly 10 minutes; keep the MPC idle (no playback or recording)."
+  tool_version="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  backup_rc=0
+  timeout 7200 python3 "$SCRIPT_DIR/host_emmc_backup.py" \
+    --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+    --out-root "$MPC_BACKUP_DIR" --baseline "$BACKUP_BASELINE" \
+    --preflight-script "$SCRIPT_DIR/read-only-backup-preflight.sh" \
+    --tool-version "$tool_version" 2>&1 | tee "$REPORT" || backup_rc=$?
+  if (( backup_rc != 0 )); then
+    echo "Backup did not finish cleanly (status $backup_rc). Log: $REPORT" >&2
+    exit "$backup_rc"
+  fi
 elif [[ "${1:-}" == "--netbench" ]]; then
   echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
   echo "Avoid running while recording/playing; it may briefly load the MPC CPU and network."
