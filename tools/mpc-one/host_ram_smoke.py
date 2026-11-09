@@ -195,7 +195,7 @@ ulimit -f 0
 ulimit -t 3
 # Refuse to run if the inherited SSH scheduling policy is real-time.
 # awk reads its own proc stat after inheriting the shell's scheduler policy.
-policy="$(awk '{{sub(/^.*\) /, ""); if (NF >= 39) print $39; else print "unavailable"}}' /proc/self/stat)"
+policy="$(awk '{{sub(/^.*\\) /, ""); if (NF >= 39) print $39; else print "unavailable"}}' /proc/self/stat)"
 test "$policy" = "0"
 printf 'STAGE=EXECUTE_RUST\n'
 "$stage/probe" --self-test
