@@ -31,6 +31,7 @@ Start here for reproducible hardware/firmware development:
 - [Reversible factory application handoff investigation](docs/engineering/REVERSIBLE_HANDOFF.md) — read-only systemd/resource preflight and independent recovery/watchdog prerequisite matrix; **does not stop factory app**.
 - [Verified az0x ABI and factory handoff report (sanitized)](docs/hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md) — real owner-run ABI/service data, CPU affinity and ~1 GiB locked process memory, with source SHA-256 fingerprints; raw device reports excluded.
 - [Safe Rust handoff state-machine simulator](rust/mpfree-handoff-model/src/lib.rs) — guarded stock/MPFree transition model, mocked watchdog/crash/recovery failure tests; **no systemd, files, PCM or hardware calls**.
+- [Hardware ownership strategy: independent MPFree Linux userspace first](docs/engineering/HARDWARE_OWNERSHIP_STRATEGY.md) — distinguishes factory application RSS from OS overhead and core affinity from real CPU utilization, with staged RAM-only tests, restore-before-stop gates and eventual optional custom rootfs.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -165,6 +166,25 @@ bash tools/mpc-one/collect-over-ssh.sh --rtthreads
 ~~~
 
 The SSH tools are passive/read-only and still enforce the exact lab Ethernet/ARP/device/host-key gates. Redact report identifiers before sharing. **Do not run a real service handoff yet; independent unbootable-device recovery is unproven.**
+
+### Recovering the device's RAM and CPU without immediately replacing its OS
+
+Owner-run reports identify a **~995 MiB factory application resident footprint** (roughly **992 MiB locked**) on a device with ~1,970 MiB Linux RAM. This is primarily **factory user-application memory, not an OS kernel reservation**. The factory application pins audio workers across CPUs 0–3 and the main `Audio Processing` thread to CPU3; `isolcpus=2-3` means scheduler isolation, **not** cores lost to Linux.
+
+Our strategy is to **replace factory application/userspace first**, preserving the proven PREEMPT_RT kernel and ACVA/MIDI/DRM/input drivers until independent boot recovery and alternative hardware support are demonstrated. A true MPFree-owned Linux distribution remains a possible longer-term goal.
+
+Read the [resource/accounting and OS ownership roadmap](docs/engineering/HARDWARE_OWNERSHIP_STRATEGY.md). New passive `--capacity` reports actual CPU counter deltas, private/proportional memory when available, and pressure counters without stopping services, while updated `--rtthreads` now reports per-task scheduling policy/RT priority from kernel `stat`:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash tools/mpc-one/collect-over-ssh.sh --capacity
+python3 tools/mpc-one/analyze-capacity.py "$(ls -t research/mpc-one-capacity-*.txt | head -n 1)"
+bash tools/mpc-one/collect-over-ssh.sh --rtthreads
+~~~
+
+These operations are research-only; **no factory services or device owners are changed**. Any stock-app handoff remains blocked until independent full factory recovery is proven.
 
 ### Architecture and project milestones
 
