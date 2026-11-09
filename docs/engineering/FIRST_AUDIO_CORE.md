@@ -80,6 +80,27 @@ Existing `.github/workflows/mpc-inventory.yml` now builds the core on GitHub-hos
 
 **CI status must be checked for the final PR commit.** A successful build of the desktop implementation is *not* validation of the MPC backend.
 
+## Verified physical developer workstation acceptance (2026-11-08 Pacific / 2026-11-09 UTC)
+
+The owner built the current `bootstrap/architecture-and-hardware-survey` branch **on ML-tower**, using GNU C++ **15.2.0** with a Release CMake build. This is a real developer-run check, independent of GitHub CI:
+
+~~~text
+[100%] Built target mpfree-core-test
+[100%] Built target mpfree-render
+1/2 Test #1: core-click-engine ........ Passed
+2/2 Test #2: desktop-render-smoke ..... Passed
+100% tests passed, 0 tests failed out of 2
+Rendered 176400 frames; 8 beat triggers; 44,100 Hz stereo S32_LE WAV: /tmp/mpfree-metronome.wav
+/tmp/mpfree-metronome.wav: RIFF (little-endian) data, WAVE audio,
+  Microsoft PCM, 32 bit, stereo 44100 Hz
+~~~
+
+The user separately confirmed the four-second WAV **played back successfully** through their workstation's ordinary audio system. This validates build, offline PCM serialization and audible output on desktop, **not** realtime playback on MPC hardware or latency under load.
+
+At 120 BPM there are 2 beat triggers per second, so 4 seconds contain **8 triggers**, with frames `0, 22050, 44100, ... 154350`. At 44.1 kHz, 4 seconds = `176400` frames. These are deterministic expected values, not subjective sound quality benchmarks.
+
+Next milestone can proceed in parallel: expand host-only audio sequencing while investigating MPC Ethernet/USB offload potential via [auxiliary compute and interface survey](AUXILIARY_COMPUTE_AND_IO.md). Neither requires modifying the stock MPC services.
+
 ## Roadmap from M0
 
 | Milestone | Output | Preconditions |
