@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: hardware discovery plus desktop-testable Rust metronome and 16-step groove/sampler prototypes.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
+**Status: hardware discovery plus desktop-testable Rust metronome, step sequencer, bounded WAV sampler and network-audio packet prototypes.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
 
 ## Vision
 
@@ -26,6 +26,9 @@ Start here for reproducible hardware/firmware development:
 - [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — original C++17 metronome and WAV proof of concept, retained for regression.
 - [Rust M1 metronome parity and ARMv7 cross-build](docs/engineering/RUST_M1_PARITY.md) — **implemented** std-only Rust engine and WAV renderer, C++/Rust parity at 120/109/137.2 BPM, and verified ARM EABI5 hard-float cross-build; no MPC deployment.
 - [Rust M2: 16-step sequencer and 16-voice groove sampler](docs/engineering/RUST_M2_GROOVE.md) — independent deterministic step scheduling, precompiled note events, synthetic kick/snare/hat one-shots, finite voice pool, offline WAV demo and regression tests; still no MPC hardware access.
+- [Rust M3: bounded PCM packet codec and user-WAV sampler](docs/engineering/RUST_M3_NETWORK_SAMPLER.md) — Rust port of Python MPF1 protocol, jitter/deadline model, bounded 64-MiB total sample bank, velocity/note-off, offline preview and CI tests. No real sockets or MPC playback.
+- [ARMv7 target userspace ABI survey and local comparator](docs/engineering/ARMV7_USERSPACE_COMPATIBILITY.md) — read-only libc/loader/library probe and host-only ELF/glibc requirement checker; target compatibility remains unverified.
+- [Reversible factory application handoff investigation](docs/engineering/REVERSIBLE_HANDOFF.md) — read-only systemd/resource preflight and independent recovery/watchdog prerequisite matrix; **does not stop factory app**.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -116,6 +119,31 @@ xdg-open /tmp/mpfree-groove.wav
 ~~~
 
 Expected duration: 4 seconds, 176,400 frames, 24 scheduled drum events and stereo 44.1-kHz S32_LE PCM WAV. The precise [M2 architecture and safety limits](docs/engineering/RUST_M2_GROOVE.md) are documented. This **does not** run or install anything on the MPC.
+
+### M3: real WAV samples, Rust network framing and safe MPC preflight
+
+The Rust workspace now includes `mpfree-sampler` (bounded, setup-time WAV PCM16/24/32/float32 decoding, note mapping, velocity, 16 voices and 64 MiB aggregate sample budget) and `mpfree-network` (Python-compatible 28-byte `MPF1` header, MTU checks, reordering/late-packet handling and bounded playout). **Neither opens actual MPC devices, and the network model does not open sockets.**
+
+To preview your own 44.1-kHz WAV on ML-tower:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+./rust/target/release/mpfree-sampler /path/to/owned-sample.wav /tmp/mpfree-preview.wav
+xdg-open /tmp/mpfree-preview.wav
+~~~
+
+To inspect the MPC's real az0x library ABI and service dependency/rollback requirements **without stopping anything** (same existing owner-verified Ethernet identity guard and temporary RAM SSH bootstrap):
+
+~~~sh
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash tools/mpc-one/collect-over-ssh.sh --abi
+bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
+~~~
+
+Attach the generated locally ignored `research/mpc-one-abi-*.txt` and `research/mpc-one-handoff-preflight-*.txt` for evaluation after checking for private identifiers. **Reversible handoff is research-only; independent recovery has NOT been proven.** See [M3 design](docs/engineering/RUST_M3_NETWORK_SAMPLER.md).
 
 ### Architecture and project milestones
 
