@@ -265,10 +265,10 @@ mod tests {
     fn bounded_reordering_loss_and_duplicates() {
         let mut recv = BoundedPlayout::new(19,2,128,8,0).unwrap();
         let a = test_payload(0); let b = test_payload(1); let c = test_payload(2);
-        let mk = |seq, frame, payload: &'_ [u8]| AudioPacket {
-            stream_id: 19, sequence: seq, start_frame: frame,
-            frames: 128, channels: 2, payload
-        };
+        fn mk(seq: u32, frame: u64, payload: &[u8]) -> AudioPacket<'_> {
+            AudioPacket {stream_id: 19, sequence: seq, start_frame: frame,
+                frames: 128, channels: 2, payload}
+        }
         assert_eq!(recv.ingest(&mk(2, 256, &c)), IngestResult::Accepted);
         assert_eq!(recv.ingest(&mk(0, 0, &a)), IngestResult::Accepted);
         assert_eq!(recv.ingest(&mk(0, 0, &a)), IngestResult::Duplicate);
