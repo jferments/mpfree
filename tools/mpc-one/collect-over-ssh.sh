@@ -21,8 +21,10 @@ case "${1:-}" in
   "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
   "--runtime") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-runtime.sh"; REPORT_KIND="mpc-one-runtime" ;;
   "--io") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-io.sh"; REPORT_KIND="mpc-one-io" ;;
+  "--abi") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-abi.sh"; REPORT_KIND="mpc-one-abi" ;;
+  "--handoff-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-handoff-preflight.sh"; REPORT_KIND="mpc-one-handoff-preflight" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
