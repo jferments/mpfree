@@ -13,6 +13,9 @@ This is a proposal, not a promise of parity or a timeline.
 - [x] **M4 host-only safety:** no-unsafe pure Rust handoff/watchdog state-machine simulation with gates for recovery/owner consent; CI tests crash/cancel/timeout/restore failure. **No actual systemd or device-control backend exists.**
 - [ ] **M4 MPC next passive probes:** re-run fixed `--rtthreads` to read per-task SCHED policy/RT priority from `/proc/task/stat`; run two-second read-only `--capacity` at idle and under ordinary playback to quantify real CPU/memory pressure.
 - [ ] **M4 actual recovery:** independent eMMC/boot restore **unproven**, real stock unit stop/restart/handoff prohibited until separately owner-approved and simulated.
+- [x] **M5 host build/tooling:** first standalone Rust `mpfree-device-smoke` (4,096 frames in memory, zero device opens), exact-on-device ABI/ELF preflight, opt-in `/run`-only execution harness with hash, timeout and cleanup. **Host CI checks are required; execution on physical MPC remains owner-run and unverified.**
+- [ ] **M5 actual ARM execution:** owner runs `--ram-smoke-check` then explicitly opts into `--ram-smoke` after reviewing reports; verify factory app remains active, no persistent writes, and clean exit.
+- [ ] **M6 independent MPFree headless app:** live typed engine/transport/null-audio adapter + bounded event loop alongside stock MPC; later exclusive audio resource handoff remains blocked on independent recovery.
 - [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
 - [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
 - [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate).
