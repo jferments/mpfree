@@ -95,6 +95,6 @@ Prioritize low menu depth, immediate physical control, reliable audio, reversibl
 
 - Engine language: **DECIDED — Rust-first**, retaining C/C++ compatibility adapters for established instruments, DSP and plugin hosting; see [ADR-0001](engineering/ADR-0001-RUST-FIRST-HYBRID.md). Hardware real-time performance remains unqualified.
 - UI: Qt Quick vs SDL or other lightweight renderer.
-- Audio: ALSA direct vs JACK/PipeWire (measure on device).
+- Audio: **DECIDED — direct ALSA on the device**, with JACK/PipeWire/CPAL as desktop backends behind an `AudioDevice` trait; see [ADR-0002](engineering/ADR-0002-DIRECT-ALSA-AUDIO.md). On-device xrun and latency qualification still pending.
 - Licensing: GPL-3.0-or-later, MPL-2.0, or other approved FOSS license.
 - Plugin API: LV2, CLAP, custom internal graph, or combination; hardware and licensing constraints apply.
