@@ -38,6 +38,8 @@ jobs:
           sh -n tools/mpc-one/read-only-io.sh
           sh -n tools/mpc-one/read-only-abi.sh
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
+          sh -n tools/mpc-one/read-only-process-map.sh
+          sh -n tools/mpc-one/read-only-touchscreen.sh
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
@@ -57,6 +59,8 @@ jobs:
               Path("tools/mpc-one/read-only-io.sh"),
               Path("tools/mpc-one/read-only-abi.sh"),
               Path("tools/mpc-one/read-only-handoff-preflight.sh"),
+              Path("tools/mpc-one/read-only-process-map.sh"),
+              Path("tools/mpc-one/read-only-touchscreen.sh"),
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
@@ -92,6 +96,28 @@ jobs:
           assert '"--runtime")' in wrapper
           assert '"--abi")' in wrapper
           assert '"--handoff-preflight")' in wrapper
+          assert '"--process-map")' in wrapper
+          assert '"--touchscreen")' in wrapper
+          procmap=Path("tools/mpc-one/read-only-process-map.sh").read_text()
+          assert 'systemctl show "$unit"' in procmap
+          assert 'systemctl list-units --type=service' in procmap
+          assert 'readlink "$fd"' in procmap
+          assert 'readlink "$proc/exe"' in procmap
+          assert '/proc/[0-9]*' in procmap
+          assert '/proc/"$pid"/task/[0-9]*' in procmap
+          assert '/proc/$pid/environ' not in procmap
+          assert '/proc/$pid/cmdline' not in procmap
+          touch=Path("tools/mpc-one/read-only-touchscreen.sh").read_text()
+          assert '/sys/bus/i2c/devices/4-0026' in touch
+          assert '/sys/class/input/event*/device' in touch
+          assert '/sys/class/drm/card0-DSI-1' in touch
+          assert '/sys/class/graphics/fb0' in touch
+          assert '/proc/bus/input/devices' in touch
+          assert 'readlink "$fd"' in touch
+          assert '/dev/input/event0' not in "\n".join(
+              line for line in touch.splitlines()
+              if not line.lstrip().startswith("#")
+          )
           assert '"--rtthreads")' in wrapper
           assert '"--capacity")' in wrapper
           assert '"--ram-smoke-env")' in wrapper
