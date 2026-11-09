@@ -16,7 +16,7 @@ This repository does **not** yet contain a working MPC replacement application o
 | M9–M10 | ILI2117 touch metadata: X/Y 0..=2048, 10 multitouch slots, read-only | Physical MPC |
 | GPU | Surfaceless EGL/GLES 3.1 on Panfrost (Mali-T760), offscreen only | Physical MPC |
 | M11 | Type-B multitouch decoder, pointer mapping and gesture model | Workstation and CI (synthetic events) |
-| M12 | Read-only 60 s touch capture tool and orientation analyzer (implemented, owner run pending) | Workstation and CI; MPC run pending |
+| M12 | Read-only, step-by-step touch capture tool and orientation analyzer (implemented, owner run pending) | Workstation and CI; MPC run pending |
 
 Not done yet: real ALSA playback, live touch events and their orientation, DRM display presentation, controller (pad/button/encoder) input, and a proven recovery path for the factory system. See the [roadmap](docs/ROADMAP.md) for gates and the [development log](docs/DEVELOPMENT_LOG.md) for the history.
 
@@ -78,7 +78,7 @@ Hardware evidence and engineering notes, roughly in the order they were produced
 - [M10 verified physical ILI2117 touch-axis metadata](docs/hardware/MPC_ONE_ILI2117_EVIOCGABS_VALIDATED_20261109.md) — owner-run double-opt-in read-only query passed on original MPC One: **X/Y=0..=2048, multitouch slots=10**, no events or grab; physical orientation remains unmeasured.
 - [M10 guarded read-only ILI2117 launcher and acceptance runbook](docs/engineering/M10_GUARDED_TOUCH_AXES.md) — exact identity/ABI/sysfs and SHA preflight, RAM-only inspection and 5s watchdog; service-active is not proof of complete factory functionality.
 - [M11 host-only multitouch decoder, pointer mapping and gestures](docs/engineering/M11_MULTITOUCH_DECODER.md) — Type-B slot/tracking-id decoding with SYN_REPORT frames and SYN_DROPPED resync, all eight swap/flip orientations, and tap/drag/long-press/two-finger recognition, tested against synthetic event streams only.
-- [M12 live touch capture and orientation calibration](docs/engineering/M12_TOUCH_CAPTURE.md) — non-grabbing, read-only, RAM-only 60 s `event0` capture with eMMC write-counter checks, plus a host analyzer that recovers all 8 orientations from synthetic captures. **Owner run pending.**
+- [M12 live touch capture and orientation calibration](docs/engineering/M12_TOUCH_CAPTURE.md) — non-grabbing, read-only, RAM-only `event0` capture, one 9 s run per touch step after you press Enter, with eMMC write-counter checks, plus a host analyzer that recovers all 8 orientations from synthetic captures. **Owner run pending.**
 - [Physical Panfrost/Mali-T760 EGL/GLES offscreen GPU qualification](docs/engineering/GPU_PANFROST_OFFSCREEN_20261109.md) — independently demonstrated surfaceless GLES 3.1 rendering on original MPC with Akai active (800×480 benchmark, p99 2.742ms); **not** real LCD/KMS presentation.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Accepted audio backend ADR: direct ALSA on the MPC One](docs/engineering/ADR-0002-DIRECT-ALSA-AUDIO.md) — the engine owns the ACVA PCM; JACK/PipeWire only as desktop or optional backends.

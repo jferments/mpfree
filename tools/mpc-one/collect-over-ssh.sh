@@ -40,7 +40,7 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in 60 s read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -201,7 +201,7 @@ elif [[ "${1:-}" == "--touch-axes-check" ]]; then
 elif [[ "${1:-}" == "--touch-capture-check" ]]; then
   echo "READ-ONLY M12 MPC/ILI2117/ARM ABI preflight (NO upload): $REPORT"
 elif [[ "${1:-}" == "--touch-capture" ]]; then
-  echo "OWNER DOUBLE OPT-IN: 60 s read-only touch capture from /run: $REPORT"
+  echo "OWNER DOUBLE OPT-IN: step-by-step read-only touch capture from /run: $REPORT"
 elif [[ "${1:-}" == "--touch-axes" ]]; then
   echo "OWNER DOUBLE OPT-IN: volatile M10 metadata-only EVIOCGABS /run: $REPORT"
 elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--headless-check" || "${1:-}" == "--session-check" ]]; then
@@ -244,9 +244,11 @@ elif [[ "${1:-}" == "--touch-capture-check" || "${1:-}" == "--touch-capture" ]];
   if [[ "${1:-}" == "--touch-capture" ]]; then
     capture_args+=(--execute)
   fi
-  # Not redirected: the touch prompts must reach the terminal. The helper
-  # writes the same lines to $REPORT itself.
-  if ! timeout 260 python3 "$SCRIPT_DIR/host_touch_capture.py" "${capture_args[@]}" \
+  # Not redirected: the touch prompts and Enter key must reach the terminal.
+  # The helper writes the same lines to $REPORT itself. --foreground keeps
+  # the helper in the terminal's process group so it can read Enter and gets
+  # Ctrl-C; 1800 s is an overall ceiling while the owner works through steps.
+  if ! timeout --foreground 1800 python3 "$SCRIPT_DIR/host_touch_capture.py" "${capture_args[@]}" \
       2> >(tee -a "$REPORT" >&2); then
     echo "M12 touch capture failed/blocked; PRIVATE report: $REPORT" >&2
     exit 1

@@ -29,6 +29,13 @@ for name in uboot-spl env uboot splash recoverysplash rootfs; do
     "/sys/class/block/mmcblk0p$n/stat"
   n=$((n + 1))
 done
+# Count leftover stage folders from an interrupted run (RAM only; listed,
+# never touched).
+stale=0
+for d in /run/mpfree-touch-capture.*; do
+  if [ -e "$d" ]; then stale=$((stale + 1)); fi
+done
+printf 'stale_stage_dirs=%s\n' "$stale"
 printf 'touch_driver=ili2117\n'
 printf 'touch_event=event0\n'
 printf 'factory_service_active=active\n'
