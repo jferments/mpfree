@@ -100,6 +100,29 @@ The `--detail` mode uses the *same strict SSH host-key, wired interface, route a
 
 The report is written locally under `research/mpc-one-detail-<timestamp>-<random>.txt`, with a companion SHA-256 file. Always review/redact report contents before posting or uploading anywhere. The original baseline report **contained a private hardware serial** and is **not** stored in Git.
 
+### Verified second survey and next audio/thread probe
+
+The focused collector **succeeded** at approximately `2026-11-09 05:21:06 UTC`. Its owner-local report SHA-256 is `d25be98aea6e90cc0328c0af4d29c505106dcd26704da7dc1f6f5bd59cec317e`. See [redacted service and hardware resource map](MPC_ONE_3_6_0_RESOURCES_20261109.md): `acvs.service` owns ALSA PCM playback and capture, raw MIDI and sequencer, DRM card0, touchscreen event0 and gpio-keys event1; GPU identifies as Panfrost/Mali-T760 compatible; native DSI mode is 800x1280. The uploaded raw report remains **off-GitHub**.
+
+**Known probe bug fixed:** BusyBox rejected `head -c` and `od -An` while reading the 64-byte ELF header. The corrected probe uses a read-only `dd if=/usr/bin/MPC bs=64 count=1 | od -b` command to inspect only a header, not copy a vendor executable. This fix is not evidence that the ELF header was successfully captured yet.
+
+The follow-up `--runtime` script reads ALSA's **current** PCM `hw_params` and `sw_params` from procfs, the actual factory process's thread scheduling fields, the main process's memory `VmLck`, USB MIDI interface class metadata, and the first 64 bytes of its ELF header. It does **not** open device handles, alter sample rates, stop applications, control buttons or MIDI, change mixer settings, or write to the MPC.
+
+Run these **exact commands on ML-tower** with the established link:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash -n tools/mpc-one/collect-over-ssh.sh
+sh -n tools/mpc-one/read-only-runtime.sh
+bash tools/mpc-one/collect-over-ssh.sh --runtime
+~~~
+
+Local output: `research/mpc-one-runtime-<UTC-timestamp>-<suffix>.txt` and `.txt.sha256`.
+
+**Do not confuse these data sources:** procfs `hw_params` describes the **currently configured** PCM stream while it is open, not the driver's complete supported rate/format matrix. The thread policy snapshot likewise describes only the present firmware runtime, not a promised realtime configuration on every device.
+
 ### Execute the automated read-only inventory
 
 This repository contains:
