@@ -38,9 +38,59 @@ case "$route" in
 esac
 ping -I "$MPC_IFACE" -c 1 -W 2 "$MPC_IP" >/dev/null || die 'MPC does not answer direct-interface ICMP'
 
-found_mac="$(ip neigh show "$MPC_IP" dev "$MPC_IFACE" | awk '{print tolower($5)}')"
-if [[ "$found_mac" != "$MPC_EXPECT_MAC" ]]; then
-  die "Device identity mismatch: expected $MPC_EXPECT_MAC, observed <$(test -n "$found_mac" && printf '%s' "$found_mac" || printf 'none')>"
+# Keep the device identity gate: never silently accept missing neighbor data.
+# In Linux, ARP records can be absent/transient despite a successful ping.
+# Read both netlink and /proc/net/arp; safely refresh with bounded ICMP retries.
+# The parser checks exact IP + interface and finds "lladdr" by name, not $5.
+PARSER="$SCRIPT_DIR/lib/neighbor-identity.sh"
+[[ -r "$PARSER" ]] || die "Missing neighbor parser: $PARSER"
+# shellcheck source=lib/neighbor-identity.sh
+source "$PARSER"
+
+found_mac=""
+for attempt in 1 2 3 4; do
+  neighbor_lines="$(
+    {
+      ip -4 neigh show dev "$MPC_IFACE" || :
+      ip -4 neigh get "$MPC_IP" dev "$MPC_IFACE" || :
+    } 2>/dev/null
+  )"
+  netlink_mac="$(printf '%s\n' "$neighbor_lines" |
+    mpfree_mac_from_ip_neigh_lines "$MPC_IP" "$MPC_IFACE" | sort -u)"
+  proc_mac=""
+  if [[ -r /proc/net/arp ]]; then
+    proc_mac="$(mpfree_mac_from_proc_arp_lines "$MPC_IP" "$MPC_IFACE" < /proc/net/arp | sort -u)"
+  fi
+
+  if [[ -n "$netlink_mac" && -n "$proc_mac" && "$netlink_mac" != "$proc_mac" ]]; then
+    die "Conflicting neighbor identities for $MPC_IP on $MPC_IFACE: ip=$netlink_mac, proc=$proc_mac"
+  fi
+  found_mac="${netlink_mac:-$proc_mac}"
+  if [[ -n "$found_mac" ]]; then
+    break
+  fi
+  if (( attempt < 4 )); then
+    printf 'No complete ARP neighbor entry yet (attempt %s/4); refreshing with ICMP...\n' "$attempt" >&2
+    sleep 1
+    ping -I "$MPC_IFACE" -c 1 -W 2 "$MPC_IP" >/dev/null ||
+      die "MPC stopped responding on $MPC_IFACE during identity check"
+  fi
+done
+
+if [[ -z "$found_mac" ]]; then
+  printf 'Diagnostic ip-neigh output:\n' >&2
+  ip -4 neigh show dev "$MPC_IFACE" >&2 || true
+  printf 'Diagnostic /proc/net/arp record(s):\n' >&2
+  if [[ -r /proc/net/arp ]]; then
+    awk -v ip="$MPC_IP" -v dev="$MPC_IFACE" 'NR==1 || ($1==ip && $6==dev)' /proc/net/arp >&2
+  fi
+  die "No complete ARP/MAC identity for $MPC_IP on $MPC_IFACE (not a mismatched MAC). No SSH or MPC commands were run. Do not bypass the identity check."
+fi
+if [[ ! "$found_mac" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]; then
+  die "Unexpected MAC format from neighbor tables: $found_mac"
+fi
+if [[ "$found_mac" != "${MPC_EXPECT_MAC,,}" ]]; then
+  die "Device identity mismatch: expected ${MPC_EXPECT_MAC,,}, observed $found_mac"
 fi
 
 mkdir -p -- "$MPC_REPORT_DIR"
