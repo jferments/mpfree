@@ -18,6 +18,13 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-sampler"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]
+
+[[package]]
 name = "mpfree-render"
 version = "0.1.0"
 dependencies = [
