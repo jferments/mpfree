@@ -40,6 +40,7 @@ jobs:
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
           sh -n tools/mpc-one/read-only-process-map.sh
           sh -n tools/mpc-one/read-only-touchscreen.sh
+          sh -n tools/mpc-one/read-only-touch-axes-env.sh
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
@@ -61,6 +62,7 @@ jobs:
               Path("tools/mpc-one/read-only-handoff-preflight.sh"),
               Path("tools/mpc-one/read-only-process-map.sh"),
               Path("tools/mpc-one/read-only-touchscreen.sh"),
+              Path("tools/mpc-one/read-only-touch-axes-env.sh"),
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
@@ -127,6 +129,26 @@ jobs:
           assert '"--headless-smoke")' in wrapper
           assert '"--session-check")' in wrapper
           assert '"--session-smoke")' in wrapper
+          assert '"--touch-axes-check")' in wrapper
+          assert '"--touch-axes")' in wrapper
+          assert 'MPFREE_ACCEPT_TOUCH_AXES' in wrapper
+          assert 'host_touch_axes.py' in wrapper
+          touchcheck=Path("tools/mpc-one/read-only-touch-axes-env.sh").read_text()
+          assert 'ILI2117 Touchscreen' in touchcheck
+          assert '/sys/bus/i2c/devices/4-0026' in touchcheck
+          assert 'ioctl_performed=no' in touchcheck
+          assert 'systemctl stop' not in touchcheck
+          inspect_host=Path("tools/mpc-one/host_touch_axes.py").read_text()
+          assert 'verify_live_board(out)' in inspect_host
+          assert 'preflight_elf(' in inspect_host
+          assert 'check_remote_environment(env_out)' in inspect_host
+          assert 'verify_touch_preflight(touch_out)' in inspect_host
+          assert 'MPFREE_TOUCH_STAGE_SHA256_OK' in inspect_host
+          assert 'ulimit -t 3' in inspect_host
+          assert 'MPFREE_ACCEPT_TOUCH_IOCTL=YES' in inspect_host
+          assert 'WATCHDOG = "MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED"' in inspect_host
+          assert 'systemctl stop' not in inspect_host
+          assert 'os.kill(' not in inspect_host
           assert 'MPFREE_ACCEPT_SESSION_EXEC' in wrapper
           assert '/release/mpfree-session' in wrapper
           assert 'smoke_profile="session"' in wrapper
@@ -179,6 +201,10 @@ jobs:
           assert '#![forbid(unsafe_code)]' in touch_lib
           assert '#![deny(unsafe_op_in_unsafe_fn)]' in touch_main
           assert 'MPFREE_ACCEPT_TOUCH_IOCTL' in touch_main
+          assert 'MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED' in touch_main
+          assert 'arm_inspection_watchdog()?' in touch_main
+          assert 'event_device.components()' in touch_main
+          assert '/sys/bus/i2c/devices/4-0026/driver' in touch_main
           assert '/sys/class/input/event0/device/name' in touch_main
           assert '/sys/bus/i2c/devices/4-0026/name' in touch_main
           assert '.read(true)' in touch_main and '.open("/dev/input/event0")' in touch_main
@@ -548,6 +574,7 @@ jobs:
           assert touch.is_file() and touch.stat().st_size < 2 * 1024 * 1024
           assert b"MPFREE_TOUCH_ABS_METADATA_V1" in touch.read_bytes()
           assert b"MPFREE_TOUCH_METADATA_SELFTEST_V1" in touch.read_bytes()
+          assert b"MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED" in touch.read_bytes()
           touch_header=subprocess.run(
               ["arm-linux-gnueabihf-readelf", "-h", str(touch)],
               check=True, capture_output=True, text=True
