@@ -112,6 +112,8 @@ PASS: first on-target Rust sample computations; factory devices untouched.
 
 If the SSH link drops before cleanup, an unused file may remain temporarily in `/run`; it disappears when tmpfs is cleared at reboot. The remote timeout prevents a surviving computation from running indefinitely. This is a *low-risk* smoke test, not a promise of zero possible runtime risk from running new code with the existing root-only access.
 
+**Persistence nuance:** Our installer/launcher intentionally writes no files outside `/run`, but stock `sshd`, PAM or system logging may independently append ordinary login/audit entries to writable overlays during a session. This is not a forensic zero-change experiment. It is a **reversible application-space test** that does not alter firmware, boot settings, installed programs, persistent service configuration, audio device ownership or user projects. Use the vendor UI to confirm nothing unexpected changed after the test.
+
 ## Success criteria
 
 1. Both stages meet existing IP/MAC/route + StrictHostKeyChecking/authorized SSH key requirements.
