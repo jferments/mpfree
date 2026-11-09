@@ -1,7 +1,17 @@
 # MPC One / az0x 3.6.0: audio and MIDI implementation survey
 
 > **Evidence type:** owner-run `collect-over-ssh.sh --audio-midi` (read-only), 2026-11-09 22:31 UTC, factory app running (PID 317 in this boot). Report SHA-256 `84ffd15043b5c8c73708a35b2224adeb6e15f408e9f0178d0f8a56376a26fdc8` (owner-local, not committed). Kernel `6.6.95-az01-2025-06-27-rt55`.
-> **Collector bug in this run:** the device-tree section printed nothing because `/proc/device-tree` is a symlink and BusyBox `find` did not descend into it. Fixed in the same PR (trailing slash); re-run to get codec/I2S device-tree properties.
+> **Collector bugs, both fixed in PR #20:** the first run printed no device-tree nodes (`/proc/device-tree` is a symlink; fixed with a trailing slash). The re-run at 22:51 UTC (SHA-256 `d7b4bc6fa7ca3e47cb05057fa530772fd89e7f7e49e52283a75ad7c0d971f40b`) printed the root node's serial number; the survey now redacts `*serial*`, `*mac-address*` and `*uuid*` properties. Owner reports from that run must not be shared publicly.
+
+## Device tree (re-run, 22:51 UTC)
+
+| Node | Observed | Meaning |
+| --- | --- | --- |
+| `/` | `compatible = inmusic,acva inmusic,az01 rockchip,rk3288`; `inmusic,product-code = "ACVA"`; PCB rev `J`; `inmusic,panel-rotation = 270` | Product identity; display mounted rotated 270° |
+| `/sound` | `compatible = inmusic,acva-audio`, links a CPU DAI and a codec | The vendor machine driver (`jp07-audio`) |
+| `/sound-codec` | `compatible = inmusic,acva-audio-codec`; `enable-gpios`, `mute-gpios`, `reset-gpios`; one clock (MCLK) | **No I2C/SPI control interface**: the converters are configured by pins only. No software gain or routing to manage; the driver handles mute/enable (pop suppression) |
+| `/i2s@ff890000` | `rockchip,rk3288-i2s`; DMA `tx`/`rx`; `rockchip,playback-channels = 8`, `capture-channels = 2` | Standard Rockchip I2S; the card exposes 2 playback channels |
+| `/sound@ff8b0000` | S/PDIF controller, `status = disabled` | Not used on the MPC One |
 
 ## Audio
 

@@ -79,6 +79,8 @@ dt_print_node() {
       compatible|status|name|label|*-names|*format*|sound-name-prefix|model|simple-audio-card,name)
         printf '  %s = ' "$name"; tr '\000' ' ' < "$p" 2>/dev/null; printf '\n' ;;
       phandle|linux,phandle) : ;;
+      # Never print device identifiers (the root node has serial-number).
+      *serial*|*mac-address*|*uuid*) printf '  %s = [redacted]\n' "$name" ;;
       *)
         # Numeric/binary property: print raw bytes as octal (BusyBox-safe), capped.
         printf '  %s (octal bytes) = ' "$name"

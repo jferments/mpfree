@@ -89,6 +89,7 @@ class RemoteScriptTests(unittest.TestCase):
         text = (BASE / "read-only-audio-midi.sh").read_text()
         code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotIn("/dev/snd", code)
+        self.assertIn("*serial*|*mac-address*|*uuid*) printf '  %s = [redacted]", code)
         for word in ("mount -", "modprobe", "insmod", "systemctl stop", "systemctl restart",
                      "systemctl start", "chrt", "taskset", "renice", "ioctl"):
             self.assertNotIn(word, code, msg=word)
