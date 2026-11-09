@@ -34,8 +34,10 @@ case "${1:-}" in
   "--headless-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-headless-execution" ;;
   "--session-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-session-preflight" ;;
   "--session-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-session-execution" ;;
+  "--touch-axes-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-preflight" ;;
+  "--touch-axes") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -48,7 +50,23 @@ command -v ping >/dev/null 2>&1 || die 'ping missing on workstation'
 command -v ssh >/dev/null 2>&1 || die 'OpenSSH client missing on workstation'
 command -v timeout >/dev/null 2>&1 || die 'timeout missing on workstation'
 command -v sha256sum >/dev/null 2>&1 || die 'sha256sum missing on workstation'
-if [[ "${1:-}" == "--netbench" ]]; then
+if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'Python3 missing on workstation'
+  command -v arm-linux-gnueabihf-readelf >/dev/null 2>&1 || die 'ARM hard-float readelf missing'
+  for helper in host_touch_axes.py host_ram_smoke.py check-arm-abi.py \
+                read-only-abi.sh read-only-ram-smoke-env.sh \
+                read-only-touch-axes-env.sh; do
+    [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing M10 preflight: $helper"
+  done
+  touch_binary="$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-touch"
+  [[ -f "$touch_binary" && -r "$touch_binary" ]] ||
+    die 'build exact ARMv7 mpfree-touch release binary before M10 preflight'
+  if [[ "${1:-}" == "--touch-axes" && (
+        "${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != 'YES' ||
+        "${MPFREE_ACCEPT_TOUCH_AXES:-}" != 'YES' ) ]]; then
+    die 'M10 dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_TOUCH_AXES=YES bash tools/mpc-one/collect-over-ssh.sh --touch-axes'
+  fi
+elif [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
 elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-check" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-check" || "${1:-}" == "--session-smoke" ]]; then
@@ -159,6 +177,10 @@ REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXX
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
 if [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
+elif [[ "${1:-}" == "--touch-axes-check" ]]; then
+  echo "READ-ONLY M10 exact MPC/ILI2117/ARM ABI preflight (NO upload): $REPORT"
+elif [[ "${1:-}" == "--touch-axes" ]]; then
+  echo "OWNER DOUBLE OPT-IN: volatile M10 metadata-only EVIOCGABS /run: $REPORT"
 elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--headless-check" || "${1:-}" == "--session-check" ]]; then
   echo "READ-ONLY ELF/ABI compatibility preflight (no remote upload) to $REPORT"
 elif [[ "${1:-}" == "--ram-smoke" || "${1:-}" == "--headless-smoke" || "${1:-}" == "--session-smoke" ]]; then
@@ -167,7 +189,26 @@ else
   echo "Collecting passive/read-only report to $REPORT"
 fi
 
-if [[ "${1:-}" == "--netbench" ]]; then
+if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
+  touch_args=(
+    --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY"
+    --binary "$touch_binary"
+    --abi-script "$SCRIPT_DIR/read-only-abi.sh"
+    --abi-checker "$SCRIPT_DIR/check-arm-abi.py"
+    --env-script "$SCRIPT_DIR/read-only-ram-smoke-env.sh"
+    --touch-script "$SCRIPT_DIR/read-only-touch-axes-env.sh"
+  )
+  if [[ "${1:-}" == "--touch-axes" ]]; then
+    touch_args+=(--execute)
+  fi
+  if ! timeout 90 python3 "$SCRIPT_DIR/host_touch_axes.py" \
+      "${touch_args[@]}" > "$REPORT" 2>&1; then
+    echo "M10 guarded touch metadata failed/blocked; PRIVATE report: $REPORT" >&2
+    sed -n '1,50p' "$REPORT" >&2
+    exit 1
+  fi
+  sed -n '1,85p' "$REPORT"
+elif [[ "${1:-}" == "--netbench" ]]; then
   echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
   echo "Avoid running while recording/playing; it may briefly load the MPC CPU and network."
   if ! timeout 95 python3 "$SCRIPT_DIR/network-bench.py" \
