@@ -9,7 +9,10 @@ This is a proposal, not a promise of parity or a timeline.
 - [x] **M2:** Rust 16-step pattern compiler, timestamped note events, synthetic kick/snare/hat source bank and bounded 16-voice playback; desktop-only generated groove WAV and CI validation.
 - [x] **M3 host:** Rust `MPF1` framed PCM codec and bounded playout model ported from Python (no network sockets); Rust WAV PCM16/24/32/float32 sampler (note mapping, release envelope, 16-voice limit and 64 MiB bank cap); CI unit/synthetic WAV smoke.
 - [x] **M3 safety tools:** read-only ABI/loader/library inspection `--abi`, read-only factory service/device ownership `--handoff-preflight`, and host-only GLIBC/ELF comparator.
-- [ ] **M3 MPC evidence:** actually run and interpret the new ABI/handoff preflights; establish exact glibc target version, unit ExecStop/KillMode/dependencies and restoration constraints; no takeover yet.
+- [x] **M3 MPC observations:** owner successfully ran `--abi` and `--handoff-preflight`; sanitized evidence confirms loader/SONAMEs, GLIBC_2.39 *symbol tags* (not exact libc release), actual `acvs`/MIDI/script-runner unit dependencies, 1 GiB locked factory memory, exclusive ACVA PCM ownership and CPU0 main-thread affinity.
+- [x] **M4 host-only safety:** no-unsafe pure Rust handoff/watchdog state-machine simulation with gates for recovery/owner consent; CI tests crash/cancel/timeout/restore failure. **No actual systemd or device-control backend exists.**
+- [ ] **M4 MPC next passive probes:** repeat updated `--abi` to seek an explicit embedded glibc release banner; run new `--rtthreads` to map per-task RT priority and affinity; confirm using redacted report evidence.
+- [ ] **M4 actual recovery:** independent eMMC/boot restore **unproven**, real stock unit stop/restart/handoff prohibited until separately owner-approved and simulated.
 - [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
 - [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
 - [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate).
