@@ -6,6 +6,37 @@
 use mpfree_headless::self_test;
 use std::time::{Duration, Instant};
 
+/// Passive non-persistent /proc metrics: read only *after* the audio render,
+/// never inside a render callback or a timing-critical code path.
+fn proc_status_kib(field: &str, status: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let (label, rest) = line.split_once(':')?;
+        if label != field {
+            return None;
+        }
+        let mut tokens = rest.split_whitespace();
+        let number = tokens.next()?.parse::<u64>().ok()?;
+        (tokens.next() == Some("kB") && tokens.next().is_none()).then_some(number)
+    })
+}
+
+fn print_memory_metrics() {
+    match std::fs::read_to_string("/proc/self/status") {
+        Ok(status) => {
+            for (field, name) in [("VmHWM", "peak_rss_kib"), ("VmRSS", "rss_kib")] {
+                match proc_status_kib(field, &status) {
+                    Some(kib) => println!("{name}={kib}"),
+                    None => println!("{name}=unavailable"),
+                }
+            }
+        }
+        Err(_) => {
+            println!("peak_rss_kib=unavailable");
+            println!("rss_kib=unavailable");
+        }
+    }
+}
+
 const WATCHDOG_SECONDS: u64 = 5;
 const WATCHDOG_MARKER: &str = "MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED";
 
@@ -50,6 +81,7 @@ fn main() {
             println!("peak_abs={:.6}", s.sink.peak_abs);
             println!("checksum_fnv1a64={:016x}", s.sink.checksum_fnv1a64);
             println!("elapsed_us={}", begin.elapsed().as_micros());
+            print_memory_metrics();
             println!("status=PASS");
         }
         Err(err) => {
@@ -61,6 +93,17 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_linux_proc_memory_in_kib_without_unsafe_code() {
+        let status = "Name:\tmpfree-headless\nVmRSS:\t  3020 kB\nVmHWM:\t4096 kB\n";
+        assert_eq!(super::proc_status_kib("VmRSS", status), Some(3020));
+        assert_eq!(super::proc_status_kib("VmHWM", status), Some(4096));
+        assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\tnot-a-number kB\n"), None);
+        assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\t20 MB\n"), None);
+        assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\t20 kB extra\n"), None);
+        assert_eq!(super::proc_status_kib("VmRSS", "VmRSSBad:\t20 kB\n"), None);
+    }
+
     #[test]
     fn watchdog_constant_is_positive_and_bounded() {
         assert!((1..=5).contains(&super::WATCHDOG_SECONDS));

@@ -97,6 +97,12 @@ jobs:
           assert '"--ram-smoke-env")' in wrapper
           assert '"--ram-smoke-check")' in wrapper
           assert '"--ram-smoke")' in wrapper
+          assert '"--headless-check")' in wrapper
+          assert '"--headless-smoke")' in wrapper
+          assert 'MPFREE_ACCEPT_HEADLESS_EXEC' in wrapper
+          assert '--profile "$smoke_profile"' in wrapper
+          assert '/release/mpfree-headless' in wrapper
+          assert 'smoke_args+=(--execute)' in wrapper
           assert 'MPFREE_ACCEPT_VOLATILE_EXEC' in wrapper
           assert 'read-only-ram-smoke-env.sh' in wrapper
           host = Path("tools/mpc-one/host_ram_smoke.py").read_text()
@@ -106,6 +112,18 @@ jobs:
           assert 'ulimit -t 3' in host, "kernel CPU-time limit must remain"
           assert 'RUST_WATCHDOG_MARKER' in host, "Rust self-watchdog proof required"
           assert 'shell_scheduler_policy' in host, "normal-priority guard required"
+          assert '"headless": {' in host
+          assert '"binary": "mpfree-headless"' in host
+          assert '"backend": "null"' in host
+          assert '"sample_rate_hz": "44100"' in host
+          assert 'get_profile(a.profile)' in host
+          assert 'parse_results(stdout, stderr, code, a.profile)' in host
+          headless = Path("rust/mpfree-headless/src/main.rs").read_text()
+          assert '#![forbid(unsafe_code)]' in headless
+          assert 'mpfree_headless::self_test' in headless
+          assert 'MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED' in headless
+          assert 'std::fs::read_to_string("/proc/self/status")' in headless
+          assert not any(s in headless for s in ('/dev/snd', '/dev/dri', '/dev/input', 'systemctl stop', 'std::net::'))
           rust_smoke = Path("rust/mpfree-device-smoke/src/main.rs").read_text()
           assert "#![forbid(unsafe_code)]" in rust_smoke
           assert 'arm_self_watchdog()' in rust_smoke
@@ -228,6 +246,9 @@ jobs:
           grep -q '^groove_events=12$' /tmp/mpfree-headless.out
           grep -q '^sampler_notes=4$' /tmp/mpfree-headless.out
           grep -q '^status=PASS$' /tmp/mpfree-headless.out
+          grep -Eq '^peak_rss_kib=[0-9]+$' /tmp/mpfree-headless.out
+          grep -Eq '^rss_kib=[0-9]+$' /tmp/mpfree-headless.out
+          grep -Eq '^elapsed_us=[0-9]+$' /tmp/mpfree-headless.out
           cat /tmp/mpfree-headless.out
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |

@@ -92,6 +92,41 @@ RUST_WATCHDOG_MARKER = "WATCHDOG=RUST_5S_ARMED"
 
 
 
+
+# Strictly fixed executables and outputs. The user cannot choose an arbitrary
+# target binary, device endpoint, program arguments, or remote shell command.
+# "device-smoke" preserves M5 behavior; "headless" is a separate M6 gate.
+PROFILES = {
+    "device-smoke": {
+        "binary": "mpfree-device-smoke",
+        "sentinel": "MPFREE_ARMV7_SMOKE_V1",
+        "watchdog": RUST_WATCHDOG_MARKER,
+        "expected": {
+            "os": "linux", "arch": "arm", "sample_rate_hz": "44100",
+            "frames": "4096", "beats": "1", "status": "PASS",
+        },
+    },
+    "headless": {
+        "binary": "mpfree-headless",
+        "sentinel": "MPFREE_HEADLESS_V1",
+        "watchdog": "MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED",
+        "expected": {
+            "os": "linux", "arch": "arm", "backend": "null",
+            "sample_rate_hz": "44100", "frames": "88200",
+            "groove_events": "12", "sampler_notes": "4",
+            "groove_voice_steals": "0", "sampler_voice_steals": "0",
+            "prepared_bytes": "94628", "status": "PASS",
+        },
+    },
+}
+
+
+def get_profile(name):
+    if name not in PROFILES:
+        raise ValueError(f"unsupported RAM-only executable profile: {name!r}")
+    return PROFILES[name]
+
+
 def check_remote_environment(report):
     """Validate the read-only remote prerequisite report before any upload.
 
@@ -204,22 +239,64 @@ test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
 """
 
 
-def parse_results(stdout, stderr, code):
+def parse_results(stdout, stderr, code, profile="device-smoke"):
+    """Validate device output; never infer success from a partial marker."""
+    p = get_profile(profile)
     if code:
         raise RuntimeError(
-            f"remote smoke exited {code}; "
+            f"remote {profile} exited {code}; "
             f"last stdout={stdout[-1500:]!r}; last stderr={stderr[-800:]!r}"
         )
-    for marker in ("MPFREE_VOLATILE_STAGE_SHA256_OK", SMOKE_SENTINEL,
-                   "status=PASS", "arch=arm", "os=linux",
-                   "frames=4096", "beats=1"):
-        if marker not in stdout:
-            raise RuntimeError(f"missing expected remote result: {marker}")
-    if RUST_WATCHDOG_MARKER not in stderr:
+    lines = stdout.splitlines()
+    expected_markers = (
+        "MPFREE_VOLATILE_STAGE_SHA256_OK", "STAGE=RUST_EXECUTED",
+        p["sentinel"],
+    )
+    for marker in expected_markers:
+        if lines.count(marker) != 1:
+            raise RuntimeError(f"missing or repeated remote {profile} marker: {marker}")
+    if stderr.splitlines().count(p["watchdog"]) != 1:
         raise RuntimeError(
-            "no evidence the on-device Rust watchdog armed; "
-            "rebuild ARMv7 ELF before any retest"
+            f"expected on-device {profile} Rust watchdog not proven; "
+            "rebuild the correct ARMv7 target executable"
         )
+    # Require exactly one key=value for every expected field. A malicious or
+    # stale program printing duplicate / contradictory fields must be refused.
+    fields = {}
+    for line in lines:
+        if "=" in line:
+            key, value = line.split("=", 1)
+            if key == "STAGE":
+                continue  # Many legitimate shell phases use STAGE=...
+            if key in fields:
+                raise RuntimeError(f"duplicate remote output field: {key}")
+            fields[key] = value
+    for key, value in p["expected"].items():
+        if fields.get(key) != value:
+            raise RuntimeError(
+                f"unexpected {profile} result for {key}: "
+                f"expected {value!r}, received {fields.get(key)!r}"
+            )
+    if profile == "headless":
+        for key in ("nonzero_samples", "elapsed_us", "peak_rss_kib", "rss_kib"):
+            value = fields.get(key)
+            if value is None:
+                raise RuntimeError(f"headless performance field missing: {key}")
+            if key.endswith("_kib") and value == "unavailable":
+                continue
+            if not value.isdigit() or (key != "rss_kib" and int(value) < 1):
+                raise RuntimeError(f"invalid headless performance metric {key}: {value!r}")
+        if not re.fullmatch(r"[0-9a-f]{16}", fields.get("checksum_fnv1a64", "")):
+            raise RuntimeError("invalid headless audio checksum")
+        if int(fields["nonzero_samples"]) > 2 * int(fields["frames"]):
+            raise RuntimeError("headless nonzero sample count exceeds stereo capacity")
+        try:
+            peak = float(fields["peak_abs"])
+        except (ValueError, KeyError):
+            raise RuntimeError("missing or invalid headless audio peak") from None
+        if not (0 < peak <= 1):
+            raise RuntimeError("headless audio peak outside normalized PCM range")
+    return fields
 
 
 def main(argv=None):
@@ -229,11 +306,18 @@ def main(argv=None):
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--readelf", default="arm-linux-gnueabihf-readelf")
     parser.add_argument("--env-script", required=True)
+    parser.add_argument("--profile", choices=tuple(PROFILES), default="device-smoke")
     parser.add_argument("--execute", action="store_true")
     a = parser.parse_args(argv)
     if not 1 <= a.port <= 65535:
         raise ValueError("invalid port")
+    profile = get_profile(a.profile)
     binary_path = Path(a.binary)
+    if binary_path.name != profile["binary"]:
+        raise ValueError(
+            f"refusing non-allowlisted executable {binary_path.name!r} for "
+            f"{a.profile}; expected {profile['binary']!r}"
+        )
     if (not binary_path.is_file() or not Path(a.abi_script).is_file()
             or not Path(a.env_script).is_file()):
         raise ValueError("expected compiled ELF or reviewed read-only survey script missing")
@@ -242,10 +326,15 @@ def main(argv=None):
     binary = binary_path.read_bytes()
     # An old locally cross-built binary lacks its own watchdog. This must
     # fail before any MPC execution; do not infer safety from source alone.
-    if RUST_WATCHDOG_MARKER.encode("ascii") not in binary:
+    if profile["watchdog"].encode("ascii") not in binary:
         raise ValueError(
-            "ARMv7 binary is stale and lacks Rust self-watchdog; "
-            "rebuild mpfree-device-smoke after git pull"
+            f"ARMv7 {profile['binary']} binary is stale or lacks the "
+            f"allowlisted watchdog; rebuild this exact target after git pull"
+        )
+    if profile["sentinel"].encode("ascii") not in binary:
+        raise ValueError(
+            f"ARMv7 {profile['binary']} is missing its version marker; "
+            "rebuild the exact target executable"
         )
     digest = hashlib.sha256(binary).hexdigest()
     # Reject a file that changed between reading the upload bytes and the
@@ -285,10 +374,19 @@ def main(argv=None):
     code, stdout, stderr = call_ssh(
         a.ip, a.port, a.user, a.key, remote_command, binary, 18,
     )
-    parse_results(stdout, stderr, code)
+    fields = parse_results(stdout, stderr, code, a.profile)
     print(stdout.strip())
-    print(RUST_WATCHDOG_MARKER)
-    print("PASS: first on-target Rust sample computations; factory devices untouched.")
+    print(profile["watchdog"])
+    print(
+        f"PASS: {a.profile} ran on MPC through null-only userspace; "
+        "factory devices untouched."
+    )
+    if a.profile == "headless":
+        duration_seconds = int(fields["frames"]) / 44_100
+        elapsed_us = int(fields["elapsed_us"])
+        print(f"headless_audio_seconds={duration_seconds:.3f}")
+        print(f"headless_offline_throughput_x={duration_seconds / (elapsed_us / 1_000_000):.2f}")
+        print("NOTE: offline throughput is NOT an ALSA real-time deadline/xrun test.")
     print("Remote shell cleanup trap removed /run stage on normal completion.")
     return 0
 
