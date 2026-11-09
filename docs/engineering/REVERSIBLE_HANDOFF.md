@@ -10,7 +10,7 @@ On the developer workstation with the existing identity-checked root SSH lab set
 
 ~~~bash
 cd /home/jesse/code/mpfree-hardware-survey
-git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+git pull --ff-only origin main
 ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
 sh -n tools/mpc-one/read-only-handoff-preflight.sh
 bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
@@ -18,7 +18,35 @@ bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
 
 The script only reads systemd unit definitions/properties for `acvs.service`, `az01-network-midi.service` and `az01-script-runner.service`; current MainPID and selected `/proc` fd symlinks; ALSA PCM availability; device-node metadata; root/persistent overlay mounts; memory; boot arguments/partition names. It **never stops, starts, kills, reloads, masks, edits or disables services**, opens the PCM/MIDI/DRM devices, modifies partitions, remounts storage or binds USB gadgets.
 
-Reports remain local and ignored at `research/mpc-one-handoff-preflight-*.txt`. **Raw reports can include kernel command lines, network addresses, service environment variables and device identifiers; review and redact before sharing. Never commit raw reports.** This mode will be tested on the owner's MPC only after they run it; CI syntax/safety tests are not an on-device execution.
+Reports remain local and ignored at `research/mpc-one-handoff-preflight-*.txt`. **Raw reports can include kernel command lines, network addresses, service environment variables and device identifiers; review and redact before sharing. Never commit raw reports.** The owner **successfully ran this preflight on the actual MPC**; a sanitized findings note and raw report fingerprint are recorded in [2026-11-09 ABI/handoff survey](../hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). This confirms the *inspection*, not any stop/restore behavior.
+
+## Measured service/resource details and resulting engineering constraints
+
+The owner-run preflight confirms:
+
+| Unit | Actual service behavior (snapshot) |
+| --- | --- |
+| `acvs.service` | `Type=simple`, `Restart=always` with **100 ms restart delay**, `KillMode=control-group`, **90-second stop timeout**, `Wants=az01-script-runner.service`, and `After=az01-network-midi.service az01-script-runner.service ...` |
+| `az01-network-midi.service` | `Type=simple`, `Restart=always`, 90-second stop timeout, active; ordered before `acvs.service` |
+| `az01-script-runner.service` | `Type=simple`, `Restart=no`, active; wanted and ordered before `acvs.service` |
+
+**Do not stop the two helpers merely because they are ordered before `acvs`**: systemd ordering (`After=`) does not mean the unit requires or automatically shuts down those helpers. The factory GUI process itself owned `/dev/dri/card0`, the touchscreen/GPIO `event0/event1`, the ACVA playback/capture PCM endpoints, `/dev/snd/seq` and raw MIDI.
+
+With **38 process threads, one observed leader affinity CPU 0, and `isolcpus=2-3`**, a thread-level survey is necessary before building the Rust realtime audio scheduler. Neither a single affinity line nor the isolation boot flag tells us which other threads receive SCHED_FIFO/RR or how the factory partitions the work.
+
+A more serious scheduling/resource constraint is the **~1 GiB resident and locked factory process** on ~2 GiB RAM (no swap). A 64 MiB prepared-sample bank seems conservative, but does not prove MPFree will fit while stock software runs. We must measure worst-case working set with no unsupported assumptions about reclaiming mlocked pages.
+
+The root is read-only, but `/etc` and `/var` are read-write overlays backed by `/data`. Any real handoff prototype must avoid those mounts and create *all* session state under volatile RAM-only locations.
+
+### New per-thread passive survey
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+# Once this PR is merged, update your main checkout; until then test on a branch checkout.
+bash tools/mpc-one/collect-over-ssh.sh --rtthreads
+~~~
+
+This reports the current factory process's per-thread names, CPU affinity, kernel scheduling policy/priority and limits. **It does not change CPU affinity, priorities or memory locks**. Any subsequent public writeup must redact machine/process IDs and retain a cryptographic hash of the owner's private raw report.
 
 ## Important systemd semantic correction
 
@@ -37,7 +65,26 @@ There are deliberately **no executable stop/start commands here**. Handoff remai
 
 **As of today gates 1, 4, 5 and 6 are NOT proven. Any device takeover is blocked.**
 
-## Proposed state machine (DESIGN; not implemented)
+## A pure-Rust mock state machine now exists (SIMULATION ONLY)
+
+The new `rust/mpfree-handoff-model` crate implements the following *simulated* guarded transitions:
+
+`StockRunning → Qualified → Armed → StockQuiescing → ResourcesReleased → MpFreeActive → StockRestoring → StockVerified → StockRunning`.
+
+Before `Qualified`, the mock requires **all six explicit flags**: firmware+board match, independently proven boot restore, factory project saved, owner consent, independent watchdog, and successful mock restoration. No single flag is optional. This is a **simulation of evidence**, not evidence that the real prerequisites hold; unit tests set flags true synthetically.
+
+Once simulated resources are released, an owner cancel, an MPFree crash, transport failure, missed heartbeat, or a heartbeat delivered after deadline transitions to `StockRestoring`. Failure to verify factory unit/executable, PCM, input/display and user-visible stock interface results in terminal `RecoveryRequired`; it does not falsely claim `StockVerified`. A late heartbeat cannot revive an expired simulated session.
+
+**This Rust crate has no filesystem, subprocess, systemd, network, ALSA or DRM API. It cannot stop, kill or launch anything.** CI checks this statically and runs state-machine unit tests on desktop. No production privileged systemd adapter exists.
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+cargo test --manifest-path rust/Cargo.toml --locked -p mpfree-handoff-model
+~~~
+
+The simulation moves us forward on failure semantics without changing the MPC's real device state.
+
+## Proposed REAL hardware state machine (DESIGN; not implemented)
 
 ~~~text
 STOCK_RUNNING
@@ -66,12 +113,12 @@ Every transition needs an explicit guard and finite timeout. On an error after r
 
 | Experiment | Current state |
 | --- | --- |
-| Passive service dependency/ExecStop/KillMode/Restart and fd map | **Script committed, awaiting owner run** |
-| Determine current kernel and runtime ABI compatibility | **ABI survey and desktop checker committed, awaiting owner report** |
-| Mock service graph / watchdog timeout / restore test | Planned; no real service manipulation |
+| Passive service dependency/ExecStop/KillMode/Restart and fd map | **Owner ran report; sanitized evidence documented** |
+| Determine current kernel and runtime ABI compatibility | **Owner ran initial ABI survey: GLIBC_2.39 tag evidence; exact libc still unverified** |
+| Mock service graph / watchdog timeout / restore test | **Implemented pure Rust simulator + unit tests; no real service manipulation** |
 | Verify independent unbootable-device recovery | **Not done; hard blocker** |
 | Consented manual session-only stock release/restore | **BLOCKED** |
 | Use ACVA/DRM/MIDI with MPFree on actual MPC | **BLOCKED** |
 | Persistent end-user installer or automatic USB takeover | **BLOCKED** |
 
-**Next action:** have the owner run `--handoff-preflight` and attach the output for redacted documentation. Do not stop the stock service yet.
+**Next safe action:** owner runs the new `--rtthreads` read-only survey and repeats `--abi` for an explicit libc release banner. **Do not stop the stock service yet.** Independent recovery is still the critical blocker.
