@@ -138,6 +138,18 @@ The thread-policy query returned names but **not** the policy/priority fields; d
 
 Full reproducible evidence, interpretation, tables and missing capabilities: [third survey](MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md). This provided the parameters for [MPFree's first separate host-only metronome core](../engineering/FIRST_AUDIO_CORE.md).
 
+### Completed Ethernet/USB research run (2026-11-09 UTC)
+
+The owner's read-only `--io` and explicitly opt-in active `--netbench` experiments have both **succeeded**. See [the redacted measured reference](MPC_ONE_3_6_0_ETHERNET_USB_20261109.md).
+
+Source-report SHA-256:
+- Passive `--io`: `92687a46ab7d04d81ba6bf05486e29e6f67f73e66c0c9ea0ad7e136e20eee45d`.
+- Active `--netbench`: `6d206eba95640a385b58ea76f36ea91723591b44fada7155a5fff9de14679d01`.
+
+Directly observed: `end0` negotiated **1 Gbit/s full-duplex** via `rk_gmac-dwmac` + **Realtek RTL8211E**; zero error/drop counters at that sampling time; 20/20 ICMP responses, average 0.272 ms; short 4 MiB SSH goodput **126.66 Mbit/s MPC→workstation**, **47.05 Mbit/s workstation→MPC**. The PNY flash drive uses **USB 2.0 high-speed (480 Mbit/s)**, and USB gadget UDC `ff580000.usb` is registered high-speed but not attached. This is *not* a validated USB networking or PCM audio stream.
+
+The general scripts below remain useful for other authorized developers using their own independently identified network settings. **Do not repeat the active benchmark during live music work**.
+
 ### New interface survey: Ethernet and USB, plus optional bounded data-transfer benchmark
 
 The owner requested research into using a connected Linux laptop or desktop as an **auxiliary DSP computer**, sending generated audio back to an MPC. The architecture, raw PCM bandwidth/latency model and hardware limitations are documented in [Auxiliary Compute and I/O](../engineering/AUXILIARY_COMPUTE_AND_IO.md).
