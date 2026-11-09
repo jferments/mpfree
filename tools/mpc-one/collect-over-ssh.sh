@@ -19,8 +19,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 case "${1:-}" in
   "") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"; REPORT_KIND="mpc-one" ;;
   "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
-  *) die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-     die "Unknown mode. Use no arguments for baseline, or --detail for focused follow-up." ;;
+  *) printf 'ERROR: Unknown mode. Use no arguments for baseline, or --detail for focused follow-up.\n' >&2
+     exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
