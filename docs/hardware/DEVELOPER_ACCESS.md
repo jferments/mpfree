@@ -119,6 +119,15 @@ Maintain separate maps for **storage/boot**, **CPU/device tree**, **audio**, **M
 ## Failure handling
 
 - **Ping fails:** verify `mpc-direct` is connected on `eno1np0`; do not create an overlapping NetworkManager connection.
+- **Collector says `Device identity mismatch: ... observed <none>`:** This is **not** proof of a different MAC. It means the host could not resolve a complete ARP/neighbor entry. An earlier version of the script read only the fifth whitespace field of a single `ip neigh` lookup, causing a false-negative on a transient/missing record. The corrected collector retries ICMP, scans `lladdr` by name, and checks both netlink and `/proc/net/arp`. It fails closed if there is no verified MAC or the two sources conflict. It does **not** disable the security check. Diagnostic commands on the workstation:
+
+  ~~~sh
+  ping -I eno1np0 -c 3 10.42.0.141
+  ip -4 neigh show to 10.42.0.141 dev eno1np0
+  cat /proc/net/arp
+  ~~~
+
+  Use the current development-branch version of `tools/mpc-one/collect-over-ssh.sh`. Do not bypass MAC and SSH host-key checks or manually edit the hardcoded expected address merely to make the collector pass.
 - **Ping succeeds, port 2222 refuses connections:** check whether USB autorun ran and whether `sshd` started. Inspect removable USB diagnostics after a normal shutdown, with no firmware modifications.
 - **Host key mismatch after reboot:** expected with temporary keys but must still be **verified**; never unconditionally ignore the warning.
 - **SSH authentication failure:** confirm that the dedicated public key on the USB matches the private key; use `ssh-add` for passphrase-protected keys.
