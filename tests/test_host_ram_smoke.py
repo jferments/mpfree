@@ -111,9 +111,9 @@ class GuardTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "duplicate"):
             smoke.check_remote_environment(
                 ENV_REPORT.replace(
-                    "tool.timeout=present",
-                    "tool.timeout=present\n"
-                    "tool.timeout=present",
+                    "tool.sha256sum=present",
+                    "tool.sha256sum=present\n"
+                    "tool.sha256sum=present",
                 )
             )
 
