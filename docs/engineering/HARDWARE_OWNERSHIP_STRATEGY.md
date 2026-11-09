@@ -10,9 +10,9 @@ See the [sanitized owner-run hardware/ABI/stock-resource survey](../hardware/MPC
 
 | Observed item | Value | Interpretation and caution |
 | --- | --- | --- |
-| Linux RAM | `MemTotal: 2067188 kB` (~1,970 MiB) | Linux-available physical memory, not every byte of DRAM on the board |
-| Factory process `VmRSS` | ~1,043,768 kB (~995 MiB) | **Factory application**, not OS kernel reservation. Includes file/shared pages; approximate |
-| Factory process `VmLck` | ~1,040,052 kB (~992 MiB) | Application's **locked** mappings. May be released with process exit, but reclaim must be measured, not projected from RSS alone |
+| Linux RAM | `MemTotal: 2067188 kB` (~2,019 MiB) | Linux-available physical memory, not every byte of DRAM on the board |
+| Factory process `VmRSS` | ~1,043,768 kB (~1,019 MiB) | **Factory application**, not OS kernel reservation. Includes file/shared pages; approximate |
+| Factory process `VmLck` | ~1,040,052 kB (~1,016 MiB) | Application's **locked** mappings. May be released with process exit, but reclaim must be measured, not projected from RSS alone |
 | `MemAvailable` | ~882,348 kB (~862 MiB) | Kernel's current estimate of allocatable memory without swapping; dynamic |
 | Swap | 0 | **Do not** budget for swap under pressure |
 | Process threads | 38 | Each `/proc/PID/task/TID/status` repeats the process's whole VmRSS; do not multiply by 38! |
@@ -106,7 +106,7 @@ Only then optimize distro contents: include minimal open Linux base system, ALSA
 
 | Metric | Initial engineering target | Why |
 | --- | --- | --- |
-| Base MPFree process and services | Measure first, then aim for a **<256 MiB idle budget** | Ambitious but testable against 995 MiB stock resident footprint |
+| Base MPFree process and services | Measure first, then aim for a **<256 MiB idle budget** | Ambitious but testable against 1,019 MiB stock resident footprint |
 | Prepared WAV sample bank | Keep **64 MiB** initial cap | Already implemented; avoid swapping on a 2 GiB target |
 | Audio callback | Measure worst-case vs **128/44100 ≈ 2.90 ms** ALSA period | Need scheduling headroom, not an average-only benchmark |
 | CPU | Report actual per-core occupancy under load | Affinity/isolation ≠ consumption |
