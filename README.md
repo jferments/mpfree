@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: hardware discovery plus desktop-testable Rust metronome, step sequencer, bounded WAV sampler and network-audio packet prototypes.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
+**Status: proven M5/M6/M7 native Rust computation on physical original MPC One, independent sequencer/sampler/null-audio timing harness, and initial Rust host-only offscreen GUI prototype.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
 
 ## Vision
 
@@ -27,17 +27,19 @@ Start here for reproducible hardware/firmware development:
 - [Rust M1 metronome parity and ARMv7 cross-build](docs/engineering/RUST_M1_PARITY.md) — **implemented** std-only Rust engine and WAV renderer, C++/Rust parity at 120/109/137.2 BPM, and verified ARM EABI5 hard-float cross-build; no MPC deployment.
 - [Rust M2: 16-step sequencer and 16-voice groove sampler](docs/engineering/RUST_M2_GROOVE.md) — independent deterministic step scheduling, precompiled note events, synthetic kick/snare/hat one-shots, finite voice pool, offline WAV demo and regression tests; still no MPC hardware access.
 - [Rust M3: bounded PCM packet codec and user-WAV sampler](docs/engineering/RUST_M3_NETWORK_SAMPLER.md) — Rust port of Python MPF1 protocol, jitter/deadline model, bounded 64-MiB total sample bank, velocity/note-off, offline preview and CI tests. No real sockets or MPC playback.
-- [ARMv7 target userspace ABI survey and local comparator](docs/engineering/ARMV7_USERSPACE_COMPATIBILITY.md) — read-only libc/loader/library probe and host-only ELF/glibc requirement checker; target compatibility remains unverified.
+- [ARMv7 target userspace ABI survey and local comparator](docs/engineering/ARMV7_USERSPACE_COMPATIBILITY.md) — target libc 2.39 and matching EABI5/loader were owner-verified; M5/M6/M7 ARM application executions have passed, but broader dependencies and real drivers remain unqualified.
 - [Reversible factory application handoff investigation](docs/engineering/REVERSIBLE_HANDOFF.md) — read-only systemd/resource preflight and independent recovery/watchdog prerequisite matrix; **does not stop factory app**.
 - [Verified az0x ABI and factory handoff report (sanitized)](docs/hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md) — real owner-run ABI/service data, CPU affinity and ~1 GiB locked process memory, with source SHA-256 fingerprints; raw device reports excluded.
 - [Safe Rust handoff state-machine simulator](rust/mpfree-handoff-model/src/lib.rs) — guarded stock/MPFree transition model, mocked watchdog/crash/recovery failure tests; **no systemd, files, PCM or hardware calls**.
 - [Hardware ownership strategy: independent MPFree Linux userspace first](docs/engineering/HARDWARE_OWNERSHIP_STRATEGY.md) — distinguishes factory application RSS from OS overhead and core affinity from real CPU utilization, with staged RAM-only tests, restore-before-stop gates and eventual optional custom rootfs.
 - [M5: first RAM-only Rust executable on the MPC](docs/engineering/ARMV7_VOLATILE_SMOKE.md) — cross-built bounded Rust audio computation; live board/az0x 5.0.8/glibc 2.39/ELF checks; opt-in temporary `/run` execution with timeouts, SHA-256 validation and cleanup. Factory app remains active, with no PCM/MIDI/DRM acquisition.
 - [M6: standalone headless groove + WAV sampler + null audio](docs/engineering/M6_HEADLESS_NULL_AUDIO.md) — **owner successfully ran the integrated engine on actual MPC One**: 88,200 frames in 30.565 ms (65.43× offline), 1,792 KiB RSS, same PCM checksum as workstation; factory app remained active and exclusive hardware untouched.
-- [M7: synthetic 128-frame deadline timing + independent HOST supervisor](docs/engineering/M7_SYNTHETIC_TIMING_AND_HOST_SUPERVISOR.md) — host-verified: 690 callbacks, 0 synthetic deadline misses, 10 µs p99 / 28 µs max, 81 µs max wakeup lateness; physical M7 timing remains untested.
+- [M7: synthetic 128-frame deadline timing + independent HOST supervisor](docs/engineering/M7_SYNTHETIC_TIMING_AND_HOST_SUPERVISOR.md) — physical MPC test **PASSED** under factory workload: 690 callbacks, 0 synthetic misses, p99 66µs, max 165µs, 167µs worst wakeup lateness, exact PCM parity (not ALSA).
 - [M7 safe ARM acceptance](docs/engineering/M7_ARM_NULL_TIMING_ACCEPTANCE.md) — new read-only `--session-check` and independently allowlisted, double-opt-in `--session-smoke`, still null audio (no factory device handoff).
 - [Factory process and reversible GUI handoff research](docs/engineering/FACTORY_GUI_HANDOFF_RESEARCH.md) — map running units, process/thread relationships and hardware fds without stopping Akai; independent recovery required before screen takeover.
-- [ILI2117 touchscreen / Rockchip DSI display research](docs/hardware/MPC_ONE_TOUCHSCREEN_ILI2117_RESEARCH.md) — existing observed I²C + evdev/DRM evidence; new read-only `--touchscreen` and `--process-map` metadata surveys.
+- [ILI2117 touchscreen / Rockchip DSI display research](docs/hardware/MPC_ONE_TOUCHSCREEN_ILI2117_RESEARCH.md) — owner ran `--touchscreen` and `--process-map`; confirmed actual `ili2117` kernel binding, Linux Type-B multitouch bitmaps, independent controller and power-button services.
+- [Sanitized physical M7/process/touchscreen acceptance evidence](docs/hardware/MPC_ONE_M7_PROCESS_TOUCH_VALIDATED_20261109.md) — owner reports interpreted with exact code-level observations, no raw private logs.
+- [M8 host-only GUI test card, panel rotation and touch transform](docs/engineering/M8_DISPLAY_OFFSCREEN_TESTCARD.md) — new safe Rust `mpfree-display` draws 1280×800 logical card and 800×1280 clockwise/counterclockwise PPM previews **without DRM/evdev access**.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -57,7 +59,7 @@ A **read-only** automated survey, run on the *workstation*, is available as:
 
 The SSH wrapper defaults to the **already-tested reference lab** (`eno1np0`, `10.42.0.141:2222`, and the existing dedicated developer key). Other users must set their own verified addresses, interface, MAC and key as described in the runbook.
 
-Run this from a cloned copy of the branch containing these files (before merging architecture PR #1, that branch is `bootstrap/architecture-and-hardware-survey`):
+Run this from an up-to-date local checkout of `main`:
 
 ~~~sh
 bash tools/mpc-one/collect-over-ssh.sh
@@ -97,7 +99,7 @@ The [redacted measured reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261
 
 **Rust-first with targeted C/C++ integration is now the accepted policy.** New MPFree-owned sequencing, realtime audio, networking and project logic should normally use Rust. Mature LV2/VST3 plugin hosts, synthesizers, DSP and low-level system libraries can be integrated through audited, narrow C/C++ interfaces. [ADR-0001](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) records the decision, and [M1](docs/engineering/RUST_M1_PARITY.md) documents the first Rust audio prototype and ARM cross-build qualification.
 
-The C++ reference is deliberately retained. Rust native tests and cross-language PCM WAV parity tests have **passed**, as has an ARMv7 hard-float cross-build on a CI workstation. **Binary compatibility with the MPC's az0x userspace and on-device execution remain unverified.**
+The C++ reference is deliberately retained. Rust native tests and cross-language PCM WAV parity tests have **passed**, as has an ARMv7 hard-float cross-build on a CI workstation. **The M5–M7 ARMv7 binary and userspace null-audio runtime are proven on the physical MPC, but actual ACVA ALSA, DRM/evdev, full project performance, and app stop/restore remain unverified.**
 
 On ML-tower (requires Rust stable and Cargo):
 

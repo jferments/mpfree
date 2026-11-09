@@ -1,6 +1,6 @@
 # MPC One touchscreen: Ilitek ILI2117, evdev, Rockchip DSI and Panfrost
 
-**Status:** Based on existing owner's read-only factory MPC One 3.6.0 hardware surveys. The expanded touchscreen collector has **not yet been run** on the device. Factory app remains owner of DRM/evdev/audio. No I²C messages, evdev event reads, DRM opens, modesets or display changes are implemented here.
+**Status: expanded owner-run `--touchscreen` passed** on the physical original MPC One 3.6.0. It verified the bound **`ili2117`** I²C kernel driver, EV_KEY/ABS with Type-B multitouch slot/position/tracking codes, active 800×1280 DSI, 32bpp framebuffer and Panfrost. Axis ranges, number of contacts and rotation remain **UNVERIFIED**. Factory owns DRM/evdev/audio; no I²C messages, evdev event reads, DRM opens, modesets or display changes were performed. See [sanitized physical findings](MPC_ONE_M7_PROCESS_TOUCH_VALIDATED_20261109.md).
 
 ## Currently observed on the real MPC One
 
@@ -21,7 +21,7 @@ Source: https://github.com/torvalds/linux/blob/master/drivers/input/touchscreen/
 
 Upstream Linux `ili210x.c` supports device-tree identifier `ilitek,ili2117`, parses a **43-byte** I²C touchscreen report with a checksum, and defines `ili211x_chip` with **max_touches=10** and **resolution=2048**. It exposes events via Linux input/evdev, making a custom I²C driver likely unnecessary.
 
-**Do not assume** the vendor's Linux 6.6.95 kernel has the exact same capabilities/driver implementation. Device-tree inversion, swap and active panel geometry may change final evdev values. Read the bound driver and actual event capability bitmaps first. A later explicitly reviewed metadata-only EVIOCGABS ioctl can retrieve the actual axis min/max/flat/fuzz (without consuming touch events or grabbing the device), but that is **not** part of this current script.
+**Crucial distinction:** the owner's actual I²C device reports the bound driver name **`ili2117`** (not the upstream source filename `ili210x.c`), and advertises ABS_X/Y, ABS_MT_SLOT, ABS_MT_POSITION_X/Y and ABS_MT_TRACKING_ID; these prove Type-B multitouch **semantics**, not ten actual slots or the exact upstream report parser. **Do not assume** the vendor's Linux 6.6.95 kernel has the exact same capabilities/driver implementation. Device-tree inversion, swap and active panel geometry may change final evdev values. Read the bound driver and actual event capability bitmaps first. A later explicitly reviewed metadata-only EVIOCGABS ioctl can retrieve the actual axis min/max/flat/fuzz (without consuming touch events or grabbing the device), but that is **not** part of this current script.
 
 ## Safe on-device survey (no opens of hardware character nodes)
 

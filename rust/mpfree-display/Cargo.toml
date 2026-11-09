@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-display"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "mpfree_display"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mpfree-display"
+path = "src/main.rs"
+
+[dependencies]
