@@ -23,3 +23,6 @@ __pycache__/
 build/
 cmake-build-*/
 *.wav
+
+# Rust workspace build outputs (retain rust/Cargo.lock for reproducible builds).
+rust/target/
