@@ -101,6 +101,7 @@ Therefore:
 - Rust UI is viable via software/DRM KMS or EGL/OpenGL ES, but **must be tested** with existing libc, EGL/Mesa and libdrm without disturbing the factory DRM master.
 - Candidates for exploration: Slint direct Linux KMS backend (DRM dumb buffers / software renderer or GBM/EGL), a custom SDL2/3 EGL backend, or wgpu's GLES backend **after verifying feature requirements**. None is proven on actual device.
 - Rust doesn't magically grant access to the proprietary factory graphics stack; UI architecture should separate logical coordinates (landscape) from native panel mode (portrait 800×1280) and read-only/takeover states.
+- **Slint licensing is material:** its official terms include **GPLv3** for open-source embedded products, alongside royalty-free/commercial options whose embedded scope differs. For our free-software MPFree vision, evaluate GPLv3 compatibility explicitly before adopting it. Source: https://github.com/slint-ui/slint/blob/master/LICENSE.md .
 - Some UI frameworks have per-component licensing, deployment dependencies or renderer restrictions; validate before adoption.
 
 ## Real-time Rust rules for MPFree (language-agnostic RT guarantees)
