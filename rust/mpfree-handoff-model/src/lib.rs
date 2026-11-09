@@ -151,8 +151,13 @@ impl HandoffSimulation {
             self.restore(StopReason::MissedHeartbeat);
             return Err(Error::InvalidDeadline);
         }
-        self.deadline_ms = Some(at_ms.checked_add(self.heartbeat_period_ms)
-            .ok_or(Error::InvalidDeadline)?);
+        let Some(next_deadline) = at_ms.checked_add(self.heartbeat_period_ms) else {
+            // A clock arithmetic overflow must never leave a fake session active
+            // without a new enforceable watchdog deadline.
+            self.restore(StopReason::MissedHeartbeat);
+            return Err(Error::InvalidDeadline);
+        };
+        self.deadline_ms = Some(next_deadline);
         Ok(())
     }
 
@@ -344,6 +349,19 @@ mod tests {
         m.simulate_mpfree_start(20).unwrap();
         assert_eq!(m.heartbeat(19), Err(Error::TimeWentBackwards));
         assert_eq!(m.state(), State::MpFreeActive);
+    }
+
+    #[test]
+    fn heartbeat_deadline_overflow_cannot_leave_session_running() {
+        let mut m = HandoffSimulation::default();
+        m.qualify(all_gates()).unwrap();
+        m.arm(100).unwrap();
+        m.simulate_stock_quiesce().unwrap();
+        m.simulate_resources_released().unwrap();
+        m.simulate_mpfree_start(u64::MAX - 150).unwrap();
+        assert_eq!(m.heartbeat(u64::MAX - 80), Err(Error::InvalidDeadline));
+        assert_eq!(m.state(), State::StockRestoring);
+        assert_eq!(m.stop_reason(), Some(StopReason::MissedHeartbeat));
     }
 
     #[test]
