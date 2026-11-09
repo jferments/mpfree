@@ -40,6 +40,7 @@ jobs:
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
+          sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -58,6 +59,7 @@ jobs:
               Path("tools/mpc-one/read-only-handoff-preflight.sh"),
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
+              Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -92,9 +94,15 @@ jobs:
           assert '"--handoff-preflight")' in wrapper
           assert '"--rtthreads")' in wrapper
           assert '"--capacity")' in wrapper
+          assert '"--ram-smoke-env")' in wrapper
           assert '"--ram-smoke-check")' in wrapper
           assert '"--ram-smoke")' in wrapper
           assert 'MPFREE_ACCEPT_VOLATILE_EXEC' in wrapper
+          assert 'read-only-ram-smoke-env.sh' in wrapper
+          host = Path("tools/mpc-one/host_ram_smoke.py").read_text()
+          assert '--env-script' in host
+          assert 'check_remote_environment(env_out)' in host
+          assert 'MPC missing required RAM-smoke utilities' in host
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
