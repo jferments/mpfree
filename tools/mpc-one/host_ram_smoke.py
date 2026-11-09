@@ -81,21 +81,75 @@ def preflight_elf(checker_path, report, binary, readelf):
         raise RuntimeError(f"ELF ABI not qualified (ABI checker exit {code})")
 
 
+
+REQUIRED_RUNTIME_TOOLS = (
+    "awk", "mktemp", "cat", "sha256sum", "timeout",
+    "nice", "chmod", "rm", "rmdir", "systemctl",
+)
+
+
+def check_remote_environment(report):
+    """Validate the read-only remote prerequisite report before any upload.
+
+    Report unavailable commands by name, instead of unexplained exit 127.
+    """
+    if ("MPFREE RAM SMOKE ENVIRONMENT READ ONLY" not in report
+            or "END MPFREE RAM SMOKE ENVIRONMENT" not in report):
+        raise RuntimeError("incomplete or unexpected remote utility report")
+    details = {}
+    for line in report.splitlines():
+        if line.startswith(("tool.", "run_mount_type=", "factory_service_active=",
+                            "factory_main_pid=", "armhf_interpreter=")):
+            key, value = line.split("=", 1)
+            if key in details:
+                raise RuntimeError(f"duplicate prerequisite field: {key}")
+            details[key] = value
+    unavailable = [
+        tool for tool in REQUIRED_RUNTIME_TOOLS
+        if details.get("tool." + tool) != "present"
+    ]
+    if unavailable:
+        raise RuntimeError(
+            "MPC missing required RAM-smoke utilities: "
+            + ", ".join(unavailable)
+            + "; see read-only --ram-smoke-env report; no upload attempted"
+        )
+    if details.get("run_mount_type") != "tmpfs":
+        raise RuntimeError(
+            "MPC /run not confirmed RAM-backed tmpfs; no upload attempted"
+        )
+    if details.get("factory_service_active") != "active" or (
+            details.get("factory_main_pid") != "present"):
+        raise RuntimeError(
+            "factory MPC app not confirmed active with a live MainPID; "
+            "no upload attempted"
+        )
+    if details.get("armhf_interpreter") != "present":
+        raise RuntimeError(
+            "ARM hard-float interpreter missing; no upload attempted"
+        )
+    return "PASS: /run tmpfs, all 10 required utilities, stock MPC active, ARM interpreter"
+
+
 def remote_run_script(expected_sha):
     """Only a fixed command sequence; caller cannot inject remote paths."""
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None:
         raise ValueError("invalid hash")
     return f"""set -eu
+printf 'STAGE=CHECK_RAM_MOUNT\n'
 # Assert the exact /run mount is tmpfs before creating any file.
 awk '$2=="/run" && $3=="tmpfs" {{found=1}} END{{exit !found}}' /proc/mounts
+printf 'STAGE=CHECK_UTILITIES\n'
 for tool in mktemp cat sha256sum awk timeout nice chmod rm rmdir systemctl; do
     command -v "$tool" >/dev/null
 done
+printf 'STAGE=CHECK_FACTORY_APP\n'
 # Require the stock GUI to be active throughout the coexistence test.
 test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
 pid="$(systemctl show acvs.service -p MainPID --value 2>/dev/null)"
 case "$pid" in ''|0|*[!0-9]*) exit 5 ;; esac
 test -d "/proc/$pid"
+printf 'STAGE=CREATE_TMPFS_DIR\n'
 umask 077
 stage="$(mktemp -d /run/mpfree-smoke.XXXXXXXX)"
 cleanup() {{
@@ -104,8 +158,10 @@ cleanup() {{
 }}
 trap cleanup 0
 trap 'exit 124' 1 2 15
+printf 'STAGE=RECEIVE_PAYLOAD\n'
 cat > "$stage/probe"
 chmod 0500 "$stage/probe"
+printf 'STAGE=VERIFY_SHA256\n'
 observed="$(sha256sum "$stage/probe" | awk '{{print $1}}')"
 test "$observed" = "{expected_sha}" || {{
     printf 'SHA256_MISMATCH\\n' >&2
@@ -116,14 +172,19 @@ printf 'MPFREE_VOLATILE_STAGE_SHA256_OK\\n'
 ulimit -c 0
 ulimit -f 0
 # Remote timeout is essential: terminating SSH alone cannot stop a child.
+printf 'STAGE=EXECUTE_RUST\n'
 timeout 5 nice -n 10 "$stage/probe" --self-test
+printf 'STAGE=RUST_EXECUTED\n'
 test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
 """
 
 
 def parse_results(stdout, stderr, code):
     if code:
-        raise RuntimeError(f"remote smoke exited {code}: {stderr[:800]}")
+        raise RuntimeError(
+            f"remote smoke exited {code}; "
+            f"last stdout={stdout[-1500:]!r}; last stderr={stderr[-800:]!r}"
+        )
     for marker in ("MPFREE_VOLATILE_STAGE_SHA256_OK", SMOKE_SENTINEL,
                    "status=PASS", "arch=arm", "os=linux",
                    "frames=4096", "beats=1"):
@@ -137,13 +198,15 @@ def main(argv=None):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--readelf", default="arm-linux-gnueabihf-readelf")
+    parser.add_argument("--env-script", required=True)
     parser.add_argument("--execute", action="store_true")
     a = parser.parse_args(argv)
     if not 1 <= a.port <= 65535:
         raise ValueError("invalid port")
     binary_path = Path(a.binary)
-    if not binary_path.is_file() or not Path(a.abi_script).is_file():
-        raise ValueError("expected compiled Rust ELF or ABI script is missing")
+    if (not binary_path.is_file() or not Path(a.abi_script).is_file()
+            or not Path(a.env_script).is_file()):
+        raise ValueError("expected compiled ELF or reviewed read-only survey script missing")
     if binary_path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("binary exceeds 2 MiB volatile staging budget")
     binary = binary_path.read_bytes()
@@ -161,6 +224,17 @@ def main(argv=None):
         raise RuntimeError(f"read-only SSH ABI failed: {err[:800]}")
     verify_live_board(out)
     print("Exact original MPC One / az0x 5.0.8 / glibc 2.39 confirmed.", flush=True)
+    print("LIVE READ-ONLY RAM runtime prerequisites (no upload).", flush=True)
+    code, env_out, env_err = call_ssh(
+        a.ip, a.port, a.user, a.key, "sh -s",
+        Path(a.env_script).read_bytes(), 25,
+    )
+    if code != 0:
+        raise RuntimeError(
+            f"read-only utility inspection failed (exit {code}): "
+            f"stdout={env_out[-800:]!r}, stderr={env_err[-500:]!r}"
+        )
+    print(check_remote_environment(env_out), flush=True)
     preflight_elf(Path(a.abi_checker), out, binary_path, a.readelf)
     if hashlib.sha256(binary_path.read_bytes()).hexdigest() != digest:
         raise RuntimeError("ELF changed after ABI validation; refusing upload")
