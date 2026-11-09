@@ -1,15 +1,15 @@
-# ADR-0001: Rust-first, C/C++-compatible MPFree architecture (PROPOSED)
+# ADR-0001: Rust-first, C/C++-compatible MPFree architecture (ACCEPTED)
 
 **Date:** 2026-11-08 America/Los_Angeles  
-**Status:** **PROPOSED — decision pending owner review.** Neither Rust migration nor removal of the validated C++ metronome has been authorized by this ADR.  
+**Status:** **ACCEPTED (owner decision, 2026-11-08 Pacific)** — MPFree-owned new code should be Rust-first; C/C++ remain supported for high-value integration. This authorizes a staged migration and Rust implementations, **not** deleting the existing C++ reference or changing MPC firmware/services.  
 **Repo:** `jferments/mpfree`; baseline branch `bootstrap/architecture-and-hardware-survey`.  
 **Basis:** owner-verified MPC One az0x 3.6.0 hardware research; nine/ nine Python audio packet tests, two/two C++ CTest tests, an audible host-generated 4-second 44.1-kHz stereo S32_LE metronome, and read-only observations.
 
-## Executive decision proposed
+## Accepted decision
 
 **Build new MPFree-owned core components primarily in Rust**, **keep targeted C/C++ adapters for externally maintained DSP engines, mature plugin ecosystems and low-level hardware when justified**, and permit running heavyweight C++ plugins on a laptop/desktop auxiliary host rather than trying to force them into the RK3288 MPC.
 
-This is a **Rust-first hybrid**, not a "rewrite every dependency in Rust" rule, and **not** an immediate deletion of the C++ proof of concept. Keep the existing `ClickEngine` as a reference implementation and a known-good baseline. Before accepting a permanent migration, require a Rust parity implementation plus **real ARMv7 hard-float cross-build** and deterministic tests on desktop. Until then language selection remains **proposed**.
+This is a **Rust-first hybrid**, not a "rewrite every dependency in Rust" rule. Keep the existing `ClickEngine` as a reference implementation and a known-good baseline. Before *retiring* the C++ reference, require a Rust parity implementation plus **real ARMv7 hard-float cross-build** and deterministic desktop tests. **The language policy is accepted; target runtime compatibility is a separate qualification gate.**
 
 The biggest actual risk of a Rust-first engine is **access to mature C++ plugin/instrument hosting frameworks and ARMv7-specific runtime integration**, not whether Rust can render 128 stereo audio frames.
 
@@ -154,14 +154,14 @@ A plugin/instrument/native C++ integration MUST NOT expose C++ STL, Rust `Vec` o
 
 Do not consider “a Rust wrapper around C++” the equivalent of fully memory-safe execution.
 
-## Proof required before final decision / migration
+## Qualification required before replacing the C++ baseline
 
 The working C++ and Python baseline is valuable. Owner results reported:
 - Python packet model **9/9 tests passed**, including reordering/late/loss/geometry.
 - CMake/CTest **2/2 tests passed**.
 - Four-second metronome at 120 BPM played audibly; 176,400 frames at 44.1 kHz, eight beat triggers.
 
-A reversible Rust comparison **spike** should:
+Our first accepted Rust implementation milestone should:
 1. Keep C++ source and CMake/CTest untouched as the reference.
 2. Add a standalone Cargo crate implementing the *same* tempo/beat/frame scheduling and S32 conversion, with equivalent input-output artifacts.
 3. Run deterministic parity tests: frame positions, noninteger BPM, different block segmentation, NaNs/clipping, endian WAV validation, period/buffer metadata and sequence number wrap.
@@ -172,9 +172,9 @@ A reversible Rust comparison **spike** should:
 8. Perform license/security/dependency audit: `cargo deny`, `cargo audit`, tracked lockfile and vendored build option for reproducibility.
 9. Review key FFI seams (sfizz, FluidSynth, plugin hosts) before committing to a feature list or deciding no C++ will ever be used.
 
-**Do not migrate on a hunch.** Approve Rust-first only after (2)–(5) succeed, and maintain the original C++ executable as a side-by-side reference until the new implementation meets or exceeds the tested contract.
+**Policy accepted; verification still required.** Implement Rust-first now, but preserve the original C++ executable as a side-by-side regression reference until the new implementation meets or exceeds the tested contract. ARMv7 cross-builds do not themselves establish ABI compatibility with az0x or authorize running a binary on the MPC.
 
-## Proposed layering
+## Accepted layering (implementation staged)
 
 ~~~text
 MPFree UI / controller model               Rust primarily (backend TBD)
