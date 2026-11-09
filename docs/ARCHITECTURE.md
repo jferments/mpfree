@@ -38,6 +38,29 @@ Audio callback: bounded work only; no file I/O, UI calls, dynamic memory allocat
 
 Use a deterministic sequencer model that can be unit-tested on a desktop before connecting to audio. Validate round-trip MIDI timing, audio latency, xruns, and shutdown/recovery on real hardware.
 
+### MPC One hardware findings (November 2026 verified evidence)
+
+See [first hardware survey](hardware/MPC_ONE_3_6_0_SURVEY_20261109.md) and [factory resource-ownership survey](hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md). These **observations** supersede earlier guesses that the target audio and GUI interfaces were unknown:
+
+- **SoC/CPU:** Rockchip RK3288; four ARMv7 cores (NEON/VFPv4), performance governor observed at 1.608 GHz; ~2 GiB memory, zero swap.
+- **Realtime kernel:** OpenEmbedded az0x 5.0.8 Linux 6.6.95 PREEMPT_RT. Neither a replacement kernel nor a supported ARM ABI is yet implemented.
+- **Audio:** ALSA card 1 ACVA with one playback and one capture PCM subdevice. Both were opened by the stock factory process with zero available subdevices at the observation moment. PCM rate/format/periods remain unmeasured.
+- **Controllers:** USB MIDI device `09e8:0046`, with three raw MIDI subports labelled Public/Private/MIDI Port. The stock application opens the raw-MIDI device three times. Port-to-pad/encoder/LED semantics remain unknown.
+- **UI:** factory app holds `/dev/dri/card0` and evdev `event0` (ILI2117 touchscreen), `event1` (GPIO keys). Mali-T760-compatible GPU has Panfrost and a DRM render node. Connector mode is **800x1280**; physical landscape transform remains unknown.
+- **Stock process:** `acvs.service`, launched via `/usr/bin/az01-launch-MPC`. Its process holds ALSA sequencer, playback, capture, controls, raw MIDI, evdev and DRM file descriptors concurrently. Do not hardcode session PID or file-descriptor numbers.
+- **Persistent storage:** factory eMMC partition labels are known, and `/etc`/`/var` are persistent writable overlays despite a read-only `/`. Recovery is not yet proven.
+
+**Implementation boundary:** the initial MPFree engine, transport and UI model must work on a workstation with a fake hardware backend. The MPC One HAL should (a) enumerate actual devices, (b) report ownership and capabilities without opening conflicting endpoints, and only later (c) acquire PCM/MIDI/KMS after a user-approved, reversible factory handoff. Never create a "startup on boot" hook during discovery, and do not stop `acvs.service` until a tested rollback/restore mechanism exists.
+
+A useful initial resource-state model is:
+
+```text
+SURVEY_ONLY → SUPPORTED_HARDWARE_VERIFIED → RECOVERY_VERIFIED
+            → CONSENTED_SESSION_TAKEOVER → RESTORE_STOCK
+```
+
+This is a **design state machine**, not a working installer. The later `CONSENTED_SESSION_TAKEOVER` stage is explicitly blocked today by missing backup/recovery proof and unknown audio/MIDI control semantics.
+
 ### Hardware adapter
 
 Expose a versioned interface for:
