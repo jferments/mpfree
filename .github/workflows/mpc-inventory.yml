@@ -250,11 +250,19 @@ jobs:
           capture_host = Path("tools/mpc-one/host_touch_capture.py").read_text()
           assert 'MPFREE_ACCEPT_TOUCH_CAPTURE=YES "$stage/probe" --capture' in capture_host
           assert 'ulimit -f 0' in capture_host and 'ulimit -t 15' in capture_host
+          # A dropped SSH link must not kill the remote shell before its
+          # EXIT trap deletes the /run copy.
+          assert "trap '' PIPE" in capture_host
+          assert 'const CAPTURE_SECONDS: u64 = 9;' in capture_src
+          assert 'STEP_SECONDS = 9' in capture_host
           for needle in ('EVIOCGRAB', 'systemctl stop', 'systemctl restart', 'fw_setenv',
                          'mount -o', 'dd if', 'dd of', '/dev/mmcblk'):
               assert needle not in capture_host, needle
           assert '"${MPFREE_ACCEPT_TOUCH_CAPTURE:-}" != \'YES\'' in wrapper
           assert '"${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != \'YES\'' in wrapper
+          # Owner presses Enter per step: the helper must stay in the terminal's
+          # foreground process group so it can read Enter and receive Ctrl-C.
+          assert 'timeout --foreground 1800 python3 "$SCRIPT_DIR/host_touch_capture.py"' in wrapper
           session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
           assert '#![forbid(unsafe_code)]' in session_source
           assert 'NullAudioBackend' in session_source
@@ -647,8 +655,8 @@ jobs:
           print("PASS: M9 touch EVIOCGABS metadata helper ARMv7 ELF glibc<=2.39; NOT DEPLOYED")
           capture=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-touch-capture")
           assert capture.is_file() and capture.stat().st_size < 2 * 1024 * 1024
-          for marker in (b"MPFREE_TOUCH_CAPTURE_V1", b"MPFREE_TOUCH_CAPTURE_ARMED",
-                         b"MPFREE_TOUCH_CAPTURE_WATCHDOG_70S_ARMED"):
+          for marker in (b"MPFREE_TOUCH_CAPTURE_V2", b"MPFREE_TOUCH_CAPTURE_ARMED",
+                         b"MPFREE_TOUCH_CAPTURE_WATCHDOG_20S_ARMED"):
               assert marker in capture.read_bytes(), marker
           def cap_elf(*args):
               return subprocess.run(["arm-linux-gnueabihf-readelf", *args, str(capture)],

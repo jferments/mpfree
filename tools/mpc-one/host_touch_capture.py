@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""M12: guarded 60-second read-only ILI2117 touch capture.
+"""M12: guarded, owner-paced, read-only ILI2117 touch capture.
 
 Invoked ONLY by the identity-gated collect-over-ssh.sh wrapper. It reuses the
-M5-M10 identity, ABI and RAM preflights, then (only with --execute) stages the
-fixed, hashed mpfree-touch-capture binary in /run, runs it once, streams its
-event log back, prints timed touch prompts, and checks afterwards that the
-factory app is still active and that eMMC partitions p1-p6 saw zero writes.
+M5-M10 identity, ABI and RAM preflights. Then, only with --execute, it walks
+the owner through the touch steps one at a time: for each step it shows the
+instruction, waits for Enter, stages the fixed, hashed mpfree-touch-capture
+binary in /run, runs it for one 9-second window (3-second countdown, then 6
+seconds to do the step), and checks afterwards that the stage directory is
+gone, the factory app is still active and eMMC p1-p6 saw zero writes.
 
 The capture binary opens /dev/input/event0 read-only and non-blocking. It
 never grabs the device, never issues an ioctl, and writes nothing on the MPC.
+Ctrl-C at any point closes the SSH session; the MPC side then stops within
+the 9-second window and its EXIT trap deletes the /run copy.
 """
 import argparse
 import hashlib
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -23,27 +28,43 @@ import time
 import host_ram_smoke as safe
 
 BINARY_NAME = "mpfree-touch-capture"
-HEADER = "MPFREE_TOUCH_CAPTURE_V1"
+HEADER = "MPFREE_TOUCH_CAPTURE_V2"
 ARMED = "MPFREE_TOUCH_CAPTURE_ARMED"
 END = "MPFREE_TOUCH_CAPTURE_END"
-WATCHDOG = "MPFREE_TOUCH_CAPTURE_WATCHDOG_70S_ARMED"
+WATCHDOG = "MPFREE_TOUCH_CAPTURE_WATCHDOG_20S_ARMED"
+LOG_HEADER = "MPFREE_TOUCH_CAPTURE_STEPS_V1"
+LOG_END = "MPFREE_TOUCH_CAPTURE_STEPS_END"
 PARTITIONS = range(1, 7)
-# Seconds after the device reports ARMED, and what to do next.
-PROMPTS = (
-    (0, "Get ready. First: one finger in the CENTRE."),
-    (3, "NOW: hold one finger still in the CENTRE for 3 s, then lift."),
-    (8, "TOP-LEFT corner: hold about 1 s, then lift."),
-    (12, "TOP-RIGHT corner: hold about 1 s, then lift."),
-    (16, "BOTTOM-RIGHT corner: hold about 1 s, then lift."),
-    (20, "BOTTOM-LEFT corner: hold about 1 s, then lift."),
-    (24, "Drag one finger slowly LEFT to RIGHT across the middle, then lift."),
-    (28, "Drag one finger slowly TOP to BOTTOM through the middle, then lift."),
-    (32, "TWO fingers down together, hold 2 s, then lift."),
-    (37, "FIVE fingers (one flat hand), hold 2 s, then lift."),
-    (43, "Optional: TEN fingers (both hands), hold 2 s, then lift."),
-    (50, "Done. Keep hands off the screen; capture stops at 60 s."),
+# Must equal CAPTURE_SECONDS in rust/mpfree-touch/src/bin/capture.rs.
+STEP_SECONDS = 9
+COUNTDOWN_SECONDS = 3
+# Per step: SSH connect, upload, the 9 s capture and the after-checks.
+STEP_DEADLINE_S = 45
+ABS_MT_TRACKING_ID = 57
+# (name, fingers, optional, instruction). Names must match STEP_NAMES in
+# rust/mpfree-touch/src/calibrate.rs. "Top-left" is as you face the MPC.
+STEPS = (
+    ("centre", 1, False,
+     "Hold ONE finger still in the CENTRE of the screen for 3 seconds, then lift."),
+    ("top_left", 1, False,
+     "Touch the TOP-LEFT corner, as close to the edges as you can. Hold 1 second, then lift."),
+    ("top_right", 1, False,
+     "Touch the TOP-RIGHT corner, as close to the edges as you can. Hold 1 second, then lift."),
+    ("bottom_right", 1, False,
+     "Touch the BOTTOM-RIGHT corner, as close to the edges as you can. Hold 1 second, then lift."),
+    ("bottom_left", 1, False,
+     "Touch the BOTTOM-LEFT corner, as close to the edges as you can. Hold 1 second, then lift."),
+    ("drag_left_to_right", 1, False,
+     "Drag ONE finger slowly from the LEFT edge to the RIGHT edge across the middle, then lift."),
+    ("drag_top_to_bottom", 1, False,
+     "Drag ONE finger slowly from the TOP edge to the BOTTOM edge through the middle, then lift."),
+    ("two_fingers", 2, False,
+     "Put TWO fingers down together, hold 2 seconds, then lift."),
+    ("five_fingers", 5, False,
+     "Put FIVE fingers down (one flat hand), hold 2 seconds, then lift."),
+    ("ten_fingers", 10, True,
+     "Optional: put TEN fingers down (both hands), hold 2 seconds, then lift."),
 )
-EXECUTE_DEADLINE_S = 110
 
 
 def parse_preflight(report):
@@ -94,6 +115,9 @@ def remote_script(digest):
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("invalid SHA-256")
     return r"""set -eu
+# If the SSH link closes early (Ctrl-C on the workstation), writes fail with
+# EPIPE instead of killing the shell, so the EXIT trap below always runs.
+trap '' PIPE
 printf 'STAGE=CHECK_RUN_TMPFS\n'
 awk '$2=="/run" && $3=="tmpfs" {found=1} END{exit !found}' /proc/mounts
 for tool in mktemp cat sha256sum awk chmod rm rmdir systemctl grep readlink; do
@@ -136,7 +160,7 @@ ulimit -t 15
 policy="$(awk '{sub(/^.*\) /, ""); if (NF >= 39) print $39; else print "unavailable"}' /proc/self/stat)"
 test "$policy" = "0"
 printf 'STAGE=TOUCH_CAPTURE\n'
-# Fixed binary, fixed argument. Read-only event0, no grab, no ioctl.
+# Fixed binary, fixed argument, fixed 9 s. Read-only event0, no grab, no ioctl.
 status=0
 MPFREE_ACCEPT_TOUCH_CAPTURE=YES "$stage/probe" --capture || status=$?
 printf 'STAGE=CAPTURE_EXITED status=%s\n' "$status"
@@ -152,8 +176,12 @@ exit "$status"
         "__POST__", counters_script("post_"))
 
 
-def check_execution(stdout, stderr, code):
-    """Validate the run. Returns the capture footer fields."""
+def check_execution(stdout, stderr, code, baseline):
+    """Validate one step's run. Returns (footer fields, capture lines).
+
+    `baseline` is the eMMC p1-p6 counters from the read-only preflight. Both
+    the before and after counters of every step must equal it exactly.
+    """
     lines = stdout.splitlines()
     if code != 0:
         raise RuntimeError(
@@ -170,80 +198,167 @@ def check_execution(stdout, stderr, code):
         raise RuntimeError("capture watchdog not demonstrated")
     before = parse_counters(stdout, "pre_")
     after = parse_counters(stdout, "post_")
-    if before != after:
-        changed = sorted(k for k in before if before[k] != after[k])
-        raise RuntimeError(f"eMMC boot-chain counters changed during capture: {changed}")
+    for label, seen in (("before", before), ("after", after)):
+        if seen != baseline:
+            changed = sorted(k for k in baseline if baseline[k] != seen[k])
+            raise RuntimeError(
+                f"eMMC boot-chain counters {label} this step differ from the preflight: {changed}")
     footer = [l for l in lines if l.startswith(END + " ")]
     if len(footer) != 1:
         raise RuntimeError("missing/repeated capture footer")
     fields = dict(kv.split("=", 1) for kv in footer[0].split()[1:] if "=" in kv)
     if fields.get("status") != "PASS":
         raise RuntimeError(f"capture status {fields.get('status')!r}")
-    events = sum(1 for l in lines if l.startswith("E "))
+    first, last = lines.index(HEADER), lines.index(footer[0])
+    if not first < lines.index(ARMED) < last:
+        raise RuntimeError("capture markers out of order")
+    capture = lines[first:last + 1]
+    events = sum(1 for l in capture if l.startswith("E "))
     if str(events) != fields.get("events"):
         raise RuntimeError("streamed event count does not match capture footer")
-    if events == 0:
-        raise RuntimeError(
-            "zero touch events received: the factory app may hold an exclusive "
-            "grab on event0, or the screen was not touched"
-        )
-    return fields
+    return fields, capture
 
 
-def stream_capture(command, image, deadline_s, log_path, prompts, out):
-    """Run the remote capture, stream stdout to the log, print prompts."""
+def count_touches(capture):
+    """New contacts in a step: ABS_MT_TRACKING_ID events with a value >= 0."""
+    n = 0
+    for line in capture:
+        f = line.split()
+        if (len(f) == 6 and f[0] == "E" and f[3] == "3"
+                and f[4] == str(ABS_MT_TRACKING_ID) and not f[5].startswith("-")):
+            n += 1
+    return n
+
+
+def run_step(command, image, deadline_s, go_text, out, countdown=COUNTDOWN_SECONDS):
+    """Run one remote capture: upload, countdown once armed, GO, then STOP.
+
+    Returns (exit code, stdout, stderr). Kills the local ssh client on the
+    deadline or on any exception (including Ctrl-C).
+    """
     proc = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    armed = threading.Event()
-    stderr_chunks = []
+    lines, err_chunks = [], []
+    armed, ended, eof = threading.Event(), threading.Event(), threading.Event()
 
-    def drain_stderr():
-        stderr_chunks.append(proc.stderr.read())
-
-    def prompt():
-        if not armed.wait(deadline_s):
-            return
-        start = time.monotonic()
-        for at, text in prompts:
-            delay = start + at - time.monotonic()
-            if delay > 0 and proc.poll() is None:
-                time.sleep(delay)
-            if proc.poll() is not None:
-                return
-            out(f"[{at:2d}s] {text}")
-
-    killer = threading.Timer(deadline_s, proc.kill)
-    threads = [threading.Thread(target=drain_stderr, daemon=True),
-               threading.Thread(target=prompt, daemon=True)]
-    for t in threads:
-        t.start()
-    killer.start()
-    stdout_lines = []
-    try:
-        proc.stdin.write(image)
-        proc.stdin.close()
-        with open(log_path, "x", encoding="utf-8") as log:
+    def read_stdout():
+        try:
             for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").rstrip("\n")
-                stdout_lines.append(line)
-                log.write(line + "\n")
+                lines.append(line)
                 if line == ARMED:
                     armed.set()
-                    out("Capture armed: 60 s window starts now.")
-        code = proc.wait()
+                elif line.startswith(END + " "):
+                    ended.set()
+        finally:
+            eof.set()
+
+    def read_stderr():
+        err_chunks.append(proc.stderr.read())
+
+    readers = [threading.Thread(target=read_stdout, daemon=True),
+               threading.Thread(target=read_stderr, daemon=True)]
+    for t in readers:
+        t.start()
+    stop_at = time.monotonic() + deadline_s
+
+    def wait_for(event):
+        while not event.is_set() and not eof.is_set():
+            left = stop_at - time.monotonic()
+            if left <= 0:
+                return False
+            event.wait(min(left, 0.1))
+        return event.is_set()
+
+    try:
+        try:
+            proc.stdin.write(image)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass  # remote side ended early; its output says why
+        if wait_for(armed):
+            for n in range(countdown, 0, -1):
+                if ended.is_set() or eof.is_set():
+                    break
+                out(f"  {n}...")
+                time.sleep(1)
+            if not (ended.is_set() or eof.is_set()):
+                out(f"GO: {go_text}  ({STEP_SECONDS - countdown} s)")
+            if wait_for(ended):
+                out("STOP. Lift your fingers.")
+        left = stop_at - time.monotonic()
+        code = proc.wait(timeout=max(left, 0.1))
+    except subprocess.TimeoutExpired:
+        code = None
     finally:
-        killer.cancel()
-        armed.set()
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    threads[0].join(5)
+    for t in readers:
+        t.join(5)
     proc.stdout.close()
     proc.stderr.close()
-    stderr = b"".join(c for c in stderr_chunks if c).decode("utf-8", "replace")
-    return code, "\n".join(stdout_lines) + "\n", stderr
+    if code is None:
+        code = proc.returncode
+        out(f"step exceeded {deadline_s} s; ssh closed")
+    stderr = b"".join(c for c in err_chunks if c).decode("utf-8", "replace")
+    return code, "\n".join(lines) + "\n", stderr
+
+
+def run_steps(command, image, baseline, log_path, out, ask, steps=STEPS,
+              deadline_s=STEP_DEADLINE_S, countdown=COUNTDOWN_SECONDS):
+    """Walk the owner through every step. Each step is its own guarded run.
+
+    `ask(prompt)` reads one line from the owner (input() in real use).
+    Returns the number of steps kept in the event log.
+    """
+    kept = 0
+    total_events = 0
+    with open(log_path, "x", encoding="utf-8") as log:
+        log.write(LOG_HEADER + "\n")
+        log.flush()
+        for i, (name, fingers, optional, text) in enumerate(steps, 1):
+            while True:
+                out("")
+                out(f"[{i}/{len(steps)}] {text}")
+                prompt = "Press Enter when you are ready"
+                if optional:
+                    prompt += " (or type s then Enter to skip)"
+                reply = ask(prompt + ": ").strip().lower()
+                if optional and reply == "s":
+                    out(f"step {name}: skipped")
+                    break
+                out("Starting the capture on the MPC...")
+                code, stdout, stderr = run_step(
+                    command, image, deadline_s, text, out, countdown)
+                fields, capture = check_execution(stdout, stderr, code, baseline)
+                touches = count_touches(capture)
+                out(f"step {name}: events={fields.get('events')} touches={touches} "
+                    f"drops={fields.get('drops')}; eMMC p1-p6 unchanged, /run copy "
+                    "removed, factory app active")
+                if fields.get("events") == "0":
+                    out("No events reached the capture. If this repeats, the factory app "
+                        "may hold an exclusive grab on event0; press Ctrl-C to stop.")
+                if touches != fingers:
+                    out(f"Expected {fingers} touch(es), saw {touches}.")
+                    again = ask("Press Enter to redo this step, or type k then Enter "
+                                "to keep it anyway: ").strip().lower()
+                    if again != "k":
+                        continue
+                log.write(f"STEP {name}\n")
+                log.write("\n".join(capture) + "\n")
+                log.flush()
+                kept += 1
+                total_events += int(fields.get("events", "0"))
+                break
+        if total_events == 0:
+            raise RuntimeError(
+                "zero touch events in every step: the factory app may hold an "
+                "exclusive grab on event0, or the screen was not touched")
+        log.write(f"{LOG_END} steps={kept}\n")
+    return kept
 
 
 def main(argv=None):
@@ -271,7 +386,7 @@ def main(argv=None):
     image = path.read_bytes()
     for required in (HEADER, ARMED, WATCHDOG):
         if required.encode("ascii") not in image:
-            raise ValueError(f"stale capture binary missing {required}")
+            raise ValueError(f"stale capture binary missing {required}; rebuild it")
     digest = hashlib.sha256(image).hexdigest()
 
     out("M12 live MPC identity and ARMv7 ABI preflight; read-only.")
@@ -289,10 +404,16 @@ def main(argv=None):
         a.ip, a.port, a.user, a.key, "sh -s", Path(a.capture_script).read_bytes(), 20)
     if code:
         raise RuntimeError(f"touch capture preflight failed: {pre_err[-600:]}")
-    counters = parse_preflight(pre_out)
+    baseline = parse_preflight(pre_out)
     out("PASS: ILI2117 event0 and I2C binding confirmed, factory app active.")
     out("eMMC p1-p6 writes completed: " + " ".join(
-        f"p{p}={counters[(p, 'writes')]}" for p in PARTITIONS))
+        f"p{p}={baseline[(p, 'writes')]}" for p in PARTITIONS))
+    stale = stale_stage_dirs(pre_out)
+    if stale:
+        out(f"NOTE: {stale} leftover /run/mpfree-touch-capture.* folder(s) from an "
+            "interrupted run. They are in RAM only and a reboot removes them.")
+    else:
+        out("No leftover /run/mpfree-touch-capture.* folders.")
     safe.preflight_elf(Path(a.abi_checker), abi, path, "arm-linux-gnueabihf-readelf")
     if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
         raise RuntimeError("capture binary changed during ABI preflight")
@@ -302,24 +423,56 @@ def main(argv=None):
         return 0
 
     log_path = Path(a.report).with_suffix(".events.log")
-    out("OWNER DUAL OPT-IN: 60 s read-only event0 capture from /run.")
-    out("Follow the prompts below. Touches also reach the Akai app as usual.")
+    out(f"OWNER DUAL OPT-IN: {len(STEPS)} read-only event0 capture steps from /run.")
+    out("For each step: read it, press Enter, wait for the 3-2-1 countdown, then do it")
+    out(f"during the {STEP_SECONDS - COUNTDOWN_SECONDS} s window. Touches also reach the "
+        "Akai app as usual. Ctrl-C stops at any time.")
     command = safe.ssh_command(
         a.ip, a.port, a.user, a.key, "sh -c " + shlex.quote(remote_script(digest)))
-    code, stdout, stderr = stream_capture(
-        command, image, EXECUTE_DEADLINE_S, log_path, PROMPTS, out)
-    fields = check_execution(stdout, stderr, code)
-    out(f"capture events={fields.get('events')} drops={fields.get('drops')} "
-        f"elapsed_ms={fields.get('elapsed_ms')}")
-    out("PASS: eMMC p1-p6 counters unchanged, /run stage removed, factory app active.")
+    kept = run_steps(command, image, baseline, log_path, out, input)
+    out("")
+    out(f"PASS: {kept} steps captured; every step left eMMC p1-p6 unchanged, removed "
+        "its /run copy, and the factory app stayed active.")
     out(f"Event log: {log_path}")
     out("Next: run mpfree-touch-analyze on the event log (see runbook).")
     return 0
 
 
+def stale_stage_dirs(preflight):
+    for line in preflight.splitlines():
+        m = re.fullmatch(r"stale_stage_dirs=([0-9]{1,6})", line)
+        if m:
+            return int(m.group(1))
+    raise RuntimeError("touch capture preflight did not report stale_stage_dirs")
+
+
+_interrupted = False
+
+
+def _on_signal(signum, frame):
+    """First Ctrl-C (or TERM from the wrapper's timeout) stops the run; any
+    repeat is ignored so it cannot cut the cleanup short."""
+    global _interrupted
+    if _interrupted:
+        return
+    _interrupted = True
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nM12 STOPPED BY OWNER: ssh closed. On the MPC the capture ends within "
+              f"{STEP_SECONDS} s and its /run copy is deleted. Nothing else was changed.",
+              file=sys.stderr)
+        sys.exit(130)
+    except EOFError:
+        print("M12 STOPPED: no terminal input (run it from an interactive terminal).",
+              file=sys.stderr)
+        sys.exit(2)
     except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"M12 FAIL CLOSED: {exc}", file=sys.stderr)
         sys.exit(2)

@@ -1,8 +1,9 @@
 //! M12: bounded, non-grabbing, read-only ILI2117 event capture.
 //!
 //! Prints every evdev event from `/dev/input/event0` as one text line for at
-//! most CAPTURE_SECONDS, then exits. All decoding and calibration happens on
-//! the workstation (`mpfree-touch-analyze`).
+//! most CAPTURE_SECONDS, then exits. The workstation runs it once per touch
+//! step, after the owner presses Enter. All decoding and calibration happens
+//! on the workstation (`mpfree-touch-analyze`).
 //!
 //! What this program does on the MPC, and nothing else:
 //! - reads sysfs to confirm event0 is the ILI2117 on I2C 4-0026;
@@ -22,8 +23,10 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant};
 
 const DEVICE: &str = "/dev/input/event0";
-const CAPTURE_SECONDS: u64 = 60;
-const WATCHDOG_SECONDS: u64 = 70;
+/// One touch step: about 3 s of countdown on the workstation, then 6 s to
+/// perform it. Must match STEP_SECONDS in tools/mpc-one/host_touch_capture.py.
+const CAPTURE_SECONDS: u64 = 9;
+const WATCHDOG_SECONDS: u64 = 20;
 const MAX_EVENTS: u64 = 100_000;
 const POLL_MS: u64 = 10;
 /// struct input_event on 32-bit ARM Linux: u32 sec, u32 usec, u16 type,
@@ -36,10 +39,10 @@ const EV_SYN: u16 = 0;
 const EV_MAX: u16 = 0x1f;
 const SYN_DROPPED: u16 = 3;
 
-const HEADER: &str = "MPFREE_TOUCH_CAPTURE_V1";
+const HEADER: &str = "MPFREE_TOUCH_CAPTURE_V2";
 const ARMED: &str = "MPFREE_TOUCH_CAPTURE_ARMED";
 const END: &str = "MPFREE_TOUCH_CAPTURE_END";
-const WATCHDOG_MARKER: &str = "MPFREE_TOUCH_CAPTURE_WATCHDOG_70S_ARMED";
+const WATCHDOG_MARKER: &str = "MPFREE_TOUCH_CAPTURE_WATCHDOG_20S_ARMED";
 const OPT_IN: &str = "MPFREE_ACCEPT_TOUCH_CAPTURE";
 
 /// Same identity rules as the M10 metadata probe (src/main.rs), duplicated
