@@ -2,7 +2,7 @@
 
 **Objective:** a reproducible, legally distributable, evidence-based map of MPC One firmware/hardware interfaces that other developers can use without proprietary firmware copies. This is a work queue and evidence schema. Nothing marked UNKNOWN should be interpreted as a published hardware specification.
 
-Reference baseline: [MPC One 3.6.0](MPC_ONE_3_6_0_BASELINE.md). Latest redacted evidence: [initial 2026-11-09 survey](MPC_ONE_3_6_0_SURVEY_20261109.md) and [focused hardware-ownership survey](MPC_ONE_3_6_0_RESOURCES_20261109.md). Read-only collection: [developer access](DEVELOPER_ACCESS.md).
+Reference baseline: [MPC One 3.6.0](MPC_ONE_3_6_0_BASELINE.md). Latest redacted evidence: [initial survey](MPC_ONE_3_6_0_SURVEY_20261109.md), [focused ownership survey](MPC_ONE_3_6_0_RESOURCES_20261109.md), and [44.1-kHz audio/runtime survey](MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md). Read-only collection: [developer access](DEVELOPER_ACCESS.md).
 
 ## Evidence procedure
 
@@ -22,18 +22,18 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 | ID | Subsystem | Current knowledge | Next safe question | Required evidence | Implementation output |
 | --- | --- | --- | --- | --- | --- |
 | SYS-01 | Board/SoC | **OBSERVED:** device tree `rockchip,rk3288`, `inmusic,acva`, `inmusic,az01` | Confirm SoC revision and binding of active kernel drivers | Device-tree `compatible`, driver symlink metadata | Stable platform identification |
-| SYS-02 | CPU/RAM | **OBSERVED:** four ARMv7 RK3288 CPUs, NEON/VFPv4, **performance @ 1,608 MHz**; ~2 GiB RAM, ~1 GiB `Mlocked` (owner unknown) | Sample thread priority, runtime CPU affinity, memory lock owner | `/proc/<pid>/task`, `/proc/<pid>/status`, `/sys/devices/system/cpu` | ARMv7 RT/memory performance budget |
+| SYS-02 | CPU/RAM | **OBSERVED:** four ARMv7 RK3288 CPUs, NEON/VFPv4, **performance @ 1,608 MHz**; ~2 GiB RAM, ~1 GiB locked largely accounted for by `/usr/bin/MPC` (`VmLck=1040052 kB`); 38 threads | Sample thread priority, runtime CPU affinity, memory lock owner | `/proc/<pid>/task`, `/proc/<pid>/status`, `/sys/devices/system/cpu` | ARMv7 RT/memory performance budget |
 | SYS-03 | Kernel/modules | **OBSERVED:** 6.6.95 PREEMPT_RT; I²S/JP07 ASoC modules, Panfrost IRQ; sched RT 950000/1000000 | Audio thread priorities, IRQ affinity, true kernel-config features | `/proc/<pid>/task`, `/proc/interrupts`, sysfs | Real-time tuning evidence |
 | BOOT-01 | Internal eMMC | **OBSERVED:** 7.3 GiB eMMC with PARTNAME labels `uboot-spl`, `env`, `uboot`, `splash`, `recoverysplash`, `rootfs`, `content`, `data`; boot0/boot1 also present | Read-only boot-chain metadata and validated restoration study | `/sys/class/block/mmcblk0p*/uevent`, partition metadata | Partition reference map **without** writes |
 | BOOT-02 | Boot/update chain | UNKNOWN | Is there A/B switching, U-Boot and recovery without Linux? | Non-destructive vendor documentation, read-only boot metadata | Proven recovery prerequisite |
 | FS-01 | Overlayfs | `/etc` and `/var` persistent upperdirs observed | Which paths are mutable and survive reboot? | `mount`, `/proc/mounts`, optional benign isolated tests **only after consent** | Runtime/installer path constraints |
 | FS-02 | USB execution | Research USB showed `noexec` mount | Which deployment paths support ARM ELF? | `/proc/mounts`, loader inspection; executable tests only in isolated phase | Portable loader strategy |
-| APP-01 | Factory GUI | **OBSERVED:** `acvs.service` active; dynamic MainPID has DRM, ALSA PCM playback/capture, control, seq, triple RawMIDI, touch and gpio-key fds | Which threads own audio, GPU, MIDI and what are service dependencies? | `systemctl show acvs.service`, `/proc/<pid>/task`, fd symlink metadata | Safe takeover supervisor design |
+| APP-01 | Factory GUI | **OBSERVED:** `acvs.service` (`Restart=always`) runs `/usr/bin/MPC` with 38 threads; it has DRM, ALSA PCM playback/capture, control, seq, triple RawMIDI, touch and gpio fds | Map each audio thread policy/affinity and safely restorable lifecycle | `/proc/<pid>/task`, systemd properties; no service changes | Safe takeover supervisor design |
 | APP-02 | Libraries/plugins | UNKNOWN | What libraries load and which formats are public? | dependency and path metadata; separate local legal review | Clean-room API design |
-| AUD-01 | Audio devices | **OBSERVED:** ACVA card1 PCM playback/capture, one subdevice each, **0 available while stock app runs** | Negotiated format/rate/period from procfs, then codec routing and capabilities | `/proc/asound/card1/pcm0{p,c}/sub0/hw_params`, no opens | ACVA driver backend prototype |
+| AUD-01 | Audio devices | **OBSERVED:** ACVA playback & capture actively configured **44.1 kHz, stereo, S32_LE, interleaved, 128-frame periods**, with 384-frame output and 256-frame input buffer | Full driver capability matrix, physical codec, measured xrun/latency | `/proc/asound` for stock state; later consented exclusive tests | S32 PCM HAL profile and offline engine tests |
 | AUD-02 | Audio ownership | **OBSERVED:** `acvs.service` MainPID holds `/dev/snd/pcmC1D0p`, `pcmC1D0c`, `controlC1`, `/dev/snd/seq`, three raw-MIDI fds | Is it exclusive? How to restore exact normal ownership after a later test? | Existing `/proc/<pid>/fd`, ALSA subdevice availability; later opt-in trial | Arbitration/ownership policy |
 | AUD-03 | Realtime performance | UNKNOWN | Rate, periods, xruns, latency? | Controlled **opt-in** audio test with factory app idle/stopped safely | Audio engine budgets |
-| MIDI-01 | Controller protocol | **OBSERVED:** USB `09e8:0046` full-speed 12 Mbit/s Akai MPC One MIDI (two interfaces), RawMIDI 3 subports, stock app opens `/dev/snd/midiC0D0` three times | Map USB interface descriptors, then physical pad/encoder event semantics | USB sysfs interface descriptors; later controlled passive capture | Versioned MIDI mapping table |
+| MIDI-01 | Controller protocol | **OBSERVED:** USB `09e8:0046` AudioControl/MIDIStreaming interfaces, three RawMIDI ports; kernel counters show output0 6,036,856B, output1 29,775B, input1 49,837B; JUCE/MPC sequencer graph mapped | Which substreams carry pad/encoder activity? | Short read-only counter deltas during physical user presses (no device opens) | Versioned MIDI mapping table |
 | MIDI-02 | LED/output | UNKNOWN | LED/control feedback protocol? | Later active opt-in experiments, no unsolicited writes | Bidirectional controller backend |
 | UI-01 | Display | **OBSERVED:** DRM `card0-DSI-1` enabled `800x1280`, framebuffer virtual `800x3840` @ 32 bpp, Mali-T760-compatible Panfrost GPU | Physical panel orientation, transforms, compositor ownership | DRM sysfs, `/proc/<pid>/fd`, later GUI isolation tests | DRM/KMS display backend |
 | UI-02 | Touchscreen | **OBSERVED:** ILI2117 `event0` opened by factory app; touch capability bitmasks captured | Absolute ranges, calibration/rotation, multi-touch tracking | sysfs/device tree; later non-interfering opt-in capture | Touch adapter |
@@ -41,6 +41,10 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 | IO-01 | External MIDI/USB | **OBSERVED:** Akai USB `09e8:0046` internal MIDI; PNY `154b:1006` removable research USB; DWC/EHCI/OHCI controllers | Inspect interface subclass/protocol; distinguish control and external data ports | `/sys/bus/usb/devices/*`, `/proc/asound` | I/O backend |
 | NET-01 | Ethernet | **OBSERVED:** `end0`, direct IPv4; stmmac-like PHY IRQ label | Driver details, link config, factory default discovery | `/sys/class/net/end0`, `/proc/interrupts` | Discovery/network API |
 | CONTENT-01 | Factory content | p7 content mounted; formats UNKNOWN | User content paths/formats and provenance? | filenames/metadata only, local user-authorized inspection | Local-only importer |
+
+## Current implemented software milestone
+
+**M0 (host-only) is implemented:** [Deterministic audio core and WAV renderer](../engineering/FIRST_AUDIO_CORE.md). A C++17 sample-frame click engine with a bounded, precomputed wavetable and saturating float-to-S32 converter; offline WAV demo and CI tests. Does not access MPC devices. This is a software foundation, not a proof of audio-driver takeover or ROM recovery.
 
 ## Research order
 
