@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-device-smoke"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bounded no-device Rust on-target MPC One userspace smoke test"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }
