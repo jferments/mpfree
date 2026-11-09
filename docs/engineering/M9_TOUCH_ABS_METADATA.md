@@ -1,6 +1,6 @@
 # M9: exact ILI2117 evdev ABS axis metadata — isolated Rust interface
 
-**Status:** Code, synthetic model and Linux EVIOCGABS request ABI developed and included in the locked Rust workspace. **NOT executed on the MPC.** No mode added to `collect-over-ssh.sh`, no remote application uploaded, no evdev access on the MPC, no touch gestures or display takeover. A future hardware interaction needs an owner-reviewed separate allowlisted deployment with explicit consent.
+**Status:** M9 host implementation and tests passed on owner ML-tower (48 Rust workspace tests); M10 now adds a separate exact-identity-gated `--touch-axes-check` read-only ABI+ILI2117 preflight and double-opt-in `--touch-axes` temporary read-only EVIOCGABS mode. **Not executed on the MPC**. Details, safety and commands: [M10 guarded touch axes](M10_GUARDED_TOUCH_AXES.md). No touch gestures or display handoff.
 
 ## Why a new interface is needed
 
@@ -44,7 +44,7 @@ CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
 
 ## Future separate owner consent / deployment plan
 
-1. Add a narrowly allowlisted `--touch-axes-check` read-only preflight to the existing exact Ethernet/MAC/SSH guard. Verify original MPC One, expected az0x/glibc/kernel, factory `acvs.service` still active, ILI2117 exact sysfs identity and current USB/SSH route.
+1. **Implemented in M10; hardware not yet run.** Add a narrowly allowlisted `--touch-axes-check` read-only preflight to the existing exact Ethernet/MAC/SSH guard. Verify original MPC One, expected az0x/glibc/kernel, factory `acvs.service` still active, ILI2117 exact sysfs identity and current USB/SSH route.
 2. Add an explicitly authorized `--touch-axes` mode with **two independent opt-ins**; only upload the exact cross-compiled, verified-hash ARMv7 `mpfree-touch` helper to volatile `/run`; set bounded CPU/wall deadline and separate watcher; run *only* the compiled `--inspect` action; remove staging directory even on failure. No arbitrary paths or commands.
 3. Validate output as one `MPFREE_TOUCH_ABS_METADATA_V1` with exact driver/bus/access markers, all six axis range fields, no live touch values, and no unexpected error/duplicate markers. Verify the factory app remained active and the touchscreen/buttons still work after the test. **If there is any unexpected change, halt and diagnose.**
 4. Import only these measured ranges and slot count into the M8 `map_raw_touch` calibration model. Raw physical-to-logical rotation still requires separately authorized touch/corner sampling; axis limits alone cannot determine physical orientation.
