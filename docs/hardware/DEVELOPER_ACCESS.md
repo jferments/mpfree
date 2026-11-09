@@ -178,6 +178,27 @@ This is an **active** test; it performs 20 ICMP pings and transfers **4 MiB in e
 
 Both commands retain the same verified `eno1np0`/MPC MAC identity gates and strict SSH host-key checking as previous successful probes. **The new probes still require first real-device verification**; CI shell syntax and safety heuristics are not proof that firmware exposes every optional file.
 
+### M3: read-only ABI and reversible-handoff preflights (first run still pending)
+
+The current research is moving toward a **Rust-first userspace** without replacing the stock kernel. Before testing an MPFree executable on the MPC, we must establish the **actual GNU libc version and dynamic loader compatibility**, and map the **real stock application lifecycle and resource ownership**.
+
+Both commands below use the same direct Ethernet IP/MAC/host-key identity check and SSH key as the successful previous hardware surveys. They **do not** stop `acvs.service`, open ALSA/DRM/MIDI, modify firmware, write persistent storage, or alter USB controller roles:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+sh -n tools/mpc-one/read-only-abi.sh
+sh -n tools/mpc-one/read-only-handoff-preflight.sh
+
+bash tools/mpc-one/collect-over-ssh.sh --abi
+bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
+~~~
+
+Local reports are saved under `research/mpc-one-abi-*.txt` and `research/mpc-one-handoff-preflight-*.txt`, plus SHA-256 sidecars. **Redact boot args, local IP/MAC, serials and unit environment information before public sharing**; raw reports must stay off GitHub.
+
+`--abi` lists user-space loader/libc/ALSA/DRM/EGL paths and glibc version. [ARM compatibility guide](../engineering/ARMV7_USERSPACE_COMPATIBILITY.md) explains how to use the host-only ELF comparison script after receipt. `--handoff-preflight` maps systemd unit behavior, fds and rollback dependencies; [reversible handoff design](../engineering/REVERSIBLE_HANDOFF.md) explicitly prohibits any live takeover until independent recovery and a watchdog-backed restoration test are proven. **Neither new probe has been run on the owner's MPC yet.**
+
 ### Execute the automated read-only inventory
 
 This repository contains:
