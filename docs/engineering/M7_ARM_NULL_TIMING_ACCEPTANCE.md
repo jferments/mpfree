@@ -1,6 +1,29 @@
 # M7: optional synthetic callback timing on the physical MPC (no ALSA)
 
-**Status:** New read-only M7 ELF/target check and independently allowlisted, time-limited **dual-opt-in** RAM-only execution mode implemented. **M7 has not yet run on the physical MPC**. This is a finite, purely synthetic null-audio timing experiment, not a display/audio handoff, not a daemon, not an ALSA xrun test. The old M5 and M6 modes remain unchanged.
+**Status: PHYSICAL MPC M7 PASSED.** On 2026-11-09 owner ran read-only `--session-check` and double-opted-in to finite RAM-only `--session-smoke`, obtaining correct PCM checksum and zero synthetic deadline misses while factory app was active. This is **not** a real ACVA ALSA timing/xrun test, a persistent daemon, an application restart or a graphics takeover. M5 and M6 modes are unchanged. Full sanitized measurements: [validated M7/process/touch report](../hardware/MPC_ONE_M7_PROCESS_TOUCH_VALIDATED_20261109.md).
+
+## Physical MPC One M7 timing — owner-run 2026-11-09
+
+All live preflight gates passed: correct original MPC One / az0x 5.0.8 / libc 2.39, ELF32 ARM hard-float, target PT_INTERP, highest symbol need GLIBC 2.34, no missing libraries, /run tmpfs, stock application active, SCHED_OTHER, independent double owner consent, SHA-256 verification and volatile cleanup trap.
+
+**Real MPC, still pure userspace/null backend:**
+
+| Metric | Observed |
+| --- | ---: |
+| Frames / callbacks | 88,200 / 690 |
+| Nominal 128-frame period | 2,902.49µs |
+| Synthetic deadline misses | **0** |
+| Late starts | 690 (all slightly behind nominal start) |
+| p99 / maximum callback duration | **66µs / 165µs** |
+| Maximum start lateness | **167µs** |
+| Sum of render times | **26,859µs** |
+| Elapsed wall | **1,999,934µs** |
+| PCM FNV1a64 | **`3dc4d6dabbb17fbd`** — host+M6 parity |
+| Outcome | **PASS** |
+
+This means our ~2-second **small fixed sample/sequencer** workload produced all synthetic callbacks inside their deadlines while the factory application remained alive. The slowest callback consumed 5.68% of a nominal 2.90ms period; total render time was ~1.34% of a single core-equivalent wall-time budget. These are **not** whole-DAW CPU utilization or an xrun-free ALSA guarantee. No DRM, evdev, controller MIDI or ACVA device was opened by M7.
+
+Original private user reports remain outside the repository. No user identifiers or raw logs are committed.
 
 ## M7 owner ML-tower result — 2026-11-09
 
