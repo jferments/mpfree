@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-touch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ILI2117 metadata-only evdev axis survey; no event reads or grabs"
+
+[lib]
+name = "mpfree_touch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mpfree-touch"
+path = "src/main.rs"
+
+[dependencies]
