@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "schema_note": "Single-owner MPC One survey; OBSERVED from read-only procfs/sysfs/ALSA/udev, or DERIVED where explicitly indicated. Not a universal board or firmware specification.",
+  "provenance": {
+    "collected_utc": "2026-11-09T05:00:46Z",
+    "firmware_ui_reported": "3.6.0",
+    "kernel": "6.6.95-az01-2025-06-27-rt55",
+    "distribution": "az01",
+    "distribution_version": "5.0.8",
+    "source_report_sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
+    "raw_report_in_repo": false,
+    "hardware_serial_redacted": true
+  },
+  "board": {
+    "model": "Akai Professional MPC One",
+    "compatible": [
+      "inmusic,acva",
+      "inmusic,az01",
+      "rockchip,rk3288"
+    ],
+    "confidence": "OBSERVED"
+  },
+  "cpu": {
+    "isa": "armv7l",
+    "logical_cpus": 4,
+    "implementer_hex": "0x41",
+    "part_hex": "0xc0d",
+    "revision": 1,
+    "features": [
+      "neon",
+      "vfp",
+      "vfpv3",
+      "vfpv4",
+      "lpae",
+      "idiva",
+      "idivt"
+    ],
+    "midr_family_note": "RK3288 part 0xC0D: Cortex-A12 vs Cortex-A17 nomenclature ambiguous in external cpuinfo sources",
+    "confidence": "OBSERVED"
+  },
+  "memory": {
+    "reported_total_kb": 2067188,
+    "reported_available_kb": 882876,
+    "reported_mlocked_kb": 1039452,
+    "reported_unevictable_kb": 1051660,
+    "swap_kb": 0,
+    "point_in_time": true,
+    "confidence": "OBSERVED"
+  },
+  "storage": {
+    "device": "mmcblk0",
+    "size_gib_approx": 7.3,
+    "partitions": [
+      {
+        "number": 1,
+        "name": "uboot-spl",
+        "size_kib": 64,
+        "mount": null
+      },
+      {
+        "number": 2,
+        "name": "env",
+        "size_kib": 8,
+        "mount": null
+      },
+      {
+        "number": 3,
+        "name": "uboot",
+        "size_kib": 384,
+        "mount": null
+      },
+      {
+        "number": 4,
+        "name": "splash",
+        "size_kib": 4096,
+        "mount": null
+      },
+      {
+        "number": 5,
+        "name": "recoverysplash",
+        "size_kib": 4096,
+        "mount": null
+      },
+      {
+        "number": 6,
+        "name": "rootfs",
+        "size_kib": 512000,
+        "mount": "/",
+        "filesystem": "ext4",
+        "readonly": true
+      },
+      {
+        "number": 7,
+        "name": "content",
+        "size_kib": 4194304,
+        "mount": "/media/acvs-content",
+        "filesystem": "ext4",
+        "readonly": false
+      },
+      {
+        "number": 8,
+        "name": "data",
+        "size_kib": 2921775,
+        "mounts": [
+          "/data",
+          "/media/az01-internal"
+        ],
+        "filesystem": "ext4",
+        "readonly": false
+      }
+    ],
+    "boot_regions": [
+      {
+        "name": "mmcblk0boot0",
+        "size_kib": 4096
+      },
+      {
+        "name": "mmcblk0boot1",
+        "size_kib": 4096
+      }
+    ],
+    "overlays": [
+      {
+        "mount": "/etc",
+        "persistent_upperdir": "/data/system/etc/overlay"
+      },
+      {
+        "mount": "/var",
+        "persistent_upperdir": "/data/system/var/overlay"
+      }
+    ],
+    "boot_recovery_procedure_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "audio": {
+    "alsa_cards": [
+      {
+        "card_index": 0,
+        "name": "MIDI",
+        "type": "USB-Audio",
+        "device": "MPC One MIDI"
+      },
+      {
+        "card_index": 1,
+        "name": "ACVA",
+        "type": "vendor ASoC/PCM",
+        "playback_device": "/dev/snd/pcmC1D0p",
+        "capture_device": "/dev/snd/pcmC1D0c"
+      }
+    ],
+    "kernel_modules": [
+      "snd_soc_inmusic_jp07",
+      "snd_soc_rockchip_inmusic_jp07",
+      "snd_soc_rockchip_i2s"
+    ],
+    "sample_rates_verified": false,
+    "audio_owner_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "midi": {
+    "device": "/dev/snd/midiC0D0",
+    "interfaces": [
+      {
+        "address": "hw:0,0,0",
+        "label": "MPC Studio Live Public"
+      },
+      {
+        "address": "hw:0,0,1",
+        "label": "MPC Studio Live Private"
+      },
+      {
+        "address": "hw:0,0,2",
+        "label": "MPC Studio Live MIDI Port"
+      }
+    ],
+    "pad_protocol_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "display": {
+    "framebuffer": "/dev/fb0",
+    "framebuffer_driver_name": "rockchipdrmfb",
+    "drm_cards": [
+      "/dev/dri/card0",
+      "/dev/dri/card1"
+    ],
+    "drm_connector": "card0-DSI-1",
+    "render_node": "/dev/dri/renderD128",
+    "backlight_name": "mipi-backlight",
+    "gpu_kernel_irq_label": "panfrost-gpu",
+    "display_mode_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "input": {
+    "touch": {
+      "name": "ILI2117 Touchscreen",
+      "device": "/dev/input/event0",
+      "sysfs_path": "/devices/platform/ff160000.i2c/i2c-4/4-0026/input/input0"
+    },
+    "gpio_keys": {
+      "name": "gpio-keys",
+      "device": "/dev/input/event1"
+    },
+    "touch_axes_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "factory_application": {
+    "binary": "/usr/bin/MPC",
+    "binary_size_bytes": 106115596,
+    "launcher_path": "/usr/bin/az01-launch-MPC",
+    "service": "acvs.service",
+    "service_state": "active running",
+    "main_pid_verified": false,
+    "hardware_fd_ownership_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "unknowns": [
+    "Exact external codec and ALSA PCM rates/periods/latency",
+    "Physical pad/encoder/LED MIDI messages",
+    "GPU identity/driver binding and display resolution",
+    "Touch ABS axis range",
+    "A/B boot selection and recoverability",
+    "Hard-float ABI and dynamic loader",
+    "MPC app service main PID and device fd ownership",
+    "Cross-firmware compatibility"
+  ],
+  "references": [
+    "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md",
+    "docs/hardware/DEVELOPER_ACCESS.md"
+  ]
+}
