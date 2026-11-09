@@ -24,6 +24,7 @@ Start here for reproducible hardware/firmware development:
 - [Focused MPC process/device ownership survey](docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md) — actual `/proc/<acvs MainPID>/fd` links for PCM, MIDI, DRM, and evdev; 800x1280 DSI connector, Mali-T760-compatible GPU, 1.608 GHz clocks, USB identifiers and known BusyBox ELF probe limitation.
 - [Active 44.1-kHz audio/ABI/JUCE/MIDI survey](docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md) — confirmed S32_LE stereo 128-frame PCM, independent playback/capture ring sizes, 38 stock app threads, high locked RAM, sequencer routing, EABI5 hard-float header.
 - [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — C++17, deterministic metronome rendering and host-only stereo S32_LE WAV; tested without accessing MPC hardware.
+- [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 
@@ -32,7 +33,9 @@ A **read-only** automated survey, run on the *workstation*, is available as:
 - [tools/mpc-one/collect-over-ssh.sh](tools/mpc-one/collect-over-ssh.sh) — checks interface/IP, network route, expected device MAC and SSH host key; writes report locally.
 - [tools/mpc-one/read-only-inventory.sh](tools/mpc-one/read-only-inventory.sh) — POSIX shell survey streamed over SSH without installation or deliberate MPC writes.
 - [tools/mpc-one/read-only-detail.sh](tools/mpc-one/read-only-detail.sh) — focused service/resource inventory, verified on target.
-- [tools/mpc-one/read-only-runtime.sh](tools/mpc-one/read-only-runtime.sh) — targeted process threads and ALSA PCM procfs observation; **not yet exercised on MPC**.
+- [tools/mpc-one/read-only-runtime.sh](tools/mpc-one/read-only-runtime.sh) — targeted process threads and ALSA PCM procfs observation; successfully exercised on MPC.
+- [tools/mpc-one/read-only-io.sh](tools/mpc-one/read-only-io.sh) — **passive** sysfs and optional read-only ethtool report for Ethernet link/PHY and USB host/gadget capabilities.
+- [tools/mpc-one/network-bench.py](tools/mpc-one/network-bench.py) — **explicit opt-in active** 20-ping and 4 MiB each direction SSH goodput check; workstation-hosted, writes no MPC files.
 - [tools/collect-hardware-info.sh](tools/collect-hardware-info.sh) — original lightweight device-local manual survey.
 
 The SSH wrapper defaults to the **already-tested reference lab** (`eno1np0`, `10.42.0.141:2222`, and the existing dedicated developer key). Other users must set their own verified addresses, interface, MAC and key as described in the runbook.
@@ -45,6 +48,8 @@ bash tools/mpc-one/collect-over-ssh.sh
 # Optional focused follow-up (no audio/MIDI opens or factory service changes):
 # bash tools/mpc-one/collect-over-ssh.sh --detail
 # bash tools/mpc-one/collect-over-ssh.sh --runtime
+# bash tools/mpc-one/collect-over-ssh.sh --io       # passive Ethernet/USB inventory
+# bash tools/mpc-one/collect-over-ssh.sh --netbench # active 8 MiB total; only when idle
 ~~~
 
 Raw survey output goes into local `research/`, which is ignored by Git. **Never commit unredacted hardware logs, private keys, factory firmware, sample archives or images.**
