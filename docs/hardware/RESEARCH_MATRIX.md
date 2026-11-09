@@ -2,7 +2,7 @@
 
 **Objective:** a reproducible, legally distributable, evidence-based map of MPC One firmware/hardware interfaces that other developers can use without proprietary firmware copies. This is a work queue and evidence schema. Nothing marked UNKNOWN should be interpreted as a published hardware specification.
 
-Reference baseline: [MPC One 3.6.0](MPC_ONE_3_6_0_BASELINE.md). Read-only collection: [developer access](DEVELOPER_ACCESS.md).
+Reference baseline: [MPC One 3.6.0](MPC_ONE_3_6_0_BASELINE.md). Latest redacted evidence: [2026-11-09 device survey](MPC_ONE_3_6_0_SURVEY_20261109.md). Read-only collection: [developer access](DEVELOPER_ACCESS.md).
 
 ## Evidence procedure
 
@@ -21,25 +21,25 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 
 | ID | Subsystem | Current knowledge | Next safe question | Required evidence | Implementation output |
 | --- | --- | --- | --- | --- | --- |
-| SYS-01 | Board/SoC | ARMv7 OS verified; exact SoC UNKNOWN | Which device-tree compatible strings? | `/proc/device-tree/model` and `compatible` | Platform variant identifier |
-| SYS-02 | CPU/RAM | Kernel 6.6.95 RT verified; core count/RAM UNKNOWN | CPU model, cores, usable RAM and cache? | `/proc/cpuinfo`, `/proc/meminfo`, `/sys/devices/system/cpu` | Runtime performance baseline |
-| SYS-03 | Kernel/modules | PREEMPT_RT verified | Driver list, realtime settings, scheduling and cgroups? | `/proc/modules`, `/proc/interrupts`, kernel config when readable | RT tuning and portability notes |
-| BOOT-01 | Internal eMMC | p6 root ro, p7 content rw, p8 data rw OBSERVED | Which partitions are boot/update/recovery? | `lsblk`, `/proc/partitions`, sysfs partition labels and read-only metadata | Partition map, no guessed roles |
+| SYS-01 | Board/SoC | **OBSERVED:** device tree `rockchip,rk3288`, `inmusic,acva`, `inmusic,az01` | Confirm SoC revision and binding of active kernel drivers | Device-tree `compatible`, driver symlink metadata | Stable platform identification |
+| SYS-02 | CPU/RAM | **OBSERVED:** four ARMv7 CPUs MIDR `0xC0D`; NEON/VFPv4, ~2 GiB RAM, no swap, ~1 GiB `Mlocked` | ABI/loader, CPU freq and locked-memory owner | CPU sysfs + process metadata | ARMv7 performance/memory budget |
+| SYS-03 | Kernel/modules | **OBSERVED:** 6.6.95 PREEMPT_RT; I²S/JP07 ASoC modules, Panfrost IRQ; sched RT 950000/1000000 | Audio thread priorities, IRQ affinity, true kernel-config features | `/proc/<pid>/task`, `/proc/interrupts`, sysfs | Real-time tuning evidence |
+| BOOT-01 | Internal eMMC | **OBSERVED:** 7.3 GiB eMMC with PARTNAME labels `uboot-spl`, `env`, `uboot`, `splash`, `recoverysplash`, `rootfs`, `content`, `data`; boot0/boot1 also present | Read-only boot-chain metadata and validated restoration study | `/sys/class/block/mmcblk0p*/uevent`, partition metadata | Partition reference map **without** writes |
 | BOOT-02 | Boot/update chain | UNKNOWN | Is there A/B switching, U-Boot and recovery without Linux? | Non-destructive vendor documentation, read-only boot metadata | Proven recovery prerequisite |
 | FS-01 | Overlayfs | `/etc` and `/var` persistent upperdirs observed | Which paths are mutable and survive reboot? | `mount`, `/proc/mounts`, optional benign isolated tests **only after consent** | Runtime/installer path constraints |
 | FS-02 | USB execution | Research USB showed `noexec` mount | Which deployment paths support ARM ELF? | `/proc/mounts`, loader inspection; executable tests only in isolated phase | Portable loader strategy |
-| APP-01 | Factory GUI | `/usr/bin/MPC` exists (bootstrap prerequisite) | What is real process tree, service unit and ABI? | `ps`, `systemctl show`, `readelf` on owner device | Reversible takeover manager |
+| APP-01 | Factory GUI | **OBSERVED:** `/usr/bin/MPC` (106,115,596 bytes), `/usr/bin/az01-launch-MPC`, **`acvs.service` active** | Identify service main PID, loaded libraries and hardware fd links | `systemctl show acvs.service`, `/proc/<pid>/fd` symlink targets | Safe takeover supervisor design |
 | APP-02 | Libraries/plugins | UNKNOWN | What libraries load and which formats are public? | dependency and path metadata; separate local legal review | Clean-room API design |
-| AUD-01 | Audio devices | UNKNOWN | ALSA card/PCM names and paths? | `/proc/asound`, `aplay -l`, `arecord -l` | Audio-device enumerator |
+| AUD-01 | Audio devices | **OBSERVED:** ALSA card1 `ACVA`, PCM capture+playback, three JP07/I²S modules | Owner, formats/rates and connection to physical codec | `/proc/asound`, `/sys/class/sound`, safe metadata | ACVA driver backend prototype |
 | AUD-02 | Audio ownership | UNKNOWN | Does MPC hold ALSA directly; custom DSP? | `/proc/<pid>/fd` read-only metadata in later approved phase | Arbitration/ownership policy |
 | AUD-03 | Realtime performance | UNKNOWN | Rate, periods, xruns, latency? | Controlled **opt-in** audio test with factory app idle/stopped safely | Audio engine budgets |
-| MIDI-01 | Controller protocol | UNKNOWN for this firmware | What ports expose pads, velocity, aftertouch, knobs? | `amidi -l`, `aconnect -l`, read-only controller enumeration | Versioned mapping table |
+| MIDI-01 | Controller protocol | **OBSERVED:** USB MIDI card0, three I/O ports named `MPC Studio Live Public`, `Private`, `MIDI Port` | Which endpoints carry pads, transport, encoders, and LED feedback? | `amidi -l`, USB sysfs descriptors, later consented capture | Versioned MIDI mapping table |
 | MIDI-02 | LED/output | UNKNOWN | LED/control feedback protocol? | Later active opt-in experiments, no unsolicited writes | Bidirectional controller backend |
-| UI-01 | Display | UNKNOWN | Framebuffer vs DRM vs vendor compositor? | `/proc/fb`, `/dev/dri`, process/driver names | Display backend |
-| UI-02 | Touchscreen | UNKNOWN | Which input event nodes and calibration? | `/proc/bus/input/devices`, sysfs names | Touch adapter |
-| UI-03 | Hardware keys | UNKNOWN | Which evdev/MIDI/HID endpoints? | same passive enumeration; later controlled event capture | Button/encoder adapter |
+| UI-01 | Display | **OBSERVED:** `/dev/fb0` rockchipdrmfb, DRM card0 DSI-1, card1 Panfrost-associated GPU renderD128 | Display mode, backend ownership, rendering ABI | DRM/sysfs modes and owner process metadata | DRM/KMS display backend |
+| UI-02 | Touchscreen | **OBSERVED:** ILI2117 on I²C 4-0026, `/dev/input/event0` | Absolute axis ranges, orientation, multitouch capabilities | input sysfs capability metadata | Touch adapter |
+| UI-03 | Hardware keys | **OBSERVED:** `gpio-keys` `/dev/input/event1`; no separate pad evdev in the inventory | Which key events are present, whether pads use MIDI | Input sysfs; later controlled MIDI events | Button/encoder adapter |
 | IO-01 | External MIDI/USB | UNKNOWN | USB topology, HID/serial, DIN interfaces? | `lsusb`, sysfs USB, ALSA MIDI metadata | I/O backend |
-| NET-01 | Ethernet | `end0` and direct IPv4 tested | Which controller/driver; factory networking defaults? | sysfs driver name, `ip` metadata | Discovery/network API |
+| NET-01 | Ethernet | **OBSERVED:** `end0`, direct IPv4; stmmac-like PHY IRQ label | Driver details, link config, factory default discovery | `/sys/class/net/end0`, `/proc/interrupts` | Discovery/network API |
 | CONTENT-01 | Factory content | p7 content mounted; formats UNKNOWN | User content paths/formats and provenance? | filenames/metadata only, local user-authorized inspection | Local-only importer |
 
 ## Research order
