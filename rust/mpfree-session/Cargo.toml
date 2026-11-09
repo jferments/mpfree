@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-session"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Finite synthetic 128-frame scheduling benchmark with null audio, no device access"
+
+[dependencies]
+mpfree-headless = { path = "../mpfree-headless" }
