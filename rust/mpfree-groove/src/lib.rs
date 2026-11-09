@@ -390,7 +390,7 @@ mod tests {
         let config = GrooveConfig::default();
         let mut a = GrooveEngine::new(&pattern, config).unwrap();
         let mut b = GrooveEngine::new(&pattern, config).unwrap();
-        let n = 44_100 * 2 + 13;
+        let n = 44_100 * 4 + 13;
         let mut al = vec![0.0; n];
         let mut ar = vec![0.0; n];
         let mut bl = vec![0.0; n];
@@ -431,20 +431,17 @@ mod tests {
 
     #[test]
     fn bounded_voices_steal_without_allocating() {
-        let mut pattern = Pattern::empty();
-        for step in &mut pattern.steps {
-            *step = Step { kick: 127, snare: 127, hat: 127 };
+        // Force >MAX_VOICES simultaneous voices to exercise deterministic
+        // bounded voice stealing even though the default pattern is sparse.
+        let mut engine = GrooveEngine::new(&Pattern::basic(), GrooveConfig::default()).unwrap();
+        for _ in 0..(MAX_VOICES + 4) {
+            engine.trigger(Event { frame: 0, drum: Drum::Kick, velocity: 127 });
         }
-        let mut engine = GrooveEngine::new(&pattern,
-            GrooveConfig { sample_rate: 8_000, bpm: 400.0, bars: 1 }).unwrap();
-        let mut l = [0.0; 512];
-        let mut r = [0.0; 512];
-        for _ in 0..8 {
-            engine.render(&mut l, &mut r).unwrap();
-        }
-        assert_eq!(engine.triggered_events(), 48);
-        assert!(engine.stolen_voices() > 0);
-        assert!(l.iter().all(|x| x.is_finite()));
+        assert_eq!(engine.stolen_voices(), 4);
+        let mut l = [0.0; 128];
+        let mut r = [0.0; 128];
+        engine.render(&mut l, &mut r).unwrap();
+        assert!(l.iter().all(|x| x.is_finite() && x.abs() <= 0.98));
     }
 
     #[test]
