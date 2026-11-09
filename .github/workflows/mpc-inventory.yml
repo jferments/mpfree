@@ -26,6 +26,7 @@ jobs:
           bash -n tools/mpc-one/collect-over-ssh.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
+          sh -n tools/mpc-one/read-only-runtime.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -38,6 +39,7 @@ jobs:
           paths = [
               Path("tools/mpc-one/read-only-inventory.sh"),
               Path("tools/mpc-one/read-only-detail.sh"),
+              Path("tools/mpc-one/read-only-runtime.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -58,6 +60,13 @@ jobs:
           assert "section 'Factory MPC application unit'" in baseline
           detail = paths[1].read_text()
           assert 'app_hardware_links' in detail and 'usb_metadata' in detail
+          runtime = paths[2].read_text()
+          assert 'alsa_active_procfs' in runtime and 'app_threads' in runtime
+          assert 'dd if=/usr/bin/MPC bs=64 count=1' in runtime
+          assert 'smaps_rollup' not in "\n".join(line for line in runtime.splitlines() if not line.lstrip().startswith("#"))
+          assert 'dd if=/usr/bin/MPC bs=64 count=1' in detail
+          wrapper = Path("tools/mpc-one/collect-over-ssh.sh").read_text()
+          assert '"--runtime")' in wrapper
           print("Static checks passed (not a proof of semantic read-only behavior).")
           PY
       - name: Validate sanitized observed hardware JSON
