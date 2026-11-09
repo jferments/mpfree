@@ -13,4 +13,12 @@ path = "src/lib.rs"
 name = "mpfree-touch"
 path = "src/main.rs"
 
+[[bin]]
+name = "mpfree-touch-capture"
+path = "src/bin/capture.rs"
+
+[[bin]]
+name = "mpfree-touch-analyze"
+path = "src/bin/analyze.rs"
+
 [dependencies]
