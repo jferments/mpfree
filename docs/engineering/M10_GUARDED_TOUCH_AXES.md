@@ -1,6 +1,6 @@
 # M10 — guarded real MPC ILI2117 multitouch axis metadata experiment
 
-**Status: IMPLEMENTED, NOT RUN ON MPC.** The user has confirmed M9 desktop tests passed (48 tests total). M10 adds a separate, reviewed exact-original-MPC identity-gated read-only preflight and optional owner-double-opt-in RAM-only executable. **Nothing stops or restarts Akai, grabs touch events, performs I2C commands, sets calibration, acquires DRM master or modifies persistent storage.**
+**Status: IMPLEMENTED AND OWNER-RUN ON PHYSICAL MPC — PASS (2026-11-09).** M9 desktop tests passed (48 total); the M10 exact-original-MPC read-only preflight and double-opt-in RAM-only EVIOCGABS query both passed on the original MPC One. **The driver reported 0..=2048 on X/Y and MT_X/Y, 10 available MT slots (0–9) and tracking ID 0..=65535.** This is not evidence of correct orientation or responsive factory GUI after the test. See [sanitized physical acceptance](../hardware/MPC_ONE_ILI2117_EVIOCGABS_VALIDATED_20261109.md). **Nothing stops or restarts Akai, grabs touch events, performs I2C commands, sets calibration, acquires DRM master or modifies persistent storage.**
 
 This is a narrow experimental user-space interaction: after a successful preflight, the test briefly opens the already kernel-managed **/dev/input/event0** O_RDONLY|O_NONBLOCK and performs read-only EVIOCGABS metadata ioctls. This is a new class of access compared to earlier sysfs surveys, and the owner must authorize it explicitly.
 
@@ -9,7 +9,7 @@ This is a narrow experimental user-space interaction: after a successful preflig
 - Original MPC One, az0x 5.0.8, GLIBC 2.39, kernel 6.6.95-az01, 32-bit hard-float ARM.
 - Factory MPC app owns its DRM, touchscreen event0, GPIO event1, ALSA PCM and raw MIDI. az01-pwrbtn also reads event1; **M10 never touches event1**.
 - Kernel binding: *ILI2117 Touchscreen*, I²C bus 4 device 0x26, driver **ili2117**, compatible **ilitek,ili2117**. Linux Type-B-style MT slot, tracking ID and coordinate event bitmaps confirmed.
-- The display is native 800×1280 (logical MPFree landscape 1280×800), but **raw axis ranges, actual number of MT slots, and rotation remain unknown**.
+- The display is native 800×1280 (logical MPFree landscape 1280×800). **Raw min/max and the driver's MT slot capacity are now measured; orientation, raw-to-screen calibration and physical ten-finger reliability remain unknown.**
 
 ## Security and safety gates
 
@@ -71,10 +71,10 @@ Successful results should include:
 - multitouch_slots=N, status=PASS, temporary /run stage cleanup report;
 - stock GUI is still active and owner confirms UI/touch works.
 
-A metadata-only ioctl **does not identify rotation**: the axes may be swapped or inverted by driver/device tree, and the landscape physical orientation still needs carefully bounded touch coordinate sampling later. The measured axis min/max can then update our M8 calibrated logical 1280×800 input-coordinate model.
+A metadata-only ioctl **does not identify rotation**: the axes may be swapped or inverted by driver/device tree. On this MPC the measured axes are `0..=2048` (inclusive), `ABS_MT_SLOT` is `0..=9` and each axis resolution field is 0. We added a host-only M8 regression for these real coordinate limits with both candidate 90° orientations; the actual physical orientation still requires separately authorized touch/corner calibration.
 
 ## Next after physical M10 acceptance
 
-- Add an M8 touch coordinate calibration fixture from actual measured min/max and number of slots.
+- [x] Add an M8 host-only coordinate regression using the **actual measured 0..=2048 limits**, testing both CW/CCW while leaving physical rotation unset. `ABS_MT_SLOT` reports 10 available slots, but a live ten-finger sensor test has not been conducted.
 - Design a **separate** finite non-grabbing gesture capture with explicit permission and no event logging outside selected calibration points, and validate that the factory GUI remains interactive.
 - Physical MPFree GUI/factory application stop-and-restart experiments remain **blocked** on independent stock boot recovery proof and a tested separate restoring supervisor. M10 does not change those gates.

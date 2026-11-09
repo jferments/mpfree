@@ -264,6 +264,35 @@ mod tests {
     }
 
     #[test]
+    fn measured_mpc_one_ili2117_0_to_2048_axis_limits() {
+        // Actual owner-reported EVIOCGABS min/max on original MPC One,
+        // firmware 3.6.0 / az0x 5.0.8 (2026-11-09). The orientation is
+        // NOT established: this tests *both* mathematical alternatives.
+        // Do NOT assume 2047 or make this the default on other devices.
+        let measured = AxisRange { min: 0, max: 2048 };
+        let cw = QuarterTurn::Clockwise;
+        assert_eq!(map_raw_touch(0, 0, measured, measured, cw),
+                   Some(Point { x: 0, y: 799 }));
+        assert_eq!(map_raw_touch(2048, 0, measured, measured, cw),
+                   Some(Point { x: 0, y: 0 }));
+        assert_eq!(map_raw_touch(0, 2048, measured, measured, cw),
+                   Some(Point { x: 1279, y: 799 }));
+        assert_eq!(map_raw_touch(2048, 2048, measured, measured, cw),
+                   Some(Point { x: 1279, y: 0 }));
+        assert_eq!(map_raw_touch(1024, 1024, measured, measured, cw),
+                   Some(Point { x: 639, y: 400 }));
+        let ccw = QuarterTurn::CounterClockwise;
+        assert_eq!(map_raw_touch(0, 0, measured, measured, ccw),
+                   Some(Point { x: 1279, y: 0 }));
+        assert_eq!(map_raw_touch(2048, 2048, measured, measured, ccw),
+                   Some(Point { x: 0, y: 799 }));
+        assert_eq!(map_raw_touch(1024, 1024, measured, measured, ccw),
+                   Some(Point { x: 640, y: 399 }));
+        assert_eq!(map_raw_touch(2049, 0, measured, measured, cw), None);
+        assert_eq!(map_raw_touch(0, -1, measured, measured, cw), None);
+    }
+
+    #[test]
     fn touch_mapping_requires_actual_ranges_and_applies_inverse_rotation() {
         let xr = AxisRange { min: 100, max: 899 }; // 800 range, *test fixture*
         let yr = AxisRange { min: 500, max: 1779 }; // 1280 range, *test fixture*

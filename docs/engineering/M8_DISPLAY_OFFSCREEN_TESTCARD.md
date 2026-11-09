@@ -7,7 +7,7 @@
 The owner's physical MPC One `--touchscreen` survey confirmed:
 - Native DSI connector `card0-DSI-1` runs 800×1280, `/dev/fb0` has a virtual 800×3840 framebuffer at 32bpp, stride 3200 bytes.
 - Its physical screen is used in landscape; logical GUI dimensions proposed are **1280×800**. We do **not** yet know whether clockwise or counterclockwise is correct.
-- The ILI2117 `ili2117` kernel driver exposes `EV_ABS`, BTN_TOUCH, ABS_X/Y and multitouch slots/position/tracking IDs. Real EVIOCGABS min/max and calibration/rotation are **still unknown**.
+- The ILI2117 `ili2117` kernel driver exposes `EV_ABS`, BTN_TOUCH, ABS_X/Y and multitouch slots/position/tracking IDs. The owner's **M10 EVIOCGABS run confirmed X/Y and MT_X/Y bounds 0..=2048 and slots 0–9 (10 reported)**. Calibration/physical orientation are **still unknown**. See [M10 physical metadata acceptance](../hardware/MPC_ONE_ILI2117_EVIOCGABS_VALIDATED_20261109.md).
 - Rockchip RK3288 / Mali T760 + Panfrost; original factory MPC opens `/dev/dri/card0` and `/dev/input/event0`.
 
 The independent service `DeviceControlServer.bin` and power-button handler are still active alongside the main factory MPC. A later stop of **only acvs** may leave them intact, but is not tested and remains blocked on recovery proof.
@@ -17,7 +17,7 @@ The independent service `DeviceControlServer.bin` and power-button handler are s
 Rust `mpfree-display` separates:
 - `RgbCanvas`: finite memory-bounded logical RGB888 image in user RAM, with safe drawing and FNV checksum. This **does not assume the DRM framebuffer format** is RGB888. A future KMS adapter will convert pixels to the **queried actual** DRM format; never directly copy RGB bytes to /dev/fb0 without proof.
 - `QuarterTurn`: either clockwise or counterclockwise 90° rotation from logical landscape to native portrait; no guessed default selected for physical hardware.
-- `map_raw_touch`: requires caller-supplied raw X/Y axis minimum/maximum and orientation, rejecting out-of-range values, zero-span axes and invalid input. The synthetic unit-test ranges are **fixtures, not measured ILI2117 ranges**.
+- `map_raw_touch`: requires caller-supplied raw X/Y axis minimum/maximum and orientation, rejecting out-of-range values and invalid input. Existing synthetic tests remain fixtures; **a separate unit test now uses the real owner's M10-measured `0..=2048` bounds** for both orientation candidates. Physical CW/CCW orientation is still not established.
 - `render_test_card`: four different brightly colored corner markers and an MPFREE TEST label, plus grid and crosshair. The distinct colors make rotation/mirroring recognizable once safely displayed on a physical panel.
 
 No real touch events, fingers, click targets or GUI window managers are part of this proof.
@@ -46,7 +46,7 @@ This code can cross-build for ARMv7, but the GUI test has **no on-device launche
 
 ## Later gates before live GUI takeover
 
-1. Measure actual evdev ABS ranges and slots with a separately reviewed, non-grab, metadata-only ioctl (no event reading). Preserve factory evdev ownership.
+1. **Completed M10:** owner ran a separately reviewed non-grabbing read-only EVIOCGABS metadata query on the physical MPC. Ranges: `0..=2048`; ten available slots. Preserve factory evdev ownership and confirm post-test UI manually.
 2. Work out panel orientation and raw touch-to-GUI mapping empirically (nonexclusive, bounded gesture capture only with owner authorization). Build an input event backend that handles `ABS_MT_SLOT`, tracking IDs, `SYN_REPORT` and `SYN_DROPPED`; event0 is not a guaranteed stable name across boot, so resolve by sysfs device identity.
 3. Independently demonstrate original MPC One boot/eMMC recovery; the official firmware updater is not proof of recovery from a damaged bootloader.
 4. Build and test a separate independent supervised restoration controller with an out-of-band timeout armed **before** factory state change. Retain power-button, controller service, network and SSH. A pure Rust state machine on workstation already models failures, but hasn't controlled systemd.
