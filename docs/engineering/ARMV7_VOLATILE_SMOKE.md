@@ -20,7 +20,8 @@ A small non-hardware Rust executable is the **least intrusive first target proof
 - `rust/mpfree-device-smoke`: no-unsafe Rust executable that runs the already-tested `mpfree-core::ClickEngine` for 4,096 frames at 44.1 kHz, verifies equal stereo, finite data, one beat trigger, nonzero samples and prints a deterministic checksum; **stdout only**, no filesystem, network, audio, graphics, MIDI or systemd API.
 - `tools/mpc-one/host_ram_smoke.py`: host-side guarded driver. Reads a **live** on-device ABI survey first, confirms exact original MPC One DT model, az0x 5.0.8, kernel 6.6.95 series, embedded GNU libc 2.39. Uses the host ARM \`readelf\` checks to verify ELF32/EABI5 hard-float, interpreter, GNU libc version needs and every reported DT_NEEDED library name. Rejects absent evidence.
 - Existing `tools/mpc-one/collect-over-ssh.sh`: same direct host interface, IP+MAC/ARP+route and **strict SSH known-host identity** gates as the previous successful read-only probes. New explicit modes:
-  - `--ram-smoke-check`: **only read-only target ABI plus host ELF checks; no upload or execution**.
+  - `--ram-smoke-env`: **read-only prerequisite inventory** of utilities, `/run` tmpfs, live stock service and ARM loader; does not require a compiled ELF.
+  - `--ram-smoke-check`: **read-only ABI/ELF and remote utility checks; no upload or execution**.
   - `--ram-smoke`: must also set `MPFREE_ACCEPT_VOLATILE_EXEC=YES`; **uploads & executes a small binary in tmpfs**, never persistent storage.
 - Both modes store redaction-required host-side reports in ignored `research/`, with SHA-256 digests. The command does not accept arbitrary remote scripts or paths.
 
@@ -79,6 +80,31 @@ bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-check
 This first proves the device still matches the expected model/firmware, reads its actual libc release banner and library names, checks the candidate ELF (including `DT_NEEDED`), prints the local SHA-256 and **stops without uploading any bytes**.
 
 If this fails, **do not bypass the check**. Share the redacted private report for a proper ABI/toolchain fix. A common legitimate blocker is an unobserved `libgcc_s.so.1` or a cross-built binary requiring newer glibc; the updated read-only ABI collector surveys additional runtime libraries. A different firmware/board or failing SSH host identity must also stop.
+
+## Observed M5 launch failure: status 127 (2026-11-09)
+
+The owner successfully cross-compiled the Rust smoke ELF and passed the live read-only ARM ABI preflight. It established original MPC One / az0x 5.0.8 / GNU libc 2.39, correct EABI5 hard-float ELF interpreter and three candidate shared-library names, with maximum required GLIBC_2.34.
+
+The **first opt-in launch failed with SSH remote exit 127 and empty stderr**, with no Rust status output. **A passed ABI check is not evidence that this executable ran.** Exit 127 may mean a required shell utility is absent, or the ELF interpreter/one of its dependencies failed at process start. The original launcher did not display the captured remote stdout on failure, so the failed stage is not yet known.
+
+To isolate this WITHOUT another upload, a new read-only tool inspection was introduced. After merging this fix and updating ML-tower:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+
+# NEW: read only the exact /run mount, stock service state and each utility.
+bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-env
+
+# NEW: full original ABI check + read-only remote utility requirements.
+bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-check
+~~~
+
+The report prints `tool.timeout=present` or `tool.timeout=MISSING` (likewise for `nice`, `sha256sum`, `mktemp`, `awk`, `cat`, `chmod`, `rm`, `rmdir`, and `systemctl`), plus `run_mount_type` and `factory_service_active`. **A missing tool prevents the upload** and yields an explicit message naming the tool. Do not install packages onto the MPC to work around this; we can instead implement and test a self-contained, bounded alternative when we know which components are unavailable.
+
+For subsequent owner-authorized execution, the launcher now prints bounded `STAGE=` markers and the *last remote stdout and stderr* if it fails. This distinguishes failure before creating a temporary directory, during transfer/checksum, and when the Rust executable starts. **Don't repeat `--ram-smoke` until the read-only environment report is understood.**
+
+These changes do not stop/restart the factory application, acquire exclusive devices, modify overlays, or bypass the existing owner opt-in, identity, ABI, tmpfs or execution-timeout safeguards.
 
 ## Stage D: owner-approved, volatile first execution
 
