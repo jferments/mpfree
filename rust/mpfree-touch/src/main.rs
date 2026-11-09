@@ -82,18 +82,50 @@ fn strict_sysfs_identity() -> Result<(), String> {
     expected("/sys/class/input/event0/device/name", "ILI2117 Touchscreen")?;
     expected("/sys/class/input/event0/device/id/bustype", "0018")?;
     expected("/sys/bus/i2c/devices/4-0026/name", "ili2117")?;
-    let driver = fs::canonicalize("/sys/class/input/event0/device/device/driver")
+    // Device identity must follow the actual event0 -> input0 -> I2C4-0026
+    // sysfs ancestry. Checking only the name is insufficient: an unrelated
+    // event device could reuse the same user-visible label.
+    let event_device = fs::canonicalize("/sys/class/input/event0/device")
+        .map_err(|e| format!("cannot resolve event0 sysfs parent: {e}"))?;
+    if !event_device.components().any(|part| part.as_os_str() == "4-0026") {
+        return Err("event0 does not belong to physical I2C 4-0026".into());
+    }
+    // Inspect the actual physical I2C device's bound driver, not a fragile
+    // assumed number of 'device/' symlinks between evdev and its bus parent.
+    let driver = fs::canonicalize("/sys/bus/i2c/devices/4-0026/driver")
         .map_err(|e| format!("cannot resolve ILI2117 kernel driver: {e}"))?;
     if !driver.ends_with("bus/i2c/drivers/ili2117") {
         return Err("unrecognized kernel driver; aborting before evdev open".into());
     }
-    let uevent = fs::read_to_string("/sys/bus/i2c/devices/4-0026/uevent")
-        .map_err(|e| format!("missing physical ILI2117 driver identity: {e}"))?;
-    if !uevent.lines().any(|line| line == "OF_COMPATIBLE_0=ilitek,ili2117")
-        || !uevent.lines().any(|line| line == "DRIVER=ili2117")
-    {
-        return Err("I2C compatible or driver mismatch; aborting".into());
+    // Device-tree compatible is a sequence of NUL-terminated strings, not
+    // necessarily copied into a vendor kernel's optional uevent metadata.
+    let compatible = fs::read("/sys/bus/i2c/devices/4-0026/of_node/compatible")
+        .map_err(|e| format!("cannot read actual touchscreen compatible: {e}"))?;
+    if !compatible.split(|b| *b == 0).any(|part| part == b"ilitek,ili2117") {
+        return Err("I2C device-tree compatible mismatch; refusing evdev open".into());
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn arm_inspection_watchdog() -> Result<(), String> {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    let (sender, receiver) = sync_channel::<()>(0);
+    std::thread::Builder::new()
+        .name("mpfree-touch-timer".into())
+        .spawn(move || {
+            // The parent only continues after the independently scheduled
+            // watchdog thread has entered this routine.
+            let _ = sender.send(());
+            std::thread::sleep(Duration::from_secs(5));
+            // Terminal fallback: abnormal termination releases evdev fd.
+            std::process::abort();
+        })
+        .map_err(|e| format!("unable to start 5s child watchdog: {e}"))?;
+    receiver.recv_timeout(Duration::from_secs(1))
+        .map_err(|_| "5s watchdog did not arm before touch inspection".to_string())?;
+    eprintln!("MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED");
     Ok(())
 }
 
@@ -107,6 +139,7 @@ fn metadata_mode() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         strict_sysfs_identity()?;
+        arm_inspection_watchdog()?;
         // Only kernel O_RDONLY/O_NONBLOCK open. Never call read(), write(),
         // EVIOCGRAB, EVIOCSABS, or any nonmetadata ioctl request.
         let file = OpenOptions::new()
