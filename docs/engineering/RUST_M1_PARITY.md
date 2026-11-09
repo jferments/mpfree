@@ -2,7 +2,7 @@
 
 **Decision:** [ADR-0001 — ACCEPTED Rust-first, C/C++-compatible architecture](ADR-0001-RUST-FIRST-HYBRID.md), approved by the owner on 2026-11-08 Pacific.
 
-**Current stage:** Rust metronome core and offline WAV renderer implemented. Host native unit tests and C++/Rust WAV comparison pass in CI. ARMv7-gnueabihf cross-linking requires the cross-compiler **and** its target libc development/startup objects; its result is tracked separately. **Nothing has been executed or installed on the MPC.**
+**Current stage:** Rust metronome core and offline WAV renderer implemented. Host native debug/release unit tests, C++/Rust WAV comparison and an **ARMv7 hard-float cross-build have all passed in GitHub Actions**. ARM linking required the cross-compiler **and** target libc startup objects (`libc6-dev-armhf-cross`). **Nothing has been executed or installed on the MPC.**
 
 ## Why preserve the C++ implementation?
 
@@ -109,8 +109,10 @@ Expected architecture: `ELF32`, `EM_ARM`, EABI5 hard-float, consistent with the 
 - Existing shell, reference USB safety checks and Python packet tests: unchanged.
 - Existing C++ metronome + RIFF/PCM WAV smoke: unchanged.
 - New Rust workspace: debug and release unit tests; cargo locked build.
-- Cross-language parity: three tempos; exact PCM WAV header/data geometry, frames, beat counts, stereo symmetry, and ≤16,384 integer PCM units maximum sample difference. This corresponds to ~7.63×10⁻⁶ full-scale amplitude and intentionally tolerates tiny libm differences, **not** beat misalignment.
+- Cross-language parity: three tempos; exact PCM WAV header/data geometry, frames, beat counts, stereo symmetry, and ≤16,384 integer PCM units maximum sample difference. This corresponds to ~7.63×10⁻⁶ full-scale amplitude and intentionally tolerates tiny libm differences, **not** beat misalignment. **Observed in GitHub CI:** max difference **0** for all three tempos (120, 109 and 137.2 BPM).
 - ARMv7: cargo cross-compile `--target armv7-unknown-linux-gnueabihf` and ELF-header assertions. The first attempt lacked ARM C runtime `Scrt1.o` and `crti.o`; the CI setup now explicitly installs `libc6-dev-armhf-cross`.
+
+**Confirmed CI run:** https://github.com/jferments/mpfree/actions/runs/42575002089 (all three CI jobs passed, including ARMv7 cross-link and ELF inspection). There is **no proof of MPC runtime compatibility** because the cross-linker uses a runner-image sysroot.
 
 **No artifact uploads or proprietary SDK usage.** Build products are generated in local ignored `rust/target/`, and GitHub CI does not archive them.
 
