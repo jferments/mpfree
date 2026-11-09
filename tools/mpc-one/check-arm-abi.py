@@ -86,7 +86,7 @@ def main():
 
     fmt = lambda x: ".".join(map(str, x[:2]))
     print(f"MPFree binary architecture: ARM ELF32 EABI5 hard-float; PT_INTERP={link}")
-    print(f"Cross-built binary requires GNU libc <= {fmt(required)}; MPC reports {fmt(target)}")
+    print(f"Cross-built binary requires GNU libc >= {fmt(required)}; MPC reports {fmt(target)}")
     print("DT_NEEDED libraries:", ", ".join(needed_libraries(dyn)) or "(none)")
     if required > target:
         print("FAIL: binary requires newer glibc than the MPC reports.")
