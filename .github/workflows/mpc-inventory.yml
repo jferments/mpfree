@@ -43,6 +43,7 @@ jobs:
           sh -n tools/mpc-one/read-only-touch-axes-env.sh
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
+          sh -n tools/mpc-one/read-only-boot-map.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
@@ -65,6 +66,7 @@ jobs:
               Path("tools/mpc-one/read-only-touch-axes-env.sh"),
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
+              Path("tools/mpc-one/read-only-boot-map.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
           ]
           prohibited = (
@@ -100,6 +102,12 @@ jobs:
           assert '"--handoff-preflight")' in wrapper
           assert '"--process-map")' in wrapper
           assert '"--touchscreen")' in wrapper
+          assert '"--boot-map")' in wrapper
+          bootmap = Path("tools/mpc-one/read-only-boot-map.sh").read_text()
+          bootmap_exec = "\n".join(line for line in bootmap.splitlines() if not line.lstrip().startswith("#"))
+          for forbidden in ("kexec -l", "kexec -e", "fw_setenv", "mount ", "systemctl start", "rkdeveloptool", "unsquashfs"):
+              assert forbidden not in bootmap_exec, f"boot-map must stay read-only: {forbidden}"
+          assert "redact" in bootmap and "<REDACTED>" in bootmap, "boot-map identifier redaction missing"
           procmap=Path("tools/mpc-one/read-only-process-map.sh").read_text()
           assert 'systemctl show "$unit"' in procmap
           assert 'systemctl list-units --type=service' in procmap

@@ -27,6 +27,7 @@ case "${1:-}" in
   "--touchscreen") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-touchscreen.sh"; REPORT_KIND="mpc-one-touchscreen" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
+  "--boot-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-boot-map.sh"; REPORT_KIND="mpc-one-boot-map" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
   "--ram-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-execution" ;;
@@ -37,7 +38,7 @@ case "${1:-}" in
   "--touch-axes-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-preflight" ;;
   "--touch-axes") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
