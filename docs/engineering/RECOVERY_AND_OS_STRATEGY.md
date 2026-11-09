@@ -129,6 +129,8 @@ Steps 1–5 are read-only or offline. Step 6 changes device state and needs the 
 2. Extract `/opt/ramfs-update.squashfs` from the backup's rootfs on the workstation (no MPC contact), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
+   **Tool ready:** [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md) does the on-device copy
+   from the backup. Akai's public update file is still to do.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
    Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
    second copy verified on another disk.
