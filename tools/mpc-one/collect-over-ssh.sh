@@ -25,10 +25,11 @@ case "${1:-}" in
   "--handoff-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-handoff-preflight.sh"; REPORT_KIND="mpc-one-handoff-preflight" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
+  "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
   "--ram-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-check (read-only ABI check), --ram-smoke (explicit RAM-only execute), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -50,6 +51,7 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" ]]; then
   [[ -r "$SCRIPT_DIR/host_ram_smoke.py" ]] || die 'Missing guarded RAM smoke orchestrator'
   [[ -r "$SCRIPT_DIR/check-arm-abi.py" ]] || die 'Missing host ARM ABI checker'
   [[ -r "$SCRIPT_DIR/read-only-abi.sh" ]] || die 'Missing read-only target ABI probe'
+  [[ -r "$SCRIPT_DIR/read-only-ram-smoke-env.sh" ]] || die 'Missing read-only RAM environment probe'
   [[ -f "$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke" ]] ||
       die 'Missing cross-compiled mpfree-device-smoke ELF; build it before launch'
   if [[ "${1:-}" == "--ram-smoke" && "${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != 'YES' ]]; then
@@ -155,6 +157,7 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" ]]; then
     --binary "$REPO_ROOT/rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke"
     --abi-script "$SCRIPT_DIR/read-only-abi.sh"
     --abi-checker "$SCRIPT_DIR/check-arm-abi.py"
+    --env-script "$SCRIPT_DIR/read-only-ram-smoke-env.sh"
   )
   if [[ "${1:-}" == "--ram-smoke" ]]; then smoke_args+=(--execute); fi
   if ! timeout 90 python3 "$SCRIPT_DIR/host_ram_smoke.py" "${smoke_args[@]}" > "$REPORT" 2>&1; then
