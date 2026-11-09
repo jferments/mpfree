@@ -169,7 +169,7 @@ The SSH tools are passive/read-only and still enforce the exact lab Ethernet/ARP
 
 ### Recovering the device's RAM and CPU without immediately replacing its OS
 
-Owner-run reports identify a **~995 MiB factory application resident footprint** (roughly **992 MiB locked**) on a device with ~1,970 MiB Linux RAM. This is primarily **factory user-application memory, not an OS kernel reservation**. The factory application pins audio workers across CPUs 0–3 and the main `Audio Processing` thread to CPU3; `isolcpus=2-3` means scheduler isolation, **not** cores lost to Linux.
+Owner-run reports identify a **~1,019 MiB factory application resident footprint** (roughly **1,016 MiB locked**) on a device with ~2,019 MiB Linux RAM. This is primarily **factory user-application memory, not an OS kernel reservation**. The factory application pins audio workers across CPUs 0–3 and the main `Audio Processing` thread to CPU3; `isolcpus=2-3` means scheduler isolation, **not** cores lost to Linux.
 
 Our strategy is to **replace factory application/userspace first**, preserving the proven PREEMPT_RT kernel and ACVA/MIDI/DRM/input drivers until independent boot recovery and alternative hardware support are demonstrated. A true MPFree-owned Linux distribution remains a possible longer-term goal.
 
