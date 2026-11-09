@@ -20,6 +20,8 @@ Start here for reproducible hardware/firmware development:
 - [Verified USB autorun and SSH developer access](docs/hardware/DEVELOPER_ACCESS.md) — upstream byte-sensitive autorun files, tested SSH approach, exact reference Ethernet lab settings, failure recovery.
 - [Verified USB autorun reference builder and verifier](docs/hardware/USB_AUTORUN_REFERENCE.md) — exact scripts and upstream hashes from the successful reference device; **hardcoded lab-only USB safety checks, not a general installer**.
 - [Hardware reverse-engineering research matrix](docs/hardware/RESEARCH_MATRIX.md) — subsystem-by-subsystem mapping plan with evidence labels and safety gates.
+- [November 2026 in-device hardware survey](docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md) — verified Rockchip RK3288 CPU/SoC, eMMC partition map, ACVA ALSA and USB-MIDI, DRM/Panfrost, ILI2117 touchscreen, process/service names, constraints and remaining questions.
+- [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 
 A **read-only** automated survey, run on the *workstation*, is available as:
@@ -34,6 +36,9 @@ Run this from a cloned copy of the branch containing these files (before merging
 
 ~~~sh
 bash tools/mpc-one/collect-over-ssh.sh
+
+# Optional focused follow-up (no audio/MIDI opens or factory service changes):
+# bash tools/mpc-one/collect-over-ssh.sh --detail
 ~~~
 
 Raw survey output goes into local `research/`, which is ignored by Git. **Never commit unredacted hardware logs, private keys, factory firmware, sample archives or images.**
