@@ -88,14 +88,14 @@ The revised `--rtthreads` also reads `/proc/PID/task/TID/stat` for numeric sched
 Run host-side state/control and selected bounded algorithms in volatile memory while factory app remains active, with strict memory and CPU budgets. Measure working set, thread scheduling, library compatibility and crash behavior. Do not bind another process to the factory's exclusive audio/DRM/MIDI devices.
 
 ### Gate 3 — Restore-before-stop proof and controlled factory userland handoff
-**BLOCKED** until an independently verified full eMMC/boot restore path exists, including vendor boot/recovery metadata, and a real recovery test not dependent on factory Linux booting.
+**BLOCKED** until the Tier 1 recovery gate passes (adopted by the owner 2026-11-09; see the [recovery strategy](RECOVERY_AND_OS_STRATEGY.md)): a verified full off-device eMMC backup, measured zero writes to `p1`–`p6` across the session, and a stub stop → start rehearsal with no MPFree code. This replaces the earlier requirement of a proven unbootable-device restore for RAM-only sessions. Any persistent change still needs Tier 2 or Tier 3.
 
 With that proven, separate volatile watchdog, explicit per-session owner consent, factory saved and quiescent, no recording, and failure-handling tested on a fake service graph, attempt only the narrowest factory-app release. Observe exact device ownership, run MPFree as a session child and guarantee *best-effort* restoration. A watchdog alone cannot recover from an unbootable device.
 
 Start by proving stock app restore **without** starting our audio engine. Later test the PCM, MIDI, DRM and touchscreen resources independently, with strictly bounded timeouts and owner-visible cancellation.
 
 ### Gate 4 — Optional independently booted MPFree userspace
-Only after independently reproducible **factory recovery** and exact understanding of the vendor boot flow, explore an alternate rootfs that does not overwrite factory eMMC. The ability to boot from USB, SD, RAM or recovery transport must be **measured**; it is not established by current documentation. A separate U-Boot/extlinux slot or removable boot medium should not be claimed functional until demonstrated.
+Testing another kernel in RAM only (kexec, and possibly fastboot or MaskROM RAM boot) leaves the eMMC untouched and is research under the [recovery strategy](RECOVERY_AND_OS_STRATEGY.md). Anything persistent needs the **Tier 3** gate: MaskROM recovery proven on this unit and an eMMC read-back verified, plus exact understanding of the vendor boot flow ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). Only then explore an alternate rootfs that does not overwrite factory eMMC. The ability to boot from USB, SD, RAM or recovery transport must be **measured**; it is not established by current documentation. A separate U-Boot/extlinux slot or removable boot medium should not be claimed functional until demonstrated.
 
 Only then optimize distro contents: include minimal open Linux base system, ALSA/DRM/MIDI/evdev, Rust MPFree, reliable watchdog/recovery tools and verified updates. Evaluate whether retaining vendor kernel and proprietary driver components is legally/distribution-wise permitted; separate user-owned extraction from redistributed binaries.
 
@@ -119,6 +119,6 @@ The final goals should be workload-specific: 16-track/32-track sequencer mixes, 
 - Run the passive `--capacity` once idle, once under a normal CPU-intensive MPC pattern, then compare actual **percent busy** and factory process CPU tick consumption.
 - Run revised `--rtthreads` to capture **SCHED_OTHER/FIFO/RR**, per-task RT priority and last CPU from `stat`, not just affinity.
 - Prepare a carefully bounded **RAM-only ARMv7 hello-world self-test** after proving binary-specific glibc compatibility. No service changes.
-- Research and independently test **factory firmware recovery** before touching any bootloader, recovery partition, rootfs, or factory app/service resources.
+- Research and independently test **factory firmware recovery** before touching any bootloader, recovery partition, rootfs, or factory app/service resources. The tier each kind of change needs is in the [recovery strategy](RECOVERY_AND_OS_STRATEGY.md).
 
 **Safety rule:** All measured CPU/memory savings are hypotheses until MPFree actually replaces the factory user process under a proven reversible procedure. No current GitHub code has performed that takeover.
