@@ -10,6 +10,7 @@ use std::path::Path;
 pub const MAX_WAV_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_SAMPLE_FRAMES: usize = 5_000_000;
 pub const MAX_SAMPLES: usize = 128;
+pub const MAX_PREPARED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_VOICES: usize = 16;
 const RELEASE_FRAMES: u16 = 64;
 const STEAL_FADE_FRAMES: u16 = 32;
@@ -21,6 +22,7 @@ pub enum SamplerError {
     TooLarge,
     WrongSampleRate { expected: u32, found: u32 },
     SampleBankFull,
+    InvalidNote,
     MissingSample,
     OutputLengthMismatch,
     Io(std::io::Error),
@@ -179,6 +181,7 @@ impl Default for Voice {
 pub struct Sampler {
     rate: u32,
     samples: Vec<PreparedSample>,
+    prepared_bytes: usize,
     mappings: [Option<usize>; 128],
     voices: [Voice; MAX_VOICES],
     next_steal: usize,
@@ -190,7 +193,7 @@ impl Sampler {
             return Err(SamplerError::UnsupportedWave("sample rate"));
         }
         Ok(Self {
-            rate: sample_rate, samples: Vec::new(),
+            rate: sample_rate, samples: Vec::new(), prepared_bytes: 0,
             mappings: [None; 128], voices: [Voice::default(); MAX_VOICES],
             next_steal: 0, voice_steals: 0,
         })
@@ -203,13 +206,20 @@ impl Sampler {
             });
         }
         if self.samples.len() >= MAX_SAMPLES { return Err(SamplerError::SampleBankFull); }
+        let added_bytes = sample.prepared_bytes();
+        let Some(next_bytes) = self.prepared_bytes.checked_add(added_bytes) else {
+            return Err(SamplerError::TooLarge);
+        };
+        if next_bytes > MAX_PREPARED_SAMPLE_BYTES { return Err(SamplerError::TooLarge); }
         let index = self.samples.len();
         self.samples.push(sample);
+        self.prepared_bytes = next_bytes;
         Ok(index)
     }
     pub fn map_note(&mut self, note: u8, sample_index: usize) -> Result<(), SamplerError> {
+        if note > 127 { return Err(SamplerError::InvalidNote); }
         if sample_index >= self.samples.len() { return Err(SamplerError::MissingSample); }
-        self.mappings[usize::from(note.min(127))] = Some(sample_index);
+        self.mappings[usize::from(note)] = Some(sample_index);
         Ok(())
     }
     pub fn note_on(&mut self, note: u8, velocity: u8) -> bool {
@@ -287,6 +297,7 @@ impl Sampler {
     pub fn voice_steals(&self)->u64 { self.voice_steals }
     pub fn active_voices(&self)->usize { self.voices.iter().filter(|v|v.active).count() }
     pub fn sample_count(&self)->usize { self.samples.len() }
+    pub fn prepared_sample_bytes(&self)->usize { self.prepared_bytes }
 }
 
 #[cfg(test)]
@@ -373,6 +384,7 @@ mod tests {
         let mut s=Sampler::new(44100).unwrap();
         let idx=s.add_sample(PreparedSample::parse_wav(
             &fixture(1,16,1,44100,&source)).unwrap()).unwrap();
+        assert!(matches!(s.map_note(200,idx), Err(SamplerError::InvalidNote)));
         s.map_note(60,idx).unwrap();
         for _ in 0..MAX_VOICES+5 {assert!(s.note_on(60,127));}
         assert_eq!(s.active_voices(),MAX_VOICES);
