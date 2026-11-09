@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-network"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Offline, bounded S32 PCM wire protocol and deadline model"
+
+[lib]
+path = "src/lib.rs"
