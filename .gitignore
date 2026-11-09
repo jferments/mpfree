@@ -18,3 +18,8 @@ id_rsa
 .env.*
 __pycache__/
 *.pyc
+
+# Local CMake build and rendered offline audio tests.
+build/
+cmake-build-*/
+*.wav
