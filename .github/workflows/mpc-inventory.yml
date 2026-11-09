@@ -38,6 +38,7 @@ jobs:
           sh -n tools/mpc-one/read-only-io.sh
           sh -n tools/mpc-one/read-only-abi.sh
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
+          sh -n tools/mpc-one/read-only-rtthreads.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -54,6 +55,7 @@ jobs:
               Path("tools/mpc-one/read-only-io.sh"),
               Path("tools/mpc-one/read-only-abi.sh"),
               Path("tools/mpc-one/read-only-handoff-preflight.sh"),
+              Path("tools/mpc-one/read-only-rtthreads.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -86,6 +88,7 @@ jobs:
           assert '"--runtime")' in wrapper
           assert '"--abi")' in wrapper
           assert '"--handoff-preflight")' in wrapper
+          assert '"--rtthreads")' in wrapper
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
@@ -207,6 +210,23 @@ jobs:
           assert all(pcm[i:i+4] == pcm[i+4:i+8]
                      for i in range(0, len(pcm), 8)), "Stereo channels differ"
           print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Prove Rust fake-handoff state machine has no OS side effects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("rust/mpfree-handoff-model/src/lib.rs")
+          source = path.read_text()
+          assert "#![forbid(unsafe_code)]" in source
+          assert "std::process" not in source
+          assert "std::fs" not in source
+          assert "std::net" not in source
+          assert "Command::new" not in source
+          assert "systemctl " not in source
+          assert "independent_boot_restore_proven" in source
+          assert "watchdog_separate_from_audio" in source
+          assert "RestorationUnverified" in source
+          print("PASS: no-unsafe pure handoff model, no systemd/device/file API")
           PY
       - name: Validate bounded Rust WAV sampler on synthetic host fixture
         run: |

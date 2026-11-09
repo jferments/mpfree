@@ -29,6 +29,8 @@ Start here for reproducible hardware/firmware development:
 - [Rust M3: bounded PCM packet codec and user-WAV sampler](docs/engineering/RUST_M3_NETWORK_SAMPLER.md) — Rust port of Python MPF1 protocol, jitter/deadline model, bounded 64-MiB total sample bank, velocity/note-off, offline preview and CI tests. No real sockets or MPC playback.
 - [ARMv7 target userspace ABI survey and local comparator](docs/engineering/ARMV7_USERSPACE_COMPATIBILITY.md) — read-only libc/loader/library probe and host-only ELF/glibc requirement checker; target compatibility remains unverified.
 - [Reversible factory application handoff investigation](docs/engineering/REVERSIBLE_HANDOFF.md) — read-only systemd/resource preflight and independent recovery/watchdog prerequisite matrix; **does not stop factory app**.
+- [Verified az0x ABI and factory handoff report (sanitized)](docs/hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md) — real owner-run ABI/service data, CPU affinity and ~1 GiB locked process memory, with source SHA-256 fingerprints; raw device reports excluded.
+- [Safe Rust handoff state-machine simulator](rust/mpfree-handoff-model/src/lib.rs) — guarded stock/MPFree transition model, mocked watchdog/crash/recovery failure tests; **no systemd, files, PCM or hardware calls**.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -144,6 +146,25 @@ bash tools/mpc-one/collect-over-ssh.sh --handoff-preflight
 ~~~
 
 Attach the generated locally ignored `research/mpc-one-abi-*.txt` and `research/mpc-one-handoff-preflight-*.txt` for evaluation after checking for private identifiers. **Reversible handoff is research-only; independent recovery has NOT been proven.** See [M3 design](docs/engineering/RUST_M3_NETWORK_SAMPLER.md).
+
+### Current MPC ABI / reversible-handoff research (new read-only task survey)
+
+The owner successfully ran the first `--abi` and `--handoff-preflight` surveys on the MPC One. The device has an ARMv7 hard-float loader, ALSA/DRM/EGL/GLES/GBM shared-library SONAMEs, and libc symbol strings up to `GLIBC_2.39`. **Exact GNU libc release is not established yet:** `getconf` was absent. The factory `acvs.service` owns the ACVA PCM devices and display, reports `Restart=always`, and locks about **1 GiB of RAM**. The main task reports CPU0 affinity but `isolcpus=2-3` means we must inspect per-task scheduling before designing our own realtime threads.
+
+[Actual findings without identifiers](docs/hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). A new Rust `mpfree-handoff-model` exercises failure and restore transitions **on a simulation only**, not the real MPC.
+
+After updating `main`, run on ML-tower:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+cargo test --manifest-path rust/Cargo.toml --locked -p mpfree-handoff-model
+ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
+bash tools/mpc-one/collect-over-ssh.sh --abi
+bash tools/mpc-one/collect-over-ssh.sh --rtthreads
+~~~
+
+The SSH tools are passive/read-only and still enforce the exact lab Ethernet/ARP/device/host-key gates. Redact report identifiers before sharing. **Do not run a real service handoff yet; independent unbootable-device recovery is unproven.**
 
 ### Architecture and project milestones
 

@@ -17,6 +17,18 @@ if command -v getconf >/dev/null 2>&1; then
 else
   printf 'getconf not found (libc version remains unverified)\n'
 fi
+printf '\n=== GNU libc embedded release banner (read-only strings) ===\n'
+if command -v strings >/dev/null 2>&1 && [ -r /lib/libc.so.6 ]; then
+  banner="$(strings /lib/libc.so.6 2>/dev/null | \
+    grep -E '^GNU C Library.*release version [0-9]+\.[0-9]+' | head -n 1 || :)"
+  if [ -n "$banner" ]; then
+    printf 'GNU libc release banner: %s\n' "$banner"
+  else
+    printf 'GNU libc release banner: unavailable (do not infer version)\n'
+  fi
+else
+  printf 'GNU libc release banner: unavailable (strings/libc missing)\n'
+fi
 printf '\n=== Dynamic ELF interpreter and known native library paths ===\n'
 for path in /lib/ld-linux-armhf.so.3 /lib/libc.so.6 \
   /lib/libm.so.6 /lib/libpthread.so.0 \
