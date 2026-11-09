@@ -38,6 +38,13 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-session"
+version = "0.1.0"
+dependencies = [
+ "mpfree-headless",
+]
+
+[[package]]
 name = "mpfree-sampler"
 version = "0.1.0"
 dependencies = [
