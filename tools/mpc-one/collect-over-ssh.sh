@@ -45,7 +45,9 @@ esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 MPC_REPORT_DIR="${MPC_REPORT_DIR:-$REPO_ROOT/research}"
-MPC_BACKUP_DIR="${MPC_BACKUP_DIR:-$REPO_ROOT/research/backups}"
+# Backups default to OUTSIDE the git clone: they hold keys, serial/MAC and user data,
+# and `git clean -fdx` must not be able to delete them.
+MPC_BACKUP_DIR="${MPC_BACKUP_DIR:-$HOME/mpfree-backups}"
 BACKUP_BASELINE="$SCRIPT_DIR/baselines/mpc-one-3.6.0-reference.txt"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -76,6 +78,13 @@ elif [[ "${1:-}" == "--backup" ]]; then
     [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing backup helper: $helper"
   done
   [[ -r "$BACKUP_BASELINE" ]] || die "missing backup baseline: $BACKUP_BASELINE"
+  backup_abs="$(realpath -m -- "$MPC_BACKUP_DIR")"
+  case "$backup_abs/" in
+    "$REPO_ROOT"/*)
+      git -C "$REPO_ROOT" check-ignore -q -- "$backup_abs/probe" 2>/dev/null ||
+        die "MPC_BACKUP_DIR is inside the git clone and not git-ignored: $backup_abs"
+      ;;
+  esac
 elif [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
