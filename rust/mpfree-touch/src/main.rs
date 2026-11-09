@@ -97,12 +97,12 @@ fn strict_sysfs_identity() -> Result<(), String> {
     if !driver.ends_with("bus/i2c/drivers/ili2117") {
         return Err("unrecognized kernel driver; aborting before evdev open".into());
     }
-    let uevent = fs::read_to_string("/sys/bus/i2c/devices/4-0026/uevent")
-        .map_err(|e| format!("missing physical ILI2117 driver identity: {e}"))?;
-    if !uevent.lines().any(|line| line == "OF_COMPATIBLE_0=ilitek,ili2117")
-        || !uevent.lines().any(|line| line == "DRIVER=ili2117")
-    {
-        return Err("I2C compatible or driver mismatch; aborting".into());
+    // Device-tree compatible is a sequence of NUL-terminated strings, not
+    // necessarily copied into a vendor kernel's optional uevent metadata.
+    let compatible = fs::read("/sys/bus/i2c/devices/4-0026/of_node/compatible")
+        .map_err(|e| format!("cannot read actual touchscreen compatible: {e}"))?;
+    if !compatible.split(|b| *b == 0).any(|part| part == b"ilitek,ili2117") {
+        return Err("I2C device-tree compatible mismatch; refusing evdev open".into());
     }
     Ok(())
 }
