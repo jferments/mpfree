@@ -23,8 +23,9 @@ Start here for reproducible hardware/firmware development:
 - [November 2026 in-device hardware survey](docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md) — verified Rockchip RK3288 CPU/SoC, eMMC partition map, ACVA ALSA and USB-MIDI, DRM/Panfrost, ILI2117 touchscreen, process/service names, constraints and remaining questions.
 - [Focused MPC process/device ownership survey](docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md) — actual `/proc/<acvs MainPID>/fd` links for PCM, MIDI, DRM, and evdev; 800x1280 DSI connector, Mali-T760-compatible GPU, 1.608 GHz clocks, USB identifiers and known BusyBox ELF probe limitation.
 - [Active 44.1-kHz audio/ABI/JUCE/MIDI survey](docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md) — confirmed S32_LE stereo 128-frame PCM, independent playback/capture ring sizes, 38 stock app threads, high locked RAM, sequencer routing, EABI5 hard-float header.
-- [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — C++17, deterministic metronome rendering and host-only stereo S32_LE WAV; tested without accessing MPC hardware.
-- [Language architecture ADR: Rust-first with C/C++ compatibility (PROPOSED)](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. The validated C++ prototype remains unchanged.
+- [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — original C++17 metronome and WAV proof of concept, retained for regression.
+- [Rust M1 metronome parity and ARMv7 cross-build](docs/engineering/RUST_M1_PARITY.md) — **implemented** std-only Rust engine and WAV renderer, C++/Rust parity at 120/109/137.2 BPM, and verified ARM EABI5 hard-float cross-build; no MPC deployment.
+- [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
 - [Host-only network audio datagram prototype](tools/mpc-one/host_audio_packet.py) — sample-frame-stamped, MTU-checked S32_LE packet format and bounded deadline simulation, tested offline; not a live network receiver.
@@ -79,9 +80,26 @@ The owner's 2026-11-09 §--io§ and §--netbench§ runs verified **1000-Mbit/s f
 
 The [redacted measured reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) preserves the hashes of the private raw logs and an evidence checklist. Raw PCM over gigabit Ethernet is technically plausible, but loss/jitter/clock drift/deadline tests and resource ownership remain blocking for live MPC audio output. For a first independent step, [host-only packet model](tools/mpc-one/host_audio_packet.py) tests MTU, timestamp, reorder, missed deadlines and finite buffering without sockets or hardware access.
 
-### Rust vs C++ architectural proposal
+### Accepted Rust-first architecture — first implementation now validated
 
-**Rust-first is a proposal, not an implemented migration.** MPFree should consider safe Rust for its sequencer/transport, sample and project management, realtime audio and network transport, retaining reviewed C/C++ adapters for mature native instruments, LV2/VST3/plugin hosts, and ALSA/DRM integration where necessary. The original C++ core and WAV tests remain intact until a Rust parity implementation passes desktop and ARMv7 hard-float compilation gates. Read [ADR-0001](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) before changing the build system.
+**Rust-first with targeted C/C++ integration is now the accepted policy.** New MPFree-owned sequencing, realtime audio, networking and project logic should normally use Rust. Mature LV2/VST3 plugin hosts, synthesizers, DSP and low-level system libraries can be integrated through audited, narrow C/C++ interfaces. [ADR-0001](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) records the decision, and [M1](docs/engineering/RUST_M1_PARITY.md) documents the first Rust audio prototype and ARM cross-build qualification.
+
+The C++ reference is deliberately retained. Rust native tests and cross-language PCM WAV parity tests have **passed**, as has an ARMv7 hard-float cross-build on a CI workstation. **Binary compatibility with the MPC's az0x userspace and on-device execution remain unverified.**
+
+On ML-tower (requires Rust stable and Cargo):
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
+cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+python3 tests/check_cpp_rust_wav_parity.py --cpp build/mpfree-render --rust rust/target/release/mpfree-render
+./rust/target/release/mpfree-render /tmp/mpfree-rust-metronome.wav 4 120
+xdg-open /tmp/mpfree-rust-metronome.wav
+~~~
+
+This only creates/plays a WAV on the Linux workstation. It does not touch the MPC.
 
 ### Architecture and project milestones
 
