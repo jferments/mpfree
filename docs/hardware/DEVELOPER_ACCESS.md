@@ -123,6 +123,21 @@ Local output: `research/mpc-one-runtime-<UTC-timestamp>-<suffix>.txt` and `.txt.
 
 **Do not confuse these data sources:** procfs `hw_params` describes the **currently configured** PCM stream while it is open, not the driver's complete supported rate/format matrix. The thread policy snapshot likewise describes only the present firmware runtime, not a promised realtime configuration on every device.
 
+### Third survey: confirmed live audio engine baseline (successful)
+
+The third read-only runtime survey succeeded at approximately **2026-11-09 05:30:31 UTC**. Report SHA-256: `1ea9eb27f837e5602cd5548db71622adf2f8c6aef52553f2aafd22e035a34b76`, verified against the uploaded owner-local report bytes. The raw report is **not** committed to GitHub.
+
+The stock `/usr/bin/MPC` process exposed:
+- Active playback and capture both **44,100 Hz, stereo, interleaved S32_LE**, **128 frames/period**.
+- Playback ALSA buffer **384 frames**; capture buffer **256 frames**. These durations do **not** establish real-world latency.
+- ~1 GiB resident and locked virtual memory, 38 threads, main thread affinity CPU 0.
+- An ALSA kernel RawMIDI counter table and explicit JUCE/MPC sequencer connections.
+- ARM ELF32 little-endian `EM_ARM`, EABI5 **hard-float** flag `0x05000400`.
+
+The thread-policy query returned names but **not** the policy/priority fields; do not claim specific realtime priorities or per-thread CPU affinities. The firmware's `acvs.service` reports `Restart=always`, so a simple `kill` is not a safe takeover test.
+
+Full reproducible evidence, interpretation, tables and missing capabilities: [third survey](MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md). This provided the parameters for [MPFree's first separate host-only metronome core](../engineering/FIRST_AUDIO_CORE.md).
+
 ### Execute the automated read-only inventory
 
 This repository contains:
