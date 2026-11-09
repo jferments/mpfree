@@ -92,6 +92,9 @@ jobs:
           assert '"--handoff-preflight")' in wrapper
           assert '"--rtthreads")' in wrapper
           assert '"--capacity")' in wrapper
+          assert '"--ram-smoke-check")' in wrapper
+          assert '"--ram-smoke")' in wrapper
+          assert 'MPFREE_ACCEPT_VOLATILE_EXEC' in wrapper
           assert '"--io")' in wrapper and '"--netbench")' in wrapper
           io = paths[3].read_text()
           assert '/sys/class/net/end0/speed' in io or '"/sys/class/net/end0/$f"' in io
@@ -103,7 +106,7 @@ jobs:
           PY
       - name: Validate optional network bench without contacting MPC
         run: |
-          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py
+          python3 -m py_compile tools/mpc-one/network-bench.py tools/mpc-one/host_audio_packet.py tools/mpc-one/check-arm-abi.py tools/mpc-one/analyze-capacity.py tools/mpc-one/host_ram_smoke.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Validate sanitized observed hardware JSON
         run: |
@@ -184,6 +187,446 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
           cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: Test host-native Rust userland coexistence self-test
+        run: |
+          cargo run --manifest-path rust/Cargo.toml --release --locked \
+            -p mpfree-device-smoke -- --self-test | tee /tmp/mpfree-smoke-native.txt
+          grep -q '^MPFREE_ARMV7_SMOKE_V1
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Prove Rust fake-handoff state machine has no OS side effects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("rust/mpfree-handoff-model/src/lib.rs")
+          source = path.read_text()
+          assert "#![forbid(unsafe_code)]" in source
+          assert "std::process" not in source
+          assert "std::fs" not in source
+          assert "std::net" not in source
+          assert "Command::new" not in source
+          assert "systemctl " not in source
+          assert "independent_boot_restore_proven" in source
+          assert "watchdog_separate_from_audio" in source
+          assert "RestorationUnverified" in source
+          print("PASS: no-unsafe pure handoff model, no systemd/device/file API")
+          PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf --workspace
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          smoke=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke
+          file "$smoke"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          path="rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-device-smoke"
+          binary=Path(path)
+          assert binary.is_file() and binary.stat().st_size < 2 * 1024 * 1024
+          def readelf(*args):
+              return subprocess.run(
+                  ["arm-linux-gnueabihf-readelf",*args,path],
+                  check=True,capture_output=True,text=True
+              ).stdout
+          header=readelf("-h")
+          phdr=readelf("-l")
+          versions=readelf("-W","--version-info")
+          assert re.search(r"Class:\s*ELF32",header)
+          assert re.search(r"Machine:\s*ARM",header)
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI",header)
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in phdr
+          needs=[tuple(map(int,groups)) for groups in
+                 re.findall(r"GLIBC_(\d+)\.(\d+)",versions)]
+          assert needs, "no versioned glibc needs seen"
+          assert max(needs) <= (2,39), f"Requires glibc newer than device: {max(needs)}"
+          print("PASS: ARMv7 ELF32 EABI5 hard-float, loader, GLIBC <=2.39")
+          print("NOTE: actual target-side verified executable test still pending.")
+          PY
+          echo "Cross-built ARM EABI5 hard-float. No executable deployed to MPC in CI."
+ /tmp/mpfree-smoke-native.txt
+          grep -q '^frames=4096
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Prove Rust fake-handoff state machine has no OS side effects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("rust/mpfree-handoff-model/src/lib.rs")
+          source = path.read_text()
+          assert "#![forbid(unsafe_code)]" in source
+          assert "std::process" not in source
+          assert "std::fs" not in source
+          assert "std::net" not in source
+          assert "Command::new" not in source
+          assert "systemctl " not in source
+          assert "independent_boot_restore_proven" in source
+          assert "watchdog_separate_from_audio" in source
+          assert "RestorationUnverified" in source
+          print("PASS: no-unsafe pure handoff model, no systemd/device/file API")
+          PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf --workspace
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
+ /tmp/mpfree-smoke-native.txt
+          grep -q '^beats=1
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Prove Rust fake-handoff state machine has no OS side effects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("rust/mpfree-handoff-model/src/lib.rs")
+          source = path.read_text()
+          assert "#![forbid(unsafe_code)]" in source
+          assert "std::process" not in source
+          assert "std::fs" not in source
+          assert "std::net" not in source
+          assert "Command::new" not in source
+          assert "systemctl " not in source
+          assert "independent_boot_restore_proven" in source
+          assert "watchdog_separate_from_audio" in source
+          assert "RestorationUnverified" in source
+          print("PASS: no-unsafe pure handoff model, no systemd/device/file API")
+          PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf --workspace
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
+ /tmp/mpfree-smoke-native.txt
+          grep -q '^status=PASS
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          import subprocess
+          result = subprocess.run(
+              ["rust/target/release/mpfree-groove", "/tmp/mpfree-ci-groove.wav", "120", "2"],
+              text=True, capture_output=True, check=True, timeout=30,
+          )
+          print(result.stdout.strip())
+          assert "176400 frames" in result.stdout
+          assert "24 triggered events" in result.stdout
+          assert "0 stolen voices" in result.stdout
+          data = Path("/tmp/mpfree-ci-groove.wav").read_bytes()
+          assert data[:4] == b"RIFF" and data[8:16] == b"WAVEfmt "
+          assert data[36:40] == b"data"
+          assert struct.unpack_from("<HHIIHH", data, 20) == (
+              1, 2, 44100, 352800, 8, 32
+          )
+          assert struct.unpack_from("<I", data, 40)[0] == 176400 * 8
+          assert len(data) == 44 + 176400 * 8
+          assert struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+          pcm = memoryview(data)[44:]
+          assert any(pcm), "Offline drum pattern is silent"
+          assert all(pcm[i:i+4] == pcm[i+4:i+8]
+                     for i in range(0, len(pcm), 8)), "Stereo channels differ"
+          print("PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio")
+          PY
+      - name: Prove Rust fake-handoff state machine has no OS side effects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("rust/mpfree-handoff-model/src/lib.rs")
+          source = path.read_text()
+          assert "#![forbid(unsafe_code)]" in source
+          assert "std::process" not in source
+          assert "std::fs" not in source
+          assert "std::net" not in source
+          assert "Command::new" not in source
+          assert "systemctl " not in source
+          assert "independent_boot_restore_proven" in source
+          assert "watchdog_separate_from_audio" in source
+          assert "RestorationUnverified" in source
+          print("PASS: no-unsafe pure handoff model, no systemd/device/file API")
+          PY
+      - name: Validate bounded Rust WAV sampler on synthetic host fixture
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-sampler
+          python3 - <<'PY'
+          import math, struct, subprocess, wave
+          from pathlib import Path
+          source=Path("/tmp/mpfree-ci-user-wav.wav")
+          with wave.open(str(source),"wb") as w:
+              w.setnchannels(1)
+              w.setsampwidth(2)
+              w.setframerate(44100)
+              samples=b"".join(struct.pack("<h",round(math.sin(
+                  2*math.pi*440*i/44100)*12000)) for i in range(44100))
+              w.writeframes(samples)
+          result=subprocess.run(
+              ["rust/target/release/mpfree-sampler",str(source),
+               "/tmp/mpfree-ci-sampler.wav"],
+              check=True,capture_output=True,text=True,timeout=30)
+          print(result.stdout.strip())
+          data=Path("/tmp/mpfree-ci-sampler.wav").read_bytes()
+          assert data[:4]==b"RIFF" and data[8:12]==b"WAVE"
+          assert struct.unpack_from("<HHIIHH",data,20)==(
+              1,2,44100,352800,8,32)
+          assert len(data)==44+88200*8 and data[44:]!=bytes(88200*8)
+          print("PASS: own generated sample -> stereo S32_LE WAV without MPC device opens")
+          PY
+      - name: Build independent C++ reference
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Verify C++ and Rust WAV parity at diverse tempos
+        run: |
+          python3 tests/check_cpp_rust_wav_parity.py \
+            --cpp build/mpfree-render \
+            --rust rust/target/release/mpfree-render
+      - name: Install GNU ARMv7 hard-float cross-linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+      - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf --workspace
+          target=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+          file "$target"
+          arm-linux-gnueabihf-readelf -h "$target" | tee /tmp/mpfree-arm-elf-header.txt
+          arm-linux-gnueabihf-readelf -l "$target" | grep -i 'interpreter:' || true
+          grep -Eq 'Class: *ELF32' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Machine: *ARM' /tmp/mpfree-arm-elf-header.txt
+          grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI' /tmp/mpfree-arm-elf-header.txt
+          echo "Cross-built ARM EABI5 hard-float. Loader/glibc compatibility with az0x is still NOT verified."
+ /tmp/mpfree-smoke-native.txt
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
