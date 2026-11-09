@@ -25,6 +25,10 @@ jobs:
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
           sh -n tools/mpc-one/read-only-inventory.sh
+          bash -n tools/mpc-one/lib/neighbor-identity.sh
+          bash -n tools/mpc-one/tests/test-neighbor-identity.sh
+      - name: Test neighbor MAC extraction against deterministic fixtures
+        run: bash tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'
