@@ -11,6 +11,14 @@
 
 This is a **Rust-first hybrid**, not a "rewrite every dependency in Rust" rule. Keep the existing `ClickEngine` as a reference implementation and a known-good baseline. Before *retiring* the C++ reference, require a Rust parity implementation plus **real ARMv7 hard-float cross-build** and deterministic desktop tests. **The language policy is accepted; target runtime compatibility is a separate qualification gate.**
 
+### Implementation update — M1 Rust metronome parity completed
+
+Owner's **Rust-first decision is accepted and active**, and a concrete Rust implementation now exists under [`rust/`](../../rust/) rather than only a proposal. [M1 developer and CI guide](RUST_M1_PARITY.md) documents it. The Rust implementation has no third-party dependencies; it retains the original C++ metronome as a regression oracle.
+
+**Verified GitHub Actions:** Rust debug + release tests, C++ reference tests, three WAV parity cases at 120, 109, 137.2 BPM with **zero observed PCM integer difference**, and successfully linked ARM ELF32 EABI5 **hard-float** cross-target (CI run: https://github.com/jferments/mpfree/actions/runs/42575002089). An earlier cross-linker failure (missing `Scrt1.o`/`crti.o`) was resolved by installing `libc6-dev-armhf-cross`.
+
+**Not verified:** armv7 binary execution on az0x, its `PT_INTERP` and glibc compatibility, realtime thread behavior on MPC, or access to stock-owned ACVA ALSA. This decision does not authorize device takeover or persistent firmware/boot modifications.
+
 The biggest actual risk of a Rust-first engine is **access to mature C++ plugin/instrument hosting frameworks and ARMv7-specific runtime integration**, not whether Rust can render 128 stereo audio frames.
 
 ## Hardware constraints, observed not inferred
