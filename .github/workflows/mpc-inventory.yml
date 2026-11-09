@@ -51,8 +51,11 @@ jobs:
           )
           for p in paths:
               text = p.read_text()
+              # Do not interpret safety comments like "dd without of=" as commands.
+              executable_lines = "\n".join(line for line in text.splitlines()
+                                           if not line.lstrip().startswith("#"))
               for pattern in prohibited:
-                  assert not re.search(pattern, text), f"Potential mutation in {p}: {pattern}"
+                  assert not re.search(pattern, executable_lines), f"Potential mutation in {p}: {pattern}"
           baseline = paths[0].read_text()
           assert "section 'ALSA kernel devices'" in baseline
           assert "section 'Input device enumeration'" in baseline
