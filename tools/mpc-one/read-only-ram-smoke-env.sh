@@ -33,6 +33,22 @@ for tool in awk mktemp cat sha256sum timeout nice chmod rm rmdir systemctl; do
   fi
 done
 
+printf '\n=== Shell CPU-time limit and inherited scheduling (read-only) ===\n'
+# Changes RLIMIT_CPU in a CHILD shell only. Nothing persists or affects
+# the factory app/current login shell.
+if (ulimit -t 3) 2>/dev/null; then
+  printf 'shell_cpu_limit=present\n'
+else
+  printf 'shell_cpu_limit=unsupported\n'
+fi
+# The awk process inherits this SSH shell's scheduling policy.
+# /proc/self/stat fields after stripping pid+(comm): policy = $39.
+if command -v awk >/dev/null 2>&1 && [ -r /proc/self/stat ]; then
+  awk '{ sub(/^.*\) /, ""); if (NF >= 39) printf "shell_scheduler_policy=%s\n", $39; else print "shell_scheduler_policy=unavailable" }' /proc/self/stat
+else
+  printf 'shell_scheduler_policy=unavailable\n'
+fi
+
 printf '\n=== Factory application (read-only) ===\n'
 if command -v systemctl >/dev/null 2>&1; then
   state="$(systemctl is-active acvs.service 2>/dev/null || :)"

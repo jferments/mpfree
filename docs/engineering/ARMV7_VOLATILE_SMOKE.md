@@ -20,7 +20,7 @@ A small non-hardware Rust executable is the **least intrusive first target proof
 - `rust/mpfree-device-smoke`: no-unsafe Rust executable that runs the already-tested `mpfree-core::ClickEngine` for 4,096 frames at 44.1 kHz, verifies equal stereo, finite data, one beat trigger, nonzero samples and prints a deterministic checksum; **stdout only**, no filesystem, network, audio, graphics, MIDI or systemd API.
 - `tools/mpc-one/host_ram_smoke.py`: host-side guarded driver. Reads a **live** on-device ABI survey first, confirms exact original MPC One DT model, az0x 5.0.8, kernel 6.6.95 series, embedded GNU libc 2.39. Uses the host ARM \`readelf\` checks to verify ELF32/EABI5 hard-float, interpreter, GNU libc version needs and every reported DT_NEEDED library name. Rejects absent evidence.
 - Existing `tools/mpc-one/collect-over-ssh.sh`: same direct host interface, IP+MAC/ARP+route and **strict SSH known-host identity** gates as the previous successful read-only probes. New explicit modes:
-  - `--ram-smoke-env`: **read-only prerequisite inventory** of utilities, `/run` tmpfs, live stock service and ARM loader; does not require a compiled ELF.
+  - `--ram-smoke-env`: **read-only prerequisite inventory** of utilities, `/run` tmpfs, POSIX CPU-limit support, normal scheduler policy, live stock service and ARM loader; does not require a compiled ELF.
   - `--ram-smoke-check`: **read-only ABI/ELF and remote utility checks; no upload or execution**.
   - `--ram-smoke`: must also set `MPFREE_ACCEPT_VOLATILE_EXEC=YES`; **uploads & executes a small binary in tmpfs**, never persistent storage.
 - Both modes store redaction-required host-side reports in ignored `research/`, with SHA-256 digests. The command does not accept arbitrary remote scripts or paths.
@@ -100,11 +100,58 @@ bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-env
 bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-check
 ~~~
 
-The report prints `tool.timeout=present` or `tool.timeout=MISSING` (likewise for `nice`, `sha256sum`, `mktemp`, `awk`, `cat`, `chmod`, `rm`, `rmdir`, and `systemctl`), plus `run_mount_type` and `factory_service_active`. **A missing tool prevents the upload** and yields an explicit message naming the tool. Do not install packages onto the MPC to work around this; we can instead implement and test a self-contained, bounded alternative when we know which components are unavailable.
+The report prints `tool.timeout=present` or `tool.timeout=MISSING` and similarly for other commands, plus `run_mount_type` and `factory_service_active`. **A missing required tool prevents the upload** and yields an explicit message naming the tool. Do not install packages onto the MPC to work around this; we can instead implement and test a self-contained, bounded alternative when we know which components are unavailable.
 
-For subsequent owner-authorized execution, the launcher now prints bounded `STAGE=` markers and the *last remote stdout and stderr* if it fails. This distinguishes failure before creating a temporary directory, during transfer/checksum, and when the Rust executable starts. **Don't repeat `--ram-smoke` until the read-only environment report is understood.**
+For subsequent owner-authorized execution, the launcher now prints bounded `STAGE=` markers and the *last remote stdout and stderr* if it fails. This distinguishes failure before creating a temporary directory, during transfer/checksum, and when the Rust executable starts. **The follow-up report established the two missing commands: `timeout` and `nice`. Use the rebuilt watchdog-equipped binary and updated live preflight before any retry.**
 
 These changes do not stop/restart the factory application, acquire exclusive devices, modify overlays, or bypass the existing owner opt-in, identity, ABI, tmpfs or execution-timeout safeguards.
+
+## Resolution of the first exit-127 failure: missing GNU utilities
+
+The owner ran the new **read-only** `--ram-smoke-env` on the actual original MPC One and observed:
+
+| Requirement | MPC observation |
+| --- | --- |
+| `/run` filesystem | `tmpfs` (correct RAM-backed staging area) |
+| `timeout` executable | **MISSING** |
+| `nice` executable | **MISSING** |
+| Other required utilities | `awk`, `mktemp`, `cat`, `sha256sum`, `chmod`, `rm`, `rmdir`, `systemctl` present |
+| Factory `acvs.service` | Active with valid MainPID |
+| ARM hard-float loader | Present |
+
+Private on-workstation raw survey SHA-256: `ba013dc63e3f84db17f80f286e8bfae375e932c605ab3cb22c46590851c3ebe8`. No raw log or identifiers are committed.
+
+This explains the earlier **remote shell exit 127 before binary launch**: the shell checked for executables `timeout` and `nice`, then failed before staging. It does **not** establish that the Rust executable ever loaded.
+
+### New safe launcher without factory OS modifications
+
+Do **not** install packages into az0x to work around missing tools. We now:
+
+1. Treat `timeout` and `nice` as optional informational fields, not prerequisites. The factory SSH process is expected to inherit **SCHED_OTHER (policy 0)**, lower priority than the factory's SCHED_RR audio threads; the read-only survey checks the numeric policy.
+2. Verify a POSIX `ulimit -t 3` limit is supported **in a disposable child shell**, without altering factory thread resource limits.
+3. Enforce `ulimit -t 3` in the actual remote shell before execution, providing a **kernel CPU-time limit** in addition to core/file size limits.
+4. Arm a safe-Rust **five-second wall-clock watchdog thread** inside the Rust smoke binary, which aborts the process if the one-shot computation does not complete. This does not require `unsafe` or external utilities.
+5. Retain the host's **18-second SSH execution deadline**, exact board identity, glibc/ELF and library checks, SHA-256 before execute, live factory-app state, explicit opt-in, tmpfs-only staging, and removal trap.
+
+**Safety limitation:** The Rust watchdog is **inside the test process**, not a separate privileged supervisor. An unschedulable/uninterruptible process or a killed SSH session can defeat some userspace guarantees. A POSIX CPU-time limit measures *actual execution time*, not wall-clock time. This bounded smoke is therefore **not** a validated general-purpose safe application handoff. We will implement a separate supervisor before any persistent DAW or exclusive resource ownership.
+
+### Workstation and read-only checks before reattempting execution
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+
+# IMPORTANT: rebuild cross-target ELF; the previously built candidate
+# does NOT contain the mandatory Rust watchdog and is rejected by the host.
+CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+  cargo build --manifest-path rust/Cargo.toml --release --locked \
+  --target armv7-unknown-linux-gnueabihf -p mpfree-device-smoke
+
+cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+bash tools/mpc-one/collect-over-ssh.sh --ram-smoke-check
+~~~
+
+The live preflight must print **`PASS: ... 8 required utilities ... shell CPU limit, SCHED_OTHER; timeout/nice not required`** before any opt-in execution. If the shell policy or CPU limit is unavailable, **stop** rather than bypassing it.
 
 ## Stage D: owner-approved, volatile first execution
 
@@ -116,7 +163,7 @@ MPFREE_ACCEPT_VOLATILE_EXEC=YES \
   bash tools/mpc-one/collect-over-ssh.sh --ram-smoke
 ~~~
 
-The launcher rechecks the live ABI, requires `acvs.service` to be **active** with a valid MainPID, and verifies that `/run` is mounted **tmpfs**. It creates a unique root-owned mode-0700 temporary directory there, streams no more than **2 MiB** of locally built bytes into `probe`, and validates the remote SHA-256 before running the executable. It suppresses core dumps and regular-file writes for the child, uses a **five-second remote timeout** and `nice -n 10`, and deletes the temporary probe/directory via a remote exit trap.
+The launcher rechecks the live ABI, requires `acvs.service` to be **active** with a valid MainPID, confirms inherited **SCHED_OTHER** and POSIX CPU-limit support, and verifies that `/run` is **tmpfs**. It creates a unique root-owned mode-0700 temporary directory there, streams no more than **2 MiB** into `probe`, and validates the remote SHA-256 before running the executable. It suppresses core dumps and regular-file writes, applies `ulimit -t 3` and uses the **Rust program's own five-second watchdog thread** plus a host SSH deadline. It removes the temporary files using an exit trap. Neither `timeout` nor `nice` is required on the MPC.
 
 Expected result (examples, checksum depends on architecture/libm):
 
@@ -136,7 +183,7 @@ PASS: first on-target Rust sample computations; factory devices untouched.
 
 **This is controlled volatile execution, not read-only:** it writes and removes a tiny file under RAM-backed `/run` and causes a short burst of CPU use. It does NOT stop/restart the factory application, acquire its PCM/DRM/MIDI/input devices, alter network settings, enable persistent services, remount/flash drives or access proprietary content.
 
-If the SSH link drops before cleanup, an unused file may remain temporarily in `/run`; it disappears when tmpfs is cleared at reboot. The remote timeout prevents a surviving computation from running indefinitely. This is a *low-risk* smoke test, not a promise of zero possible runtime risk from running new code with the existing root-only access.
+If the SSH link drops before cleanup, an unused file may remain temporarily in `/run`; it disappears when tmpfs is cleared at reboot. The Rust-internal watchdog and Linux CPU-time limit bound ordinary computation failures, although they are not equivalent to a separate independent watchdog supervisor. This is a *low-risk* smoke test, not a promise of zero possible runtime risk from running new code with the existing root-only access.
 
 **Persistence nuance:** Our installer/launcher intentionally writes no files outside `/run`, but stock `sshd`, PAM or system logging may independently append ordinary login/audit entries to writable overlays during a session. This is not a forensic zero-change experiment. It is a **reversible application-space test** that does not alter firmware, boot settings, installed programs, persistent service configuration, audio device ownership or user projects. Use the vendor UI to confirm nothing unexpected changed after the test.
 

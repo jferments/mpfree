@@ -83,9 +83,13 @@ def preflight_elf(checker_path, report, binary, readelf):
 
 
 REQUIRED_RUNTIME_TOOLS = (
-    "awk", "mktemp", "cat", "sha256sum", "timeout",
-    "nice", "chmod", "rm", "rmdir", "systemctl",
+    "awk", "mktemp", "cat", "sha256sum",
+    "chmod", "rm", "rmdir", "systemctl",
 )
+# Informational-only: the owner's az0x image does NOT contain these commands.
+OPTIONAL_RUNTIME_TOOLS = ("timeout", "nice")
+RUST_WATCHDOG_MARKER = "WATCHDOG=RUST_5S_ARMED"
+
 
 
 def check_remote_environment(report):
@@ -99,7 +103,8 @@ def check_remote_environment(report):
     details = {}
     for line in report.splitlines():
         if line.startswith(("tool.", "run_mount_type=", "factory_service_active=",
-                            "factory_main_pid=", "armhf_interpreter=")):
+                            "factory_main_pid=", "armhf_interpreter=",
+                            "shell_cpu_limit=", "shell_scheduler_policy=")):
             key, value = line.split("=", 1)
             if key in details:
                 raise RuntimeError(f"duplicate prerequisite field: {key}")
@@ -128,7 +133,20 @@ def check_remote_environment(report):
         raise RuntimeError(
             "ARM hard-float interpreter missing; no upload attempted"
         )
-    return "PASS: /run tmpfs, all 10 required utilities, stock MPC active, ARM interpreter"
+    if details.get("shell_cpu_limit") != "present":
+        raise RuntimeError(
+            "POSIX shell CPU-time limit unavailable; no upload attempted"
+        )
+    if details.get("shell_scheduler_policy") != "0":
+        raise RuntimeError(
+            "SSH-launched shell is not proven SCHED_OTHER (policy 0); "
+            "no upload attempted"
+        )
+    return (
+        "PASS: /run tmpfs, 8 required utilities, stock MPC active, "
+        "ARM interpreter, shell CPU limit, SCHED_OTHER; "
+        "timeout/nice not required"
+    )
 
 
 def remote_run_script(expected_sha):
@@ -140,7 +158,7 @@ printf 'STAGE=CHECK_RAM_MOUNT\n'
 # Assert the exact /run mount is tmpfs before creating any file.
 awk '$2=="/run" && $3=="tmpfs" {{found=1}} END{{exit !found}}' /proc/mounts
 printf 'STAGE=CHECK_UTILITIES\n'
-for tool in mktemp cat sha256sum awk timeout nice chmod rm rmdir systemctl; do
+for tool in mktemp cat sha256sum awk chmod rm rmdir systemctl; do
     command -v "$tool" >/dev/null
 done
 printf 'STAGE=CHECK_FACTORY_APP\n'
@@ -171,9 +189,16 @@ printf 'MPFREE_VOLATILE_STAGE_SHA256_OK\\n'
 # No core dumps or regular-file creation permitted by the child process.
 ulimit -c 0
 ulimit -f 0
-# Remote timeout is essential: terminating SSH alone cannot stop a child.
+# Kernel-enforced CPU-time cap. Our Rust self-test carries a separate
+# 5-second internal watchdog thread for wall-clock overruns.
+# No timeout/nice binaries are installed on this embedded factory image.
+ulimit -t 3
+# Refuse to run if the inherited SSH scheduling policy is real-time.
+# awk reads its own proc stat after inheriting the shell's scheduler policy.
+policy="$(awk '{{sub(/^.*\\) /, ""); if (NF >= 39) print $39; else print "unavailable"}}' /proc/self/stat)"
+test "$policy" = "0"
 printf 'STAGE=EXECUTE_RUST\n'
-timeout 5 nice -n 10 "$stage/probe" --self-test
+"$stage/probe" --self-test
 printf 'STAGE=RUST_EXECUTED\n'
 test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
 """
@@ -190,6 +215,11 @@ def parse_results(stdout, stderr, code):
                    "frames=4096", "beats=1"):
         if marker not in stdout:
             raise RuntimeError(f"missing expected remote result: {marker}")
+    if RUST_WATCHDOG_MARKER not in stderr:
+        raise RuntimeError(
+            "no evidence the on-device Rust watchdog armed; "
+            "rebuild ARMv7 ELF before any retest"
+        )
 
 
 def main(argv=None):
@@ -210,6 +240,13 @@ def main(argv=None):
     if binary_path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("binary exceeds 2 MiB volatile staging budget")
     binary = binary_path.read_bytes()
+    # An old locally cross-built binary lacks its own watchdog. This must
+    # fail before any MPC execution; do not infer safety from source alone.
+    if RUST_WATCHDOG_MARKER.encode("ascii") not in binary:
+        raise ValueError(
+            "ARMv7 binary is stale and lacks Rust self-watchdog; "
+            "rebuild mpfree-device-smoke after git pull"
+        )
     digest = hashlib.sha256(binary).hexdigest()
     # Reject a file that changed between reading the upload bytes and the
     # ELF loader/symbol checks against its on-disk path.
@@ -250,6 +287,7 @@ def main(argv=None):
     )
     parse_results(stdout, stderr, code)
     print(stdout.strip())
+    print(RUST_WATCHDOG_MARKER)
     print("PASS: first on-target Rust sample computations; factory devices untouched.")
     print("Remote shell cleanup trap removed /run stage on normal completion.")
     return 0
