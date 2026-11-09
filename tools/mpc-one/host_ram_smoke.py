@@ -81,9 +81,14 @@ def remote_run_script(expected_sha):
     return f"""set -eu
 # Assert the exact /run mount is tmpfs before creating any file.
 awk '$2=="/run" && $3=="tmpfs" {{found=1}} END{{exit !found}}' /proc/mounts
-for tool in mktemp cat sha256sum awk timeout nice chmod rm rmdir; do
+for tool in mktemp cat sha256sum awk timeout nice chmod rm rmdir systemctl; do
     command -v "$tool" >/dev/null
 done
+# Require the stock GUI to be active throughout the coexistence test.
+test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
+pid="$(systemctl show acvs.service -p MainPID --value 2>/dev/null)"
+case "$pid" in ''|0|*[!0-9]*) exit 5 ;; esac
+test -d "/proc/$pid"
 umask 077
 stage="$(mktemp -d /run/mpfree-smoke.XXXXXXXX)"
 cleanup() {{
@@ -100,8 +105,12 @@ test "$observed" = "{expected_sha}" || {{
     exit 3
 }}
 printf 'MPFREE_VOLATILE_STAGE_SHA256_OK\\n'
+# No core dumps or regular-file creation permitted by the child process.
+ulimit -c 0
+ulimit -f 0
 # Remote timeout is essential: terminating SSH alone cannot stop a child.
 timeout 5 nice -n 10 "$stage/probe" --self-test
+test "$(systemctl is-active acvs.service 2>/dev/null)" = "active"
 """
 
 
@@ -132,6 +141,9 @@ def main(argv=None):
         raise ValueError("binary exceeds 2 MiB volatile staging budget")
     binary = binary_path.read_bytes()
     digest = hashlib.sha256(binary).hexdigest()
+    # Reject a file that changed between reading the upload bytes and the
+    # ELF loader/symbol checks against its on-disk path.
+
 
     print("LIVE READ-ONLY ABI check (no on-device file writes).", flush=True)
     code, out, err = call_ssh(
@@ -143,6 +155,8 @@ def main(argv=None):
     verify_live_board(out)
     print("Exact original MPC One / az0x 5.0.8 / glibc 2.39 confirmed.", flush=True)
     preflight_elf(Path(a.abi_checker), out, binary_path, a.readelf)
+    if hashlib.sha256(binary_path.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("ELF changed after ABI validation; refusing upload")
     print(f"Candidate bytes={len(binary)}, SHA256={digest}", flush=True)
     if not a.execute:
         print("PREFLIGHT ONLY: nothing uploaded or executed on MPC.")
