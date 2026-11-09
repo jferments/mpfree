@@ -25,6 +25,7 @@ jobs:
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
           sh -n tools/mpc-one/read-only-inventory.sh
+          sh -n tools/mpc-one/read-only-detail.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -34,8 +35,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          p = Path("tools/mpc-one/read-only-inventory.sh")
-          text = p.read_text()
+          paths = [
+              Path("tools/mpc-one/read-only-inventory.sh"),
+              Path("tools/mpc-one/read-only-detail.sh"),
+          ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
               r"\bdd\s+.*\bof\s*=",
@@ -44,11 +47,18 @@ jobs:
               r"\b(?:parted|sfdisk|fdisk)\b",
               r">\s*/dev/(?:mmcblk|sd)",
           )
-          for pattern in prohibited:
-              assert not re.search(pattern, text), f"Potential mutation in {p}: {pattern}"
-          assert "section 'ALSA kernel devices'" in text
-          assert "section 'Input device enumeration'" in text
-          print("Static check passed (not a proof of semantic read-only behavior).")
+          for p in paths:
+              text = p.read_text()
+              for pattern in prohibited:
+                  assert not re.search(pattern, text), f"Potential mutation in {p}: {pattern}"
+          baseline = paths[0].read_text()
+          assert "section 'ALSA kernel devices'" in baseline
+          assert "section 'Input device enumeration'" in baseline
+          assert 'awk "!/^Serial[[:space:]]*:/" /proc/cpuinfo' in baseline, "CPU serial redaction missing"
+          assert "section 'Factory MPC application unit'" in baseline
+          detail = paths[1].read_text()
+          assert 'app_hardware_links' in detail and 'usb_metadata' in detail
+          print("Static checks passed (not a proof of semantic read-only behavior).")
           PY
       - name: Verify archived reference USB scripts parse and retain exact source bytes
         run: |
