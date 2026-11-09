@@ -31,11 +31,8 @@ app_runtime() {
     grep -E '^(Name|State|Pid|PPid|Threads|VmRSS|VmSize|VmLck|VmHWM|Cpus_allowed_list):' \
       "/proc/$pid/status" 2>/dev/null || :
   fi
-  if [ -r "/proc/$pid/smaps_rollup" ]; then
-    echo 'Memory totals (private process aggregate; not mappings):'
-    grep -E '^(Rss|Pss|Pss_Anon|Pss_File|Locked):' \
-      "/proc/$pid/smaps_rollup" 2>/dev/null || :
-  fi
+  # Do not traverse smaps_rollup while live audio runs: scanning many VMAs
+  # may temporarily consume CPU. /proc/<pid>/status already reports VmLck.
   echo 'Current selected service properties (read-only):'
   systemctl show acvs.service --no-pager -p Type -p Restart -p MainPID \
     -p Requires -p PartOf -p BindsTo -p Wants 2>/dev/null || :
