@@ -10,14 +10,14 @@ The MPC reported ARMv7 CPU part `0xc0d` with NEON/VFPv4, working `/lib/ld-linux-
 
 **Crucial qualification:** `getconf` is **not installed**; the first ABI report displayed `GLIBC_2.35` through `GLIBC_2.39` from `strings /lib/libc.so.6`. Those tags **strongly suggest** a 2.39-era runtime but **do not, alone, certify the release or every exported symbol**. An earlier version of `check-arm-abi.py` exited with no target version; it must never silently promote a maximum symbol string to a confirmed version.
 
-The revised script now tries to print the embedded **GNU libc release banner**, if present, from `strings` without executing libc. The checker:
+The revised script now prints the embedded **GNU libc release banner** from `strings` without executing libc. **Observed on this MPC:** `GNU C Library (GNU libc) stable release version 2.39.` The checker:
 - uses **only an explicit getconf result or recognized embedded release banner** as a target version;
 - otherwise emits **NOT QUALIFIED**, with candidate-required GLIBC version and the observed symbol-string ceiling, exit **4**;
 - rejects incompatible ELF/loader or a candidate requiring newer GLIBC than an explicitly reported target, exit **2**;
 - when the explicit version and needed library names are observed, reports necessary ELF/loader/version checks passed, exit **0**, **not** approval to deploy;
 - exits **3** for missing/malformed reports, tools or other unhandled readelf conditions.
 
-The sanitized measured facts and raw-report SHA-256 provenance are in [MPC One ABI/handoff survey](../hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). The first survey and stock-service preflight both completed successfully. **Updated `--abi` and new `--rtthreads` probes still await on-device execution.**
+The sanitized measured facts and raw-report SHA-256 provenance are in [MPC One ABI/handoff survey](../hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). **The owner ran the updated `--abi` on the actual MPC, and its embedded GNU libc release banner explicitly says 2.39.** The `--rtthreads` survey also ran and established CPU affinities across all four cores. The newest task-policy parser and passive capacity probe still require owner execution.
 
 ## New read-only userspace survey (implemented)
 
@@ -93,6 +93,6 @@ python3 tools/mpc-one/check-arm-abi.py \
   --elf rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
 ~~~
 
-**Exit 4 is expected if the new survey cannot determine an explicit libc release.** This is valuable evidence, not a failed MPC operation. The checker never opens SSH or executes the binary. Run this only on the workstation.
+**This owner's updated survey confirmed the explicit GNU libc 2.39 release banner; exit 4 remains appropriate if a different device does not provide that evidence.** This is valuable evidence, not a failed MPC operation. The checker never opens SSH or executes the binary. Run this only on the workstation.
 
 **No part of this work enables flashing, stopping the stock application, or overriding factory library search paths.**

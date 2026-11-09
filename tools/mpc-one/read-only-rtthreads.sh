@@ -33,8 +33,20 @@ for tid_dir in /proc/"$pid"/task/[0-9]*; do
   tid="$(basename "$tid_dir")"
   printf '\n--- TID %s ---\n' "$tid"
   if [ -r "$tid_dir/status" ]; then
-    grep -E '^(Name|State|Cpus_allowed_list|Mems_allowed_list|VmRSS):' \
+    # Per-task /proc/TID/status repeats the entire process VmRSS.
+    # Do NOT print/aggregate RSS per task: that falsely multiplies memory use.
+    grep -E '^(Name|State|Cpus_allowed_list|Mems_allowed_list):' \
       "$tid_dir/status" 2>/dev/null || :
+  fi
+  if [ -r "$tid_dir/stat" ]; then
+    # Linux proc_pid_stat(5): fields after stripping pid+(comm):
+    # $37 = last processor (field 39), $38 = RT priority (field 40),
+    # $39 = scheduler policy (field 41), $16 = priority, $17 = nice.
+    # Use final ') ' separator since task comm may contain spaces.
+    awk '{sub(/^.*\) /, ""); if (NF >= 39) {
+      printf "last_cpu=%s rt_priority=%s policy=%s raw_priority=%s nice=%s\n", \
+        $37, $38, $39, $16, $17
+    }}' "$tid_dir/stat" 2>/dev/null || :
   fi
   if [ -r "$tid_dir/sched" ]; then
     awk '/^[[:space:]]*(policy|prio|nr_switches|nr_voluntary_switches|nr_involuntary_switches)[[:space:]]*:/ {print}' \
