@@ -46,15 +46,44 @@ armhf_interpreter=present
 END MPFREE RAM SMOKE ENVIRONMENT
 """
 
-PASS_OUTPUT = """MPFREE_VOLATILE_STAGE_SHA256_OK
+PASS_OUTPUT = """STAGE=VERIFY_SHA256
+MPFREE_VOLATILE_STAGE_SHA256_OK
+STAGE=EXECUTE_RUST
 MPFREE_ARMV7_SMOKE_V1
 os=linux
 arch=arm
+sample_rate_hz=44100
 frames=4096
 beats=1
 nonzero_samples=146
 status=PASS
+STAGE=RUST_EXECUTED
 """
+
+HEADLESS_OUTPUT = """STAGE=VERIFY_SHA256
+MPFREE_VOLATILE_STAGE_SHA256_OK
+STAGE=EXECUTE_RUST
+MPFREE_HEADLESS_V1
+os=linux
+arch=arm
+backend=null
+sample_rate_hz=44100
+frames=88200
+groove_events=12
+sampler_notes=4
+groove_voice_steals=0
+sampler_voice_steals=0
+prepared_bytes=94628
+nonzero_samples=102304
+peak_abs=0.765504
+checksum_fnv1a64=3dc4d6dabbb17fbd
+elapsed_us=10000
+peak_rss_kib=4320
+rss_kib=3992
+status=PASS
+STAGE=RUST_EXECUTED
+"""
+
 
 
 class GuardTests(unittest.TestCase):
@@ -134,6 +163,69 @@ class GuardTests(unittest.TestCase):
             )
             self.assertIn("PASS", smoke.check_remote_environment(report))
 
+    def test_headless_profile_is_allowlisted_separately(self):
+        self.assertEqual(
+            smoke.get_profile("headless")["binary"], "mpfree-headless"
+        )
+        self.assertEqual(
+            smoke.get_profile("device-smoke")["binary"], "mpfree-device-smoke"
+        )
+        self.assertNotEqual(
+            smoke.get_profile("headless")["watchdog"],
+            smoke.get_profile("device-smoke")["watchdog"]
+        )
+        with self.assertRaises(ValueError):
+            smoke.get_profile("unapproved")
+
+    def test_headless_results_require_exact_null_backend_and_pcm_metrics(self):
+        stderr = "MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED\n"
+        d = smoke.parse_results(HEADLESS_OUTPUT, stderr, 0, "headless")
+        self.assertEqual(d["frames"], "88200")
+        self.assertEqual(d["backend"], "null")
+        self.assertEqual(d["rss_kib"], "3992")
+        for before, after in (
+            ("backend=null", "backend=alsa"),
+            ("arch=arm", "arch=x86_64"),
+            ("frames=88200", "frames=88199"),
+            ("sampler_notes=4", "sampler_notes=5"),
+            ("groove_voice_steals=0", "groove_voice_steals=2"),
+            ("prepared_bytes=94628", "prepared_bytes=0"),
+            ("peak_abs=0.765504", "peak_abs=inf"),
+            ("elapsed_us=10000", "elapsed_us=0"),
+            ("rss_kib=3992", "rss_kib=oops"),
+            ("status=PASS", "status=FAIL"),
+        ):
+            with self.subTest(field=before):
+                with self.assertRaises(RuntimeError):
+                    smoke.parse_results(
+                        HEADLESS_OUTPUT.replace(before, after),
+                        stderr, 0, "headless"
+                    )
+        with self.assertRaisesRegex(RuntimeError, "watchdog not proven"):
+            smoke.parse_results(HEADLESS_OUTPUT, "", 0, "headless")
+
+    def test_headless_duplicate_or_missing_phase_markers_rejected(self):
+        stderr = "MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED\n"
+        with self.assertRaises(RuntimeError):
+            smoke.parse_results(
+                HEADLESS_OUTPUT.replace(
+                    "STAGE=RUST_EXECUTED", "STAGE=EXECUTE_RUST"
+                ), stderr, 0, "headless"
+            )
+        with self.assertRaisesRegex(RuntimeError, "duplicate"):
+            smoke.parse_results(
+                HEADLESS_OUTPUT.replace(
+                    "frames=88200", "frames=88200\nframes=88200"
+                ), stderr, 0, "headless"
+            )
+        # No memory reading may be available on a future kernel,
+        # but output fields must still be present and explicit.
+        valid = HEADLESS_OUTPUT.replace("peak_rss_kib=4320", "peak_rss_kib=unavailable")
+        self.assertEqual(
+            smoke.parse_results(valid, stderr, 0, "headless")["peak_rss_kib"],
+            "unavailable"
+        )
+
     def test_remote_script_is_fixed_tmpfs_only_and_checks_checksum(self):
         digest = "a" * 64
         program = smoke.remote_run_script(digest)
@@ -154,7 +246,7 @@ class GuardTests(unittest.TestCase):
 
     def test_must_see_hash_arch_frames_and_pass(self):
         smoke.parse_results(PASS_OUTPUT, "WATCHDOG=RUST_5S_ARMED\n", 0)
-        with self.assertRaisesRegex(RuntimeError, "Rust watchdog armed"):
+        with self.assertRaisesRegex(RuntimeError, "watchdog not proven"):
             smoke.parse_results(PASS_OUTPUT, "", 0)
         with self.assertRaises(RuntimeError):
             smoke.parse_results(PASS_OUTPUT, "", 1)
