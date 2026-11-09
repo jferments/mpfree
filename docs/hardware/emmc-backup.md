@@ -28,7 +28,7 @@ From an up-to-date checkout, on the workstation:
 bash tools/mpc-one/collect-over-ssh.sh --backup
 ```
 
-You need about 7.6 GiB free under `research/backups/` (git-ignored). Set `MPC_BACKUP_DIR=/some/other/disk` to write somewhere else. The tool checks free space before copying.
+Backups go to `~/mpfree-backups/`, **outside the git clone**, so they can't be committed by accident or deleted by `git clean -fdx`. You need about 7.6 GiB free there, and the tool checks before copying. Set `MPC_BACKUP_DIR=/some/other/disk` to write somewhere else. The wrapper refuses a folder inside the clone unless git ignores it.
 
 | Exit status | Meaning |
 | --- | --- |
@@ -49,7 +49,7 @@ You need about 7.6 GiB free under `research/backups/` (git-ignored). Set `MPC_BA
 
 ## What you get
 
-A new folder `research/backups/mpc-one-emmc-<UTC time>-<random>/`, files read-only (mode 0400):
+A new folder `~/mpfree-backups/mpc-one-emmc-<UTC time>-<random>/`, files read-only (mode 0400):
 
 - `mmcblk0.img`: the whole user area, including both GPT copies and `p1`–`p8`
 - `mmcblk0boot0.img`, `mmcblk0boot1.img`
@@ -59,13 +59,13 @@ A new folder `research/backups/mpc-one-emmc-<UTC time>-<random>/`, files read-on
 Make a second copy on a different disk and check it there:
 
 ```bash
-cp -a research/backups/mpc-one-emmc-<…> /path/to/other/disk/ && \
+cp -a ~/mpfree-backups/mpc-one-emmc-<…> /path/to/other/disk/ && \
 cd /path/to/other/disk/mpc-one-emmc-<…> && sha256sum -c SHA256SUMS
 ```
 
 ## Keep it private
 
-The image contains Akai's proprietary content, your projects and settings, and the private SSH host key under `/data/mpfree/ssh/`. Never commit, upload or share it. `research/` and `*.img` are git-ignored.
+The image contains Akai's proprietary content, your projects and settings, the SSH host key and authorized keys under `/data/mpfree/ssh/`, and the MPC's serial number and MAC address (in the U-Boot environment). **It is private: never commit, upload or share it.** The default folder is outside the git clone, and `research/` and `*.img` are git-ignored as a second guard.
 
 ## What it does not cover
 
