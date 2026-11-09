@@ -160,7 +160,46 @@ For *laptop-generated instrument audio* delivered to MPC, define:
 - All timing and routing experiments stay on host simulation until a **reversible, consented** hardware takeover and tested recovery have been established.
 - Documentation distinguishes kernel/SoC *capabilities* from the exact MPC One **physical ports and negotiated connections**.
 
-## 5. Integration roadmap
+## 5. First host-only packet model: implemented (no sockets or MPC interaction)
+
+As a starting engineering artifact, `tools/mpc-one/host_audio_packet.py` implements a **Python/stdlib-only prototype**, with corresponding `tests/test_host_audio_packet.py` regression tests. It deliberately **does not** open any network connection, ALSA device, MIDI endpoint, or USB gadget. Its purpose is to settle packet-level invariants and deadline behavior before any runtime deployment.
+
+Packet header format (big-endian fields, 28 bytes):
+
+~~~text
+magic[4] = MPF1
+version:u8 = 1
+format:u8 = 1 (S32_LE payload)
+reserved_flags:u16 = 0
+stream_id:u32
+sequence:u32
+starting_sample_frame:u64
+frame_count:u16
+channel_count:u16
+PCM payload = frame_count × channel_count × 4 bytes (little endian)
+~~~
+
+The packet body is **interleaved S32_LE**, while header fields use network byte order. The static IPv4 standard-MTU budget is a conservative **1472-byte UDP payload** (1500-byte Ethernet MTU minus 20-byte IPv4 and 8-byte UDP headers; IP options/tunnels can reduce it further). A 128-frame stereo packet is **28 + 1024 = 1052 bytes UDP payload**, safely under that limit. A 128-frame *eight-channel* packet is rejected as too large; 32-frame eight-channel packets fit.
+
+The host-only `BoundedPlayout` model accepts aligned packets within a maximum configured future window and handles:
+- Reordered packets before their playback deadline.
+- Duplicate, wrong-stream, wrong-geometry, too-late and too-far-future rejection.
+- Missing packets by returning an exactly-sized **silence block** and recording an underrun.
+- Strict cap of 64 blocks for the simulated receive window; defaults to eight blocks of 128 frames (**~23.22 ms** of 44.1 kHz audio).
+
+Tests validate binary encode/decode, malformed packets, packet-size upper bounds, out-of-order arrival, loss, deadlines and bounded memory growth.
+
+**This is not yet production-grade.** In particular, a real receiver needs authentication/pairing and replay protection, fixed-capacity SPSC rings and preallocation in C++, an IO thread separate from the render callback, packet-clock/sampling-rate correction, network pacing, negotiated startup time and optional concealment/ramp rather than abrupt silence. The model assumes the sender and receiver already agree on starting frame 0; it doesn't estimate real network latency or imply that a 23-ms jitter buffer is required in practice.
+
+Run tests on ML-tower after pulling the branch:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+python3 -m unittest discover -s tests -p 'test_host_audio_packet.py' -v
+~~~
+
+## 6. Integration roadmap
 
 | Gate | Result | Current status |
 | --- | --- | --- |
