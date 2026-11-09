@@ -46,6 +46,15 @@ This is valuable feasibility evidence, not a validated recipe for our device: th
 
 An especially relevant observation from their validation: a `DeviceControlServer` was still present on a JUCE MIDI client after the main Akai application stopped. We must inspect our own factory process map to determine whether other daemons retain controller or MIDI ownership.
 
+## Factory firmware update/recovery route: official documentation
+
+Akai's own MPC Series Firmware Update Walkthrough documents a **manual power-on Update Mode** for the original MPC One using **FULL LEVEL + BROWSE + PAD BANK C/G** while powering on:
+https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough
+
+This is useful to document before a supervised UI-handoff experiment. However, it is a **firmware updater entry mechanism**, not proven restoration from overwritten eMMC boot sectors, a damaged bootloader or completely unbootable Linux. Akai itself warns that interrupted firmware updates can sometimes be difficult or impossible to recover. We must **not trigger update mode, flash firmware, or alter boot partitions during read-only discovery**.
+
+To qualify independent recovery later: identify available official firmware for the **exact original MPC One** and version, confirm updater/host-cable compatibility, maintain an externally stored full-storage/boot backup, and independently test a procedure for the relevant failure modes before altering factory disk or services. Do not infer that Rockchip generic MaskROM procedures or USB boot priority documented for other RK boards work on this product without direct evidence.
+
 ## Future owner-approved screen handoff stages (NOT implemented now)
 
 **Stage 0: no device writes:** process and touchscreen survey; offscreen Rust test-card rendering on workstation; no DRM master, framebuffer, evdev, user project or factory service modifications.
