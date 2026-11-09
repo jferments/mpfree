@@ -174,6 +174,21 @@ jobs:
                   'systemctl stop', 'systemctl restart', 'std::net::',
                   'std::process::Command', 'EVIOCGRAB', 'ioctl(',
               ))
+          touch_lib=Path("rust/mpfree-touch/src/lib.rs").read_text()
+          touch_main=Path("rust/mpfree-touch/src/main.rs").read_text()
+          assert '#![forbid(unsafe_code)]' in touch_lib
+          assert '#![deny(unsafe_op_in_unsafe_fn)]' in touch_main
+          assert 'MPFREE_ACCEPT_TOUCH_IOCTL' in touch_main
+          assert '/sys/class/input/event0/device/name' in touch_main
+          assert '/sys/bus/i2c/devices/4-0026/name' in touch_main
+          assert '.read(true)' in touch_main and '.open("/dev/input/event0")' in touch_main
+          assert 'fn eviocgabs(' in touch_main
+          assert 'fn ioctl(' in touch_main
+          assert 'fn read(' not in touch_main
+          assert 'EVIOCGRAB,' not in touch_main
+          assert 'std::process::Command' not in touch_main
+          assert 'systemctl stop' not in touch_main
+          assert '"--touch-abs")' not in wrapper
           session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
           assert '#![forbid(unsafe_code)]' in session_source
           assert 'NullAudioBackend' in session_source
@@ -372,6 +387,21 @@ jobs:
           assert pixel(ccw,800,799,0)==yellow
           print("PASS: offscreen M8 RGB test card, both panel rotations, create_new")
           PY
+      - name: Validate M9 ILI2117 synthetic EVIOCGABS metadata model (HOST ONLY)
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-touch
+          rust/target/release/mpfree-touch --self-test > /tmp/mpfree-touch-selftest.out
+          grep -q '^MPFREE_TOUCH_METADATA_SELFTEST_V1$' /tmp/mpfree-touch-selftest.out
+          grep -q '^backend=synthetic$' /tmp/mpfree-touch-selftest.out
+          grep -q '^device_opened=no$' /tmp/mpfree-touch-selftest.out
+          grep -q '^multitouch_slots_fixture=10$' /tmp/mpfree-touch-selftest.out
+          grep -q '^status=PASS$' /tmp/mpfree-touch-selftest.out
+          # Fail closed before sysfs or dev nodes when explicit opt-in absent.
+          if env -u MPFREE_ACCEPT_TOUCH_IOCTL rust/target/release/mpfree-touch --inspect; then
+            echo "FAIL: M9 inspection permitted without explicit opt-in" >&2
+            exit 1
+          fi
+          echo "PASS: no evdev open in M9 synthetic mode; live mode not deployed"
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -511,6 +541,30 @@ jobs:
               f"M7 ARM binary requires unsupported glibc {max(required)}"
           )
           print("PASS: M7 ARMv7 hard-float ABI and glibc<=2.39; NO deployment")
+          touch=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-touch")
+          assert touch.is_file() and touch.stat().st_size < 2 * 1024 * 1024
+          assert b"MPFREE_TOUCH_ABS_METADATA_V1" in touch.read_bytes()
+          assert b"MPFREE_TOUCH_METADATA_SELFTEST_V1" in touch.read_bytes()
+          touch_header=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-h", str(touch)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          touch_program=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-l", str(touch)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          touch_versions=subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-W", "--version-info", str(touch)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          assert re.search(r"Class:\s*ELF32", touch_header)
+          assert re.search(r"Machine:\s*ARM", touch_header)
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI", touch_header)
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in touch_program
+          glibcs=[tuple(map(int,m)) for m in re.findall(
+              r"GLIBC_(\d+)\.(\d+)",touch_versions)]
+          assert glibcs and max(glibcs)<=(2,39)
+          print("PASS: M9 touch EVIOCGABS metadata helper ARMv7 ELF glibc<=2.39; NOT DEPLOYED")
           headless=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-headless")
           assert headless.is_file() and headless.stat().st_size < 2 * 1024 * 1024
           assert b"MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED" in headless.read_bytes()
