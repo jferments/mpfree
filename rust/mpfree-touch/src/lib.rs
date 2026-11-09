@@ -85,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_invalid_raw_ranges_without_touch events() {
+    fn reject_invalid_raw_ranges_without_touch_events() {
         let zero = AxisInfo {
             minimum: 0, maximum: 0, fuzz: 0, flat: 0, resolution: 0,
         };
