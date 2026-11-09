@@ -1,0 +1,48 @@
+name: MPC read-only inventory checks
+
+on:
+  pull_request:
+    paths:
+      - "tools/mpc-one/**"
+      - ".github/workflows/mpc-inventory.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/mpc-one/**"
+      - ".github/workflows/mpc-inventory.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Shell syntax and static no-write checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          bash -n tools/mpc-one/collect-over-ssh.sh
+          sh -n tools/mpc-one/read-only-inventory.sh
+      - name: Check the remote survey contains no known destructive operations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("tools/mpc-one/read-only-inventory.sh")
+          text = p.read_text()
+          prohibited = (
+              r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
+              r"\bdd\s+.*\bof\s*=",
+              r"\bsystemctl\s+(?:stop|disable|restart|mask)\b",
+              r"\bmount\s+-o\s+remount",
+              r"\b(?:parted|sfdisk|fdisk)\b",
+              r">\s*/dev/(?:mmcblk|sd)",
+          )
+          for pattern in prohibited:
+              assert not re.search(pattern, text), f"Potential mutation in {p}: {pattern}"
+          assert "section 'ALSA kernel devices'" in text
+          assert "section 'Input device enumeration'" in text
+          print("Static check passed (not a proof of semantic read-only behavior).")
+          PY
