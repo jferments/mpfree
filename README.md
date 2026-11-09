@@ -25,6 +25,8 @@ Start here for reproducible hardware/firmware development:
 - [Active 44.1-kHz audio/ABI/JUCE/MIDI survey](docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md) — confirmed S32_LE stereo 128-frame PCM, independent playback/capture ring sizes, 38 stock app threads, high locked RAM, sequencer routing, EABI5 hard-float header.
 - [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — C++17, deterministic metronome rendering and host-only stereo S32_LE WAV; tested without accessing MPC hardware.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
+- [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
+- [Host-only network audio datagram prototype](tools/mpc-one/host_audio_packet.py) — sample-frame-stamped, MTU-checked S32_LE packet format and bounded deadline simulation, tested offline; not a live network receiver.
 - [Machine-readable hardware observations](docs/hardware/data/mpc-one-3.6.0-observed.json) — structured, **redacted** single-device evidence with explicit unknowns; no device serial or factory blobs.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 
@@ -69,6 +71,12 @@ file /tmp/mpfree-metronome.wav
 ~~~
 
 The resulting WAV is **44,100 Hz / stereo / signed 32-bit little-endian PCM**, matching the observed ACVA stream format. A WAV written to ML-tower is not MPC playback; the ACVA device remains owned by the factory software. See [M0 implementation and safety gates](docs/engineering/FIRST_AUDIO_CORE.md).
+
+### Ethernet and USB auxiliary-compute measurements (now confirmed)
+
+The owner's 2026-11-09 §--io§ and §--netbench§ runs verified **1000-Mbit/s full-duplex Ethernet** on the actual MPC One (Rockchip §rk_gmac-dwmac§, Realtek RTL8211E PHY), **USB 2.0 high-speed 480 Mbit/s** to a removable storage device, and a registered §dwc2§ high-speed **USB gadget UDC** which was *not attached* during the survey. Short ICMP ping averaged **0.272 ms** (20/20 replies); encrypted SSH goodput was **126.66 Mbit/s MPC→workstation** and **47.05 Mbit/s workstation→MPC** over only 4 MiB transfers, not a true UDP or gigabit PHY saturation test.
+
+The [redacted measured reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) preserves the hashes of the private raw logs and an evidence checklist. Raw PCM over gigabit Ethernet is technically plausible, but loss/jitter/clock drift/deadline tests and resource ownership remain blocking for live MPC audio output. For a first independent step, [host-only packet model](tools/mpc-one/host_audio_packet.py) tests MTU, timestamp, reorder, missed deadlines and finite buffering without sockets or hardware access.
 
 ### Architecture and project milestones
 
