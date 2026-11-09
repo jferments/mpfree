@@ -41,7 +41,7 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 
 ## Phase 0 — Evidence and risk reduction
 - [x] Record exact target model and factory firmware version. (MPC One, 3.6.0: [baseline](hardware/MPC_ONE_3_6_0_BASELINE.md))
-- [x] Review licensing and choose a repository license. (MIT, 2026-11-09; `LICENSE` file still to be added)
+- [x] Review licensing and choose a repository license. (MIT, 2026-11-09: [LICENSE](../LICENSE))
 - [ ] Inventory kernel, audio devices, controller MIDI endpoints, touchscreen, graphics, storage, and recovery options. (Everything except recovery options is inventoried; see the [survey](hardware/MPC_ONE_3_6_0_SURVEY_20261109.md).)
 - [x] Identify a reversible, offline, non-destructive way to launch a custom userspace application. (RAM-only `/run` execution over SSH, proven in M5–M7 and M10.)
 - [ ] Define a desktop simulator for the hardware inputs and display. (Partial: M8 offscreen test card and M11 synthetic touch streams.)

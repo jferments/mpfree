@@ -130,7 +130,7 @@ mpfree will not distribute proprietary Akai/AIR firmware, plugin binaries, prese
 
 ## License
 
-MIT, chosen by the owner on 2026-11-09. Until a `LICENSE` file is committed, do not assume this repository is licensed for reuse.
+[MIT](LICENSE). This covers MPFree's own code and documentation only, not any Akai/AIR firmware, content or third-party projects referenced here.
 
 ## Research starting points
 
