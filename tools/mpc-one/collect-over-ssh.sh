@@ -112,7 +112,11 @@ fi
 mkdir -p -- "$MPC_REPORT_DIR"
 REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
-echo "Collecting read-only report to $REPORT"
+if [[ "${1:-}" == "--netbench" ]]; then
+  echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
+else
+  echo "Collecting passive/read-only report to $REPORT"
+fi
 
 if [[ "${1:-}" == "--netbench" ]]; then
   echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
