@@ -4,11 +4,17 @@ on:
   pull_request:
     paths:
       - "tools/mpc-one/**"
+      - "src/**"
+      - "tests/**"
+      - "CMakeLists.txt"
       - ".github/workflows/mpc-inventory.yml"
   push:
     branches: [main]
     paths:
       - "tools/mpc-one/**"
+      - "src/**"
+      - "tests/**"
+      - "CMakeLists.txt"
       - ".github/workflows/mpc-inventory.yml"
   workflow_dispatch:
 
@@ -103,3 +109,32 @@ jobs:
           PY
           test "$(git hash-object tools/mpc-one/reference-lab/prepare_mpc_one_usb.py)" = "45721099d111608d19fe9d49a0aa1f8b06a99fdd"
           test "$(git hash-object tools/mpc-one/reference-lab/verify_mpc_one_usb.py)" = "23d013fc8ca5acaa7ff4a01374cb601bf2d04efe"
+
+  core:
+    name: Deterministic core build, tests and offline WAV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure C++ core
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Run deterministic engine tests and WAV smoke
+        run: ctest --test-dir build --output-on-failure
+      - name: Validate rendered WAV format and exact size
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p = Path("build/mpfree-test.wav")
+          data = p.read_bytes()
+          assert data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+          assert data[12:16] == b"fmt " and data[36:40] == b"data"
+          fmt = struct.unpack_from("<HHIIHH", data, 20)
+          assert fmt == (1, 2, 44100, 44100 * 8, 8, 32), fmt
+          data_length = struct.unpack_from("<I", data, 40)[0]
+          assert data_length == 44100 * 2 * 4
+          assert len(data) == 44 + data_length
+          assert any(data[44:]), "Rendered WAV is silent"
+          print("Valid 44.1kHz stereo S32_LE 1s offline demo; 0 MPC hardware access")
+          PY
