@@ -11,7 +11,7 @@ Every claim should carry one of these designations:
 - **UNVERIFIED:** a hypothesis requiring further device evidence or controlled testing.
 - **PROHIBITED DURING DISCOVERY:** actions that can change the installed firmware, data or hardware resource ownership.
 
-This document currently records OBSERVED facts and explicitly labels remaining unknowns. It is deliberately not a fictional SoC pinout or driver map.
+This document records OBSERVED facts and explicitly labels remaining unknowns. The **2026-11-09 survey** extends the original SSH/mount observations with SoC/CPU, eMMC labels, ALSA devices, MIDI endpoints, graphics and touchscreen evidence. For exact values, commands, confidence and redacted evidence see [MPC One 2026-11-09 detailed survey](MPC_ONE_3_6_0_SURVEY_20261109.md).
 
 ## 1. Entry point and verified access
 
@@ -49,11 +49,11 @@ PRETTY_NAME="az0x (inMusic Brands AZ0x base distribution) 5.0.8 (scarthgap)"
 CPE_NAME="cpe:/o:openembedded:az01:5.0.8"
 ~~~
 
-**OBSERVED:** ARMv7 Linux userspace, Linux 6.6.95 vendor kernel with PREEMPT_RT, inMusic az0x built on an OpenEmbedded/Yocto Scarthgap-era base. This does **not** establish the exact SoC part number, CPU core count, floating-point ABI, kernel defconfig, bootloader type or RT tuning. Collect these separately before deciding on a cross-compiler/sysroot.
+**OBSERVED:** ARMv7 Linux userspace, Linux 6.6.95 vendor kernel with PREEMPT_RT, inMusic az0x based on OpenEmbedded Scarthgap; device tree reports `rockchip,rk3288`, with **four** ARMv7 cores (MIDR part `0xC0D`), NEON and VFPv4. Approximately 2 GiB RAM, no swap and ~1 GiB `Mlocked` at sampling time. **UNVERIFIED:** precise hard-float ABI/linker, kernel config, CPU clock governor and the owner of locked pages. See [detailed survey](MPC_ONE_3_6_0_SURVEY_20261109.md).
 
 ## 3. Storage and mount topology
 
-Captured from `mount` on the running device; this is mount evidence, **not** the complete eMMC partition table.
+Captured from `mount` and, in the subsequent 2026-11-09 survey, `lsblk` and `/sys/class/block/mmcblk0p*/uevent`. **OBSERVED:** kernel PARTNAMEs are p1 `uboot-spl` (64 KiB), p2 `env` (8 KiB), p3 `uboot` (384 KiB), p4 `splash` (4 MiB), p5 `recoverysplash` (4 MiB), p6 `rootfs` (500 MiB), p7 `content` (4 GiB), and p8 `data` (~2.8 GiB). They are evidence of partition names, **not** confirmation of working recovery or complete boot-chain operation. See [detailed partition map](MPC_ONE_3_6_0_SURVEY_20261109.md).
 
 | Device/source | Mountpoint | Type | Observed access | Caution |
 | --- | --- | --- | --- | --- |
@@ -72,7 +72,7 @@ Captured from `mount` on the running device; this is mount evidence, **not** the
 
 **Critical implementation detail:** a read-only `/` does **not** imply an immutable `/etc` or `/var`. Their overlay upperdirs are on writable persistent `/data`. The installer must treat edits to these mounts as persistent changes, requiring transactional backup and rollback.
 
-**UNVERIFIED:** meaning of eMMC partitions 1–5, bootloader environment, update slots, recovery mode, GPT/MBR details, boot selection, exact capacity, block-device wear, storage restore procedure. The next inventory is limited to read-only metadata (`/proc/partitions`, `lsblk` and `/sys/class/block/...`).
+**UNVERIFIED:** how the bootloader environment is encoded, recovery mode, actual boot ROM chain, update/fallback slots, GPT/MBR offsets and verified restoration. The `recoverysplash` label does not prove an operable recovery OS. eMMC has separate 4 MiB boot0/boot1 regions whose use is not yet established.
 
 ## 4. Networking
 
@@ -82,7 +82,7 @@ Captured from `mount` on the running device; this is mount evidence, **not** the
 
 ## 5. Audio, MIDI, display, controls and application
 
-**No validated hardware map yet.** The following are investigation targets rather than claims:
+**Verified 2026-11-09 enumeration:** ALSA card 0 `MPC One MIDI`, ALSA card 1 `ACVA` with one playback and one capture PCM; three raw MIDI endpoints named `MPC Studio Live Public`, `Private`, and `MIDI Port`; DRM `card0-DSI-1` display, framebuffer `rockchipdrmfb`, Panfrost GPU-related devices; ILI2117 touchscreen as `/dev/input/event0`; `gpio-keys` as `/dev/input/event1`; stock application under `/usr/bin/MPC`, managed by running **`acvs.service`**. The following are the **still-unverified functional behaviors**:
 
 | Subsystem | Questions | Non-invasive evidence |
 | --- | --- | --- |
@@ -108,11 +108,11 @@ Do **not** copy proprietary executables, embedded assets, activation data, licen
 | Claim | Confidence |
 | --- | --- |
 | Working root SSH using autorun on this particular firmware/device | OBSERVED |
-| Linux/az0x versions, ARMv7, real-time kernel | OBSERVED |
+| RK3288 device tree, four CPUs, ~2 GiB RAM, PREEMPT_RT az0x | OBSERVED |
 | Mounts and persistent overlay upperdirs | OBSERVED |
-| Complete eMMC/bootloader/firmware/recovery layout | UNVERIFIED |
-| Pad and encoder protocol/LED control | UNVERIFIED |
-| Audio driver, exclusive ownership and performance | UNVERIFIED |
+| eMMC partition labels/capacities and mounts | OBSERVED; boot execution chain and recoverability UNVERIFIED |
+| MIDI device names and touchscreen node | OBSERVED; pad/encoder message protocols and LED writes UNVERIFIED |
+| ALSA ACVA and USB MIDI enumeration | OBSERVED; actual hardware ownership, protocols, formats and latency UNVERIFIED |
 | Compatibility on other MPC One firmware or models | UNVERIFIED |
 | Ability to boot independent kernel or an installer without risks | UNVERIFIED |
 
