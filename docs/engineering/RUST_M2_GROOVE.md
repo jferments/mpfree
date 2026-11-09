@@ -99,6 +99,23 @@ CI also validates offline WAV RIFF structure, sample rate/width, four-second dur
 
 No workflow uploads build artifacts or touches the MPC.
 
+## Verified GitHub CI acceptance (2026-11-09 UTC)
+
+[GitHub Actions run 42576743311](https://github.com/jferments/mpfree/actions/runs/42576743311) **passed all three jobs**: Rust tests and ARMv7 cross-build, shell/static no-write checks, and original C++ core/WAV tests.
+
+The Rust job reported **5/5 M1 metronome tests and 6/6 new M2 groove tests passed in both debug and release**. The independent desktop WAV renderer printed:
+
+~~~text
+Rust MPFree groove: 176400 frames, 24 triggered events,
+86436 prepared sample bytes, 0 stolen voices;
+44,100 Hz stereo S32_LE WAV: /tmp/mpfree-ci-groove.wav
+PASS: 2 bars, 24 drum events, 44.1kHz stereo S32_LE, nonzero audio
+~~~
+
+The same run preserved **zero sample difference** between Rust and the original C++ metronome at 120, 109, and 137.2 BPM. The Rust groove crate also compiled for ARMv7 ELF32 EABI5 hard-float. These are **real GitHub CI results**, not a claim that MPFree runs on the MPC.
+
+The project's owner independently verified the M1 Rust metronome on **ML-tower**, using rustc/cargo **1.97.1**: 5/5 tests, all three C++/Rust parity comparisons at integer difference zero, creation of the 176,400-frame metronome WAV. **The new M2 drum demo has not yet been reported as played back on ML-tower**; instructions above reproduce it.
+
 ## What M2 does not implement
 
 This is intentionally a *small, verifiable vertical slice*, not a full DAW. The following remain future work: user-supplied sample loading and streaming, actual velocity-layer instruments, zero-copy sample caching, MIDI capture, per-note sustain/off/release, swing, time signatures other than 4/4, tempo maps, parameter automation, polymeter, musical undo, per-track mixer/pan, effects routing, quality resampling, real plugin hosting, asynchronous app/UI state, project persistence, network audio transport, MPC hardware input/output, and crash recovery.
