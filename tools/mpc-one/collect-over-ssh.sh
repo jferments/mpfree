@@ -14,13 +14,15 @@ MPC_USER="${MPC_USER:-root}"
 MPC_KEY="${MPC_KEY:-/home/jesse/.ssh/mpc_one_autorun_ed25519}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-# Only the three reviewed, repository-local scripts are executable remotely.
+# Only reviewed, repository-local survey scripts and a bounded host-side benchmark are allowed.
 # No arbitrary user-supplied script path or remote command is accepted.
 case "${1:-}" in
   "") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"; REPORT_KIND="mpc-one" ;;
   "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
   "--runtime") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-runtime.sh"; REPORT_KIND="mpc-one-runtime" ;;
-  *) printf 'ERROR: Unknown mode. Use no arguments for baseline, --detail for focused hardware, or --runtime for audio/runtime procfs.\n' >&2
+  "--io") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-io.sh"; REPORT_KIND="mpc-one-io" ;;
+  "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -33,7 +35,12 @@ command -v ping >/dev/null 2>&1 || die 'ping missing on workstation'
 command -v ssh >/dev/null 2>&1 || die 'OpenSSH client missing on workstation'
 command -v timeout >/dev/null 2>&1 || die 'timeout missing on workstation'
 command -v sha256sum >/dev/null 2>&1 || die 'sha256sum missing on workstation'
-[[ -f "$REMOTE_SCRIPT" && -r "$REMOTE_SCRIPT" ]] || die "Missing read-only inventory script: $REMOTE_SCRIPT"
+if [[ "${1:-}" == "--netbench" ]]; then
+  [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
+else
+  [[ -f "$REMOTE_SCRIPT" && -r "$REMOTE_SCRIPT" ]] || die "Missing read-only inventory script: $REMOTE_SCRIPT"
+fi
 [[ -f "$MPC_KEY" && -r "$MPC_KEY" ]] || die "SSH private key is missing or unreadable: $MPC_KEY"
 [[ -n "$MPC_EXPECT_MAC" && -n "$MPC_HOST_IP_CIDR" ]] || die 'Device identity gates must be supplied'
 
@@ -107,6 +114,17 @@ REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXX
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
 echo "Collecting read-only report to $REPORT"
 
+if [[ "${1:-}" == "--netbench" ]]; then
+  echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
+  echo "Avoid running while recording/playing; it may briefly load the MPC CPU and network."
+  if ! timeout 95 python3 "$SCRIPT_DIR/network-bench.py" \
+    --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" \
+    --key "$MPC_KEY" --iface "$MPC_IFACE" > "$REPORT" 2>&1; then
+    echo "Benchmark failed safely; output retained: $REPORT" >&2
+    sed -n '1,50p' "$REPORT" >&2
+    exit 1
+  fi
+else
 if ! timeout 180 ssh -T \
    -o BatchMode=yes \
    -o IdentitiesOnly=yes \
@@ -121,6 +139,7 @@ if ! timeout 180 ssh -T \
   sed -n '1,30p' "$REPORT" >&2
   echo "For a passphrase-protected key, first run: ssh-add $MPC_KEY" >&2
   exit 1
+fi
 fi
 
 sha256sum "$REPORT" > "$REPORT.sha256"
