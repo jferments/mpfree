@@ -27,6 +27,8 @@ case "${1:-}" in
   "--touchscreen") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-touchscreen.sh"; REPORT_KIND="mpc-one-touchscreen" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
+  "--audio-midi") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-audio-midi.sh"; REPORT_KIND="mpc-one-audio-midi" ;;
+  "--midi-activity") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-activity" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
   "--ram-smoke") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-execution" ;;
@@ -37,7 +39,7 @@ case "${1:-}" in
   "--touch-axes-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-preflight" ;;
   "--touch-axes") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -66,6 +68,11 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
         "${MPFREE_ACCEPT_TOUCH_AXES:-}" != 'YES' ) ]]; then
     die 'M10 dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_TOUCH_AXES=YES bash tools/mpc-one/collect-over-ssh.sh --touch-axes'
   fi
+elif [[ "${1:-}" == "--midi-activity" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-activity on workstation'
+  [[ -r "$SCRIPT_DIR/host_midi_activity.py" ]] || die 'Missing host_midi_activity.py'
+  [[ -r "$SCRIPT_DIR/read-only-midi-counters.sh" ]] || die 'Missing read-only-midi-counters.sh'
+  [[ -t 0 ]] || die '--midi-activity is interactive: run it from a terminal'
 elif [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
@@ -175,7 +182,9 @@ fi
 mkdir -p -- "$MPC_REPORT_DIR"
 REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
-if [[ "${1:-}" == "--netbench" ]]; then
+if [[ "${1:-}" == "--midi-activity" ]]; then
+  echo "Guided READ-ONLY MIDI counter map (procfs reads only) to $REPORT"
+elif [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
 elif [[ "${1:-}" == "--touch-axes-check" ]]; then
   echo "READ-ONLY M10 exact MPC/ILI2117/ARM ABI preflight (NO upload): $REPORT"
@@ -208,6 +217,14 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
     exit 1
   fi
   sed -n '1,85p' "$REPORT"
+elif [[ "${1:-}" == "--midi-activity" ]]; then
+  # --foreground keeps the prompts readable from the terminal.
+  if ! timeout --foreground 900 python3 "$SCRIPT_DIR/host_midi_activity.py" \
+      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --script "$SCRIPT_DIR/read-only-midi-counters.sh" --report "$REPORT"; then
+    echo "MIDI activity map stopped or failed; partial report kept: $REPORT" >&2
+    exit 1
+  fi
 elif [[ "${1:-}" == "--netbench" ]]; then
   echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
   echo "Avoid running while recording/playing; it may briefly load the MPC CPU and network."
