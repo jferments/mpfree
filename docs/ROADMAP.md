@@ -34,17 +34,20 @@ This is a proposal, not a promise of parity or a timeline.
 - [ ] **Future experimental screen takeover:** requires independently proven full factory boot recovery and a separate supervised, owner-consented stock-app stop → timed DRM test-card → verified stock-app restore. Not implemented or authorized in current work.
 - [x] Read-only mapping of Rockchip hardware, ACVA ALSA buffer settings, MIDI graph, storage layout, 1-Gbit Ethernet PHY, USB 2.0 high-speed port and Linux DWC2 device controller.
 - [ ] Target-image-compatible ARMv7 sysroot and tested reversible **nonpersistent** custom executable launch.
-- [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate).
+- [ ] Proven independent unbootable-MPC recovery from verified backups, plus volatile watchdog and tested service restoration (hard gate). **Proposed replacement:** a three-tier gate (session-only / persistent files on SD / boot chain), see [recovery and OS strategy](engineering/RECOVERY_AND_OS_STRATEGY.md); awaiting owner adoption.
+- [x] **Persistent SSH** (owner-built, kept by owner decision 2026-11-09): early-boot `mpfree-sshd.service` in rootfs, keys under `/data/mpfree/ssh`; recorded as MOD-001/MOD-002 in [device modifications](hardware/DEVICE_MODIFICATIONS.md).
+- [x] Read-only `--boot-map` survey, owner-run twice on 2026-11-09: eMMC layout, U-Boot environment and boot flow, boot-partition hashes, zero writes to `p1`–`p6`, kexec support. Akai's Update Mode is U-Boot fastboot and does not need the rootfs. See the [boot map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md).
+- [ ] Track B research: test a non-Akai kernel with **zero eMMC writes** (kexec, which is available; fastboot RAM boot, unverified; or MaskROM RAM boot) before any persistent boot change. SD boot is not zero-write, because U-Boot tries the eMMC first.
 - [ ] Demonstrate controller input and safe ALSA playback **on actual MPC** after verifying factory service handoff and recovery.
 - [ ] Port host-only Python network-audio datagram model to Rust; add bounded real packet pacing/clock-drift simulation before any MPC audio ingress.
 - [ ] Implement user-provided sample importer and genuine sequencer editing, projects, MIDI and hardware HAL.
 
-These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No MPFree software is installed persistently on the MPC, and the original `acvs.service` still owns PCM and display resources. For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
+These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2 gates complete. No MPFree software is installed persistently on the MPC, and the original `acvs.service` still owns PCM and display resources. **The reference unit is not stock, though:** persistent SSH added a unit to the rootfs and keys under `/data` (see [device modifications](hardware/DEVICE_MODIFICATIONS.md)). For source and tests see [Rust M1](engineering/RUST_M1_PARITY.md) and [Rust M2](engineering/RUST_M2_GROOVE.md).
 
 ## Phase 0 — Evidence and risk reduction
 - [x] Record exact target model and factory firmware version. (MPC One, 3.6.0: [baseline](hardware/MPC_ONE_3_6_0_BASELINE.md))
 - [x] Review licensing and choose a repository license. (MIT, 2026-11-09: [LICENSE](../LICENSE))
-- [ ] Inventory kernel, audio devices, controller MIDI endpoints, touchscreen, graphics, storage, and recovery options. (Everything except recovery options is inventoried; see the [survey](hardware/MPC_ONE_3_6_0_SURVEY_20261109.md).)
+- [ ] Inventory kernel, audio devices, controller MIDI endpoints, touchscreen, graphics, storage, and recovery options. (Everything except recovery options is inventoried; see the [survey](hardware/MPC_ONE_3_6_0_SURVEY_20261109.md). The boot chain is mapped in the [boot map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md), but no recovery path has been proven yet.)
 - [x] Identify a reversible, offline, non-destructive way to launch a custom userspace application. (RAM-only `/run` execution over SSH, proven in M5–M7 and M10.)
 - [ ] Define a desktop simulator for the hardware inputs and display. (Partial: M8 offscreen test card and M11 synthetic touch streams.)
 
