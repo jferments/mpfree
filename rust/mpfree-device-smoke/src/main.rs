@@ -6,6 +6,22 @@
 
 use mpfree_core::ClickEngine;
 
+// Independent Rust watchdog thread requires no on-device timeout/nice utility.
+// A permanently unschedulable process is still beyond any userspace watchdog.
+const WALL_WATCHDOG_SECONDS: u64 = 5;
+
+fn arm_self_watchdog() -> Result<(), std::io::Error> {
+    std::thread::Builder::new()
+        .name("mpfree-smoke-watchdog".to_string())
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(WALL_WATCHDOG_SECONDS));
+            eprintln!("status=FAIL reason=rust_watchdog_deadline_exceeded");
+            std::process::abort();
+        })?;
+    Ok(())
+}
+
 const BLOCK: usize = 128;
 const FRAMES: usize = 4096;
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
@@ -63,6 +79,11 @@ fn main() {
         eprintln!("Usage: mpfree-device-smoke --self-test");
         std::process::exit(64);
     }
+    if let Err(error) = arm_self_watchdog() {
+        eprintln!("status=FAIL reason=watchdog_unavailable error={error}");
+        std::process::exit(70);
+    }
+    eprintln!("WATCHDOG=RUST_5S_ARMED");
     match self_test() {
         Ok(s) => {
             println!("MPFREE_ARMV7_SMOKE_V1");
