@@ -27,6 +27,10 @@ This bootstrap temporarily launched the MPC's **existing** OpenSSH 9.6 server wi
 
 It may write diagnostic status/fingerprint files on the removable USB. The authenticated shell itself may cause routine logging by the factory OS.
 
+### Persistent SSH (current primary access, 2026-11-09)
+
+USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.service` in the rootfs starts key-only root SSH on port `2222` (secondary `2223`), with configuration and keys under `/data/mpfree/ssh/`. Installing it required a temporary read-write remount of `/`, so **the reference unit is no longer stock**. The exact paths, risk, the effect of an Akai update, and the undo steps are in [DEVICE_MODIFICATIONS.md](DEVICE_MODIFICATIONS.md). USB autorun remains the fallback if an update removes the unit.
+
 ### Reference lab network (not general defaults)
 
 | Property | Value |
