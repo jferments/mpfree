@@ -217,6 +217,18 @@ jobs:
             -p mpfree-device-smoke -- --self-test > /tmp/mpfree-watchdog-native.out 2>/tmp/mpfree-watchdog-native.err
           grep -q '^WATCHDOG=RUST_5S_ARMED$' /tmp/mpfree-watchdog-native.err
           grep -q '^status=PASS$' /tmp/mpfree-watchdog-native.out
+      - name: Validate headless groove + sampler + null audio integration
+        run: |
+          cargo run --manifest-path rust/Cargo.toml --release --locked \
+            -p mpfree-headless -- --self-test > /tmp/mpfree-headless.out 2>/tmp/mpfree-headless.err
+          grep -q '^MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED$' /tmp/mpfree-headless.err
+          grep -q '^MPFREE_HEADLESS_V1$' /tmp/mpfree-headless.out
+          grep -q '^backend=null$' /tmp/mpfree-headless.out
+          grep -q '^frames=88200$' /tmp/mpfree-headless.out
+          grep -q '^groove_events=12$' /tmp/mpfree-headless.out
+          grep -q '^sampler_notes=4$' /tmp/mpfree-headless.out
+          grep -q '^status=PASS$' /tmp/mpfree-headless.out
+          cat /tmp/mpfree-headless.out
       - name: Validate offline 16-step groove audio and RIFF PCM encoding
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
@@ -329,6 +341,36 @@ jobs:
           assert b"WATCHDOG=RUST_5S_ARMED" in binary.read_bytes(), (
               "ARM binary must contain self-watchdog startup marker"
           )
+          headless=Path("rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-headless")
+          assert headless.is_file() and headless.stat().st_size < 2 * 1024 * 1024
+          assert b"MPFREE_HEADLESS_RUST_WATCHDOG_5S_ARMED" in headless.read_bytes()
+          assert b"MPFREE_HEADLESS_V1" in headless.read_bytes()
+          # Reuse same ABI validation against ARMv7 target for our new executable.
+          headless_header = subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-h", str(headless)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          assert re.search(r"Class:\s*ELF32", headless_header)
+          assert re.search(r"Machine:\s*ARM", headless_header)
+          assert re.search(r"Flags:.*Version5 EABI.*hard-float ABI", headless_header)
+          headless_phdr = subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-l", str(headless)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          assert "Requesting program interpreter: /lib/ld-linux-armhf.so.3" in headless_phdr
+          headless_versions = subprocess.run(
+              ["arm-linux-gnueabihf-readelf", "-W", "--version-info", str(headless)],
+              check=True, capture_output=True, text=True
+          ).stdout
+          headless_needs = [
+              tuple(map(int, m)) for m in
+              re.findall(r"GLIBC_(\d+)\.(\d+)", headless_versions)
+          ]
+          assert headless_needs and max(headless_needs) <= (2, 39), (
+              f"headless binary requires newer glibc: {max(headless_needs)}"
+          )
+          print("PASS: headless ARMv7 ELF+glibc <=2.39; no hardware execution")
+
           def readelf(*args):
               return subprocess.run(
                   ["arm-linux-gnueabihf-readelf", *args, path],
