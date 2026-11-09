@@ -1,0 +1,11 @@
+[package]
+name = "mpfree-headless"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Finite standalone MPFree groove + sampler + null-output userspace validation"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }
+mpfree-groove = { path = "../mpfree-groove" }
+mpfree-sampler = { path = "../mpfree-sampler" }

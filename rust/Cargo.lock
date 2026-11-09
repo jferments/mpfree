@@ -21,6 +21,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-headless"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+ "mpfree-groove",
+ "mpfree-sampler",
+]
+
+[[package]]
 name = "mpfree-handoff-model"
 version = "0.1.0"
 
