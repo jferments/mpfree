@@ -30,7 +30,7 @@ is recorded below.
 | Boot chain | Untouched | Must be understood first; tested without eMMC writes |
 | Delivery | USB autorun → install to SD/`/data` → SSH | USB/SD image, eventually an installer |
 | Gate tier | Tier 1 → Tier 2 | Tier 3 |
-| Next step | Full eMMC backup, then the Tier 1 rehearsal | Read-only kexec preflight, then a RAM-only kexec test plan |
+| Next step | Tier 1 stop → start rehearsal (backup done) | Read-only kexec preflight, then a RAM-only kexec test plan |
 
 Track A delivers a usable instrument early. Track B starts as read-only
 research and runs alongside it.
@@ -126,12 +126,12 @@ Policy:
 Steps 1–5 are read-only or offline. Step 6 changes device state and needs the owner's go-ahead.
 
 1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). The second run captured the U-Boot environment and boot script.
-2. Copy `/opt/ramfs-update.squashfs` to the workstation (a read on the device), `unsquashfs` it there,
+2. Extract `/opt/ramfs-update.squashfs` from the backup's rootfs on the workstation (no MPC contact), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
-   Label it `MOD-001+MOD-002`. **Tool added:** [`--backup`](../hardware/emmc-backup.md), read-only on the MPC;
-   owner run pending.
+   Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
+   second copy verified on another disk.
 4. Host-side write-counter diff tool: fails if `p1`–`p6` show writes between two `--boot-map` snapshots.
 5. Board photos to locate a MaskROM button or eMMC clock test point. Opening the case is the owner's decision.
 6. **Owner go-ahead required:** first Tier 1 rehearsal. Stop and start `acvs.service` with no MPFree

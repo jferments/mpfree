@@ -231,7 +231,7 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
   sed -n '1,85p' "$REPORT"
 elif [[ "${1:-}" == "--backup" ]]; then
   echo "Copies the whole eMMC (about 7.3 GiB) and both boot areas into a new folder under $MPC_BACKUP_DIR."
-  echo "The MPC only reads. Expect roughly 10 minutes; keep the MPC idle (no playback or recording)."
+  echo "The MPC only reads. Expect about 4 minutes (first run: 193 s); keep the MPC idle (no playback or recording)."
   tool_version="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   backup_rc=0
   timeout 7200 python3 "$SCRIPT_DIR/host_emmc_backup.py" \
