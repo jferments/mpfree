@@ -44,7 +44,7 @@ fi
 # The awk process inherits this SSH shell's scheduling policy.
 # /proc/self/stat fields after stripping pid+(comm): policy = $39.
 if command -v awk >/dev/null 2>&1 && [ -r /proc/self/stat ]; then
-  awk '{ sub(/^.*\\) /, ""); if (NF >= 39) printf "shell_scheduler_policy=%s\\n", $39; else print "shell_scheduler_policy=unavailable" }' /proc/self/stat
+  awk '{ sub(/^.*\) /, ""); if (NF >= 39) printf "shell_scheduler_policy=%s\n", $39; else print "shell_scheduler_policy=unavailable" }' /proc/self/stat
 else
   printf 'shell_scheduler_policy=unavailable\n'
 fi
