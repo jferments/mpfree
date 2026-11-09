@@ -18,6 +18,7 @@ Start here for reproducible hardware/firmware development:
 
 - [Verified MPC One 3.6.0 hardware/software baseline](docs/hardware/MPC_ONE_3_6_0_BASELINE.md) — observed ARMv7/PREEMPT_RT kernel, inMusic az0x distribution, storage mounts/overlays, and explicit unknowns.
 - [Verified USB autorun and SSH developer access](docs/hardware/DEVELOPER_ACCESS.md) — upstream byte-sensitive autorun files, tested SSH approach, exact reference Ethernet lab settings, failure recovery.
+- [Verified USB autorun reference builder and verifier](docs/hardware/USB_AUTORUN_REFERENCE.md) — exact scripts and upstream hashes from the successful reference device; **hardcoded lab-only USB safety checks, not a general installer**.
 - [Hardware reverse-engineering research matrix](docs/hardware/RESEARCH_MATRIX.md) — subsystem-by-subsystem mapping plan with evidence labels and safety gates.
 - [One-USB installer architecture](docs/USB_INSTALLER_ARCHITECTURE.md) — future owner-consented installer, version compatibility, signatures, rollback and recovery.
 
