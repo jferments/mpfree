@@ -50,8 +50,15 @@ def verify_live_board(report):
         "GNU libc release banner: GNU C Library (GNU libc) "
         "stable release version 2.39.",
     )
+    lines = report.splitlines()
     for marker in required:
-        if marker not in report:
+        # Model, firmware and libc identity must be exact whole lines; a
+        # substring match would dangerously accept "MPC One+" as "MPC One".
+        found = (
+            any(EXPECTED_KERNEL in line for line in lines)
+            if marker == EXPECTED_KERNEL else marker in lines
+        )
+        if not found:
             raise RuntimeError(f"device identity/ABI marker not established: {marker}")
 
 
