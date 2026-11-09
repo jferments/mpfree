@@ -4,19 +4,34 @@
 
 **Goal:** stop treating `cargo build --target armv7-unknown-linux-gnueabihf` as sufficient evidence of deployability. Find the exact target glibc version, dynamic loader, ABI and library availability before any nonpersistent executable is considered for on-device testing.
 
+## Actual device results from the owner (2026-11-09 UTC)
+
+The MPC reported ARMv7 CPU part `0xc0d` with NEON/VFPv4, working `/lib/ld-linux-armhf.so.3`, `/lib/libc.so.6`, `/lib/libm.so.6`, `libasound.so.2`, `libdrm.so.2`, EGL, GLESv2, GBM and libstdc++. Its Yocto-derived distribution is **az0x 5.0.8 (scarthgap)**.
+
+**Crucial qualification:** `getconf` is **not installed**; the first ABI report displayed `GLIBC_2.35` through `GLIBC_2.39` from `strings /lib/libc.so.6`. Those tags **strongly suggest** a 2.39-era runtime but **do not, alone, certify the release or every exported symbol**. An earlier version of `check-arm-abi.py` exited with no target version; it must never silently promote a maximum symbol string to a confirmed version.
+
+The revised script now tries to print the embedded **GNU libc release banner**, if present, from `strings` without executing libc. The checker:
+- uses **only an explicit getconf result or recognized embedded release banner** as a target version;
+- otherwise emits **NOT QUALIFIED**, with candidate-required GLIBC version and the observed symbol-string ceiling, exit **4**;
+- rejects incompatible ELF/loader or a candidate requiring newer GLIBC than an explicitly reported target, exit **2**;
+- when the explicit version and needed library names are observed, reports necessary ELF/loader/version checks passed, exit **0**, **not** approval to deploy;
+- exits **3** for missing/malformed reports, tools or other unhandled readelf conditions.
+
+The sanitized measured facts and raw-report SHA-256 provenance are in [MPC One ABI/handoff survey](../hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md). The first survey and stock-service preflight both completed successfully. **Updated `--abi` and new `--rtthreads` probes still await on-device execution.**
+
 ## New read-only userspace survey (implemented)
 
 On ML-tower with previously verified direct MPC Ethernet and root SSH identity:
 
 ~~~bash
 cd /home/jesse/code/mpfree-hardware-survey
-git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+git pull --ff-only origin main
 ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519
 sh -n tools/mpc-one/read-only-abi.sh
 bash tools/mpc-one/collect-over-ssh.sh --abi
 ~~~
 
-The script reads `uname`, CPU feature flags (without serial), `/etc/os-release`, `getconf GNU_LIBC_VERSION` if installed, installed dynamic linker/library paths and symlinks for libc/ALSA/DRM/EGL/GLES/GBM/libstdc++, names of available inspection tools, optional libc GLIBC symbol tags and **only the first 64-byte header** of the factory executable (never copies the binary). It performs **no writes, no target-side compiler installation, no package changes, no ELF program execution, and no hardware device opens**.
+The script reads `uname`, CPU feature flags (without serial), `/etc/os-release`, `getconf GNU_LIBC_VERSION` if installed, **an embedded GNU libc release banner from read-only `strings`**, installed dynamic linker/library paths and symlinks for libc/ALSA/DRM/EGL/GLES/GBM/libstdc++, names of available inspection tools, optional libc GLIBC symbol tags and **only the first 64-byte header** of the factory executable (never copies the binary). It performs **no writes, no target-side compiler installation, no package changes, no ELF program execution, and no hardware device opens**.
 
 Result: local, gitignored `research/mpc-one-abi-*.txt`. Review and redact before public sharing.
 
@@ -67,5 +82,17 @@ A target-compatible **reproducible** sysroot should eventually be derived from *
 ## CI behavior
 
 GitHub Actions builds the Rust workspace using the `armv7-unknown-linux-gnueabihf` target with `gcc-arm-linux-gnueabihf` plus ARM `libc6-dev` startup objects. It tests the ELF header flag, not target library compatibility. The new `check-arm-abi.py` is unit-tested with synthetic report/ELF strings, but can only run a real compatibility check after the owner supplies the **actual** read-only ABI report.
+
+### Report-based host check, using an actual filename
+
+When the cross-compiler/binutils are installed, cross-build on ML-tower, then:
+
+~~~bash
+python3 tools/mpc-one/check-arm-abi.py \
+  --report "$(ls -t research/mpc-one-abi-*.txt | head -n 1)" \
+  --elf rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-render
+~~~
+
+**Exit 4 is expected if the new survey cannot determine an explicit libc release.** This is valuable evidence, not a failed MPC operation. The checker never opens SSH or executes the binary. Run this only on the workstation.
 
 **No part of this work enables flashing, stopping the stock application, or overriding factory library search paths.**
