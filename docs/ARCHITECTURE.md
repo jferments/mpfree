@@ -30,7 +30,7 @@ Touchscreen UI + hardware workflow (candidate: Qt Quick/QML or SDL)
                    MPC One
 ```
 
-**Decisions not yet made:** C++ vs Rust for the real-time engine, Qt vs SDL for the UI, ALSA direct vs JACK/PipeWire, plugin ABI, sample-streaming strategy, boot integration, and compatibility with factory content. All require measurement on the target device.
+**Decisions not yet made:** the project is evaluating **Rust-first with small C/C++ integration modules** rather than pure C++; [ADR-0001](engineering/ADR-0001-RUST-FIRST-HYBRID.md) proposes the decision and names verification gates. The C++ M0 engine is a validated baseline, **not** yet rewritten. Qt vs SDL/Slint for UI, direct ALSA vs JACK/PipeWire, actual plugin ABI, sample streaming, boot integration, and factory-content compatibility remain open and require target-level evidence.
 
 ### Real-time boundary
 
