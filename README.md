@@ -2,7 +2,7 @@
 
 **A proposed free, open-source music-production environment for the Akai MPC One.**
 
-**Status: hardware discovery plus an initial desktop-testable independent audio core.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
+**Status: hardware discovery plus desktop-testable Rust metronome and 16-step groove/sampler prototypes.** This repository does **not** yet contain a working MPC replacement application or firmware image. **On one MPC One running reported firmware 3.6.0, temporary root SSH access via USB autorun and a direct Ethernet connection was demonstrated on 2026-11-08.** The original firmware was not replaced.
 
 ## Vision
 
@@ -25,6 +25,7 @@ Start here for reproducible hardware/firmware development:
 - [Active 44.1-kHz audio/ABI/JUCE/MIDI survey](docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md) — confirmed S32_LE stereo 128-frame PCM, independent playback/capture ring sizes, 38 stock app threads, high locked RAM, sequencer routing, EABI5 hard-float header.
 - [First independent MPFree audio core (M0)](docs/engineering/FIRST_AUDIO_CORE.md) — original C++17 metronome and WAV proof of concept, retained for regression.
 - [Rust M1 metronome parity and ARMv7 cross-build](docs/engineering/RUST_M1_PARITY.md) — **implemented** std-only Rust engine and WAV renderer, C++/Rust parity at 120/109/137.2 BPM, and verified ARM EABI5 hard-float cross-build; no MPC deployment.
+- [Rust M2: 16-step sequencer and 16-voice groove sampler](docs/engineering/RUST_M2_GROOVE.md) — independent deterministic step scheduling, precompiled note events, synthetic kick/snare/hat one-shots, finite voice pool, offline WAV demo and regression tests; still no MPC hardware access.
 - [Accepted language architecture ADR: Rust-first with C/C++ compatibility](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md) — memory safety, ARMv7-gnueabihf, no-allocation real-time constraints, ALSA, Rust audio libraries, CLAP/VST3/LV2 gaps, Mali-T760 OpenGL ES graphics, migration/compatibility gates. **Accepted by the owner**; the C++ prototype is retained as a regression baseline.
 - [Auxiliary computing over Ethernet and USB](docs/engineering/AUXILIARY_COMPUTE_AND_IO.md) — offload CPU-intensive synths/FX to another Linux computer, raw PCM streaming budget, latency/clock synchronization and deliberately separated passive I/O diagnosis versus optional bounded data transfer.
 - [Measured MPC One Gigabit Ethernet and USB reference](docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md) — **1000 Mbit/s full-duplex** Realtek RTL8211E, Rockchip GMAC, USB-A **480 Mbit/s**, DWC2 high-speed device controller, 0.272 ms average ping and bounded SSH goodput. Explicitly distinguishes raw wire speed, USB roles and unmeasured audio jitter.
@@ -100,6 +101,21 @@ xdg-open /tmp/mpfree-rust-metronome.wav
 ~~~
 
 This only creates/plays a WAV on the Linux workstation. It does not touch the MPC.
+
+### New Rust step sequencer and offline drum-machine demo (M2)
+
+The `mpfree-groove` crate adds an actually playable 16-step drum sequence. A two-bar preset triggers kick, snare and hi-hat with sample-frame timestamps; waveforms and event lists are generated **outside** the audio render callback, which uses a fixed 16-voice pool. Sample data are synthetic and freely generated, not imported Akai content. On ML-tower:
+
+~~~sh
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin bootstrap/architecture-and-hardware-survey
+cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-groove
+./rust/target/release/mpfree-groove /tmp/mpfree-groove.wav 120 2
+xdg-open /tmp/mpfree-groove.wav
+~~~
+
+Expected duration: 4 seconds, 176,400 frames, 24 scheduled drum events and stereo 44.1-kHz S32_LE PCM WAV. The precise [M2 architecture and safety limits](docs/engineering/RUST_M2_GROOVE.md) are documented. This **does not** run or install anything on the MPC.
 
 ### Architecture and project milestones
 
