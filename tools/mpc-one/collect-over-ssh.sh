@@ -14,12 +14,13 @@ MPC_USER="${MPC_USER:-root}"
 MPC_KEY="${MPC_KEY:-/home/jesse/.ssh/mpc_one_autorun_ed25519}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-# Only the two reviewed, repository-local scripts are executable remotely.
+# Only the three reviewed, repository-local scripts are executable remotely.
 # No arbitrary user-supplied script path or remote command is accepted.
 case "${1:-}" in
   "") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"; REPORT_KIND="mpc-one" ;;
   "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
-  *) printf 'ERROR: Unknown mode. Use no arguments for baseline, or --detail for focused follow-up.\n' >&2
+  "--runtime") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-runtime.sh"; REPORT_KIND="mpc-one-runtime" ;;
+  *) printf 'ERROR: Unknown mode. Use no arguments for baseline, --detail for focused hardware, or --runtime for audio/runtime procfs.\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
