@@ -3,6 +3,8 @@
 //! The audio path uses fixed-size, precomputed click wavetables. No ALSA,
 //! network, USB, filesystem I/O, locks, logging, or heap allocation in render().
 //! Configuration and reset MUST NOT be called concurrently with rendering.
+#![forbid(unsafe_code)]
+
 
 use std::f64::consts::PI;
 
