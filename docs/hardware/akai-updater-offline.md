@@ -148,7 +148,7 @@ From the second survey run (owner's run, 2026-11-10), which prints Akai's script
 - **LoadPin:** `az0x-loadpin-trustpoints` loads `/usr/lib/az0x/trusted-verity-digests` into `/sys/kernel/security/loadpin/dm-verity` early in boot. LoadPin limits where the kernel loads modules and firmware from. It doesn't control `kexec_load`, which is what a test boot from 3.6.0 would use (inference from the upstream kernel).
 - **SSH:** 3.10.0 ships `sshd` but doesn't start it. `az01-ssh-login` is a wrapper for certificate logins restricted by product code and serial number.
 
-**For a RAM-only test boot of 3.10.0** this means: hide the eMMC controller from the 3.10.0 kernel in its device tree, so no program can reach any eMMC partition; disable kexec inside it (`kernel.kexec_load_disabled=1`), because Akai's updater and anything else would need kexec to reach a kernel that sees the eMMC; and keep the app, the web server and all firmware updaters from running.
+**For a RAM-only test boot of 3.10.0** this means: hide the eMMC controller from the 3.10.0 kernel in its device tree, so no program can reach any eMMC partition; disable kexec inside it (`kernel.kexec_load_disabled=1`), because Akai's updater and anything else would need kexec to reach a kernel that sees the eMMC; and keep the app, the web server and all firmware updaters from running. The full design, and the tools that build and write the USB stick for it, are in [Test-booting another firmware version by kexec](kexec-test-boot.md).
 
 ## Keep Akai's files private
 
