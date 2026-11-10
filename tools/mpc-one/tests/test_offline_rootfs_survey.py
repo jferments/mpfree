@@ -172,6 +172,8 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         res = self.survey("--from-backup", "--baseline", fx.baseline, home=fx.home)
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("does not match the boot-map hash; stopping", res.stdout)
+        for folder in self.folders(work):
+            self.assertEqual(os.listdir(os.path.join(work, folder)), ["report.txt"], "the p6 copy must be removed")
 
     def test_guards(self):
         inside = os.path.join(REPO, "tools", "mpc-one", "survey-test-not-ignored")
