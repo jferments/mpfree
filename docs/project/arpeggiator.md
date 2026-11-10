@@ -1,6 +1,6 @@
 # Arpeggiator, Latch and latch patterns
 
-**Status:** design and first engine, 2026-11-10. The engine is [`rust/mpfree-arp`](../../rust/mpfree-arp) (host-only, unit-tested, not yet wired to the pads). Nothing here has run on the MPC.
+**Status:** design and first engine, 2026-11-10; owner decisions recorded below. The engine is [`rust/mpfree-arp`](../../rust/mpfree-arp) (host-only, unit-tested, not yet wired to the pads). Nothing here has run on the MPC.
 
 ## What the owner asked for
 
@@ -146,11 +146,14 @@ Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persiste
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
 
-## Open questions for the owner
+## Decisions (owner, 2026-11-10)
 
-- Latch default: Reset (a fresh press starts a new chord) is proposed. Toggle is one setting away.
-- Note Repeat with Latch on: should latched pads keep repeating after NOTE REPEAT is released? Proposed: yes, until Latch is turned off.
-- Should the arp start on the next beat when a transport is running (Ableton's Retrigger "Beat"), or always on the press? Proposed: on the press until a transport exists, then a setting.
+The owner accepted all four proposals, and they apply to every live test from round 5 on:
+
+1. **Latch defaults to Reset:** a press with nothing held starts a new chord; Toggle is an option.
+2. **Latched pads keep repeating** after NOTE REPEAT is released, until Latch is turned off.
+3. **The generator starts on the press**, not on the next beat, until a transport exists; then it becomes a setting.
+4. **Record-on-pads layout:** pads 1 to 9 are the 1st to 9th held note, several at once a chord, pad 13 the next note in the order, 14 random, 15 tie, 16 rest.
 
 ## Sources
 
