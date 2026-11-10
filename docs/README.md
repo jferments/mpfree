@@ -67,6 +67,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 - [Boot chain and recovery map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
 - [eMMC backup](hardware/emmc-backup.md): a read-only copy of the whole eMMC to the workstation, checked against the boot map (2026-11-09).
 - [Reading Akai's updater offline](hardware/akai-updater-offline.md): what Akai's updater and the 3.10.0 update image write and check, read on the workstation only (2026-11-10).
-- [Test-booting another firmware version by kexec](hardware/kexec-test-boot.md): booting 3.10.0 once from a USB stick with the eMMC hidden from it (in progress).
+- [Test-booting another firmware version by kexec](hardware/kexec-test-boot.md): booting 3.10.0 from a USB stick with the eMMC hidden from it; booted three times, storage unchanged, Ethernet and SSH work after one retry (2026-11-10).
+- [MaskROM over USB](hardware/maskrom-usb.md): how the RK3288 boot ROM's USB recovery mode could be reached on the MPC One, what it can do RAM-only, secure-boot risk, and the first checks (research, 2026-11-10).
 - [Research matrix](hardware/RESEARCH_MATRIX.md): subsystem-by-subsystem mapping plan and safety gates.
 - [Observed data (JSON)](hardware/data/mpc-one-3.6.0-observed.json): redacted, machine-readable observations.
