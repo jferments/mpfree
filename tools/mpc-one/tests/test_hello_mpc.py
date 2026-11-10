@@ -88,6 +88,10 @@ case "$1" in
   pads)
     case "$*" in *--keepalive*) echo "sent keep-alive 1"; h=$FAKE_PADS_KEEPALIVE ;; *) h=$FAKE_PADS ;; esac
     echo "pads done: 30 bytes, 10 events, $h pad hits, 0 keep-alives sent, 0 replies" ;;
+  lights) echo "lights done: 90 messages sent, pad hits on Public 4, Private 0, MIDI Port 0" ;;
+  setup) echo "setup done: 140 messages sent, pad hits on Public 0, Private 4, MIDI Port 0" ;;
+  drums) if [ -f kit.bin ]; then echo "kit: 8 sounds"; else echo "STOP: no kit"; exit 1; fi
+         echo "drums done: 12 pad hits played" ;;
   click) echo "click done: 3445 periods (10.0 s), 0 underruns, 0 late periods"; exit "$FAKE_CLICK_RC" ;;
 esac
 '''
@@ -171,6 +175,9 @@ class HelloTests(unittest.TestCase):
         write(f"{r}/proc/mounts", "/dev/root / ext4 ro,relatime 0 0\n"
                                   f"tmpfs /run tmpfs {run_opts} 0 0\n"
                                   "tmpfs /data tmpfs rw,size=262144k,mode=755 0 0\n")
+        write(f"{r}/sys/bus/usb/devices/1-1/idVendor", "09e8\n")
+        write(f"{r}/sys/bus/usb/devices/1-1/idProduct", os.environ.get("FAKE_USB_PRODUCT", "0046") + "\n")
+        write(f"{r}/sys/bus/usb/devices/usb1/idVendor", "1d6b\n")
         write(f"{r}/proc/321/comm", "mpfree-screen-l\n")
         os.makedirs(f"{r}/proc/321/fd")
         os.symlink("/dev/fb0", f"{r}/proc/321/fd/3")
@@ -226,13 +233,21 @@ class HelloTests(unittest.TestCase):
                           "pads --seconds 15 --keepalive", "click --seconds 10 --gain-db -12"])
 
     def test_skips_and_stops(self):
-        # inventory: skip; screen: skip; touch: go (and a note); pads: quit. The log display was never stopped.
+        # inventory: skip; screen: skip; touch: go (and a note); pads: quit. Touch draws, so it stops the
+        # log display, which is started again at the end.
         res = self.run_helper("s\ns\n\nyes, both fingers\nq\n")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertEqual(self.log_lines("program: "), ["touch --seconds 10"])
-        self.assertNotIn("stop mpfree-test-screen.service", self.log_lines("systemctl: "))
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if "mpfree-test-screen" in l and "is-active" not in l],
+                         ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
         self.assertIn("STOP: stopped by you", res.stdout)
         self.assertIn("your answer: yes, both fingers", res.stdout)
+        # inventory only: nothing draws, so the log display is never stopped.
+        write(self.log, "")
+        res = self.run_helper("\n", MPFREE_HELLO_STEPS="inventory")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.log_lines("program: "), ["inventory"])
+        self.assertNotIn("stop mpfree-test-screen.service", self.log_lines("systemctl: "))
         # inventory: go; screen: go (and a note); touch: quit. The log display is started again.
         write(self.log, "")
         res = self.run_helper("\n\ny\nq\n")
@@ -252,6 +267,60 @@ class HelloTests(unittest.TestCase):
         res = self.run_helper(FAKE_CLICK_RC="1")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("click: exit code 1", res.stdout)
+
+    def kit(self, data=b"MPFKIT01" + b"\x01" * 100, name="factory-kit-20261110T000000Z-abc"):
+        path = os.path.join(self.work, name, "kit.bin")
+        write(path, data)
+        return path
+
+    def test_lights_setup_and_drums(self):
+        kit = self.kit()
+        # lights: Enter + answer; drums: Enter + answer; setup: a wrong word, then SEND + answer.
+        res = self.run_helper("\nall pads lit\n\nkick on pad 1\nsend\nSEND\nbuttons lit\n",
+                              MPFREE_HELLO_STEPS="drums,setup,lights")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("steps: lights, drums, setup", f"drum kit: {kit}", "drum kit copied; its hash on the MPC matches",
+                     "[4/6] Lights", "[5/6] Drums", "[6/6] Akai's setup", "Please type SEND exactly, or s, or q.",
+                     "your answer: all pads lit", "your answer: buttons lit", "your answer: kick on pad 1",
+                     "kit: 8 sounds", "drums done: 12 pad hits played", "RESULT: all steps ran"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("controller: 09e8:0046"), 3)
+        self.assertEqual(self.log_lines("program: "),
+                         ["lights --seconds 15", "drums --seconds 30 --gain-db -12", "setup --seconds 20"])
+        with open(kit, "rb") as a, open(f"{self.root}/run/mpfree-hello/kit.bin", "rb") as b:
+            self.assertEqual(a.read(), b.read())
+        # Without the screen step, the first drawing step stops the log display; it is started again at the end.
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if "mpfree-test-screen" in l and "is-active" not in l],
+                         ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
+
+    def test_setup_can_be_skipped_and_drums_needs_a_kit(self):
+        res = self.run_helper("s\n", MPFREE_HELLO_STEPS="setup,drums")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("no factory kit found", res.stdout)
+        self.assertIn("steps: drums, setup", res.stdout)
+        self.assertNotIn("[5/", res.stdout)
+        self.assertEqual(self.log_lines("program: "), [])
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello/kit.bin"))
+        self.kit(b"not a kit")
+        res = self.run_helper("", MPFREE_HELLO_STEPS="drums")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("is not a kit file", res.stdout)
+        res = self.run_helper("", MPFREE_HELLO_STEPS="pads,format")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("unknown step(s) format", res.stdout)
+
+    def test_stops_if_the_controller_changes(self):
+        os.environ["FAKE_USB_PRODUCT"] = "0047"
+        try:
+            self.make_root()
+        finally:
+            del os.environ["FAKE_USB_PRODUCT"]
+        res = self.run_helper("\n\n\n", MPFREE_HELLO_STEPS="lights,click")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("controller: 09e8:0047", res.stdout)
+        self.assertIn("STOP: the controller's USB id changed", res.stdout)
+        self.assertEqual(self.log_lines("program: "), ["lights --seconds 15"])
 
     def test_refuses_anything_but_the_test_build(self):
         write(self.stage, "36\n")
@@ -311,7 +380,8 @@ class StaticTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("host_hello_mpc", HELPER)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        names = ("CHECK", "PREPARE", "RECEIVE", "HASH", "RUN", "SCREEN_STOP", "SCREEN_START", "REPORT")
+        names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
+                 "REPORT", "CONTROLLER")
         scripts = {name: getattr(mod, name) for name in names}
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
@@ -322,14 +392,16 @@ class StaticTests(unittest.TestCase):
                 self.assertNotIn(needle, text, f"{name}: {needle}")
             self.assertIsNone(re.search(r"(^|[;&|(]\s*|systemctl\s+)(reboot|poweroff|halt)\b", text, re.M), name)
         writes = [ln for t in scripts.values() for ln in t.splitlines() if re.search(r"(^|[^2])>[^&]", ln)]
-        self.assertEqual(writes, [mod.RECEIVE], writes)
+        self.assertEqual(writes, [mod.RECEIVE, mod.RECEIVE_KIT], writes)
         self.assertIn('cat > "$R/run/mpfree-hello/mpfree-hello.part"', mod.RECEIVE)
+        self.assertIn('cat > "$R/run/mpfree-hello/kit.bin.part"', mod.RECEIVE_KIT)
         services = re.findall(r"systemctl (stop|start|restart|enable|disable|mask|unmask|kill) (\S+)",
                               " ".join(scripts.values()))
         self.assertEqual(sorted(services), [("start", "mpfree-test-screen.service"),
                                             ("stop", "mpfree-test-screen.service")])
         # The program's arguments are fixed in the tool; nothing from the command line reaches the MPC.
-        self.assertEqual(sorted(mod.PHASES), ["click", "inventory", "pads", "pads-keepalive", "screen", "touch"])
+        self.assertEqual(sorted(mod.PHASES), ["click", "drums", "inventory", "lights", "pads", "pads-keepalive", "screen",
+                                              "setup", "touch"])
         for args, _ in mod.PHASES.values():
             self.assertRegex(args, r"^[a-z]+( --[a-z-]+( -?[0-9]+)?)*$")
 
@@ -356,7 +428,7 @@ class StaticTests(unittest.TestCase):
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&ppm))",
             # the ACVA playback device
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
-            # the controller's MIDI port, output side (keep-alive only)
+            # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
