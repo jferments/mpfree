@@ -15,7 +15,8 @@
 use crate::title::{self, TitleMask};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use crate::menu;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 use std::cell::RefCell;
 use std::f32::consts::{FRAC_PI_2, TAU};
@@ -378,14 +379,20 @@ fn draw_title(out: &mut [[u8; 3]], l: &Layout, seconds: f32) {
 pub struct GalaxyWidget<'a> {
     pub galaxy: &'a Galaxy,
     pub seconds: f32,
+    /// The boot menu to draw over the scene, if any.
+    pub menu: Option<&'a menu::MenuText>,
 }
 
 impl Widget for GalaxyWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (w, h) = (area.width as usize, area.height as usize * 2);
-        let px = self.galaxy.pixels(w, h, self.seconds);
+        let mut px = self.galaxy.pixels(w, h, self.seconds);
         if px.is_empty() {
             return;
+        }
+        let pixel_menu = menu::fits_pixels(w, h);
+        if let (Some(m), true) = (self.menu, pixel_menu) {
+            menu::draw_pixels(&mut px, w, h, m);
         }
         for row in 0..area.height as usize {
             for col in 0..w {
@@ -396,6 +403,22 @@ impl Widget for GalaxyWidget<'_> {
                         .set_fg(Color::Rgb(top[0], top[1], top[2]))
                         .set_bg(Color::Rgb(bottom[0], bottom[1], bottom[2]));
                 }
+            }
+        }
+        if let (Some(m), false) = (self.menu, pixel_menu) {
+            // Too small for the pixel font: plain text near the bottom.
+            let mut lines: Vec<(String, Style)> = Vec::new();
+            let options: Vec<String> =
+                m.options.iter().map(|(l, on)| if *on { format!("[ {l} ]") } else { format!("  {l}  ") }).collect();
+            lines.push((options.join("  "), Style::new().fg(Color::Rgb(90, 225, 255)).bg(Color::Rgb(5, 10, 30))));
+            for hint in &m.hints {
+                lines.push((hint.clone(), Style::new().fg(Color::Rgb(230, 230, 240)).bg(Color::Rgb(5, 10, 30))));
+            }
+            let top = area.y + area.height.saturating_sub(lines.len() as u16 + 1);
+            for (i, (text, style)) in lines.iter().enumerate() {
+                let len = text.chars().count() as u16;
+                let x = area.x + area.width.saturating_sub(len) / 2;
+                buf.set_stringn(x, top + i as u16, text, area.width as usize, *style);
             }
         }
     }
@@ -465,7 +488,7 @@ mod tests {
         let g = Galaxy::new();
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        GalaxyWidget { galaxy: &g, seconds: 1.0 }.render(area, &mut buf);
+        GalaxyWidget { galaxy: &g, seconds: 1.0, menu: None }.render(area, &mut buf);
         for y in 0..24 {
             for x in 0..80 {
                 assert_eq!(buf[(x, y)].symbol(), "\u{2580}");

@@ -864,6 +864,15 @@ jobs:
           assert not any(data[frame:]), "wrote past the visible frame"
           print("PASS: static ARMv7 startup screen draws one frame's bytes on a fake framebuffer under qemu")
           PY
+          # Boot menu: MPFree starts by itself; the factory OS only when picked.
+          menu() { rc=0; out=$(timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --menu --menu-seconds 1 "$@") || rc=$?; echo "$out rc=$rc"; }
+          r=$(menu); test "$r" = "choice=mpfree rc=0"
+          r=$(menu --no-mpfree); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\220\122\177' > "$t/wheel-right-play.mid"   # wheel cw, PLAY down
+          r=$(menu --midi-file "$t/wheel-right-play.mid"); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\260\144\177\231\045\100' > "$t/right-left-pad.mid"   # cw, ccw, a pad
+          r=$(menu --midi-file "$t/right-left-pad.mid"); test "$r" = "choice=mpfree rc=0"
+          echo "PASS: boot menu choices and exit codes under qemu"
   splash-gl:
     name: SDL3/GLES startup screen (desktop build, headless render)
     runs-on: ubuntu-latest
