@@ -97,10 +97,10 @@ to the untouched Akai slot.
 | Area | Rewritten? | Effect |
 | --- | --- | --- |
 | `p6` rootfs (kernel, DT, glibc, `acvs.service`) | Yes, almost certainly | Removes MOD-001 (persistent SSH). New ABI/units: MPFree must re-qualify. Our `p6` backup becomes the older version |
-| `p1`–`p3` bootloader, `p2` env | Unknown | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
+| `p1`–`p3` bootloader, `p2` env | **Can be.** Akai's RAM updater handles U-Boot partitions and logs "bootloader unchanged", so it probably writes them only when they differ (inferred from strings, [findings](../hardware/akai-updater-offline.md#findings-2026-11-10)) | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
 | `p4`/`p5` splash | Possibly | None |
 | `p7` content | Expansion installs only | None |
-| `p8` data, `/etc`/`/var` overlays | Probably kept, possibly pruned | Tier 2 files on `/data` could vanish; stale overlay files could clash |
+| `p8` data, `/etc`/`/var` overlays | Usually kept, but **the updater can erase the data partition** if the image asks (inferred from strings) | Tier 2 files on `/data` could vanish, so keep a copy on SD/USB too; stale overlay files could clash |
 | SD card / USB | No | Anything MPFree keeps there survives |
 
 Risks for MPFree: USB autorun can be patched out (it is the bootstrap for the
@@ -129,8 +129,9 @@ Steps 1–5 are read-only or offline. Step 6 changes device state and needs the 
 2. Extract `/opt/ramfs-update.squashfs` from the backup's rootfs on the workstation (no MPC contact), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
-   **Tool ready:** [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md) does the on-device copy
-   from the backup. Akai's public update file is still to do.
+   **On-device copy read 2026-11-10** with [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md):
+   no scripts, a signed-image updater that can write U-Boot and erase `/data`. Still open: what launches it,
+   and the partition list of Akai's public 3.6.0 update file.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
    Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
    second copy verified on another disk.

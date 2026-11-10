@@ -145,7 +145,6 @@ mkdir -p "$WORK/rootfs-files"
 echo "--- ls -l /boot ---"
 dfs "ls -l /boot"
 dump_file /boot/boot.scr.uimg "$WORK/rootfs-files/boot.scr.uimg"
-dump_file /usr/bin/az01-update "$WORK/rootfs-files/az01-update"
 echo "--- systemd units whose names mention update, upd, flash or fw ---"
 units="$(dfs "ls -p /usr/lib/systemd/system" |
   awk -F/ 'NF >= 7 && $6 ~ /(update|upd|flash|fw)/ && $6 ~ /^[A-Za-z0-9@._-]+$/ { print $6 }' |
