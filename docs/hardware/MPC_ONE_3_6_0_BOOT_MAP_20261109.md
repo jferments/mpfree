@@ -135,7 +135,7 @@ confirmation is still needed.
 
 ## Update path
 
-- ~~`/usr/bin/az01-update` exists~~. Corrected 2026-11-10: it does not exist in `p6`, and neither boot-map run shows it. See [reading Akai's updater offline](akai-updater-offline.md).
+- `az01-update` exists, at `/usr/sbin/az01-update` (not `/usr/bin`). This line said `/usr/bin` at first, and a correction on 2026-11-10 then wrongly said the program doesn't exist; the rootfs survey found it. See [reading Akai's updater offline](akai-updater-offline.md).
 - `/opt/ramfs-update.squashfs` (3,551,232 bytes) lives on `p6`. It is a signed-image updater that runs from RAM; findings are in [reading Akai's updater offline](akai-updater-offline.md).
 - Akai also ships boot-time firmware updaters for peripherals:
   `touch-fw-update.service` (`/usr/bin/touch-fw-upd`, Ilitek ILI2116/2117) and
