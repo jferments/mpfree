@@ -321,3 +321,44 @@ The current assessment is therefore **strong negative evidence against a simple 
 Analyze the direct Thumb call target at `0xFF708296` (call from `0xFF705288`), its immediate callees, the `rk3288_sysreset` driver registration area, and any startup reads of `0xFF730094`. Use a bounded disassembly scope and preserve the distinction between Ghidra database changes and **no changes to executable bytes, device storage, or MPFree source files**.
 
 The independently distributed `MPFreeP1TraceReset.py` script performs this follow-up locally in Ghidra. It does **not** belong in this repository under the current one-file authorization.
+
+## 10. p1 follow-up: reset wrapper and driver-dispatch investigation (owner, 2026-11-10)
+
+The owner supplied the private report `p1-reset-followup-20261110T132140.txt`. This is the latest **measured** p1/SPL result; previous interpretations of its reset call path should be evaluated against this report.
+
+### Observed machine-code control flow
+
+At `0xFF705278`, the already-established `reset_bootloader` Thumb function loads:
+
+- `[0xFF705290] = 0xFF730094` (RK3288 boot/reboot-mode register).
+- `[0xFF705294] = 0x5242C309` (Rockchip Fastboot reboot request).
+
+It executes `str r2,[r3,#0]`, then zeroes r0..r3 and branches to `0xFF708296`.
+
+At `0xFF708296`, the report shows:
+
+```asm
+ff708296 push {r3,lr}
+ff708298 movs r0,#0
+ff70829a bl   0xff708282
+ff70829e movs r0,r0    ; may be padding / unreachable if reset never returns
+ff7082a0 ldr  r3,[0xff7082b8]   ; Ghidra recognizes a different function here
+```
+
+**Direct conclusion:** the p1 command invokes `0xFF708282` with argument 0 immediately after writing the Fastboot flag. The actual instructions at **`0xFF708282` were not included in this report**. The combination of an apparently nonreturning call and code from a separate function starting `0xFF7082A0` can mislead Ghidra's decompiler; the generated C for `FUN_ff708296` incorrectly includes a pointer-table walk from the following function. Do not treat that decompiler output as established source logic.
+
+The report also identifies an indirect function-pointer dispatcher near `0xFF7082C0`: it calls `0xFF7082A0` to find a registration, then loads a callback pointer at offset `0x14` and executes `bx r3`. Whether this dispatch specifically participates in reset handling **has not been proven**.
+
+### Registered reset driver evidence
+
+The SPL contains `rk3288_sysreset`, and the raw data word at `0xFF709F78` points to that name (`0xFF7099D9`); the next word is `0x38`. This is consistent with a U-Boot driver registration, but the report does not reconstruct a valid full driver structure or callback function. Do not conflate the mere presence of that driver with evidence of its specific runtime register writes.
+
+The SPL startup and boot-device selection code is also present, with linked functions near `0xFF705208` and `0xFF705350`, but **no demonstrated recognition of `BOOT_BROM_DOWNLOAD=0xEF08A53C`**.
+
+### Engineering interpretation
+
+This follow-up strengthens the finding that the stock 2019 SPL implements a **Fastboot** reset path, but **does not prove a software route into the RK3288 silicon BootROM**. Exact `0xEF08A53C` and `0x5242C301` literals remain absent from the extracted initial-stage code; this is negative evidence, not an impossibility proof.
+
+The reset framework behavior closely resembles U-Boot `reset_cpu()`, `sysreset_walk_halt()` and driver-model dispatch. However the exact identity of `0xFF708282` and the final RK3288 reset register accesses must be confirmed from its instructions. For context, upstream U-Boot's `drivers/sysreset/sysreset-uclass.c` implements `sysreset_walk_halt` and `reset_cpu`: https://android.googlesource.com/platform/external/u-boot/+/825936815a752ce15f5a883c23bc54be76403268/drivers/sysreset/sysreset-uclass.c
+
+**Next offline step:** run the separately distributed **`MPFreeP1SysresetDeepTrace.py`** Ghidra script, which reads `0xFF708282`, disassembles already-recognized functions, checks raw callback pointers and emits a private report at `~/mpfree-work/p1-sysreset-deep-trace-*.txt`. It does not patch Ghidra, firmware or MPC storage. Any hardware reboot/BootROM experiment still requires explicit owner approval.
