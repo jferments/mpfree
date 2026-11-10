@@ -135,8 +135,8 @@ confirmation is still needed.
 
 ## Update path
 
-- `/usr/bin/az01-update` exists (Akai's updater, not yet inspected).
-- `/opt/ramfs-update.squashfs` (3,551,232 bytes) lives on `p6`.
+- ~~`/usr/bin/az01-update` exists~~. Corrected 2026-11-10: it does not exist in `p6`, and neither boot-map run shows it. See [reading Akai's updater offline](akai-updater-offline.md).
+- `/opt/ramfs-update.squashfs` (3,551,232 bytes) lives on `p6`. It is a signed-image updater that runs from RAM; findings are in [reading Akai's updater offline](akai-updater-offline.md).
 - Akai also ships boot-time firmware updaters for peripherals:
   `touch-fw-update.service` (`/usr/bin/touch-fw-upd`, Ilitek ILI2116/2117) and
   `xmos-update.service` (`xmosdfu --auto`, only when no I²S sound node exists).

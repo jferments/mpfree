@@ -2,8 +2,7 @@
 """Tests for offline-akai-updater.sh against a fake eMMC backup. No device.
 
 Builds a small ext4 rootfs (no journal, like p6 on the MPC) holding a fake
-/opt/ramfs-update.squashfs, /usr/bin/az01-update, a U-Boot boot script and
-some systemd units, places it at p6's real start sector in a fake
+/opt/ramfs-update.squashfs, a U-Boot boot script and some systemd units, places it at p6's real start sector in a fake
 mmcblk0.img, and runs the real script on it. Set
 MPFREE_REQUIRE_OFFLINE_TOOLS=1 (CI does) to fail instead of skip when
 e2fsprogs or squashfs-tools are missing.
@@ -32,7 +31,6 @@ P6_SECTORS = 16384  # 8 MiB instead of 500 MiB
 TAIL_SECTORS = 2048
 
 INIT_SCRIPT = "#!/bin/sh\n# FAKE-UPDATER-INIT\ndd if=/tmp/rootfs.img of=/dev/mmcblk0p6 bs=1M\n"
-AZ01_UPDATE = "#!/bin/sh\n# FAKE-AZ01-UPDATE uses /opt/ramfs-update.squashfs\n"
 BOOT_SCRIPT = "setenv bootargs FAKE-BOOT-SCRIPT\nload mmc 0:6 ${kernel_addr_r} /boot/zImage\n"
 UNITS = {
     "az01-update.service": "[Service]\nExecStart=/usr/bin/az01-update FAKE-UNIT-AZ01\n",
@@ -86,15 +84,13 @@ def build_rootfs(base, with_updater=True):
     if with_updater:
         os.makedirs(os.path.join(root, "opt"))
         shutil.copy(squash, os.path.join(root, "opt", "ramfs-update.squashfs"))
-    # An absolute symlink, as many distributions install their updaters.
-    write(os.path.join(root, "usr", "libexec", "az01", "updater"), AZ01_UPDATE, 0o755)
-    os.makedirs(os.path.join(root, "usr", "bin"))
-    os.symlink("/usr/libexec/az01/updater", os.path.join(root, "usr", "bin", "az01-update"))
     write(os.path.join(root, "boot", "boot.scr.uimg"), uboot_script_image(BOOT_SCRIPT))
     units = os.path.join(root, "usr", "lib", "systemd", "system")
     for name, text in UNITS.items():
         write(os.path.join(units, name), text)
     os.symlink("az01-update.service", os.path.join(units, "fw-alias.service"))
+    write(os.path.join(root, "usr", "libexec", "az01", "flash.service"), "[Service]\nExecStart=/bin/true FAKE-ABS-TARGET\n")
+    os.symlink("/usr/libexec/az01/flash.service", os.path.join(units, "abs-flash.service"))
     long_target = "../system/" + "x" * 70 + "-update.service"  # too long for a fast symlink
     os.symlink(long_target, os.path.join(units, "slow-link-update.service"))
     write(os.path.join(units, "x" * 70 + "-update.service"), "[Service]\nExecStart=/bin/true FAKE-SLOW-TARGET\n")
@@ -194,11 +190,12 @@ class OfflineAkaiUpdaterTests(unittest.TestCase):
         self.assertIn(INIT_SCRIPT, out)
         self.assertIn("FAKE-ELF-MARKER /dev/mmcblk0p3", out)
         self.assertIn("squashfs-root/dev/console", out)
-        self.assertIn(AZ01_UPDATE, out)
         self.assertIn("FAKE-BOOT-SCRIPT", out)
         self.assertIn("FAKE-UNIT-AZ01", out)
         self.assertIn("FAKE-UNIT-TOUCH", out)
-        self.assertIn("/usr/bin/az01-update -> /usr/libexec/az01/updater\ncopied /usr/libexec/az01/updater", out)
+        self.assertIn("/usr/lib/systemd/system/abs-flash.service -> /usr/libexec/az01/flash.service\n"
+                      "copied /usr/libexec/az01/flash.service", out)
+        self.assertIn("FAKE-ABS-TARGET", out)
         self.assertIn("/usr/lib/systemd/system/fw-alias.service -> az01-update.service\n"
                       "copied /usr/lib/systemd/system/az01-update.service", out)
         self.assertIn("slow-link-update.service -> ../system/xxx", out)
