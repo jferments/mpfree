@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Tests for collect-over-ssh.sh --kexec-preflight against a fake MPC. No device, no network.
 
-ip, ping and ssh are stand-ins. The fake ssh runs the real
+ip, ping and ssh are stand-ins, and the network identity is a test-only
+address on a made-up interface, so the result never depends on the
+workstation's own network (such as the lab MPC in its ARP table). The fake
+ssh runs the real
 read-only-kexec-preflight.sh under BusyBox applets (as on the MPC), with
 stand-ins for kexec and systemctl that log how they were called. It serves
 `uname -r` and `cat /sys/firmware/fdt` from the test's fake unit, and refuses
@@ -53,12 +56,15 @@ print("fake ssh: command not allowed: " + command, file=sys.stderr)
 sys.exit(255)
 '''
 
+# Test-only network identity: a documentation address (RFC 5737) on an interface name no real
+# machine has, so nothing in the workstation's own ARP table (such as the lab MPC) can match.
+TEST_IP, TEST_IFACE, TEST_HOST, TEST_MAC = "192.0.2.141", "mpfreetest0", "192.0.2.1/24", "02:00:00:00:00:01"
 FAKE_IP = r'''#!/bin/sh
 case "$*" in
-  *"addr show dev eno1np0"*) echo "    inet 10.42.0.1/24 brd 10.42.0.255 scope global eno1np0" ;;
-  *"route get 10.42.0.141"*) echo "10.42.0.141 dev eno1np0 src 10.42.0.1 uid 1000" ;;
-  *"neigh show dev eno1np0"*) echo "10.42.0.141 lladdr 02:00:00:00:00:01 REACHABLE" ;;
-  *"neigh get 10.42.0.141 dev eno1np0"*) echo "10.42.0.141 dev eno1np0 lladdr 02:00:00:00:00:01 REACHABLE" ;;
+  *"addr show dev mpfreetest0"*) echo "    inet 192.0.2.1/24 brd 192.0.2.255 scope global mpfreetest0" ;;
+  *"route get 192.0.2.141"*) echo "192.0.2.141 dev mpfreetest0 src 192.0.2.1 uid 1000" ;;
+  *"neigh show dev mpfreetest0"*) echo "192.0.2.141 lladdr 02:00:00:00:00:01 REACHABLE" ;;
+  *"neigh get 192.0.2.141 dev mpfreetest0"*) echo "192.0.2.141 dev mpfreetest0 lladdr 02:00:00:00:00:01 REACHABLE" ;;
   *) exit 1 ;;
 esac
 '''
@@ -130,7 +136,8 @@ class KexecPreflightTests(unittest.TestCase):
                 write(os.path.join(folder, f"rk3288-az01-{variant}.dtb"), dtb.build(board_tree()))
         self.env = {
             "HOME": self.home, "LC_ALL": "C", "PATH": fakebin + os.pathsep + "/usr/bin:/bin",
-            "MPC_KEY": self.key, "MPC_EXPECT_MAC": "02:00:00:00:00:01", "MPC_REPORT_DIR": self.reports,
+            "MPC_KEY": self.key, "MPC_REPORT_DIR": self.reports,
+            "MPC_IP": TEST_IP, "MPC_IFACE": TEST_IFACE, "MPC_HOST_IP_CIDR": TEST_HOST, "MPC_EXPECT_MAC": TEST_MAC,
             "FAKE_LOG": self.log, "FAKE_REMOTE_PATH": remote, "FAKE_RELEASE": RELEASE, "FAKE_FDT": self.fdt,
         }
 
