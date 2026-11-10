@@ -33,6 +33,7 @@ jobs:
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
           bash -n tools/mpc-one/offline-akai-updater.sh
+          bash -n tools/mpc-one/offline-rootfs-survey.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
@@ -56,11 +57,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends busybox
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py
-      - name: Test the offline Akai updater tools against fake backups and images (no device)
+      - name: Test the offline Akai update tools against fake backups and images (no device)
         run: |
           sudo apt-get install -y --no-install-recommends squashfs-tools e2fsprogs file binutils
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_updater.py
           python3 tools/mpc-one/tests/test_offline_update_image.py
+          python3 tools/mpc-one/tests/test_offline_update_extract.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'

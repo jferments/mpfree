@@ -6,6 +6,7 @@ devicetree specification's flattened tree), so the tests need only Python.
 """
 import gzip
 import hashlib
+import lzma
 import os
 import random
 import struct
@@ -59,6 +60,26 @@ def fdt_blob(root):
     header = struct.pack(">10I", 0xD00DFEED, total, off_struct, off_strings, off_rsv,
                          17, 16, 0, len(strings), len(body))
     return header + bytes(16) + bytes(body) + bytes(strings)
+
+
+def az_string(text):
+    raw = text.encode() + b"\x00"
+    return struct.pack("<I", len(text)) + raw + b"\x00" * (-len(raw) % 4)
+
+
+def az01_blob(parts, build="TEST-1", compatible=("inmusic,acva",), devices=(0x09E84046,),
+              description="MPC upgrade image", trailer=b""):
+    """An AZ01 container laid out like Akai's 3.10.0 image.
+    parts = [(name, compression, [(algo, value)], stored bytes)]"""
+    fields = (az_string(build) + struct.pack("<I", len(compatible)) + b"".join(map(az_string, compatible))
+              + struct.pack(f"<I{len(devices)}I", len(devices), *devices) + az_string(description))
+    out = b"AZ01" + struct.pack("<II", 1, 12 + len(fields)) + fields
+    for name, compression, hashes, data in parts:
+        body = az_string(name) + az_string(compression) + struct.pack("<I", len(hashes))
+        for algo, value in hashes:
+            body += az_string(algo) + struct.pack("<I", len(value)) + value + b"\x00" * (-len(value) % 4)
+        out += b"PART" + struct.pack("<IQ", 16 + len(body), len(data)) + body + data + b"\x00" * (-len(data) % 4)
+    return out + trailer
 
 
 def ext4_like(size=4096):
@@ -155,6 +176,58 @@ class OfflineUpdateImageTests(unittest.TestCase):
         self.assertIn("external data for images/broken: offset", out)
         self.assertIn("PAST THE END OF THE FILE", out)
         self.assertIn("data after the FDT:", out)
+
+    def test_az01_container(self):
+        rootfs = random.Random(5).randbytes(5000)
+        packed = lzma.compress(rootfs, format=lzma.FORMAT_XZ)
+        splash = b"BM" + random.Random(6).randbytes(1001)  # odd length: the record is padded
+        blob = az01_blob(
+            [("rootfs", "xz", [("sha1", hashlib.sha1(rootfs).digest())], packed),
+             ("splash", "none", [("sha256", hashlib.sha256(splash).digest()), ("blake9", b"x" * 4)], splash)],
+            build="SNAPSHOT-20261014152523", compatible=("inmusic,acv5", "inmusic,acva", "inmusic,acva2"),
+            devices=(0x09E8403A, 0x09E84046), trailer=bytes(16))
+        path = self.put("MPC-3.10.0-Gen1-update.img", blob)
+        res = self.run_tool(path)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        header = 12 + 28 + 4 + 3 * 20 + 12 + 24  # fields, each string padded to 4
+        self.assertIn(f"AZ01 container, format version 1, header {header} bytes", out)
+        self.assertIn('  build = "SNAPSHOT-20261014152523"', out)
+        self.assertIn('  compatible = "inmusic,acv5", "inmusic,acva", "inmusic,acva2"', out)
+        self.assertIn("  device IDs = 0x09e8403a (09e8:403a), 0x09e84046 (09e8:4046)", out)
+        self.assertIn('  description = "MPC upgrade image"', out)
+        self.assertIn(f"partition record at offset {header} (76-byte header): rootfs", out)
+        self.assertIn('  compression = "xz"', out)
+        self.assertIn(f"  hash sha1 = {hashlib.sha1(rootfs).hexdigest()}", out)
+        self.assertIn(f"  data: offset {header + 76}, {len(packed)} bytes, xz, starts {packed[:16].hex()}, "
+                      f"sha256 {sha(packed)}", out)
+        self.assertIn("  sha1 over the stored bytes: differs (it may cover the uncompressed data;", out)
+        self.assertIn(": splash\n", out)
+        self.assertIn("  sha256 over the stored bytes: matches", out)
+        self.assertIn("  blake9: not a hash this tool knows, not checked", out)
+        self.assertIn(f"unknown record at offset {len(blob) - 16}: tag 00000000", out)
+        self.assertIn("16 bytes to the end of the file", out)
+        self.assertNotIn("PAST THE END", out)
+
+    def test_az01_damage_is_reported(self):
+        good = az01_blob([("rootfs", "none", [], b"r" * 400)])
+        cases = {
+            "cut.img": good[:30],
+            "long.img": good[:4] + struct.pack("<I", 1) + struct.pack("<I", 10 ** 6) + good[12:],
+            "nonul.img": good[:16] + b"TEST-1X" + good[23:],
+            "count.img": good[:24] + struct.pack("<I", 100000) + good[28:],
+        }
+        for name, blob in cases.items():
+            res = self.run_tool(self.put(name, blob))
+            self.assertEqual(res.returncode, 1, f"{name}: {res.stdout}")
+            self.assertIn("ERROR:", res.stdout, name)
+        res = self.run_tool(self.put("short.img", good[:-100]))
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("400 bytes: PAST THE END OF THE FILE", res.stdout)
+        res = self.run_tool(self.put("tail.img", good + b"SIGN" + struct.pack("<I", 8)))
+        self.assertIn(f"unknown record at offset {len(good)}: tag 5349474e ('SIGN')", res.stdout)
+        res = self.run_tool(self.put("tiny.img", good + b"abc"))
+        self.assertIn(f"trailing 3 bytes at offset {len(good)}: 616263", res.stdout)
 
     def test_zip_download_is_unpacked_safely(self):
         blob = fdt_blob(mpc_like_tree())

@@ -76,23 +76,55 @@ The flag list and argument order are reconstructed from neighbouring strings, so
 - **There are three ways an update reaches the eMMC.** The desktop updater writes over USB in Update Mode (U-Boot fastboot). Standard U-Boot fastboot can flash any GPT partition by name, including `uboot-spl` and `uboot`, but whether Akai's build allows that is unverified. USB-drive and online updates run the RAM updater above, which can write U-Boot itself and erase `/data`.
 - **Updates and factory reset need mains power.** The library refuses both without it, which lowers the risk of a half-written bootloader.
 
-**Still open:** read the partition list of Akai's public 3.6.0 update file with `offline-update-image.py` (below). It shows whether a real update carries a bootloader payload at all.
-
 ## Reading Akai's public update file
 
-[`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) lists what a downloaded update image contains, also on the workstation only. inMusic's update images are flattened device tree (FDT/FIT) containers: a tree of nodes whose properties hold each partition's payload, hashes and signatures. The tool prints that tree with every property's name and size, short values in full, and a SHA-256 and format guess (gzip, xz, zstd, ext4, Rockchip loader, U-Boot image and so on) for each large payload. It doesn't decompress, mount or run anything, and it never writes the image. A `.zip` download is unpacked into a temporary folder next to it, which is deleted afterwards.
+Three workstation-only tools read a downloaded update image. None of them contacts the MPC, and none writes the image.
+
+| Tool | What it does | Writes |
+| --- | --- | --- |
+| [`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
+| [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-update-<UTC>-<random>/` |
+| [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units and flashing programs it has, and which files mention the eMMC or flashing | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/` |
 
 ```bash
 python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files
+python3 tools/mpc-one/offline-update-extract.py ~/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img
+bash tools/mpc-one/offline-rootfs-survey.sh                 # the rootfs just extracted
+bash tools/mpc-one/offline-rootfs-survey.sh --from-backup   # the 3.6.0 rootfs (p6), for comparison
 ```
 
-It reads every `.img` and `.zip` directly inside that folder. Keep downloaded images outside the git clone, like the backup.
+The extractor writes a payload only if one of the image's hashes matches it, either over the stored bytes or over the uncompressed data. A `.zip` download is unpacked into a temporary folder next to it, which is deleted afterwards. Keep downloaded images outside the git clone, like the backup.
+
+### Two container formats
+
+Older MPC images (and the Denon/inMusic devices documented publicly) are FDT/FIT containers: a device tree whose nodes hold each payload, its compression and its hashes.
+
+The **3.10.0** image (`MPC-3.10.0-Gen1-update.img`, 167,084,848 bytes, sha256 `d09b1e4c…406a2a20`) uses a different format that starts with `AZ01`. The layout below is read from that file's first 340 bytes (owner's dump, 2026-11-10). Our test encoder rebuilds those bytes exactly. Everything is little-endian, and each string is a 32-bit length, the text, a NUL, then zero padding to a multiple of 4.
+
+| Offset | Field | 3.10.0 value |
+| --- | --- | --- |
+| 0 | magic | `AZ01` |
+| 4 | format version | 1 |
+| 8 | header size | 264 |
+| 12 | build | `SNAPSHOT-20261014152523` |
+| 40 | compatible boards (count, strings) | 8: `inmusic,acv5`, `acv8`, `acva`, `acva2`, `acvb`, `acvm`, `acvr`, `acv5s` |
+| 204 | device IDs (count, 32-bit values) | 8: `09e8:403a`, `403b`, `4046`, `4047`, `404b`, `4052`, `4056`, `4057` |
+| 240 | description | `MPC upgrade image` |
+| 264 | `PART` record: tag, record header size (76), 64-bit data size, name, compression, hash count, then per hash (algorithm, size, value) | `rootfs`, `xz`, one `sha1` |
+| 340 | the partition data | an xz stream of 167,084,492 bytes |
+| 167,084,832 | 16 more bytes | not yet read |
+
+What this means (the hash coverage and the last 16 bytes are still open):
+
+- **The 3.10.0 update carries only the rootfs.** There is no bootloader, splash or partition-table record, so this image can't rewrite U-Boot. The kernel and device trees live in the rootfs's `/boot`, as on 3.6.0.
+- **Our unit is a target.** Its device tree says `inmusic,acva`, which is in the list. Its internal controller is USB `09e8:0046`. The listed `09e8:4046` looks like the same ID with `0x4000` added, which is an inference.
+- **No signature is visible in the header or the record.** Where the "v3 signature" the RAM updater checks lives is open. It may be in the last 16 bytes, which are too short for an RSA signature, or in a separate file.
 
 ## Keep Akai's files private
 
-The work folder `~/mpfree-work/akai-updater-<UTC time>-<random>/` holds Akai's proprietary software, and `report.txt` quotes their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
+The work folders under `~/mpfree-work/` (`akai-updater-…`, `akai-update-…` and `rootfs-survey-…`) hold or quote Akai's proprietary software, and the reports quote their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
 
 ## What it does not cover
 
-- **Akai's downloadable 3.6.0 update.** It may differ from the copy on the device, and reading it is a separate step.
-- **Running anything.** Nothing from the updater is executed, mounted or loop-attached.
+- **Akai's downloadable 3.6.0 update.** Only 3.10.0 is offered for download, so the 3.6.0 rootfs is read from the backup instead.
+- **Running anything.** Nothing from the updater or an update image is executed, mounted or loop-attached.
