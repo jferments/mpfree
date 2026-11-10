@@ -1,6 +1,6 @@
 # mpfree-splash
 
-The MPFree startup screen: an outer-space scene with a spinning two-armed
+The MPFree startup screen: an outer-space scene with a four-armed (Milky Way-style)
 spiral galaxy turning around the words **MPCFree OS v0.1**, in block letters in its glowing heart. The galaxy is sized around the title: its arms start just outside the words and sweep outwards.
 It is drawn with [ratatui](https://ratatui.rs) (MIT).
 
@@ -11,12 +11,12 @@ background colour. That lets the same scene run in two places:
 - **A desktop terminal** (crossterm backend, needs 24-bit colour). For
   previewing on the workstation.
 - **The MPC One's framebuffer**, through `fb::FramebufferBackend`, a ratatui
-  backend that draws each cell as 8x16 pixels straight into `/dev/fb0`'s
+  backend that draws each cell as 4x8 pixels straight into `/dev/fb0`'s
   layout. Both of Akai's kernels have no text console on the screen, so a
   normal terminal backend has nothing to draw on. The geometry and rotation
   code follows `mpfree-screen-log` from the kexec test boot: 800x1280
   XRGB8888, stride 3200, rotation 270 (left side up), so the viewer sees
-  1280x800, which is 160x50 cells or 160x100 galaxy pixels.
+  1280x800, which is 320x100 cells or 320x200 scene pixels (each 4x4 screen pixels).
 
 ## Modes
 
@@ -49,4 +49,4 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
 
 CI builds it that way and runs it under `qemu-arm` against a fake framebuffer.
 
-`src/font.rs` is font8x8_basic (public domain), copied from `mpfree-screen-log`.
+The framebuffer geometry, rotation and the 8x8 fallback font are shared with `mpfree-screen-log`. The title's letters (`src/title.rs`) are our own rounded strokes in the style of Ubuntu Mono; no font file is copied.
