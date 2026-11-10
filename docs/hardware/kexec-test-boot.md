@@ -4,7 +4,7 @@
 
 **Goal:** boot Akai's 3.10.0 once on the reference unit without installing it, in a way where nothing in the MPC's own storage can change. 3.6.0 starts kexec from its running system, and 3.10.0's root filesystem comes from a USB stick.
 
-Background: [Reading Akai's updater offline](akai-updater-offline.md) (what 3.10.0 contains and why its updater is dangerous) and the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) (the hashes and write counters the undo step compares).
+Background: [Reading Akai's updater offline](akai-updater-offline.md) (what 3.10.0 contains and why its updater is dangerous) and the [boot map](boot-map.md) (the hashes and write counters the undo step compares).
 
 ## Why the eMMC stays untouched
 
@@ -65,7 +65,7 @@ The builder refuses anything but a static ARM EABI5 hard-float executable. CI bu
 | 8 | `python3 tools/mpc-one/offline-kexec-details.py` | Workstation only. When something fails in the test boot, it prints the Ethernet, display, backlight and reserved-memory nodes of both releases' board files, the running tree and `kexec.dtb` (MAC and serial values hidden), every difference between the two board files, and both kernels' build configs |
 | 9 | `bash tools/mpc-one/collect-over-ssh.sh --ethernet` | Read-only on the MPC. Runs [`read-only-ethernet.sh`](../../tools/mpc-one/read-only-ethernet.sh) on 3.6.0: the interfaces, the MDIO bus and PHY, the PHY's reset and interrupt pins, the Ethernet clocks (debugfs, only if already mounted), and the kernel's Ethernet messages, with MACs replaced. The test build runs the same script and keeps its output on the stick, so the two can be compared |
 
-Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](SURVEY_TOOLS.md#one-folder-and-one-zip-per-test-round)).
+Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](../guides/survey-tools.md#one-folder-and-one-zip-per-test-round)).
 
 ## The boot step
 
