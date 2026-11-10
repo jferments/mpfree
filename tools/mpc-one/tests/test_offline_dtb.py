@@ -189,6 +189,88 @@ class DtbTests(unittest.TestCase):
                 with self.assertRaises(dtb.DtbError):
                     dtb.parse(blob)
 
+    def kexec_inputs(self, target=None):
+        live = board_tree(serial=SERIAL, mac=MAC)
+        chosen = live.find("/chosen")
+        chosen.set_prop("bootargs", s("root=PARTUUID=FAKE-UUID rootwait ro"))
+        chosen.set_prop("inmusic,internal-sd-fitted", b"")
+        live.find("/").children.append(node("reserved-memory", [("ranges", b"")], [node("ramoops@8000000")]))
+        if target is None:
+            target = board_tree(model="Akai Professional MPC One")
+            target.find("/dwmmc@ff0f0000").set_prop("new-binding", cells(7))
+        return (self.save("new.dtb", target), self.save("old.dtb", board_tree()), self.save("live.dtb", live))
+
+    def kexec(self, new, old, live, out, *extra):
+        return self.cli("kexec-dtb", "--target", new, "--reference", old, "--live", live, "--out", out, *extra)
+
+    def test_kexec_dtb(self):
+        new, old, live = self.kexec_inputs()
+        out = os.path.join(self.tmp, "kexec.dtb")
+        res = self.kexec(new, old, live, out, "--drop", "/chosen/inmusic,internal-sd-fitted")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for line in ("added from the running tree (17 bytes): /serial-number",
+                     "added from the running tree (6 bytes): /ethernet@ff290000/local-mac-address",
+                     "replaced from the running tree (8 bytes): /memory@0/reg",
+                     "not copied (kexec sets it): /chosen/bootargs",
+                     "copied node added by U-Boot: /reserved-memory",
+                     "dropped as asked: /chosen/inmusic,internal-sd-fitted",
+                     'eMMC controller disabled: /dwmmc@ff0f0000 status = "disabled"',
+                     f"written: {out}"):
+            self.assertIn(line, res.stdout)
+        self.assertNotIn(SERIAL, res.stdout)
+        self.assertNotIn("FAKE-UUID", res.stdout)
+        tree = dtb.load(out)
+        self.assertEqual(tree.root.prop("serial-number"), s(SERIAL))
+        self.assertEqual(tree.find("/ethernet@ff290000").prop("local-mac-address"), MAC)
+        self.assertEqual(tree.find("/memory@0").prop("reg"), cells(0, 0x80000000))
+        self.assertIsNone(tree.find("/chosen").prop("bootargs"))
+        self.assertIsNone(tree.find("/chosen").prop("inmusic,internal-sd-fitted"))
+        self.assertIsNotNone(tree.find("/reserved-memory/ramoops@8000000"))
+        emmc = tree.find("/dwmmc@ff0f0000")
+        self.assertEqual(emmc.prop("status"), s("disabled"))
+        self.assertEqual(emmc.prop("new-binding"), cells(7), "the new version's own properties stay")
+        self.assertEqual(tree.find("/dwmmc@ff0c0000").prop("status"), None, "the SD controller is left alone")
+        res = self.kexec(new, old, live, out)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("already exists; not overwriting it", res.stdout)
+
+    def test_kexec_dtb_stops(self):
+        out = os.path.join(self.tmp, "kexec.dtb")
+        no_ethernet = board_tree()
+        no_ethernet.root.children = [c for c in no_ethernet.root.children if not c.name.startswith("ethernet")]
+        no_emmc = board_tree()
+        no_emmc.root.children = [c for c in no_emmc.root.children if c.name != "dwmmc@ff0f0000"]
+        cases = {
+            "the new tree has no /ethernet@ff290000": no_ethernet,
+            "expected one node at the eMMC address ff0f0000 in the new tree, found 0": no_emmc,
+        }
+        for message, target in cases.items():
+            with self.subTest(message):
+                new, old, live = self.kexec_inputs(target)
+                res = self.kexec(new, old, live, out)
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("STOP: ", res.stdout)
+                self.assertIn(message, res.stdout)
+                self.assertIn("No file written.", res.stdout)
+                self.assertFalse(os.path.exists(out))
+        new, old, live = self.kexec_inputs()
+        res = self.kexec(new, old, live, out, "--drop", "/chosen/nope")
+        self.assertIn("STOP: --drop /chosen/nope: no such property in the result", res.stdout)
+        removed = board_tree(serial=SERIAL)
+        removed.find("/chosen").del_prop("stdout-path")
+        res = self.kexec(new, old, self.save("live2.dtb", removed), out)
+        self.assertIn("STOP: U-Boot removed /chosen/stdout-path; decide by hand", res.stdout)
+        unsized = self.save("live3.dtb", board_tree())
+        res = self.kexec(new, old, unsized, out)
+        self.assertIn("STOP: /memory@0 has no memory size", res.stdout)
+        other = board_tree()
+        other.root.set_prop("compatible", s("inmusic,acva2", "rockchip,rk3288"))
+        res = self.kexec(self.save("other.dtb", other), old, live, out)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("--target is not a inmusic,acva tree", res.stdout)
+        self.assertFalse(os.path.exists(out))
+        self.assertEqual(self.cli("kexec-dtb", "--target", new).returncode, 2)
+
     def test_usage(self):
         self.assertEqual(self.cli().returncode, 2)
         self.assertEqual(self.cli("diff", "a").returncode, 2)
