@@ -99,7 +99,7 @@ STUB_PROGRAMS = (
 REQUIRED = {"/usr/sbin/sshd": "regular", "/usr/lib/systemd/system/data.mount": "regular",
             "/etc/systemd/system": "directory", "/etc/systemd/system/multi-user.target.wants": "directory",
             "/etc/shadow": "regular", "/bin/sh": None}
-MADE_IF_MISSING = ("/etc/systemd/system-generators", "/etc/sysctl.d")
+MADE_IF_MISSING = ("/etc/systemd/system-generators", "/etc/sysctl.d", "/etc/systemd/system/sysinit.target.wants")
 
 STUB = """#!/bin/sh
 # MPFree kexec test boot: this program is disabled on the test stick.
@@ -181,16 +181,21 @@ while :; do
   sleep 10
 done
 """
+# Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
 LOG_UNIT = """[Unit]
 Description=MPFree test boot: copy logs to the USB stick's log partition
-After=local-fs.target
+DefaultDependencies=no
+After=systemd-journald.service systemd-udevd.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
 
 [Service]
 Type=simple
 ExecStart=/bin/sh /etc/mpfree-test/save-logs.sh
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target
 """
 
 
@@ -392,7 +397,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
                   "/etc/systemd/system/mpfree-test-logs.service", "/etc/mpfree-test",
                   "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service",
-                  "/etc/systemd/system/multi-user.target.wants/mpfree-test-logs.service",
+                  "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service",
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
                  ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS])
     for path in new_paths:
@@ -445,7 +450,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
     links.update({"/etc/systemd/system-generators/" + g: "/dev/null" for g in MASK_GENERATORS})
     links["/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service"] = \
         "/etc/systemd/system/mpfree-test-sshd.service"
-    links["/etc/systemd/system/multi-user.target.wants/mpfree-test-logs.service"] = \
+    links["/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"] = \
         "/etc/systemd/system/mpfree-test-logs.service"
 
     commands = ["mkdir /etc/mpfree-test"]
