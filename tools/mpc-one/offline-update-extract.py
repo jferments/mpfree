@@ -16,7 +16,7 @@ but a new output folder. The output is Akai's proprietary software: keep
 it private and commit only findings.
 
 Usage: python3 tools/mpc-one/offline-update-extract.py IMAGE [--node PATH ...]
-Output folder: $MPFREE_WORK_DIR (default ~/mpfree-work)/akai-update-<UTC>-<random>/
+Output folder: $MPFREE_WORK_DIR (default ~/mpfree-work)/akai-unpacked-<UTC>-<random>/
 """
 import argparse
 import bz2
@@ -262,7 +262,7 @@ def extract(image, wanted):
             raise ExtractError("the image has no payloads")
         os.makedirs(out_root, mode=0o700, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        out_dir = tempfile.mkdtemp(prefix=f"akai-update-{stamp}-", dir=out_root)
+        out_dir = tempfile.mkdtemp(prefix=f"akai-unpacked-{stamp}-", dir=out_root)
         print(f"image: {os.path.abspath(image)}")
         print(f"output folder: {out_dir}")
         for payload in payloads:

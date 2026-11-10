@@ -128,10 +128,15 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertEqual((sha_file(self.image), os.stat(self.image).st_mtime_ns), before, "image must not change")
 
     def test_default_is_the_newest_unpacked_update(self):
-        older = os.path.join(self.work, "akai-update-20261101T000000Z-aaaa")
-        newer = os.path.join(self.work, "akai-update-20261110T000000Z-bbbb")
-        os.makedirs(older)
-        os.makedirs(newer)
+        older = os.path.join(self.work, "akai-unpacked-20261101T000000Z-aaaa")
+        newer = os.path.join(self.work, "akai-unpacked-20261110T000000Z-bbbb")
+        # Folders that sort after the newest unpack must not be picked: the owner's download
+        # folder, and a hand-made one without the extractor's timestamp.
+        others = [os.path.join(self.work, "akai-update-files"), os.path.join(self.work, "akai-unpacked-notes")]
+        for folder in (older, newer, *others):
+            os.makedirs(folder)
+        for folder in others:
+            shutil.copy(self.image, os.path.join(folder, "rootfs.img"))
         shutil.copy(self.image, os.path.join(newer, "rootfs.img"))
         res = self.survey()
         self.assertEqual(res.returncode, 0, res.stdout)
@@ -140,8 +145,8 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         res = self.survey()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("expected one *rootfs*.img", res.stdout)
-        shutil.rmtree(newer)
-        shutil.rmtree(older)
+        for folder in (newer, older, *others):
+            shutil.rmtree(folder)
         res = self.survey()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("no unpacked update under", res.stdout)

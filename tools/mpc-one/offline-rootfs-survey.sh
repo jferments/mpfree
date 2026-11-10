@@ -6,7 +6,7 @@
 # Two sources:
 #   --image FILE    an ext2/3/4 rootfs image, such as the rootfs unpacked from
 #                   an Akai update by offline-update-extract.py. Default: the
-#                   single *rootfs*.img in the newest ~/mpfree-work/akai-update-*/
+#                   single *rootfs*.img in the newest ~/mpfree-work/akai-unpacked-<UTC>-*/
 #   --from-backup   the 3.6.0 rootfs (p6) cut from the newest verified eMMC
 #                   backup and checked against the boot map, for comparison
 #
@@ -53,7 +53,7 @@ esac
 
 if [[ "$SOURCE" == image && -z "$IMAGE_ARG" ]]; then
   shopt -s nullglob
-  folders=("$work_abs"/akai-update-*/)
+  folders=("$work_abs"/akai-unpacked-[0-9]*/)
   (( ${#folders[@]} )) || die "no unpacked update under $work_abs (run offline-update-extract.py first) or pass --image"
   found=("${folders[-1]}"*rootfs*.img)
   shopt -u nullglob
