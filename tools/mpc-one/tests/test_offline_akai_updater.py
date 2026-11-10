@@ -70,7 +70,12 @@ def uboot_script_image(text):
     return header + payload
 
 
-def build_rootfs(base, with_updater=True):
+LAUNCHER = ("#!/bin/sh\n# FAKE-LAUNCHER\ncp /opt/ramfs-update.squashfs /run/upd\n"
+            "exec /run/upd/init erase-data-partition\n")
+APP_MARKER = b"\0kexec --initrd=/opt/ramfs-update.squashfs FAKE-APP-MARKER\0"
+
+
+def build_rootfs(base, with_updater=True, block_size=1024, mentions=True):
     """Return (p6 bytes, squashfs sha256) for a fake rootfs."""
     sq_src = os.path.join(base, "squash-src")
     write(os.path.join(sq_src, "init"), INIT_SCRIPT, 0o755)
@@ -96,10 +101,20 @@ def build_rootfs(base, with_updater=True):
     write(os.path.join(units, "x" * 70 + "-update.service"), "[Service]\nExecStart=/bin/true FAKE-SLOW-TARGET\n")
     write(os.path.join(units, "empty-fw.service"), "")
     os.symlink("loop-update.service", os.path.join(units, "loop-update.service"))
+    if mentions:
+        write(os.path.join(root, "usr", "libexec", "az01", "start-update.sh"), LAUNCHER, 0o755)
+        with open(shutil.which("true"), "rb") as fh:
+            write(os.path.join(root, "usr", "bin", "fakeapp"), fh.read() + APP_MARKER, 0o755)
+        write(os.path.join(root, "tmp", "deleted.txt"), "old ramfs-update note\n")
+        # A short symlink target lives inside the inode, not in a data block.
+        os.symlink("/opt/ramfs-update.squashfs", os.path.join(root, "usr", "bin", "upd-link"))
     image = os.path.join(base, "p6.img")
     with open(image, "wb") as fh:
         fh.truncate(P6_SECTORS * SECTOR)
-    run(["mkfs.ext4", "-q", "-F", "-O", "^has_journal", "-d", root, image])
+    run(["mkfs.ext4", "-q", "-F", "-b", str(block_size), "-O", "^has_journal", "-d", root, image])
+    if mentions:
+        # Leaves the text in a freed block, like a file deleted on the MPC.
+        run(["debugfs", "-w", "-R", "rm /tmp/deleted.txt", image], stderr=subprocess.DEVNULL)
     with open(image, "rb") as fh:
         p6 = fh.read()
     with open(squash, "rb") as fh:
@@ -204,6 +219,17 @@ class OfflineAkaiUpdaterTests(unittest.TestCase):
         self.assertIn("rootfs:empty-fw.service: empty", out)
         self.assertIn("/usr/lib/systemd/system/loop-update.service: symlink, not copied", out)
         self.assertNotIn("FAKE-UNIT-ACVS", out)
+        self.assertIn("searching for: ramfs-update erase-data-partition (block size 1024)", out)
+        self.assertIn("ramfs-update: /usr/libexec/az01/start-update.sh", out)
+        self.assertIn("erase-data-partition: /usr/libexec/az01/start-update.sh", out)
+        self.assertEqual(out.count("copied /usr/libexec/az01/start-update.sh"), 1, out)
+        self.assertIn("ramfs-update: /usr/bin/fakeapp", out)
+        self.assertIn("ramfs-update: 1 match(es) in free space", out)
+        self.assertIn("ramfs-update: match(es) in filesystem metadata, block(s) ", out)
+        self.assertIn("ramfs-update: /opt\n/opt: directory, not copied", out)
+        self.assertIn("exec /run/upd/init erase-data-partition", out)
+        self.assertIn("FAKE-APP-MARKER", out)
+        self.assertNotIn("old ramfs-update note", out)
         self.assertIn("never commit or share them", out)
         self.assertEqual(fx.snapshot(), before, "the backup must not change")
         [work] = fx.work_folders()
@@ -213,6 +239,17 @@ class OfflineAkaiUpdaterTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(work, "p6-rootfs.img")))
         self.assertTrue(os.path.isfile(os.path.join(work, "ramfs-update", "init")))
         self.assertEqual(stat.S_IMODE(os.stat(work).st_mode), 0o700)
+
+    def test_search_with_4k_blocks_and_no_launcher(self):
+        p6, squash_sha = build_rootfs(tempfile.mkdtemp(dir=self.tmp), block_size=4096, mentions=False)
+        fx = self.fixture(p6=p6, squash_sha=squash_sha)
+        res = fx.run()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("(block size 4096)", res.stdout)
+        self.assertIn("erase-data-partition: no match", res.stdout)
+        self.assertIn("ramfs-update: /opt\n", res.stdout)
+        self.assertNotIn("free space", res.stdout)
+        self.assertNotIn("filesystem metadata", res.stdout)
 
     def test_picks_newest_verified_backup(self):
         fx = self.fixture()

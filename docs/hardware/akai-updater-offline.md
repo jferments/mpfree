@@ -15,8 +15,9 @@ Before the reference unit takes any official update, and before the Tier 2 gate 
    - `/boot/boot.scr.uimg`, U-Boot's boot script
    - every unit in `/usr/lib/systemd/system` whose name contains `update`, `upd`, `flash` or `fw`
 4. Lists and unpacks the squashfs with `unsquashfs`.
-5. Writes `report.txt`. Scripts and unit files are printed in full. Binaries are summarised by the strings that mention storage, partitions or update steps.
-6. Deletes the `p6` copy and keeps the extracted files.
+5. Searches the whole `p6` copy for the text `ramfs-update` and `erase-data-partition`, maps each match to the file that holds it (`debugfs icheck` and `ncheck`), copies those files and prints the lines or strings around each match. Matches in free space (deleted data) or filesystem metadata (such as a short symlink target) are counted separately.
+6. Writes `report.txt`. Scripts and unit files are printed in full. Binaries are summarised by the strings that mention storage, partitions or update steps.
+7. Deletes the `p6` copy and keeps the extracted files.
 
 ## Running it
 
@@ -26,7 +27,7 @@ From an up-to-date checkout:
 bash tools/mpc-one/offline-akai-updater.sh
 ```
 
-It needs `debugfs` (e2fsprogs), `unsquashfs` (squashfs-tools), `file` and `strings` (binutils), and about 550 MB free under `~/mpfree-work` while it runs. Exit status 0 means the report is complete. Exit status 1 means it stopped; the last line says why.
+It needs `debugfs` (e2fsprogs), `unsquashfs` (squashfs-tools), `file`, `strings` (binutils) and `python3`, and about 550 MB free under `~/mpfree-work` while it runs. Exit status 0 means the report is complete. Exit status 1 means it stopped; the last line says why.
 
 Options: `--backup DIR` picks a specific backup, and `MPFREE_WORK_DIR` changes the output location. The work folder must not be inside the backup, or inside the git clone unless git ignores it. The script checks both before creating anything.
 
@@ -59,7 +60,7 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 
 **Still open:**
 
-1. Find what launches the RAM updater: search the whole `p6` copy for references to `ramfs-update`.
+1. Find what launches the RAM updater. The script now searches the whole `p6` copy for it (step 5 above); waiting on the owner's second run.
 2. Read the partition list of Akai's public 3.6.0 update file.
 
 ## Keep Akai's files private
