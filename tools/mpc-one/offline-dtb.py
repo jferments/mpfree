@@ -17,11 +17,15 @@ Commands:
                        kexec: NEW (the other version's board file) plus what
                        U-Boot added at boot (the differences from OLD, the
                        running version's board file, to LIVE, the running
-                       tree), with the eMMC controller disabled. bootargs,
+                       tree), with the eMMC and SD card controllers
+                       disabled, so the other kernel sees neither. bootargs,
                        initrd and random-seed properties of /chosen are not
-                       copied, because kexec sets them. --drop removes a
-                       property from the result. OUT must not exist. The
-                       printed report names properties only, never values.
+                       copied, because kexec sets them, and neither are
+                       U-Boot's memory reservations (it reserves the tree's
+                       own old location; the new kernel reserves its tree
+                       itself). --drop removes a property from the result.
+                       OUT must not exist. The printed report names
+                       properties only, never values.
 
 It only reads the files it is given and prints to stdout. It never contacts
 the MPC.
@@ -42,6 +46,9 @@ MAX_DEPTH = 64
 MAX_SIZE = 4 << 20
 EMMC_ADDRESS = "ff0f0000"  # RK3288 eMMC controller (dw-mshc) on the MPC One
 SD_ADDRESS = "ff0c0000"    # RK3288 SD card controller
+# Controllers the kernel booted by kexec must not see: then no program it runs
+# can reach the eMMC or a card in the SD slot.
+HIDDEN_CONTROLLERS = (("eMMC", EMMC_ADDRESS), ("SD card", SD_ADDRESS))
 
 
 class DtbError(Exception):
@@ -417,13 +424,17 @@ def kexec_dtb(target, reference, live, drops=()):
             continue
         node.del_prop(name)
         notes.append(f"dropped as asked: {item}")
-    emmc = nodes_at(target, EMMC_ADDRESS)
-    if len(emmc) != 1:
-        problems.append(f"expected one node at the eMMC address {EMMC_ADDRESS} in the new tree, found {len(emmc)}")
-    else:
-        path, node = emmc[0]
+    if live.reserved != target.reserved:
+        notes.append(f"not copied: memory reservations (running tree {len(live.reserved)}, "
+                     f"result keeps the new file's {len(target.reserved)})")
+    for label, address in HIDDEN_CONTROLLERS:
+        found = nodes_at(target, address)
+        if len(found) != 1:
+            problems.append(f"expected one node at the {label} address {address} in the new tree, found {len(found)}")
+            continue
+        path, node = found[0]
         node.set_prop("status", b"disabled\x00")
-        notes.append(f"eMMC controller disabled: {path} status = \"disabled\"")
+        notes.append(f"{label} controller disabled: {path} status = \"disabled\"")
     return notes, problems
 
 
@@ -432,9 +443,10 @@ def verify_kexec_dtb(tree, board):
     reasons = []
     if board not in compatible(tree):
         reasons.append(f"the tree is not for {board}: {', '.join(compatible(tree))}")
-    emmc = nodes_at(tree, EMMC_ADDRESS)
-    if len(emmc) != 1 or strings_of(emmc[0][1].prop("status") or b"") != ["disabled"]:
-        reasons.append("the eMMC controller is not disabled")
+    for label, address in HIDDEN_CONTROLLERS:
+        found = nodes_at(tree, address)
+        if len(found) != 1 or strings_of(found[0][1].prop("status") or b"") != ["disabled"]:
+            reasons.append(f"the {label} controller is not disabled")
     for path, node in tree.walk():
         if (node.name == "memory" or node.name.startswith("memory@")) and \
                 not any(node.prop("reg") or b"\x00"):
@@ -474,7 +486,7 @@ def kexec_dtb_main(args, out):
         return 1
     with open(opts["--out"], "xb") as fh:
         fh.write(blob)
-    out.write(f"written: {opts['--out']} ({len(blob)} bytes); its eMMC controller is disabled\n")
+    out.write(f"written: {opts['--out']} ({len(blob)} bytes); its eMMC and SD card controllers are disabled\n")
     return 0
 
 

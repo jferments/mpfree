@@ -195,6 +195,7 @@ class DtbTests(unittest.TestCase):
         chosen.set_prop("bootargs", s("root=PARTUUID=FAKE-UUID rootwait ro"))
         chosen.set_prop("inmusic,internal-sd-fitted", b"")
         live.find("/").children.append(node("reserved-memory", [("ranges", b"")], [node("ramoops@8000000")]))
+        live.reserved.append((0x8F000000, 0xD000))  # as U-Boot reserves the tree's own location
         if target is None:
             target = board_tree(model="Akai Professional MPC One")
             target.find("/dwmmc@ff0f0000").set_prop("new-binding", cells(7))
@@ -215,7 +216,10 @@ class DtbTests(unittest.TestCase):
                      "copied node added by U-Boot: /reserved-memory",
                      "dropped as asked: /chosen/inmusic,internal-sd-fitted",
                      'eMMC controller disabled: /dwmmc@ff0f0000 status = "disabled"',
-                     f"written: {out}"):
+                     'SD card controller disabled: /dwmmc@ff0c0000 status = "disabled"',
+                     "not copied: memory reservations (running tree 2, result keeps the new file's 1)",
+                     f"written: {out} ",
+                     "its eMMC and SD card controllers are disabled"):
             self.assertIn(line, res.stdout)
         self.assertNotIn(SERIAL, res.stdout)
         self.assertNotIn("FAKE-UUID", res.stdout)
@@ -229,7 +233,8 @@ class DtbTests(unittest.TestCase):
         emmc = tree.find("/dwmmc@ff0f0000")
         self.assertEqual(emmc.prop("status"), s("disabled"))
         self.assertEqual(emmc.prop("new-binding"), cells(7), "the new version's own properties stay")
-        self.assertEqual(tree.find("/dwmmc@ff0c0000").prop("status"), None, "the SD controller is left alone")
+        self.assertEqual(tree.find("/dwmmc@ff0c0000").prop("status"), s("disabled"))
+        self.assertEqual(tree.reserved, [(0x10000000, 0x100000)], "U-Boot's reservations are not copied")
         res = self.kexec(new, old, live, out)
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("already exists; not overwriting it", res.stdout)
@@ -240,9 +245,12 @@ class DtbTests(unittest.TestCase):
         no_ethernet.root.children = [c for c in no_ethernet.root.children if not c.name.startswith("ethernet")]
         no_emmc = board_tree()
         no_emmc.root.children = [c for c in no_emmc.root.children if c.name != "dwmmc@ff0f0000"]
+        no_sd = board_tree()
+        no_sd.root.children = [c for c in no_sd.root.children if c.name != "dwmmc@ff0c0000"]
         cases = {
             "the new tree has no /ethernet@ff290000": no_ethernet,
             "expected one node at the eMMC address ff0f0000 in the new tree, found 0": no_emmc,
+            "expected one node at the SD card address ff0c0000 in the new tree, found 0": no_sd,
         }
         for message, target in cases.items():
             with self.subTest(message):
