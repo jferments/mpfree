@@ -48,6 +48,7 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-boot-menu.sh
           sh -n tools/mpc-one/read-only-ethernet.sh
           sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
