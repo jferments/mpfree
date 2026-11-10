@@ -51,7 +51,7 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 
 **Other findings:**
 
-- `/usr/bin/az01-update` does **not** exist in `p6`. An earlier note in the boot-map doc said it did. Neither boot-map run shows it, so that note was wrong and is corrected.
+- **`az01-update` exists, at `/usr/sbin/az01-update`** (found by the rootfs survey, 2026-11-10, in both 3.6.0 and 3.10.0). The boot map listed the name without a folder. An earlier version of this page looked only in `/usr/bin` and wrongly said the program doesn't exist.
 - **What starts the RAM updater: `/usr/lib/libaz01-prog.so.1.3`**, an inMusic library. It is the only file in `p6` whose contents mention `ramfs-update` or `erase-data-partition` (owner's second run, 2026-11-10). See [How an update is launched](#how-an-update-is-launched).
 - `boot.scr.uimg` has no update branch. It loads `zImage` and the board DTB (plus an `az01b` overlay on that board) and boots with `fsck.repair=yes`. Update Mode stays U-Boot's own `fastboot 0`, as the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) found.
 - The other `update`/`fw` units are stock systemd ones, plus Akai's `touch-fw-update.service` (Ilitek touch firmware) and `xmos-update.service`, which only runs when the device tree has no `sound` node. This unit uses I²S audio, so it probably never runs here.
@@ -84,7 +84,7 @@ Three workstation-only tools read a downloaded update image. None of them contac
 | --- | --- | --- |
 | [`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
 | [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
-| [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units and flashing programs it has, and which files mention the eMMC or flashing | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/` |
+| [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/` |
 
 ```bash
 python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files
@@ -112,13 +112,26 @@ The **3.10.0** image (`MPC-3.10.0-Gen1-update.img`, 167,084,848 bytes, sha256 `d
 | 240 | description | `MPC upgrade image` |
 | 264 | `PART` record: tag, record header size (76), 64-bit data size, name, compression, hash count, then per hash (algorithm, size, value) | `rootfs`, `xz`, one `sha1` |
 | 340 | the partition data | an xz stream of 167,084,492 bytes |
-| 167,084,832 | 16 more bytes | not yet read |
+| 167,084,832 | end record: tag `EOF\0`, record size 16, 8 zero bytes | end of file |
 
-What this means (the hash coverage and the last 16 bytes are still open):
+The owner's run of the lister and extractor (2026-11-10) confirmed the rest. The SHA-1 covers the stored (compressed) bytes and matches. The rootfs unpacks to 451,468,288 bytes (431 MiB, ext4), which fits the 500 MiB system partition.
+
+What this means:
 
 - **The 3.10.0 update carries only the rootfs.** There is no bootloader, splash or partition-table record, so this image can't rewrite U-Boot. The kernel and device trees live in the rootfs's `/boot`, as on 3.6.0.
 - **Our unit is a target.** Its device tree says `inmusic,acva`, which is in the list. Its internal controller is USB `09e8:0046`. The listed `09e8:4046` looks like the same ID with `0x4000` added, which is an inference.
-- **No signature is visible in the header or the record.** Where the "v3 signature" the RAM updater checks lives is open. It may be in the last 16 bytes, which are too short for an RSA signature, or in a separate file.
+- **The file holds no signature.** Every byte belongs to the header, the one `PART` record or the `EOF` record. Where the "v3 signature" the RAM updater checks comes from is open.
+
+### The 3.10.0 rootfs compared with 3.6.0
+
+From `offline-rootfs-survey.sh` on the unpacked 3.10.0 rootfs and on the reference unit's `p6` (owner's run, 2026-11-10). These are file listings and unit files; nothing was run.
+
+- **New kernel and base system.** 3.10.0 has kernel `6.18.44-az01-2026-08-10-rt6` (3.6.0: `6.6.95-az01-2025-06-27-rt55`) and Akai's base distribution 5.0.18 (3.6.0: 5.0.8). `/boot` has the same device-tree files, each a little larger.
+- **The same mounts and update units, with these exceptions:**
+  - New in 3.10.0: `/usr/bin/az01-bootloader-sig` and the boot service `az0x-loadpin-trustpoints.service`. LoadPin is a kernel feature that limits where the kernel may load files from, so 3.10.0 may restrict kexec or module loading. That's an inference until the files are read.
+  - 3.10.0 enables `az0x-info.service` and `az0x-webserver.service`, and mounts the content partition through a new `storage.mount`.
+  - The reference unit's 3.6.0 rootfs enables a serial-console login on `ttyS2`, and 3.10.0 doesn't. Whether that is stock 3.6.0 is unknown.
+- **Peripheral firmware updaters, in both versions.** `touch-fw-update.service` runs `touch-fw-upd` at every boot on boards with the ILI2117 touch controller at `i2c@ff160000` address `0x26`, which is this unit's. `acvs.service` (the MPC app) also mentions it. The app launcher `/usr/bin/az01-launch-MPC` and `/usr/share/Akai/SME0/Firmware/update.sh` mention `dfu-util`, so starting the app may flash a microcontroller over USB DFU. These write outside the eMMC, so a power-cycle wouldn't undo them. Any RAM-only test of another version must keep them from running.
 
 ## Keep Akai's files private
 

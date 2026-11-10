@@ -100,13 +100,29 @@ echo
 
 dfs() { debugfs -R "$1" "$ROOTFS" 2>/dev/null; }
 [[ -n "$(dfs 'ls -p /')" ]] || die "debugfs could not read $ROOTFS (not ext2/3/4, or e2fsprogs too old?)"
-rootfs_type() { dfs "stat $1" | sed -n 's/^Inode: [0-9]*  *Type: \([a-z]*\).*/\1/p' | head -n 1; }
+SAFE_PATH='^[A-Za-z0-9@._+/-]+$'
+spec_of() {  # how to name $1 to debugfs: the path, or <inode> for a name debugfs would split
+  local path="$1" dir name ino
+  if [[ "$path" =~ $SAFE_PATH ]]; then printf '%s' "$path"; return 0; fi
+  dir="${path%/*}" name="${path##*/}"
+  [[ -n "$dir" && "$dir" =~ $SAFE_PATH ]] || return 1
+  # The name goes through the environment: awk -v would expand escapes such as \x2d.
+  ino="$(dfs "ls -p $dir" | NAME="$name" awk -F/ 'NF >= 7 && $6 == ENVIRON["NAME"] { print $2; exit }')"
+  [[ "$ino" =~ ^[0-9]+$ ]] || return 1
+  printf '<%s>' "$ino"
+}
+rootfs_type() {
+  local spec
+  spec="$(spec_of "$1")" || return 0
+  dfs "stat $spec" | sed -n 's/^Inode: [0-9]*  *Type: \([a-z]*\).*/\1/p' | head -n 1
+}
 link_target() {  # a symlink's target: fast links are stored in the inode, slow ones in a block
-  local target
-  target="$(dfs "stat $1" | sed -n 's/^Fast link dest: "\(.*\)"$/\1/p' | head -n 1)"
+  local target spec
+  spec="$(spec_of "$1")" || { printf '(target unreadable)'; return 0; }
+  target="$(dfs "stat $spec" | sed -n 's/^Fast link dest: "\(.*\)"$/\1/p' | head -n 1)"
   if [[ -z "$target" ]]; then
     rm -f -- "$WORK/link.tmp"
-    dfs "dump $1 $WORK/link.tmp"
+    dfs "dump $spec $WORK/link.tmp"
     target="$(head -c 4096 -- "$WORK/link.tmp" 2>/dev/null | tr -d '\0')"
     rm -f -- "$WORK/link.tmp"
   fi
@@ -116,9 +132,9 @@ names_in() {  # $1 = directory; prints "type name" per entry, skipping . and ..
   dfs "ls -p $1" | awk -F/ 'NF >= 7 && $6 != "." && $6 != ".." {
     t = substr($3, 1, 2); kind = (t == "04") ? "dir" : (t == "12") ? "link" : "file"; print kind, $6 }'
 }
-show_file() {  # $1 = path in the image; prints it if it's a small text file
-  local path="$1" tmp="$WORK/show.tmp" type
-  [[ "$path" =~ ^[A-Za-z0-9@._+/-]+$ ]] || { echo "($path: unusual name, skipped)"; return 0; }
+STRINGS_PATTERN='(/dev/|/sys/|/proc/|/etc/|/usr/|/opt/|/data|/media|mmc|boot|spl|sig|key|flash|dfu|firmware|fw|update|upgrade|partition|i2c|loadpin|kexec|reboot|systemctl|exec|[.]sh|[.]bin|[.]hex|erase|write|verify|version)'
+show_file() {  # $1 = path in the image; prints a small text file, or a binary's sha256 and relevant strings
+  local path="$1" tmp="$WORK/show.tmp" type spec kind size
   type="$(rootfs_type "$path")"
   case "$type" in
     regular) ;;
@@ -126,13 +142,36 @@ show_file() {  # $1 = path in the image; prints it if it's a small text file
     symlink) echo "--- $path -> $(link_target "$path")"; return 0 ;;
     *) echo "($path: $type, not a regular file)"; return 0 ;;
   esac
+  spec="$(spec_of "$path")"
   rm -f -- "$tmp"
-  dfs "dump $path $tmp"
-  if [[ "$(file -b -- "$tmp")" == *text* ]] && (( $(stat -c %s -- "$tmp") <= 65536 )); then
+  dfs "dump $spec $tmp"
+  kind="$(file -b -- "$tmp")" size="$(stat -c %s -- "$tmp")"
+  if [[ "$kind" == *text* ]] && (( size <= 65536 )); then
     echo "--- $path"; cat -- "$tmp"
   else
-    echo "--- $path: $(file -b -- "$tmp") ($(stat -c %s -- "$tmp") bytes)"
+    echo "--- $path: $kind ($size bytes), sha256 $(sha256sum -- "$tmp" | awk '{print $1}')"
+    if [[ "$kind" == ELF* ]]; then
+      strings -a -n 6 -- "$tmp" | grep -E -i -- "$STRINGS_PATTERN" | head -n 200 | sed 's/^/    /'
+    fi
   fi
+  rm -f -- "$tmp"
+}
+unique_dirs() {  # the given folders that exist, each real folder once (/lib is often a link to /usr/lib)
+  local d ino seen=" "
+  for d in "$@"; do
+    [[ "$(rootfs_type "$d")" == directory ]] || continue
+    ino="$(dfs "stat $d" | sed -n 's/^Inode: \([0-9][0-9]*\) .*/\1/p' | head -n 1)"
+    [[ -n "$ino" && "$seen" != *" $ino "* ]] || continue
+    seen+="$ino "
+    printf '%s\n' "$d"
+  done
+}
+file_sha() {  # sha256 of a regular file in the image
+  local tmp="$WORK/sha.tmp" spec
+  spec="$(spec_of "$1")" || return 0
+  rm -f -- "$tmp"
+  dfs "dump $spec $tmp"
+  [[ -f "$tmp" ]] && sha256sum -- "$tmp" | awk '{print $1}'
   rm -f -- "$tmp"
 }
 
@@ -140,16 +179,19 @@ echo "=== 1. Identity ==="
 for f in /etc/issue /etc/os-release /etc/version /etc/timestamp; do show_file "$f"; done
 echo "--- ls -l /boot"
 dfs "ls -l /boot"
-for d in /usr/lib/modules /lib/modules; do
-  [[ "$(rootfs_type "$d")" == directory ]] && { echo "--- kernel module folders in $d"; names_in "$d"; }
-done
+echo "--- sha256 of the files in /boot"
+while read -r kind name; do
+  [[ "$kind" == file ]] && echo "$(file_sha "/boot/$name") $name"
+done < <(names_in /boot | sort -k2)
+while read -r d; do
+  echo "--- kernel module folders in $d"; names_in "$d"
+done < <(unique_dirs /usr/lib/modules /lib/modules)
 echo
 
 echo "=== 2. What it mounts ==="
 show_file /etc/fstab
-UNIT_DIRS=(/usr/lib/systemd/system /lib/systemd/system /etc/systemd/system)
+mapfile -t UNIT_DIRS < <(unique_dirs /usr/lib/systemd/system /lib/systemd/system /etc/systemd/system)
 for d in "${UNIT_DIRS[@]}"; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
   while read -r kind name; do
     [[ "$kind" == file && "$name" == *.mount ]] && show_file "$d/$name"
   done < <(names_in "$d")
@@ -157,14 +199,12 @@ done
 echo
 
 echo "=== 3. Units ==="
-UNIT_PATTERN='(update|upd|flash|fw|dfu|firmware|xmos|touch|ilitek|resize|grow|format|factory|repart|overlay|recover|loader|mmc|emmc|partition|data|content)'
+UNIT_PATTERN='(update|upd|flash|fw|dfu|firmware|xmos|touch|ilitek|resize|grow|format|factory|repart|overlay|recover|loader|mmc|emmc|partition|data|content|^az0|^acvs|^media-|^storage|^secure|loadpin|sig|webserver)'
 for d in "${UNIT_DIRS[@]}"; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
   echo "--- all entries in $d"
   names_in "$d" | sort -k2
 done
 for d in "${UNIT_DIRS[@]}"; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
   while read -r kind name; do
     [[ "$kind" == dir ]] && continue
     [[ "$name" =~ $UNIT_PATTERN ]] && show_file "$d/$name"
@@ -172,7 +212,6 @@ for d in "${UNIT_DIRS[@]}"; do
 done
 echo "--- started at boot (.wants and .requires folders)"
 for d in "${UNIT_DIRS[@]}"; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
   while read -r kind name; do
     [[ "$kind" == dir && "$name" =~ ^[A-Za-z0-9@._+-]+\.(wants|requires)$ ]] || continue
     names_in "$d/$name" | awk -v d="$d/$name" '{ print d ": " $2 }' | sort
@@ -181,24 +220,33 @@ done
 echo
 
 echo "=== 4. Programs whose names suggest flashing or storage work ==="
-PROG_PATTERN='(fw|dfu|flash|upd|firmware|xmos|ilitek|boot|loader|mmc|emmc|prog|recover|factory)'
-for d in /usr/bin /usr/sbin /usr/libexec /bin /sbin; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
+PROG_PATTERN='(fw|dfu|flash|upd|firmware|xmos|ilitek|boot|loader|mmc|emmc|prog|recover|factory|sshd|dropbear)'
+mapfile -t PROG_DIRS < <(unique_dirs /usr/bin /usr/sbin /usr/libexec /bin /sbin)
+for d in "${PROG_DIRS[@]}"; do
   names_in "$d" | awk -v d="$d" -v re="$PROG_PATTERN" '$2 ~ re { print d "/" $2 " (" $1 ")" }'
 done
 echo
 
 echo "=== 5. Firmware blobs ==="
-for d in /usr/lib/firmware /lib/firmware; do
-  [[ "$(rootfs_type "$d")" == directory ]] || continue
+while read -r d; do
   echo "--- $d"
   while read -r kind name; do
-    echo "$kind $name"
+    if [[ "$kind" == file ]]; then
+      echo "file $name sha256 $(file_sha "$d/$name")"
+    else
+      echo "$kind $name"
+    fi
     if [[ "$kind" == dir && "$name" =~ ^[A-Za-z0-9@._+-]+$ ]]; then
-      names_in "$d/$name" | sed 's/^/    /'
+      while read -r kind2 name2; do
+        if [[ "$kind2" == file ]]; then
+          echo "    file $name2 sha256 $(file_sha "$d/$name/$name2")"
+        else
+          echo "    $kind2 $name2"
+        fi
+      done < <(names_in "$d/$name" | sort -k2)
     fi
   done < <(names_in "$d" | sort -k2)
-done
+done < <(unique_dirs /usr/lib/firmware /lib/firmware)
 echo
 
 echo "=== 6. Files that mention flashing or the eMMC ==="
@@ -237,6 +285,32 @@ for needle in "${NEEDLES[@]}"; do
     fi
   done < <(dfs "ncheck $inodes")
 done
+echo
+
+echo "=== 7. Akai's own programs, scripts and firmware updaters ==="
+AKAI_PATTERN='^(az0|acvs|touch-fw|xmosdfu|dfu-util|fw_setenv|fw_printenv)'
+for d in "${PROG_DIRS[@]}"; do
+  while read -r kind name; do
+    [[ "$kind" != dir && "$name" =~ $AKAI_PATTERN ]] && show_file "$d/$name"
+  done < <(names_in "$d" | sort -k2)
+done
+for d in /usr/lib/systemd/system-preset /etc/az01; do
+  [[ "$(rootfs_type "$d")" == directory ]] || continue
+  while read -r kind name; do
+    [[ "$kind" == file ]] && show_file "$d/$name"
+  done < <(names_in "$d" | sort -k2)
+done
+if [[ "$(rootfs_type /usr/share/Akai)" == directory ]]; then
+  while read -r kind name; do
+    [[ "$kind" == dir && "$name" =~ ^[A-Za-z0-9@._+-]+$ ]] || continue
+    fw="/usr/share/Akai/$name/Firmware"
+    [[ "$(rootfs_type "$fw")" == directory ]] || continue
+    while read -r kind2 name2; do
+      [[ "$kind2" == file ]] || { echo "($fw/$name2: $kind2)"; continue; }
+      show_file "$fw/$name2"
+    done < <(names_in "$fw" | sort -k2)
+  done < <(names_in /usr/share/Akai | sort -k2)
+fi
 echo
 
 echo "DONE. Report: $REPORT"

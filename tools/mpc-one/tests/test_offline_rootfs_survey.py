@@ -20,6 +20,9 @@ from test_offline_akai_updater import (  # noqa: E402
 
 SCRIPT = os.path.join(os.path.dirname(HERE), "offline-rootfs-survey.sh")
 UNITS = "usr/lib/systemd/system"
+SME0_BLOB = bytes(range(256)) * 8
+SIG_MARKER = b"\0FAKE-SIG verify /dev/mmcblk0p3 with key FAKE-KEY\0harmless-unmatched-text\0"
+ILITEK = b"\x00" * 3000
 LONG = "x" * 70 + "-update.service"  # too long for a fast symlink
 
 
@@ -37,21 +40,33 @@ def build_image(base, name="rootfs.img"):
         f"{UNITS}/xmos-update.service": "[Service]\nExecStart=/usr/bin/xmosdfu --write FAKE-XMOS\n",
         f"{UNITS}/touch-fw-update.service": "[Service]\nExecStart=/usr/bin/touch-fw-upd FAKE-TOUCH\n",
         f"{UNITS}/acvs.service": "[Service]\nExecStart=/usr/bin/MPC FAKE-APP-UNIT\n",
+        f"{UNITS}/getty-other.service": "[Service]\nExecStart=/bin/true FAKE-OTHER-UNIT\n",
         f"{UNITS}/{LONG}": "[Service]\nExecStart=/bin/true FAKE-LONG\n",
         "usr/bin/touch-fw-upd": "#!/bin/sh\n",
         "usr/lib/firmware/top.bin": b"\x01\x02",
-        "usr/lib/firmware/ilitek/fw.bin": b"\x00" * 3000,
+        "usr/lib/firmware/ilitek/fw.bin": ILITEK,
         "boot/zImage-9.9": b"\x00" * 1000,
         "opt/note.sh": "dd of=/dev/mmcblk0 erase-data-partition\n",
         "usr/lib/modules/9.9-fake/modules.dep": "",
+        # systemd escapes "-" in unit names as \x2d; debugfs can't take such a name as a path.
+        f"{UNITS}/media-acvs\\x2dcontent.mount": "[Mount]\nWhat=PARTUUID=FAKE-CONTENT\nWhere=/media/acvs-content\n",
+        "usr/bin/az01-launch-MPC": "#!/bin/sh\n# FAKE-LAUNCHER\ndfu-util -D /usr/share/Akai/SME0/Firmware/fw.bin\nexec MPC\n",
+        "usr/lib/systemd/system-preset/98-az01-touch-fw-updater.preset": "enable touch-fw-update.service\n",
+        "usr/share/Akai/SME0/Firmware/update.sh": "#!/bin/sh\ndfu-util -a 0 -D fw.bin FAKE-SME0\n",
+        "usr/share/Akai/SME0/Firmware/fw.bin": SME0_BLOB,
+        "usr/share/Akai/SME0/Docs/readme.txt": "not a firmware folder\n",
     }
     for path, data in files.items():
         write(os.path.join(root, path), data)
     with open(shutil.which("true"), "rb") as fh:
-        write(os.path.join(root, "usr/bin/xmosdfu"), fh.read() + b"\0fastboot flash uboot-spl\0", 0o755)
+        elf = fh.read()
+    write(os.path.join(root, "usr/bin/xmosdfu"), elf + b"\0fastboot flash uboot-spl\0", 0o755)
+    write(os.path.join(root, "usr/bin/az01-bootloader-sig"), elf + SIG_MARKER, 0o755)
     os.symlink("xmos-update.service", os.path.join(root, UNITS, "alias-update.service"))
     os.symlink("../system/" + LONG, os.path.join(root, UNITS, "slow-update.service"))
     os.symlink("zImage-9.9", os.path.join(root, "boot/zImage"))
+    for merged in ("lib", "bin"):  # merged /usr, as on the MPC
+        os.symlink("usr/" + merged, os.path.join(root, merged))
     wants = os.path.join(root, "etc/systemd/system/multi-user.target.wants")
     os.makedirs(wants)
     os.symlink("/" + UNITS + "/xmos-update.service", os.path.join(wants, "xmos-update.service"))
@@ -106,13 +121,32 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("link alias-update.service", out)
         self.assertIn("ExecStart=/usr/bin/xmosdfu --write FAKE-XMOS", out)
         self.assertIn("ExecStart=/usr/bin/touch-fw-upd FAKE-TOUCH", out)
-        self.assertNotIn("FAKE-APP-UNIT", out, "units that don't match the pattern are listed, not printed")
+        self.assertIn("--- /usr/lib/systemd/system/acvs.service\n[Service]\nExecStart=/usr/bin/MPC FAKE-APP-UNIT", out)
+        self.assertIn("file getty-other.service", out)
+        self.assertNotIn("FAKE-OTHER-UNIT", out, "units that don't match the pattern are listed, not printed")
         self.assertIn("--- /usr/lib/systemd/system/alias-update.service -> xmos-update.service", out)
         self.assertIn(f"--- /usr/lib/systemd/system/slow-update.service -> ../system/{LONG}", out)
         self.assertIn("/etc/systemd/system/multi-user.target.wants: xmos-update.service", out)
         self.assertIn("/usr/bin/xmosdfu (file)", out)
         self.assertIn("/usr/bin/touch-fw-upd (file)", out)
-        self.assertIn("--- /usr/lib/firmware\ndir ilitek\n    file fw.bin\nfile top.bin", out)
+        self.assertIn(f"--- /usr/lib/firmware\ndir ilitek\n    file fw.bin sha256 {hashlib.sha256(ILITEK).hexdigest()}\n"
+                      f"file top.bin sha256 {hashlib.sha256(bytes([1, 2])).hexdigest()}", out)
+        self.assertIn(f"{hashlib.sha256(bytes(1000)).hexdigest()} zImage-9.9", out)
+        self.assertIn("--- /usr/lib/systemd/system/media-acvs\\x2dcontent.mount\n[Mount]\nWhat=PARTUUID=FAKE-CONTENT", out)
+        self.assertNotIn("unusual name", out)
+        self.assertNotIn("all entries in /lib/systemd/system", out, "/lib is a link to /usr/lib: list it once")
+        self.assertEqual(out.count("--- /usr/bin/az01-launch-MPC\n"), 1)
+        self.assertNotIn("--- /bin/az01-launch-MPC", out)
+        self.assertIn("=== 7. Akai's own programs", out)
+        self.assertIn("--- /usr/bin/az01-launch-MPC\n#!/bin/sh\n# FAKE-LAUNCHER", out)
+        self.assertIn("--- /usr/bin/az01-bootloader-sig: ELF", out)
+        self.assertIn("    FAKE-SIG verify /dev/mmcblk0p3 with key FAKE-KEY", out)
+        self.assertNotIn("harmless-unmatched-text", out)
+        self.assertIn("--- /usr/lib/systemd/system-preset/98-az01-touch-fw-updater.preset\nenable touch-fw-update", out)
+        self.assertIn("dfu-util -a 0 -D fw.bin FAKE-SME0", out)
+        self.assertRegex(out, r"--- /usr/share/Akai/SME0/Firmware/fw.bin: .*\(2048 bytes\), sha256 "
+                              + hashlib.sha256(SME0_BLOB).hexdigest())
+        self.assertNotIn("not a firmware folder", out)
         self.assertIn("erase-data-partition: /opt/note.sh", out)
         self.assertIn("fastboot: /usr/bin/xmosdfu", out)
         self.assertIn("uboot-spl: /usr/bin/xmosdfu", out)
@@ -203,9 +237,11 @@ class StaticTests(unittest.TestCase):
     def test_script_never_contacts_the_mpc_or_writes_images(self):
         with open(SCRIPT) as fh:
             code = fh.read()
-        for forbidden in ("ssh", "scp", "debugfs -w", "of=/dev", "curl", "wget"):
+        for forbidden in ("debugfs -w", "of=/dev", "curl", "wget"):
             self.assertNotIn(forbidden, code)
-        commands = re.compile(r"(^|[;&|(]|\$\()\s*(sudo\s+)?(u?mount|losetup|kexec|fsck|e2fsck|tune2fs)\b", re.M)
+        # A command word followed by a space or the end of the line; names inside the grep patterns don't count.
+        commands = re.compile(r"(^|[;&|(]|\$\()\s*(sudo\s+)?(ssh|scp|u?mount|losetup|kexec|fsck|e2fsck|tune2fs)(?=\s|$)",
+                              re.M)
         self.assertIsNone(commands.search(code))
         subprocess.run(["bash", "-n", SCRIPT], check=True)
 

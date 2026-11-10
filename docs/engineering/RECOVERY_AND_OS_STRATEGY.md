@@ -135,7 +135,8 @@ Steps 1–5 are read-only or offline. Step 6 changes device state and needs the 
    no scripts, a signed-image updater that can write U-Boot and erase `/data`. The MPC software starts it
    with kexec for USB-drive and online updates. Only 3.10.0 is offered for download. Its image (a new `AZ01`
    format) carries **only the rootfs**, no bootloader ([layout](../hardware/akai-updater-offline.md#two-container-formats)).
-   Still open: which bytes its SHA-1 covers, its last 16 bytes, and what its rootfs mounts and flashes.
+   Its rootfs runs kernel 6.18 and has the same peripheral firmware updaters as 3.6.0 (touch controller at boot,
+   a USB DFU updater near the app launcher), plus new LoadPin and bootloader-signature pieces.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
    Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
    second copy verified on another disk.
