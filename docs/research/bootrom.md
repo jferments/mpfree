@@ -803,3 +803,76 @@ No changes to firmware/device or other Git files are authorized by this section.
 ### 16.1 Shared Fastboot precondition helper at 0x00122834
 
 Further decoding of the same 64-byte callback windows reveals that **download, flash, erase, and one conditional branch of OEM** each call the same Thumb helper at linked VA **0x00122834**. The direct BL targets were computed from the instruction offsets in the owner report: download +0x2298C, flash +0x22C64, erase +0x22C00, OEM +0x2286A. The caller branches on its result. This is a high-value new candidate for a shared permission or state check, but its actual semantics are **unknown** until its function body is decoded; do not label it an authorization gate yet. Analyze this helper alongside the deferred boot and continue USB completion callbacks.
+
+## 17. Offline Thumb decoding: Fastboot RAM boot and volatile operation gate (owner, 2026-11-10)
+
+The owner ran the read-only, SHA256-verified p3 code extractor and supplied private `fastboot-completions-hex.txt`. The payload hash matched `b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`. Relevant code windows were decoded independently using the local LLVM ARMv7 Thumb disassembler with linked addresses; addresses and call edges below are measured from **the 2019 InMusic binary**, while symbolic names are comparison-source inferences.
+
+### 17.1 USB completion stage: actual bootm-shaped invocation
+
+`continue`'s post-response completion handler is at linked `0x001226B0` and contains a **direct unconditional Thumb branch to `0x00121DD0`**. The destination is not yet examined; it is consistent with a USB detach / resume path but must not be assumed.
+
+The `boot` post-response completion handler at **`0x001226B4`** is longer. It prepares a three-element array on the stack, with the last element NULL, and then:
+
+```asm
+001226B4 ldr  r3,[pc,#0x3c]      ; literal 0x0013B8B4, candidate "bootm" string
+001226BA ldr  r0,[pc,#0x3c]      ; literal 0x0013467B, string not decoded
+001226BE str  r3,[sp,#0x0c]      ; argv[0]
+001226C0 str.w sp,[sp,#0x10]    ; argv[1] points to formatted stack buffer
+001226C4 str  r4,[sp,#0x14]      ; argv[2] = NULL (r4 = 0)
+001226C6 bl   0x0010D14C
+001226CA ldr  r3,[pc,#0x30]      ; literal 0x00143E34, global value address
+001226CC mov  r0,sp
+001226CE ldr  r1,[pc,#0x30]      ; literal 0x0013468D, format string not decoded
+001226D0 ldr  r2,[r3]           ; value of global, likely fastboot_buf_addr
+001226D2 bl   0x0012E950      ; likely print/format the address
+001226D6 add  r3,sp,#0x0c     ; argv for boot
+001226D8 mov  r1,#0
+001226DA mov  r2,#2
+001226DC mov  r0,#0
+001226DE bl   0x00101744      ; extremely strong do_bootm-like call signature
+001226E2 mov  r3,#0
+001226E4 mov  r2,#0
+001226E6 mov  r1,#0
+001226E8 mov  r0,#0
+001226EA bl   0x0011622A      ; already measured reset_cpu-like wrapper
+```
+
+Conclusions:
+- Stock Fastboot **intends to boot the downloaded image from memory using a bootm-style command invocation** after sending `OKAY`. The direct callback invokes `0x00101744` with `(cmdtp=NULL, flags=0, argc=2, argv)`, very strong structural evidence for `do_bootm()`. It then calls the known reset wrapper if execution returns.
+- The global at **`0x00143E34`** supplies a value used in the boot command string and is a candidate for `fastboot_buf_addr`; confirm its initializer and whether the download callback writes to exactly that address. The strings at `0x0013B8B4`, `0x0013467B`, and `0x0013468D` need direct reading to finalize argument semantics.
+- The shared Fastboot response literal `0x00132BA6` is **verified to be "OKAY"**, not merely inferred.
+- The current data do not prove whether the image must be Android-style, legacy uImage or FIT, whether memory regions overlap a running loader, whether a `fastboot_bootcmd` override is present, or whether boot succeeds on actual hardware. Do **not** send any device-side boot/download commands yet.
+- The assembly matches an upstream U-Boot implementation where Fastboot boot constructs argv for `do_bootm` and calls reset on failure. Treat reference source as guidance, not exact provenance: https://nest-open-source.googlesource.com/manifest_repos/u-boot/+/06419a4bae2adcdd0ed4e73f93f3f40a82172e45/drivers/fastboot/fb_common.c
+
+### 17.2 Actual shared gate and OEM state setter
+
+The `download`, `flash`, `erase`, and a branch of `oem` command handlers call `0x00122834`. This helper has now been decoded:
+
+```asm
+00122834 ldr  r3,[pc,#0x14]  ; [0x0012284C] = 0x0014D690
+00122838 ldr  r4,[r3]        ; test global operation flag
+0012283A cbnz r4,0x00122846
+0012283C ldr  r0,[pc,#0x10]  ; [0x00122850] = 0x00138FE8, not yet decoded
+0012283E bl   0x00122734     ; transmit a Fastboot response if flag is zero
+00122842 mov  r0,r4          ; return 0
+00122846 movs r0,#1          ; return 1 if flag nonzero
+```
+
+Thus **`0x0014D690` is a global permission/state flag**, although its startup value and other writers have not yet been fully traced. The OEM callback at `0x00122854` reveals that:
+1. It recognizes `"format"` by comparing six bytes with the received subcommand (private report explicitly verified that string).
+2. On that branch, it **calls `0x00122834`**, and when the flag permits it, constructs a command using the embedded GPT-writer format string and calls a U-Boot command-execution-shaped function `0x00110484`. This is a **potentially destructive partition-table rewrite path** and must never be used as a discovery command.
+3. It compares another subcommand against a **37-byte vendor-specific string** (the value is deliberately omitted), and on a match executes `str 1, [0x0014D690]` before emitting an apparent success response. This firmly links the OEM marker to the permission/state flag. **Do not publish the marker itself.**
+4. Other nearby OEM comparisons and effects, including a possible `resetenv` branch, need separate verification. No on-device requests have been made.
+
+The fact that a recognized OEM string writes the flag does **not** demonstrate the flag's persistence: the visible instruction is a RAM write, not an eMMC write. Nor is this by itself evidence of a secure hardware root of trust. The exact `FAIL...` response when the gate is zero remains to be read at `0x00138FE8`.
+
+### 17.3 Priority next analysis
+
+- Resolve the **`0x00121DD0`** continuation path, classify whether it detaches USB and returns to the built-in `az01_bootcmd`.
+- Resolve the **`0x00143E34`** download-buffer pointer, length limit and overlap with U-Boot/DTB; verify strings in the deferred boot callback.
+- Locate the origin/initialization of **`0x0014D690`** and classify any other readers/writers; evaluate whether all affected commands are reliably blocked until the OEM state changes.
+- Trace `0x00101744` and `0x00110484` far enough to confirm `do_bootm` and U-Boot `run_command`, respectively.
+- Separately continue tracing p3 reboot-mode reader and p1's ROM-return paths. Nothing in these Fastboot findings proves any MaskROM software entry.
+
+Scripts used so far have only read the private local backup; **no changes to the MPC, emmc, firmware or other repository files**.
