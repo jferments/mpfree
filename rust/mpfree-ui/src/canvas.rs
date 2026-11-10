@@ -18,6 +18,23 @@ pub trait Canvas {
     /// Blend `c` through a coverage mask (one byte per pixel, `w` x `h`, rows
     /// top to bottom) whose top left corner lands at (x, y). Text uses this.
     fn blend_mask(&mut self, x: i32, y: i32, w: usize, h: usize, mask: &[u8], c: Color);
+    /// Copy a picture, opaque, with its top left corner at (x, y).
+    fn draw_image(&mut self, x: i32, y: i32, img: &Image);
+}
+
+/// A picture in memory: one XRGB8888 word per pixel, rows top to bottom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub w: i32,
+    pub h: i32,
+    pub px: Vec<u32>,
+}
+
+impl Image {
+    pub fn new(w: i32, h: i32) -> Image {
+        assert!(w > 0 && h > 0 && w <= 8192 && h <= 8192, "image size {w}x{h}");
+        Image { w, h, px: vec![0; (w * h) as usize] }
+    }
 }
 
 /// A canvas in memory, one XRGB8888 word per pixel, rows top to bottom.
@@ -184,6 +201,18 @@ impl Canvas for SoftCanvas {
             }
         }
     }
+
+    fn draw_image(&mut self, x: i32, y: i32, img: &Image) {
+        let area = Rect::new(x, y, img.w, img.h).intersect(self.clip);
+        if area.is_empty() {
+            return;
+        }
+        for py in area.y..area.bottom() {
+            let src = ((py - y) * img.w + (area.x - x)) as usize;
+            let dst = (py * self.w + area.x) as usize;
+            self.px[dst..dst + area.w as usize].copy_from_slice(&img.px[src..src + area.w as usize]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +251,18 @@ mod tests {
         assert_eq!(c.pixel(0, 20), W);
         assert_eq!(c.pixel(39, 20), W);
         assert_eq!(c.pixel(20, 2), Color::rgb(0));
+    }
+
+    #[test]
+    fn images_are_copied_inside_the_clip() {
+        let mut img = Image::new(3, 2);
+        img.px = vec![1, 2, 3, 4, 5, 6];
+        let mut c = SoftCanvas::new(4, 4);
+        c.set_clip(Rect::new(0, 0, 3, 4));
+        c.draw_image(1, 1, &img);
+        assert_eq!(&c.px[4..8], &[0, 1, 2, 0]);
+        assert_eq!(&c.px[8..12], &[0, 4, 5, 0]);
+        assert!(c.px[..4].iter().chain(&c.px[12..]).all(|&p| p == 0));
     }
 
     #[test]

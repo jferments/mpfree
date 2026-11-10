@@ -32,7 +32,7 @@ pub mod theme;
 pub mod ui;
 pub mod widgets;
 
-pub use canvas::{Canvas, SoftCanvas};
+pub use canvas::{Canvas, Image, SoftCanvas};
 pub use color::Color;
 pub use geom::Rect;
 pub use text::{Align, FontId, Fonts};

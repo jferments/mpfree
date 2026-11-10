@@ -1,6 +1,7 @@
 //! The widget library. Each widget only shows what the app put in its fields
 //! and reports touches; none of them knows about MIDI, audio or files.
 
+use crate::canvas::Image;
 use crate::color::Color;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
@@ -8,6 +9,7 @@ use crate::theme::Tone;
 use crate::ui::{EventKind, PaintCx, Touch, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------- header
 
@@ -473,6 +475,301 @@ impl Widget for Label {
     }
 }
 
+
+// ---------------------------------------------------------------- loading
+
+/// The full-screen loading page: a picture (the startup screen's last frame,
+/// or a starry one drawn here with the title), and a card at the bottom with
+/// what is happening, a progress bar and a hint. A change to the card redraws
+/// only the card.
+pub struct Loading {
+    backdrop: Option<Arc<Image>>,
+    backdrop_version: u64,
+    /// Drawn over the starry backdrop only (a picture brings its own).
+    pub title: String,
+    pub subtitle: String,
+    /// What is happening now, in plain words.
+    pub message: String,
+    /// A second, quieter line: the step, a count, or what went wrong.
+    pub detail: String,
+    /// 0.0 to 1.0.
+    pub progress: f32,
+    pub failed: bool,
+    pub hint: String,
+    drawn: RefCell<Option<(Rect, u64)>>,
+}
+
+const CARD_W: i32 = 720;
+const CARD_H: i32 = 128;
+
+impl Loading {
+    pub fn new(title: &str, subtitle: &str) -> Loading {
+        Loading { backdrop: None, backdrop_version: 0, title: title.to_string(), subtitle: subtitle.to_string(),
+                  message: String::new(), detail: String::new(), progress: 0.0, failed: false, hint: String::new(),
+                  drawn: RefCell::new(None) }
+    }
+
+    /// Show `img` (the size of the page) behind the card, or the starry
+    /// backdrop with the title if None.
+    pub fn set_backdrop(&mut self, img: Option<Arc<Image>>) {
+        self.backdrop = img;
+        self.backdrop_version += 1;
+    }
+
+    pub fn has_backdrop(&self) -> bool {
+        self.backdrop.is_some()
+    }
+
+    /// The card, and the hint line under it.
+    pub fn card(r: Rect) -> Rect {
+        let w = CARD_W.min(r.w - 48).max(0);
+        Rect::new(r.x + (r.w - w) / 2, r.bottom() - 64 - CARD_H, w, CARD_H)
+    }
+
+    fn changing_part(r: Rect) -> Rect {
+        let c = Loading::card(r);
+        Rect::new(c.x - 4, c.y - 4, c.w + 8, r.bottom() - c.y + 4).intersect(r)
+    }
+
+    fn starry(cx: &mut PaintCx, r: Rect, title: &str, subtitle: &str) {
+        let t = cx.theme.clone();
+        let clip = cx.canvas.clip();
+        let top = t.bg.mix(Color::rgb(0x1B2340), 0.0);
+        let bottom = t.bg.mix(Color::rgb(0x1B2340), 0.9);
+        let rows = r.intersect(clip);
+        for y in rows.y..rows.bottom() {
+            let k = (y - r.y) as f32 / r.h.max(1) as f32;
+            cx.canvas.fill_rect(Rect::new(rows.x, y, rows.w, 1), top.mix(bottom, k));
+        }
+        // Stars at fixed places (a small hash, so every frame matches).
+        let mut seed: u32 = 0x9E37_79B9;
+        for _ in 0..220 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let x = r.x + (seed % r.w.max(1) as u32) as i32;
+            let y = r.y + ((seed >> 11) % r.h.max(1) as u32) as i32;
+            let size = 1 + (seed >> 27) as i32 % 2;
+            let glow = 90 + (seed >> 20) % 150;
+            cx.canvas.fill_rect(Rect::new(x, y, size, size), t.text.with_alpha(glow as u8));
+        }
+        if !title.is_empty() {
+            let mid = Rect::new(r.x, r.y + r.h / 2 - 150, r.w, 120);
+            let tw = cx.measure(FontId::Bold, 96.0, title);
+            // "MP" in the text colour and the rest in the accent, as in the header.
+            let split = title.char_indices().nth(2).map(|(i, _)| i).unwrap_or(title.len());
+            let (a, b) = title.split_at(split);
+            let aw = cx.measure(FontId::Bold, 96.0, a);
+            let x0 = mid.x + (mid.w - tw) / 2;
+            cx.text(FontId::Bold, 96.0, Rect::new(x0, mid.y, aw + 4, mid.h), Align::Left, t.text, a);
+            cx.text(FontId::Bold, 96.0, Rect::new(x0 + aw, mid.y, tw - aw + 8, mid.h), Align::Left, t.accent, b);
+            let sub = Rect::new(r.x, mid.bottom(), r.w, 40);
+            cx.text(FontId::Sans, t.size_title + 3.0, sub, Align::Center, t.text_dim, subtitle);
+        }
+    }
+}
+
+impl Widget for Loading {
+    fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
+        match *self.drawn.borrow() {
+            Some((at, version)) if at == r && version == self.backdrop_version => Some(vec![Loading::changing_part(r)]),
+            _ => None,
+        }
+    }
+
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let clip = cx.canvas.clip();
+        if clip.intersect(r) == r {
+            *self.drawn.borrow_mut() = Some((r, self.backdrop_version));
+        }
+        match &self.backdrop {
+            Some(img) => cx.canvas.draw_image(r.x, r.y, img),
+            None => Loading::starry(cx, r, &self.title, &self.subtitle),
+        }
+        let card = Loading::card(r);
+        cx.canvas.fill_round_rect(card, t.radius + 4, t.surface.with_alpha(232));
+        cx.canvas.stroke_round_rect(card, t.radius + 4, 1, t.outline);
+        let inner = card.inset_xy(28, 22);
+        let (head, rest) = inner.take_top(30);
+        let pct = format!("{:.0} %", (self.progress.clamp(0.0, 1.0) * 100.0).floor());
+        let pw = cx.measure(FontId::Sans, t.size_body, &pct) + 16;
+        let (pct_r, msg_r) = head.take_right(pw);
+        let ink = if self.failed { t.bad } else { t.text };
+        cx.text(FontId::Bold, t.size_title + 3.0, msg_r, Align::Left, ink, &self.message);
+        if !self.failed {
+            cx.text(FontId::Sans, t.size_body, pct_r, Align::Right, t.text_dim, &pct);
+        }
+        let (_, rest) = rest.take_top(12);
+        let (bar, rest) = rest.take_top(10);
+        cx.canvas.fill_round_rect(bar, 5, t.raised);
+        let fill = Rect::new(bar.x, bar.y, ((bar.w as f32) * self.progress.clamp(0.0, 1.0)) as i32, bar.h);
+        if fill.w > 0 {
+            cx.canvas.fill_round_rect(fill, 5, if self.failed { t.bad } else { t.accent });
+        }
+        let (_, rest) = rest.take_top(12);
+        let (detail, _) = rest.take_top(24);
+        cx.text(FontId::Sans, t.size_small + 1.0, detail, Align::Left, t.text_dim, &self.detail);
+        let hint = Rect::new(r.x, card.bottom() + 14, r.w, 26);
+        cx.text(FontId::Sans, t.size_small + 1.0, hint, Align::Center, t.text_dim, &self.hint);
+    }
+}
+
+// ---------------------------------------------------------------- card
+
+/// A titled panel with a large heading, lines of text and buttons along the
+/// bottom. A tap on button `i` gives `Tab(i)`.
+pub struct Card {
+    pub title: String,
+    pub heading: String,
+    pub lines: Vec<(String, Tone)>,
+    pub buttons: Vec<String>,
+}
+
+const BUTTON_W: i32 = 200;
+const BUTTON_H: i32 = 54;
+
+impl Card {
+    pub fn new(title: &str) -> Card {
+        Card { title: title.to_string(), heading: String::new(), lines: Vec::new(), buttons: Vec::new() }
+    }
+
+    pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
+        let inner = r.inset(14);
+        Rect::new(inner.x + i as i32 * (BUTTON_W + 12), inner.bottom() - BUTTON_H, BUTTON_W, BUTTON_H)
+    }
+}
+
+impl Widget for Card {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let body = cx.titled_panel(r, &self.title, "");
+        let (head, mut rest) = body.take_top(52);
+        cx.text(FontId::Bold, 32.0, head, Align::Left, t.text, &self.heading);
+        rest = rest.take_top(8).1;
+        let limit = if self.buttons.is_empty() { r.bottom() } else { self.button_rect(r, 0).y - 8 };
+        for (line, tone) in &self.lines {
+            let (row, after) = rest.take_top(30);
+            if row.bottom() > limit || row.h < 24 {
+                break;
+            }
+            cx.text(FontId::Sans, t.size_body, row, Align::Left, t.tone(*tone), line);
+            rest = after;
+        }
+        for (i, label) in self.buttons.iter().enumerate() {
+            let b = self.button_rect(r, i);
+            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.text(FontId::Bold, t.size_body, b, Align::Center, t.text, label);
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        (0..self.buttons.len()).find(|&i| self.button_rect(r, i).contains(x, y)).map(EventKind::Tab)
+    }
+}
+
+// ---------------------------------------------------------------- options
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OptionRow {
+    pub name: String,
+    pub value: String,
+}
+
+/// A titled list of settings, each with a value and arrows to step it. A tap
+/// on a row's name selects it (`Select`); a tap on an arrow steps its value
+/// (`Step`).
+pub struct OptionList {
+    pub title: String,
+    pub right: String,
+    pub rows: Vec<OptionRow>,
+    pub selected: usize,
+}
+
+const OPTION_H: i32 = 58;
+const VALUE_W: i32 = 300;
+const ARROW_W: i32 = 64;
+
+impl OptionList {
+    pub fn new(title: &str) -> OptionList {
+        OptionList { title: title.to_string(), right: String::new(), rows: Vec::new(), selected: 0 }
+    }
+
+    fn body(r: Rect) -> Rect {
+        // Matches PaintCx::titled_panel with the default theme's padding.
+        r.inset(14).take_top(34).1
+    }
+
+    fn first(&self, visible: usize) -> usize {
+        if self.rows.len() <= visible || visible == 0 {
+            return 0;
+        }
+        self.selected.saturating_sub(visible / 2).min(self.rows.len() - visible)
+    }
+
+    /// Row `k`'s rectangle (if it is in view) and its value box.
+    pub fn row_rects(&self, r: Rect, k: usize) -> Option<(Rect, Rect)> {
+        let body = OptionList::body(r);
+        let visible = (body.h / OPTION_H).max(0) as usize;
+        let first = self.first(visible);
+        if k < first || k >= first + visible || k >= self.rows.len() {
+            return None;
+        }
+        let row = Rect::new(body.x, body.y + (k - first) as i32 * OPTION_H, body.w, OPTION_H - 6);
+        let value = Rect::new(row.right() - VALUE_W.min(row.w / 2), row.y, VALUE_W.min(row.w / 2), row.h);
+        Some((row, value))
+    }
+}
+
+impl Widget for OptionList {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.titled_panel(r, &self.title, &self.right);
+        for k in 0..self.rows.len() {
+            let Some((row, value)) = self.row_rects(r, k) else { continue };
+            let on = k == self.selected;
+            if on {
+                cx.canvas.fill_round_rect(row, 10, t.raised);
+                cx.canvas.fill_round_rect(Rect::new(row.x, row.y + 12, 4, row.h - 24), 2, t.accent);
+            }
+            let name = Rect::new(row.x + 16, row.y, (value.x - row.x - 24).max(0), row.h);
+            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_body, name, Align::Left, t.text,
+                    &self.rows[k].name);
+            let boxr = value.inset_xy(0, 7);
+            cx.canvas.fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
+            let (left, mid) = boxr.take_left(ARROW_W);
+            let (right, mid) = mid.take_right(ARROW_W);
+            cx.text(FontId::Bold, t.size_title + 4.0, left, Align::Center, t.text_dim, "‹");
+            cx.text(FontId::Bold, t.size_title + 4.0, right, Align::Center, t.text_dim, "›");
+            cx.text(FontId::Bold, t.size_body, mid, Align::Center, if on { t.accent } else { t.text },
+                    &self.rows[k].value);
+        }
+        if self.rows.is_empty() {
+            let body = OptionList::body(r);
+            cx.text(FontId::Sans, t.size_body, body.take_top(OPTION_H).0, Align::Left, t.text_faint, "nothing here");
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let k = (0..self.rows.len()).find(|&k| self.row_rects(r, k).is_some_and(|(row, _)| row.contains(x, y)))?;
+        let (_, value) = self.row_rects(r, k)?;
+        self.selected = k;
+        if value.contains(x, y) && x < value.x + ARROW_W {
+            Some(EventKind::Step { index: k, delta: -1 })
+        } else if value.contains(x, y) && x >= value.right() - ARROW_W {
+            Some(EventKind::Step { index: k, delta: 1 })
+        } else {
+            Some(EventKind::Select(k))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +874,53 @@ mod tests {
     }
 
     #[test]
+    fn option_rows_select_and_step() {
+        let mut o = OptionList::new("Prefs");
+        o.rows = (0..12).map(|i| OptionRow { name: format!("option {i}"), value: "a".into() }).collect();
+        let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
+        let (row, value) = o.row_rects(r, 2).unwrap();
+        assert_eq!(o.touch(1, Touch::Down, row.x + 20, row.y + 10, r), Some(EventKind::Select(2)));
+        assert_eq!(o.touch(1, Touch::Down, value.x + 5, value.y + 10, r), Some(EventKind::Step { index: 2, delta: -1 }));
+        assert_eq!(o.touch(1, Touch::Down, value.right() - 5, value.y + 10, r),
+                   Some(EventKind::Step { index: 2, delta: 1 }));
+        assert_eq!(o.selected, 2);
+        assert_eq!(o.touch(1, Touch::Up, value.right() - 5, value.y + 10, r), None);
+        // Rows out of view cannot be hit; the selected row is kept in view.
+        o.selected = 11;
+        assert!(o.row_rects(r, 0).is_none() && o.row_rects(r, 11).is_some());
+    }
+
+    #[test]
+    fn card_buttons_report_their_index() {
+        let mut c = Card::new("Buttons");
+        c.buttons = vec!["Skip".into(), "Skip all".into()];
+        let r = Rect::new(0, 0, 700, 400);
+        let b1 = c.button_rect(r, 1);
+        assert_eq!(c.touch(1, Touch::Down, b1.x + 5, b1.y + 5, r), Some(EventKind::Tab(1)));
+        assert_eq!(c.touch(1, Touch::Down, 300, 100, r), None);
+    }
+
+    #[test]
+    fn loading_redraws_only_its_card_once_drawn() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 640, 400);
+        ui.add("loading", Loading::new("MPFree", "Pad player"));
+        ui.add_full_page("p", "loading").unwrap();
+        let mut c = SoftCanvas::new(640, 400);
+        assert_eq!(ui.paint(&mut c), vec![Rect::new(0, 0, 640, 400)]);
+        ui.get_mut::<Loading>("loading").unwrap().progress = 0.5;
+        let d = ui.paint(&mut c);
+        let r = Rect::new(0, 0, 640, 400);
+        assert_eq!(d, vec![Loading::changing_part(r)]);
+        assert!(d[0].h < 200 && d[0].contains(320, Loading::card(r).y + 5));
+        // A new backdrop redraws everything.
+        let mut img = Image::new(640, 400);
+        img.px.fill(0x123456);
+        ui.get_mut::<Loading>("loading").unwrap().set_backdrop(Some(Arc::new(img)));
+        assert_eq!(ui.paint(&mut c), vec![r]);
+        assert_eq!(c.pixel(5, 5), Color::rgb(0x123456));
+    }
+
+    #[test]
     fn every_widget_paints_inside_its_rectangle() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 640, 400);
         let mut h = Header::new(&["Play", "Debug"]);
@@ -596,7 +940,16 @@ mod tests {
         log.push("99 25 40 pad 1", Tone::Normal);
         ui.add("log", log);
         ui.add("hint", Label::new("wheel: kit", Tone::Dim, Align::Center));
-        ui.add_page("p", "col(header:60, row(pads:*, col(kits, level:90, stats, log)):*, hint:24)").unwrap();
+        let mut card = Card::new("Buttons");
+        card.heading = "Press MENU".into();
+        card.lines.push(("a line".into(), Tone::Dim));
+        card.buttons.push("Skip".into());
+        ui.add("card", card);
+        let mut opts = OptionList::new("Prefs");
+        opts.rows.push(OptionRow { name: "Velocity curve".into(), value: "Linear".into() });
+        ui.add("opts", opts);
+        ui.add_page("p", "col(header:60, row(pads:*, col(kits, level:90, stats, log), col(card, opts)):*, hint:24)")
+            .unwrap();
         let mut c = SoftCanvas::new(640, 400);
         ui.paint(&mut c);
         // Nothing drawn in the outer margin.
