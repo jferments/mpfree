@@ -56,6 +56,17 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 
 Reports go to the local `research/` folder, which git ignores. They can contain device identifiers and proprietary paths. Publish only reviewed, redacted findings under `docs/hardware/`, and never commit raw logs, keys, firmware, sample content or images.
 
+## One folder and one zip per test round
+
+Run every step of a test round through [`results.py`](../../tools/mpc-one/results.py), so all of its output lands in one folder, `~/mpfree-results/current/`, and comes back as one zip:
+
+```bash
+python3 tools/mpc-one/results.py run boot-map -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
+python3 tools/mpc-one/results.py zip      # prints the one zip to upload
+```
+
+`run` keeps the terminal, so you can still type answers and your sudo password (which is not echoed, so not recorded). It saves everything the step prints to `NN-<name>.log`, ending with the exit code, and copies any report the step writes: a `report.txt` under `~/mpfree-work`, or a report in `research/`. `zip` adds `MANIFEST.txt` (the clone's commit, Python, kernel and a SHA-256 of each file), packs the folder into `~/mpfree-results/mpfree-results-<UTC>.zip`, and renames `current/` so the next round starts empty. Only logs and text reports are collected, never images, device trees, keys or backups. The reports can still quote Akai's files, so upload the zip to the project only.
+
 ## Other tools
 
 - [`tools/collect-hardware-info.sh`](../../tools/collect-hardware-info.sh): the original lightweight survey, run by hand on the device.
