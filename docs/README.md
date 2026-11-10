@@ -9,6 +9,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Development log](project/development-log.md): dated history of how the project got here.
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
 - [USB installer architecture](project/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
+- [Arpeggiator, Latch and latch patterns](project/arpeggiator.md): research, design and plan for Note Repeat, Latch, the arpeggiator and custom patterns (engine in `rust/mpfree-arp`).
 - [UI architecture](project/ui-architecture.md): MPFree's GUI toolkit (`mpfree-ui`): canvas, theme, fonts, widgets, one-line page layouts, and how the screen and audio threads talk.
 
 ## Decisions
