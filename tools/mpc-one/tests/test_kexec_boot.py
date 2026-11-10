@@ -104,6 +104,13 @@ esac
 
 # BusyBox runs its own applets (such as uname, dmesg and ip) even when PATH has a stand-in,
 # so the fake MPC gets its release from proc/sys/kernel/osrelease, as the scripts read it.
+# systemd 255.17's own fsck unit, as on the reference unit: its only kexec line is allowed.
+FSCK_UNIT = ("[Unit]\nDescription=File System Check on %f\nDefaultDependencies=no\nBindsTo=%i.device\n"
+             "IgnoreOnIsolate=yes\nConflicts=reboot.target kexec.target poweroff.target halt.target\n"
+             "After=%i.device systemd-fsck-root.service local-fs-pre.target\n"
+             "Before=systemd-quotacheck.service shutdown.target\n\n[Service]\nType=oneshot\n"
+             "RemainAfterExit=yes\nExecStart=/usr/lib/systemd/systemd-fsck %f\nTimeoutSec=infinity\n")
+
 FAKE_SIMPLE = {
     "journalctl": '#!/bin/sh\necho "kernel: mpfree-test: blocked /usr/bin/dfu-util -l"\n',
 }
@@ -184,6 +191,7 @@ class KexecBootTests(unittest.TestCase):
         write(f"{r}/etc/systemd/system/acvs.service", "[Service]\nExecStart=/usr/bin/az01-launch-MPC\n")
         write(f"{r}/usr/lib/systemd/system/kexec.target", "[Unit]\nRequires=systemd-kexec.service\n")
         write(f"{r}/usr/lib/systemd/system/systemd-kexec.service", "[Service]\nExecStart=systemctl --force kexec\n")
+        write(f"{r}/usr/lib/systemd/system/systemd-fsck@.service", FSCK_UNIT)
         write(f"{r}/usr/lib/systemd/system-shutdown/flush.sh", "#!/bin/sh\nsync\n", 0o755)
         os.makedirs(f"{r}/run")
         usb = f"{r}/sys/devices/platform/ff500000.usb/usb1/1-1/host0/block/sda/sda1"
@@ -241,8 +249,9 @@ class KexecBootTests(unittest.TestCase):
         for text in ("zImage, kexec.dtb, cmdline.txt, known_hosts match SHA256SUMS",
                      "kexec.dtb: for inmusic,acva, eMMC and SD card controllers disabled",
                      f"running release: {OLD}", "test stick: partition 1 is /dev/sda1", "on USB: yes",
-                     "/dev/sda2 on /media/MPFREE-LOG", "lockdown: not readable here",
+                     "/dev/sda2 on /media/MPFREE-LOG (ext4, rw)", "lockdown: not readable here",
                      "/usr/lib/systemd/system-shutdown/flush.sh", "mmcblk0p6: 0", "CHECKS-OK",
+                     "systemd-fsck@.service: only systemd's own line", "no other unit reacts to kexec",
                      "their hashes on the MPC match the build", "kexec --load exit code: 0", "kexec_loaded: 1",
                      "answer: 'BOOT 3.10'", "the test build answered after", f"release: {NEW}",
                      "/ is device 8:1, options ro,relatime", "/data: tmpfs tmpfs", "mpfree-test: blocked",
@@ -284,6 +293,12 @@ class KexecBootTests(unittest.TestCase):
             ("kexec unit", lambda: write(f"{self.r36}/etc/systemd/system/akai-kexec-hook.service",
                                          "[Install]\nWantedBy=kexec.target\n"), "reacts to kexec"),
             ("kexec wants", lambda: os.symlink("/dev/null", self.wants()), "reacts to kexec"),
+            ("fsck unit changed", lambda: write(f"{self.r36}/usr/lib/systemd/system/systemd-fsck@.service",
+                                                FSCK_UNIT + "ExecStopPost=/usr/sbin/kexec -e\n"),
+             "      15:ExecStopPost=/usr/sbin/kexec -e"),
+            ("fsck line indented", lambda: write(f"{self.r36}/usr/lib/systemd/system/systemd-fsck@.service",
+                                                 FSCK_UNIT.replace("Conflicts=", " Conflicts=")),
+             "reacts to kexec"),
             ("hook", lambda: write(f"{self.r36}/usr/lib/systemd/system-shutdown/akai.sh",
                                    '#!/bin/sh\n[ "$1" = kexec ] && do_something\n', 0o755), "mentions kexec"),
             ("not usb", self.not_usb, "is not on USB"),
