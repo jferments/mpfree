@@ -45,6 +45,8 @@ Some points here are inferences, not yet checked on the unit:
 | 4 | `python3 tools/mpc-one/write-test-stick.py` | **Erases one USB stick.** It writes only to the one removable whole disk on USB of 256 GiB or less, with nothing mounted, no swap and no holders, and only after you type `WRITE` |
 | 5 | The boot step (not written yet) | It copies `zImage` and `kexec.dtb` to RAM on the MPC, loads them with `kexec -l`, and reboots into 3.10.0 only after a typed confirmation |
 
+Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](SURVEY_TOOLS.md#one-folder-and-one-zip-per-test-round)).
+
 When 3.10.0 doesn't come up on the network, power-cycle the MPC and read the stick's log partition on the workstation. It holds `dmesg`, the journal, failed units and the network state, written every 10 seconds.
 
 ## Keep it private
