@@ -207,6 +207,8 @@ class DtbTests(unittest.TestCase):
         if target is None:
             target = board_tree(model="Akai Professional MPC One")
             target.find("/dwmmc@ff0f0000").set_prop("new-binding", cells(7))
+            target.find("/ethernet@ff290000").children.append(node("mdio", [], [
+                node("ethernet-phy@1", [("compatible", s("ethernet-phy-ieee802.3-c22")), ("reg", cells(1))])]))
         return (self.save("new.dtb", target), self.save("old.dtb", board_tree()), self.save("live.dtb", live))
 
     def kexec(self, new, old, live, out, *extra):
@@ -215,8 +217,12 @@ class DtbTests(unittest.TestCase):
     def test_kexec_dtb(self):
         new, old, live = self.kexec_inputs()
         out = os.path.join(self.tmp, "kexec.dtb")
-        res = self.kexec(new, old, live, out, "--drop", "/chosen/inmusic,internal-sd-fitted")
+        phy = "/ethernet@ff290000/mdio/ethernet-phy@1"
+        res = self.kexec(new, old, live, out, "--drop", "/chosen/inmusic,internal-sd-fitted",
+                         "--add-compatible", f"{phy}=ethernet-phy-id001c.c915")
         self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f'compatible of {phy} is now "ethernet-phy-id001c.c915", "ethernet-phy-ieee802.3-c22"',
+                      res.stdout)
         for line in ("added from the running tree (17 bytes): /serial-number",
                      "added from the running tree (6 bytes): /ethernet@ff290000/local-mac-address",
                      "replaced from the running tree (8 bytes): /memory@0/reg",
@@ -243,6 +249,7 @@ class DtbTests(unittest.TestCase):
         self.assertEqual(emmc.prop("new-binding"), cells(7), "the new version's own properties stay")
         self.assertEqual(tree.find("/dwmmc@ff0c0000").prop("status"), s("disabled"))
         self.assertEqual(tree.reserved, [(0x10000000, 0x100000)], "U-Boot's reservations are not copied")
+        self.assertEqual(tree.find(phy).prop("compatible"), s("ethernet-phy-id001c.c915", "ethernet-phy-ieee802.3-c22"))
         res = self.kexec(new, old, live, out)
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("already exists; not overwriting it", res.stdout)
@@ -272,6 +279,14 @@ class DtbTests(unittest.TestCase):
         new, old, live = self.kexec_inputs()
         res = self.kexec(new, old, live, out, "--drop", "/chosen/nope")
         self.assertIn("STOP: --drop /chosen/nope: no such property in the result", res.stdout)
+        bad = "no such node with a compatible list, or a bad string"
+        for item, message in (("/nope=x", bad), ("/ethernet@ff290000/mdio/ethernet-phy@1=", bad),
+                              ("/ethernet@ff290000/mdio/ethernet-phy@1=ethernet-phy-ieee802.3-c22",
+                               "the node already has it")):
+            res = self.kexec(new, old, live, out, "--add-compatible", item)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(f"STOP: --add-compatible {item}: {message}", res.stdout)
+            self.assertFalse(os.path.exists(out))
         removed = board_tree(serial=SERIAL)
         removed.find("/chosen").del_prop("stdout-path")
         res = self.kexec(new, old, self.save("live2.dtb", removed), out)
