@@ -80,6 +80,7 @@ jobs:
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hello_mpc.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
       - name: Check the remote survey contains no known destructive operations
         run: |
@@ -829,4 +830,28 @@ jobs:
           assert any(data), "nothing was drawn"
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
+      - name: Build and check the static Hello MPC program for the kexec test boot (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          # Its ALSA and input layouts against the kernel's own headers for 32-bit ARM (compile only).
+          arm-linux-gnueabihf-gcc -c rust/mpfree-hello/abi-check.c -o "$RUNNER_TEMP/abi-check.o"
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-hello
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-hello
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-hello must be statically linked"; exit 1
+          fi
+          # Its unit tests as 32-bit ARM (the parameter blocks and event layout), under qemu.
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-hello
+          # The host-only preview under qemu: draws the card into a new file, touches no device.
+          timeout 60 qemu-arm "$f" --preview "$RUNNER_TEMP/hello.ppm"
+          head -c 15 "$RUNNER_TEMP/hello.ppm" | grep -q '^P6'
+          echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."
 
