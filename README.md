@@ -22,13 +22,13 @@ Development happens on one MPC One running firmware 3.6.0, reached over a direct
 | M11 | Multitouch decoder, pointer mapping and gesture model | Workstation and CI |
 | M12 | Live touch capture: panel orientation (swap X/Y, flip X), full-screen reach, 10 fingers, ~113 Hz reports; zero eMMC writes | MPC One |
 
-Not done yet: real ALSA playback, on-screen display, pad/button/encoder input, and a proven recovery path for the factory system. The [roadmap](docs/ROADMAP.md) lists the gates, and the [development log](docs/DEVELOPMENT_LOG.md) has the history.
+Not done yet: real ALSA playback, on-screen display, pad/button/encoder input, and a proven recovery path for the factory system. The [roadmap](docs/project/roadmap.md) lists the gates, and the [development log](docs/project/development-log.md) has the history.
 
 ## Approach
 
 - **Userspace first.** MPFree runs on top of the stock Linux system before any thought of a custom kernel, bootloader or installer.
-- **Rust first,** with narrow C/C++ interfaces where mature libraries are needed ([ADR-0001](docs/engineering/ADR-0001-RUST-FIRST-HYBRID.md)).
-- **Direct ALSA** for audio on the device; JACK and PipeWire only as desktop backends ([ADR-0002](docs/engineering/ADR-0002-DIRECT-ALSA-AUDIO.md)).
+- **Rust first,** with narrow C/C++ interfaces where mature libraries are needed ([ADR-0001](docs/decisions/adr-0001-rust-first.md)).
+- **Direct ALSA** for audio on the device; JACK and PipeWire only as desktop backends ([ADR-0002](docs/decisions/adr-0002-direct-alsa-audio.md)).
 - **Reversible by default.** Every on-device test runs from RAM, is opt-in, and leaves the factory app running.
 
 ## Build and test
@@ -47,7 +47,7 @@ cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
 python3 tests/check_cpp_rust_wav_parity.py --cpp build/mpfree-render --rust rust/target/release/mpfree-render
 ~~~
 
-None of this touches the MPC. To work with a device, start with [developer access](docs/hardware/DEVELOPER_ACCESS.md) and then the [survey tools guide](docs/hardware/SURVEY_TOOLS.md).
+None of this touches the MPC. To work with a device, start with [developer access](docs/guides/developer-access.md) and then the [survey tools guide](docs/guides/survey-tools.md).
 
 ## Repository layout
 
@@ -67,7 +67,7 @@ None of this touches the MPC. To work with a device, start with [developer acces
 
 ## Legal
 
-MPFree will not distribute Akai/AIR firmware, plugins, presets or factory sample packs, and will not bypass activation. Compatibility with content a user legitimately owns may be researched separately ([policy](docs/FACTORY_CONTENT.md)). The factory system must always remain recoverable.
+MPFree will not distribute Akai/AIR firmware, plugins, presets or factory sample packs, and will not bypass activation. Compatibility with content a user legitimately owns may be researched separately ([policy](docs/project/factory-content-policy.md)). The factory system must always remain recoverable.
 
 Licensed under [MIT](LICENSE). This covers MPFree's own code and documentation, not any Akai/AIR material or third-party projects referenced here.
 

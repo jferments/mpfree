@@ -4,18 +4,18 @@ Research note, 2026-11-10. **Nothing in this file has been run on the MPC One.**
 It collects what is public about the RK3288 boot ROM's USB recovery mode
 ("MaskROM"), what our own read-only surveys already show about this unit, and
 what that means for future MPFree installers and for the Tier 3 recovery gate
-in the [recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md).
+in the [recovery strategy](../research/recovery-and-os-strategy.md).
 
 Every statement is tagged:
 
 - **Measured**: from our own read-only runs on the reference unit (see the
-  [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) and
+  [boot map](boot-map.md) and
   [offline updater notes](akai-updater-offline.md)).
 - **Public**: from Rockchip, U-Boot or community sources, linked at the end.
   These describe the RK3288 or other Akai units, not necessarily this board.
 - **Inference**: our reasoning. Treat as unverified until checked.
 
-The project's device safety rule (see [developer access](DEVELOPER_ACCESS.md)) applies to everything here: no writes
+The project's device safety rule (see [developer access](../guides/developer-access.md)) applies to everything here: no writes
 to the bootloader, its environment or the system partition until MaskROM
 recovery has been proven on this unit.
 
@@ -48,7 +48,7 @@ recovery has been proven on this unit.
    tool, `az01-bootloader-sig`, that prints a bootloader signing-key hash
    (Measured from strings), so Akai is at least signing bootloaders on some
    product. This is the main open risk for the "guaranteed bootloader access"
-   goal in the [roadmap](../ROADMAP.md).
+   goal in the [roadmap](../project/roadmap.md).
 6. **For a one-click installer, MaskROM is a recovery tool, not the install
    path.** It needs a host computer and, today, opening the case. The normal
    install should stay software-only (USB autorun, kexec), with MaskROM as the
