@@ -38,6 +38,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 | M9 | [Touch ABS metadata interface](engineering/M9_TOUCH_ABS_METADATA.md) | Workstation |
 | M10 | [Guarded touch-axis test](engineering/M10_GUARDED_TOUCH_AXES.md), [validation record](hardware/MPC_ONE_ILI2117_EVIOCGABS_VALIDATED_20261109.md) | MPC One |
 | M11 | [Multitouch decoder and gestures](engineering/M11_MULTITOUCH_DECODER.md) | Workstation, CI |
+| M12 | [Live touch capture and orientation calibration](engineering/M12_TOUCH_CAPTURE.md) | MPC One |
 | GPU | [Panfrost offscreen GLES qualification](engineering/GPU_PANFROST_OFFSCREEN_20261109.md), [kit](../tools/mpc-one/gpu-qualification/README.md) | MPC One |
 
 M4 was host-only safety tooling and the [handoff state-machine simulator](../rust/mpfree-handoff-model/src/lib.rs); it has no separate report. See the [roadmap](ROADMAP.md).
