@@ -523,8 +523,9 @@ def jump_and_check(mpc, out, args, build):
         out.say("\nRESULT: the test build is running from the stick, and it cannot see the eMMC or SD card.")
     else:
         out.say("\nRESULT: the test build is running, but some checks failed (see PROBLEM lines).")
-    out.say("NEXT: switch the MPC off with its power switch, take out the stick, wait 10 s, switch it on,")
-    out.say("and wait for 3.6. Then run the boot-map block to confirm nothing on the eMMC changed.")
+    out.say("NEXT: leave it running and do this round's steps on the test build (such as the --hello block).")
+    out.say("When they are done, switch the MPC off with its power switch, take out the stick, wait 10 s,")
+    out.say("switch it on and wait for 3.6. Then run the boot-map block to confirm nothing on the eMMC changed.")
     return 0 if ok else 1
 
 
