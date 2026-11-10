@@ -15,32 +15,32 @@
         "collected_utc": "2026-11-09T05:00:46Z",
         "sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
         "local_only": true,
-        "document": "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md"
+        "document": "docs/hardware/survey-2026-11-09.md"
       },
       {
         "collected_utc": "2026-11-09T05:21:06Z",
         "sha256": "d25be98aea6e90cc0328c0af4d29c505106dcd26704da7dc1f6f5bd59cec317e",
         "local_only": true,
-        "document": "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md"
+        "document": "docs/hardware/resource-ownership.md"
       },
       {
         "collected_utc": "2026-11-09T05:30:31Z",
         "sha256": "1ea9eb27f837e5602cd5548db71622adf2f8c6aef52553f2aafd22e035a34b76",
         "local_only": true,
-        "document": "docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md"
+        "document": "docs/hardware/audio-runtime.md"
       },
       {
         "collected_utc": "2026-11-09T06:01:06Z",
         "sha256": "92687a46ab7d04d81ba6bf05486e29e6f67f73e66c0c9ea0ad7e136e20eee45d",
         "local_only": true,
-        "document": "docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md",
+        "document": "docs/hardware/ethernet-usb.md",
         "kind": "passive_io"
       },
       {
         "collected_utc": "2026-11-09T06:01:16Z",
         "sha256": "6d206eba95640a385b58ea76f36ea91723591b44fada7155a5fff9de14679d01",
         "local_only": true,
-        "document": "docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md",
+        "document": "docs/hardware/ethernet-usb.md",
         "kind": "active_ssh_benchmark"
       }
     ]
@@ -476,12 +476,12 @@
     "Real effective USB 2.0 payload goodput and external port contention"
   ],
   "references": [
-    "docs/hardware/MPC_ONE_3_6_0_SURVEY_20261109.md",
-    "docs/hardware/DEVELOPER_ACCESS.md",
-    "docs/hardware/MPC_ONE_3_6_0_RESOURCES_20261109.md",
-    "docs/hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md",
-    "docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md",
-    "docs/engineering/AUXILIARY_COMPUTE_AND_IO.md"
+    "docs/hardware/survey-2026-11-09.md",
+    "docs/guides/developer-access.md",
+    "docs/hardware/resource-ownership.md",
+    "docs/hardware/audio-runtime.md",
+    "docs/hardware/ethernet-usb.md",
+    "docs/research/auxiliary-compute.md"
   ],
   "abi": {
     "installed_loader": "/lib/ld-linux-armhf.so.3",

@@ -11,7 +11,7 @@
     "events_log_sha256": "f45a520dc84b7cf7d545aa239d95a3e528a3af5dfd4debea15056d6dac9933f4",
     "raw_logs_in_repo": false,
     "emmc_p1_p6_writes_during_capture": 0,
-    "document": "docs/engineering/M12_TOUCH_CAPTURE.md"
+    "document": "docs/milestones/m12-touch-capture.md"
   },
   "raw_x": [0, 2048],
   "raw_y": [0, 2048],
