@@ -86,7 +86,7 @@ These workstation-only tools read a downloaded update image. None of them contac
 | [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
 | [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing. Section 8 covers what a kexec boot needs: the drivers built into the kernel, the kernel's embedded config, and the board's device trees | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/`, and a copy of `/boot` in `~/mpfree-work/boot-files/<kernel release>/` (never overwritten) |
 | [`offline-kernel-config.py`](../../tools/mpc-one/offline-kernel-config.py) | Prints the build config embedded in a zImage (`CONFIG_IKCONFIG`), all of it or only the symbols that matter for a kexec boot | Nothing |
-| [`offline-dtb.py`](../../tools/mpc-one/offline-dtb.py) | Lists, summarises and compares device trees. A comparison leaves values out unless asked, so it's safe on the tree read from the MPC | Nothing |
+| [`offline-dtb.py`](../../tools/mpc-one/offline-dtb.py) | Lists, summarises, compares and shows device trees. A comparison leaves values out unless asked, and `show` never prints the MAC address or serial number, so both are safe on the tree read from the MPC | Nothing |
 
 ```bash
 python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files

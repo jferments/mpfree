@@ -287,6 +287,62 @@ class DtbTests(unittest.TestCase):
         self.assertFalse(os.path.exists(out))
         self.assertEqual(self.cli("kexec-dtb", "--target", new).returncode, 2)
 
+    def test_show(self):
+        tree = board_tree(serial=SERIAL, mac=MAC)
+        gmac = tree.find("/ethernet@ff290000")
+        gmac.props += [["phy-supply", cells(4)], ["pinctrl-names", s("default")], ["pinctrl-0", cells(3)],
+                       ["phy-handle", cells(5)], ["snps,reset-gpio", cells(1, 7, 1)], ["clocks", cells(6, 5, 6, 6)],
+                       ["phy-mode", s("rgmii")], ["bogus-gpios", cells(99, 1, 2)]]
+        gmac.children.append(node("mdio", [("#address-cells", cells(1))], [
+            node("phy@1", [("reg", cells(1)), ("reset-gpios", cells(1, 8, 1)), ("phandle", cells(5))])]))
+        tree.root.children += [
+            node("pinctrl", [], [
+                node("gpio4@ff790000", [("gpio-controller", b""), ("#gpio-cells", cells(2)), ("phandle", cells(1))]),
+                node("pcfg-pull-none", [("bias-disable", b""), ("phandle", cells(2))]),
+                node("gmac", [], [node("rgmii-pins", [("rockchip,pins", cells(3, 0, 1, 2, 3, 1, 1, 2)),
+                                                      ("phandle", cells(3))])])]),
+            node("vcc-phy-regulator", [("compatible", s("regulator-fixed")), ("gpio", cells(1, 8, 0)),
+                                       ("phandle", cells(4))]),
+            node("cru", [("#clock-cells", cells(1)), ("phandle", cells(6))]),
+        ]
+        path = self.save("live.dtb", tree)
+        res = self.cli("show", path, "/ethernet@ff290000")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for line in ("/ethernet@ff290000 {",
+                     '  compatible = "rockchip,rk3288-gmac";',
+                     "  reg = <0xff290000 0x10000>;",
+                     "  local-mac-address = (6 bytes, not shown);",
+                     "  phy-supply = <&{/vcc-phy-regulator}>;",
+                     "  pinctrl-0 = <&{/pinctrl/gmac/rgmii-pins}>;",
+                     "  phy-handle = <&{/ethernet@ff290000/mdio/phy@1}>;",
+                     "  snps,reset-gpio = <&{/pinctrl/gpio4@ff790000} 0x7 0x1>;",
+                     "  clocks = <&{/cru} 0x5>, <&{/cru} 0x6>;",
+                     '  phy-mode = "rgmii";',
+                     "  bogus-gpios = <0x63 0x1 0x2>;",
+                     "  mdio {",
+                     "    phy@1 {",
+                     "      reset-gpios = <&{/pinctrl/gpio4@ff790000} 0x8 0x1>;",
+                     "nodes pointed to from the nodes above (their own properties only):",
+                     "/vcc-phy-regulator {",
+                     "  gpio = <&{/pinctrl/gpio4@ff790000} 0x8 0x0>;",
+                     "/pinctrl/gmac/rgmii-pins {",
+                     "  rockchip,pins = <0x3 0x0 0x1 &{/pinctrl/pcfg-pull-none}>, "
+                     "<0x3 0x1 0x1 &{/pinctrl/pcfg-pull-none}>;",
+                     "/pinctrl/gpio4@ff790000 {",
+                     "/cru {"):
+            self.assertIn(line + "\n", out)
+        self.assertEqual(out.count("phy@1 {"), 1, "a node inside the shown one is not repeated")
+        self.assertNotIn("/pinctrl/pcfg-pull-none {", out, "only one level of pointers is followed")
+        self.assertNotIn(MAC.hex(), out)
+        res = self.cli("show", path, "/", "/nope")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("  serial-number = (17 bytes, not shown);", res.stdout)
+        self.assertIn("(no node /nope in this tree)", res.stdout)
+        self.assertNotIn(SERIAL, res.stdout)
+        self.assertNotIn(MAC.hex(), res.stdout)
+        self.assertEqual(self.cli("show", path).returncode, 2)
+
     def test_usage(self):
         self.assertEqual(self.cli().returncode, 2)
         self.assertEqual(self.cli("diff", "a").returncode, 2)
