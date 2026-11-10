@@ -6,6 +6,8 @@
 
 For supported Akai standalone hardware, an end user should be able to prepare a USB stick on a computer, insert it into their MPC, approve the prompt on the hardware, and run/install MPFree without ever typing SSH commands.
 
+**Owner direction (2026-11-09):** one click. The user inserts the USB stick in the back of the MPC, and it installs the MPFree OS/userspace and sets up an SSH server they can log into over Ethernet. Long term this includes MPFree's own Linux distribution, which may only ship once booting it is proven unable to brick the device. See [recovery and OS strategy](engineering/RECOVERY_AND_OS_STRATEGY.md).
+
 Separate these deliverables clearly:
 1. **USB builder:** desktop tool that identifies the intended removable device, prepares a supported FAT filesystem and copies validated installation files. Never blindly target `/dev/sdX`; check USB transport, model, filesystem, partitions, mounted paths and device serial if available. Show destructive actions and require exact typed confirmation. Prefer *no formatting* when possible.
 2. **Bootstrap:** smallest possible autorun entry point, specific to a **known supported** firmware/hardware combination. Keep the upstream validation-sensitive files immutable and separate all editable logic; do not assume it works on newer Akai builds.
@@ -18,6 +20,7 @@ Separate these deliverables clearly:
 | Mode | Target | Persistent factory changes | Gate |
 | --- | --- | --- | --- |
 | A: Developer survey | temporary SSH under `/run`; no installed MPFree | None deliberately; USB diagnostic files only | **DONE** on reference MPC One |
+| A+: Persistent developer SSH | early-boot SSH unit in rootfs + keys in `/data/mpfree/ssh` | **Yes: rootfs and `/data`** ([MOD-001/002](hardware/DEVICE_MODIFICATIONS.md)) | **DONE** on reference unit; owner decision to keep. Not an end-user pattern: a rootfs write is Tier 3 |
 | B: Portable proof of concept | RAM-backed MPFree binary/config; data from removable storage | None to internal partitions | Need actual sysroot, device map, runtime loader and executable-mount tests |
 | C: Reversible MPFree userspace | versioned files on known safe storage with opt-in launch, stock OS fallback | May write a dedicated MPFree directory if explicitly authorized | Verified backups + recovery + transactional install |
 | D: Independent Linux image | alternate kernel/rootfs or boot arrangement | Potentially boot-critical internal changes | **Out of scope until real recovery is validated** |
