@@ -65,7 +65,7 @@ jobs:
       - name: Test the offline Akai update tools against fake backups and images (no device)
         run: |
           sudo apt-get install -y --no-install-recommends squashfs-tools e2fsprogs file binutils \
-            device-tree-compiler lz4 lzop zstd
+            device-tree-compiler lz4 lzop zstd fdisk openssh-client
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_updater.py
           python3 tools/mpc-one/tests/test_offline_update_image.py
           python3 tools/mpc-one/tests/test_offline_update_extract.py
@@ -73,6 +73,8 @@ jobs:
           MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
+          python3 tools/mpc-one/tests/test_write_test_stick.py
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'
