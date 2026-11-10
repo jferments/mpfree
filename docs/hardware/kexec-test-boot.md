@@ -1,6 +1,6 @@
 # Test-booting another firmware version by kexec (MPC One)
 
-**Status (2026-11-10):** all the tools are written and tested against a fake MPC. The owner has run the read-only steps and written the stick. **Nothing has been booted yet:** the boot step waits for the owner's go.
+**Status (2026-11-10):** 3.10.0 has booted once on the reference unit, from the stick. Nothing in the MPC's storage changed: the boot maps before and after match, and 3.10.0 saw no MMC device. It reached its normal running state with no failed units, but had no Ethernet, so SSH never answered (see [First boot](#first-boot-2026-11-10)).
 
 **Goal:** boot Akai's 3.10.0 once on the reference unit without installing it, in a way where nothing in the MPC's own storage can change. 3.6.0 starts kexec from its running system, and 3.10.0's root filesystem comes from a USB stick.
 
@@ -46,6 +46,7 @@ Some points here are inferences, not yet checked on the unit:
 | 5 | `MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot` | **State-changing, RAM only on the MPC.** With the stick in the MPC's USB-A port, it runs [`host_kexec_boot.py`](../../tools/mpc-one/host_kexec_boot.py): checks on the workstation and on 3.6.0 (read-only), copies `zImage` and `kexec.dtb` to `/run`, runs `kexec --load`, and jumps (`systemctl kexec`) only after you type `BOOT 3.10`. Then it checks 3.10.0 over SSH. Details below |
 | 6 | Power-cycle with the stick out, then `collect-over-ssh.sh --boot-map` | The MPC is back on 3.6.0. The boot map compares the boot-partition hashes and write counters with the run before the test |
 | 7 | `python3 tools/mpc-one/read-stick-logs.py` | Read-only, with the stick in the workstation. It copies the log partition once with `sudo cat`, replays its journal on the copy, and writes every log of every test boot to `~/mpfree-work/stick-logs-*/report.txt`, with MACs and USB serials replaced |
+| 8 | `python3 tools/mpc-one/offline-kexec-details.py` | Workstation only. When something fails in the test boot, it prints the Ethernet, display, backlight and reserved-memory nodes of both releases' board files, the running tree and `kexec.dtb` (MAC and serial values hidden), every difference between the two board files, and both kernels' build configs |
 
 Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](SURVEY_TOOLS.md#one-folder-and-one-zip-per-test-round)).
 
@@ -72,6 +73,14 @@ The possible endings, and what to do after each:
 | A stop before you type | Nothing was loaded, or the load was undone | Nothing to undo |
 
 The stick's log service starts early in 3.10.0's boot (in `sysinit.target`) and keeps running through a switch to emergency mode. Every 10 seconds it saves `dmesg`, the journal, failed units, all units, the network state and the command line to the stick's partition 2, which is mounted `sync`. If the kernel cannot mount the root partition, it panics and reboots after 10 seconds (`panic=10`) and U-Boot boots 3.6.0 from the eMMC.
+
+## First boot (2026-11-10)
+
+- **Storage:** the boot maps before and after the test match: the same hashes for p1–p6 and the boot areas, and no writes. 3.10.0's kernel log shows no MMC device, and no blocked program was called. The power-cycle brought 3.6.0 back.
+- **3.10.0 itself:** its startup finished 7.7 s after its kernel started, with no failed units and sshd listening on port 2222, and the log service wrote to the stick every 10 s.
+- **Ethernet failed:** the MAC (`rk_gmac-dwmac ff290000.ethernet`) probed, but `mdio_bus stmmac-0: MDIO device at address 1 is missing`, and later `eth0: cannot attach to PHY (error: -ENODEV)`. Under 3.6.0 the RTL8211E answers at address 1. **Inferred, not verified:** 3.6.0 leaves the PHY held in reset when it shuts down for the jump, and 3.10.0 reads the PHY's ID before releasing the reset. `offline-kexec-details.py` shows how the board files wire the PHY reset, which settles it.
+- **Screen:** the display driver came up (`fb0`) and a getty started on `tty1`, but nothing appeared. The kernel log has no framebuffer console line, so 3.10.0's kernel probably has none built in (inferred; its build config, step 8, settles it).
+- **Reserved memory:** 3.10.0's kernel skipped U-Boot's `framebuffer` and `dma-unusable` regions as `invalid reg property`, after Akai's own fixup converted them, so DRM had no reserved framebuffer. That only affects the splash hand-over.
 
 ## Keep it private
 

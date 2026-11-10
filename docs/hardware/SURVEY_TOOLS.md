@@ -48,7 +48,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--session-check`, `--session-smoke` | [M7](../engineering/M7_ARM_NULL_TIMING_ACCEPTANCE.md) |
 | `--touch-axes-check`, `--touch-axes` | [M10](../engineering/M10_GUARDED_TOUCH_AXES.md) |
 
-**Test boot of another firmware version.** `--kexec-boot` boots the test build on the USB stick once by kexec. It changes only RAM on the MPC, jumps only after you type `BOOT 3.10`, and requires `MPFREE_ACCEPT_KEXEC_BOOT=YES`. After it, [`read-stick-logs.py`](../../tools/mpc-one/read-stick-logs.py) copies the test build's logs off the stick, read-only, on the workstation. See [the kexec test boot](kexec-test-boot.md).
+**Test boot of another firmware version.** `--kexec-boot` boots the test build on the USB stick once by kexec. It changes only RAM on the MPC, jumps only after you type `BOOT 3.10`, and requires `MPFREE_ACCEPT_KEXEC_BOOT=YES`. After it, [`read-stick-logs.py`](../../tools/mpc-one/read-stick-logs.py) copies the test build's logs off the stick, read-only, on the workstation, and [`offline-kexec-details.py`](../../tools/mpc-one/offline-kexec-details.py) prints the device-tree nodes and kernel configs behind the build when something fails in it. See [the kexec test boot](kexec-test-boot.md).
 
 **Passive capture.** `--midi-capture` reads the kernel's usbmon interface for the controller's USB bus while you use the controller. It is interactive, stops itself within 240 s and requires `MPFREE_ACCEPT_USBMON=YES`. See [audio and MIDI diagnostics](../engineering/AUDIO_MIDI_DIAGNOSTICS.md).
 

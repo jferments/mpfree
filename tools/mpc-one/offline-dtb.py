@@ -15,6 +15,13 @@ Commands:
                        Values are left out unless --values is given, so it is
                        safe to run on a tree read from the MPC, which carries
                        the unit's serial number and MAC address.
+  show DTB NODE...     each NODE (a full path, such as /ethernet@ff290000) with
+                       everything under it, values included, then every node
+                       those point to by phandle (its own properties only).
+                       A phandle is printed as the path of the node it points
+                       to. The values of local-mac-address, mac-address,
+                       serial-number, bootargs, rng-seed and kaslr-seed are
+                       never printed, so it is safe on a tree read from the MPC.
   kexec-dtb --target NEW.dtb --reference OLD.dtb --live LIVE.dtb --out OUT.dtb
             [--drop /path/property]...
                        build the device tree for booting another kernel by
@@ -40,6 +47,7 @@ parse(build(tree)) gives back the same tree.
 """
 import copy
 import os
+import re
 import struct
 import sys
 
@@ -242,17 +250,125 @@ def strings_of(value):
     return [p.decode("ascii") for p in parts]
 
 
-def show(value):
+def show(value, max_cells=32, max_bytes=64):
     texts = strings_of(value)
     if texts is not None:
         return ", ".join(f'"{t}"' for t in texts)
     if value and len(value) % 4 == 0:
         cells = struct.unpack(f">{len(value) // 4}I", value)
-        shown = " ".join(f"0x{c:x}" for c in cells[:32])
-        return f"<{shown}{' ...' if len(cells) > 32 else ''}>"
+        shown = " ".join(f"0x{c:x}" for c in cells[:max_cells])
+        return f"<{shown}{' ...' if len(cells) > max_cells else ''}>"
     if not value:
         return "(empty)"
-    return f"[{value[:64].hex()}{'...' if len(value) > 64 else ''}]"
+    return f"[{value[:max_bytes].hex()}{'...' if len(value) > max_bytes else ''}]"
+
+
+# Properties whose values `show` never prints: they identify the unit (U-Boot
+# adds them at boot) or hold boot-time secrets.
+NOT_SHOWN = ("local-mac-address", "mac-address", "serial-number", "bootargs", "rng-seed", "kaslr-seed")
+# Phandle lists: property -> the property of the node pointed to that says how
+# many argument cells follow each phandle.
+ARG_CELLS = {
+    "clocks": "#clock-cells", "assigned-clocks": "#clock-cells", "assigned-clock-parents": "#clock-cells",
+    "resets": "#reset-cells", "phys": "#phy-cells", "power-domains": "#power-domain-cells",
+    "dmas": "#dma-cells", "pwms": "#pwm-cells", "io-channels": "#io-channel-cells",
+    "interrupts-extended": "#interrupt-cells", "iommus": "#iommu-cells", "mboxes": "#mbox-cells",
+    "sound-dai": "#sound-dai-cells",
+}
+# Properties in which every cell is a phandle.
+ALL_PHANDLES = re.compile(r"^(.*-supply|.*-handle|pinctrl-[0-9]+|interrupt-parent|memory-region|phy|"
+                          r"remote-endpoint|rockchip,grf|rockchip,pmu|backlight|panel|operating-points-v2)$")
+
+
+def phandles(tree):
+    """{phandle: path} from every node's phandle (or linux,phandle) property."""
+    found = {}
+    for path, node in tree.walk():
+        for name in ("phandle", "linux,phandle"):
+            value = node.prop(name)
+            if value is not None and len(value) == 4:
+                found[struct.unpack(">I", value)[0]] = path
+    return found
+
+
+def references(name, value, handles, nodes):
+    """[(path, argument cells)] for a property that holds phandles, or None if it doesn't parse as one."""
+    if not value or len(value) % 4:
+        return None
+    cells = struct.unpack(f">{len(value) // 4}I", value)
+    if name == "rockchip,pins":  # <bank pin function &pin-config> per pin
+        if len(cells) % 4 or any(cells[i] not in handles for i in range(3, len(cells), 4)):
+            return None
+        return [(handles[cells[i + 3]], cells[i:i + 3]) for i in range(0, len(cells), 4)]
+    if ALL_PHANDLES.match(name):
+        if any(c not in handles for c in cells):
+            return None
+        return [(handles[c], ()) for c in cells]
+    count = ARG_CELLS.get(name)
+    if count is None and (name in ("gpio", "gpios") or name.endswith(("-gpio", "-gpios"))):
+        count = "#gpio-cells"
+    if count is None:
+        return None
+    refs, i = [], 0
+    while i < len(cells):
+        path = handles.get(cells[i])
+        n = nodes[path].prop(count) if path is not None else None
+        if n is None or len(n) != 4:
+            return None
+        n = struct.unpack(">I", n)[0]
+        if i + 1 + n > len(cells):
+            return None
+        refs.append((path, cells[i + 1:i + 1 + n]))
+        i += 1 + n
+    return refs
+
+
+def show_value(name, value, handles, nodes):
+    if name in NOT_SHOWN:
+        return f"({len(value)} bytes, not shown)", []
+    refs = references(name, value, handles, nodes)
+    if refs is None:
+        return show(value, max_cells=1024, max_bytes=1024), []
+    if name == "rockchip,pins":
+        text = ", ".join(f"<{' '.join(f'0x{c:x}' for c in args)} &{{{path}}}>" for path, args in refs)
+    else:
+        text = ", ".join(f"<&{{{path}}}{''.join(f' 0x{c:x}' for c in args)}>" for path, args in refs)
+    return text, [path for path, _ in refs]
+
+
+def show_nodes(path, wanted, out):
+    """Print each wanted node with its subtree, then the nodes they point to. Returns how many were missing."""
+    tree = load(path)
+    nodes, handles = dict(tree.walk()), phandles(tree)
+    out.write(f"--- {path}\n")
+    printed, pointed, missing = set(), [], 0
+
+    def emit(node_path, node, depth, children):
+        pad = "  " * depth
+        out.write(f"{pad}{node_path if depth == 0 else node.name} {{\n")
+        printed.add(node_path)
+        for name, value in node.props:
+            text, targets = show_value(name, value, handles, nodes)
+            out.write(f"{pad}  {name} = {text};\n")
+            pointed.extend(t for t in targets if t not in pointed)
+        if children:
+            for c in node.children:
+                emit(node_path.rstrip("/") + "/" + c.name, c, depth + 1, True)
+        out.write(f"{pad}}};\n")
+
+    for want in wanted:
+        node = tree.find(want) if want.startswith("/") else None
+        if node is None:
+            missing += 1
+            out.write(f"(no node {want} in this tree)\n")
+            continue
+        emit(want if want == "/" else "/" + "/".join(p for p in want.split("/") if p), node, 0, True)
+    extra = [p for p in pointed if p not in printed]
+    if extra:
+        out.write("nodes pointed to from the nodes above (their own properties only):\n")
+        for p in extra:
+            emit(p, nodes[p], 0, False)
+    return missing
 
 
 def unit_address(name):
@@ -515,6 +631,8 @@ def main(argv):
             for path in args[1:]:
                 summary(path, sys.stdout)
             return 0
+        if len(args) >= 3 and args[0] == "show":
+            return 1 if show_nodes(args[1], args[2:], sys.stdout) else 0
         if args[:1] == ["kexec-dtb"]:
             rc = kexec_dtb_main(args[1:], sys.stdout)
             if rc != 2:
