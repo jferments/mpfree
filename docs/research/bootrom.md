@@ -799,3 +799,7 @@ The OEM handler at linked VA 0x00122854 begins by reading a command buffer point
 4. Keep investigating the OEM and storage branches **offline**, and do not publish vendor token bytes.
 
 No changes to firmware/device or other Git files are authorized by this section.
+
+### 16.1 Shared Fastboot precondition helper at 0x00122834
+
+Further decoding of the same 64-byte callback windows reveals that **download, flash, erase, and one conditional branch of OEM** each call the same Thumb helper at linked VA **0x00122834**. The direct BL targets were computed from the instruction offsets in the owner report: download +0x2298C, flash +0x22C64, erase +0x22C00, OEM +0x2286A. The caller branches on its result. This is a high-value new candidate for a shared permission or state check, but its actual semantics are **unknown** until its function body is decoded; do not label it an authorization gate yet. Analyze this helper alongside the deferred boot and continue USB completion callbacks.
