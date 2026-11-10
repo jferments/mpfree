@@ -41,7 +41,7 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 
 | Step | Evidence (strings) | What it means for us |
 | --- | --- | --- |
-| Mounts `/proc`, `/sys`, a tmpfs at `/mnt`, then an "upgrade device" | `failed to mount upgrade device`, `trying to mount %s as '%s'` | The update image comes from a mounted device or filesystem. Which one isn't known yet |
+| Mounts `/proc`, `/sys`, a tmpfs at `/mnt`, then an "upgrade device" | `failed to mount upgrade device`, `trying to mount %s as '%s'` | The update image comes from a mounted device, passed in by the launcher (below) |
 | Checks a signature before writing | `attempting to verify signature with key %s`, `v3 signature verified, checking compatibility`, OpenSSL `EVP_DigestVerify` with SHA-256 | Update images are signed. MPFree can't use this path to install anything, which is expected |
 | Checks the image's partitions | `verifying image partitions`, `verifying image (%s)...` | The image carries a per-partition list |
 | Writes partitions by name, optionally compressed | `write partition %s, compression=%s`, `writing partition %s (%zu bytes)`, `partition not found: %s`, `refusing to lookup partition %s` | It writes whole partitions from the image, looked up by name |
@@ -52,16 +52,31 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 **Other findings:**
 
 - `/usr/bin/az01-update` does **not** exist in `p6`. An earlier note in the boot-map doc said it did. Neither boot-map run shows it, so that note was wrong and is corrected.
-- What starts the RAM updater is unknown. None of the update-named units mentions it, and the rest of `p6` hasn't been searched yet. The MPC app itself is a plausible launcher (for example for an update from a USB drive), but that is a guess.
+- **What starts the RAM updater: `/usr/lib/libaz01-prog.so.1.3`**, an inMusic library. It is the only file in `p6` whose contents mention `ramfs-update` or `erase-data-partition` (owner's second run, 2026-11-10). See [How an update is launched](#how-an-update-is-launched).
 - `boot.scr.uimg` has no update branch. It loads `zImage` and the board DTB (plus an `az01b` overlay on that board) and boots with `fsck.repair=yes`. Update Mode stays U-Boot's own `fastboot 0`, as the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) found.
 - The other `update`/`fw` units are stock systemd ones, plus Akai's `touch-fw-update.service` (Ilitek touch firmware) and `xmos-update.service`, which only runs when the device tree has no `sound` node. This unit uses I²S audio, so it probably never runs here.
 
-**There are two update paths.** The desktop updater on a computer writes over USB in Update Mode, which is U-Boot fastboot. Standard U-Boot fastboot can flash any GPT partition by name, including `uboot-spl` and `uboot`, but whether Akai's build allows that is unverified. The RAM updater above writes from inside Linux and handles U-Boot itself. Which partitions a real 3.6.0 update contains still needs Akai's public update file. Its partition list may be readable without running anything.
+### How an update is launched
 
-**Still open:**
+From the strings of `libaz01-prog.so.1.3`, in the order they appear (inferred, not run):
 
-1. Find what launches the RAM updater. The script now searches the whole `p6` copy for it (step 5 above); waiting on the owner's second run.
-2. Read the partition list of Akai's public 3.6.0 update file with `offline-update-image.py` (below).
+- **Update Mode** (Menu > Preferences > Info > Update > "Switch to Update Mode") is most likely `systemctl reboot --reboot-argument=loader`. U-Boot then starts `fastboot 0`. The `loader` → recovery-flag step happens in the bootloader and wasn't seen directly.
+- **USB-drive and online updates** use **kexec**. The library refuses unless the MPC is on mains power (`refusing to update: not on AC power`). It verifies the image and checks it against the board (`image is not compatible with this device`, device-tree `compatible` and `inmusic,az0x-pcb-rev` nodes). Then it loads Akai's own kernel with the updater as a RAM disk and jumps to it:
+  - `/usr/sbin/kexec --load /boot/zImage --ramdisk /opt/ramfs-update.squashfs --kexec-syscall-auto`
+  - command line `ramdisk_size=32768 root=/dev/ram0 ro -- upgrade-device=… upgrade-file=…`
+  - log lines `preparing upgrade environment...`, `booting upgrade environment...`
+- **Factory reset** goes the same way with `erase-data-partition`, and also refuses without mains power (`refusing to erase user data: not on AC power`).
+- Other reboot arguments are present: `update`, `factory-reset` and `update:%s:%s`. What U-Boot does with them is unknown.
+
+The flag list and argument order are reconstructed from neighbouring strings, so the exact command line is an inference.
+
+**What this means for MPFree:**
+
+- **Akai uses kexec on this board for every USB and online update.** It boots its own kernel from the running system with a RAM disk, which is the route we planned for testing our own kernel in RAM ([recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md), option 1). It doesn't prove our kernel will come up cleanly, but it shows this hardware and kernel handle kexec in normal use.
+- **There are three ways an update reaches the eMMC.** The desktop updater writes over USB in Update Mode (U-Boot fastboot). Standard U-Boot fastboot can flash any GPT partition by name, including `uboot-spl` and `uboot`, but whether Akai's build allows that is unverified. USB-drive and online updates run the RAM updater above, which can write U-Boot itself and erase `/data`.
+- **Updates and factory reset need mains power.** The library refuses both without it, which lowers the risk of a half-written bootloader.
+
+**Still open:** read the partition list of Akai's public 3.6.0 update file with `offline-update-image.py` (below). It shows whether a real update carries a bootloader payload at all.
 
 ## Reading Akai's public update file
 
