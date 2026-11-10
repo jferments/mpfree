@@ -60,7 +60,9 @@ Built now:
 
 - **Latch** Off, Reset (called `Replace`), Toggle; clear latched notes; panic.
 - **Modes** Direct, Repeat, Arp, Pattern. Switching mode never leaves a gap: notes sounding in Direct mode are stopped and the generator starts on the same frame.
-- **Orders** Up, Down, Up-down, Up-down inclusive, Converge, Diverge, As played, Random (seeded, so it is repeatable), Chord; 1–4 octaves; notes past 127 are skipped.
+- **Orders** Up, Down, Up-down, Up-down inclusive, Converge, Diverge, As played, Random (seeded, so it is repeatable), Random with no repeats until every note has played, Random once (one shuffled order kept until the notes change), Chord; 1–4 octaves; notes past 127 are skipped.
+- **Feel** strum (spreads chord notes across up to the whole step, lowest first); retrigger (a new note restarts the order and pattern); repeat count (play N steps, then stop, for one-shot runs).
+- **Scales** ten scales (major, minor, harmonic minor, dorian, phrygian, mixolydian, both pentatonics, blues, chromatic) with any root, applied last so octave and degree offsets always land in key. Off by default and for drum pads.
 - **Timing** rates 1/4 to 1/32 with triplets, at 960 ticks per quarter; gate 1–100 %; swing 50–75 % on every second step. The first step plays on the press (there is no transport yet).
 - **Velocity** played (following pad pressure) or fixed; accent velocity.
 - **Patterns** up to 64 steps, written as text:
@@ -89,7 +91,23 @@ x x%60 ? x%30 . x _ ?  chance, random notes and a tie
 | `:N` | N hits in the step (2–8) |
 | `%N` | N % chance |
 
-Eight original starter patterns are built in (Straight, Gallop, Bounce, Climb, Pulse, Stabs, Rolls, Drift). The text form round-trips, so the screen editor and files use the same model.
+**Lanes** follow the steps after a `|`, each with its own length, so they loop against the steps (polymeter):
+
+```text
+x x x x | oct 0 1 0 | vel 120 70 90 70 80     octave over 3, accents over 5, steps over 4
+1 1 1 1 1 1 1 1 | deg 0 2 4 5 7 4 2 | gate 40 40 80   one held note plays a line
+```
+
+| Lane | Values |
+|---|---|
+| `oct` | octaves added to the step's own, −3 to 3 |
+| `deg` | scale degrees (with a scale) or semitones (without), −24 to 24 |
+| `vel` | velocity 1–127; 0 = as played; an accent still wins |
+| `gate` | note length in percent; 0 = the step's or the engine's |
+
+**Variation** that never loses the original: `Pattern::mutated(seed, amount)` returns a new pattern (the same seed gives the same variation; ties stay; at least one step plays) and `Pattern::rotated(n)` turns the steps. The app keeps the original and swaps back on "Original".
+
+Ten original starter patterns are built in (Straight, Gallop, Bounce, Climb, Pulse, Stabs, Rolls, Drift, Three over four, Climbing line). The text form round-trips, so the screen editor and files use the same model.
 
 ## The screen and the buttons
 
@@ -137,11 +155,11 @@ Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persiste
 
 | Step | What | Depends on | Device? |
 |---|---|---|---|
-| A (this PR) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format; 25 tests | nothing | no |
+| A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
 | B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
 | C | `StepGrid` widget and the pattern editor (tap, record on pads); pattern files | B | yes |
-| D | Lanes with their own lengths (polymeter), per-step semitone and scale-degree offsets with scale snap applied last, per-step velocity and swing | C | no (engine), then yes |
-| E | Variation: Mutate with keep-original, per-lane random amount, Random Once, rotate, velocity ramp, strum/spread, retrigger (note, beat, bar), repeats count | D | no, then yes |
+| D (engine done, PR #35) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate; scales applied last. Still to do: per-step swing/nudge lane, and the UI | C for the UI | no (engine), then yes |
+| E (engine mostly done, PR #35) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count. Still to do: per-lane random amounts, velocity ramp, retrigger on beat or bar (needs a transport) | D | no, then yes |
 | F | Transport and MIDI: sync to the sequencer's clock and MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
