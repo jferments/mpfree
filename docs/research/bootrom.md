@@ -648,3 +648,92 @@ Scripts are distributed privately, **not committed**. The repository authorizati
 The p3 Ghidra/host reports identify a valid FDT header at raw U-Boot payload offset `0x502F4`, with `totalsize=0x898D`. Their sum is **`0x58C81`**, exactly **363,649 bytes**, the verified U-Boot payload length. Thus the DTB **ends at the exact end of the U-Boot image payload**, a strong structural indication that this build uses U-Boot with an appended DTB (`u-boot-dtb.bin`-style layout). This is an arithmetic observation from verified metadata, not a demonstration of how its internal DTB is selected or relocated at runtime.
 
 The first-stage embedded DTB begins at stage offset `0x627C` and has `totalsize=0xCA7`; it is within the 32-KiB SPL stage and does not extend to its end. Compare the two embedded bootloader DTBs with the 3.6.0 and 3.10.0 ACVA kernel DTBs. The separately distributed offline deepmap tool supports `--extract-embedded-dtbs`, saving private validated FDTs under `~/mpfree-work` without touching the device or Git.
+
+## 14. New owner evidence: actual embedded DTBs and Fastboot callback table (2026-11-10)
+
+**Source reports and private extracted DTBs**:
+- `bootchain-deepmap-20261110T141353.txt`
+- `bootchain-decisions-p1-20261110T141504.txt`
+- `bootchain-decisions-p3-20261110T141612.txt`
+- `p1-spl-00-offset-00627c.dtb`, 3,239 bytes
+- `p3-uboot-00-offset-0502f4.dtb`, 35,213 bytes
+
+The two FDTs were independently parsed from the owner-supplied binary device trees in this round. They are **private firmware-derived files** and have **not been committed**. The p3 DTB is appended exactly at the end of the p3 uImage payload, as previously established.
+
+### 14.1 SPL vs U-Boot hardware ownership (directly parsed DTBs)
+
+| Property | p1 U-Boot SPL DTB | p3 U-Boot proper DTB |
+| --- | --- | --- |
+| Total parsed nodes | **14** | **288** |
+| `model` | `Akai Professional MPC One` | `Akai Professional MPC One` |
+| `compatible` | `inmusic,acva`, `inmusic,az01`, `rockchip,rk3288` | Same |
+| `/aliases/mmc0` | `/dwmmc@ff0f0000` | Same |
+| `dwmmc@ff0f0000` (eMMC) | `status="okay"`, 8-bit, non-removable | Same |
+| `/aliases/mmc1` | Not defined | `/dwmmc@ff0c0000` |
+| `dwmmc@ff0c0000` (SDMMC) | Not defined | **`status="disabled"`** |
+| `usb@ff580000` (DWC2) | Not defined | **`status="okay"`** |
+| `usb@ff540000` | Not defined | `status="disabled"` |
+| `/aliases/serial2` | `/serial@ff690000` | Same |
+| `/chosen/stdout-path` | `serial2:115200n8` | Same |
+| `clock-controller@ff760000` | RK3288 CRU | RK3288 CRU |
+
+**Interpretation:** SPL is purpose-built for the eMMC boot path with only a small pre-relocation device model. Full U-Boot enables DWC2 `usb@ff580000`, explaining the hardware description for U-Boot USB Fastboot even though this board's 3.6/3.10 Linux DTBs disable the same controller. Absence of a USB node in SPL says nothing about **silicon ROM** USB capability, because the ROM does not use SPL's Linux-style FDT.
+
+**Critical installer/recovery qualification:** U-Boot's embedded environment includes `boot_targets=mmc0 mmc1`, but the p3 DTB maps `mmc1` to `/dwmmc@ff0c0000` and marks the device `disabled`. Merely listing `mmc1` **does not prove a working U-Boot SD-card fallback**; U-Boot runtime DT fixups or other path would have to be demonstrated. Neither does this rule out separate SoC BootROM boot-source behavior. Do not use SD fallback as a Tier 3 safety mechanism without direct proof.
+
+Neither embedded p1 nor p3 DTB contains a `syscon-reboot-mode` child node. Kernel DTBs do, with values described in §13.5. The runtime Fastboot writes in p1 and p3 are separate board-specific code; a Linux `mode-loader` property alone does not make a Rockusb/MaskROM entry path in the 2019 U-Boot.
+
+### 14.2 SPL second-stage entry, loader format and unresolved entry policy
+
+The latest p1 report shows the boot loop `0xFF705350` calls the raw MMC loader `0xFF7054A4`, and on a successful load can call `0xFF705310`:
+
+```asm
+ff705310 push {r3,lr}
+ff705312 ldr  r3,[r0,#0xc]
+ff705314 blx  r3
+```
+
+The destination is the **entry pointer at image descriptor offset `+0xC`**, not a literal ROM-return call. The image parser `0xFF7052C0` reads and byte-swaps U-Boot legacy uImage `load` (header `+0x10`), `entry` (header `+0x14`) and image-size (header `+0xC`) fields. It *conditionally* fills descriptor `+0xC` either from the uImage entry field or from the load address, depending on descriptor flags at `+0x14`; one branch adjusts load/size to include the 64-byte uImage header. **Therefore the verified p3 header `entry=0` does not mean SPL necessarily jumps to zero**: establish the flag state and the actual populated descriptor before assigning the runtime entry destination.
+
+This path strongly favors SPL-side eMMC loading of p3 in the stock boot sequence. Do not yet assert that all possible BootROM continuation paths are absent.
+
+### 14.3 First Fastboot dispatch-table entries proven from raw linked pointers
+
+The offline deepmap recovered **10,269** aligned words pointing into the p3 load image `0x00100000..`; a contiguous table at raw payload `+0x2F2B0` is consistent with `struct { const char *prefix; handler_fn callback; }` entries of eight bytes each:
+
+| Raw entry offset | Prefix string (linked VA) | Thumb function ptr | Function instruction VA | Confidence |
+| --- | --- | --- | --- | --- |
+| `+0x2F2B0` | `reboot` (`0x0013F08B`) | `0x00122CF9` | **`0x00122CF8`** | Prefix and linked pointer |
+| `+0x2F2B8` | `getvar:` (`0x0013F092`) | `0x00122D39` | **`0x00122D38`** | Prefix and linked pointer |
+| `+0x2F2C0` | `download:` (`0x0013F09A`) | `0x00122981` | **`0x00122980`** | Prefix and linked pointer |
+| `+0x2F2C8` | Unknown until dereferenced (`0x0013E8AE`) | `0x00122965` | `0x00122964` | Pointer pair, name unresolved |
+| `+0x2F2D0` | Unknown until dereferenced (`0x0013F0A4`) | `0x00122949` | `0x00122948` | Pointer pair, name unresolved |
+| `+0x2F2D8` | Unknown until dereferenced (`0x0013EF0E`) | `0x00122C5D` | `0x00122C5C` | Pointer pair, name unresolved |
+
+The low bit in each callback pointer encodes **Thumb state**, so the instruction address is pointer & `~1`. A pointer pair strongly suggests command registration, but we still need to trace the dispatcher loop and confirm it invokes the table.
+
+Other important linked references:
+
+- `reboot-bootloader` string is referenced by a literal pointer at payload `+0x22D24`; inspect its enclosing function and state handling.
+- OEM/lock-related strings and a vendor-specific marker are referenced around payload `+0x22900..`+0x22944`. The underlying **token value must not be reproduced** in public documentation. Investigate whether this actually gates flash/erase/download/boot and whether any state persists.
+- MMC Fastboot write and erase string references occur near payload `+0x1020C` and `+0x10328`; they are leads to code, **not permission for destructive USB commands**.
+- U-Boot's `set_reboot_mode` string has a raw pointer around payload `+0x1160`, near `0xFF730094` and `0x5242C300`. Trace this early mode-reader next to determine whether it uses only Fastboot or recognizes other reboot flags.
+
+Relevant upstream Fastboot dispatcher example (functionality differs by version/build):
+https://third-party-mirror.googlesource.com/u-boot/+/5e4aeb9b450dbefad6e7b47e39169527d64affa0/drivers/usb/gadget/f_fastboot.c
+
+### 14.4 Correction: last p3 Ghidra "no pointers" report is invalid
+
+The owner ran `MPFreeBootChainDecisions.py` against a Ghidra p3 raw import at block base **zero** and the script reported `Total raw linked-pointer occurrences=0` and many strings as absent. This directly conflicts with the verified offline deepmap that counted **10,269** aligned linked pointers and the earlier literal scanner that found the strings.
+
+**This is a bug in the Ghidra helper's bulk-memory import into a Python bytearray**, not an absence of commands in the binary. The helper used `getBytes(Address, bytearray)` in Jython and then scanned an unpopulated Python buffer. The script must instead pass a proper Java/Jython `jarray.zeros(length, 'b')`, convert each signed Java byte with `& 0xFF`, and validate a known nonzero binary anchor before accepting the result; a per-byte `Memory.getByte` fallback also works.
+
+Separately, mapping p3 at zero hides references because **internal pointers are linked at `0x00100000`**. Recommend importing a *separate* raw p3 program with **memory-block base `0x00100000`**, language `ARM:LE:32:v7` and Auto Analysis. Preserve the previous base-zero program for comparison. Recovered literal/context offsets in the existing reports are **raw payload offsets**; for the new Ghidra import, use `linked VA = 0x00100000 + payload offset`.
+
+### 14.5 Prioritized safe follow-ups
+
+1. Read the six command strings/callbacks starting at `0x0012F2B0` from a correctly mapped p3 program, classify command semantics and note hazards. Recover adjacent callback entries and the dispatch loop.
+2. Trace `set_reboot_mode` / early reboot flag consumer near p3 raw `+0x1130`, U-Boot recovery flag setting and reset-mode clearing, and compare with Linux reboot-mode DTB. **This is crucial to test whether `mode-loader` has an actual receiver.**
+3. In p1, trace the image descriptor flags in `0xFF7052C0` and indirect `BLX` at `0xFF705314` to determine actual p3 handoff. Confirm read addresses and CRC/image validation.
+4. In p1, resolve the sysreset callback registration pointer to the already-confirmed CRU MMIO writer `0xFF704214`, and resolve the base getter `0xFF706798`.
+5. No software MaskROM handoff has been proven. Continue reference-source research and board-side USB routing/test-point inventory; **no register writes, firmware modification, Fastboot OEM, flash, erase or hardware reboot is authorized by this document update.**
