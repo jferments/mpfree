@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from test_offline_dtb import board_tree, dtb, s as dt_strings  # noqa: E402
+from test_offline_dtb import board_tree, cells, dtb, node, s as dt_strings  # noqa: E402
 
 TOOLS = os.path.dirname(HERE)
 TOOL = os.path.join(TOOLS, "offline-kexec-stick.py")
@@ -49,8 +50,26 @@ def run(cmd, **kw):
                           env={**os.environ, "PATH": SBIN_PATH}, **kw)
 
 
-def new_board(variant=False):
+def fake_elf(machine=40, flags=0x05000400, etype=2, interp=False):
+    """A stand-in for the screen log program: only its ELF header and program headers are real."""
+    phnum = 2 if interp else 1
+    head = b"\x7fELF\x01\x01\x01" + b"\x00" * 9 + struct.pack(
+        "<HHIIIIIHHHHHH", etype, machine, 1, 0x10000, 52, 0, flags, 52, 32, phnum, 40, 0, 0)
+    ph = struct.pack("<8I", 1, 0, 0x10000, 0x10000, 4096, 4096, 5, 0x1000)
+    if interp:
+        ph += struct.pack("<8I", 3, 0, 0, 0, 20, 20, 4, 1)
+    return head + ph + b"FAKE-SCREEN-LOG" * 100
+
+
+def new_board(variant=False, phy=True):
     tree = board_tree()
+    if phy:
+        gmac = tree.find("/ethernet@ff290000")
+        gmac.set_prop("phy-handle", cells(0x4B))
+        gmac.children.append(node("mdio", [], [node("ethernet-phy@1", [
+            ("compatible", dt_strings("ethernet-phy-ieee802.3-c22")), ("reg", cells(1)),
+            ("reset-gpios", cells(0x18, 8, 1)), ("phandle", cells(0x4B))])]))
+        tree.root.children.append(node("mipi@ff960000", [], [node("panel@0", [("rotation", cells(270))])]))
     tree.find("/chosen").set_prop("inmusic,acvs-emmc-content", b"")
     tree.find("/dwmmc@ff0f0000").set_prop("new-in-9.9", dt_strings("yes"))
     if variant:
@@ -139,6 +158,8 @@ class KexecStickTests(unittest.TestCase):
         self.pre = os.path.join(self.work, "kexec-preflight-20260101T000000Z-xyz")
         write(os.path.join(self.pre, "live.dtb"), live_tree())
         write(os.path.join(self.pre, "release.txt"), OLD + "\n")
+        self.screen_log = os.path.join(self.tmp, "mpfree-screen-log")
+        write(self.screen_log, fake_elf(), 0o755)
         self.key = os.path.join(self.tmp, "mpc_key")
         made = run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "fake-user-key", "-f", self.key])
         self.assertEqual(made.returncode, 0, made.stdout)
@@ -147,7 +168,8 @@ class KexecStickTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def build(self, **extra):
-        env = {"HOME": self.home, "LC_ALL": "C", "PATH": SBIN_PATH, "MPC_KEY": self.key, **extra}
+        env = {"HOME": self.home, "LC_ALL": "C", "PATH": SBIN_PATH, "MPC_KEY": self.key,
+               "MPFREE_SCREEN_LOG": self.screen_log, **extra}
         return subprocess.run([sys.executable, "-I", TOOL], env=env, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, timeout=300)
 
@@ -195,6 +217,13 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(tree.find("/ethernet@ff290000").prop("local-mac-address"), MAC)
         self.assertIsNone(tree.find("/chosen").prop("inmusic,acvs-emmc-content"))
         self.assertIsNone(tree.find("/chosen").prop("bootargs"))
+        phy = "/ethernet@ff290000/mdio/ethernet-phy@1"
+        self.assertEqual(tree.find(phy).prop("compatible"),
+                         dt_strings("ethernet-phy-id001c.c915", "ethernet-phy-ieee802.3-c22"))
+        self.assertIn(f"Ethernet PHY {phy}: the kernel takes its ID (ethernet-phy-id001c.c915) from the tree",
+                      res.stdout)
+        self.assertIn("panel rotation (from /mipi@ff960000/panel@0): 270 degrees", res.stdout)
+        self.assertIn(f"screen log program: {self.screen_log} ({len(fake_elf())} bytes, sha256 ", res.stdout)
 
         stick = os.path.join(out, "stick.img")
         root_img, log_img = os.path.join(self.tmp, "p1.img"), os.path.join(self.tmp, "p2.img")
@@ -218,6 +247,17 @@ class KexecStickTests(unittest.TestCase):
                       self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"))
         self.assertIn("File not found",
                       self.dfs(root_img, "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-logs.service"))
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-screen.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"))
+        screen_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service")
+        for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target",
+                     "ExecStart=/bin/sh -c 'journalctl -b -f -n 100 --no-pager --no-hostname -o short-monotonic "
+                     "2>&1 | /etc/mpfree-test/mpfree-screen-log --rotation 270'"):
+            self.assertIn(line + "\n", screen_unit)
+        program = os.path.join(self.tmp, "screen-log-copy")
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-screen-log {program}", root_img])
+        self.assertEqual(sha(program), sha(self.screen_log))
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree-screen-log"), r"Type: regular\s+Mode:\s+0755")
         log_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-logs.service")
         for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target"):
             self.assertIn(line + "\n", log_unit)
@@ -291,6 +331,28 @@ class KexecStickTests(unittest.TestCase):
             self.expect_stop("boot-files belong to another build")
             write(os.path.join(folder, "zImage-" + NEW), ZIMAGE)
             self.expect_stop("does not match")
+        with self.subTest("screen log program"):
+            for data, message in ((fake_elf(interp=True), "is dynamically linked"),
+                                  (fake_elf(machine=62), "is not an ARM executable"),
+                                  (fake_elf(flags=0x05000200), "is not EABI5 hard-float"),
+                                  (b"#!/bin/sh\n", "is not a 32-bit little-endian ELF file")):
+                write(self.screen_log, data, 0o755)
+                self.expect_stop(message)
+            os.unlink(self.screen_log)
+            self.expect_stop("build the screen log program first")
+            write(self.screen_log, fake_elf(), 0o755)
+        with self.subTest("a board file without the PHY layout"):
+            folder = os.path.join(self.work, "boot-files", NEW)
+            unpacked = os.path.dirname(self.image)
+            os.unlink(self.image)
+            build_rootfs(unpacked, extra={"boot/rk3288-az01-acva.dtb": new_board(phy=False)})
+            self.image_sha = sha(self.image)
+            write(os.path.join(folder, "rk3288-az01-acva.dtb"), new_board(phy=False))
+            with open(os.path.join(folder, "SHA256SUMS"), "w") as fh:
+                for name in sorted(os.listdir(folder)):
+                    if name != "SHA256SUMS":
+                        fh.write(f"{sha(os.path.join(folder, name))}  {name}\n")
+            self.expect_stop("has no phy-handle to a PHY node under it")
         with self.subTest("no preflight"):
             shutil.rmtree(self.pre)
             self.expect_stop("run collect-over-ssh.sh --kexec-preflight first")

@@ -266,6 +266,17 @@ jobs:
                   'systemctl stop', 'systemctl restart', 'std::net::',
                   'std::process::Command', 'EVIOCGRAB', 'ioctl(',
               ))
+          screen_lib=Path("rust/mpfree-screen-log/src/lib.rs").read_text()
+          screen_main=Path("rust/mpfree-screen-log/src/main.rs").read_text()
+          assert '#![forbid(unsafe_code)]' in screen_lib and '#![forbid(unsafe_code)]' in screen_main
+          # The test-boot screen log writes the framebuffer and its sysfs pan file only:
+          # no new files except the host-only --preview (create_new), no truncation, no processes.
+          assert screen_main.count('.create_new(true)') == 1 and '.create(true)' not in screen_main
+          assert '.truncate(' not in screen_main and 'remove_file' not in screen_main
+          for pathtext in (screen_lib, screen_main):
+              assert not any(needle in pathtext for needle in (
+                  'std::process::Command', 'std::net::', 'ioctl', '/dev/mmc', '/dev/sd', 'systemctl',
+              ))
           touch_lib=Path("rust/mpfree-touch/src/lib.rs").read_text()
           touch_main=Path("rust/mpfree-touch/src/main.rs").read_text()
           assert '#![forbid(unsafe_code)]' in touch_lib
@@ -778,4 +789,40 @@ jobs:
           print("PASS: ARMv7 ELF32 EABI5 hard-float and GLIBC <=2.39")
           PY
           echo "No executables uploaded or run on MPC by CI."
+      - name: Build and check the static screen log program for the kexec test boot (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-screen-log
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-screen-log must be statically linked"; exit 1
+          fi
+          # Run it under qemu against a fake framebuffer and sysfs folder (no device).
+          sudo apt-get install -y --no-install-recommends qemu-user
+          t=$(mktemp -d)
+          mkdir "$t/sys"
+          printf 'U:800x1280p-0\n' > "$t/sys/modes"
+          echo 3200 > "$t/sys/stride"
+          echo 32 > "$t/sys/bits_per_pixel"
+          : > "$t/sys/pan"
+          truncate -s $((800 * 3840 * 4)) "$t/fb"
+          printf 'line one\nline two\n' | timeout 60 qemu-arm "$f" --rotation 270 --fb "$t/fb" --sysfs "$t/sys"
+          test "$(cat "$t/sys/pan")" = "0,0"
+          test "$(stat -c %s "$t/fb")" = $((800 * 3840 * 4))
+          python3 - "$t/fb" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read(800 * 1280 * 4)
+          # The title row is blue (B, G, R, X = 160, 60, 20, 0) where the viewer sees the top of the screen:
+          # with rotation 270 that is native x = 1 (logical y = 1), here at native y = 1279 - 800 (logical x = 800).
+          o = (1279 - 800) * 3200 + 1 * 4
+          assert data[o:o + 4] == bytes([160, 60, 20, 0]), data[o:o + 4]
+          assert any(data), "nothing was drawn"
+          print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
+          PY
 

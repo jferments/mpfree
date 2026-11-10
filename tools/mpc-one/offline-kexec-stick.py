@@ -31,6 +31,10 @@ What changes in the COPY of the root filesystem (the image itself is only read):
   - key-only root SSH on port 2222: a host key made here and your public key
   - a service that copies the boot log, failed units and network state to
     the stick's log partition every 10 seconds (it writes only that partition)
+  - a service that shows the live log on the MPC's screen: our program
+    mpfree-screen-log (rust/mpfree-screen-log, built for ARM beforehand) reads
+    `journalctl -f` and draws it on /dev/fb0, turned by the panel's rotation
+    from the device tree; it writes only the framebuffer
   - root's password field, only if it marks the account locked ("!"), is set
     to "*" so OpenSSH accepts key logins; no password works either way
 
@@ -43,6 +47,18 @@ Inputs, found automatically:
   the running tree  live.dtb in the newest kexec-preflight-*/ folder (from
                     collect-over-ssh.sh --kexec-preflight)
   your public key   $MPC_KEY.pub (default /home/jesse/.ssh/mpc_one_autorun_ed25519.pub)
+  the screen log    rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-screen-log
+                    in this clone (or $MPFREE_SCREEN_LOG): a static ARM EABI5
+                    hard-float executable, built with
+                    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+                    RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
+                    cargo build --manifest-path rust/Cargo.toml --release --locked \
+                      --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+
+The device tree also gets the Ethernet PHY's ID (Realtek RTL8211E, as 3.6.0
+reads it on the reference unit). 3.6.0 holds the PHY in reset when it shuts
+down for the jump, and without the ID the new kernel reads it from the PHY
+before releasing that reset, finds nothing and has no Ethernet.
 """
 import argparse
 import glob
@@ -52,6 +68,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -70,6 +87,14 @@ LINUX_FS_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 SECTOR = 512
 ALIGN = 2048                        # 1 MiB, in sectors
 LOG_SIZE = 32 << 20
+ETHERNET = "/ethernet@ff290000"
+# The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
+# 0x001cc915, Realtek RTL8211E; docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md).
+PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
+PANEL = "/mipi@ff960000/panel@0"
+SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
+                                "mpfree-screen-log")
+SCREEN_LOG_MAX = 16 << 20
 SAFE = re.compile(r"^[A-Za-z0-9@._+/=-]+$")
 SAFE_UNIT = re.compile(r"^[A-Za-z0-9@._\\-]+$")
 
@@ -180,6 +205,26 @@ while :; do
   sync
   sleep 10
 done
+"""
+# Like the log service: started early and kept through a switch to emergency mode.
+SCREEN_UNIT = """[Unit]
+Description=MPFree test boot: show the live log on the MPC's screen
+DefaultDependencies=no
+After=systemd-journald.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'journalctl -b -f -n 100 --no-pager --no-hostname -o short-monotonic 2>&1 | /etc/mpfree-test/mpfree-screen-log --rotation {rotation}'
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=sysinit.target
 """
 # Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
 LOG_UNIT = """[Unit]
@@ -303,6 +348,61 @@ class Image:
         return int(blocks.group(1)) * int(size.group(1)), int(inodes.group(1))
 
 
+def phy_node(tree):
+    """The Ethernet PHY node the MAC points to, checked to be the layout this fix is for."""
+    gmac = tree.find(ETHERNET)
+    handle = gmac.prop("phy-handle") if gmac is not None else None
+    path = dtb.phandles(tree).get(struct.unpack(">I", handle)[0]) if handle and len(handle) == 4 else None
+    node = tree.find(path) if path else None
+    if node is None or not path.startswith(ETHERNET + "/"):
+        raise Stop(f"the new board file's {ETHERNET} has no phy-handle to a PHY node under it")
+    if node.prop("reg") != struct.pack(">I", 1) or node.prop("reset-gpios") is None or \
+            dtb.strings_of(node.prop("compatible") or b"") != ["ethernet-phy-ieee802.3-c22"]:
+        raise Stop(f"the PHY node {path} is not at address 1 with compatible \"ethernet-phy-ieee802.3-c22\" "
+                   "and a reset-gpios line; this tool does not know this layout")
+    return path
+
+
+def panel_rotation(tree):
+    """The panel's rotation property (degrees counter-clockwise), or 0 without one."""
+    node = tree.find(PANEL)
+    value = node.prop("rotation") if node is not None else None
+    if value is None:
+        return 0
+    degrees = struct.unpack(">I", value)[0] if len(value) == 4 else None
+    if degrees not in (0, 90, 180, 270):
+        raise Stop(f"{PANEL}/rotation is not 0, 90, 180 or 270")
+    return degrees
+
+
+def screen_log_program():
+    """Our screen log program, checked to be a static ARM EABI5 hard-float executable. Returns (path, bytes)."""
+    path = os.path.realpath(os.environ.get("MPFREE_SCREEN_LOG", SCREEN_LOG_BUILT))
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build the screen log program first (see the top of this file, or the docs)")
+    with open(path, "rb") as fh:
+        data = fh.read(SCREEN_LOG_MAX + 1)
+    problem = None
+    if len(data) > SCREEN_LOG_MAX or len(data) < 52 or data[:7] != b"\x7fELF\x01\x01\x01":
+        problem = "not a 32-bit little-endian ELF file of a plausible size"
+    else:
+        e_type, e_machine = struct.unpack_from("<HH", data, 16)
+        phoff, = struct.unpack_from("<I", data, 28)
+        flags, = struct.unpack_from("<I", data, 36)
+        phentsize, phnum = struct.unpack_from("<HH", data, 42)
+        if e_type != 2 or e_machine != 40:
+            problem = "not an ARM executable"
+        elif flags & 0xFF000000 != 0x05000000 or not flags & 0x400:
+            problem = "not EABI5 hard-float"
+        elif phentsize < 32 or phoff + phnum * phentsize > len(data):
+            problem = "its program headers run past the end"
+        elif any(struct.unpack_from("<I", data, phoff + i * phentsize)[0] in (2, 3) for i in range(phnum)):
+            problem = "dynamically linked (it must be static: 3.10.0's C library may differ)"
+    if problem:
+        raise Stop(f"{path} is {problem}; rebuild it as shown at the top of this file")
+    return path, data
+
+
 def newest(pattern):
     found = sorted(glob.glob(pattern))
     return found[-1] if found else None
@@ -380,7 +480,7 @@ def running_release(pre, work, target_release):
     return release, how
 
 
-def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
+def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note."""
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
@@ -391,13 +491,15 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
         if found is None or (kind and found != kind):
             raise Stop(f"the image has no {kind or 'file'} {path}; this tool does not know this layout")
     free_bytes, free_inodes = img.free()
-    if free_bytes < (4 << 20) or free_inodes < 64:
+    if free_bytes < len(screen_log) + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
     new_paths = (["/etc/systemd/system/" + u for u in MASK_UNITS] +
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
                   "/etc/systemd/system/mpfree-test-logs.service", "/etc/mpfree-test",
+                  "/etc/systemd/system/mpfree-test-screen.service",
                   "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service",
+                  "/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service",
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
                  ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS])
     for path in new_paths:
@@ -418,6 +520,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
     add("/etc/mpfree-test/save-logs.sh", LOG_SCRIPT.format(log_uuid=log_uuid), 0o755)
     add("/etc/systemd/system/mpfree-test-sshd.service", SSHD_UNIT, 0o644)
     add("/etc/systemd/system/mpfree-test-logs.service", LOG_UNIT, 0o644)
+    add("/etc/mpfree-test/mpfree-screen-log", screen_log, 0o755)
+    add("/etc/systemd/system/mpfree-test-screen.service", SCREEN_UNIT.format(rotation=rotation), 0o644)
     stubbed, absent = [], []
     for prog in STUB_PROGRAMS:
         kind = img.kind(prog)
@@ -452,6 +556,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid):
         "/etc/systemd/system/mpfree-test-sshd.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"] = \
         "/etc/systemd/system/mpfree-test-logs.service"
+    links["/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"] = \
+        "/etc/systemd/system/mpfree-test-screen.service"
 
     commands = ["mkdir /etc/mpfree-test"]
     for folder in MADE_IF_MISSING:
@@ -556,6 +662,7 @@ def main(argv):
         pubkey = fh.read().strip() + "\n"
     if len(pubkey.splitlines()) != 1 or run(["ssh-keygen", "-l", "-f", pub_path]).returncode != 0:
         raise Stop(f"{pub_path} is not a single public key")
+    screen_path, screen_log = screen_log_program()
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     os.makedirs(work, exist_ok=True)
@@ -611,11 +718,17 @@ def main(argv):
         chosen = target_tree.find("/chosen")
         if chosen is not None and chosen.prop("inmusic,acvs-emmc-content") is not None:
             drops = ["--drop", "/chosen/inmusic,acvs-emmc-content"]  # tells Akai's units the content is on eMMC
+        phy = phy_node(target_tree)
+        rotation = panel_rotation(target_tree)
         dtb_out = os.path.join(outdir, "kexec.dtb")
         rc = dtb.kexec_dtb_main(["--target", target, "--reference", reference, "--live", live_path,
-                                 "--out", dtb_out, *drops], OUT)
+                                 "--out", dtb_out, *drops, "--add-compatible", f"{phy}={PHY_ID_COMPATIBLE}"], OUT)
         if rc != 0:
             raise Stop("offline-dtb.py kexec-dtb stopped; see above")
+        if dtb.strings_of(dtb.load(dtb_out).find(phy).prop("compatible"))[:1] != [PHY_ID_COMPATIBLE]:
+            raise Stop(f"{phy} in kexec.dtb does not start with {PHY_ID_COMPATIBLE}")
+        OUT.say(f"Ethernet PHY {phy}: the kernel takes its ID ({PHY_ID_COMPATIBLE}) from the tree, then resets it")
+        OUT.say(f"panel rotation (from {PANEL}): {rotation} degrees; the screen log is drawn to match")
         OUT.say()
 
         OUT.say("=== Changes to the copy of the root filesystem ===")
@@ -624,7 +737,10 @@ def main(argv):
         if res.returncode != 0:
             raise Stop("ssh-keygen failed:\n" + res.stdout)
         root_uuid, log_uuid = str(uuid.uuid4()), str(uuid.uuid4())
-        root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid)
+        OUT.say(f"screen log program: {screen_path} ({len(screen_log)} bytes, "
+                f"sha256 {hashlib.sha256(screen_log).hexdigest()}, static ARM EABI5 hard-float)")
+        root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
+                                                                  screen_log, rotation)
         for path in links:
             OUT.say(f"link     {path} -> {img.link(path)}")
         for path in written:

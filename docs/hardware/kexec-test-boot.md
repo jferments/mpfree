@@ -34,6 +34,22 @@ Some points here are inferences, not yet checked on the unit:
   - one memory reservation: the tree's own location, `0xd000` bytes, the size of the tree
 - `kexec-dtb` copies all of these into 3.10.0's file except `bootargs`, which kexec sets, and the reservation.
 - It drops `/chosen/inmusic,acvs-emmc-content`, which tells Akai's units that the content partition is on the eMMC.
+- It puts the Ethernet PHY's ID first in the PHY node's compatible list: `"ethernet-phy-id001c.c915"` (Realtek RTL8211E, as 3.6.0 reads it on this unit). Both releases' board files give the PHY (`/ethernet@ff290000/mdio/ethernet-phy@1`) its own reset line, `reset-gpios` on GPIO4 B0, active low, with Akai's 10 ms assert and 30 ms deassert times. The kernel drives that line low when it lets go of the PHY, as 3.6.0 does when it shuts down for the jump. Without an ID in the tree, the new kernel reads the ID from the PHY before it takes that line, so it finds nothing (the first boot's `MDIO device at address 1 is missing`). With the ID, it skips that read, takes the line, resets the PHY with Akai's times and only then talks to it. This is the kernel's documented way for PHYs whose ID can't be read at that point.
+
+## The screen
+
+Neither kernel has a text console on the screen (`CONFIG_FRAMEBUFFER_CONSOLE` is off in both), so the stick adds our own program, [`mpfree-screen-log`](../../rust/mpfree-screen-log). A service started early in the boot pipes `journalctl -f` into it, and it draws the newest lines on `/dev/fb0` about four times a second, with a title row and a status row (uptime and each network link's state). It reads the framebuffer's size, stride and depth from sysfs. It turns the text by the panel's `rotation` in the device tree (270 on the MPC One: the panel's left edge is at the top), which agrees with the M12 touch calibration. After the first frame, it writes `0,0` to the framebuffer's sysfs `pan` file. That makes the kernel's framebuffer emulation set its mode, which turns the panel on. It writes nothing else.
+
+It is a static ARM executable, so it doesn't depend on 3.10.0's C library. Build it on the workstation before the builder:
+
+```bash
+CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
+cargo build --manifest-path rust/Cargo.toml --release --locked \
+  --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+```
+
+The builder refuses anything but a static ARM EABI5 hard-float executable. CI builds it the same way and runs it under `qemu-arm` against a fake framebuffer. `--preview FILE.ppm` draws a sample frame on the workstation instead.
 
 ## Tools, in order
 
@@ -41,7 +57,7 @@ Some points here are inferences, not yet checked on the unit:
 | --- | --- | --- |
 | 1 | `bash tools/mpc-one/offline-rootfs-survey.sh` and `--from-backup` | Workstation only. It copies each version's `/boot` to `~/mpfree-work/boot-files/<release>/` |
 | 2 | `bash tools/mpc-one/collect-over-ssh.sh --kexec-preflight` | Read-only on the MPC. It copies the running tree to `~/mpfree-work/kexec-preflight-*/live.dtb` |
-| 3 | `python3 tools/mpc-one/offline-kexec-stick.py` | Workstation only, no devices. It changes a copy of the rootfs and writes a new folder `~/mpfree-work/kexec-stick-<UTC>-*/`: `stick.img` (GPT, with the rootfs as partition 1 and a 32 MiB log partition as partition 2), `zImage`, `kexec.dtb`, `cmdline.txt` and `known_hosts` |
+| 3 | `python3 tools/mpc-one/offline-kexec-stick.py`, after building `mpfree-screen-log` ([the screen](#the-screen)) | Workstation only, no devices. It changes a copy of the rootfs and writes a new folder `~/mpfree-work/kexec-stick-<UTC>-*/`: `stick.img` (GPT, with the rootfs as partition 1 and a 32 MiB log partition as partition 2), `zImage`, `kexec.dtb`, `cmdline.txt` and `known_hosts` |
 | 4 | `python3 tools/mpc-one/write-test-stick.py` | **Erases one USB stick.** It writes only to the one removable whole disk on USB of 256 GiB or less, with nothing mounted, no swap and no holders, and only after you type `WRITE` |
 | 5 | `MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot` | **State-changing, RAM only on the MPC.** With the stick in the MPC's USB-A port, it runs [`host_kexec_boot.py`](../../tools/mpc-one/host_kexec_boot.py): checks on the workstation and on 3.6.0 (read-only), copies `zImage` and `kexec.dtb` to `/run`, runs `kexec --load`, and jumps (`systemctl kexec`) only after you type `BOOT 3.10`. Then it checks 3.10.0 over SSH. Details below |
 | 6 | Power-cycle with the stick out, then `collect-over-ssh.sh --boot-map` | The MPC is back on 3.6.0. The boot map compares the boot-partition hashes and write counters with the run before the test |
@@ -80,6 +96,7 @@ The stick's log service starts early in 3.10.0's boot (in `sysinit.target`) and 
 - **3.10.0 itself:** its startup finished 7.7 s after its kernel started, with no failed units and sshd listening on port 2222, and the log service wrote to the stick every 10 s.
 - **Ethernet failed:** the MAC (`rk_gmac-dwmac ff290000.ethernet`) probed, but `mdio_bus stmmac-0: MDIO device at address 1 is missing`, and later `eth0: cannot attach to PHY (error: -ENODEV)`. Under 3.6.0 the RTL8211E answers at address 1. **Inferred, not verified:** 3.6.0 leaves the PHY held in reset when it shuts down for the jump, and 3.10.0 reads the PHY's ID before releasing the reset. `offline-kexec-details.py` shows how the board files wire the PHY reset, which settles it.
 - **Screen:** the display driver came up (`fb0`) and a getty started on `tty1`, but nothing appeared. The kernel log has no framebuffer console line, so 3.10.0's kernel probably has none built in (inferred; its build config, step 8, settles it).
+- **Fixes for the next boot:** the PHY's ID in `kexec.dtb` ([which device tree](#which-device-tree)), and the on-screen log ([the screen](#the-screen)). `offline-kexec-details.py` showed the PHY's reset line in both board files and confirmed that neither kernel has a framebuffer console.
 - **Reserved memory:** 3.10.0's kernel skipped U-Boot's `framebuffer` and `dma-unusable` regions as `invalid reg property`, after Akai's own fixup converted them, so DRM had no reserved framebuffer. That only affects the splash hand-over.
 
 ## Keep it private

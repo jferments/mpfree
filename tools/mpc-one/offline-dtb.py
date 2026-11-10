@@ -23,7 +23,7 @@ Commands:
                        serial-number, bootargs, rng-seed and kaslr-seed are
                        never printed, so it is safe on a tree read from the MPC.
   kexec-dtb --target NEW.dtb --reference OLD.dtb --live LIVE.dtb --out OUT.dtb
-            [--drop /path/property]...
+            [--drop /path/property]... [--add-compatible /path=STRING]...
                        build the device tree for booting another kernel by
                        kexec: NEW (the other version's board file) plus what
                        U-Boot added at boot (the differences from OLD, the
@@ -35,6 +35,11 @@ Commands:
                        U-Boot's memory reservations (it reserves the tree's
                        own old location; the new kernel reserves its tree
                        itself). --drop removes a property from the result.
+                       --add-compatible puts STRING first in a node's
+                       compatible list (for an Ethernet PHY node,
+                       "ethernet-phy-idXXXX.XXXX" makes the kernel take the
+                       PHY's ID from the tree instead of reading it from a
+                       PHY that may still be held in reset).
                        OUT must not exist. The printed report names
                        properties only, never values.
 
@@ -495,7 +500,7 @@ def prop_path(path, name):
     return f"{path.rstrip('/')}/{name}"
 
 
-def kexec_dtb(target, reference, live, drops=()):
+def kexec_dtb(target, reference, live, drops=(), adds=()):
     """Apply U-Boot's runtime changes (reference -> live) to target and disable the eMMC.
 
     Returns (notes, problems). Notes name every change; problems are reasons to stop.
@@ -544,6 +549,18 @@ def kexec_dtb(target, reference, live, drops=()):
             continue
         node.del_prop(name)
         notes.append(f"dropped as asked: {item}")
+    for item in adds:
+        path, _, text = item.partition("=")
+        node = target.find(path) if path.startswith("/") else None
+        old = strings_of(node.prop("compatible") or b"") if node is not None else None
+        if node is None or old is None or not text or strings_of(text.encode() + b"\x00") != [text]:
+            problems.append(f"--add-compatible {item}: no such node with a compatible list, or a bad string")
+            continue
+        if text in old:
+            problems.append(f"--add-compatible {item}: the node already has it")
+            continue
+        node.set_prop("compatible", b"".join(t.encode() + b"\x00" for t in [text] + old))
+        notes.append(f"compatible of {path} is now {show(node.prop('compatible'))}")
     if live.reserved != target.reserved:
         notes.append(f"not copied: memory reservations (running tree {len(live.reserved)}, "
                      f"result keeps the new file's {len(target.reserved)})")
@@ -575,13 +592,16 @@ def verify_kexec_dtb(tree, board):
 
 
 def kexec_dtb_main(args, out):
-    opts, drops, i = {}, [], 0
+    opts, drops, adds, i = {}, [], [], 0
     while i < len(args):
         key = args[i]
-        if key not in ("--target", "--reference", "--live", "--out", "--drop") or i + 1 >= len(args):
+        if key not in ("--target", "--reference", "--live", "--out", "--drop", "--add-compatible") or \
+                i + 1 >= len(args):
             return 2
         if key == "--drop":
             drops.append(args[i + 1])
+        elif key == "--add-compatible":
+            adds.append(args[i + 1])
         else:
             opts[key] = args[i + 1]
         i += 2
@@ -594,7 +614,7 @@ def kexec_dtb_main(args, out):
     for label, tree in (("--target", target), ("--reference", reference)):
         if board not in compatible(tree):
             raise DtbError(f"{label} is not a {board} tree: {', '.join(compatible(tree))}")
-    notes, problems = kexec_dtb(target, reference, live, drops)
+    notes, problems = kexec_dtb(target, reference, live, drops, adds)
     for note in notes:
         out.write(note + "\n")
     blob = build(target)

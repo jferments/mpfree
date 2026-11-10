@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-screen-log"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "mpfree_screen_log"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mpfree-screen-log"
+path = "src/main.rs"
+
+[dependencies]
