@@ -2,7 +2,7 @@
 
 **Status:** first owner run **verified** on 2026-11-09 (see [First run](#first-run-2026-11-09)). Tested against a fake device in CI.
 
-A verified, off-device copy of the whole eMMC is the first condition of the Tier 1 recovery gate in the [recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md), and every later recovery path ends with "write the backup back." The reference unit is not stock ([device modifications](DEVICE_MODIFICATIONS.md)), so Akai's installer cannot recreate its current state. Only this backup can.
+A verified, off-device copy of the whole eMMC is the first condition of the Tier 1 recovery gate in the [recovery strategy](../research/recovery-and-os-strategy.md), and every later recovery path ends with "write the backup back." The reference unit is not stock ([device modifications](device-modifications.md)), so Akai's installer cannot recreate its current state. Only this backup can.
 
 ## What it does on the MPC
 
@@ -43,7 +43,7 @@ Backups go to `~/mpfree-backups/`, **outside the git clone**, so they can't be c
 2. **Same bytes as the MPC sees:** the copied stream's MBR/GPT, `p1`–`p6`, `boot0` and `boot1` regions must hash the same as the MPC's own hashes from step 1.
 3. **No changes during the copy:** write and discard counters for `p1`–`p6`, `boot0` and `boot1` must not move between the first counter read and the end of the copy, and the MPC must not reboot.
 4. **Workstation disk:** each image is re-read from disk, with that file's page cache dropped, and must match the hash computed while receiving.
-5. **Baseline:** `p1`, `p3`–`p6`, `boot0` and `boot1` are compared with the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) hashes (exit status 3 on a difference).
+5. **Baseline:** `p1`, `p3`–`p6`, `boot0` and `boot1` are compared with the [boot map](boot-map.md) hashes (exit status 3 on a difference).
 
 `p7` (content) and `p8` (data) are mounted read-write. Their write counters are reported in the manifest. If they changed during the copy, those partitions are captured like a power-loss snapshot. SSH's per-packet integrity check covers their bytes in transit.
 
@@ -74,7 +74,7 @@ sha256sum -c SHA256SUMS
 Owner-run at 23:36 UTC on the reference MPC One (firmware 3.6.0, state `MOD-001+MOD-002`). Log SHA-256 `6b69ad44dd357fd4d1109977be2e85d727396c7e9d161939f9c760e41e58f809` (kept privately on the workstation, not committed).
 
 - **Verified.** All checks passed, exit status 0.
-- `p1`, `p3`–`p6`, `boot0` and `boot1` match the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) hashes exactly. The MPC's own hashes of the MBR/GPT, `p1`–`p6` and both boot areas match the copied data.
+- `p1`, `p3`–`p6`, `boot0` and `boot1` match the [boot map](boot-map.md) hashes exactly. The MPC's own hashes of the MBR/GPT, `p1`–`p6` and both boot areas match the copied data.
 - Zero writes or discards on `p1`–`p6` and both boot areas during the copy, and no reboot.
 - `p7`: no writes during the copy. `p8`: 96 sectors (48 KiB) written during the copy, most likely the factory app saving settings or logs (not checked), so `p8` is captured like a power-loss snapshot.
 - 7,457 MiB in 193 s (40.5 MB/s). The 4 MiB boot areas took under a second each.

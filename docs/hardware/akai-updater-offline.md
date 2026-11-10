@@ -2,14 +2,14 @@
 
 **Status:** run by the owner on the real backup on 2026-11-10. Both hashes matched the boot map. [Findings](#findings-2026-11-10) below.
 
-Before the reference unit takes any official update, and before the Tier 2 gate in the [recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md), we need to know what an Akai update writes: which partitions, in what order, and what it checks first. Part of the answer is on the MPC already: `/opt/ramfs-update.squashfs` sits in the rootfs (`p6`), and the [eMMC backup](emmc-backup.md) holds a verified copy of it.
+Before the reference unit takes any official update, and before the Tier 2 gate in the [recovery strategy](../research/recovery-and-os-strategy.md), we need to know what an Akai update writes: which partitions, in what order, and what it checks first. Part of the answer is on the MPC already: `/opt/ramfs-update.squashfs` sits in the rootfs (`p6`), and the [eMMC backup](emmc-backup.md) holds a verified copy of it.
 
 ## What it does
 
 [`offline-akai-updater.sh`](../../tools/mpc-one/offline-akai-updater.sh) runs **on the workstation only**. It makes no SSH or network connection, so the MPC doesn't need to be on.
 
 1. Picks the newest verified backup (a folder with `SHA256SUMS`) in `~/mpfree-backups`.
-2. Copies the `p6` region of `mmcblk0.img` into a new work folder and checks it against the `p6` hash in the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md). It stops if they differ. The backup itself is only read.
+2. Copies the `p6` region of `mmcblk0.img` into a new work folder and checks it against the `p6` hash in the [boot map](boot-map.md). It stops if they differ. The backup itself is only read.
 3. Reads that copy with `debugfs`, which is read-only unless given `-w` (never used). It copies out:
    - `/opt/ramfs-update.squashfs`, checked against its boot-map hash
    - `/boot/boot.scr.uimg`, U-Boot's boot script
@@ -53,7 +53,7 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 
 - **`az01-update` exists, at `/usr/sbin/az01-update`** (found by the rootfs survey, 2026-11-10, in both 3.6.0 and 3.10.0). The boot map listed the name without a folder. An earlier version of this page looked only in `/usr/bin` and wrongly said the program doesn't exist.
 - **What starts the RAM updater: `/usr/lib/libaz01-prog.so.1.3`**, an inMusic library. It is the only file in `p6` whose contents mention `ramfs-update` or `erase-data-partition` (owner's second run, 2026-11-10). See [How an update is launched](#how-an-update-is-launched).
-- `boot.scr.uimg` has no update branch. It loads `zImage` and the board DTB (plus an `az01b` overlay on that board) and boots with `fsck.repair=yes`. Update Mode stays U-Boot's own `fastboot 0`, as the [boot map](MPC_ONE_3_6_0_BOOT_MAP_20261109.md) found.
+- `boot.scr.uimg` has no update branch. It loads `zImage` and the board DTB (plus an `az01b` overlay on that board) and boots with `fsck.repair=yes`. Update Mode stays U-Boot's own `fastboot 0`, as the [boot map](boot-map.md) found.
 - The other `update`/`fw` units are stock systemd ones, plus Akai's `touch-fw-update.service` (Ilitek touch firmware) and `xmos-update.service`, which only runs when the device tree has no `sound` node. This unit uses I²S audio, so it probably never runs here.
 
 ### How an update is launched
@@ -72,7 +72,7 @@ The flag list and argument order are reconstructed from neighbouring strings, so
 
 **What this means for MPFree:**
 
-- **Akai uses kexec on this board for every USB and online update.** It boots its own kernel from the running system with a RAM disk, which is the route we planned for testing our own kernel in RAM ([recovery strategy](../engineering/RECOVERY_AND_OS_STRATEGY.md), option 1). It doesn't prove our kernel will come up cleanly, but it shows this hardware and kernel handle kexec in normal use.
+- **Akai uses kexec on this board for every USB and online update.** It boots its own kernel from the running system with a RAM disk, which is the route we planned for testing our own kernel in RAM ([recovery strategy](../research/recovery-and-os-strategy.md), option 1). It doesn't prove our kernel will come up cleanly, but it shows this hardware and kernel handle kexec in normal use.
 - **There are three ways an update reaches the eMMC.** The desktop updater writes over USB in Update Mode (U-Boot fastboot). Standard U-Boot fastboot can flash any GPT partition by name, including `uboot-spl` and `uboot`, but whether Akai's build allows that is unverified. USB-drive and online updates run the RAM updater above, which can write U-Boot itself and erase `/data`.
 - **Updates and factory reset need mains power.** The library refuses both without it, which lowers the risk of a half-written bootloader.
 
