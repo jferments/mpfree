@@ -937,3 +937,58 @@ Reading the **on-disk payload bytes** at linked VA `0x0014D690` yields `0x000000
 - Confirm image types supported by `0x00101744` (bootm-like), the validated `bootm` arguments, any boot-signature checks, and device-tree/ramdisk handoff.
 - Preserve distinction between U-Boot Fastboot USB RAM boot and genuine RK3288 silicon MaskROM recovery. The former is now strongly supported by the binary; the latter remains unproven.
 - No live Fastboot `download`, `boot`, `flash`, `erase`, `oem` or ROM register experiments have been performed.
+
+## 19. Offline Fastboot transfer completion and bootm image-format trace (owner, 2026-11-10)
+
+New owner report: private `fastboot-boundaries-next.txt`, extracted after SHA256 verification of the same 2019 p3 U-Boot raw payload (`b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`). The selected ARMv7 Thumb byte windows were decoded offline with LLVM. This section is *measured from the provided binary* unless a claim is labelled inference. No live USB or flash operation occurred.
+
+### 19.1 Fastboot request and response text
+
+Explicit firmware strings: `Starting download of %d bytes`, `FAILdata invalid size`, `FAILdata too large`, and `DATA%08x`. These confirm the expected Fastboot size-validation and positive DATA handshake strings. The separate gate failure is `FAILpermission denied` (§18). Their presence alone does not establish which branch generates each error, but the earlier download handler disassembly showed a base-16 size parser and size bound `0x70000000` (1.75 GiB). The latter is **a protocol limit, not a safe memory map**, and the board's actual usable RAM carveouts still need separate verification.
+
+### 19.2 Receive callback termination branch
+
+The existing USB receive callback (entry `0x00122A10`) includes the following measured instructions in its completion path:
+
+```asm
+00122A74 ldr   r2,[r6]        ; byte count state
+00122A76 ldr.w r3,[r8]        ; requested-size state
+00122A7A cmp   r2,r3
+00122A7C blo   0x00122AB4   ; not yet complete
+00122A7E movs  r3,#0
+00122A80 str.w r3,[r8]       ; clear pending-size state
+00122A84 ldr   r3,[pc,#0x40] ; pointer literal 0x00122781 (Thumb)
+00122A8A str   r3,[r5,#0x10] ; USB request complete callback
+00122A8C mov.w r3,#0x1000
+00122A90 str   r3,[r5,#0x4]  ; USB request length 4096
+00122A92 bl    0x0012DBF4   ; formats a reply; argument string needs confirmation
+00122A98 bl    0x00122734   ; shared Fastboot response writer
+00122AAE ldr   r3,[r3,#0x10]
+00122AB0 blx   r3            ; invoke USB request operation via driver pointer
+```
+
+At `0x00122AB4` the incomplete-transfer branch calls `0x0012247C`, stores its result as the next request length, and rejoins the USB request submission path. The successful-transfer branch acknowledges the completed download and resets transfer state; the exact response string can be established from the literal pool by a focused next pass. This is an executed-code-path finding, not merely a recognized `download:` string.
+
+### 19.3 Legacy uImage handling in the built-in bootm command
+
+The `do_bootm`-shaped entry at `0x00101744` dispatches a boot operation using parsed address/arguments and delegates work to `0x0010A6A4`. A nearby image-format handler at `0x001017FC` calls `0x0010E390` and branches based on format codes 1 and 2. On the code-1 path, it compares the image's first word against the little-endian representation `0x56190527` of big-endian legacy uImage magic **`0x27051956`** (visible as literal bytes `27 05 19 56`), then invokes additional validation/boot helpers (`0x0010E000`, `0x0010E1CC`, `0x0010E02A`, etc.). The code-2 path invokes helpers `0x0010F49C`, `0x0010F728`, `0x0010F388` and may represent FIT/FDT handling, but its exact constraints are unproven.
+
+**Interpretation:** Legacy U-Boot image recognition is strongly supported by the machine code. Do **not** yet claim the Fastboot path boots any arbitrary legacy uImage, that a FIT image is supported, that all CRC checks were identified, or that the MPFree kernel/ramdisk/DTB handoff will succeed. Boot-image load address, entry point, architecture/type, decompression, RAM placement and DTB compatibility still require scrutiny before live testing.
+
+### 19.4 Verified Fastboot exit state reader
+
+`0x00121DC4` reads a byte from the global at `0x0014D658` and returns it. `0x00121DD0` sets that byte to 1, while `0x00121DDC` sets it to 0. The previously measured Fastboot `continue` USB completion callback branches to the setter. This is a coherent exit-request/read/clear design, although the main event loop caller that polls this helper remains to be traced.
+
+### 19.5 Runtime state is not derived from raw file words
+
+The offline scan found the on-disk words at `0x0014D658` and `0x0014D690` equal `0x00000017`, and the on-disk word at `0x0014D684` equals `0x001304A4`. These **are not trustworthy runtime initial values** of the exit flag, permission flag, or download size: the image may have startup initialization, BSS writes, relocation, and nontrivial memory layout. The gate at `0x00122834` *at runtime* checks the current word at `0x0014D690`, and an OEM branch sets it to 1. Its actual power-on state is still unknown. Two observed literal pointers refer to that permission-global address, at raw code+`0x2284C` and code+`0x22928`; the absence of other full-address literals is not proof there are no computed references.
+
+### 19.6 Next research before any live test
+
+- Trace the USB response sequence and `0x00122780` completion callback; verify the positive download response and the final copy/sync behavior.
+- Reconstruct U-Boot's actual RAM bank/reserved region/stack/relocation limits and memory-buffer size, not merely the `0x70000000` protocol bound.
+- Identify `0x0010E390` image classification and the two image-format branches, including the legacy uImage CRC, load-address, entry-point and DTB requirements.
+- Recover runtime initialization and all callers of the permission-gate check and exit-flag reader. Do not assume USB downloads are accessible in the default state.
+- Continue separate Rockchip silicon BootROM/MaskROM study; nothing here proves an SPL-to-MaskROM handoff.
+
+No MPC reboot, USB Fastboot traffic, eMMC writes or permission-changing commands were performed in this phase.
