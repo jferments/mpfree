@@ -13,7 +13,7 @@
 //! reaches the panel. Hello MPC round 4 showed it: one write per row left the
 //! old picture showing around the panels.
 
-use crate::canvas::SoftCanvas;
+use crate::canvas::{Image, SoftCanvas};
 use crate::geom::Rect;
 use mpfree_screen_log::{Geometry, PixelFormat, Rotation};
 use std::fs::{self, File, OpenOptions};
@@ -116,6 +116,46 @@ impl FbLayout {
     }
 }
 
+impl FbLayout {
+    /// The picture held in `frame` (a whole native frame, as read from the
+    /// framebuffer), turned the way the viewer sees it.
+    pub fn picture(&self, frame: &[u8]) -> Result<Image, String> {
+        let g = &self.geometry;
+        if frame.len() < g.frame_len() {
+            return Err(format!("the frame is {} bytes; the screen needs {}", frame.len(), g.frame_len()));
+        }
+        let (lw, lh) = self.logical_size();
+        let mut img = Image::new(lw, lh);
+        for ly in 0..lh as usize {
+            for lx in 0..lw as usize {
+                let (nx, ny) = g.native(self.rotation, lx, ly);
+                let at = ny * g.stride + nx * g.bytes_per_pixel();
+                img.px[ly * lw as usize + lx] = match g.format {
+                    PixelFormat::Xrgb8888 => {
+                        u32::from_le_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]) & 0x00FF_FFFF
+                    }
+                    PixelFormat::Rgb565 => {
+                        let v = u16::from_le_bytes([frame[at], frame[at + 1]]) as u32;
+                        let (r, gg, b) = ((v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F);
+                        ((r << 3 | r >> 2) << 16) | ((gg << 2 | gg >> 4) << 8) | (b << 3 | b >> 2)
+                    }
+                };
+            }
+        }
+        Ok(img)
+    }
+}
+
+/// What the screen shows now, read from the framebuffer (opened read-only).
+/// The startup screen leaves its last frame there, so the app's loading page
+/// can carry on from it.
+pub fn capture(fb: &Path, layout: &FbLayout) -> Result<Image, String> {
+    let file = OpenOptions::new().read(true).open(fb).map_err(|e| format!("{}: {e}", fb.display()))?;
+    let mut frame = vec![0u8; layout.geometry.frame_len()];
+    file.read_exact_at(&mut frame, 0).map_err(|e| format!("reading the screen: {e}"))?;
+    layout.picture(&frame)
+}
+
 /// The logical pixel shown at native (nx, ny): the inverse of `Geometry::native`.
 fn logical(g: &Geometry, rot: Rotation, nx: usize, ny: usize) -> (usize, usize) {
     let (w, h) = (g.width, g.height);
@@ -192,6 +232,29 @@ mod tests {
             x2 = ((end % line) * 8).div_ceil(bits);
         }
         (x1, y1, x2.max(x1), y2)
+    }
+
+    #[test]
+    fn a_frame_read_back_is_the_picture_that_was_written() {
+        for rot in [Rotation::Deg0, Rotation::Deg90, Rotation::Deg180, Rotation::Deg270] {
+            for bpp in [32, 16] {
+                let g = Geometry::new(6, 10, 6 * bpp as usize / 8 + 8, bpp).unwrap();
+                let layout = FbLayout { geometry: g, rotation: rot };
+                let (w, h) = layout.logical_size();
+                let mut c = SoftCanvas::new(w, h);
+                for (i, p) in c.px.iter_mut().enumerate() {
+                    // Values that survive RGB565 exactly: 5 or 6 bits, repeated into the low bits.
+                    let (r, gg, b) = ((i * 7 % 32) as u32, (i * 13 % 64) as u32, (i * 3 % 32) as u32);
+                    *p = ((r << 3 | r >> 2) << 16) | ((gg << 2 | gg >> 4) << 8) | (b << 3 | b >> 2);
+                }
+                let f = frame(&layout, &c, Rect::new(0, 0, w, h));
+                let img = layout.picture(&f).unwrap();
+                assert_eq!((img.w, img.h), (w, h));
+                assert_eq!(img.px, c.px, "{rot:?} {bpp} bpp");
+            }
+        }
+        let layout = FbLayout { geometry: Geometry::new(4, 4, 16, 32).unwrap(), rotation: Rotation::Deg0 };
+        assert!(layout.picture(&[0u8; 10]).is_err());
     }
 
     #[test]

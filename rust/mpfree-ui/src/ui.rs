@@ -66,6 +66,8 @@ pub enum EventKind {
     Select(usize),
     /// A slider moved, 0.0 to 1.0.
     Value(f32),
+    /// A value stepped down (-1) or up (+1), in row `index`.
+    Step { index: usize, delta: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,9 +134,20 @@ impl Ui {
 
     /// Add a page from a layout spec. Every slot must name a widget added already.
     pub fn add_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
+        let margin = self.theme.gap;
+        self.add_page_with_margin(name, spec, margin)
+    }
+
+    /// Like `add_page`, but the page fills the screen to its edges (no outer
+    /// margin), for a full-screen picture such as the loading page.
+    pub fn add_full_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
+        self.add_page_with_margin(name, spec, 0)
+    }
+
+    fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: i32) -> Result<(), String> {
         let node = layout::parse(spec)?;
         let g = self.theme.gap;
-        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(g);
+        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(margin);
         let mut slots = Vec::new();
         for (slot, r) in layout::solve(&node, area, g) {
             let i = self.widgets.iter().position(|(n, _, _)| *n == slot)
@@ -331,6 +344,16 @@ mod tests {
         ui.show("two").unwrap();
         assert_eq!(ui.paint(&mut c).len(), 1);
         assert_eq!(ui.get::<Probe>("a").unwrap().paints.get(), 1, "a is not on page two");
+    }
+
+    #[test]
+    fn full_pages_reach_the_edges() {
+        let mut ui = ui();
+        ui.add_full_page("full", "a").unwrap();
+        ui.show("full").unwrap();
+        assert_eq!(ui.rect_of("a"), Some(Rect::new(0, 0, 200, 100)));
+        ui.show("two").unwrap();
+        assert_eq!(ui.rect_of("b"), Some(Rect::new(12, 12, 176, 76)));
     }
 
     #[test]
