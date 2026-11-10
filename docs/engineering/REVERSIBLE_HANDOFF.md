@@ -56,7 +56,7 @@ There are deliberately **no executable stop/start commands here**. Handoff remai
 
 ## Hard prerequisites before ANY live takeover
 
-1. **Independent recovery proof**: externally stored, checksum-verified eMMC/boot data and a tested procedure to restore even when factory Linux cannot boot. A successful stock SSH login or untested image file is not enough.
+1. **Recovery proof matched to what the session can damage** (tiered gate, adopted by the owner 2026-11-09; see the [recovery strategy](RECOVERY_AND_OS_STRATEGY.md)). A **Tier 1** session (RAM only, no persistent writes) needs an externally stored, checksum-verified full eMMC backup ([`--backup`](../hardware/emmc-backup.md)), per-partition write counters showing zero writes to `p1`–`p6` across the session, and a stub stop → start rehearsal with no MPFree code. Persistent MPFree files need Tier 2 (Akai Update Mode and `/data` restore rehearsed). Anything that writes the boot chain or rootfs needs Tier 3 (MaskROM recovery proven on this unit). A successful stock SSH login or an unverified image file is not enough.
 2. **Exact-device and firmware allowlist**: check board ID, firmware, kernel, service unit content, boot model and storage map; fail closed if anything is unknown or changed.
 3. **Owner intent and factory quiescence**: confirm project saved, no current recording, exports or file writes; require explicit per-session consent *after* an actionable rollback plan is displayed.
 4. **Separately supervised volatile test session**: independently running watchdog in RAM (`/run` or equivalent), not inside MPFree's render process and not dependent on the laptop/SSH bridge. All changes must be volatile. A local owner cancellation method is mandatory.
@@ -65,7 +65,7 @@ There are deliberately **no executable stop/start commands here**. Handoff remai
 
 **As of today gates 1, 4, 5 and 6 are NOT proven. Any device takeover is blocked.**
 
-**Proposed (awaiting owner adoption):** [RECOVERY_AND_OS_STRATEGY.md](RECOVERY_AND_OS_STRATEGY.md) scopes gate 1 by tier. A session-only takeover with no eMMC writes (Tier 1) would need a full off-device backup and measured zero writes to `p1`–`p6`, not MaskROM-level recovery. Gates 2–6 are unchanged.
+**Adopted 2026-11-09:** gate 1 is scoped by tier, replacing the earlier single "independent unbootable-device recovery" requirement. A Tier 1 session does not need MaskROM-level recovery, because nothing on the eMMC changes and the write counters measure that. Gates 2–6 are unchanged.
 
 ## A pure-Rust mock state machine now exists (SIMULATION ONLY)
 
@@ -118,9 +118,11 @@ Every transition needs an explicit guard and finite timeout. On an error after r
 | Passive service dependency/ExecStop/KillMode/Restart and fd map | **Owner ran report; sanitized evidence documented** |
 | Determine current kernel and runtime ABI compatibility | **Owner ran updated ABI survey; installed GNU libc release banner confirms version 2.39; per-binary dynamic linking remains unproven** |
 | Mock service graph / watchdog timeout / restore test | **Implemented pure Rust simulator + unit tests; no real service manipulation** |
-| Verify independent unbootable-device recovery | **Not done; hard blocker** |
-| Consented manual session-only stock release/restore | **BLOCKED** |
+| Tier 1 gate: verified full eMMC backup (`--backup`) | **Done 2026-11-09:** verified, boot partitions match the boot map, second copy verified on another disk ([details](../hardware/emmc-backup.md#first-run-2026-11-09)) |
+| Tier 1 gate: stub stop → start rehearsal with zero writes to `p1`–`p6` | **Not done; needs owner go-ahead after the backup** |
+| Tier 3 gate: MaskROM recovery proven on this unit | **Not done; blocks any boot-chain or rootfs write** |
+| Consented manual session-only stock release/restore | **BLOCKED until the Tier 1 gate passes** |
 | Use ACVA/DRM/MIDI with MPFree on actual MPC | **BLOCKED** |
 | Persistent end-user installer or automatic USB takeover | **BLOCKED** |
 
-**Next safe action:** owner runs the *revised* `--rtthreads` read-only survey for the missing scheduler policy/RT-priority fields and `--capacity` for actual CPU utilization and process memory proportions. The updated `--abi` has already explicitly confirmed libc 2.39. **Do not stop the stock service yet.** Independent recovery remains the critical blocker.
+**Next safe action:** the verified backup exists (2026-11-09). Next is a written Tier 1 stop → start rehearsal plan for the owner to review. Separately, the *revised* `--rtthreads` and `--capacity` surveys are still useful. The updated `--abi` has already confirmed libc 2.39. **Do not stop the stock service yet.** The first stop → start is the Tier 1 rehearsal, and it needs the owner's go-ahead.

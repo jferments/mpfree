@@ -80,4 +80,5 @@ reboot. No script for this is provided on purpose.
 There is no pristine `p6` on this unit any more. A full eMMC backup taken now
 captures the **modified** rootfs. A clean stock rootfs can only come from
 Akai's official update image. Label backups accordingly
-(`state=MOD-001+MOD-002`).
+(`state=MOD-001+MOD-002`). The first full backup (2026-11-09, [eMMC backup](emmc-backup.md#first-run-2026-11-09))
+carries that label in its manifest.

@@ -32,6 +32,9 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
+          bash -n tools/mpc-one/offline-akai-updater.sh
+          bash -n tools/mpc-one/offline-rootfs-survey.sh
+          sh -n tools/mpc-one/read-only-kexec-preflight.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
@@ -45,6 +48,8 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-ethernet.sh
+          sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           sh -n tools/mpc-one/read-only-audio-midi.sh
           sh -n tools/mpc-one/read-only-midi-counters.sh
@@ -53,6 +58,29 @@ jobs:
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
+      - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends busybox
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py
+      - name: Test the offline Akai update tools against fake backups and images (no device)
+        run: |
+          sudo apt-get install -y --no-install-recommends squashfs-tools e2fsprogs file binutils \
+            device-tree-compiler lz4 lzop zstd fdisk openssh-client
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_updater.py
+          python3 tools/mpc-one/tests/test_offline_update_image.py
+          python3 tools/mpc-one/tests/test_offline_update_extract.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
+          MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
+          python3 tools/mpc-one/tests/test_offline_kexec_details.py
+          MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
+          python3 tools/mpc-one/tests/test_write_test_stick.py
+          python3 tools/mpc-one/tests/test_results.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'
@@ -71,6 +99,9 @@ jobs:
               Path("tools/mpc-one/read-only-rtthreads.sh"),
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-boot-map.sh"),
+              Path("tools/mpc-one/read-only-kexec-preflight.sh"),
+              Path("tools/mpc-one/read-only-ethernet.sh"),
+              Path("tools/mpc-one/read-only-backup-preflight.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
               Path("tools/mpc-one/read-only-audio-midi.sh"),
               Path("tools/mpc-one/read-only-midi-counters.sh"),
@@ -110,6 +141,31 @@ jobs:
           assert '"--process-map")' in wrapper
           assert '"--touchscreen")' in wrapper
           assert '"--boot-map")' in wrapper
+          assert '"--backup")' in wrapper
+          assert '"--kexec-preflight")' in wrapper
+          assert '"--ethernet")' in wrapper
+          # The kexec preflight may ask kexec only for its version and help text.
+          kexec_exec = [line for line in Path("tools/mpc-one/read-only-kexec-preflight.sh").read_text().splitlines()
+                        if not line.lstrip().startswith("#")]
+          for line in kexec_exec:
+              for call in re.findall(r"\bkexec\s+(-\S+)", line):
+                  assert call in ("--version", "--help"), f"kexec preflight calls kexec {call}"
+          # The backup must only read on the MPC: fixed remote commands, dd input only.
+          import sys
+          sys.path.insert(0, "tools/mpc-one")
+          import host_emmc_backup as backup
+          assert set(backup.PREFLIGHT_COMMANDS.values()) == {"sh -s hash", "sh -s stat"}
+          for cmd in backup.STREAM_COMMANDS.values():
+              assert re.fullmatch(r"dd if=/dev/mmcblk0(?:boot[01])? bs=1048576", cmd), cmd
+          helper_exec = "\n".join(line for line in Path("tools/mpc-one/host_emmc_backup.py").read_text().splitlines()
+                                   if not line.lstrip().startswith("#"))
+          assert not re.search(r"\bof\s*=", helper_exec), "backup helper must not name a dd output file"
+          preflight = Path("tools/mpc-one/read-only-backup-preflight.sh").read_text()
+          preflight_exec = [line for line in preflight.splitlines() if not line.lstrip().startswith("#")]
+          for line in preflight_exec:
+              assert ">" not in line.replace("2>/dev/null", ""), f"backup preflight redirects output: {line}"
+              for forbidden in ("mount", "sync", "fsfreeze", "blockdev", "hdparm", "mmc ", "fw_setenv", "tee", "rm ", "mv ", "cp "):
+                  assert forbidden not in line, f"backup preflight must stay read-only: {forbidden}"
           bootmap = Path("tools/mpc-one/read-only-boot-map.sh").read_text()
           bootmap_exec = "\n".join(line for line in bootmap.splitlines() if not line.lstrip().startswith("#"))
           for forbidden in ("kexec -l", "kexec -e", "fw_setenv", "mount ", "systemctl start", "rkdeveloptool", "unsquashfs"):
@@ -213,6 +269,17 @@ jobs:
               assert not any(needle in pathtext for needle in (
                   'systemctl stop', 'systemctl restart', 'std::net::',
                   'std::process::Command', 'EVIOCGRAB', 'ioctl(',
+              ))
+          screen_lib=Path("rust/mpfree-screen-log/src/lib.rs").read_text()
+          screen_main=Path("rust/mpfree-screen-log/src/main.rs").read_text()
+          assert '#![forbid(unsafe_code)]' in screen_lib and '#![forbid(unsafe_code)]' in screen_main
+          # The test-boot screen log writes the framebuffer and its sysfs pan file only:
+          # no new files except the host-only --preview (create_new), no truncation, no processes.
+          assert screen_main.count('.create_new(true)') == 1 and '.create(true)' not in screen_main
+          assert '.truncate(' not in screen_main and 'remove_file' not in screen_main
+          for pathtext in (screen_lib, screen_main):
+              assert not any(needle in pathtext for needle in (
+                  'std::process::Command', 'std::net::', 'ioctl', '/dev/mmc', '/dev/sd', 'systemctl',
               ))
           touch_lib=Path("rust/mpfree-touch/src/lib.rs").read_text()
           touch_main=Path("rust/mpfree-touch/src/main.rs").read_text()
@@ -726,4 +793,40 @@ jobs:
           print("PASS: ARMv7 ELF32 EABI5 hard-float and GLIBC <=2.39")
           PY
           echo "No executables uploaded or run on MPC by CI."
+      - name: Build and check the static screen log program for the kexec test boot (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-screen-log
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-screen-log must be statically linked"; exit 1
+          fi
+          # Run it under qemu against a fake framebuffer and sysfs folder (no device).
+          sudo apt-get install -y --no-install-recommends qemu-user
+          t=$(mktemp -d)
+          mkdir "$t/sys"
+          printf 'U:800x1280p-0\n' > "$t/sys/modes"
+          echo 3200 > "$t/sys/stride"
+          echo 32 > "$t/sys/bits_per_pixel"
+          : > "$t/sys/pan"
+          truncate -s $((800 * 3840 * 4)) "$t/fb"
+          printf 'line one\nline two\n' | timeout 60 qemu-arm "$f" --rotation 270 --fb "$t/fb" --sysfs "$t/sys"
+          test "$(cat "$t/sys/pan")" = "0,0"
+          test "$(stat -c %s "$t/fb")" = $((800 * 3840 * 4))
+          python3 - "$t/fb" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read(800 * 1280 * 4)
+          # The title row is blue (B, G, R, X = 160, 60, 20, 0) where the viewer sees the top of the screen:
+          # with rotation 270 that is native x = 1 (logical y = 1), here at native y = 1279 - 800 (logical x = 800).
+          o = (1279 - 800) * 3200 + 1 * 4
+          assert data[o:o + 4] == bytes([160, 60, 20, 0]), data[o:o + 4]
+          assert any(data), "nothing was drawn"
+          print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
+          PY
 
