@@ -263,3 +263,61 @@ A software USB MaskROM path requires cooperation from early stage code. Mainline
 **Next offline pass:** read the command descriptor's fields and handler pointer at `0xFF709D00..`, extract assembly around `0xFF70527A` and its function, decompile available functions without assuming a correct noreturn graph, and determine whether early startup checks the reboot-mode register. Separate report outside Git.
 
 **No device-side register writes, reboots or eMMC modifications are authorized by this follow-up.**
+
+## 9. SPL command-handler disassembly confirms the Fastboot register write (2026-11-10)
+
+The owner's next private report, `p1-reset-mode-deep-dive-20261110T131705.txt`, verified the first-stage handler and its call target. This section **supersedes the earlier tentative interpretation in §8** that only code references to the Fastboot literals had been found.
+
+### Recovered five-word command descriptor
+
+| SRAM address | Value | Verified interpretation |
+| --- | --- | --- |
+| `0xFF709D00` | `0xFF709A67` | `"reset_bootloader"` |
+| `0xFF709D04` | `2` | Maximum argument count |
+| `0xFF709D08` | `1` | Repeatability flag |
+| `0xFF709D0C` | `0xFF705279` | Thumb code pointer, actual instruction at `0xFF705278` |
+| `0xFF709D10` | `0xFF709A78` | `"reset to fastboot mode"` |
+
+**Correction to the report generator:** `0xFF709D14` points to `"fixed_rate_clock"`, unrelated to the command, and `0xFF709D18=0xD`. There is no basis to treat these as `help` and `completion` fields; the command descriptor likely ends after five 32-bit fields. Inspect adjacent data structures separately.
+
+The command table's presence **does not mean** that the SPL provides a usable interactive command shell; the registration could be linked in but never reached during normal SPL execution.
+
+### Thumb machine-code proof of the flag write
+
+```asm
+ff705278 push {r3,lr}
+ff70527a ldr  r3,[0xff705290]  ; [0xff705290] == 0xff730094
+ff70527c ldr  r2,[0xff705294]  ; [0xff705294] == 0x5242c309
+ff70527e str  r2,[r3,#0x0]     ; write Fastboot flag to RK3288 mode register
+ff705280 movs r3,#0
+ff705282 mov  r2,r3
+ff705284 mov  r1,r3
+ff705286 mov  r0,r3
+ff705288 bl   0xff708296       ; next reset-related function to inspect
+ff70528c movs r0,#0
+ff70528e pop  {r3,pc}
+```
+
+This proves that the *p1 SPL* handler, like p3's separate handler, contains a hardware register write equivalent to:
+
+```c
+*(volatile uint32_t *)0xFF730094 = 0x5242C309;
+```
+
+The branch target `0xFF708296` has **not yet been decompiled** in the supplied report, so its detailed behavior remains unknown. Do not label it definitively as a specific `reset_cpu` implementation until inspected.
+
+### Further control-flow findings
+
+- `0xFF7040B4` enters low-level CPU/MMU initialization through a branch to `0xFF704068`.
+- `0xFF705208` sets a stack pointer from an embedded constant, performs initialization calls, clears a region of memory and branches indirectly to a next-stage function pointer; symbolic identities remain unverified.
+- `0xFF705350` is a boot-device iteration routine, including MMC-load attempts and the printed `"Trying to boot from "` / `"SPL: failed to boot from all boot devices"` messages.
+- `0xFF7054A4` contains MMC raw-image loading logic and indirect calls to the block-read callback; it is not a verified BootROM entry path.
+- `0xEF08A53C` (BootROM request) and `0x5242C301` (Rockusb Loader request) remain absent as exact raw 32-bit constants in the extracted p1 code.
+
+The current assessment is therefore **strong negative evidence against a simple literal-based software MaskROM route in the 2019 InMusic SPL**, but *not* proof that no other return-to-ROM mechanism exists. Distinguish register-written Fastboot from true MaskROM USB download.
+
+### Next focused Ghidra work
+
+Analyze the direct Thumb call target at `0xFF708296` (call from `0xFF705288`), its immediate callees, the `rk3288_sysreset` driver registration area, and any startup reads of `0xFF730094`. Use a bounded disassembly scope and preserve the distinction between Ghidra database changes and **no changes to executable bytes, device storage, or MPFree source files**.
+
+The independently distributed `MPFreeP1TraceReset.py` script performs this follow-up locally in Ghidra. It does **not** belong in this repository under the current one-file authorization.
