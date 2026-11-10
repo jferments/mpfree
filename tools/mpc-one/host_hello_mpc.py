@@ -21,8 +21,9 @@ started by you pressing Enter:
   5. screen: stops the test build's own log display (mpfree-test-screen, our
      service; started again at the end) and draws the Hello MPC card.
   6. touch: shows your touches on the screen for 10 s (reads only, no grab).
-  7. pads: listens to the controller for 15 s. Only if no pad hit arrived, it
-     offers a second try that also sends Akai's keep-alive message every 5 s.
+  7. pads: listens on all three of the controller's MIDI ports for 15 s and
+     shows every message in hex. Only if no pad hit arrived, it offers a
+     second try that also sends Akai's keep-alive message every 5 s.
   8. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
      counts underruns and late periods. Turn the volume knob down first.
   At the end it starts the log display again and copies the program's own
@@ -311,12 +312,13 @@ def main(argv):
             run_phase(mpc, out, "touch")
             note(out, "Did your touches show on the screen, near where you touched?")
 
-        out.say("\n[7/8] Pads: 15 s of listening (nothing is sent to the controller)")
+        out.say("\n[7/8] Pads: 15 s of listening on all three MIDI ports (nothing is sent to the controller)")
         answer = ready(out, "Hit some pads, press a button, turn a Q-Link and the wheel.")
         if answer == "quit":
             raise Stop("stopped by you")
         if answer == "go":
             rc, text = run_phase(mpc, out, "pads")
+            note(out, "What did you press or turn, and did anything light up or react?")
             hits = re.search(r"^pads done: .* (\d+) pad hits", text, re.M)
             if hits and hits.group(1) == "0":
                 out.say("  No pad hits arrived. The stock app sends a keep-alive message every 5 s;")
@@ -326,6 +328,7 @@ def main(argv):
                     raise Stop("stopped by you")
                 if answer == "go":
                     run_phase(mpc, out, "pads-keepalive")
+                    note(out, "What did you press or turn this time, and did anything light up or react?")
             elif hits:
                 out.say(f"  {hits.group(1)} pad hits arrived without the keep-alive, so it is not sent.")
 

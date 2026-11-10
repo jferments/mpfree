@@ -81,6 +81,7 @@ jobs:
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hello_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
       - name: Check the remote survey contains no known destructive operations
         run: |

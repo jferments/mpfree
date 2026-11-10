@@ -8,10 +8,12 @@
 //!   screen             draws the Hello MPC card on /dev/fb0
 //!   touch --seconds N  reads the touchscreen (no grab) and shows the contacts
 //!   pads --seconds N [--keepalive]
-//!                      reads the controller's Private MIDI port and shows pad,
-//!                      button, Q-Link and wheel events; with --keepalive it also
-//!                      sends Akai's keep-alive message on the Public port every
-//!                      5 s (the only thing it ever sends to the controller)
+//!                      reads all three of the controller's MIDI ports (Public,
+//!                      Private, MIDI Port) and shows every message in hex, with
+//!                      its meaning (pad, button, Q-Link, wheel) where known;
+//!                      with --keepalive it also sends Akai's keep-alive message
+//!                      on the Public port every 5 s (the only thing it ever
+//!                      sends to the controller)
 //!   click --seconds N [--gain-db G]
 //!                      plays a 120 BPM click on the ACVA card (stereo S32_LE,
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
@@ -30,7 +32,7 @@
 mod alsa;
 mod sys;
 
-use mpfree_controller::midi::Parser;
+use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_screen_log::{grid, render, Geometry, LogView, Rotation};
@@ -498,15 +500,66 @@ fn describe_event(e: &ControlEvent) -> String {
     }
 }
 
+/// The controller's three USB-MIDI cables, as ALSA RawMIDI subdevices of
+/// midiC<card>D0, with a word each subdevice's name must contain.
+const MIDI_PORTS: [(u32, &str); 3] = [(0, "Public"), (1, "Private"), (2, "MIDI Port")];
+/// Lines shown per listening step; everything is still counted after that.
+const MAX_SHOWN: u64 = 300;
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+}
+
+/// The bytes of one parsed message, as they came in (running status written out).
+fn message_bytes(msg: &Message<'_>) -> (Vec<u8>, bool) {
+    match *msg {
+        Message::Channel { status, data1, data2 } => match status & 0xF0 {
+            0xC0 | 0xD0 => (vec![status, data1], false),
+            _ => (vec![status, data1, data2], false),
+        },
+        Message::SysEx { bytes, truncated } => (bytes.to_vec(), truncated),
+        Message::RealTime(b) => (vec![b], false),
+        Message::Common { status, data1, data2 } => match status {
+            0xF1 | 0xF3 => (vec![status, data1], false),
+            0xF2 => (vec![status, data1, data2], false),
+            _ => (vec![status], false),
+        },
+    }
+}
+
+/// One line for one message: time, port, the bytes in hex, and what it means if known.
+fn message_line(t: f64, port: &str, bytes: &[u8], truncated: bool, event: Option<&ControlEvent>) -> String {
+    let meaning = match event {
+        Some(e) => describe_event(e),
+        None => "not recognised".to_string(),
+    };
+    let cut = if truncated { " (cut short: longer than the parser keeps)" } else { "" };
+    format!("+{t:.3} s {port}: {}{cut} = {meaning}", hex(bytes))
+}
+
+struct PortIn {
+    name: &'static str,
+    file: File,
+    parser: Parser,
+    bytes: u64,
+    messages: u64,
+}
+
 fn pads(o: &Options) -> Result<(), String> {
     let heading = if o.keepalive { "pads, with keep-alive" } else { "pads (listen only)" };
     let mut out = Out::new(o, heading, true);
     let card = midi_card()?;
-    let (mut input, info) = alsa::open_rawmidi(card, mpc_one::Port::Private as u32, alsa::Direction::Input)
-        .map_err(|e| format!("opening the Private MIDI port: {e}"))?;
-    out.say(&format!("listening on card {card} subdevice {} \"{}\"", info.subdevice, info.subname));
-    if info.subdevice != 1 || info.stream != alsa::RAWMIDI_STREAM_INPUT || !info.subname.contains("Private") {
-        return Err("that is not the controller's Private port; stopping".to_string());
+    // Listen on all three cables: Akai's app gets every control on Private, but
+    // without the app the controller might use another one.
+    let mut inputs = Vec::new();
+    for (sub, word) in MIDI_PORTS {
+        let (file, info) = alsa::open_rawmidi(card, sub, alsa::Direction::Input)
+            .map_err(|e| format!("opening MIDI input {sub} ({word}): {e}"))?;
+        out.say(&format!("listening on card {card} subdevice {} \"{}\"", info.subdevice, info.subname));
+        if info.subdevice != sub || info.stream != alsa::RAWMIDI_STREAM_INPUT || !info.subname.contains(word) {
+            return Err(format!("that is not the controller's {word} port; stopping"));
+        }
+        inputs.push(PortIn { name: word, file, parser: Parser::default(), bytes: 0, messages: 0 });
     }
     let mut output = None;
     if o.keepalive {
@@ -518,12 +571,13 @@ fn pads(o: &Options) -> Result<(), String> {
         }
         output = Some(f);
     }
-    out.say(&format!("hit some pads, press a button, turn a Q-Link ({} s)", o.seconds));
-    let mut parser = Parser::default();
+    out.say("every message is shown in hex, with its meaning where we know it");
+    out.say(&format!("hit some pads, press a button, turn a Q-Link and the wheel ({} s)", o.seconds));
     let mut buf = [0u8; 256];
-    let (mut bytes, mut pad_hits, mut events, mut pings, mut replies) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut pad_hits, mut pings, mut replies, mut unknown, mut pressure, mut shown) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut last_ping: Option<Instant> = None;
-    let end = Instant::now() + Duration::from_secs(o.seconds);
+    let start = Instant::now();
+    let end = start + Duration::from_secs(o.seconds);
     while Instant::now() < end {
         if let Some(f) = output.as_mut() {
             if last_ping.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
@@ -531,37 +585,59 @@ fn pads(o: &Options) -> Result<(), String> {
                 f.write_all(&msg).map_err(|e| format!("sending the keep-alive: {e}"))?;
                 pings += 1;
                 last_ping = Some(Instant::now());
-                out.say(&format!("sent keep-alive {pings}"));
+                out.say(&format!("+{:.3} s sent keep-alive {pings} on Public: {}", start.elapsed().as_secs_f64(), hex(&msg)));
             }
         }
-        match input.read(&mut buf) {
-            Ok(0) => thread::sleep(Duration::from_millis(2)),
-            Ok(n) => {
-                bytes += n as u64;
-                for &b in &buf[..n] {
-                    if let Some(msg) = parser.feed(b) {
-                        if let Some(ev) = mpc_one::decode(&msg) {
-                            events += 1;
-                            match ev {
-                                ControlEvent::PadDown { .. } => pad_hits += 1,
-                                ControlEvent::KeepAliveReply { .. } => replies += 1,
+        let mut got = false;
+        for port in inputs.iter_mut() {
+            match port.file.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    got = true;
+                    port.bytes += n as u64;
+                    let t = start.elapsed().as_secs_f64();
+                    for &b in &buf[..n] {
+                        if let Some(msg) = port.parser.feed(b) {
+                            port.messages += 1;
+                            let event = mpc_one::decode(&msg);
+                            let (bytes, truncated) = message_bytes(&msg);
+                            match event {
+                                Some(ControlEvent::PadDown { .. }) => pad_hits += 1,
+                                Some(ControlEvent::KeepAliveReply { .. }) => replies += 1,
+                                Some(ControlEvent::PadPressure { .. }) => pressure += 1,
+                                None => unknown += 1,
                                 _ => {}
                             }
-                            if !matches!(ev, ControlEvent::PadPressure { .. }) {
-                                out.say(&describe_event(&ev));
+                            if matches!(event, Some(ControlEvent::PadPressure { .. })) {
+                                continue;
+                            }
+                            shown += 1;
+                            if shown <= MAX_SHOWN {
+                                out.say(&message_line(t, port.name, &bytes, truncated, event.as_ref()));
+                            } else if shown == MAX_SHOWN + 1 {
+                                out.say(&format!("(more than {MAX_SHOWN} messages: only counting from here)"));
                             }
                         }
                     }
                 }
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN) => {}
+                Err(e) => return Err(format!("reading MIDI ({}): {e}", port.name)),
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN) => {
-                thread::sleep(Duration::from_millis(2))
-            }
-            Err(e) => return Err(format!("reading MIDI: {e}")),
+        }
+        if !got {
+            thread::sleep(Duration::from_millis(2));
         }
     }
-    out.say(&format!("pads done: {bytes} bytes, {events} events, {pad_hits} pad hits, \
-                      {pings} keep-alives sent, {replies} replies"));
+    for port in &inputs {
+        out.say(&format!("{}: {} bytes, {} messages, {} stray bytes", port.name, port.bytes, port.messages, port.parser.stray_bytes));
+    }
+    let bytes: u64 = inputs.iter().map(|p| p.bytes).sum();
+    let messages: u64 = inputs.iter().map(|p| p.messages).sum();
+    out.say(&format!("pads done: {bytes} bytes, {messages} messages, {pad_hits} pad hits, {pressure} pressure, \
+                      {unknown} not recognised, {pings} keep-alives sent, {replies} replies"));
+    drop(inputs);
+    drop(output);
+    dump(&mut out, &format!("/proc/asound/card{card}/midi0"));
     Ok(())
 }
 
@@ -804,6 +880,55 @@ mod tests {
     fn describes_events() {
         assert_eq!(describe_event(&ControlEvent::PadDown { pad: 0, velocity: 90 }), "pad 1 down, velocity 90");
         assert_eq!(describe_event(&ControlEvent::QLinkTurn { knob: 2, delta: -1 }), "Q-Link 3 turned -1");
+    }
+
+    fn lines_for(port: &str, input: &[u8]) -> Vec<String> {
+        let mut parser = Parser::default();
+        let mut lines = Vec::new();
+        for &b in input {
+            if let Some(msg) = parser.feed(b) {
+                let event = mpc_one::decode(&msg);
+                let (bytes, truncated) = message_bytes(&msg);
+                lines.push(message_line(1.5, port, &bytes, truncated, event.as_ref()));
+            }
+        }
+        lines
+    }
+
+    #[test]
+    fn shows_every_message_in_hex() {
+        // The reply round 1 understood, and the same reply with another last byte, which it dropped.
+        let known = [0xF0, 0x47, 0x7F, 0x46, 0x53, 0x00, 0x05, 0x7D, 0x6D, 0x57, 0x35, 0x01, 0xF7];
+        let mut other = known;
+        other[11] = 0x00;
+        let mut input = known.to_vec();
+        input.extend_from_slice(&other);
+        input.extend_from_slice(&[0x99, 0x25, 0x40, 0x25, 0x00, 0xB0, 0x64, 0x7F, 0xC3, 0x05]);
+        assert_eq!(lines_for("Private", &input), vec![
+            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 01 F7 = keep-alive reply, token [7D, 6D, 57, 35]",
+            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 00 F7 = not recognised",
+            "+1.500 s Private: 99 25 40 = pad 1 down, velocity 64",
+            "+1.500 s Private: 99 25 00 = pad 1 up",
+            "+1.500 s Private: B0 64 7F = data wheel -1",
+            "+1.500 s Private: C3 05 = not recognised",
+        ]);
+    }
+
+    #[test]
+    fn marks_long_sysex_as_cut_short() {
+        let mut input = vec![0xF0];
+        input.extend(std::iter::repeat_n(0x11, 100));
+        input.push(0xF7);
+        let lines = lines_for("Public", &input);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("(cut short: longer than the parser keeps) = not recognised"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn port_names_match_the_controller() {
+        assert_eq!(MIDI_PORTS.map(|p| p.0), [0, 1, 2]);
+        assert_eq!(MIDI_PORTS[mpc_one::Port::Public as usize].1, "Public");
+        assert_eq!(MIDI_PORTS[mpc_one::Port::Private as usize].1, "Private");
     }
 
     #[test]

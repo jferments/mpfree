@@ -51,6 +51,8 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
 
 The builder refuses anything but a static ARM EABI5 hard-float executable. CI builds it the same way and runs it under `qemu-arm` against a fake framebuffer. `--preview FILE.ppm` draws a sample frame on the workstation instead.
 
+**Startup screen (optional).** With `--splash FILE`, the builder also puts our startup-screen program `mpfree-splash` (the galaxy, from `rust/mpfree-splash`) on the stick. A oneshot service draws it on `/dev/fb0` for 6 s, turned by the same panel rotation, and the log display starts when it ends (if it fails, the log simply starts). `--splash-font FILE` adds a `.ttf` or `.otf` font for its title; without one the title uses built-in letters. The program is built like the screen log (`-p mpfree-splash`) and checked the same way. It writes only the framebuffer and its sysfs `pan` file. The boot menu is not on the stick yet: without Akai's app the controller sends no wheel or button data (see [the controller protocol](controller-protocol.md#without-the-factory-app-hello-mpc-round-1-2026-11-10)).
+
 ## Tools, in order
 
 | Step | Command | Touches |
