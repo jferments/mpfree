@@ -3,9 +3,11 @@
 //!
 //! M11 adds three pure, host-only layers over already-read events:
 //! [`mt`] (Type-B multitouch decoder), [`pointer`] (raw-to-logical mapping)
-//! and [`gesture`] (toolkit-neutral recognizer). None of them read devices.
+//! and [`gesture`] (toolkit-neutral recognizer). M12 adds [`calibrate`],
+//! host-side analysis of a recorded capture. None of them read devices.
 #![forbid(unsafe_code)]
 
+pub mod calibrate;
 pub mod gesture;
 pub mod mt;
 pub mod pointer;
