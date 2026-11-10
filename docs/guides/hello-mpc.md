@@ -1,6 +1,6 @@
 # Hello MPC (Phase 1) on the kexec test build
 
-**Status:** round 2 ran on 2026-11-10. Without Akai's app the controller sends its pads, buttons, Q-Links and wheel on the **Public** port; round 1 had listened on Private only. Round 3 lights the pads and buttons, plays a factory drum kit from the pads, and replays Akai's startup messages ([below](#round-3-lights-factory-drums-and-akais-setup)).
+**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)).
 
 Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
 
@@ -123,6 +123,16 @@ The owner chose to try the lights alone first, then Akai's setup, each started b
 3. **setup**: the session and Akai's setup, replayed. It shows whether this moves the controls to the Private port with relative Q-Links, as under Akai's app (inferred). The step's report counts pad hits on each port. It runs last of the three, so whatever it changes cannot affect the others.
 
 The program listens on all three inputs in every step, so it works whichever port the controls use.
+
+### Round 3 results (2026-11-10)
+
+From the owner's results zip (clone at `2db957c`):
+
+- **Storage:** before the jump, the test build's preflight on 3.6 counted 0 sectors written to `p1`–`p6` since boot. After the power-cycle, the hashes of `p1`–`p6` and both boot areas are the same as in round 2 (which matched the baseline), again with 0 sectors written to `p1`–`p6`.
+- **Pad lights work without a session.** The pads lit up, and each got brighter while held (the owner's words: "the pads were lit and got brighter when pressed"). The button lights were not reported either way.
+- **Factory drums work.** The kit tool picked a 16-pad drum program from a factory demo project, all 16 samples found by pad number (44.1 and 96 kHz, 16- and 24-bit, mono and stereo). In 30 s the owner played 42 hits, up to 10 sounds at once, peak −7.0 dBFS with no clipping. ACVA ran 10335 periods with 0 underruns and 0 late periods; the gap between periods averaged 2.903 ms (one period is 2.902 ms) and was at most 2.947 ms. Two runs of the kit tool made byte-identical kits. Pad-to-sound latency was not measured; from the settings it should be about 12 ms or less after the MIDI message arrives (up to one 2.9 ms period of polling plus the 8.7 ms output buffer), an estimate only.
+- **Akai's setup moves the controls.** With nothing holding the controller, it accepted our token at once (status `02`), echoed the setup as it did for Akai's app, and pinged back `01` every 4 s. From then on the pads, Q-Link 1 (now relative: +1, +2, −1 … −3 per message), the wheel and the buttons all arrived on **Private**; Public got only the two identity replies. The setup step plays no sound, so the pads were silent in it, as expected.
+- The test build answered SSH after 24 s; Ethernet needed its retry again.
 
 ### The factory drum kit
 
