@@ -78,13 +78,15 @@ The flag list and argument order are reconstructed from neighbouring strings, so
 
 ## Reading Akai's public update file
 
-Three workstation-only tools read a downloaded update image. None of them contacts the MPC, and none writes the image.
+These workstation-only tools read a downloaded update image. None of them contacts the MPC, and none writes the image.
 
 | Tool | What it does | Writes |
 | --- | --- | --- |
 | [`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
 | [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
-| [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/` |
+| [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing. Section 8 covers what a kexec boot needs: the drivers built into the kernel, the kernel's embedded config, and the board's device trees | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/`, and a copy of `/boot` in `~/mpfree-work/boot-files/<kernel release>/` (never overwritten) |
+| [`offline-kernel-config.py`](../../tools/mpc-one/offline-kernel-config.py) | Prints the build config embedded in a zImage (`CONFIG_IKCONFIG`), all of it or only the symbols that matter for a kexec boot | Nothing |
+| [`offline-dtb.py`](../../tools/mpc-one/offline-dtb.py) | Lists, summarises and compares device trees. A comparison leaves values out unless asked, so it's safe on the tree read from the MPC | Nothing |
 
 ```bash
 python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files
@@ -128,14 +130,29 @@ From `offline-rootfs-survey.sh` on the unpacked 3.10.0 rootfs and on the referen
 
 - **New kernel and base system.** 3.10.0 has kernel `6.18.44-az01-2026-08-10-rt6` (3.6.0: `6.6.95-az01-2025-06-27-rt55`) and Akai's base distribution 5.0.18 (3.6.0: 5.0.8). `/boot` has the same device-tree files, each a little larger.
 - **The same mounts and update units, with these exceptions:**
-  - New in 3.10.0: `/usr/bin/az01-bootloader-sig` and the boot service `az0x-loadpin-trustpoints.service`. LoadPin is a kernel feature that limits where the kernel may load files from, so 3.10.0 may restrict kexec or module loading. That's an inference until the files are read.
+  - New in 3.10.0: `/usr/bin/az01-bootloader-sig`, `/usr/sbin/az01config` and the boot service `az0x-loadpin-trustpoints.service`. What they do is in the next section.
   - 3.10.0 enables `az0x-info.service` and `az0x-webserver.service`, and mounts the content partition through a new `storage.mount`.
   - The reference unit's 3.6.0 rootfs enables a serial-console login on `ttyS2`, and 3.10.0 doesn't. Whether that is stock 3.6.0 is unknown.
 - **Peripheral firmware updaters, in both versions.** `touch-fw-update.service` runs `touch-fw-upd` at every boot on boards with the ILI2117 touch controller at `i2c@ff160000` address `0x26`, which is this unit's. `acvs.service` (the MPC app) also mentions it. The app launcher `/usr/bin/az01-launch-MPC` and `/usr/share/Akai/SME0/Firmware/update.sh` mention `dfu-util`, so starting the app may flash a microcontroller over USB DFU. These write outside the eMMC, so a power-cycle wouldn't undo them. Any RAM-only test of another version must keep them from running.
 
+### What Akai's 3.10.0 programs do
+
+From the second survey run (owner's run, 2026-11-10), which prints Akai's scripts in full and the relevant strings of their programs. Nothing was run, so statements about programs are read from their strings and are inferences.
+
+- **Touchscreen firmware: no change between versions.** `/lib/firmware/ilitek/ili2117.bin` is byte-identical in 3.6.0 and 3.10.0 (SHA-256 `0afa6ea3…`). `touch-fw-upd` reads the chip's version from `/sys/bus/i2c/devices/4-0026/fw_version`, compares it with the file and flashes through `update_fw` only when they differ. So 3.10.0's updater should find nothing to do on a unit that has run 3.6.0.
+- **Controller (pad board) firmware is flashed only through the MPC app.** `az01-launch-MPC` runs `SME0/Firmware/update.sh` only if `dfu-util -l` already lists the controller in DFU mode (`0x08000000`). Putting it into DFU mode takes a SysEx message that `update.sh` sends with `amidi`, and that the app presumably sends when its version check fails (inference). `update.sh` can also flash `.rbin` files through `/usr/sbin/midifirmup`.
+- **XMOS:** `xmos-update.service` is skipped on boards whose device tree has a `/sound` node (I2S audio), which includes the MPC One.
+- **`az01config` writes "config storage" straight to eMMC partition 11, 4 or 3** (`/dev/disk/by-path/platform-ff0f0000.dwmmc-partN`). On the MPC One, `p3` is U-Boot and `p4` is the splash. Which partition it picks on this board is unknown, and no unit calls it. **This is one more reason not to install 3.10.0 on the reference unit.**
+- **`az01-bootloader-sig` only reads**: it compares a "primary" and a "fallback" bootloader in partitions 1 and 2 and prints the signing-key hash. That layout isn't the MPC One's, where `p2` is the U-Boot environment. No unit calls it.
+- **`az0x-webserver` (enabled in 3.10.0) installs updates sent over the network.** It accepts an upload to `/data/az01-update.img` and runs `az01-update --file` on it, after a PIN pairing step.
+- **LoadPin:** `az0x-loadpin-trustpoints` loads `/usr/lib/az0x/trusted-verity-digests` into `/sys/kernel/security/loadpin/dm-verity` early in boot. LoadPin limits where the kernel loads modules and firmware from. It doesn't control `kexec_load`, which is what a test boot from 3.6.0 would use (inference from the upstream kernel).
+- **SSH:** 3.10.0 ships `sshd` but doesn't start it. `az01-ssh-login` is a wrapper for certificate logins restricted by product code and serial number.
+
+**For a RAM-only test boot of 3.10.0** this means: hide the eMMC controller from the 3.10.0 kernel in its device tree, so no program can reach any eMMC partition; disable kexec inside it (`kernel.kexec_load_disabled=1`), because Akai's updater and anything else would need kexec to reach a kernel that sees the eMMC; and keep the app, the web server and all firmware updaters from running.
+
 ## Keep Akai's files private
 
-The work folders under `~/mpfree-work/` (`akai-updater-…`, `akai-unpacked-…` and `rootfs-survey-…`) hold or quote Akai's proprietary software, and the reports quote their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
+The work folders under `~/mpfree-work/` (`akai-updater-…`, `akai-unpacked-…`, `rootfs-survey-…` and `boot-files/`) hold or quote Akai's proprietary software, and the reports quote their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
 
 ## What it does not cover
 

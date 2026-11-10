@@ -38,9 +38,9 @@ while (( $# )); do
 done
 : "${SOURCE:=image}"
 
-for tool in debugfs file strings sha256sum dd awk sort realpath python3; do
+for tool in debugfs file strings sha256sum dd awk sort realpath python3 cmp cut; do
   command -v "$tool" >/dev/null 2>&1 ||
-    die "missing '$tool'. Install e2fsprogs, file, binutils and python3 with your package manager."
+    die "missing '$tool'. Install e2fsprogs, file, binutils, diffutils and python3 with your package manager."
 done
 
 work_abs="$(realpath -m -- "$WORK_ROOT")"
@@ -310,6 +310,88 @@ if [[ "$(rootfs_type /usr/share/Akai)" == directory ]]; then
       show_file "$fw/$name2"
     done < <(names_in "$fw" | sort -k2)
   done < <(names_in /usr/share/Akai | sort -k2)
+fi
+echo
+
+echo "=== 8. Kernel and device trees, for a kexec boot ==="
+# Copies /boot out of the image into ~/mpfree-work/boot-files/<kernel release>/,
+# so later steps can find the kernel and device trees by version. An existing
+# copy is checked against the image and never overwritten.
+BOARD_COMPATIBLE="inmusic,acva"
+MOD_PATTERN='(usb-storage|/uas|sd_mod|scsi_mod|/ext4|jbd2|mbcache|dwc2|ehci|ohci|xhci|phy-rockchip-usb|usbcore|usb-common|/vfat|/fat\.|overlay|dw_mmc|mmc_block|mmc_core|squashfs|dm-verity|dm-mod|/loop|stmmac|dwmac|configs)'
+kernels=()
+while read -r kind name; do
+  [[ "$kind" == file && "$name" == zImage-* ]] && kernels+=("$name")
+done < <(names_in /boot | sort -k2)
+release=""
+if (( ${#kernels[@]} == 1 )) && [[ "${kernels[0]#zImage-}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  release="${kernels[0]#zImage-}"
+else
+  echo "(expected one /boot/zImage-<release> file, found ${#kernels[@]}; skipping this section)"
+fi
+if [[ -n "$release" ]]; then
+  BOOT_COPY="$work_abs/boot-files/$release"
+  echo "kernel release: $release"
+  fresh="$WORK/boot-files.tmp"
+  mkdir -p -- "$fresh"
+  while read -r kind name; do
+    [[ "$kind" == file && "$name" =~ ^[A-Za-z0-9._+-]+$ ]] || continue
+    dfs "dump /boot/$name $fresh/$name"
+  done < <(names_in /boot | sort -k2)
+  (cd -- "$fresh" && sha256sum -- * > SHA256SUMS)
+  if [[ -d "$BOOT_COPY" ]]; then
+    if cmp -s -- "$fresh/SHA256SUMS" "$BOOT_COPY/SHA256SUMS"; then
+      echo "boot files: $BOOT_COPY (already there, same hashes)"
+    else
+      echo "WARNING: $BOOT_COPY exists with different files; left unchanged. The checks below use this image's copy."
+      BOOT_COPY="$fresh"
+    fi
+  else
+    mkdir -p -- "$work_abs/boot-files"
+    cp -a -- "$fresh" "$BOOT_COPY"
+    echo "boot files copied to $BOOT_COPY"
+  fi
+  modules_dir=""
+  while read -r d; do
+    [[ "$(rootfs_type "$d/$release")" == directory ]] && { modules_dir="$d/$release"; break; }
+  done < <(unique_dirs /usr/lib/modules /lib/modules)
+  for list in modules.builtin modules.dep; do
+    if [[ -z "$modules_dir" || "$(rootfs_type "$modules_dir/$list")" != regular ]]; then
+      echo "--- $list: not in the image"
+      continue
+    fi
+    if [[ "$list" == modules.builtin ]]; then
+      echo "--- built into the kernel ($modules_dir/$list), USB storage, filesystems, MMC and Ethernet"
+    else
+      echo "--- loadable modules ($modules_dir/$list), same names"
+    fi
+    rm -f -- "$WORK/list.tmp"
+    dfs "dump $modules_dir/$list $WORK/list.tmp"
+    { cut -d: -f1 -- "$WORK/list.tmp" | grep -E -- "$MOD_PATTERN" || echo "(none)"; } | sed 's/^/    /'
+    echo "    ($(wc -l < "$WORK/list.tmp") entries in all)"
+    rm -f -- "$WORK/list.tmp"
+  done
+  echo "--- kernel config embedded in zImage-$release (symbols that matter for a kexec boot)"
+  python3 -I "$SCRIPT_DIR/offline-kernel-config.py" "$BOOT_COPY/zImage-$release" --select ||
+    echo "(could not read the embedded config)"
+  shopt -s nullglob
+  dtbs=("$BOOT_COPY"/*.dtb)
+  shopt -u nullglob
+  if (( ${#dtbs[@]} )); then
+    echo "--- device trees: board of each file"
+    python3 -I "$SCRIPT_DIR/offline-dtb.py" boards "${dtbs[@]}"
+    # Shortest name first, so the plain board file is compared with its variants.
+    mapfile -t ours < <(python3 -I "$SCRIPT_DIR/offline-dtb.py" match "$BOARD_COMPATIBLE" "${dtbs[@]}" |
+                        awk '{ print length($0), $0 }' | sort -k1,1n -k2 | cut -d' ' -f2-)
+    echo "--- device trees for this board ($BOARD_COMPATIBLE): ${#ours[@]}"
+    if (( ${#ours[@]} )); then
+      python3 -I "$SCRIPT_DIR/offline-dtb.py" summary "${ours[@]}"
+      for other in "${ours[@]:1}"; do
+        python3 -I "$SCRIPT_DIR/offline-dtb.py" diff "${ours[0]}" "$other" --values
+      done
+    fi
+  fi
+  rm -rf -- "$fresh"
 fi
 echo
 

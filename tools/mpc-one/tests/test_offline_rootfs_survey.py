@@ -17,6 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from test_offline_akai_updater import (  # noqa: E402
     REPO, SBIN_PATH, Fixture, build_rootfs, run, tools_present, write)
+from test_offline_dtb import board_tree, dtb, s as dt_strings  # noqa: E402
+from test_offline_kernel_config import zimage  # noqa: E402
 
 SCRIPT = os.path.join(os.path.dirname(HERE), "offline-rootfs-survey.sh")
 UNITS = "usr/lib/systemd/system"
@@ -24,11 +26,18 @@ SME0_BLOB = bytes(range(256)) * 8
 SIG_MARKER = b"\0FAKE-SIG verify /dev/mmcblk0p3 with key FAKE-KEY\0harmless-unmatched-text\0"
 ILITEK = b"\x00" * 3000
 LONG = "x" * 70 + "-update.service"  # too long for a fast symlink
+ZIMAGE = zimage("gzip")
 
 
 def sha_file(path):
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def acva2_tree():
+    tree = board_tree(model="Akai Professional MPC Live II")
+    tree.root.set_prop("compatible", dt_strings("inmusic,acva2", "rockchip,rk3288"))
+    return tree
 
 
 def build_image(base, name="rootfs.img"):
@@ -45,7 +54,14 @@ def build_image(base, name="rootfs.img"):
         "usr/bin/touch-fw-upd": "#!/bin/sh\n",
         "usr/lib/firmware/top.bin": b"\x01\x02",
         "usr/lib/firmware/ilitek/fw.bin": ILITEK,
-        "boot/zImage-9.9": b"\x00" * 1000,
+        "boot/zImage-9.9": ZIMAGE,
+        "boot/rk3288-az01-acva.dtb": dtb.build(board_tree()),
+        "boot/rk3288-az01-acva-c.dtb": dtb.build(board_tree(model="Akai Professional MPC One (c)")),
+        "boot/rk3288-az05-acva2.dtb": dtb.build(acva2_tree()),
+        "usr/lib/modules/9.9/modules.builtin": "kernel/drivers/usb/storage/usb-storage.ko\n"
+                                               "kernel/fs/ext4/ext4.ko\nkernel/drivers/gpu/fake.ko\n",
+        "usr/lib/modules/9.9/modules.dep": "kernel/drivers/usb/storage/uas.ko: kernel/drivers/scsi/sd_mod.ko\n"
+                                           "kernel/drivers/scsi/sd_mod.ko:\nkernel/sound/fake-snd.ko:\n",
         "opt/note.sh": "dd of=/dev/mmcblk0 erase-data-partition\n",
         "usr/lib/modules/9.9-fake/modules.dep": "",
         # systemd escapes "-" in unit names as \x2d; debugfs can't take such a name as a path.
@@ -115,7 +131,7 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("VERSION_ID=FAKE-OS-9.9", out)
         self.assertIn("(/etc/issue: not in the image)", out)
         self.assertIn("zImage-9.9", out)
-        self.assertIn("--- kernel module folders in /usr/lib/modules\ndir 9.9-fake", out)
+        self.assertRegex(out, r"--- kernel module folders in /usr/lib/modules\n(dir 9\.9(-fake)?\n){2}")
         self.assertIn("--- /etc/fstab\n/dev/mmcblk0p8 /data ext4", out)
         self.assertIn("--- /usr/lib/systemd/system/content.mount\n[Mount]\nWhat=/dev/mmcblk0p7", out)
         self.assertIn("link alias-update.service", out)
@@ -131,7 +147,7 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("/usr/bin/touch-fw-upd (file)", out)
         self.assertIn(f"--- /usr/lib/firmware\ndir ilitek\n    file fw.bin sha256 {hashlib.sha256(ILITEK).hexdigest()}\n"
                       f"file top.bin sha256 {hashlib.sha256(bytes([1, 2])).hexdigest()}", out)
-        self.assertIn(f"{hashlib.sha256(bytes(1000)).hexdigest()} zImage-9.9", out)
+        self.assertIn(f"{hashlib.sha256(ZIMAGE).hexdigest()} zImage-9.9", out)
         self.assertIn("--- /usr/lib/systemd/system/media-acvs\\x2dcontent.mount\n[Mount]\nWhat=PARTUUID=FAKE-CONTENT", out)
         self.assertNotIn("unusual name", out)
         self.assertNotIn("all entries in /lib/systemd/system", out, "/lib is a link to /usr/lib: list it once")
@@ -154,12 +170,57 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("/dev/mmcblk0: /usr/lib/systemd/system/content.mount", out)
         self.assertIn("xmosdfu: /usr/bin (a file name in this folder)", out)
         self.assertIn("ramfs-update: no match", out)
+        self.check_kernel_section(out)
         self.assertIn("DONE. Report:", out)
         [folder] = self.folders()
         with open(os.path.join(self.work, folder, "report.txt")) as fh:
             self.assertIn("fastboot: /usr/bin/xmosdfu", fh.read())
         self.assertEqual(os.listdir(os.path.join(self.work, folder)), ["report.txt"], "no temporary files left")
         self.assertEqual((sha_file(self.image), os.stat(self.image).st_mtime_ns), before, "image must not change")
+
+    def check_kernel_section(self, out):
+        section = out[out.index("=== 8. Kernel and device trees"):]
+        copy = os.path.join(self.work, "boot-files", "9.9")
+        self.assertIn("kernel release: 9.9\n", section)
+        self.assertIn(f"boot files copied to {os.path.realpath(copy)}", section)
+        self.assertIn("    kernel/drivers/usb/storage/usb-storage.ko\n    kernel/fs/ext4/ext4.ko\n"
+                      "    (3 entries in all)", section)
+        self.assertIn("    kernel/drivers/usb/storage/uas.ko\n    kernel/drivers/scsi/sd_mod.ko\n"
+                      "    (3 entries in all)", section)
+        self.assertNotIn("fake.ko", section)
+        self.assertIn("(config found: gzip payload", section)
+        self.assertIn("CONFIG_USB_STORAGE=y", section)
+        self.assertIn("rk3288-az05-acva2.dtb: Akai Professional MPC Live II; inmusic,acva2, rockchip,rk3288", section)
+        self.assertIn("--- device trees for this board (inmusic,acva): 2", section)
+        self.assertIn("storage controller /dwmmc@ff0f0000: rockchip,rk3288-dw-mshc; status okay; aliases: mmc0",
+                      section)
+        self.assertIn('property /model: differs (A 26 bytes, B 30 bytes): A "Akai Professional MPC One" | '
+                      'B "Akai Professional MPC One (c)"', section)
+        self.assertEqual(sorted(os.listdir(copy)), ["SHA256SUMS", "rk3288-az01-acva-c.dtb", "rk3288-az01-acva.dtb",
+                                                    "rk3288-az05-acva2.dtb", "zImage-9.9"])
+        with open(os.path.join(copy, "zImage-9.9"), "rb") as fh:
+            self.assertEqual(fh.read(), ZIMAGE)
+
+    def test_boot_files_are_never_overwritten(self):
+        res = self.survey("--image", self.image)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        copy = os.path.join(self.work, "boot-files", "9.9")
+        res = self.survey("--image", self.image)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"boot files: {os.path.realpath(copy)} (already there, same hashes)", res.stdout)
+        tampered = os.path.join(copy, "zImage-9.9")
+        with open(tampered, "ab") as fh:
+            fh.write(b"changed")
+        with open(os.path.join(copy, "SHA256SUMS"), "a") as fh:
+            fh.write("changed\n")
+        before = sha_file(tampered)
+        res = self.survey("--image", self.image)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("exists with different files; left unchanged", res.stdout)
+        self.assertIn("(config found: gzip payload", res.stdout, "the checks use the image's own copy")
+        self.assertEqual(sha_file(tampered), before)
+        for folder in self.folders():
+            self.assertEqual(os.listdir(os.path.join(self.work, folder)), ["report.txt"])
 
     def test_default_is_the_newest_unpacked_update(self):
         older = os.path.join(self.work, "akai-unpacked-20261101T000000Z-aaaa")

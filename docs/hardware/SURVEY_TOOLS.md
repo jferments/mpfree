@@ -19,7 +19,7 @@ bash tools/mpc-one/collect-over-ssh.sh            # baseline inventory
 bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables below
 ~~~
 
-**Read-only surveys.** These read procfs, sysfs and config files only, except `--boot-map`, which also reads the raw boot partitions with `dd` to hash them (reads only, no writes). They open no audio, MIDI or display devices and change no services.
+**Read-only surveys.** These read procfs, sysfs and config files only, except `--boot-map`, which also reads the raw boot partitions with `dd` to hash them (reads only, no writes). `--kexec-preflight` also asks `kexec` and `systemctl` for their version and help text; it never loads a kernel. They open no audio, MIDI or display devices and change no services.
 
 | Mode | Script | What it reports |
 |---|---|---|
@@ -34,6 +34,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--rtthreads` | [`read-only-rtthreads.sh`](../../tools/mpc-one/read-only-rtthreads.sh) | Per-task RT policy, priority and affinity |
 | `--capacity` | [`read-only-capacity.sh`](../../tools/mpc-one/read-only-capacity.sh) | Two-second CPU and memory sample |
 | `--boot-map` | [`read-only-boot-map.sh`](../../tools/mpc-one/read-only-boot-map.sh) | Boot chain, U-Boot environment (identifiers redacted), boot-partition SHA-256 hashes, eMMC write counters, kexec support, update-path metadata |
+| `--kexec-preflight` | [`read-only-kexec-preflight.sh`](../../tools/mpc-one/read-only-kexec-preflight.sh) | What a kexec test boot needs: the kexec program's version and options, kexec state, memory map, CPU hotplug, systemd, RAM folders, and device-tree names and sizes. The wrapper also copies `/sys/firmware/fdt` to `~/mpfree-work/kexec-preflight-<UTC>-*/` (private: it holds the serial number and MAC) and compares it, without values, with Akai's device trees from `offline-rootfs-survey.sh` |
 | `--audio-midi` | [`read-only-audio-midi.sh`](../../tools/mpc-one/read-only-audio-midi.sh) | ALSA, device-tree audio nodes, IRQs, RT limits, cpufreq and USB MIDI descriptors |
 | `--midi-activity` | [`read-only-midi-counters.sh`](../../tools/mpc-one/read-only-midi-counters.sh) | Interactive: RawMIDI counter changes while you press pads, knobs and buttons |
 | `--ram-smoke-env` | [`read-only-ram-smoke-env.sh`](../../tools/mpc-one/read-only-ram-smoke-env.sh) | Utilities available for RAM-only tests |

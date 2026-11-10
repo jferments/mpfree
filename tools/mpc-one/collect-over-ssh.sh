@@ -31,6 +31,7 @@ case "${1:-}" in
   "--midi-activity") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-activity" ;;
   "--midi-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-capture" ;;
   "--boot-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-boot-map.sh"; REPORT_KIND="mpc-one-boot-map" ;;
+  "--kexec-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-kexec-preflight.sh"; REPORT_KIND="mpc-one-kexec-preflight" ;;
   "--backup") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-emmc-backup" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
@@ -42,7 +43,7 @@ case "${1:-}" in
   "--touch-axes-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-preflight" ;;
   "--touch-axes") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-axes-execution" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -88,6 +89,19 @@ elif [[ "${1:-}" == "--backup" ]]; then
         die "MPC_BACKUP_DIR is inside the git clone and not git-ignored: $backup_abs"
       ;;
   esac
+elif [[ "${1:-}" == "--kexec-preflight" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required for --kexec-preflight on workstation'
+  for helper in read-only-kexec-preflight.sh offline-dtb.py; do
+    [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing kexec preflight helper: $helper"
+  done
+  # The running device tree carries the unit's serial number and MAC: keep it outside the clone.
+  work_abs="$(realpath -m -- "${MPFREE_WORK_DIR:-$HOME/mpfree-work}")"
+  case "$work_abs/" in
+    "$REPO_ROOT"/*)
+      git -C "$REPO_ROOT" check-ignore -q -- "$work_abs/probe" 2>/dev/null ||
+        die "MPFREE_WORK_DIR is inside the git clone and not git-ignored: $work_abs" ;;
+  esac
+  [[ "$work_abs" != *[[:space:]\"\']* ]] || die "MPFREE_WORK_DIR must not contain spaces or quotes: $work_abs"
 elif [[ "${1:-}" == "--midi-activity" ]]; then
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-activity on workstation'
   [[ -r "$SCRIPT_DIR/host_midi_activity.py" ]] || die 'Missing host_midi_activity.py'
@@ -318,6 +332,45 @@ if ! timeout 180 ssh -T \
   echo "For a passphrase-protected key, first run: ssh-add $MPC_KEY" >&2
   exit 1
 fi
+fi
+
+if [[ "${1:-}" == "--kexec-preflight" ]]; then
+  # Read-only on the MPC: `cat /sys/firmware/fdt` and `uname -r`. The comparison runs here.
+  ssh_ro=(timeout 60 ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+          -o ConnectTimeout=8 -o ForwardAgent=no -o ClearAllForwardings=yes
+          -i "$MPC_KEY" -p "$MPC_PORT" "$MPC_USER@$MPC_IP")
+  mkdir -p -- "$work_abs"
+  fdt_dir="$(mktemp -d "$work_abs/kexec-preflight-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+  running="$("${ssh_ro[@]}" 'uname -r')" || die "could not read the running kernel release; report: $REPORT"
+  "${ssh_ro[@]}" 'cat /sys/firmware/fdt' > "$fdt_dir/live.dtb" ||
+    die "could not copy the running device tree; report: $REPORT"
+  {
+    echo
+    echo "=== Running device tree, compared on the workstation ==="
+    echo "private binary copy (identifies the unit, never share it): $fdt_dir/live.dtb"
+    python3 -I "$SCRIPT_DIR/offline-dtb.py" summary "$fdt_dir/live.dtb" || echo "(could not read the copied device tree)"
+    shopt -s nullglob
+    releases=("$work_abs"/boot-files/*/)
+    shopt -u nullglob
+    (( ${#releases[@]} )) ||
+      echo "(no Akai boot files under $work_abs/boot-files: run offline-rootfs-survey.sh, with and without --from-backup, first)"
+    for folder in "${releases[@]}"; do
+      shopt -s nullglob
+      dtbs=("$folder"*.dtb)
+      shopt -u nullglob
+      (( ${#dtbs[@]} )) || continue
+      while read -r ref; do
+        [[ -n "$ref" ]] || continue
+        if [[ "$folder" == "$work_abs/boot-files/$running/" ]]; then
+          python3 -I "$SCRIPT_DIR/offline-dtb.py" diff "$ref" "$fdt_dir/live.dtb"
+        else
+          printf '%s vs the running tree: ' "$ref"
+          python3 -I "$SCRIPT_DIR/offline-dtb.py" diff "$ref" "$fdt_dir/live.dtb" | tail -n 1
+        fi
+      done < <(python3 -I "$SCRIPT_DIR/offline-dtb.py" match inmusic,acva "${dtbs[@]}")
+    done
+  } >> "$REPORT" 2>&1
+  printf 'Running device tree copied to %s (private).\n' "$fdt_dir/live.dtb"
 fi
 
 sha256sum "$REPORT" > "$REPORT.sha256"
