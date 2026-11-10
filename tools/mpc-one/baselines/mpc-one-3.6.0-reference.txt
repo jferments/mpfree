@@ -1,0 +1,24 @@
+# Expected eMMC layout and boot-critical hashes of the reference MPC One,
+# firmware 3.6.0, state MOD-001+MOD-002, from the owner's two --boot-map runs
+# on 2026-11-09 (docs/hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md).
+# host_emmc_backup.py refuses to copy a disk whose layout differs from this,
+# and warns loudly if a boot-critical hash differs.
+#
+# disk  <device> <sectors>
+# part  <device> <partname> <start> <sectors> <sha256 or ->
+# hw    <device> <sectors> <sha256>
+# The p2 (U-Boot environment) hash is left out on purpose: the environment
+# holds per-device values. p7 and p8 are written in normal use.
+state MOD-001+MOD-002
+emmc  DG4008
+disk  mmcblk0      15273600
+part  mmcblk0p1    uboot-spl      64       128      aa36e0e4033ce7386a210ad3e41f405a0d952a5b2a2c2711328450017414f1ec
+part  mmcblk0p2    env            192      16       -
+part  mmcblk0p3    uboot          256      768      7b6c8d091e7fcaecb89e633bacc1b541f4c494844b23daae6dc9a3c564721976
+part  mmcblk0p4    splash         1024     8192     6b4b891d664e59c933716d5babf99711526921e228376a19ace130322fe49a3a
+part  mmcblk0p5    recoverysplash 9216     8192     9a06a00806729dda0bfc44b3193720b5ba91e3c166b80d8b21a7d4ee312a11e2
+part  mmcblk0p6    rootfs         17408    1024000  fa2ca12bfac82f5ca69238f8b85c1f1df18994486b385086ebdda26ae61b2350
+part  mmcblk0p7    content        1041408  8388608  -
+part  mmcblk0p8    data           9430016  5843551  -
+hw    mmcblk0boot0 8192           bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8
+hw    mmcblk0boot1 8192           bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8

@@ -1,10 +1,10 @@
 # Recovery tiers, firmware updates and the path to an MPFree OS
 
-**Status:** proposed plan, 2026-11-09. Owner direction is recorded below. The
-tiered gate replaces the single "independent unbootable-device recovery"
-blocker in [REVERSIBLE_HANDOFF.md](REVERSIBLE_HANDOFF.md) and
-[HARDWARE_OWNERSHIP_STRATEGY.md](HARDWARE_OWNERSHIP_STRATEGY.md) **once the owner
-adopts it**. Until then, those documents' gates still apply.
+**Status:** the tiered gate was **adopted by the owner on 2026-11-09**. It
+replaces the single "independent unbootable-device recovery" blocker in
+[REVERSIBLE_HANDOFF.md](REVERSIBLE_HANDOFF.md) and
+[HARDWARE_OWNERSHIP_STRATEGY.md](HARDWARE_OWNERSHIP_STRATEGY.md). Owner direction
+is recorded below.
 
 ## Owner direction (Jay, 2026-11-09)
 
@@ -19,6 +19,8 @@ adopts it**. Until then, those documents' gates still apply.
    existing bootloader well enough to boot and test another OS **without
    damaging the existing one**.
 4. **Keep developing the custom userspace on the stock OS** in parallel.
+5. **Adopt the three recovery tiers** below in place of the single recovery gate
+   (decided 2026-11-09).
 
 ## Two tracks
 
@@ -28,7 +30,7 @@ adopts it**. Until then, those documents' gates still apply.
 | Boot chain | Untouched | Must be understood first; tested without eMMC writes |
 | Delivery | USB autorun → install to SD/`/data` → SSH | USB/SD image, eventually an installer |
 | Gate tier | Tier 1 → Tier 2 | Tier 3 |
-| Next step | Tier 1 session handoff | Read-only `--boot-map` survey |
+| Next step | Tier 1 stop → start rehearsal (backup done) | Read-only kexec preflight, then a RAM-only kexec test plan |
 
 Track A delivers a usable instrument early. Track B starts as read-only
 research and runs alongside it.
@@ -72,7 +74,9 @@ increasing effort:
 1. **kexec from the running stock Linux. Available:** the vendor kernel has
    `CONFIG_KEXEC=y` and `CONFIG_KEXEC_FILE=y`, and `/usr/sbin/kexec` is installed. It can load our kernel and initramfs into
    RAM and jump to it. There are no eMMC writes, and a reboot returns to stock. Risk: drivers left
-   in odd states by the first kernel. `--boot-map` reports kexec support.
+   in odd states by the first kernel. `--boot-map` reports kexec support. **Akai uses this route
+   itself:** USB-drive and online updates kexec `/boot/zImage` with `/opt/ramfs-update.squashfs` as
+   a RAM disk (inferred from `libaz01-prog` strings, [findings](../hardware/akai-updater-offline.md#how-an-update-is-launched)).
 2. **Fastboot RAM boot (to evaluate).** Update Mode is U-Boot fastboot. Many
    U-Boot fastboot builds accept `fastboot boot <image>`, which loads a kernel into
    RAM and boots it without flashing. Whether Akai's build allows this is unknown.
@@ -95,10 +99,10 @@ to the untouched Akai slot.
 | Area | Rewritten? | Effect |
 | --- | --- | --- |
 | `p6` rootfs (kernel, DT, glibc, `acvs.service`) | Yes, almost certainly | Removes MOD-001 (persistent SSH). New ABI/units: MPFree must re-qualify. Our `p6` backup becomes the older version |
-| `p1`–`p3` bootloader, `p2` env | Unknown | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
+| `p1`–`p3` bootloader, `p2` env | **Can be.** Akai's RAM updater handles U-Boot partitions and logs "bootloader unchanged", so it probably writes them only when they differ (inferred from strings, [findings](../hardware/akai-updater-offline.md#findings-2026-11-10)) | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
 | `p4`/`p5` splash | Possibly | None |
 | `p7` content | Expansion installs only | None |
-| `p8` data, `/etc`/`/var` overlays | Probably kept, possibly pruned | Tier 2 files on `/data` could vanish; stale overlay files could clash |
+| `p8` data, `/etc`/`/var` overlays | Usually kept, but **the updater can erase the data partition** if the image asks (inferred from strings) | Tier 2 files on `/data` could vanish, so keep a copy on SD/USB too; stale overlay files could clash |
 | SD card / USB | No | Anything MPFree keeps there survives |
 
 Risks for MPFree: USB autorun can be patched out (it is the bootstrap for the
@@ -124,11 +128,18 @@ Policy:
 Steps 1–5 are read-only or offline. Step 6 changes device state and needs the owner's go-ahead.
 
 1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md)). The second run captured the U-Boot environment and boot script.
-2. Copy `/opt/ramfs-update.squashfs` to the workstation (a read on the device), `unsquashfs` it there,
+2. Extract `/opt/ramfs-update.squashfs` from the backup's rootfs on the workstation (no MPC contact), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
+   **On-device copy read 2026-11-10** with [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md):
+   no scripts, a signed-image updater that can write U-Boot and erase `/data`. The MPC software starts it
+   with kexec for USB-drive and online updates. Only 3.10.0 is offered for download. Its image (a new `AZ01`
+   format) carries **only the rootfs**, no bootloader ([layout](../hardware/akai-updater-offline.md#two-container-formats)).
+   Its rootfs runs kernel 6.18 and has the same peripheral firmware updaters as 3.6.0 (touch controller at boot,
+   a USB DFU updater near the app launcher), plus new LoadPin and bootloader-signature pieces.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
-   Label it `MOD-001+MOD-002`.
+   Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
+   second copy verified on another disk.
 4. Host-side write-counter diff tool: fails if `p1`–`p6` show writes between two `--boot-map` snapshots.
 5. Board photos to locate a MaskROM button or eMMC clock test point. Opening the case is the owner's decision.
 6. **Owner go-ahead required:** first Tier 1 rehearsal. Stop and start `acvs.service` with no MPFree
