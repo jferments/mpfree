@@ -107,7 +107,7 @@ if [ -e "$link" ]; then
   esac
   if grep -q "^/dev/$disk" "$R/proc/mounts"; then
     say "  mounted by 3.6 (it unmounts them when it shuts down):"
-    grep "^/dev/$disk" "$R/proc/mounts" | while read -r d m rest; do say "    $d on $m"; done
+    grep "^/dev/$disk" "$R/proc/mounts" | while read -r d m t o rest; do say "    $d on $m ($t, $o)"; done
   else
     say "  not mounted"
   fi
@@ -127,10 +127,22 @@ for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/sy
     case "$f" in
       *kexec.target.wants/*|*kexec.target.d/*) say "  $f"; found=1; continue ;;
     esac
-    if [ -f "$f" ] && grep -qi kexec "$f" 2>/dev/null; then say "  $f"; found=1; fi
+    [ -f "$f" ] && grep -qi kexec "$f" 2>/dev/null || continue
+    # systemd's own fsck unit (255.17 and later) stops a running fsck at any reboot, kexec or power-off.
+    other=$(grep -i kexec "$f" | while IFS= read -r l; do
+      [ "$l" = 'Conflicts=reboot.target kexec.target poweroff.target halt.target' ] || printf '%s\n' "$l"
+    done)
+    if [ -z "$other" ]; then
+      say "  $f: only systemd's own line 'Conflicts=reboot.target kexec.target poweroff.target halt.target'"
+      say "    (it stops a running file system check at any reboot, kexec or power-off; nothing else)"
+    else
+      say "  $f:"
+      grep -n -i kexec "$f" | while IFS= read -r l; do say "      $l"; done
+      found=1
+    fi
   done
 done
-[ "$found" = 0 ] && say "  none"
+[ "$found" = 0 ] && say "  no other unit reacts to kexec"
 [ "$found" = 0 ] || bad "a unit other than systemd's own reacts to kexec: review it before booting"
 say "shutdown hooks (they run on every reboot too):"
 hooks=0
