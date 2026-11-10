@@ -61,7 +61,17 @@ From the owner's run on the reference unit (3.6.0, `MOD-001+MOD-002`). The `p6` 
 **Still open:**
 
 1. Find what launches the RAM updater. The script now searches the whole `p6` copy for it (step 5 above); waiting on the owner's second run.
-2. Read the partition list of Akai's public 3.6.0 update file.
+2. Read the partition list of Akai's public 3.6.0 update file with `offline-update-image.py` (below).
+
+## Reading Akai's public update file
+
+[`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) lists what a downloaded update image contains, also on the workstation only. inMusic's update images are flattened device tree (FDT/FIT) containers: a tree of nodes whose properties hold each partition's payload, hashes and signatures. The tool prints that tree with every property's name and size, short values in full, and a SHA-256 and format guess (gzip, xz, zstd, ext4, Rockchip loader, U-Boot image and so on) for each large payload. It doesn't decompress, mount or run anything, and it never writes the image. A `.zip` download is unpacked into a temporary folder next to it, which is deleted afterwards.
+
+```bash
+python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files
+```
+
+It reads every `.img` and `.zip` directly inside that folder. Keep downloaded images outside the git clone, like the backup.
 
 ## Keep Akai's files private
 
