@@ -864,3 +864,47 @@ jobs:
           assert not any(data[frame:]), "wrote past the visible frame"
           print("PASS: static ARMv7 startup screen draws one frame's bytes on a fake framebuffer under qemu")
           PY
+  splash-gl:
+    name: SDL3/GLES startup screen (desktop build, headless render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL3 build dependencies and Mesa
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev libxfixes-dev libxtst-dev libwayland-dev \
+            wayland-protocols libdrm-dev libgbm-dev libegl-dev libgles-dev libasound2-dev libudev-dev \
+            libdbus-1-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Build
+        run: cargo build --manifest-path rust/mpfree-splash-gl/Cargo.toml --release --locked
+      - name: Render frames offscreen with Mesa's software renderer and check them
+        run: |
+          d=$(mktemp -d)
+          SDL_VIDEO_DRIVER=offscreen timeout 300 rust/mpfree-splash-gl/target/release/mpfree-splash-gl \
+            --screenshot "$d" --frames 2 --every 5
+          python3 - "$d" <<'PY'
+          import struct, sys, zlib, pathlib
+          files = sorted(pathlib.Path(sys.argv[1]).glob("*.png"))
+          assert len(files) == 2, files
+          frames = []
+          for f in files:
+              data = f.read_bytes()
+              w, h = struct.unpack(">II", data[16:24])
+              assert (w, h) == (1280, 800), (w, h)
+              idat, i = b"", 8
+              while i < len(data):
+                  n = struct.unpack(">I", data[i:i + 4])[0]
+                  if data[i + 4:i + 8] == b"IDAT":
+                      idat += data[i + 8:i + 8 + n]
+                  i += 12 + n
+              raw = zlib.decompress(idat)
+              frames.append(raw)
+              row = 1 + w * 3
+              centre = raw[400 * row + 1 + 640 * 3: 400 * row + 1 + 640 * 3 + 3]
+              corner = raw[1 + 3: 1 + 6]
+              assert sum(raw[1:]) / len(raw) > 10, "the frame is nearly black"
+              assert sum(corner) < 120, ("the corner should be dark sky", corner)
+          assert frames[0] != frames[1], "the galaxy should turn between frames"
+          print("PASS: two 1280x800 frames rendered headless; they differ")
+          PY

@@ -10,3 +10,4 @@ pub mod fb;
 pub mod galaxy;
 pub mod png;
 pub mod title;
+pub mod blockfont;
