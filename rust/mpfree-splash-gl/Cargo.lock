@@ -418,6 +418,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-controller"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-screen-log"
 version = "0.1.0"
 
@@ -425,6 +429,8 @@ version = "0.1.0"
 name = "mpfree-splash"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "mpfree-controller",
  "mpfree-screen-log",
  "ratatui",
 ]

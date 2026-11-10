@@ -14,5 +14,7 @@ name = "mpfree-splash"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
+mpfree-controller = { path = "../mpfree-controller" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }

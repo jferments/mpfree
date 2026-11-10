@@ -8,6 +8,7 @@
 
 pub mod fb;
 pub mod galaxy;
+pub mod menu;
 pub mod png;
 pub mod title;
 pub mod blockfont;
