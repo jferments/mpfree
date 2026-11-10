@@ -84,6 +84,7 @@ if [[ "$SOURCE" == backup ]]; then
   [[ "$p6_start" =~ ^[0-9]+$ && "$p6_sectors" =~ ^[0-9]+$ && "$p6_sha" =~ ^[0-9a-f]{64}$ ]] ||
     die "baseline has no usable mmcblk0p6 line"
   ROOTFS="$WORK/p6-rootfs.img"
+  trap 'rm -f -- "$ROOTFS"' EXIT  # the copy is 500 MiB; remove it on every exit, also on errors
   echo "source: p6 of $backup"
   dd if="$backup/mmcblk0.img" of="$ROOTFS" bs=1048576 iflag=skip_bytes,count_bytes \
      skip=$(( p6_start * 512 )) count=$(( p6_sectors * 512 )) status=none
@@ -238,6 +239,5 @@ for needle in "${NEEDLES[@]}"; do
 done
 echo
 
-if [[ "$SOURCE" == backup ]]; then rm -f -- "$ROOTFS"; fi
 echo "DONE. Report: $REPORT"
 echo "It quotes Akai's files: keep it private and commit only findings."
