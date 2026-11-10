@@ -42,9 +42,9 @@ while (( $# )); do
   esac
 done
 
-for tool in debugfs unsquashfs file strings sha256sum dd awk sort realpath; do
+for tool in debugfs unsquashfs file strings sha256sum dd awk sort realpath python3; do
   command -v "$tool" >/dev/null 2>&1 ||
-    die "missing '$tool'. Install e2fsprogs, squashfs-tools, file and binutils with your package manager."
+    die "missing '$tool'. Install e2fsprogs, squashfs-tools, file, binutils and python3 with your package manager."
 done
 [[ -r "$BASELINE" ]] || die "missing baseline: $BASELINE"
 [[ "$UPDATER_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "--updater-sha256 must be 64 lowercase hex digits"
@@ -202,6 +202,84 @@ echo "=== 5. Update files from the rootfs ==="
 while IFS= read -r -d '' f; do
   describe "$f" "rootfs:${f##*/}"
 done < <(find "$WORK/rootfs-files" -type f -print0 | sort -z)
+
+# What starts the RAM updater is not in any update-named unit, so search the
+# whole rootfs copy: find each needle's byte offsets, turn them into
+# filesystem blocks, and ask debugfs which inode owns each block (icheck) and
+# what its path is (ncheck). A directory owns a block when a file *name*
+# matches. A match in a block that no file owns is leftover data in free space.
+NEEDLES=(ramfs-update erase-data-partition)
+mention_context() {  # $1 = file, $2 = label
+  local f="$1" kind
+  kind="$(file -b -- "$f")"
+  echo "----- $2: $kind"
+  case "$kind" in
+    *ELF*) ;;
+    *text*|*script*)
+      { grep -n -F -C 8 -e "${NEEDLES[0]}" -e "${NEEDLES[1]}" -- "$f" | head -n 200; } || true
+      echo
+      return 0 ;;
+  esac
+  echo "(printable strings around each match)"
+  { strings -n 4 -- "$f" | grep -n -F -C 12 -e "${NEEDLES[0]}" -e "${NEEDLES[1]}" | head -n 300; } || true
+  echo
+}
+
+# Byte offset of every match in the p6 copy. Python's mmap keeps memory low and
+# the offsets exact; GNU grep -b needs the image's longest newline-free run in
+# memory, and with -z it reported wrong offsets (grep 3.11, 2026-11-10).
+match_offsets() {  # $1 = needle
+  python3 -I -c '
+import mmap, sys
+with open(sys.argv[1], "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as m:
+    needle, count = sys.argv[2].encode(), 0
+    i = m.find(needle)
+    while i != -1 and count < 5000:
+        print(i)
+        count += 1
+        i = m.find(needle, i + 1)
+' "$ROOTFS" "$1"
+}
+
+echo "=== 6. Files in the rootfs that mention the updater ==="
+BLOCK_SIZE="$(dfs stats | sed -n 's/^Block size: *\([0-9][0-9]*\)$/\1/p')"
+[[ "$BLOCK_SIZE" =~ ^[0-9]+$ ]] || die "debugfs did not report the rootfs block size"
+echo "searching for: ${NEEDLES[*]} (block size $BLOCK_SIZE)"
+mkdir -p "$WORK/mentions"
+declare -A copied=()
+for needle in "${NEEDLES[@]}"; do
+  blocks="$(match_offsets "$needle" |
+    awk -v bs="$BLOCK_SIZE" '{ print int($1 / bs) }' | sort -un | head -n 500 | tr '\n' ' ')"
+  if [[ -z "${blocks// /}" ]]; then
+    echo "$needle: no match"
+    continue
+  fi
+  owners="$(dfs "icheck $blocks")"
+  # A block no file owns is either free (deleted data) or filesystem metadata,
+  # such as an inode holding a short symlink target or a tiny inline file.
+  free_blocks=0 meta_blocks=()
+  while read -r b; do
+    [[ "$b" =~ ^[0-9]+$ ]] || continue
+    if dfs "testb $b" | grep -q 'marked in use'; then meta_blocks+=("$b"); else free_blocks=$((free_blocks + 1)); fi
+  done < <(awk 'NR > 1 && /block not found/ { print $1 }' <<<"$owners")
+  (( free_blocks == 0 )) || echo "$needle: $free_blocks match(es) in free space (deleted data, no file)"
+  (( ${#meta_blocks[@]} == 0 )) ||
+    echo "$needle: match(es) in filesystem metadata, block(s) ${meta_blocks[*]} (for example a short symlink target)"
+  inodes="$(awk 'NR > 1 && $2 ~ /^[0-9]+$/ { print $2 }' <<<"$owners" | sort -un | tr '\n' ' ')"
+  [[ -n "${inodes// /}" ]] || continue
+  while IFS=$'\t' read -r ino path; do
+    [[ "$ino" =~ ^[0-9]+$ ]] || continue
+    while [[ "$path" == *//* ]]; do path="${path//\/\//\/}"; done  # ncheck prints //opt for /opt
+    echo "$needle: $path"
+    [[ -z "${copied[$ino]:-}" ]] || continue
+    copied[$ino]=1
+    dump_file "$path" "$WORK/mentions/$ino-${path##*/}"
+  done < <(dfs "ncheck $inodes")
+done
+echo
+while IFS= read -r -d '' f; do
+  mention_context "$f" "mentions:${f##*/}"
+done < <(find "$WORK/mentions" -type f -print0 | sort -z)
 
 if [[ -s "$WORK/unsquashfs-warnings.txt" ]]; then
   echo "=== unsquashfs warnings (device nodes and owners can't be created without root) ==="
