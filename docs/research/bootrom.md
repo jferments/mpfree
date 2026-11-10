@@ -998,3 +998,47 @@ No MPC reboot, USB Fastboot traffic, eMMC writes or permission-changing commands
 The owner supplied private `p3-uboot-00-offset-0502f4.dtb` (35,213 bytes). It was independently parsed here from its FDT structure and string blocks; this is not inferred from a board datasheet. Its `/memory@0` node has `device_type="memory"` and `reg=<0x00000000 0x80000000>`, with 1 address cell and 1 size cell at the root. Thus the *declared physical DRAM bank* spans `[0x00000000, 0x80000000)` = **2 GiB**. The FDT's memory reservation map has no entries, but this does **not** establish that U-Boot has no runtime reserved allocations or relocation/stack regions.
 
 The Fastboot download buffer base from p3 code is `0x00800800`; the source-level size-bound from the download callback is `0x70000000`, placing the theoretical end at **`0x70800800`**, still **`0x0F7FF800` (~248 MiB)** below the declared physical RAM limit. This arithmetic is consistent with an intentional high-memory margin, but the *actual safe writable area* is unproven. The maximum must **not** be used to size an experimental MPFree image. The proper next gate is a runtime U-Boot memory map/relocation/stack/heap/USB DMA allocation review plus an independently verified small image.
+
+## 20. Fastboot command dispatch proven; legacy image CRC and FIT identification (2026-11-10)
+
+New owner report `fastboot-image-validation-next.txt` contains SHA256-verified p3 U-Boot Thumb machine-code windows at linked addresses `0x00122734`–`0x00122820`, `0x0010E350`–`0x0010E3D0`, `0x0010DFD0`–`0x0010E080`, `0x0010E1A0`–`0x0010E240`, and `0x00121C30`–`0x00121DD0`. The machine bytes were decoded using LLVM as **Thumb**. The ASCII strings independently verified in the report are `OKAY`, `downloading of %d bytes finished`, `bootm`, and `## Checking Image at %08lx ...`. These observations refer to stock InMusic U-Boot 2019, not newly compiled MPFree.
+
+### 20.1 The dispatcher actually walks the eight-element Fastboot callback table
+
+The function at **`0x00122780`** reads the incoming command buffer and searches the table whose linked address is **`0x0012F2B0`** (literal at `0x00122818`). It performs a prefix-comparison call at **`0x001227A4 -> 0x00122710`**; on a miss it advances by one entry and tests **`index != 8`**. On a match it loads the callback from entry offset `+4` and invokes **`BLX r3` at `0x001227E6`**. Its caller/request setup includes buffer-length checks and requeues a USB request afterwards. This **confirms control-flow connectivity to the eight-entry table**, not just data registration. The actual incoming-command prefix match helper can be inspected separately, but the loop's bounded table scan and indirect dispatch are unambiguous.
+
+The eight registered commands from §15 remain: `reboot`, `getvar:`, `download:`, `boot`, `continue`, `flash`, `erase`, `oem`. No additional registered table row was found after the null-terminated eighth entry in prior reports. OEM has additional internal subcommands.
+
+### 20.2 Response submission to USB endpoint
+
+`0x00122734` calls a length helper at `0x0012DCB2` on the supplied Fastboot response, copies that many bytes into a USB request buffer through `0x0012DDA2`, records the request length in `[request+4]`, and calls USB endpoint operations indirectly (`BLX r3` at `0x0012275A` and `0x00122768`). It returns zero after queueing, with an error diagnostic branch. This establishes a concrete connection between the Fastboot textual ACK/FAIL responses, their packet buffers and endpoint activity; the specific method names behind endpoint operation slots require separate verification.
+
+### 20.3 Format classifier at 0x0010E390
+
+The binary performs `ldr r2,[r0]`, compares against an inline literal **`0x56190527`**, then returns **1** for a legacy uImage. If the magic does not match, it invokes **`0x00127A1C`** on the candidate image, returning **2 when that function returns zero**, otherwise **0**. Structurally it matches upstream U-Boot `genimg_get_format()` using `image_check_magic()` and `fdt_check_header()`. Thus **format 2 is a likely FIT/FDT-based format**, but the binary call at `0x00127A1C` still needs disassembly before claiming an exact `fdt_check_header()` implementation or acceptance of a FIT payload by `bootm`.
+
+Upstream comparison source (not proof of its implementation being identical): https://android.googlesource.com/platform/external/u-boot/+/f7aa2094d4b1f8121384a030e95177327d873339/common/image.c
+
+### 20.4 Image-check functions confirmed by byte-level control flow
+
+**`0x0010E000`: legacy uImage header CRC.** Copies a **64-byte header** into stack storage (`BL 0x0012DE1C`), writes zero at copied header offset `+4` (CRC field), calls a CRC-like routine `0x0012DA74` with seed zero, buffer pointer and length `0x40`, then compares the return value with the original header's big-endian stored CRC (`REV` before compare). This precisely matches upstream `image_check_hcrc()`.
+
+**`0x0010E02A`: legacy uImage data CRC.** Reads the big-endian image data size at header offset `+0x0C` (byte-swaps it), takes the data pointer as image header `+0x40`, calls CRC-like routine `0x0012DA80` with seed 0, buffer, length and chunk-size parameter `0x10000`, then compares with byte-swapped original header offset `+0x18` (data CRC). This precisely matches upstream `image_check_dcrc()` with watchdog chunks. The CRC algorithm itself is structurally inferable as CRC32 but the callees have not been separately disassembled in this report.
+
+**Execution qualification:** these functions exist and implement the expected checks, but the currently supplied windows **do not prove that every Fastboot `boot` invocation necessarily runs both CRC functions** or every other image-policy test. Callers must still be traced within the bootm image-loading chain.
+
+**Correction:** `0x0010E1CC`, previously labelled a generic 'additional image validation' target, is **not shown to validate the image**. Its Thumb code reads the uImage name string from header offset `+0x20` and converts header bytes `+0x1C..+0x1F` (OS, architecture, type, compression) into printable names. It prints size, load and entry-address fields from offsets `+0x0C`, `+0x10`, and `+0x14`. This is strongly consistent with **`image_print_contents()`**, an informational printer, not a trust/CRC gate. Do not conflate it with validation routines.
+
+Upstream reference for `image_check_hcrc`, `image_check_dcrc`, and `image_print_contents`: https://github.com/ARM-software/u-boot/blob/master/common/image.c
+
+### 20.5 USB event-loop boundary
+
+The uploaded `0x00121C30..0x00121DD0` window contains USB controller/request setup, endpoint registration and transfer operations. The previously proven flag getter `0x00121DC4` loads a byte from `0x0014D658`, `0x00121DD0` sets it, and `0x00121DDC` clears it; the `continue` post-response callback branches to the setter. This window still **does not identify the upper-level Fastboot USB event-loop caller** that polls the flag and resumes the Akai boot sequence. Do not assert a specific return behavior without the caller.
+
+### 20.6 Revised research priorities
+
+1. Disassemble **`0x00127A1C`** to establish whether it is `fdt_check_header`, and trace the consumers of format values 1/2/0 within bootm.
+2. Trace **callers of `0x0010E000` and `0x0010E02A`**, inspect bootm orchestration near `0x0010A6A4`, and enumerate architecture/OS/image-type/CRC/security checks actually applied to a Fastboot-downloaded kernel.
+3. Reconstruct live RAM placement/relocation, USB DMA and stack so the protocol maximum `0x70000000` is not confused with safe download capacity.
+4. Determine runtime initialization of permission gate `0x0014D690` and all writes; static file word values are not live state.
+5. Track the upper-level USB polling loop reading the exit flag at `0x0014D658`, and keep ROM/MaskROM investigations independent. No live USB requests, eMMC writes, reboots, or OEM commands were performed.
