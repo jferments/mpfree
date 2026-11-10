@@ -49,4 +49,4 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
 
 CI builds it that way and runs it under `qemu-arm` against a fake framebuffer.
 
-The framebuffer geometry, rotation and the 8x8 fallback font are shared with `mpfree-screen-log`. The title's letters (`src/title.rs`) are our own rounded strokes in the style of Ubuntu Mono; no font file is copied.
+The framebuffer geometry, rotation and the 8x8 fallback font are shared with `mpfree-screen-log`. The title uses `src/blockfont.rs`, a heavy squared sci-fi face in the spirit of display fonts like Antares and Jupiter. Its shapes are our own polygons; no font file is copied. The SDL3/GLES version, [`mpfree-splash-gl`](../mpfree-splash-gl), uses the same font and layout.

@@ -24,15 +24,15 @@ pub const TITLE: &str = "MPCFree OS v0.1";
 /// The title split in two, for screens too narrow for one line.
 const TITLE_LINES: [&str; 2] = ["MPCFree", "OS v0.1"];
 /// One full turn of the galaxy takes this many seconds.
-const TURN_SECONDS: f32 = 45.0;
+pub const TURN_SECONDS: f32 = 45.0;
 /// The galaxy is seen tilted: its disc is squashed to this fraction vertically.
-const TILT: f32 = 0.62;
+pub const TILT: f32 = 0.62;
 /// Arm pitch: how tightly the arms wind (1 / tan of the pitch angle, ~15 degrees).
-const WIND: f32 = 3.6;
+pub const WIND: f32 = 3.6;
 /// The four arms, a quarter turn apart: brightness of each.
-const ARMS: [f32; 4] = [1.0, 0.55, 1.0, 0.55];
+pub const ARMS: [f32; 4] = [1.0, 0.55, 1.0, 0.55];
 /// The heart's stars turn this much faster than the disc.
-const HEART_SPEED: f32 = 1.7;
+pub const HEART_SPEED: f32 = 1.7;
 
 /// A small, fixed pseudo-random generator, so every run draws the same sky.
 struct Rng(u64);
