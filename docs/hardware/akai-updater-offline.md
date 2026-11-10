@@ -83,7 +83,7 @@ Three workstation-only tools read a downloaded update image. None of them contac
 | Tool | What it does | Writes |
 | --- | --- | --- |
 | [`offline-update-image.py`](../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
-| [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-update-<UTC>-<random>/` |
+| [`offline-update-extract.py`](../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
 | [`offline-rootfs-survey.sh`](../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units and flashing programs it has, and which files mention the eMMC or flashing | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/` |
 
 ```bash
@@ -122,7 +122,7 @@ What this means (the hash coverage and the last 16 bytes are still open):
 
 ## Keep Akai's files private
 
-The work folders under `~/mpfree-work/` (`akai-updater-…`, `akai-update-…` and `rootfs-survey-…`) hold or quote Akai's proprietary software, and the reports quote their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
+The work folders under `~/mpfree-work/` (`akai-updater-…`, `akai-unpacked-…` and `rootfs-survey-…`) hold or quote Akai's proprietary software, and the reports quote their scripts in full. Treat both like the backup: never commit, upload or share them publicly. Only our written findings go in the repo, such as which partitions an update writes and what it checks.
 
 ## What it does not cover
 
