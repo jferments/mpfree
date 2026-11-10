@@ -97,7 +97,7 @@ def main(argv, out=sys.stdout):
     trees = (("board file of the running release " + paths["running release"], paths["running board file"]),
              ("board file of the new release " + paths["new release"], paths["new board file"]),
              ("running tree, as U-Boot gave it to the running release", paths["running tree"]),
-             ("the test build's kexec.dtb", os.path.join(folder, "kexec.dtb")))
+             ("test build's kexec.dtb", os.path.join(folder, "kexec.dtb")))
     out.write("MPFree: device trees and kernel configs behind the newest kexec test build (read-only)\n")
     out.write(f"build: {folder}\n")
     for label, path in trees:
