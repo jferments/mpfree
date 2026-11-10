@@ -73,6 +73,7 @@ dependencies = [
 name = "mpfree-hello"
 version = "0.1.0"
 dependencies = [
+ "mpfree-arp",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-screen-log",

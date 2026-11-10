@@ -18,11 +18,20 @@
 //!   setup --seconds N  Akai's session and setup, replayed byte for byte
 //!   drums --seconds N [--gain-db G]
 //!                      plays the first kit in kits.bin from the pads
-//!   play --seconds N [--gain-db G]
+//!   play --seconds N [--gain-db G] [--kits FILE]
 //!                      the pad player: Akai's session and setup, then every kit
 //!                      in kits.bin, picked with the wheel or the screen, played
 //!                      from the pads or the screen, level on Q-Link 1 (at most
-//!                      G dB), timing of each hit; STOP ends it
+//!                      G dB), timing of each hit, Note Repeat, Latch, Full and
+//!                      Half Level, MENU and Prefs, the button guide; STOP ends it
+//!   app [--gain-db G] [--kits FILE] [--keep-screen]
+//!                      the same pad player as a program that starts at power-on
+//!                      (the test stick's mpfree-app service) and runs until the
+//!                      power goes off: a loading page with a progress bar while
+//!                      it waits for the controller and the sound card, then the
+//!                      player; STOP silences, SHIFT + STOP shows the system log
+//!                      (journalctl -f, read-only); --keep-screen keeps the
+//!                      startup screen's last frame behind the loading card
 //!   click --seconds N [--gain-db G]
 //!                      plays a 120 BPM click on the ACVA card (stereo S32_LE,
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
@@ -35,17 +44,20 @@
 //!
 //! It writes only to: /dev/fb0 and the framebuffer's sysfs `pan` file (the
 //! screen), the ACVA PCM device (sound), the controller's Public and Private
-//! MIDI ports (only messages Akai's app was seen sending, and pad colours made
-//! by its rules; never in inventory, screen, touch, or pads without
-//! --keepalive) and /run/mpfree-hello/hello.txt (its own report, in RAM; the
-//! workstation tool copies it into its report). With --preview on the
-//! workstation it writes only new PNG files. It never touches storage, the
-//! eMMC is hidden from this kernel anyway, and nothing it does survives a
-//! power-cycle.
+//! MIDI ports (only messages Akai's app was seen sending, button lights in the
+//! same form with the values it uses, and pad colours made by its rules; never
+//! in inventory, screen, touch, or pads without --keepalive) and
+//! /run/mpfree-hello/hello.txt (its own report, in RAM; the workstation tool
+//! copies it into its report). It reads the screen back once with
+//! --keep-screen, and `app` runs `journalctl -f` (read-only) for its console
+//! page. With --preview on the workstation it writes only new PNG files. It
+//! never touches storage, the eMMC is hidden from this kernel anyway, and
+//! nothing it does survives a power-cycle.
 
 #![deny(unsafe_code)] // the few C calls live in sys.rs, the only module allowed unsafe code
 
 mod akai;
+mod app;
 mod alsa;
 mod gui;
 mod kit;
@@ -91,6 +103,8 @@ struct Options {
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
+    kits: PathBuf,
+    keep_screen: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -105,12 +119,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         font: None,
         bold_font: None,
         mono_font: None,
+        kits: PathBuf::from(KIT_PATH),
+        keep_screen: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "inventory" | "screen" | "touch" | "pads" | "lights" | "setup" | "drums" | "play" | "click"
+            "inventory" | "screen" | "touch" | "pads" | "lights" | "setup" | "drums" | "play" | "app" | "click"
                 if o.command.is_empty() => o.command = arg.clone(),
             "--seconds" => o.seconds = value()?.parse().map_err(|_| "--seconds needs a whole number".to_string())?,
             "--keepalive" => o.keepalive = true,
@@ -126,15 +142,25 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
+            "--kits" => o.kits = PathBuf::from(value()?),
+            "--keep-screen" => o.keep_screen = true,
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
     if o.preview.is_none() && o.command.is_empty() {
-        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|play|click [options]".to_string());
+        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
+            .to_string());
     }
     let max = if o.command == "play" { PLAY_MAX_SECONDS } else { MAX_SECONDS };
-    if !(1..=max).contains(&o.seconds) {
+    if o.command == "app" {
+        if args.iter().any(|a| a == "--seconds") {
+            return Err("app runs until the power goes off; it takes no --seconds".to_string());
+        }
+    } else if !(1..=max).contains(&o.seconds) {
         return Err(format!("--seconds must be 1 to {max}"));
+    }
+    if o.keep_screen && o.command != "app" && o.command != "play" {
+        return Err("--keep-screen goes with app or play".to_string());
     }
     if o.keepalive && o.command != "pads" {
         return Err("--keepalive goes with pads".to_string());
@@ -684,6 +710,8 @@ struct Ports {
     max_shown: u64,
     /// Print without redrawing the screen (the drum loop).
     quiet: bool,
+    /// List pad pressure (aftertouch) too; it is only counted otherwise.
+    show_pressure: bool,
 }
 
 impl Ports {
@@ -696,7 +724,8 @@ impl Ports {
         } else {
             None
         };
-        Ok(Ports { inputs, public, private, start: Instant::now(), sent: 0, shown: 0, max_shown: MAX_SHOWN, quiet: false })
+        Ok(Ports { inputs, public, private, start: Instant::now(), sent: 0, shown: 0, max_shown: MAX_SHOWN, quiet: false,
+                   show_pressure: false })
     }
 
     fn t(&self) -> f64 {
@@ -754,7 +783,7 @@ impl Ports {
                 let event = mpc_one::decode(&msg);
                 let (bytes, truncated) = message_bytes(&msg);
                 self.inputs[i].messages += 1;
-                if !matches!(event, Some(ControlEvent::PadPressure { .. })) {
+                if self.show_pressure || !matches!(event, Some(ControlEvent::PadPressure { .. })) {
                     self.shown += 1;
                     if self.shown <= self.max_shown {
                         let text = message_line(t, name, &bytes, truncated, event.as_ref());
@@ -936,13 +965,29 @@ fn setup(o: &Options) -> Result<(), String> {
 
 // ---------------------------------------------------------------- drums
 
-/// The kits the host tool copied to KIT_PATH.
-fn load_kits() -> Result<Vec<kit::Kit>, String> {
-    let size = fs::metadata(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e} (the host tool copies it there)"))?.len();
+/// The kits file (by default where the host tool copies it; the test stick
+/// keeps its own), read in steps so `step(done, total)` can show progress.
+fn load_kits(path: &Path, step: &mut dyn FnMut(u64, u64)) -> Result<Vec<kit::Kit>, String> {
+    let shown = path.display();
+    let mut f = File::open(path).map_err(|e| format!("{shown}: {e}"))?;
+    let size = f.metadata().map_err(|e| format!("{shown}: {e}"))?.len();
     if size > MAX_KIT_BYTES {
-        return Err(format!("{KIT_PATH} is {size} bytes; at most {MAX_KIT_BYTES} are allowed"));
+        return Err(format!("{shown} is {size} bytes; at most {MAX_KIT_BYTES} are allowed"));
     }
-    kit::parse_kits(&fs::read(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e}"))?)
+    let mut data = Vec::with_capacity(size as usize);
+    let mut chunk = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut chunk).map_err(|e| format!("{shown}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..n]);
+        if data.len() as u64 > MAX_KIT_BYTES {
+            return Err(format!("{shown} grew past {MAX_KIT_BYTES} bytes while being read"));
+        }
+        step(data.len() as u64, size);
+    }
+    kit::parse_kits(&data)
 }
 
 /// Resting pad colours for kit number `k`: its colour where it has a sound, dark elsewhere.
@@ -967,10 +1012,10 @@ fn show_kit(out: &mut Out, kit: &kit::Kit) {
     }
 }
 
-/// Play the first kit in KIT_PATH from the pads, through ACVA.
+/// Play the first kit in the kits file from the pads, through ACVA.
 fn drums(o: &Options) -> Result<(), String> {
     let mut out = Out::new(o, "factory drums", true);
-    let mut kits = load_kits()?;
+    let mut kits = load_kits(&o.kits, &mut |_, _| {})?;
     kits.truncate(1);
     out.say(&format!("kit: {} ({} sounds)", kits[0].name, kits[0].sounds.len()));
     show_kit(&mut out, &kits[0]);
@@ -984,13 +1029,13 @@ fn drums(o: &Options) -> Result<(), String> {
     let mut ports = Ports::open(&mut out, false)?;
     let colours = pad_colours(&rest);
     ports.send_batch(&mut out, false, "pad colours: lit where the kit has a sound, dark elsewhere", &as_slices(&colours))?;
-    let pcm = open_acva(&mut out)?;
+    let pcm = open_acva(&mut out, PERIODS)?;
     let master = 10f32.powf(o.gain_db / 20.0);
     out.say(&format!("play the pads for {} s; each sound peaks at most {:.0} dB below full scale at full velocity",
                      o.seconds, -o.gain_db));
     out.draw();
     ports.quiet = true;
-    let mut play = Playback::start(pcm)?;
+    let mut play = Playback::start(pcm, PERIODS)?;
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
@@ -1032,14 +1077,14 @@ fn drums(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------- play
+// ---------------------------------------------------------------- play and app
 
 /// The quietest level the pad player goes down to; the loudest is --gain-db.
 const LEVEL_MIN_DB: f32 = -40.0;
 /// How far one step of Q-Link 1 moves the level.
 const LEVEL_STEP_DB: f32 = 0.5;
-/// Velocity for pads played from the screen (touch has no pressure).
-const SCREEN_VELOCITY: u8 = 100;
+/// How long the app waits for each device at power-on.
+const DEVICE_WAIT: Duration = Duration::from_secs(30);
 
 /// Pad hit to sound, in milliseconds.
 #[derive(Clone, Copy, Debug)]
@@ -1112,19 +1157,69 @@ fn kit_views(kits: &[kit::Kit]) -> Vec<gui::KitView> {
     }).collect()
 }
 
-/// The pad player: Akai's session and setup, every kit in kits.bin, the GUI.
-fn play(o: &Options) -> Result<(), String> {
-    let mut out = Out::new(o, "pad player", false);
-    let kits = load_kits()?;
-    let fonts = load_fonts(o, &mut out);
-    let fb = match open_screen(o) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            out.say(&format!("screen: not used ({e})"));
-            None
+/// The loading steps, for the progress bar.
+const STEPS: usize = 6;
+
+/// One loading step on the screen (and in the log).
+fn progress(out: &mut Out, step: usize, message: &str, detail: &str, value: f32) {
+    out.show(gui::ToUi::Progress { message: message.to_string(),
+                                   detail: format!("Step {step} of {STEPS}   ·   {detail}"), value });
+}
+
+/// Wait for `find` to succeed, for up to `wait`, showing how long it has been.
+fn wait_for<T>(out: &mut Out, step: usize, message: &str, value: f32, wait: Duration,
+               mut find: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    let start = Instant::now();
+    let mut shown = u64::MAX;
+    loop {
+        match find() {
+            Ok(v) => return Ok(v),
+            Err(e) if start.elapsed() >= wait => return Err(e),
+            Err(_) => {
+                let s = start.elapsed().as_secs();
+                if s != shown {
+                    shown = s;
+                    progress(out, step, message, &format!("Waiting for it to appear ({s} s)"), value);
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
         }
-    };
+    }
+}
+
+/// The pad player: `play` (timed, from the workstation; STOP ends it) or
+/// `app` (from power-on, until the power goes off).
+fn player(o: &Options, timed: bool) -> Result<(), String> {
+    let mut out = Out::new(o, if timed { "pad player" } else { "app" }, false);
+    let fonts = load_fonts(o, &mut out);
+    let mut fb = None;
+    let fb_wait = if timed { Duration::ZERO } else { Duration::from_secs(20) };
+    let start = Instant::now();
+    loop {
+        match open_screen(o) {
+            Ok(f) => {
+                fb = Some(f);
+                break;
+            }
+            Err(e) if start.elapsed() >= fb_wait => {
+                out.say(&format!("screen: not used ({e})"));
+                break;
+            }
+            Err(_) => thread::sleep(Duration::from_millis(250)),
+        }
+    }
     let size = fb.as_ref().map(|f| f.logical_size()).unwrap_or(gui::SCREEN);
+    // The startup screen's last frame stays on the panel; carry on from it.
+    let backdrop = match (&fb, o.keep_screen) {
+        (Some(f), true) => match mpfree_ui::fb::capture(&o.fb, &f.layout) {
+            Ok(img) => Some(std::sync::Arc::new(img)),
+            Err(e) => {
+                out.say(&format!("screen: could not read the startup screen back ({e}); using the built-in backdrop"));
+                None
+            }
+        },
+        _ => None,
+    };
     let touch = match touchscreen().and_then(|(path, name)| gui::TouchIn::open(&path, size).map(|t| (t, path, name))) {
         Ok((t, path, name)) => {
             out.say(&format!("touchscreen: {path} ({name}); read-only, not grabbed"));
@@ -1135,18 +1230,31 @@ fn play(o: &Options) -> Result<(), String> {
             None
         }
     };
-    let player = gui::Player::new(fonts, kit_views(&kits), size);
+    let player = gui::Player::new(fonts, size, timed, backdrop);
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
     // The screen thread starts before this thread asks for real-time priority,
     // so it keeps normal priority.
     let screen = gui::spawn(player, fb, touch, from_audio, to_audio).map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
-    let result = play_session(o, &mut out, kits, &from_ui);
+    if !timed {
+        follow_journal(to_ui.clone());
+    }
+    let result = player_session(o, &mut out, timed, &from_ui);
     if let Err(e) = &result {
         // On the screen only: main prints the STOP line as for every step.
         out.show(gui::ToUi::Session("Stopped".into(), Tone::Bad));
-        out.show(gui::ToUi::Show(format!("STOP: {e}")));
+        out.show(gui::ToUi::Failed { message: "Stopped".into(), detail: e.clone() });
+        out.show(gui::ToUi::Event(format!("STOP: {e}")));
+        if !timed {
+            // Keep the screen: the error stays up and the console is a tap away.
+            // The power switch is the way out, as for the whole test build.
+            out.note(&format!("STOP: {e}"));
+            out.note("the app stopped; the screen stays up until the power goes off");
+            loop {
+                thread::sleep(Duration::from_secs(3600));
+            }
+        }
     }
     let _ = to_ui.send(gui::ToUi::Quit);
     let report = screen.join().map_err(|_| "the screen thread stopped with an error".to_string())?;
@@ -1161,17 +1269,76 @@ fn play(o: &Options) -> Result<(), String> {
     result
 }
 
-fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
+/// The system log, followed (`journalctl -f`, read-only) into the Console page.
+fn follow_journal(tx: SyncSender<gui::ToUi>) {
+    let spawned = thread::Builder::new().name("mpfree-journal".into()).spawn(move || {
+        let child = std::process::Command::new("journalctl")
+            .args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.try_send(gui::ToUi::Console(format!("journalctl: {e} (no system log here)")));
+                return;
+            }
+        };
+        let Some(stdout) = child.stdout.take() else { return };
+        for line in io::BufRead::lines(io::BufReader::new(stdout)) {
+            let Ok(l) = line else { break };
+            if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) = tx.try_send(gui::ToUi::Console(l)) {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    });
+    if let Err(e) = spawned {
+        println!("console: {e}");
+    }
+}
+
+/// Totals over every audio stream of a session (the buffer can change).
+#[derive(Default)]
+struct AudioTotals {
+    periods: u64,
+    xruns: u64,
+    summaries: Vec<String>,
+}
+
+fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
+    // 1. Kits.
+    progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
+    let kits = load_kits(&o.kits, &mut |done, total| {
+        let value = 0.02 + 0.38 * done as f32 / total.max(1) as f32;
+        progress(out, 1, "Loading drum kits", &format!("{:.1} of {:.1} MB", done as f64 / 1e6, total as f64 / 1e6), value);
+    })?;
     let n = kits.len();
-    out.say(&format!("pad player: {n} kits"));
+    let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
+    out.say(&format!("pad player: {n} kits, {sounds} sounds"));
     for (k, kit) in kits.iter().enumerate() {
         out.say(&format!("kit {}: {} ({} sounds)", k + 1, kit.name, kit.sounds.len()));
     }
+    out.show(gui::ToUi::Kits(kit_views(&kits)));
+    // 2. The controller (USB; it may still be starting at power-on).
+    let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
+    progress(out, 2, "Finding the pads and buttons", "The controller is a USB device inside the MPC", 0.42);
+    let card = wait_for(out, 2, "Finding the pads and buttons", 0.42, wait, midi_card)?;
+    out.say(&format!("controller MIDI card: {card}"));
+    // 3. The sound card (its driver loads at power-on).
+    progress(out, 3, "Finding the sound card", "ACVA, the MPC's own outputs", 0.5);
+    let audio = wait_for(out, 3, "Finding the sound card", 0.5, wait, audio_card)?;
+    out.say(&format!("sound card: {audio} ({AUDIO_CARD_ID})"));
+    // 4. Akai's session, then 5. its setup.
     let mut ports = Ports::open(out, true)?;
-    ports.max_shown = 5000;
+    ports.max_shown = u64::MAX;
     let mut rest = kit_pad_colours(&kits[0], 0);
+    progress(out, 4, "Connecting to the pads and buttons", "Asking the controller for a session", 0.58);
     let session = start_session(out, &mut ports)?;
     if session {
+        progress(out, 5, "Lighting the pads", "Sending Akai's setup, as Akai's app does", 0.72);
         send_setup(out, &mut ports, &rest, "kit 1's pad colours")?;
         out.show(gui::ToUi::Session("Akai session".into(), Tone::Good));
     } else {
@@ -1180,20 +1347,28 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
         ports.send_batch(out, false, "kit 1's pad colours", &as_slices(&pad_colours(&rest)))?;
         out.show(gui::ToUi::Session("No session".into(), Tone::Warn));
     }
+    // 6. Sound.
+    progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut mixer = kit::Mixer::new(kits);
-    let pcm = open_acva(out)?;
+    let mut app = app::App::new(RATE, timed);
+    let mut periods = app.settings.periods;
+    let mut play = Playback::start(open_acva(out, periods)?, periods)?;
+    progress(out, 6, "Ready", "Have fun", 1.0);
     let max_db = o.gain_db;
     let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
-    out.say(&format!("play for up to {} s: pads or the screen play; the wheel or a tap picks the kit; Q-Link 1 or the \
-                      slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB); STOP ends", o.seconds));
+    let limit = if timed { format!("for up to {} s", o.seconds) } else { "until the power goes off".to_string() };
+    out.say(&format!("playing {limit}: pads or the screen play; the wheel or a tap picks the kit; Q-Link 1 or the \
+                      slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB); {}",
+                     if timed { "STOP ends" } else { "STOP silences" }));
     ports.quiet = true;
-    let mut play = Playback::start(pcm)?;
+    let mut fx = app.start();
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
-    let total_periods = o.seconds * RATE as u64 / PERIOD as u64;
-    let (mut hits, mut screen_hits, mut silent_hits, mut clipped) = (0u64, 0u64, 0u64, 0u64);
+    let mut events = mpfree_arp::Events::new();
+    let total_periods = if timed { o.seconds * RATE as u64 / PERIOD as u64 } else { u64::MAX };
+    let (mut hits, mut screen_hits, mut silent_hits, mut clipped, mut repeats) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut peak, mut window_peak, mut voices) = (0f32, 0f32, 0usize);
     let mut used = vec![false; n];
     used[0] = true;
@@ -1204,24 +1379,52 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
     let mut last_timing = Instant::now();
     let started = Instant::now();
     let mut stopped_by = "time";
+    // Pads held (on the controller or the screen), pressed but not yet sounded
+    // (Note Repeat starts a pad on the next step of its grid), and lit.
+    let mut held = [false; 16];
+    let mut awaiting = [false; 16];
+    let mut lit = [false; 16];
+    // Repeats per second, for the log (the paced Latch check reads these).
+    let (mut window_repeats, mut window_pads, mut last_repeat_note) = (0u64, [false; 16], Instant::now());
+    let mut totals = AudioTotals::default();
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
-        let mut hit_list: Vec<(usize, u8, bool)> = Vec::new(); // (pad, velocity, from the screen)
-        let mut releases: Vec<usize> = Vec::new();
+        let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
-        let mut stop = false;
+        let mut audio_change: Option<u32> = None;
+        // Hits are timed only when they sound at once (not on a repeat grid).
+        let direct = !app.repeating();
         while let Ok(a) = from_ui.try_recv() {
             match a {
-                gui::FromUi::Pad { pad, down: true } => hit_list.push((pad, SCREEN_VELOCITY, true)),
-                gui::FromUi::Pad { pad, down: false } => releases.push(pad),
+                gui::FromUi::Pad { pad, down: true } if pad < 16 => {
+                    app.pad_down(pad, app.settings.screen_velocity);
+                    held[pad] = true;
+                    awaiting[pad] = true;
+                    screen_hits += 1;
+                    if direct {
+                        pending.push(t_read);
+                    }
+                }
+                gui::FromUi::Pad { pad, down: false } if pad < 16 => {
+                    app.pad_up(pad);
+                    held[pad] = false;
+                    awaiting[pad] = false;
+                    out.show(gui::ToUi::PadUp(pad));
+                }
+                gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
                 gui::FromUi::Level(v) => {
                     level_db = LEVEL_MIN_DB + v.clamp(0.0, 1.0) * (max_db - LEVEL_MIN_DB);
                     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
                 }
+                gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
+                gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
+                gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
+                gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
             }
         }
+        ports.show_pressure = app.settings.show_pressure;
         for m in ports.poll(out, &mut buf)? {
             if let Some((token, status)) = akai::session_reply(&m.bytes) {
                 if token == akai::SESSION_TOKEN && status == akai::SESSION_RUNNING {
@@ -1234,20 +1437,63 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
             }
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
-                    hit_list.push((pad as usize, velocity, false))
+                    let pad = pad as usize;
+                    app.pad_down(pad, velocity);
+                    held[pad] = true;
+                    awaiting[pad] = true;
+                    if direct {
+                        pending.push(t_read);
+                    }
                 }
-                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => releases.push(pad as usize),
-                Some(ControlEvent::DataWheel { delta }) => {
-                    let from = kit_to.unwrap_or(mixer.kit()) as i64;
-                    kit_to = Some((from + delta as i64).rem_euclid(n as i64) as usize);
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
+                    app.pad_up(pad as usize);
+                    held[pad as usize] = false;
+                    awaiting[pad as usize] = false;
+                    out.show(gui::ToUi::PadUp(pad as usize));
                 }
+                Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
+                    app.pressure(pad as usize, pressure);
+                }
+                Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
                 Some(ControlEvent::QLinkTurn { knob: 0, delta }) => {
                     level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
                     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
                 }
-                Some(ControlEvent::Button { note: mpc_one::button::STOP, pressed: true }) => stop = true,
+                Some(ControlEvent::Button { note, pressed }) => fx.extend(app.button(note, pressed, t)),
                 _ => {}
             }
+        }
+        fx.extend(app.tick(t));
+        let mut stop = false;
+        for e in fx.drain(..) {
+            match e {
+                app::Effect::Light(note, value) => ports.send(true, &akai::button_light(note, value))?,
+                app::Effect::Kit(d) => {
+                    let from = kit_to.unwrap_or(mixer.kit()) as i64;
+                    kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
+                }
+                app::Effect::StopSounds => mixer.stop_all(),
+                app::Effect::Audio(p) => audio_change = Some(p),
+                app::Effect::Note(s) => out.note(&s),
+                app::Effect::Quit => stop = true,
+                app::Effect::Show(v) => out.show(gui::ToUi::Show(v)),
+                app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
+                app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
+                app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
+                app::Effect::Settings(s) => out.show(gui::ToUi::Settings(s)),
+                app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
+                app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
+            }
+        }
+        if let Some(p) = audio_change {
+            totals.periods += play.periods;
+            totals.xruns += play.xruns;
+            totals.summaries.push(format!("{periods} periods: {}", play.finish(out)?));
+            periods = p;
+            out.note(&format!("audio buffer: {p} periods ({:.1} ms); starting the sound again",
+                              p as f64 * period_time().as_secs_f64() * 1e3));
+            play = Playback::start(open_acva(out, p)?, p)?;
+            pending.clear();
         }
         if let Some(k) = kit_to.filter(|&k| k != mixer.kit()) {
             mixer.select(k);
@@ -1255,24 +1501,39 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
             rest = kit_pad_colours(&mixer.kits[k], k);
             out.note(&format!("kit {}: {} ({} sounds)", k + 1, mixer.kits[k].name, mixer.kits[k].sounds.len()));
             ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
+            lit = [false; 16];
             out.show(gui::ToUi::Kit(k));
         }
-        for (pad, velocity, from_screen) in hit_list {
-            let note = mpc_one::PAD_NOTES[pad];
-            match mixer.hit(note, velocity) {
-                Some(_) => {
-                    hits += 1;
-                    screen_hits += from_screen as u64;
-                    pending.push(t_read);
-                }
+        app.process(PERIOD as u32, &mut events);
+        for ev in events.as_slice() {
+            let mpfree_arp::EventKind::On { note: slot, velocity } = ev.kind else { continue };
+            let pad = slot as usize;
+            if pad >= 16 {
+                continue;
+            }
+            let v = app.velocity(velocity);
+            match mixer.hit_at(mpc_one::PAD_NOTES[pad], v, ev.offset as usize) {
+                Some(_) => hits += 1,
                 None => silent_hits += 1,
             }
-            ports.send(false, &akai::pad_colour(pad as u8, akai::hit_colour(rest[pad])))?;
-            out.show(gui::ToUi::PadDown { pad, velocity });
+            if awaiting[pad] {
+                awaiting[pad] = false;
+                out.show(gui::ToUi::PadDown { pad, velocity: v });
+            } else {
+                repeats += 1;
+                window_repeats += 1;
+                window_pads[pad] = true;
+                out.show(gui::ToUi::PadFlash { pad, velocity: v });
+            }
         }
-        for pad in releases {
-            ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
-            out.show(gui::ToUi::PadUp(pad));
+        // Pad lights: lit while held, or while Note Repeat or Latch keeps them going.
+        for pad in 0..16 {
+            let want = held[pad] || (app.repeating() && app.active(pad));
+            if want != lit[pad] {
+                lit[pad] = want;
+                let colour = if want { akai::hit_colour(rest[pad]) } else { rest[pad] };
+                ports.send(false, &akai::pad_colour(pad as u8, colour))?;
+            }
         }
         if session && last_ping.elapsed() >= Duration::from_secs(akai::PING_SECONDS) {
             let ping = akai::session_ping(akai::SESSION_TOKEN);
@@ -1318,13 +1579,28 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
                 }
             }
         }
+        if last_repeat_note.elapsed() >= Duration::from_secs(1) {
+            last_repeat_note = Instant::now();
+            if window_repeats > 0 {
+                let list: Vec<String> = (0..16).filter(|&p| window_pads[p]).map(|p| (p + 1).to_string()).collect();
+                let latched: Vec<String> = (0..16).filter(|&p| app.active(p) && !held[p]).map(|p| (p + 1).to_string())
+                    .collect();
+                out.note(&format!("repeat: {window_repeats} hits in the last second on pads {}; latched: {}; \
+                                   engine dropped {} events, overflow {}",
+                                  list.join(" "), if latched.is_empty() { "none".to_string() } else { latched.join(" ") },
+                                  events.dropped, app.engine.overflow));
+            }
+            window_repeats = 0;
+            window_pads = [false; 16];
+        }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
-            let left_s = o.seconds.saturating_sub(started.elapsed().as_secs());
+            let seconds_left = timed.then(|| o.seconds.saturating_sub(started.elapsed().as_secs()));
             out.show(gui::ToUi::Timing(gui::Timing {
-                hits, periods: play.periods, underruns: play.xruns, voices: mixer.playing(),
-                peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32, min_ms: lat.min as f32,
-                mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left: left_s,
+                hits, periods: totals.periods + play.periods, underruns: totals.xruns + play.xruns,
+                voices: mixer.playing(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
+                min_ms: lat.min as f32, mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left,
+                periods_queued: periods,
             }));
             window_peak = 0.0;
         }
@@ -1335,15 +1611,19 @@ fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Recei
         }
     }
     let summary = play.finish(out)?;
+    totals.summaries.push(format!("{periods} periods: {summary}"));
     ports.quiet = false;
     ports.counts(out);
     let kits_used: Vec<String> = used.iter().enumerate().filter(|(_, u)| **u).map(|(k, _)| (k + 1).to_string()).collect();
     out.say(&format!("pad to sound (read to leaving the card's buffer; plus up to one period, {:.1} ms, before a \
                       message is read): {}", period_time().as_secs_f64() * 1e3, lat.describe()));
+    out.say(&format!("buttons: {}", app.map.describe()));
+    out.say(&format!("note engine: {repeats} repeats, {} events dropped, {} notes that could not be queued",
+                     events.dropped, app.engine.overflow));
     out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
-                      peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {summary}",
-                     kits_used.join(" "), 20.0 * peak.max(1e-6).log10()));
+                      peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {}",
+                     kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
@@ -1437,14 +1717,15 @@ fn pads(o: &Options) -> Result<(), String> {
 
 // ---------------------------------------------------------------- click
 
-/// Open ACVA at the stock stream settings (S32_LE, 44.1 kHz, 128 x 3 periods),
+/// Open ACVA at the stock stream settings (S32_LE, 44.1 kHz, 128-frame
+/// periods; 3 periods as the stock app, or 2 from the pad player's Prefs),
 /// lock memory and ask for SCHED_FIFO. Stops before playing if anything differs.
-fn open_acva(out: &mut Out) -> Result<alsa::Pcm, String> {
+fn open_acva(out: &mut Out, periods: u32) -> Result<alsa::Pcm, String> {
     let card = audio_card()?;
     let path = format!("/dev/snd/pcmC{card}D0p");
     out.say(&format!("opening {path} ({AUDIO_CARD_ID})"));
     let pcm = alsa::Pcm::open_playback(&path).map_err(|e| format!("{path}: {e}"))?;
-    let mut hw = alsa::HwParams::stock_playback(PERIODS);
+    let mut hw = alsa::HwParams::stock_playback(periods);
     if let Err(e) = pcm.hw_params(&mut hw) {
         out.say(&format!("the stock stream settings were refused: {e}"));
         let mut any = alsa::HwParams::format_only();
@@ -1468,7 +1749,7 @@ fn open_acva(out: &mut Out) -> Result<alsa::Pcm, String> {
                      hw.interval(alsa::PARAM_RATE).describe(), hw.interval(alsa::PARAM_CHANNELS).describe(),
                      hw.interval(alsa::PARAM_PERIOD_SIZE).describe(), hw.interval(alsa::PARAM_PERIODS).describe(),
                      hw.interval(alsa::PARAM_BUFFER_SIZE).describe(), hw.msbits(), hw.fifo_size()));
-    if buffer as usize != PERIOD * PERIODS as usize {
+    if buffer as usize != PERIOD * periods as usize {
         return Err(format!("unexpected buffer size {buffer}; stopping before playing"));
     }
     let mut sw = alsa::SwParams::new(PERIOD as u32, buffer, buffer);
@@ -1488,6 +1769,8 @@ fn open_acva(out: &mut Out) -> Result<alsa::Pcm, String> {
 /// underruns, and keeps the timing of every period.
 struct Playback {
     pcm: alsa::Pcm,
+    /// Periods in the buffer.
+    queued: u32,
     xruns: u64,
     late: u64,
     errors: u64,
@@ -1499,13 +1782,13 @@ struct Playback {
 }
 
 impl Playback {
-    fn start(pcm: alsa::Pcm) -> Result<Playback, String> {
+    fn start(pcm: alsa::Pcm, queued: u32) -> Result<Playback, String> {
         pcm.prepare().map_err(|e| format!("prepare: {e}"))?;
         // Queue the whole buffer: the stream starts when it is full.
-        for _ in 0..PERIODS {
+        for _ in 0..queued {
             pcm.write_frames(&[0i32; PERIOD * 2]).map_err(|e| format!("first write: {e}"))?;
         }
-        Ok(Playback { pcm, xruns: 0, late: 0, errors: 0, gaps: Vec::with_capacity(1 << 16), notes: Vec::new(),
+        Ok(Playback { pcm, queued, xruns: 0, late: 0, errors: 0, gaps: Vec::with_capacity(1 << 16), notes: Vec::new(),
                       started: Instant::now(), prev: Instant::now(), periods: 0 })
     }
 
@@ -1518,7 +1801,7 @@ impl Playback {
                     self.notes.push(format!("underrun at period {i} ({:.3} s)", self.started.elapsed().as_secs_f64()));
                 }
                 self.pcm.prepare().map_err(|e| format!("prepare after underrun: {e}"))?;
-                for _ in 0..PERIODS {
+                for _ in 0..self.queued {
                     self.pcm.write_frames(&[0i32; PERIOD * 2]).map_err(|e| format!("refill after underrun: {e}"))?;
                 }
             }
@@ -1533,7 +1816,7 @@ impl Playback {
         let now = Instant::now();
         let gap = now - self.prev;
         self.prev = now;
-        if i >= PERIODS as u64 {
+        if i >= self.queued as u64 {
             self.gaps.push(gap);
             if gap > period_time() * 2 {
                 self.late += 1;
@@ -1569,7 +1852,7 @@ fn period_time() -> Duration {
 
 fn click(o: &Options) -> Result<(), String> {
     let mut out = Out::new(o, "click", true);
-    let pcm = open_acva(&mut out)?;
+    let pcm = open_acva(&mut out, PERIODS)?;
     let mut engine = ClickEngine::new();
     if !engine.configure(ClickConfig { sample_rate: RATE, bpm: 120.0, beats_per_bar: 4 }) {
         return Err("the click engine refused its settings".to_string());
@@ -1582,7 +1865,7 @@ fn click(o: &Options) -> Result<(), String> {
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let total_periods = o.seconds * RATE as u64 / PERIOD as u64;
-    let mut play = Playback::start(pcm)?;
+    let mut play = Playback::start(pcm, PERIODS)?;
     for i in 0..total_periods {
         engine.render(&mut left, &mut right).map_err(|e| format!("click engine: {e:?}"))?;
         for f in 0..PERIOD {
@@ -1616,8 +1899,8 @@ fn write_png(path: &Path, canvas: &SoftCanvas) -> Result<(), String> {
     Ok(())
 }
 
-/// Sample screens as PNG files in a new or empty folder: the console, and the
-/// pad player's two pages. No devices are opened.
+/// Sample screens as PNG files in a new or empty folder: the one-shot steps'
+/// console, and every page of the pad player. No devices are opened.
 fn preview(o: &Options) -> Result<(), String> {
     let dir = o.preview.as_ref().unwrap();
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1632,14 +1915,16 @@ fn preview(o: &Options) -> Result<(), String> {
     c.set_status("up 42 s");
     c.draw()?;
     write_png(&dir.join("console.png"), c.canvas())?;
-    let mut p = gui::sample_player(fonts()?);
-    let (w, h) = p.ui.size();
-    let mut canvas = SoftCanvas::new(w, h);
-    p.ui.paint(&mut canvas);
-    write_png(&dir.join("play.png"), &canvas)?;
-    p.show_page(1);
-    p.ui.paint(&mut canvas);
-    write_png(&dir.join("debug.png"), &canvas)?;
+    let font_error = fonts().err();
+    if let Some(e) = font_error {
+        return Err(e);
+    }
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        let (w, h) = p.ui.size();
+        let mut canvas = SoftCanvas::new(w, h);
+        p.ui.paint(&mut canvas);
+        write_png(&dir.join(format!("{name}.png")), &canvas)?;
+    }
     Ok(())
 }
 
@@ -1657,7 +1942,8 @@ fn main() {
             "lights" => lights(&o),
             "setup" => setup(&o),
             "drums" => drums(&o),
-            "play" => play(&o),
+            "play" => player(&o, true),
+            "app" => player(&o, false),
             "click" => click(&o),
             _ => unreachable!(),
         }
