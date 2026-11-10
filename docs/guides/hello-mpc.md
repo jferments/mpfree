@@ -1,6 +1,6 @@
 # Hello MPC (Phase 1) on the kexec test build
 
-**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)).
+**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4, [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui) with MPFree's first GUI, is ready to run.
 
 Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
 
@@ -10,9 +10,9 @@ The program is [`mpfree-hello`](../../rust/mpfree-hello/src/main.rs), a static A
 
 1. checks the program on the workstation (a static ARM EABI5 hard-float executable);
 2. connects **only to the test build**: it uses the test build's own SSH host key, so stock 3.6.0 is refused before anything runs. On the test build it checks, read-only, the release, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
-3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums step is chosen, it copies the drum kit there too and checks its hash;
+3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash;
 4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_HELLO_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table;
-5. after the lights, drums and setup steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
+5. after the lights, drums, setup and play steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
 
 The first step that draws on the screen stops our own log display (`mpfree-test-screen`), since both would draw on `/dev/fb0`; it is started again at the end.
 
@@ -24,15 +24,18 @@ The first step that draws on the screen stops our own log display (`mpfree-test-
 | pads | listens to all three of the controller's MIDI inputs (Public, Private, MIDI Port) for 15 s and shows every message in hex, with its meaning (pad, button, Q-Link, wheel) where known; then lists the kernel's MIDI byte counters | the screen |
 | pads, second try | only if no pad hit arrived: listens again while sending Akai's keep-alive message every 5 s on the Public port (the only message this step sends) | the controller's Public MIDI port |
 | lights | sends Akai's startup pad colours (orange on pad 1 to teal on pad 16) and the 58 button lights the app sets, holds them 4 s, then sends the owner's project's pad colours; for 15 s, each pad lights brighter while held. No session is asked for | the controller's Public port (pad colours) and Private port (button lights) |
-| drums | plays the factory drum kit (made on the workstation, see [below](#the-factory-drum-kit)) from the pads for 30 s through ACVA, at the click's stream settings; pads with a sound are lit, the others dark | the controller's Public port (pad colours), the ACVA playback device |
+| drums | plays the first factory drum kit (made on the workstation, see [below](#the-factory-drum-kits)) from the pads for 30 s through ACVA, at the click's stream settings; pads with a sound are lit, the others dark | the controller's Public port (pad colours), the ACVA playback device |
 | setup | after you type `SEND`: asks for a session as Akai's app does (identity request and session ping every 4 s, up to 20 s). Only once the controller accepts our token, it sends Akai's setup messages byte for byte and in the app's order, the lights again, then listens for 20 s with a ping every 4 s. If the session is not accepted, it sends nothing more | the controller's Public and Private ports |
+| play | the pad player, after you type `SEND`: the same session and setup as the setup step (with the first kit's pad colours), then up to 120 s with every kit. The pads or the screen's pads play; the wheel or a tap on the kit list picks the kit (its pad colours are sent); Q-Link 1 or the slider sets the level, from −40 dB to −12 dB, starting at −18 dB; STOP ends it. It pings the session every 4 s and times each hit. If the session is not accepted within 20 s, it plays without Akai's setup, sending only pad colours | the screen, the controller's Public and Private ports, the ACVA playback device |
 | click | 120 BPM click for 10 s on the ACVA output, about 18 dB below full scale, at the stock app's stream settings (stereo S32_LE, 44.1 kHz, 128-frame periods, 3 periods); counts underruns and late periods | the ACVA playback device |
 
 The program also appends every line to `/run/mpfree-hello/hello.txt`, which the tool copies into its report at the end. Nothing is written to the stick, and the test build cannot see the eMMC. Everything is gone after a power-cycle.
 
-**Turn the MPC's volume knob most of the way down before the drums and click steps.** The levels are fixed in the program (−12 dB: the click peaks about −18 dBFS, each drum sound at most −12 dBFS at full velocity, though hits that overlap add up), but the analogue volume knob sets what you hear.
+Every step draws on the screen with MPFree's GUI toolkit ([`mpfree-ui`](../../rust/mpfree-ui), see [UI architecture](../project/ui-architecture.md)): a header and the step's log for most steps, and the pad player's Play and Debug pages for `play`. Every line still goes to the workstation's terminal as well.
 
-The lights and setup steps send the controller only messages Akai's app sent it in the [round 2 capture](../hardware/controller-protocol.md#akais-app-at-startup-hello-mpc-round-2-2026-11-10), plus pad colours made by the app's own rule for a held pad. What they change lives in the controller's RAM: the lights and, inferred, its port mode. Switching the MPC off clears it, and Akai's app sends its own setup at every start.
+**Turn the MPC's volume knob most of the way down before the drums, play and click steps.** The levels are capped in the program (−12 dB: the click peaks about −18 dBFS, each drum sound at most −12 dBFS at full velocity, though hits that overlap add up), but the analogue volume knob sets what you hear.
+
+The lights, setup and play steps send the controller only messages Akai's app sent it in the [round 2 capture](../hardware/controller-protocol.md#akais-app-at-startup-hello-mpc-round-2-2026-11-10), plus pad colours made by the app's own rule for a held pad. What they change lives in the controller's RAM: the lights and, inferred, its port mode. Switching the MPC off clears it, and Akai's app sends its own setup at every start.
 
 ## The program
 
@@ -43,8 +46,9 @@ A few things it relies on, checked against the kernel source (6.18):
 - **MIDI substreams.** The controller's three cables are substreams 0 (Public), 1 (Private) and 2 (MIDI Port) of `midiC<card>D0`. ALSA picks one through the "preferred subdevice" set on the card's control device by the same thread, as alsa-lib does. The program then asks the kernel which substream it got (`RAWMIDI_INFO`, which must name the direction) and stops unless the subdevice and name match.
 - **Blocking writes.** The PCM is opened non-blocking, so a busy device fails at once instead of waiting. Then it is switched to blocking; `PREPARE` copies that flag into the stream.
 - **Underruns** show as `EPIPE` from a write. The program counts them, prepares the stream again and refills it with silence.
+- **Pad-to-sound timing** (play step): after each write that carries a new hit, the program asks the kernel how many frames are still queued (`SNDRV_PCM_IOCTL_DELAY`). A hit's time is from reading its MIDI message to the end of the period it starts in leaving the card's buffer: the time until the write returned, plus the queued frames beyond that period. Not counted: up to one period (2.9 ms) before the message is read, the controller and USB, and the codec.
 
-It locks its memory (`mlockall`) and runs the click at `SCHED_FIFO` priority 70; both are reported, and it carries on without them if refused.
+It locks its memory (`mlockall`) and runs the click at `SCHED_FIFO` priority 70; both are reported, and it carries on without them if refused. In the play step, the screen has its own thread at normal priority, started before the audio thread raises its own; the audio thread only hands it messages and never waits for it.
 
 ## Running it
 
@@ -63,18 +67,18 @@ Then, with the test build running (`--kexec-boot`, see [the kexec test boot](../
 MPFREE_ACCEPT_HELLO=YES bash tools/mpc-one/collect-over-ssh.sh --hello
 ```
 
-For the drums step, first make the kit on the workstation (read-only on the backup, [below](#the-factory-drum-kit)), and choose the steps:
+For the drums and play steps, first make the kits on the workstation (read-only on the backup, [below](#the-factory-drum-kits)), and choose the steps:
 
 ```bash
 python3 tools/mpc-one/offline-factory-kit.py
-MPFREE_ACCEPT_HELLO=YES MPFREE_HELLO_STEPS=pads,lights,drums,setup bash tools/mpc-one/collect-over-ssh.sh --hello
+MPFREE_ACCEPT_HELLO=YES MPFREE_HELLO_STEPS=screen,play bash tools/mpc-one/collect-over-ssh.sh --hello
 ```
 
-The host tool takes the newest `~/mpfree-work/factory-kit-*/kit.bin`, or the file named by `MPFREE_HELLO_KIT`. Without a kit it leaves the drums step out.
+The host tool takes the newest `~/mpfree-work/factory-kit-*/kits.bin`, or the file named by `MPFREE_HELLO_KIT`. Without one it leaves the drums and play steps out. A round 3 `kit.bin` is not used.
 
 Wrap every command in `python3 tools/mpc-one/results.py run NAME -- ...` so the output lands in the round's results folder. Afterwards: switch the MPC off, take out the stick, wait 10 s, switch it on, and run the boot-map survey to confirm nothing on the eMMC changed.
 
-`mpfree-hello --preview FILE.ppm` draws a sample card into a new file on the workstation, with no devices.
+`mpfree-hello --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console.png`, `play.png`, `debug.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
 
 ## Round 1 results (2026-11-10)
 
@@ -134,14 +138,32 @@ From the owner's results zip (clone at `2db957c`):
 - **Akai's setup moves the controls.** With nothing holding the controller, it accepted our token at once (status `02`), echoed the setup as it did for Akai's app, and pinged back `01` every 4 s. From then on the pads, Q-Link 1 (now relative: +1, +2, −1 … −3 per message), the wheel and the buttons all arrived on **Private**; Public got only the two identity replies. The setup step plays no sound, so the pads were silent in it, as expected.
 - The test build answered SSH after 24 s; Ethernet needed its retry again.
 
-### The factory drum kit
+## Round 4: the pad player and MPFree's first GUI
+
+The owner chose the pad player (2026-11-10): one program that holds Akai's session, lights the pads, plays factory kits and lets you pick them with the wheel. The owner also asked for a GUI for everything from now on, modular enough that the layout can change completely as features arrive, with a debug mode for MIDI and system events, while the terminal keeps the full log. The new [`mpfree-ui`](../../rust/mpfree-ui) crate and the [UI architecture](../project/ui-architecture.md) are the start of that.
+
+What round 4 runs (`MPFREE_HELLO_STEPS=screen,play`):
+
+1. **screen**: the Hello MPC card, now drawn by the GUI toolkit. It shows whether the new drawing code lands the right way up on the panel.
+2. **play** (typed `SEND`): the session and Akai's setup, as in round 3, then up to 120 s of the pad player:
+   - **Play page:** the 16 pads laid out as on the MPC, lit in the kit's colour with each sound's name, brighter while held; the kit list; the level slider; timing (pad-to-sound delay, underruns, voices, peak level).
+   - **Debug page:** every MIDI message in and out with its meaning, the program's events, and the same timing.
+   - The tabs at the top switch pages. The pads, the wheel and Q-Link 1 work on either page.
+   - The kits file holds up to 8 factory kits ([below](#the-factory-drum-kits)).
+
+It sends the controller nothing new: the session, Akai's setup and pad colours, all as in round 3. Only the colours differ, since each kit's pads rest in one of the seven colours seen from Akai's app.
+
+The report gives the pad-to-sound time (minimum, mean, maximum), underruns, and the hits from the pads and the screen.
+
+### The factory drum kits
 
 [`offline-factory-kit.py`](../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):
 
 1. It finds the newest `~/mpfree-backups/mpc-one-emmc-*/mmcblk0.img`, reads its GPT (checking both CRCs) and finds the partition named `content` (p7, `/media/acvs-content` on the MPC).
 2. It lists that ext4 file system with `debugfs`, which opens the image read-only (no `-w`) at the partition's offset. Nothing is mounted and no `sudo` is needed.
-3. It reads the drum programs (`.xpm` files whose XML says `type="Drum"`) and picks the first, by path, whose pads 1 to 16 name at least 8 samples it can find. It tries two readings of which sample a pad plays (by pad number, and by the pad's note) and reports which it used; the `.xpm` layout is inferred from the files, not documented. `--program TEXT` picks the first program whose path contains `TEXT`. If no program fits, it takes the folder with the most drum-named WAV files.
-4. It copies those WAV files out with `debugfs` into a temporary folder, converts them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes the copies.
-5. It writes a new folder `~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/` holding `kit.bin` (the format is in [`kit.rs`](../../rust/mpfree-hello/src/kit.rs)) and `report.txt` (file and sample names, formats and the chosen program's XML; no audio).
+3. It reads the drum programs (`.xpm` files whose XML says `type="Drum"`). Kit 1 is the first, by path, whose pads 1 to 16 name at least 8 samples it can find. It tries two readings of which sample a pad plays (by pad number, and by the pad's note) and reports which it used; the `.xpm` layout is inferred from the files, not documented. `--program TEXT` picks the first program whose path contains `TEXT`. If no program fits, it takes the folder with the most drum-named WAV files.
+4. Kits 2 to 8 (`--kits N` asks for 1 to 16) are the next programs by path with at least 12 samples found, one per name family (the part of the file name before `-Kit`, or its first word), so the list is not eight versions of one kit. A kit that would take the file over 48 MiB is left out.
+5. It copies each kit's WAV files out with `debugfs` into a temporary folder, converts them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes the copies.
+6. It writes a new folder `~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/` holding `kits.bin` (every kit with its name; the format is in [`kit.rs`](../../rust/mpfree-hello/src/kit.rs)) and `report.txt` (file and sample names, formats and kit 1's program XML; no audio).
 
-The kit is Akai's copyrighted content, under the [factory content policy](../project/factory-content-policy.md): it stays in `~/mpfree-work` and in the test build's RAM. It is never committed or shared, and `results.py` copies only `report.txt` into a round's zip.
+The kits are Akai's copyrighted content, under the [factory content policy](../project/factory-content-policy.md): it stays in `~/mpfree-work` and in the test build's RAM. They are never committed or shared, and `results.py` copies only `report.txt` into a round's zip.

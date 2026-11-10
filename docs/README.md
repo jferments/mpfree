@@ -9,6 +9,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Development log](project/development-log.md): dated history of how the project got here.
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
 - [USB installer architecture](project/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
+- [UI architecture](project/ui-architecture.md): MPFree's GUI toolkit (`mpfree-ui`): canvas, theme, fonts, widgets, one-line page layouts, and how the screen and audio threads talk.
 
 ## Decisions
 
@@ -20,7 +21,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Developer access](guides/developer-access.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](guides/survey-tools.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](guides/usb-autorun-reference.md): the exact lab tooling used to first get SSH. Not a general installer.
-- [Hello MPC](guides/hello-mpc.md): Phase 1 on the kexec test build: our own program on the screen, touchscreen, pads, pad lights and audio output, with a factory drum kit read from the backup, one step at a time (`--hello`).
+- [Hello MPC](guides/hello-mpc.md): Phase 1 on the kexec test build: our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--hello`).
 - [Audio and MIDI diagnostics](guides/audio-midi-diagnostics.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
 - [Device modifications](hardware/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""WORKSTATION ONLY: make a drum kit for Hello MPC from Akai's factory content,
+"""WORKSTATION ONLY: make drum kits for Hello MPC from Akai's factory content,
 read from the owner's eMMC backup. It never contacts the MPC.
 
-  python3 tools/mpc-one/offline-factory-kit.py [--backup FOLDER] [--program TEXT]
+  python3 tools/mpc-one/offline-factory-kit.py [--backup FOLDER] [--program TEXT] [--kits N]
 
 1. Finds the newest backup folder ~/mpfree-backups/mpc-one-emmc-*/ that has
    mmcblk0.img (made by `collect-over-ssh.sh --backup`), unless --backup names one.
@@ -10,15 +10,19 @@ read from the owner's eMMC backup. It never contacts the MPC.
    mounted at /media/acvs-content on the MPC).
 3. Lists that ext4 file system with debugfs, which opens the image read-only
    (no -w) at the partition's offset. Nothing is mounted and no sudo is needed.
-4. Finds drum programs (.xpm files whose XML says type="Drum") and picks the
-   first one, by path, whose pads 1 to 16 have at least 8 samples it can find.
-   --program picks the first whose path contains TEXT instead.
-5. Copies those WAV files out with debugfs into a temporary folder, converts
-   them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes the copies.
-6. Writes a new folder ~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/ with kit.bin
-   (for mpfree-hello's drums step; format in rust/mpfree-hello/src/kit.rs) and
-   report.txt (file and sample names, formats and the chosen program's XML; no
-   audio).
+4. Finds drum programs (.xpm files whose XML says type="Drum"). Kit 1 is the
+   first one, by path, whose pads 1 to 16 have at least 8 samples it can find
+   (--program picks the first whose path contains TEXT instead). Kits 2 to N
+   (--kits, default 8) are the next programs by path with at least 12 samples
+   found, one per name family (the part of the file name before "-Kit", or its
+   first word), while the file stays under 48 MiB.
+5. Copies each kit's WAV files out with debugfs into a temporary folder,
+   converts them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes
+   the copies.
+6. Writes a new folder ~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/ with kits.bin
+   (for mpfree-hello's drums and play steps; format in
+   rust/mpfree-hello/src/kit.rs) and report.txt (file and sample names,
+   formats and kit 1's program XML; no audio).
 
 The backup is opened only for reading. The kit is Akai's copyrighted content:
 it stays in ~/mpfree-work and on the MPC's RAM. Never commit it or share it;
@@ -50,12 +54,18 @@ MAX_KIT = 48 << 20
 MAX_ENTRIES = 300_000
 MAX_DEPTH = 16
 MIN_PADS = 8
+# Samples found on pads 1-16 for kits after the first.
+MIN_EXTRA_PADS = 12
+DEFAULT_KITS = 8
+MAX_KITS = 16
+MAX_KIT_NAME = 120
 MAX_REPORTED_PROGRAMS = 200
 # The controller's note for pads 1 to 16 (rust/mpfree-controller/src/mpc_one.rs
 # PAD_NOTES). Assumed, not checked: programs map pads to these same notes by
 # default. The tool tries both readings and reports which one it used.
 PAD_NOTES = (37, 36, 42, 82, 40, 38, 46, 44, 48, 47, 45, 43, 49, 55, 51, 53)
 MAGIC = b"MPFKIT01"
+KITS_MAGIC = b"MPFKITS1"
 # Words that make a folder of loose WAVs look like drums, when no program is found.
 DRUM_WORDS = ("kick", "snare", "clap", "hat", "hh", "tom", "perc", "rim", "crash", "ride", "cymbal", "shaker", "snap")
 
@@ -377,13 +387,93 @@ def to_s16_stereo(left, right):
     return a.tobytes()
 
 
+def utf8_cut(text, limit):
+    """At most `limit` bytes of UTF-8, never splitting a character."""
+    b = text.encode("utf-8")
+    if len(b) <= limit:
+        return b
+    return b[:limit].decode("utf-8", "ignore").encode("utf-8")
+
+
 def kit_bytes(sounds):
     out = bytearray(MAGIC)
     out += struct.pack("<I", len(sounds))
     for note, name, audio in sounds:
-        nb = name.encode("utf-8")[:120]
+        nb = utf8_cut(name, 120)
         out += bytes([note, 0, 0, 0]) + struct.pack("<IH", len(audio) // 4, len(nb)) + nb + audio
     return bytes(out)
+
+
+def kit_entry(name, kit):
+    """One kit inside kits.bin: its name, its length, then the kit."""
+    nb = utf8_cut(name, MAX_KIT_NAME)
+    return struct.pack("<H", len(nb)) + nb + struct.pack("<I", len(kit)) + kit
+
+
+def kits_bytes(entries):
+    return KITS_MAGIC + struct.pack("<I", len(entries)) + b"".join(entries)
+
+
+def family(path):
+    """A program's name family: the file name before "-Kit", or its first word."""
+    base = os.path.splitext(os.path.basename(path))[0]
+    cut = re.split(r"[-_ ]kit", base, maxsplit=1, flags=re.IGNORECASE)[0]
+    if cut != base and cut:
+        return cut.lower()
+    return re.split(r"[-_ ]", base, maxsplit=1)[0].lower()
+
+
+def pick_extra(candidates, first, count):
+    """Kits after the first: by path, at least MIN_EXTRA_PADS found, one per family."""
+    seen = {family(first["path"])}
+    out = []
+    for c in candidates:
+        if len(out) >= count:
+            break
+        if c["path"] == first["path"] or c["found"] < MIN_EXTRA_PADS:
+            continue
+        f = family(c["path"])
+        if f in seen:
+            continue
+        seen.add(f)
+        out.append(c)
+    return out
+
+
+def convert_kit(img, files, chosen, out_dir, say):
+    """Copy out and convert one kit's samples; returns [(note, name, audio)]."""
+    wanted = sorted({w for _, w in chosen["pads"].values() if w})
+    sounds = []
+    with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
+        got = dump(img, [w for w in wanted if files.get(w, 0) <= MAX_WAV], tmp)
+        say("pad  note  sample")
+        for pad in range(1, 17):
+            ref, wav = chosen["pads"].get(pad, (None, None))
+            note = PAD_NOTES[pad - 1]
+            label = (ref[0] or os.path.basename(ref[1])) if ref else ""
+            if not wav:
+                say(f"  {pad:2d}  {note:3d}  -" + (f" ({label}: file not found)" if label else ""))
+                continue
+            if wav not in got:
+                say(f"  {pad:2d}  {note:3d}  {label}: could not copy {wav}")
+                continue
+            with open(got[wav], "rb") as fh:
+                data = fh.read(MAX_WAV + 1)
+            try:
+                rate, ch, bits, kind, left, right, cut = read_wav(data)
+            except (ValueError, struct.error) as err:
+                say(f"  {pad:2d}  {note:3d}  {label}: {wav}: {err}")
+                continue
+            left, right = resample(left, rate), resample(right, rate)
+            left, right = left[:RATE * MAX_SECONDS], right[:RATE * MAX_SECONDS]
+            if not left:
+                say(f"  {pad:2d}  {note:3d}  {label}: {wav}: no audio")
+                continue
+            audio = to_s16_stereo(left, right)
+            sounds.append((note, label or os.path.basename(wav), audio))
+            say(f"  {pad:2d}  {note:3d}  {label}: {wav} ({rate} Hz, {ch} ch, {bits}-bit {kind}, "
+                f"{len(left) / RATE:.2f} s{', cut to 10 s' if cut else ''})")
+    return sounds
 
 
 # ------------------------------------------------------------------ main
@@ -391,8 +481,11 @@ def kit_bytes(sounds):
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--backup", help="backup folder (default: the newest one)")
-    p.add_argument("--program", help="use the first drum program whose path contains this text")
+    p.add_argument("--program", help="kit 1: the first drum program whose path contains this text")
+    p.add_argument("--kits", type=int, default=DEFAULT_KITS, help=f"how many kits, 1 to {MAX_KITS} (default {DEFAULT_KITS})")
     args = p.parse_args(argv)
+    if not 1 <= args.kits <= MAX_KITS:
+        raise Stop(f"--kits must be 1 to {MAX_KITS}")
     backups = os.path.realpath(os.environ.get("MPFREE_BACKUPS_DIR", os.path.expanduser("~/mpfree-backups")))
     work = os.path.realpath(os.environ.get("MPFREE_WORK_DIR", os.path.expanduser("~/mpfree-work")))
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -413,7 +506,7 @@ def main(argv):
         lines.append(text)
 
     try:
-        say("MPFree: make a drum kit from Akai's factory content in your eMMC backup (no MPC contact)")
+        say("MPFree: make drum kits from Akai's factory content in your eMMC backup (no MPC contact)")
         say(f"backup: {folder}")
         say(f"image: {image} ({os.path.getsize(image)} bytes, opened read-only)")
         parts = gpt_partitions(image)
@@ -452,6 +545,7 @@ def main(argv):
         say(f"\n.xpm programs: {len(xpms)}")
         chosen = None
         drum_programs = []
+        candidates = []
         if xpms:
             with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
                 got = dump(img, xpms, tmp)
@@ -471,15 +565,19 @@ def main(argv):
                     n_pad = sum(1 for v in found_pad.values() if v)
                     n_note = sum(1 for v in found_note.values() if v)
                     drum_programs.append((pth, name, n_pad, n_note))
-                    if chosen is None and max(n_pad, n_note) >= MIN_PADS and (not args.program or args.program in pth):
-                        use_note = n_note > n_pad
-                        chosen = {
-                            "path": pth, "name": name, "reading": "by note" if use_note else "by pad number",
-                            "pads": {p: ((by_note if use_note else by_pad)[p], (found_note if use_note else found_pad)[p])
-                                     for p in range(1, 17)},
-                            "xml": text.decode("utf-8", "replace"), "instruments": len(instruments),
-                            "padnotes": padnotes,
-                        }
+                    use_note = n_note > n_pad
+                    entry = {
+                        "path": pth, "name": name or os.path.splitext(os.path.basename(pth))[0],
+                        "reading": "by note" if use_note else "by pad number",
+                        "pads": {p: ((by_note if use_note else by_pad)[p], (found_note if use_note else found_pad)[p])
+                                 for p in range(1, 17)},
+                        "xml": "", "instruments": len(instruments), "padnotes": padnotes,
+                        "found": max(n_pad, n_note),
+                    }
+                    candidates.append(entry)
+                    if chosen is None and entry["found"] >= MIN_PADS and (not args.program or args.program in pth):
+                        entry["xml"] = text.decode("utf-8", "replace")
+                        chosen = entry
         say(f"drum programs: {len(drum_programs)} (pads 1-16 with samples found: by pad number / by note)")
         for pth, name, n_pad, n_note in drum_programs[:MAX_REPORTED_PROGRAMS]:
             say(f"  {n_pad:2d} / {n_note:2d}  {pth}  ({name})")
@@ -503,56 +601,46 @@ def main(argv):
             wavs = sorted(folders[best], key=rank)[:16]
             chosen = {"path": best + "/", "name": os.path.basename(best), "reading": "loose WAVs",
                       "pads": {p: ((os.path.basename(w), ""), w) for p, w in enumerate(wavs, 1)},
-                      "xml": "", "instruments": 0, "padnotes": {}}
+                      "xml": "", "instruments": 0, "padnotes": {}, "found": len(wavs)}
 
-        say(f"\nchosen: {chosen['path']} ({chosen['name']}), pads read {chosen['reading']}")
-        wanted = sorted({w for _, w in chosen["pads"].values() if w})
-        sounds = []
-        with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
-            got = dump(img, [w for w in wanted if files.get(w, 0) <= MAX_WAV], tmp)
-            say("pad  note  sample")
-            for pad in range(1, 17):
-                ref, wav = chosen["pads"].get(pad, (None, None))
-                note = PAD_NOTES[pad - 1]
-                label = (ref[0] or os.path.basename(ref[1])) if ref else ""
-                if not wav:
-                    say(f"  {pad:2d}  {note:3d}  -" + (f" ({label}: file not found)" if label else ""))
-                    continue
-                if wav not in got:
-                    say(f"  {pad:2d}  {note:3d}  {label}: could not copy {wav}")
-                    continue
-                with open(got[wav], "rb") as fh:
-                    data = fh.read(MAX_WAV + 1)
-                try:
-                    rate, ch, bits, kind, left, right, cut = read_wav(data)
-                except (ValueError, struct.error) as err:
-                    say(f"  {pad:2d}  {note:3d}  {label}: {wav}: {err}")
-                    continue
-                left, right = resample(left, rate), resample(right, rate)
-                left, right = left[:RATE * MAX_SECONDS], right[:RATE * MAX_SECONDS]
-                if not left:
-                    say(f"  {pad:2d}  {note:3d}  {label}: {wav}: no audio")
-                    continue
-                audio = to_s16_stereo(left, right)
-                sounds.append((note, label or os.path.basename(wav), audio))
-                say(f"  {pad:2d}  {note:3d}  {label}: {wav} ({rate} Hz, {ch} ch, {bits}-bit {kind}, "
-                    f"{len(left) / RATE:.2f} s{', cut to 10 s' if cut else ''})")
-        if not sounds:
-            raise Stop("none of the chosen program's samples could be read")
-        kit = kit_bytes(sounds)
-        if len(kit) > MAX_KIT:
-            raise Stop(f"the kit would be {len(kit)} bytes; at most {MAX_KIT} fit")
-        kit_path = os.path.join(out_dir, "kit.bin")
+        plan = [chosen] + pick_extra(candidates, chosen, args.kits - 1)
+        say(f"\nkits: {len(plan)} (asked for {args.kits})")
+        for k, c in enumerate(plan, 1):
+            say(f"  {k:2d}. {c['path']} ({c['name']}), {c['found']} pads found, read {c['reading']}")
+        entries, kit_lines = [], []
+        total = len(KITS_MAGIC) + 4
+        for k, c in enumerate(plan, 1):
+            say(f"\nkit {k}: {c['path']} ({c['name']}), pads read {c['reading']}")
+            sounds = convert_kit(img, files, c, out_dir, say)
+            if not sounds:
+                if k == 1:
+                    raise Stop("none of kit 1's samples could be read")
+                say(f"kit {k}: no sample could be read; left out")
+                continue
+            entry = kit_entry(c["name"], kit_bytes(sounds))
+            if total + len(entry) > MAX_KIT:
+                if k == 1:
+                    raise Stop(f"kit 1 alone would be {total + len(entry)} bytes; at most {MAX_KIT} fit")
+                say(f"kit {k}: {len(entry)} bytes would take the file over {MAX_KIT} bytes; left out")
+                continue
+            total += len(entry)
+            entries.append(entry)
+            kit_lines.append(f"  {len(entries):2d}. {c['name']}: {len(sounds)} sounds, {len(entry)} bytes")
+        data = kits_bytes(entries)
+        assert len(data) == total
+        kit_path = os.path.join(out_dir, "kits.bin")
         with open(kit_path, "xb") as fh:
-            fh.write(kit)
-        say(f"\nkit: {kit_path}: {len(sounds)} sounds, {len(kit)} bytes, sha256 {hashlib.sha256(kit).hexdigest()}")
+            fh.write(data)
+        say(f"\nkits.bin: {kit_path}: {len(entries)} kits, {len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()}")
+        for line in kit_lines:
+            say(line)
         if chosen["xml"]:
-            say(f"\nthe chosen program's XML ({chosen['instruments']} instruments, "
+            say(f"\nkit 1's program XML ({chosen['instruments']} instruments, "
                 f"{len(chosen['padnotes'])} pad notes), first 400 lines:")
             for line in chosen["xml"].splitlines()[:400]:
                 say("  | " + line)
-        say("\nRESULT: kit made. The Hello MPC tool copies the newest kit.bin into the test build's RAM.")
-        say("The kit and this report hold Akai's content: keep them private, never commit them.")
+        say("\nRESULT: kits made. The Hello MPC tool copies the newest kits.bin into the test build's RAM.")
+        say("The kits and this report hold Akai's content: keep them private, never commit them.")
         return 0
     except Stop as err:
         say(f"\nSTOP: {err}")
