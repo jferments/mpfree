@@ -74,7 +74,9 @@ increasing effort:
 1. **kexec from the running stock Linux. Available:** the vendor kernel has
    `CONFIG_KEXEC=y` and `CONFIG_KEXEC_FILE=y`, and `/usr/sbin/kexec` is installed. It can load our kernel and initramfs into
    RAM and jump to it. There are no eMMC writes, and a reboot returns to stock. Risk: drivers left
-   in odd states by the first kernel. `--boot-map` reports kexec support.
+   in odd states by the first kernel. `--boot-map` reports kexec support. **Akai uses this route
+   itself:** USB-drive and online updates kexec `/boot/zImage` with `/opt/ramfs-update.squashfs` as
+   a RAM disk (inferred from `libaz01-prog` strings, [findings](../hardware/akai-updater-offline.md#how-an-update-is-launched)).
 2. **Fastboot RAM boot (to evaluate).** Update Mode is U-Boot fastboot. Many
    U-Boot fastboot builds accept `fastboot boot <image>`, which loads a kernel into
    RAM and boots it without flashing. Whether Akai's build allows this is unknown.
@@ -130,8 +132,8 @@ Steps 1–5 are read-only or offline. Step 6 changes device state and needs the 
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
    **On-device copy read 2026-11-10** with [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md):
-   no scripts, a signed-image updater that can write U-Boot and erase `/data`. Still open: what launches it,
-   and the partition list of Akai's public 3.6.0 update file.
+   no scripts, a signed-image updater that can write U-Boot and erase `/data`. The MPC software starts it
+   with kexec for USB-drive and online updates. Still open: the partition list of Akai's public 3.6.0 update file.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
    Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
    second copy verified on another disk.
