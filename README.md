@@ -20,8 +20,9 @@ Development happens on one MPC One running firmware 3.6.0, reached over a direct
 | M9–M10 | ILI2117 touch metadata: X/Y 0–2048, 10 multitouch slots, read-only | MPC One |
 | GPU | Surfaceless EGL/GLES 3.1 on Panfrost (Mali-T760), offscreen | MPC One |
 | M11 | Multitouch decoder, pointer mapping and gesture model | Workstation and CI |
+| M12 | Live touch capture: panel orientation (swap X/Y, flip X), full-screen reach, 10 fingers, ~113 Hz reports; zero eMMC writes | MPC One |
 
-Not done yet: real ALSA playback, live touch events, on-screen display, pad/button/encoder input, and a proven recovery path for the factory system. The [roadmap](docs/ROADMAP.md) lists the gates, and the [development log](docs/DEVELOPMENT_LOG.md) has the history.
+Not done yet: real ALSA playback, on-screen display, pad/button/encoder input, and a proven recovery path for the factory system. The [roadmap](docs/ROADMAP.md) lists the gates, and the [development log](docs/DEVELOPMENT_LOG.md) has the history.
 
 ## Approach
 
