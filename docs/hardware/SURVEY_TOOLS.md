@@ -34,6 +34,8 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--rtthreads` | [`read-only-rtthreads.sh`](../../tools/mpc-one/read-only-rtthreads.sh) | Per-task RT policy, priority and affinity |
 | `--capacity` | [`read-only-capacity.sh`](../../tools/mpc-one/read-only-capacity.sh) | Two-second CPU and memory sample |
 | `--boot-map` | [`read-only-boot-map.sh`](../../tools/mpc-one/read-only-boot-map.sh) | Boot chain, U-Boot environment (identifiers redacted), boot-partition SHA-256 hashes, eMMC write counters, kexec support, update-path metadata |
+| `--audio-midi` | [`read-only-audio-midi.sh`](../../tools/mpc-one/read-only-audio-midi.sh) | ALSA, device-tree audio nodes, IRQs, RT limits, cpufreq and USB MIDI descriptors |
+| `--midi-activity` | [`read-only-midi-counters.sh`](../../tools/mpc-one/read-only-midi-counters.sh) | Interactive: RawMIDI counter changes while you press pads, knobs and buttons |
 | `--ram-smoke-env` | [`read-only-ram-smoke-env.sh`](../../tools/mpc-one/read-only-ram-smoke-env.sh) | Utilities available for RAM-only tests |
 
 **Milestone preflights and RAM-only runs.** Each `-check` mode is read-only. The matching run mode copies a checksummed binary to `/run` (RAM), runs it under a watchdog and removes it. Run modes require explicit opt-in environment variables; the wrapper prints the exact command if they are missing. See each milestone's doc for the procedure.
@@ -44,6 +46,8 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--headless-check`, `--headless-smoke` | [M6](../engineering/M6_HEADLESS_NULL_AUDIO.md) |
 | `--session-check`, `--session-smoke` | [M7](../engineering/M7_ARM_NULL_TIMING_ACCEPTANCE.md) |
 | `--touch-axes-check`, `--touch-axes` | [M10](../engineering/M10_GUARDED_TOUCH_AXES.md) |
+
+**Passive capture.** `--midi-capture` reads the kernel's usbmon interface for the controller's USB bus while you use the controller. It is interactive, stops itself within 240 s and requires `MPFREE_ACCEPT_USBMON=YES`. See [audio and MIDI diagnostics](../engineering/AUDIO_MIDI_DIAGNOSTICS.md).
 
 **Active test.** `--netbench` runs [`network-bench.py`](../../tools/mpc-one/network-bench.py) on the workstation: 20 pings and a 4 MiB SSH transfer in each direction. It writes no files on the MPC but loads its CPU and network briefly, so only run it while the MPC is idle.
 

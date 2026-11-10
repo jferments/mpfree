@@ -20,6 +20,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Developer access](hardware/DEVELOPER_ACCESS.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](hardware/SURVEY_TOOLS.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](hardware/USB_AUTORUN_REFERENCE.md): the exact lab tooling used to first get SSH. Not a general installer.
+- [Audio and MIDI diagnostics](engineering/AUDIO_MIDI_DIAGNOSTICS.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
 - [Device modifications](hardware/DEVICE_MODIFICATIONS.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 
 ## Milestones
@@ -58,6 +59,9 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 - [Audio runtime](hardware/MPC_ONE_3_6_0_AUDIO_RUNTIME_20261109.md): the live ALSA stream, threads and MIDI routing.
 - [ABI and handoff survey](hardware/MPC_ONE_3_6_0_ABI_HANDOFF_SURVEY_20261109.md): userspace ABI, CPU affinity and locked memory.
 - [Ethernet and USB](hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md): gigabit link, USB roles and measured throughput.
+- [Audio and MIDI implementation survey](hardware/MPC_ONE_3_6_0_AUDIO_MIDI_SURVEY_20261109.md): device tree, ALSA, IRQs, RT limits and USB MIDI descriptors (2026-11-09).
+- [MIDI activity map](hardware/MPC_ONE_3_6_0_MIDI_ACTIVITY_20261109.md): which internal MIDI port carries pads, knobs and buttons.
+- [Controller protocol](hardware/MPC_ONE_3_6_0_CONTROLLER_PROTOCOL_20261109.md): the internal controller's USB-MIDI messages, observed with passive usbmon.
 - [Touchscreen and display](hardware/MPC_ONE_TOUCHSCREEN_ILI2117_RESEARCH.md): ILI2117 driver, evdev, DSI panel and Panfrost.
 - [Boot chain and recovery map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
 - [Research matrix](hardware/RESEARCH_MATRIX.md): subsystem-by-subsystem mapping plan and safety gates.
