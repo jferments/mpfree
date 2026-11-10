@@ -1,7 +1,7 @@
 # mpfree-splash
 
 The MPFree startup screen: an outer-space scene with a spinning two-armed
-spiral galaxy and the words **MPCFree OS v0.1** in block letters at its centre.
+spiral galaxy turning around the words **MPCFree OS v0.1**, in block letters in its glowing heart. The galaxy is sized around the title: its arms start just outside the words and sweep outwards.
 It is drawn with [ratatui](https://ratatui.rs) (MIT).
 
 Every frame is a grid of upper-half-block cells (`▀`), each holding two
