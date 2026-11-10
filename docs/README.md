@@ -9,6 +9,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Development log](project/development-log.md): dated history of how the project got here.
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
 - [USB installer architecture](project/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
+- [Sampler design](project/sampler-design.md): how MPFree records, chops, edits, assigns and plays samples, including granular tools (proposal, 2026-11-10).
 
 ## Decisions
 
@@ -51,6 +52,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 - [Factory GUI handoff research](research/factory-gui-handoff.md): factory processes and what a screen takeover needs.
 - [ARMv7 userspace compatibility](research/armv7-userspace-compat.md): matching the device's glibc, loader and ABI.
 - [Auxiliary compute over Ethernet and USB](research/auxiliary-compute.md): offloading synths and effects to another computer.
+- [Samplers: what people like, what they don't, and what to borrow](research/sampler-landscape.md): MPC owners' praise and complaints, other samplers, granular synthesis, and MIT-compatible libraries (2026-11-10).
 
 ## Hardware findings (MPC One, firmware 3.6.0)
 
