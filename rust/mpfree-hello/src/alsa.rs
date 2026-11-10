@@ -21,6 +21,8 @@ pub const PCM_PREPARE: u32 = 0x0000_4140;
 pub const PCM_DROP: u32 = 0x0000_4143;
 pub const PCM_DRAIN: u32 = 0x0000_4144;
 pub const PCM_WRITEI_FRAMES: u32 = 0x400C_4150;
+/// _IOR('A', 0x21, snd_pcm_sframes_t): frames queued ahead of the next one written.
+pub const PCM_DELAY: u32 = 0x8004_4121;
 pub const CTL_RAWMIDI_PREFER_SUBDEVICE: u32 = 0x4004_5542;
 pub const RAWMIDI_INFO: u32 = 0x810C_5701;
 
@@ -277,6 +279,15 @@ impl Pcm {
         sys::ioctl_buf(self.file.as_raw_fd(), PCM_WRITEI_FRAMES, &mut x)?;
         Ok(get(&x, 0))
     }
+
+    /// Frames between what the card plays now and the end of what was
+    /// written: how long a frame written now waits before it leaves the
+    /// card's buffer (the codec and anything after it not included).
+    pub fn delay(&self) -> io::Result<i32> {
+        let mut d = [0u8; 4];
+        sys::ioctl_buf(self.file.as_raw_fd(), PCM_DELAY, &mut d)?;
+        Ok(i32::from_ne_bytes(d))
+    }
 }
 
 /// What snd_rawmidi_info reports about an opened substream.
@@ -355,6 +366,7 @@ mod tests {
         assert_eq!(PCM_DROP, ioc(0, b'A', 0x43, 0));
         assert_eq!(PCM_DRAIN, ioc(0, b'A', 0x44, 0));
         assert_eq!(PCM_WRITEI_FRAMES, ioc(W, b'A', 0x50, 12));
+        assert_eq!(PCM_DELAY, ioc(R, b'A', 0x21, 4));
         assert_eq!(CTL_RAWMIDI_PREFER_SUBDEVICE, ioc(W, b'U', 0x42, 4));
         assert_eq!(RAWMIDI_INFO, ioc(R, b'W', 0x01, RAWMIDI_INFO_SIZE));
     }

@@ -96,6 +96,17 @@ pub const RESTING_COLOURS: [[u8; 3]; 16] = [
     [0x2C, 0x00, 0x3F], [0x2C, 0x00, 0x3F], [0x00, 0x08, 0x3F], [0x2C, 0x00, 0x3F],
 ];
 
+/// One colour per kit in the pad player, all taken from the resting colours
+/// Akai's app used (RESTING_COLOURS), so only observed values are sent.
+pub const KIT_COLOURS: [[u8; 3]; 7] = [
+    [0x3F, 0x22, 0x00], [0x00, 0x2A, 0x3F], [0x2C, 0x00, 0x3F], [0x04, 0x3F, 0x00],
+    [0x3F, 0x00, 0x00], [0x3B, 0x3B, 0x09], [0x00, 0x08, 0x3F],
+];
+
+pub fn kit_colour(kit: usize) -> [u8; 3] {
+    KIT_COLOURS[kit % KIT_COLOURS.len()]
+}
+
 /// The colour the app sends the moment a pad is hit. In the capture every hit
 /// colour is the resting colour scaled from 0..63 up to 0..127, rounded down:
 /// 3F 00 00 -> 7F 00 00, 3B 3B 09 -> 76 76 12, 3F 22 00 -> 7F 44 00.
@@ -136,6 +147,14 @@ mod tests {
         for rest in RESTING_COLOURS {
             assert!(hit_colour(rest).iter().all(|&v| v <= 0x7F));
         }
+    }
+
+    #[test]
+    fn kit_colours_were_all_seen() {
+        for c in KIT_COLOURS {
+            assert!(RESTING_COLOURS.contains(&c), "{c:02X?}");
+        }
+        assert_eq!(kit_colour(7), KIT_COLOURS[0]);
     }
 
     #[test]

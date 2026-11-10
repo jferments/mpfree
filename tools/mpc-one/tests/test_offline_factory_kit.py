@@ -56,7 +56,7 @@ XPM = """<?xml version="1.0" encoding="UTF-8"?>
 <MPCVObject>
   <Version><File_Version>2.1</File_Version><Application>MPC-V</Application></Version>
   <Program type="Drum">
-    <ProgramName>Test Kit</ProgramName>
+    <ProgramName>{name}</ProgramName>
     <Instruments>
 {instruments}
     </Instruments>
@@ -68,14 +68,14 @@ XPM = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def xpm(samples):
+def xpm(samples, name="Test Kit"):
     inst = []
     for n in range(1, 129):
-        name = samples.get(n, "")
+        sample = samples.get(n, "")
         inst.append(f'      <Instrument number="{n}"><Layers><Layer number="1"><Active>True</Active>'
-                    f'<SampleName>{name}</SampleName><SampleFile></SampleFile></Layer></Layers></Instrument>')
+                    f'<SampleName>{sample}</SampleName><SampleFile></SampleFile></Layer></Layers></Instrument>')
     notes = "\n".join(f'      <PadNote number="{p}"><Note>{PAD_NOTES[p - 1]}</Note></PadNote>' for p in range(1, 17))
-    return XPM.format(instruments="\n".join(inst), padnotes=notes)
+    return XPM.format(instruments="\n".join(inst), padnotes=notes, name=name)
 
 
 def gpt_disk(path, parts):
@@ -114,6 +114,27 @@ def parse_kit(data):
         sounds.append((note, name, frames, audio))
     assert at == len(data)
     return sounds
+
+
+def parse_kits(data):
+    """[(kit name, sounds)] from kits.bin."""
+    assert data[:8] == b"MPFKITS1"
+    count, = struct.unpack_from("<I", data, 8)
+    at, kits = 12, []
+    for _ in range(count):
+        nlen, = struct.unpack_from("<H", data, at)
+        name = data[at + 2:at + 2 + nlen].decode()
+        klen, = struct.unpack_from("<I", data, at + 2 + nlen)
+        at += 6 + nlen
+        kits.append((name, parse_kit(data[at:at + klen])))
+        at += klen
+    assert at == len(data)
+    return kits
+
+
+def read_kits(folder):
+    with open(os.path.join(folder, "kits.bin"), "rb") as fh:
+        return parse_kits(fh.read())
 
 
 @unittest.skipUnless(HAVE, "needs mke2fs and debugfs")
@@ -170,7 +191,7 @@ class FactoryKitTests(unittest.TestCase):
             "Drums/Test Kit/Rim.wav": wav(44100, 1, 16, 100),
             "Drums/Test Kit/Shaker.wav": wav(44100, 1, 16, 100),
             "Drums/Test Kit/Crash.wav": wav(22050, 1, 16, 22050 * 12),
-            "Keys/Piano.xpm": XPM.replace('type="Drum"', 'type="Keygroup"').format(instruments="", padnotes=""),
+            "Keys/Piano.xpm": XPM.replace('type="Drum"', 'type="Keygroup"').format(instruments="", padnotes="", name="Piano"),
             "My Folder/notes.txt": "x",
         }
         folder = self.backup(files)
@@ -178,11 +199,12 @@ class FactoryKitTests(unittest.TestCase):
         res, kits, report = self.run_tool()
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertEqual(len(kits), 1)
-        self.assertIn("chosen: /Drums/Test Kit/Test Kit.xpm (Test Kit), pads read by pad number", report)
+        self.assertIn("kit 1: /Drums/Test Kit/Test Kit.xpm (Test Kit), pads read by pad number", report)
         self.assertIn("drum programs: 1", report)
+        self.assertIn("kits: 1 (asked for 8)", report)
         self.assertRegex(report, r"\n +16 +53 +- \(Missing: file not found\)\n")
-        with open(os.path.join(self.work, kits[0], "kit.bin"), "rb") as fh:
-            sounds = parse_kit(fh.read())
+        [(kit_name, sounds)] = read_kits(os.path.join(self.work, kits[0]))
+        self.assertEqual(kit_name, "Test Kit")
         self.assertEqual([(n, name) for n, name, _, _ in sounds],
                          list(zip(PAD_NOTES[:8], ["Kick", "Snare", "Hat", "Clap", "Tom", "Rim", "Shaker", "Crash"])))
         frames = {name: f for _, name, f, _ in sounds}
@@ -199,8 +221,33 @@ class FactoryKitTests(unittest.TestCase):
         # The backup is untouched, and nothing but the kit folder was written.
         after = os.stat(os.path.join(folder, "mmcblk0.img"))
         self.assertEqual((before.st_mtime_ns, before.st_size), (after.st_mtime_ns, after.st_size))
-        self.assertEqual(sorted(os.listdir(os.path.join(self.work, kits[0]))), ["kit.bin", "report.txt"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.work, kits[0]))), ["kits.bin", "report.txt"])
         self.assertEqual(sorted(os.listdir(self.work)), kits)
+
+    def test_several_kits_one_per_family(self):
+        def prog(n, name):
+            return xpm({i: f"S{i}" for i in range(1, n + 1)}, name)
+        files = {f"Expansions/X/S{i}.wav": wav(44100, 1, 16, 100 + i) for i in range(1, 17)}
+        files.update({
+            "Drums/Test Kit/Test Kit.xpm": prog(8, "Test Kit"),
+            "Expansions/X/Boom-Kit-One.xpm": prog(12, "Boom One"),
+            "Expansions/X/Boom-Kit-Two.xpm": prog(16, "Boom Two"),     # same family as Boom One
+            "Expansions/X/Trap-Kit-A.xpm": prog(11, "Trap A"),         # too few pads for an extra kit
+            "Expansions/X/Trap-Kit-B.xpm": prog(16, "Trap B"),
+        })
+        self.backup(files)
+        res, kits, report = self.run_tool()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        got = read_kits(os.path.join(self.work, kits[0]))
+        self.assertEqual([(name, len(s)) for name, s in got], [("Test Kit", 8), ("Boom One", 12), ("Trap B", 16)])
+        self.assertIn("kits: 3 (asked for 8)", report)
+        self.assertEqual(got[2][1][15][1], "S16")
+        res, kits, report = self.run_tool("--kits", "2")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual([name for name, _ in read_kits(os.path.join(self.work, kits[0]))], ["Test Kit", "Boom One"])
+        res, kits, _ = self.run_tool("--kits", "17")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("--kits must be 1 to 16", res.stdout)
 
     def test_loose_wavs_when_there_is_no_program(self):
         files = {"Loops/loop.wav": wav(44100, 1, 16, 10),
@@ -210,9 +257,8 @@ class FactoryKitTests(unittest.TestCase):
         self.backup(files)
         res, kits, report = self.run_tool()
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
-        self.assertIn("chosen: /One Shots/ (One Shots), pads read loose WAVs", report)
-        with open(os.path.join(self.work, kits[0], "kit.bin"), "rb") as fh:
-            sounds = parse_kit(fh.read())
+        self.assertIn("kit 1: /One Shots/ (One Shots), pads read loose WAVs", report)
+        [(_, sounds)] = read_kits(os.path.join(self.work, kits[0]))
         self.assertEqual([name for _, name, _, _ in sounds], ["Kick 1.wav", "Snare 1.wav", "HH Closed.wav"])
 
     def test_stops_cleanly(self):

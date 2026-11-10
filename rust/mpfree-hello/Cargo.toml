@@ -12,3 +12,5 @@ path = "src/main.rs"
 mpfree-core = { path = "../mpfree-core" }
 mpfree-controller = { path = "../mpfree-controller" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }
+mpfree-touch = { path = "../mpfree-touch" }
+mpfree-ui = { path = "../mpfree-ui" }

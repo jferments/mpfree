@@ -30,6 +30,9 @@ REPO = os.path.dirname(os.path.dirname(TOOLS))
 HELPER = os.path.join(TOOLS, "host_hello_mpc.py")
 WRAPPER = os.path.join(TOOLS, "collect-over-ssh.sh")
 HELLO_SRC = os.path.join(REPO, "rust", "mpfree-hello", "src")
+UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
+# Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
+LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"))
 NEW = "6.18.44-fake-rt6"
 APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod")
 
@@ -90,8 +93,10 @@ case "$1" in
     echo "pads done: 30 bytes, 10 events, $h pad hits, 0 keep-alives sent, 0 replies" ;;
   lights) echo "lights done: 90 messages sent, pad hits on Public 4, Private 0, MIDI Port 0" ;;
   setup) echo "setup done: 140 messages sent, pad hits on Public 0, Private 4, MIDI Port 0" ;;
-  drums) if [ -f kit.bin ]; then echo "kit: 8 sounds"; else echo "STOP: no kit"; exit 1; fi
+  drums) if [ -f kits.bin ]; then echo "kit: 8 sounds"; else echo "STOP: no kits"; exit 1; fi
          echo "drums done: 12 pad hits played" ;;
+  play) if [ -f kits.bin ]; then echo "pad player: 2 kits, 20 sounds"; else echo "STOP: no kits"; exit 1; fi
+        echo "play done (STOP): 40 pad hits, 0 underruns" ;;
   click) echo "click done: 3445 periods (10.0 s), 0 underruns, 0 late periods"; exit "$FAKE_CLICK_RC" ;;
 esac
 '''
@@ -268,8 +273,8 @@ class HelloTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("click: exit code 1", res.stdout)
 
-    def kit(self, data=b"MPFKIT01" + b"\x01" * 100, name="factory-kit-20261110T000000Z-abc"):
-        path = os.path.join(self.work, name, "kit.bin")
+    def kit(self, data=b"MPFKITS1" + struct.pack("<I", 2) + b"\x01" * 100, name="factory-kit-20261110T000000Z-abc"):
+        path = os.path.join(self.work, name, "kits.bin")
         write(path, data)
         return path
 
@@ -280,7 +285,8 @@ class HelloTests(unittest.TestCase):
                               MPFREE_HELLO_STEPS="drums,setup,lights")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        for text in ("steps: lights, drums, setup", f"drum kit: {kit}", "drum kit copied; its hash on the MPC matches",
+        for text in ("steps: lights, drums, setup", f"drum kits: {kit}", "2 kits, 112 bytes",
+                     "drum kits copied; their hash on the MPC matches",
                      "[4/6] Lights", "[5/6] Drums", "[6/6] Akai's setup", "Please type SEND exactly, or s, or q.",
                      "your answer: all pads lit", "your answer: buttons lit", "your answer: kick on pad 1",
                      "kit: 8 sounds", "drums done: 12 pad hits played", "RESULT: all steps ran"):
@@ -288,8 +294,9 @@ class HelloTests(unittest.TestCase):
         self.assertEqual(out.count("controller: 09e8:0046"), 3)
         self.assertEqual(self.log_lines("program: "),
                          ["lights --seconds 15", "drums --seconds 30 --gain-db -12", "setup --seconds 20"])
-        with open(kit, "rb") as a, open(f"{self.root}/run/mpfree-hello/kit.bin", "rb") as b:
+        with open(kit, "rb") as a, open(f"{self.root}/run/mpfree-hello/kits.bin", "rb") as b:
             self.assertEqual(a.read(), b.read())
+        self.assertEqual(os.stat(f"{self.root}/run/mpfree-hello/kits.bin").st_mode & 0o777, 0o600)
         # Without the screen step, the first drawing step stops the log display; it is started again at the end.
         self.assertEqual([l for l in self.log_lines("systemctl: ") if "mpfree-test-screen" in l and "is-active" not in l],
                          ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
@@ -297,18 +304,55 @@ class HelloTests(unittest.TestCase):
     def test_setup_can_be_skipped_and_drums_needs_a_kit(self):
         res = self.run_helper("s\n", MPFREE_HELLO_STEPS="setup,drums")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("no factory kit found", res.stdout)
+        self.assertIn("no factory kits found (make them with offline-factory-kit.py); left out: drums", res.stdout)
         self.assertIn("steps: drums, setup", res.stdout)
         self.assertNotIn("[5/", res.stdout)
         self.assertEqual(self.log_lines("program: "), [])
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello/kit.bin"))
-        self.kit(b"not a kit")
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello/kits.bin"))
+        # A file from round 3 (one kit, the old format) is not taken.
+        self.kit(b"MPFKIT01" + b"\x01" * 100)
+        write(self.log, "")
         res = self.run_helper("", MPFREE_HELLO_STEPS="drums")
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("is not a kit file", res.stdout)
+        self.assertIn("is not a kits file", res.stdout)
+        self.assertEqual(self.log_lines("ssh["), [])
         res = self.run_helper("", MPFREE_HELLO_STEPS="pads,format")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("unknown step(s) format", res.stdout)
+
+    def test_play_needs_send_and_the_kits(self):
+        kit = self.kit()
+        # play: a wrong word, then SEND + answer.
+        res = self.run_helper("go\nSEND\nkits and level followed\n", MPFREE_HELLO_STEPS="play")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("steps: play", f"drum kits: {kit}", "drum kits copied; their hash on the MPC matches",
+                     "[4/4] Pad player", "STATE-CHANGING", "Please type SEND exactly, or s, or q.",
+                     "pad player: 2 kits, 20 sounds", "play done (STOP): 40 pad hits, 0 underruns",
+                     "controller: 09e8:0046", "your answer: kits and level followed", "RESULT: all steps ran"):
+            self.assertIn(text, out)
+        self.assertEqual(self.log_lines("program: "), ["play --seconds 120 --gain-db -12"])
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if "mpfree-test-screen" in l and "is-active" not in l],
+                         ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
+        # s skips it: nothing runs and the log display is never stopped.
+        write(self.log, "")
+        res = self.run_helper("s\n", MPFREE_HELLO_STEPS="play")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.log_lines("program: "), [])
+        self.assertNotIn("stop mpfree-test-screen.service", self.log_lines("systemctl: "))
+        # q stops.
+        res = self.run_helper("q\n", MPFREE_HELLO_STEPS="play")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: stopped by you", res.stdout)
+        self.assertEqual(self.log_lines("program: "), [])
+        # Without kits, play is left out with drums.
+        shutil.rmtree(os.path.dirname(kit))
+        write(self.log, "")
+        res = self.run_helper("", MPFREE_HELLO_STEPS="drums,play")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("left out: drums, play", res.stdout)
+        self.assertIn("STOP: no steps left to run; nothing was sent to the MPC", res.stdout)
+        self.assertEqual(self.log_lines("ssh["), [])
 
     def test_stops_if_the_controller_changes(self):
         os.environ["FAKE_USB_PRODUCT"] = "0047"
@@ -394,60 +438,91 @@ class StaticTests(unittest.TestCase):
         writes = [ln for t in scripts.values() for ln in t.splitlines() if re.search(r"(^|[^2])>[^&]", ln)]
         self.assertEqual(writes, [mod.RECEIVE, mod.RECEIVE_KIT], writes)
         self.assertIn('cat > "$R/run/mpfree-hello/mpfree-hello.part"', mod.RECEIVE)
-        self.assertIn('cat > "$R/run/mpfree-hello/kit.bin.part"', mod.RECEIVE_KIT)
+        self.assertIn('cat > "$R/run/mpfree-hello/kits.bin.part"', mod.RECEIVE_KIT)
         services = re.findall(r"systemctl (stop|start|restart|enable|disable|mask|unmask|kill) (\S+)",
                               " ".join(scripts.values()))
         self.assertEqual(sorted(services), [("start", "mpfree-test-screen.service"),
                                             ("stop", "mpfree-test-screen.service")])
         # The program's arguments are fixed in the tool; nothing from the command line reaches the MPC.
-        self.assertEqual(sorted(mod.PHASES), ["click", "drums", "inventory", "lights", "pads", "pads-keepalive", "screen",
-                                              "setup", "touch"])
+        self.assertEqual(sorted(mod.PHASES), ["click", "drums", "inventory", "lights", "pads", "pads-keepalive", "play",
+                                              "screen", "setup", "touch"])
         for args, _ in mod.PHASES.values():
             self.assertRegex(args, r"^[a-z]+( --[a-z-]+( -?[0-9]+)?)*$")
+
+    def program_sources(self):
+        """(name, code) for every Rust file built into the program, without its test module (tests never
+        reach the MPC; test code may write temporary files)."""
+        files = [(f"mpfree-hello/{n}", os.path.join(HELLO_SRC, n)) for n in sorted(os.listdir(HELLO_SRC))]
+        files += [(f"mpfree-ui/{n}", os.path.join(UI_SRC, n)) for n in sorted(os.listdir(UI_SRC))]
+        for d in LINKED_SRC:
+            crate = os.path.basename(os.path.dirname(d))
+            files += [(f"{crate}/{n}", os.path.join(d, n)) for n in sorted(os.listdir(d))
+                      if n.endswith(".rs") and n != "main.rs"]
+        out = []
+        for name, path in files:
+            with open(path) as fh:
+                text = fh.read()
+            marker = "#[cfg(test)]\nmod tests {"
+            self.assertLessEqual(text.count(marker), 1, name)
+            if marker in text:
+                code, tests = text.split(marker)
+                # The test module is the last thing in the file, so nothing else is cut: its closing brace
+                # is the only one at the start of a line, and no other item starts there.
+                lines = tests.rstrip("\n").splitlines()
+                self.assertEqual([i for i, ln in enumerate(lines) if ln == "}"], [len(lines) - 1], name)
+                self.assertEqual([ln for ln in lines if re.match(r"(pub|fn|#\[|impl|struct|enum|const|static|mod|use)\b", ln)],
+                                 [], name)
+            else:
+                code = text
+            out.append((name, code))
+        self.assertGreaterEqual(len(out), 20)
+        return out
 
     def test_the_program_writes_only_where_reviewed(self):
         """Every place the program opens a file for writing, in its Rust source."""
         found = []
-        for name in sorted(os.listdir(HELLO_SRC)):
-            with open(os.path.join(HELLO_SRC, name)) as fh:
-                for line in fh:
-                    if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
-                        found.append((name, line.strip()))
-                    for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
-                                   "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir"):
-                        self.assertNotIn(needle, line, f"{name}: {line.strip()}")
+        for name, code in self.program_sources():
+            for line in code.splitlines():
+                if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
+                    found.append((name, line.strip()))
+                for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
+                               "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir",
+                               "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions"):
+                    self.assertNotIn(needle, line, f"{name}: {line.strip()}")
         texts = [line for _, line in found]
         expected = (
             # the program's own report in /run/mpfree-hello (Out::new and the STOP line in main)
             "OpenOptions::new().create(true).append(true).mode(0o644).open(Path::new(REPORT_DIR).join(\"hello.txt\")).ok()",
             "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"hello.txt\")) {",
-            # the framebuffer and its sysfs pan file
-            "let fb = OpenOptions::new().write(true).open(&o.fb).map_err(|e| format!(\"{}: {e}\", o.fb.display()))?;",
-            "let _ = OpenOptions::new().write(true).open(o.sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
-            # the host-only preview file (never on the MPC)
-            "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&ppm))",
+            # the framebuffer and its sysfs pan file (mpfree-ui's FbTarget)
+            "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
+            "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
+            # the host-only preview pictures (never on the MPC)
+            "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))",
             # the ACVA playback device
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
+        files = {name for name, _ in found}
+        self.assertEqual(files, {"mpfree-hello/main.rs", "mpfree-hello/alsa.rs", "mpfree-ui/fb.rs"}, files)
 
     def test_unsafe_code_only_in_sys(self):
-        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code."""
-        for name in sorted(os.listdir(HELLO_SRC)):
-            with open(os.path.join(HELLO_SRC, name)) as fh:
-                text = fh.read()
-            if name == "main.rs":
-                self.assertIn("#![deny(unsafe_code)]", text)
-            if name != "sys.rs":
-                self.assertNotIn("unsafe {", text, name)
-                self.assertNotIn("allow(unsafe_code)", text, name)
+        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""
+        for name, code in self.program_sources():
+            if name == "mpfree-hello/main.rs":
+                self.assertIn("#![deny(unsafe_code)]", code)
+            if name in ("mpfree-ui/lib.rs", "mpfree-touch/lib.rs", "mpfree-screen-log/lib.rs"):
+                self.assertIn("#![forbid(unsafe_code)]", code, name)
+            if name != "mpfree-hello/sys.rs":
+                self.assertNotIn("unsafe {", code, name)
+                self.assertNotIn("unsafe extern", code, name)
+                self.assertNotIn("allow(unsafe_code)", code, name)
         with open(os.path.join(HELLO_SRC, "sys.rs")) as fh:
             sys_rs = fh.read()
         self.assertEqual(sorted(set(re.findall(r"\bfn (\w+)\(", sys_rs.split("extern \"C\" {")[1].split("}")[0]))),
                          ["fcntl", "ioctl", "mlockall", "sched_setscheduler"])
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

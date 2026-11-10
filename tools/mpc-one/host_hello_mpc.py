@@ -26,24 +26,29 @@ started by you pressing Enter:
      second try that also sends Akai's keep-alive message every 5 s.
   8. lights: sends Akai's startup pad colours and button lights, then your
      project's pad colours, and lights each pad brighter while you hold it.
-  9. drums: plays the factory drum kit made by offline-factory-kit.py from
-     the pads for 30 s. The kit is copied into /run/mpfree-hello with the
-     program. Turn the volume knob down first.
+  9. drums: plays the first factory drum kit made by offline-factory-kit.py
+     from the pads for 30 s. The kits file is copied into /run/mpfree-hello
+     with the program. Turn the volume knob down first.
  10. setup: asks the controller for a session, as Akai's app does, then sends
      the app's setup messages byte for byte (you type SEND first), lights the
      pads again and listens for 20 s, pinging every 4 s. It comes after drums
      so that the drums play in the pad mode round 2 already saw working.
- 11. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
+ 11. play: the pad player, MPFree's first GUI (you type SEND first): the same
+     session and setup as step 10, then up to 120 s with every kit: the pads
+     or the screen play, the wheel or a tap picks the kit, Q-Link 1 or the
+     slider sets the level, STOP ends it. If the session is not accepted
+     within 20 s it plays without Akai's setup. Turn the volume knob down first.
+ 12. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
      counts underruns and late periods. Turn the volume knob down first.
   MPFREE_HELLO_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
-  above. After lights, drums and setup it checks that the controller still
+  above. After lights, drums, setup and play it checks that the controller still
   has its normal USB id. The first step that draws on the screen stops the
   log display, since both would draw on /dev/fb0. At the end it starts the
   log display again (if it was stopped) and copies the program's own report
   (/run/mpfree-hello/hello.txt) into this report.
 
-lights, drums and setup send the controller only what Akai's app sent it in
+lights, drums, setup and play send the controller only what Akai's app sent it in
 the capture of 2026-11-10 (see docs/hardware/controller-protocol.md), plus pad
 colours made by the app's own rule for a held pad.
 
@@ -72,9 +77,9 @@ _spec.loader.exec_module(kexec)
 PROGRAM_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree-hello")
 PROGRAM_MAX = 16 << 20
 KIT_MAX = 48 << 20
-KIT_MAGIC = b"MPFKIT01"
+KIT_MAGIC = b"MPFKITS1"
 REMOTE_DIR = "/run/mpfree-hello"
-STEPS = ("inventory", "screen", "touch", "pads", "lights", "drums", "setup", "click")
+STEPS = ("inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
 DEFAULT_STEPS = "inventory,screen,touch,pads,click"
 CONTROLLER_ID = "09e8:0046"
 SETUP_WORD = "SEND"
@@ -91,6 +96,7 @@ PHASES = {
     "lights": ("lights --seconds 15", 60),
     "setup": ("setup --seconds 20", 90),
     "drums": ("drums --seconds 30 --gain-db -12", 90),
+    "play": ("play --seconds 120 --gain-db -12", 200),
     "click": ("click --seconds 10 --gain-db -12", 45),
 }
 
@@ -139,7 +145,7 @@ case "$runopts" in tmpfs\ *) ;; *) bad "/run is not a tmpfs" ;; esac
 case ",${runopts#* }," in *,noexec,*) bad "/run does not allow programs (noexec)" ;; esac
 avail=$(df -k "$R/run" | tail -n 1 | while read -r a b c d rest; do echo "$d"; done)
 say "free in /run: $avail KiB"
-[ "${avail:-0}" -ge 65536 ] 2>/dev/null || bad "less than 64 MiB free in /run (room for the program and the drum kit)"
+[ "${avail:-0}" -ge 65536 ] 2>/dev/null || bad "less than 64 MiB free in /run (room for the program and the drum kits)"
 s=$(systemctl is-active acvs.service 2>/dev/null)
 say "Akai's app (acvs.service): ${s:-unknown}"
 [ "$s" = active ] && bad "Akai's app is running"
@@ -162,15 +168,15 @@ PREPARE = r"""R=''
 umask 077
 d="$R/run/mpfree-hello"
 [ -d "$d" ] || mkdir "$d" || exit 1
-rm -f "$d/mpfree-hello" "$d/mpfree-hello.part" "$d/kit.bin" "$d/kit.bin.part"
+rm -f "$d/mpfree-hello" "$d/mpfree-hello.part" "$d/kit.bin" "$d/kit.bin.part" "$d/kits.bin" "$d/kits.bin.part"
 """
 RECEIVE = r"""R=''; umask 077; cat > "$R/run/mpfree-hello/mpfree-hello.part" && chmod 700 "$R/run/mpfree-hello/mpfree-hello.part" && mv "$R/run/mpfree-hello/mpfree-hello.part" "$R/run/mpfree-hello/mpfree-hello" """
-RECEIVE_KIT = r"""R=''; umask 077; cat > "$R/run/mpfree-hello/kit.bin.part" && mv "$R/run/mpfree-hello/kit.bin.part" "$R/run/mpfree-hello/kit.bin" """
+RECEIVE_KIT = r"""R=''; umask 077; cat > "$R/run/mpfree-hello/kits.bin.part" && mv "$R/run/mpfree-hello/kits.bin.part" "$R/run/mpfree-hello/kits.bin" """
 HASH = r"""R=''
 sha256sum "$R/run/mpfree-hello/mpfree-hello"
 """
 HASH_KIT = r"""R=''
-sha256sum "$R/run/mpfree-hello/kit.bin"
+sha256sum "$R/run/mpfree-hello/kits.bin"
 """
 # Read-only: the controller's USB id, to see it is still in its normal MIDI mode.
 CONTROLLER = r"""R=''
@@ -289,10 +295,23 @@ def chosen_steps(text):
 
 
 def newest_kit(work):
-    """The newest ~/mpfree-work/factory-kit-*/kit.bin, or None."""
+    """The newest ~/mpfree-work/factory-kit-*/kits.bin, or None."""
     folders = sorted(d for d in os.listdir(work) if d.startswith("factory-kit-")
-                     and os.path.isfile(os.path.join(work, d, "kit.bin")))
-    return os.path.join(work, folders[-1], "kit.bin") if folders else None
+                     and os.path.isfile(os.path.join(work, d, "kits.bin")))
+    return os.path.join(work, folders[-1], "kits.bin") if folders else None
+
+
+def send_word(out):
+    """Ask for SEND before a step that sends Akai's setup. True to go on; Stop on q."""
+    while True:
+        a = typed(f"  Type {SETUP_WORD} and press Enter to send them (s skips, q stops here): ")
+        if a in (SETUP_WORD, "s", "q"):
+            break
+        print(f"  Please type {SETUP_WORD} exactly, or s, or q.")
+    out.say(f"  answer: {a}")
+    if a == "q":
+        raise Stop("stopped by you")
+    return a == SETUP_WORD
 
 
 def check_controller(mpc, out):
@@ -341,21 +360,27 @@ def main(argv):
         raise Stop(f"{folder}/report.txt does not name the test build's kernel release")
     new = found.group(1)
     kit = kit_digest = None
-    if "drums" in steps:
+    need_kits = [n for n in ("drums", "play") if n in steps]
+    if need_kits:
         kit = os.environ.get("MPFREE_HELLO_KIT") or newest_kit(os.path.realpath(args.work))
         if not kit:
-            out.say("  no factory kit found (make one with offline-factory-kit.py); the drums step is left out")
-            steps.remove("drums")
-            total -= 1
+            out.say("  no factory kits found (make them with offline-factory-kit.py); left out: "
+                    + ", ".join(need_kits))
+            for n in need_kits:
+                steps.remove(n)
+            total -= len(need_kits)
+            if not steps:
+                raise Stop("no steps left to run; nothing was sent to the MPC")
         else:
             kit = os.path.realpath(kit)
             with open(kit, "rb") as fh:
                 kit_data = fh.read(KIT_MAX + 1)
             if len(kit_data) > KIT_MAX or kit_data[:8] != KIT_MAGIC:
-                raise Stop(f"{kit} is not a kit file made by offline-factory-kit.py, or is too big")
+                raise Stop(f"{kit} is not a kits file made by offline-factory-kit.py, or is too big")
             kit_digest = hashlib.sha256(kit_data).hexdigest()
-            out.say(f"  drum kit: {kit}")
-            out.say(f"  {len(kit_data)} bytes, sha256 {kit_digest}")
+            count = struct.unpack_from("<I", kit_data, 8)[0] if len(kit_data) >= 12 else 0
+            out.say(f"  drum kits: {kit}")
+            out.say(f"  {count} kits, {len(kit_data)} bytes, sha256 {kit_digest}")
     mpc = kexec.Mpc(args, os.path.join(folder, "known_hosts"))
 
     out.say(f"\n[2/{total}] Checks on the test build (read-only; only its own host key is accepted)")
@@ -368,7 +393,7 @@ def main(argv):
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 
-    out.say(f"\n[3/{total}] Copy the program{' and the drum kit' if kit_digest else ''} into the test build's RAM ({REMOTE_DIR})")
+    out.say(f"\n[3/{total}] Copy the program{' and the drum kits' if kit_digest else ''} into the test build's RAM ({REMOTE_DIR})")
     rc, text = mpc.run(PREPARE, test=True)
     if rc != 0:
         raise Stop(f"could not make {REMOTE_DIR} ({text.strip()})")
@@ -382,11 +407,11 @@ def main(argv):
     if kit_digest:
         rc, text = mpc.run(None, test=True, stdin_path=kit, command=RECEIVE_KIT)
         if rc != 0:
-            raise Stop(f"copying the drum kit failed ({text.strip()})")
+            raise Stop(f"copying the drum kits failed ({text.strip()})")
         rc, text = mpc.run(HASH_KIT, test=True)
         if rc != 0 or text.split()[:1] != [kit_digest]:
-            raise Stop("the drum kit on the MPC does not match the one made on the workstation")
-        out.say("  drum kit copied; its hash on the MPC matches")
+            raise Stop("the drum kits on the MPC do not match the ones made on the workstation")
+        out.say("  drum kits copied; their hash on the MPC matches")
 
     screen_stopped = False
     signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -460,18 +485,25 @@ def main(argv):
                 out.say("  Akai's app sends at each start, so it ends where it does after a factory boot)")
                 out.say("  If the controller does not accept the session within 20 s, nothing else is sent.")
                 out.say("  Then 20 s: hit pads, turn Q-Link 1 and the wheel, press a few buttons.")
-                while True:
-                    a = typed(f"  Type {SETUP_WORD} and press Enter to send them (s skips, q stops here): ")
-                    if a in (SETUP_WORD, "s", "q"):
-                        break
-                    print(f"  Please type {SETUP_WORD} exactly, or s, or q.")
-                out.say(f"  answer: {a}")
-                if a == "q":
-                    raise Stop("stopped by you")
-                if a == SETUP_WORD:
+                if send_word(out):
                     drawn("setup")
                     check_controller(mpc, out)
                     note(out, "What lit up, and did the pads, Q-Link and wheel feel any different?")
+            elif name == "play":
+                out.say(f"\n[{i}/{total}] Pad player: Akai's session and setup, then up to 120 s with the kits on the screen")
+                out.say("  (STATE-CHANGING: the controller's settings and lights until it is switched off; the same")
+                out.say("  bytes as the setup step, then pad colours for the kit in use)")
+                out.say("  If the session is not accepted within 20 s, it plays without Akai's setup: no setup message")
+                out.say("  is sent, only pad colours, as in the lights step.")
+                out.say("  Play the pads or the pads on the screen; the wheel or a tap on the list picks the kit;")
+                out.say("  Q-Link 1 or the slider sets the level (it starts 6 dB below the most, which is 12 dB below")
+                out.say("  full scale). The tabs at the top switch between Play and Debug. STOP ends it early.")
+                out.say("  Turn the MPC's volume knob most of the way down first.")
+                if send_word(out):
+                    drawn("play")
+                    check_controller(mpc, out)
+                    note(out, "Did the screen follow the pads, kits and level? Did touching the screen's pads, kit "
+                              "list, slider and tabs work? Any lag, crackles or gaps?")
             elif name == "drums":
                 out.say(f"\n[{i}/{total}] Drums: 30 s of the factory kit from the pads, through the main outputs")
                 out.say("  Each sound peaks at most 12 dB below full scale; hits that overlap add up. Turn the MPC's")

@@ -12,51 +12,72 @@
 //!                      Private, MIDI Port) and shows every message in hex, with
 //!                      its meaning (pad, button, Q-Link, wheel) where known;
 //!                      with --keepalive it also sends Akai's keep-alive message
-//!                      on the Public port every 5 s (the only thing it ever
-//!                      sends to the controller)
+//!                      on the Public port every 5 s
+//!   lights --seconds N Akai's startup pad colours and button lights, then the
+//!                      project's colours; pads light brighter while held
+//!   setup --seconds N  Akai's session and setup, replayed byte for byte
+//!   drums --seconds N [--gain-db G]
+//!                      plays the first kit in kits.bin from the pads
+//!   play --seconds N [--gain-db G]
+//!                      the pad player: Akai's session and setup, then every kit
+//!                      in kits.bin, picked with the wheel or the screen, played
+//!                      from the pads or the screen, level on Q-Link 1 (at most
+//!                      G dB), timing of each hit; STOP ends it
 //!   click --seconds N [--gain-db G]
 //!                      plays a 120 BPM click on the ACVA card (stereo S32_LE,
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
 //!                      does) and logs every underrun and late period
-//!   --preview FILE.ppm host only: draws a sample card to a file, no devices
+//!   --preview DIR      host only: draws sample screens to new PNG files in DIR
+//!
+//! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
+//! also goes to stdout, which the workstation shows, and to the report file.
+//! `--font`, `--bold-font` and `--mono-font FILE` swap the built-in fonts.
 //!
 //! It writes only to: /dev/fb0 and the framebuffer's sysfs `pan` file (the
-//! screen), the ACVA PCM device (the click), the controller's Public MIDI port
-//! (keep-alive, only with --keepalive) and /run/mpfree-hello/hello.txt (its own
-//! report, in RAM; the stick's log service copies it to the stick). It never
-//! touches storage, the eMMC is hidden from this kernel anyway, and nothing it
-//! does survives a power-cycle.
+//! screen), the ACVA PCM device (sound), the controller's Public and Private
+//! MIDI ports (only messages Akai's app was seen sending, and pad colours made
+//! by its rules; never in inventory, screen, touch, or pads without
+//! --keepalive) and /run/mpfree-hello/hello.txt (its own report, in RAM; the
+//! workstation tool copies it into its report). With --preview on the
+//! workstation it writes only new PNG files. It never touches storage, the
+//! eMMC is hidden from this kernel anyway, and nothing it does survives a
+//! power-cycle.
 
 #![deny(unsafe_code)] // the few C calls live in sys.rs, the only module allowed unsafe code
 
 mod akai;
 mod alsa;
+mod gui;
 mod kit;
 mod sys;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
-use mpfree_screen_log::{grid, render, Geometry, LogView, Rotation};
+use mpfree_screen_log::Rotation;
+use mpfree_ui::fb::FbTarget;
+use mpfree_ui::{Fonts, SoftCanvas, Tone};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TITLE: &str = "MPFree: Hello MPC";
 const REPORT_DIR: &str = "/run/mpfree-hello";
 const PANEL_ROTATION: &str = "/proc/device-tree/mipi@ff960000/panel@0/rotation";
 const MAX_SECONDS: u64 = 60;
+/// The pad player may run longer.
+const PLAY_MAX_SECONDS: u64 = 300;
 const AUDIO_CARD_ID: &str = "ACVA";
 const RATE: u32 = 44_100;
 const PERIOD: usize = 128;
 const PERIODS: u32 = 3;
 const EPIPE: i32 = 32;
 const EAGAIN: i32 = 11;
-/// The drum kit the host tool copies next to the program (see kit.rs).
-const KIT_PATH: &str = "/run/mpfree-hello/kit.bin";
+/// The drum kits the host tool copies next to the program (see kit.rs).
+const KIT_PATH: &str = "/run/mpfree-hello/kits.bin";
 const MAX_KIT_BYTES: u64 = 48 << 20;
 
 struct Options {
@@ -67,6 +88,9 @@ struct Options {
     fb: PathBuf,
     sysfs: PathBuf,
     preview: Option<PathBuf>,
+    font: Option<PathBuf>,
+    bold_font: Option<PathBuf>,
+    mono_font: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -78,20 +102,17 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         fb: PathBuf::from("/dev/fb0"),
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
+        font: None,
+        bold_font: None,
+        mono_font: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "inventory" | "screen" | "touch" | "pads" | "lights" | "setup" | "drums" | "click" if o.command.is_empty() => {
-                o.command = arg.clone()
-            }
-            "--seconds" => {
-                o.seconds = value()?.parse().map_err(|_| "--seconds needs a whole number".to_string())?;
-                if !(1..=MAX_SECONDS).contains(&o.seconds) {
-                    return Err(format!("--seconds must be 1 to {MAX_SECONDS}"));
-                }
-            }
+            "inventory" | "screen" | "touch" | "pads" | "lights" | "setup" | "drums" | "play" | "click"
+                if o.command.is_empty() => o.command = arg.clone(),
+            "--seconds" => o.seconds = value()?.parse().map_err(|_| "--seconds needs a whole number".to_string())?,
             "--keepalive" => o.keepalive = true,
             "--gain-db" => {
                 o.gain_db = value()?.parse().map_err(|_| "--gain-db needs a number".to_string())?;
@@ -102,11 +123,18 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--fb" => o.fb = PathBuf::from(value()?),
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
+            "--font" => o.font = Some(PathBuf::from(value()?)),
+            "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
+            "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
     if o.preview.is_none() && o.command.is_empty() {
-        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|click [options]".to_string());
+        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|play|click [options]".to_string());
+    }
+    let max = if o.command == "play" { PLAY_MAX_SECONDS } else { MAX_SECONDS };
+    if !(1..=max).contains(&o.seconds) {
+        return Err(format!("--seconds must be 1 to {max}"));
     }
     if o.keepalive && o.command != "pads" {
         return Err("--keepalive goes with pads".to_string());
@@ -114,20 +142,16 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(o)
 }
 
-/// The card on the screen, plus the same lines on stdout and in the report file.
+/// The screen, plus the same lines on stdout and in the report file. In the
+/// pad player, lines go to the screen thread instead (`sink`), which prints
+/// them, so the audio thread never waits for the terminal or the screen.
 struct Out {
-    screen: Option<Screen>,
-    view: LogView,
-    heading: String,
+    console: Option<gui::Console>,
+    sink: Option<SyncSender<gui::ToUi>>,
+    /// Lines the screen thread had no room for (they still reach the report).
+    dropped: u64,
     report: Option<File>,
     last_draw: Instant,
-}
-
-struct Screen {
-    fb: File,
-    geometry: Geometry,
-    rotation: Rotation,
-    buf: Vec<u8>,
 }
 
 impl Out {
@@ -135,15 +159,13 @@ impl Out {
         let report = fs::create_dir_all(REPORT_DIR).ok().and_then(|_| {
             OpenOptions::new().create(true).append(true).mode(0o644).open(Path::new(REPORT_DIR).join("hello.txt")).ok()
         });
-        let mut out = Out { screen: None, view: LogView::new(60, 30), heading: heading.to_string(), report,
-                            last_draw: Instant::now() - Duration::from_secs(1) };
+        let mut out = Out { console: None, sink: None, dropped: 0, report, last_draw: Instant::now() - Duration::from_secs(1) };
         out.file_line(&format!("===== mpfree-hello {} (uptime {}) =====", heading, uptime()));
         if use_screen {
-            match Screen::open(o) {
-                Ok(s) => {
-                    let (cols, rows) = grid(&s.geometry, s.rotation);
-                    out.view = LogView::new(cols, rows.saturating_sub(2));
-                    out.screen = Some(s);
+            match open_screen(o) {
+                Ok(fb) => {
+                    let fonts = load_fonts(o, &mut out);
+                    out.console = Some(gui::Console::new(fonts, heading, Some(fb)));
                 }
                 Err(e) => out.say(&format!("screen: not used ({e})")),
             }
@@ -159,7 +181,7 @@ impl Out {
 
     fn say(&mut self, line: &str) {
         self.note(line);
-        if self.last_draw.elapsed() >= Duration::from_millis(100) {
+        if self.console.is_some() && self.last_draw.elapsed() >= Duration::from_millis(100) {
             self.draw();
         }
     }
@@ -167,18 +189,49 @@ impl Out {
     /// Like `say`, but never redraws the screen (a redraw takes longer than an
     /// audio period, so the drum loop only uses this).
     fn note(&mut self, line: &str) {
+        self.file_line(line);
+        if let Some(s) = self.sink.as_ref() {
+            if s.try_send(gui::ToUi::Line(line.to_string())).is_err() {
+                self.dropped += 1;
+            }
+            return;
+        }
         println!("{line}");
         let _ = io::stdout().flush();
-        self.file_line(line);
-        self.view.push(line);
+        if let Some(c) = self.console.as_mut() {
+            c.push(line);
+        }
+    }
+
+    /// A MIDI message in or out: like `note`, but the pad player shows it in
+    /// its MIDI monitor rather than the events.
+    fn midi(&mut self, line: &str) {
+        if self.sink.is_some() {
+            self.file_line(line);
+            let sent = self.sink.as_ref().is_some_and(|s| s.try_send(gui::ToUi::Midi(line.to_string())).is_ok());
+            if !sent {
+                self.dropped += 1;
+            }
+        } else {
+            self.note(line);
+        }
+    }
+
+    /// Something for the pad player's screen only (nothing printed).
+    fn show(&mut self, msg: gui::ToUi) {
+        if let Some(s) = self.sink.as_ref() {
+            if s.try_send(msg).is_err() {
+                self.dropped += 1;
+            }
+        }
     }
 
     fn draw(&mut self) {
-        let status = format!("{} | up {} s | switch the MPC off to return to the stock firmware", self.heading, uptime());
-        if let Some(s) = self.screen.as_mut() {
-            if let Err(e) = s.draw(TITLE, &status, &self.view) {
+        if let Some(c) = self.console.as_mut() {
+            c.set_status(&format!("up {} s", uptime()));
+            if let Err(e) = c.draw() {
                 eprintln!("screen: {e}");
-                self.screen = None;
+                self.console = None;
             }
         }
         self.last_draw = Instant::now();
@@ -191,39 +244,25 @@ impl Drop for Out {
     }
 }
 
-impl Screen {
-    fn open(o: &Options) -> Result<Screen, String> {
-        let geometry = geometry_from_sysfs(&o.sysfs)?;
-        let rotation = panel_rotation()?;
-        // Write only: no create, no truncate.
-        let fb = OpenOptions::new().write(true).open(&o.fb).map_err(|e| format!("{}: {e}", o.fb.display()))?;
-        // Ask the kernel to show the framebuffer (a mode set; nothing is stored).
-        let _ = OpenOptions::new().write(true).open(o.sysfs.join("pan")).and_then(|mut f| f.write_all(b"0,0\n"));
-        let buf = vec![0u8; geometry.frame_len()];
-        Ok(Screen { fb, geometry, rotation, buf })
-    }
+/// The framebuffer, turned as the panel is mounted.
+fn open_screen(o: &Options) -> Result<FbTarget, String> {
+    let rotation = panel_rotation()?;
+    FbTarget::open(&o.fb, &o.sysfs, rotation)
+}
 
-    fn draw(&mut self, title: &str, status: &str, view: &LogView) -> Result<(), String> {
-        render(&self.geometry, self.rotation, title, status, view, &mut self.buf)?;
-        self.fb.seek(SeekFrom::Start(0)).and_then(|_| self.fb.write_all(&self.buf)).map_err(|e| format!("writing: {e}"))
+/// The built-in fonts, or files given with --font, --bold-font, --mono-font.
+fn load_fonts(o: &Options, out: &mut Out) -> Fonts {
+    match Fonts::with_files(o.font.as_deref(), o.bold_font.as_deref(), o.mono_font.as_deref()) {
+        Ok(f) => f,
+        Err(e) => {
+            out.say(&format!("font: {e}; using the built-in fonts"));
+            Fonts::embedded()
+        }
     }
 }
 
 fn read_trimmed(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// The same reading as mpfree-screen-log: size from `modes`, plus stride and depth.
-fn geometry_from_sysfs(dir: &Path) -> Result<Geometry, String> {
-    let modes = read_trimmed(&dir.join("modes"))?;
-    let first = modes.lines().next().unwrap_or("");
-    let size = first.split(':').nth(1).unwrap_or("");
-    let digits: String = size.chars().take_while(|c| c.is_ascii_digit() || *c == 'x').collect();
-    let (w, h) = digits.split_once('x').ok_or_else(|| format!("cannot read a size from modes {first:?}"))?;
-    let num = |s: &str, what: &str| s.parse::<usize>().map_err(|_| format!("bad {what} {s:?}"));
-    let stride = num(&read_trimmed(&dir.join("stride"))?, "stride")?;
-    let bpp = read_trimmed(&dir.join("bits_per_pixel"))?.parse::<u32>().map_err(|e| format!("bits_per_pixel: {e}"))?;
-    Geometry::new(num(w, "width")?, num(h, "height")?, stride, bpp)
 }
 
 fn panel_rotation() -> Result<Rotation, String> {
@@ -357,13 +396,13 @@ fn inventory(o: &Options) -> Result<(), String> {
 
 fn screen(o: &Options) -> Result<(), String> {
     let mut out = Out::new(o, "screen", true);
-    if out.screen.is_none() {
+    if out.console.is_none() {
         return Err("no screen to draw on".to_string());
     }
     for line in [
         "Hello MPC.",
         "",
-        "This screen is drawn by MPFree's own code, running from the USB stick.",
+        "This screen is drawn by MPFree's own GUI code, running from the USB stick.",
         "Akai's software is not running, and this system cannot see the MPC's own storage.",
         "",
         "Next: touch the screen, hit the pads, and hear a click, one step at a time,",
@@ -453,15 +492,21 @@ impl Touches {
     }
 }
 
-fn touch(o: &Options) -> Result<(), String> {
-    let mut out = Out::new(o, "touch", true);
+/// The touchscreen's event device: (path, name).
+fn touchscreen() -> Result<(String, String), String> {
     let devices = input_devices();
     let hits: Vec<&(String, String)> = devices.iter().filter(|(_, n)| n.to_ascii_lowercase().contains("ili2117")).collect();
-    let [(path, name)] = hits.as_slice() else {
-        return Err(format!("expected one ILI2117 input device, found {}", hits.len()));
-    };
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        _ => Err(format!("expected one ILI2117 input device, found {}", hits.len())),
+    }
+}
+
+fn touch(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "touch", true);
+    let (path, name) = touchscreen()?;
     out.say(&format!("touchscreen: {path} ({name}); read-only, not grabbed"));
-    let mut dev = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path)
+    let mut dev = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(&path)
         .map_err(|e| format!("{path}: {e}"))?;
     out.say(&format!("touch the screen now, with one finger and then two ({} s)", o.seconds));
     let mut t = Touches::new();
@@ -635,6 +680,8 @@ struct Ports {
     start: Instant,
     sent: u64,
     shown: u64,
+    /// Messages shown before only counting.
+    max_shown: u64,
     /// Print without redrawing the screen (the drum loop).
     quiet: bool,
 }
@@ -649,7 +696,7 @@ impl Ports {
         } else {
             None
         };
-        Ok(Ports { inputs, public, private, start: Instant::now(), sent: 0, shown: 0, quiet: false })
+        Ok(Ports { inputs, public, private, start: Instant::now(), sent: 0, shown: 0, max_shown: MAX_SHOWN, quiet: false })
     }
 
     fn t(&self) -> f64 {
@@ -684,7 +731,7 @@ impl Ports {
                 self.send(private, m)?;
             }
             let text = chunk.iter().map(|m| hex(m)).collect::<Vec<_>>().join(" | ");
-            self.line(out, &format!("    {text}"));
+            out.midi(&format!("    -> {port}: {text}"));
         }
         Ok(())
     }
@@ -709,11 +756,12 @@ impl Ports {
                 self.inputs[i].messages += 1;
                 if !matches!(event, Some(ControlEvent::PadPressure { .. })) {
                     self.shown += 1;
-                    if self.shown <= MAX_SHOWN {
+                    if self.shown <= self.max_shown {
                         let text = message_line(t, name, &bytes, truncated, event.as_ref());
+                        out.midi(&text);
+                    } else if self.shown == self.max_shown + 1 {
+                        let text = format!("(more than {} messages: only counting from here)", self.max_shown);
                         self.line(out, &text);
-                    } else if self.shown == MAX_SHOWN + 1 {
-                        self.line(out, &format!("(more than {MAX_SHOWN} messages: only counting from here)"));
                     }
                 }
                 got.push(Incoming { port: i, bytes, event });
@@ -804,13 +852,10 @@ fn lights(o: &Options) -> Result<(), String> {
 
 // ---------------------------------------------------------------- setup
 
-/// Akai's startup, replayed: identity request and session ping until the
-/// controller accepts the token, then the setup messages, lights, and a listening
-/// window with pings every 4 s. Stops before any setup message if the session
-/// is not accepted within 20 s.
-fn setup(o: &Options) -> Result<(), String> {
-    let mut out = Out::new(o, "Akai's setup (session)", true);
-    let mut ports = Ports::open(&mut out, true)?;
+/// Ask for a session as Akai's app does: identity request and session ping,
+/// every 4 s, until the controller accepts our token, for up to 20 s.
+/// Returns whether it was accepted. Sends nothing else.
+fn start_session(out: &mut Out, ports: &mut Ports) -> Result<bool, String> {
     let mut buf = [0u8; 256];
     out.say(&format!("asking for a session with token {}: identity request, then a ping, every {} s, for up to 20 s",
                      hex(&akai::SESSION_TOKEN), akai::PING_SECONDS));
@@ -819,11 +864,11 @@ fn setup(o: &Options) -> Result<(), String> {
     let mut accepted = None;
     while accepted.is_none() && Instant::now() < give_up {
         if Instant::now() >= next_ping {
-            ports.send_batch(&mut out, false, "identity request and session ping",
+            ports.send_batch(out, false, "identity request and session ping",
                              &[&akai::IDENTITY_REQUEST[..], &akai::session_ping(akai::SESSION_TOKEN)[..]])?;
             next_ping = Instant::now() + Duration::from_secs(akai::PING_SECONDS);
         }
-        for m in ports.poll(&mut out, &mut buf)? {
+        for m in ports.poll(out, &mut buf)? {
             if let Some((token, status)) = akai::session_reply(&m.bytes) {
                 if token == akai::SESSION_TOKEN && (status == akai::SESSION_ACCEPTED || status == akai::SESSION_RUNNING) {
                     accepted = Some(status);
@@ -832,32 +877,52 @@ fn setup(o: &Options) -> Result<(), String> {
         }
         thread::sleep(Duration::from_millis(2));
     }
-    if accepted.is_none() {
+    Ok(accepted.is_some())
+}
+
+/// Listen (and show what comes in) for `ms` milliseconds.
+fn listen_for(out: &mut Out, ports: &mut Ports, ms: u64) -> Result<(), String> {
+    let until = Instant::now() + Duration::from_millis(ms);
+    let mut b = [0u8; 256];
+    while Instant::now() < until {
+        ports.poll(out, &mut b)?;
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// Akai's setup after the session was accepted, byte for byte and in the
+/// app's order and timing (Hello MPC round 2), then `colours` as the pads'
+/// resting colours, and a ping.
+fn send_setup(out: &mut Out, ports: &mut Ports, colours: &[[u8; 3]; 16], what: &str) -> Result<(), String> {
+    out.say("session accepted; sending Akai's setup exactly as the app did");
+    ports.send_batch(out, false, "setup, part 1 (as at +25.772 s)", &akai::SETUP_FIRST)?;
+    listen_for(out, ports, 12)?;
+    ports.send_batch(out, false, "setup, part 2 (sent twice, as at +25.784 s)", &[&akai::SETUP_5A[..], &akai::SETUP_5A[..]])?;
+    let gradient = pad_colours(&akai::STARTUP_GRADIENT);
+    ports.send_batch(out, false, "Akai's startup pad colours", &as_slices(&gradient))?;
+    let lights: Vec<[u8; 3]> = akai::STARTUP_BUTTON_LIGHTS.iter().map(|&[n, v]| akai::button_light(n, v)).collect();
+    ports.send_batch(out, true, "Akai's startup button lights", &as_slices(&lights))?;
+    listen_for(out, ports, 340)?;
+    ports.send_batch(out, false, "setup, part 3 (as at +26.170 s)", &akai::SETUP_LAST)?;
+    listen_for(out, ports, 960)?;
+    let rest = pad_colours(colours);
+    ports.send_batch(out, false, what, &as_slices(&rest))?;
+    ports.send(false, &akai::session_ping(akai::SESSION_TOKEN))?;
+    Ok(())
+}
+
+/// Akai's startup, replayed: identity request and session ping until the
+/// controller accepts the token, then the setup messages, lights, and a listening
+/// window with pings every 4 s. Stops before any setup message if the session
+/// is not accepted within 20 s.
+fn setup(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "Akai's setup (session)", true);
+    let mut ports = Ports::open(&mut out, true)?;
+    if !start_session(&mut out, &mut ports)? {
         return Err("the controller did not accept the session within 20 s; no setup message was sent".to_string());
     }
-    out.say("session accepted; sending Akai's setup exactly as the app did");
-    ports.send_batch(&mut out, false, "setup, part 1 (as at +25.772 s)", &akai::SETUP_FIRST)?;
-    let wait = |out: &mut Out, ports: &mut Ports, ms: u64| -> Result<(), String> {
-        let until = Instant::now() + Duration::from_millis(ms);
-        let mut b = [0u8; 256];
-        while Instant::now() < until {
-            ports.poll(out, &mut b)?;
-            thread::sleep(Duration::from_millis(1));
-        }
-        Ok(())
-    };
-    wait(&mut out, &mut ports, 12)?;
-    ports.send_batch(&mut out, false, "setup, part 2 (sent twice, as at +25.784 s)", &[&akai::SETUP_5A[..], &akai::SETUP_5A[..]])?;
-    let gradient = pad_colours(&akai::STARTUP_GRADIENT);
-    ports.send_batch(&mut out, false, "Akai's startup pad colours", &as_slices(&gradient))?;
-    let lights: Vec<[u8; 3]> = akai::STARTUP_BUTTON_LIGHTS.iter().map(|&[n, v]| akai::button_light(n, v)).collect();
-    ports.send_batch(&mut out, true, "Akai's startup button lights", &as_slices(&lights))?;
-    wait(&mut out, &mut ports, 340)?;
-    ports.send_batch(&mut out, false, "setup, part 3 (as at +26.170 s)", &akai::SETUP_LAST)?;
-    wait(&mut out, &mut ports, 960)?;
-    let rest = pad_colours(&akai::RESTING_COLOURS);
-    ports.send_batch(&mut out, false, "your project's pad colours", &as_slices(&rest))?;
-    ports.send(false, &akai::session_ping(akai::SESSION_TOKEN))?;
+    send_setup(&mut out, &mut ports, &akai::RESTING_COLOURS, "your project's pad colours")?;
     out.say(&format!("hit pads, turn Q-Link 1 and the wheel, press a few buttons ({} s); pings go on every {} s",
                      o.seconds, akai::PING_SECONDS));
     out.draw();
@@ -871,27 +936,51 @@ fn setup(o: &Options) -> Result<(), String> {
 
 // ---------------------------------------------------------------- drums
 
-/// Play the drum kit in KIT_PATH from the pads, through ACVA.
-fn drums(o: &Options) -> Result<(), String> {
-    let mut out = Out::new(o, "factory drums", true);
+/// The kits the host tool copied to KIT_PATH.
+fn load_kits() -> Result<Vec<kit::Kit>, String> {
     let size = fs::metadata(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e} (the host tool copies it there)"))?.len();
     if size > MAX_KIT_BYTES {
         return Err(format!("{KIT_PATH} is {size} bytes; at most {MAX_KIT_BYTES} are allowed"));
     }
-    let sounds = kit::parse(&fs::read(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e}"))?)?;
+    kit::parse_kits(&fs::read(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e}"))?)
+}
+
+/// Resting pad colours for kit number `k`: its colour where it has a sound, dark elsewhere.
+fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
     let mut rest = [[0u8; 3]; 16];
-    out.say(&format!("kit: {} sounds", sounds.len()));
-    for s in &sounds {
+    for s in &kit.sounds {
+        if let Some(pad) = mpc_one::pad_index(s.note) {
+            rest[pad as usize] = akai::kit_colour(k);
+        }
+    }
+    rest
+}
+
+/// List a kit's sounds by pad.
+fn show_kit(out: &mut Out, kit: &kit::Kit) {
+    for s in &kit.sounds {
         match mpc_one::pad_index(s.note) {
-            Some(pad) => {
-                rest[pad as usize] = akai::RESTING_COLOURS[pad as usize];
-                out.say(&format!("  pad {:2} (note {:3}): {} ({:.2} s)", pad + 1, s.note, s.name,
-                                 s.frames() as f64 / RATE as f64));
-            }
+            Some(pad) => out.say(&format!("  pad {:2} (note {:3}): {} ({:.2} s)", pad + 1, s.note, s.name,
+                                          s.frames() as f64 / RATE as f64)),
             None => out.say(&format!("  note {}: {} (no pad sends this note)", s.note, s.name)),
         }
     }
-    let mut mixer = kit::Mixer::new(sounds);
+}
+
+/// Play the first kit in KIT_PATH from the pads, through ACVA.
+fn drums(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "factory drums", true);
+    let mut kits = load_kits()?;
+    kits.truncate(1);
+    out.say(&format!("kit: {} ({} sounds)", kits[0].name, kits[0].sounds.len()));
+    show_kit(&mut out, &kits[0]);
+    let mut rest = [[0u8; 3]; 16];
+    for s in &kits[0].sounds {
+        if let Some(pad) = mpc_one::pad_index(s.note) {
+            rest[pad as usize] = akai::RESTING_COLOURS[pad as usize];
+        }
+    }
+    let mut mixer = kit::Mixer::new(kits);
     let mut ports = Ports::open(&mut out, false)?;
     let colours = pad_colours(&rest);
     ports.send_batch(&mut out, false, "pad colours: lit where the kit has a sound, dark elsewhere", &as_slices(&colours))?;
@@ -914,7 +1003,7 @@ fn drums(o: &Options) -> Result<(), String> {
                 match mixer.hit(note, velocity) {
                     Some(k) => {
                         hits += 1;
-                        let name = mixer.sounds[k].name.clone();
+                        let name = mixer.sounds()[k].name.clone();
                         out.note(&format!("    pad {} -> {name}", pad + 1));
                     }
                     None => silent_hits += 1,
@@ -940,6 +1029,324 @@ fn drums(o: &Options) -> Result<(), String> {
     out.say(&format!("drums done: {hits} pad hits played, {silent_hits} on pads without a sound, at most {voices} \
                       sounds at once, peak {:.1} dBFS, {clipped} periods clipped; {summary}",
                      20.0 * peak.max(1e-6).log10()));
+    Ok(())
+}
+
+// ---------------------------------------------------------------- play
+
+/// The quietest level the pad player goes down to; the loudest is --gain-db.
+const LEVEL_MIN_DB: f32 = -40.0;
+/// How far one step of Q-Link 1 moves the level.
+const LEVEL_STEP_DB: f32 = 0.5;
+/// Velocity for pads played from the screen (touch has no pressure).
+const SCREEN_VELOCITY: u8 = 100;
+
+/// Pad hit to sound, in milliseconds.
+#[derive(Clone, Copy, Debug)]
+struct Latency {
+    n: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+    last: f64,
+}
+
+impl Latency {
+    fn new() -> Latency {
+        Latency { n: 0, sum: 0.0, min: f64::INFINITY, max: 0.0, last: f64::NAN }
+    }
+
+    fn add(&mut self, ms: f64) {
+        self.n += 1;
+        self.sum += ms;
+        self.min = self.min.min(ms);
+        self.max = self.max.max(ms);
+        self.last = ms;
+    }
+
+    fn mean(&self) -> f64 {
+        if self.n == 0 { f64::NAN } else { self.sum / self.n as f64 }
+    }
+
+    fn describe(&self) -> String {
+        if self.n == 0 {
+            return "no hits timed".to_string();
+        }
+        format!("{} hits timed, mean {:.2} ms, min {:.2} ms, max {:.2} ms", self.n, self.mean(), self.min, self.max)
+    }
+}
+
+/// The time from reading a hit to its first frame leaving the sound card's
+/// buffer: the wait until the period holding it was written, plus the frames
+/// queued ahead of that period. `delay` is the PCM delay right after the write.
+fn hit_latency_ms(read_to_written: Duration, delay: i32) -> f64 {
+    let ahead = (delay - PERIOD as i32).max(0) as f64;
+    read_to_written.as_secs_f64() * 1e3 + ahead * 1e3 / RATE as f64
+}
+
+/// Level from Q-Link 1. On Private (after Akai's setup) it sends steps; on
+/// Public (no setup) its absolute position, 0-127 (Hello MPC round 2).
+fn qlink_level(level: f32, max: f32, port: &str, bytes: &[u8], delta: i8) -> f32 {
+    let next = if port == "Public" && bytes.len() == 3 {
+        LEVEL_MIN_DB + (max - LEVEL_MIN_DB) * bytes[2] as f32 / 127.0
+    } else {
+        level + LEVEL_STEP_DB * delta as f32
+    };
+    next.clamp(LEVEL_MIN_DB, max)
+}
+
+fn level_value(db: f32, max: f32) -> f32 {
+    ((db - LEVEL_MIN_DB) / (max - LEVEL_MIN_DB)).clamp(0.0, 1.0)
+}
+
+/// What the pad player's screen shows about each kit.
+fn kit_views(kits: &[kit::Kit]) -> Vec<gui::KitView> {
+    kits.iter().enumerate().map(|(k, kit)| {
+        let mut pads = vec![None; 16];
+        for s in &kit.sounds {
+            if let Some(pad) = mpc_one::pad_index(s.note) {
+                pads[pad as usize] = Some(s.name.clone());
+            }
+        }
+        gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k) }
+    }).collect()
+}
+
+/// The pad player: Akai's session and setup, every kit in kits.bin, the GUI.
+fn play(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "pad player", false);
+    let kits = load_kits()?;
+    let fonts = load_fonts(o, &mut out);
+    let fb = match open_screen(o) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            out.say(&format!("screen: not used ({e})"));
+            None
+        }
+    };
+    let size = fb.as_ref().map(|f| f.logical_size()).unwrap_or(gui::SCREEN);
+    let touch = match touchscreen().and_then(|(path, name)| gui::TouchIn::open(&path, size).map(|t| (t, path, name))) {
+        Ok((t, path, name)) => {
+            out.say(&format!("touchscreen: {path} ({name}); read-only, not grabbed"));
+            Some(t)
+        }
+        Err(e) => {
+            out.say(&format!("touchscreen: not used ({e})"));
+            None
+        }
+    };
+    let player = gui::Player::new(fonts, kit_views(&kits), size);
+    let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
+    let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
+    // The screen thread starts before this thread asks for real-time priority,
+    // so it keeps normal priority.
+    let screen = gui::spawn(player, fb, touch, from_audio, to_audio).map_err(|e| format!("screen thread: {e}"))?;
+    out.sink = Some(to_ui.clone());
+    let result = play_session(o, &mut out, kits, &from_ui);
+    if let Err(e) = &result {
+        // On the screen only: main prints the STOP line as for every step.
+        out.show(gui::ToUi::Session("Stopped".into(), Tone::Bad));
+        out.show(gui::ToUi::Show(format!("STOP: {e}")));
+    }
+    let _ = to_ui.send(gui::ToUi::Quit);
+    let report = screen.join().map_err(|_| "the screen thread stopped with an error".to_string())?;
+    out.sink = None;
+    let drawn = match &report.error {
+        Some(e) => format!(" (stopped: {e})"),
+        None => String::new(),
+    };
+    out.say(&format!("screen: {} frames, mean {:.1} ms, slowest {:.1} ms to draw and copy; {} touches; \
+                      {} lines the screen had no room for{drawn}",
+                     report.frames, report.mean_ms, report.max_ms, report.touches, out.dropped));
+    result
+}
+
+fn play_session(o: &Options, out: &mut Out, kits: Vec<kit::Kit>, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
+    let n = kits.len();
+    out.say(&format!("pad player: {n} kits"));
+    for (k, kit) in kits.iter().enumerate() {
+        out.say(&format!("kit {}: {} ({} sounds)", k + 1, kit.name, kit.sounds.len()));
+    }
+    let mut ports = Ports::open(out, true)?;
+    ports.max_shown = 5000;
+    let mut rest = kit_pad_colours(&kits[0], 0);
+    let session = start_session(out, &mut ports)?;
+    if session {
+        send_setup(out, &mut ports, &rest, "kit 1's pad colours")?;
+        out.show(gui::ToUi::Session("Akai session".into(), Tone::Good));
+    } else {
+        out.say("no session within 20 s: playing without Akai's setup (controls on the Public port, Q-Links absolute); \
+                 no setup message was sent");
+        ports.send_batch(out, false, "kit 1's pad colours", &as_slices(&pad_colours(&rest)))?;
+        out.show(gui::ToUi::Session("No session".into(), Tone::Warn));
+    }
+    let mut mixer = kit::Mixer::new(kits);
+    let pcm = open_acva(out)?;
+    let max_db = o.gain_db;
+    let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
+    out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+    out.say(&format!("play for up to {} s: pads or the screen play; the wheel or a tap picks the kit; Q-Link 1 or the \
+                      slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB); STOP ends", o.seconds));
+    ports.quiet = true;
+    let mut play = Playback::start(pcm)?;
+    let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let mut frames = [0i32; PERIOD * 2];
+    let mut buf = [0u8; 256];
+    let total_periods = o.seconds * RATE as u64 / PERIOD as u64;
+    let (mut hits, mut screen_hits, mut silent_hits, mut clipped) = (0u64, 0u64, 0u64, 0u64);
+    let (mut peak, mut window_peak, mut voices) = (0f32, 0f32, 0usize);
+    let mut used = vec![false; n];
+    used[0] = true;
+    let mut lat = Latency::new();
+    let mut pending: Vec<Instant> = Vec::with_capacity(32);
+    let mut delay_error = false;
+    let (mut pings, mut last_ping, mut last_reply, mut lost) = (0u64, Instant::now(), Instant::now(), false);
+    let mut last_timing = Instant::now();
+    let started = Instant::now();
+    let mut stopped_by = "time";
+    let mut i = 0u64;
+    while i < total_periods {
+        let t_read = Instant::now();
+        let mut hit_list: Vec<(usize, u8, bool)> = Vec::new(); // (pad, velocity, from the screen)
+        let mut releases: Vec<usize> = Vec::new();
+        let mut kit_to: Option<usize> = None;
+        let mut stop = false;
+        while let Ok(a) = from_ui.try_recv() {
+            match a {
+                gui::FromUi::Pad { pad, down: true } => hit_list.push((pad, SCREEN_VELOCITY, true)),
+                gui::FromUi::Pad { pad, down: false } => releases.push(pad),
+                gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
+                gui::FromUi::Level(v) => {
+                    level_db = LEVEL_MIN_DB + v.clamp(0.0, 1.0) * (max_db - LEVEL_MIN_DB);
+                    out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                }
+            }
+        }
+        for m in ports.poll(out, &mut buf)? {
+            if let Some((token, status)) = akai::session_reply(&m.bytes) {
+                if token == akai::SESSION_TOKEN && status == akai::SESSION_RUNNING {
+                    last_reply = Instant::now();
+                    if lost {
+                        lost = false;
+                        out.show(gui::ToUi::Session("Akai session".into(), Tone::Good));
+                    }
+                }
+            }
+            match m.event {
+                Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
+                    hit_list.push((pad as usize, velocity, false))
+                }
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => releases.push(pad as usize),
+                Some(ControlEvent::DataWheel { delta }) => {
+                    let from = kit_to.unwrap_or(mixer.kit()) as i64;
+                    kit_to = Some((from + delta as i64).rem_euclid(n as i64) as usize);
+                }
+                Some(ControlEvent::QLinkTurn { knob: 0, delta }) => {
+                    level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
+                    out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                }
+                Some(ControlEvent::Button { note: mpc_one::button::STOP, pressed: true }) => stop = true,
+                _ => {}
+            }
+        }
+        if let Some(k) = kit_to.filter(|&k| k != mixer.kit()) {
+            mixer.select(k);
+            used[k] = true;
+            rest = kit_pad_colours(&mixer.kits[k], k);
+            out.note(&format!("kit {}: {} ({} sounds)", k + 1, mixer.kits[k].name, mixer.kits[k].sounds.len()));
+            ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
+            out.show(gui::ToUi::Kit(k));
+        }
+        for (pad, velocity, from_screen) in hit_list {
+            let note = mpc_one::PAD_NOTES[pad];
+            match mixer.hit(note, velocity) {
+                Some(_) => {
+                    hits += 1;
+                    screen_hits += from_screen as u64;
+                    pending.push(t_read);
+                }
+                None => silent_hits += 1,
+            }
+            ports.send(false, &akai::pad_colour(pad as u8, akai::hit_colour(rest[pad])))?;
+            out.show(gui::ToUi::PadDown { pad, velocity });
+        }
+        for pad in releases {
+            ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
+            out.show(gui::ToUi::PadUp(pad));
+        }
+        if session && last_ping.elapsed() >= Duration::from_secs(akai::PING_SECONDS) {
+            let ping = akai::session_ping(akai::SESSION_TOKEN);
+            ports.send(false, &ping)?;
+            pings += 1;
+            last_ping = Instant::now();
+            out.midi(&format!("+{:.3} s -> Public: {} = session ping", ports.t(), hex(&ping)));
+        }
+        if session && !lost && last_reply.elapsed() > Duration::from_secs(10) {
+            lost = true;
+            out.note("no session reply for 10 s");
+            out.show(gui::ToUi::Session("No reply".into(), Tone::Bad));
+        }
+        voices = voices.max(mixer.playing());
+        let p = mixer.render(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        peak = peak.max(p);
+        window_peak = window_peak.max(p);
+        if p > 1.0 {
+            clipped += 1;
+        }
+        for f in 0..PERIOD {
+            frames[2 * f] = float_to_s32(left[f]);
+            frames[2 * f + 1] = float_to_s32(right[f]);
+        }
+        let xruns = play.xruns;
+        play.write(&frames, i)?;
+        if !pending.is_empty() {
+            let written = Instant::now();
+            match play.pcm.delay() {
+                // An underrun in this write dropped the period: no timing for it.
+                Ok(d) if play.xruns == xruns => {
+                    for t in pending.drain(..) {
+                        lat.add(hit_latency_ms(written - t, d));
+                    }
+                }
+                Ok(_) => pending.clear(),
+                Err(e) => {
+                    pending.clear();
+                    if !delay_error {
+                        delay_error = true;
+                        out.note(&format!("PCM delay: {e} (no timing)"));
+                    }
+                }
+            }
+        }
+        if last_timing.elapsed() >= Duration::from_millis(250) {
+            last_timing = Instant::now();
+            let left_s = o.seconds.saturating_sub(started.elapsed().as_secs());
+            out.show(gui::ToUi::Timing(gui::Timing {
+                hits, periods: play.periods, underruns: play.xruns, voices: mixer.playing(),
+                peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32, min_ms: lat.min as f32,
+                mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left: left_s,
+            }));
+            window_peak = 0.0;
+        }
+        i += 1;
+        if stop {
+            stopped_by = "STOP";
+            break;
+        }
+    }
+    let summary = play.finish(out)?;
+    ports.quiet = false;
+    ports.counts(out);
+    let kits_used: Vec<String> = used.iter().enumerate().filter(|(_, u)| **u).map(|(k, _)| (k + 1).to_string()).collect();
+    out.say(&format!("pad to sound (read to leaving the card's buffer; plus up to one period, {:.1} ms, before a \
+                      message is read): {}", period_time().as_secs_f64() * 1e3, lat.describe()));
+    out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
+                      pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
+                      peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {summary}",
+                     kits_used.join(" "), 20.0 * peak.max(1e-6).log10()));
+    if session {
+        out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
+    }
     Ok(())
 }
 
@@ -1200,27 +1607,39 @@ fn gap_stats(gaps: &[Duration]) -> (f64, f64) {
 
 // ---------------------------------------------------------------- preview (host)
 
-fn preview(o: &Options) -> Result<(), String> {
-    let g = Geometry::new(800, 1280, 3200, 32)?;
-    let (cols, rows) = grid(&g, Rotation::Deg270);
-    let mut view = LogView::new(cols, rows - 2);
-    for l in ["Hello MPC.", "", "pad 1 down, velocity 97", "touch: 1 contact(s): slot 0: x 1024 y 512",
-              "click done: 3445 periods (10.0 s), 0 underruns, 0 late periods"] {
-        view.push(l);
-    }
-    let mut buf = vec![0u8; g.frame_len()];
-    render(&g, Rotation::Deg270, TITLE, "preview | up 42 s", &view, &mut buf)?;
-    let mut ppm = format!("P6\n{} {}\n255\n", g.width, g.height).into_bytes();
-    for y in 0..g.height {
-        for x in 0..g.width {
-            let p = &buf[y * g.stride + x * 4..y * g.stride + x * 4 + 3];
-            ppm.extend_from_slice(&[p[2], p[1], p[0]]);
-        }
-    }
-    let path = o.preview.as_ref().unwrap();
-    OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&ppm))
+fn write_png(path: &Path, canvas: &SoftCanvas) -> Result<(), String> {
+    let png = mpfree_ui::png::encode_rgb(canvas.width() as u32, canvas.height() as u32, &canvas.to_rgb());
+    // New files only: never overwrite.
+    OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))
         .map_err(|e| format!("{}: {e}", path.display()))?;
     println!("preview written: {}", path.display());
+    Ok(())
+}
+
+/// Sample screens as PNG files in a new or empty folder: the console, and the
+/// pad player's two pages. No devices are opened.
+fn preview(o: &Options) -> Result<(), String> {
+    let dir = o.preview.as_ref().unwrap();
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let fonts = || Fonts::with_files(o.font.as_deref(), o.bold_font.as_deref(), o.mono_font.as_deref());
+    let mut c = gui::Console::new(fonts()?, "touch", None);
+    for l in ["===== mpfree-hello touch =====", "touchscreen: /dev/input/event0 (ili2117); read-only, not grabbed",
+              "touch the screen now, with one finger and then two (10 s)", "touch: 1 contact(s): slot 0: x 1024 y 512",
+              "touch: 2 contact(s): slot 0: x 1020 y 515, slot 1: x 300 y 1700", "touch: no contact",
+              "touch done: 412 events, 96 frames, 3 lines shown"] {
+        c.push(l);
+    }
+    c.set_status("up 42 s");
+    c.draw()?;
+    write_png(&dir.join("console.png"), c.canvas())?;
+    let mut p = gui::sample_player(fonts()?);
+    let (w, h) = p.ui.size();
+    let mut canvas = SoftCanvas::new(w, h);
+    p.ui.paint(&mut canvas);
+    write_png(&dir.join("play.png"), &canvas)?;
+    p.show_page(1);
+    p.ui.paint(&mut canvas);
+    write_png(&dir.join("debug.png"), &canvas)?;
     Ok(())
 }
 
@@ -1238,6 +1657,7 @@ fn main() {
             "lights" => lights(&o),
             "setup" => setup(&o),
             "drums" => drums(&o),
+            "play" => play(&o),
             "click" => click(&o),
             _ => unreachable!(),
         }

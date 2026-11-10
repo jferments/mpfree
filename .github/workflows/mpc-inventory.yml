@@ -849,11 +849,13 @@ jobs:
           if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
             echo "mpfree-hello must be statically linked"; exit 1
           fi
-          # Its unit tests as 32-bit ARM (the parameter blocks and event layout), under qemu.
+          # Its unit tests and the GUI's as 32-bit ARM (the parameter blocks, event layout, drawing), under qemu.
           cargo test --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-hello
-          # The host-only preview under qemu: draws the card into a new file, touches no device.
-          timeout 60 qemu-arm "$f" --preview "$RUNNER_TEMP/hello.ppm"
-          head -c 15 "$RUNNER_TEMP/hello.ppm" | grep -q '^P6'
+            --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
+          # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
+          timeout 120 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
+          for n in console play debug; do
+            head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
+          done
           echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."
 
