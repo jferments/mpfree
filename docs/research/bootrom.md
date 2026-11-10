@@ -769,3 +769,33 @@ The low bit marks Thumb state. Although the pairs match the expected `struct { c
 Use the separately distributed `MPFreeFastbootCallbacksAudit.py` inside Ghidra with the raw p3 payload open, ideally from a **second import mapped at `0x00100000` and auto-analyzed** (existing base-zero program remains unchanged). The script validates the table, scans for adjacent entries, records existing callback assembly/call edges/decompilation when available and outputs `~/mpfree-work/fastboot-callback-audit-*.txt`. It is **read-only to Ghidra**, does not contact MPC, and redacts any embedded vendor unlock token. Python syntax validated; not tested in the owner's Ghidra.
 
 Prioritize checking whether `boot` calls `bootm` on the download buffer or invokes vendor logic; whether `continue` resumes Akai's boot sequence; whether `download:` enforces size/bounds; and whether the host USB response-completion callback is needed before the transition. No software MaskROM entry is implied by any of these Fastboot findings.
+
+## 16. Fastboot callback audit identifies deferred USB completion (owner, 2026-11-10)
+
+Private source: fastboot-callback-audit-20261110T144132.txt. All eight previously recorded dispatch pointers still match, and the next table pair at raw +0x2F2F0 begins with a null string pointer. The Ghidra p3 project remained mapped at zero, leaving the callbacks undefined in the Ghidra database; the report's 64-byte machine-code windows were decoded independently as Thumb instructions using LLVM. A lack of Ghidra functions at these locations is not a lack of code.
+
+### Proven immediate boot and continue behavior
+
+The command handlers have matching structures: each loads a global fastboot state pointer at linked address 0x0014D688, then dereferences its field +0x50 (USB request) and writes a Thumb callback pointer to the request at offset +0x10, before tail-branching to the shared response writer at 0x00122734.
+
+| Command | Immediate handler (linked VA) | USB request->complete Thumb pointer | Actual completion instruction VA | Response pointer |
+| --- | --- | --- | --- | --- |
+| boot | 0x00122964 | 0x001226B5 | **0x001226B4** | 0x00132BA6 |
+| continue | 0x00122948 | 0x001226B1 | **0x001226B0** | 0x00132BA6 |
+
+The two immediate handlers **do not themselves perform a kernel jump**. They schedule different post-USB-response callbacks and then invoke a common response writer. The contents of the response string at 0x00132BA6 still require direct reading; the expected protocol response is OKAY, but it is not yet independently verified. What the completion callbacks do, including whether the boot callback invokes bootm or checks the downloaded image, remains unknown until the instructions at 0x001226B0 and 0x001226B4 are examined.
+
+The pattern matches public U-Boot f_fastboot.c, which schedules do_bootm_on_complete for boot and do_exit_on_complete for continue after a successful protocol acknowledgment, but that upstream implementation does not prove the actual InMusic callback bodies: https://qemu.googlesource.com/u-boot/+/b6c50e5831f6ce3800d4b3cf3c7aa35dde8c48d9/drivers/usb/gadget/f_fastboot.c
+
+### OEM and storage behavior
+
+The OEM handler at linked VA 0x00122854 begins by reading a command buffer pointer, advancing four bytes past the OEM prefix, and preparing a six-byte comparison with a string pointed to by a literal. The compared string has **not been verified**; do not infer that it is format, unlock, or any other subcommand. The rest of the branch tree is absent from the submitted 64-byte window. Flash, erase, and download have longer implementations; their authorization, bounds, and persistent effects remain unproven. Do not send state-changing Fastboot commands for exploratory analysis.
+
+### Next exact targets
+
+1. Import a **separate** raw p3 payload into Ghidra at initialized block base 0x00100000 with ARM little-endian v7 and run Auto Analysis. The old base-zero import was never fixed in the last round.
+2. Decode 0x001226B0, 0x001226B4 and 0x00122734 and follow immediate callees. Confirm the post-ack boot and continue effects, response contents and any validation or persistent-state changes.
+3. Trace 0x00122980 download buffer location, maximum transfer size and image format. Only after that should a RAM-only boot proposal be treated as a testable safe installer path.
+4. Keep investigating the OEM and storage branches **offline**, and do not publish vendor token bytes.
+
+No changes to firmware/device or other Git files are authorized by this section.
