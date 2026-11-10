@@ -225,3 +225,41 @@ Next technical checkpoints, in priority order:
 - Legacy Rockchip image `header0_info`, `init_boot_size` rationale: https://sources.debian.org/src/u-boot/2021.01%2Bdfsg-5/tools/rkcommon.c/
 - Ghidra ARM-state disassembly command: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/Base/src/main/java/ghidra/app/cmd/disassemble/ArmDisassembleCommand.java
 - U-Boot source code and architecture details also discussed in [MaskROM USB research](../hardware/maskrom-usb.md).
+
+## 8. Follow-up: first Ghidra audit of p1 SPL (owner, 2026-11-10)
+
+The owner imported `p1-initial-stage-code.bin` as `ARM:LE:32:v7` at initialized memory block `0xFF704004` and ran the corrected `MPFreeP1GhidraAnalyze` helper. The private report is `p1-ghidra-analysis-20261110T131114.txt`. **The report did not involve MPC hardware and did not change firmware bytes**, but the analysis script created some Ghidra database disassembly/function metadata.
+
+### Verified first-stage identity and control-flow entry
+
+- Identifiable build string: `U-Boot SPL 2016.05-inmusic-20191010 (Dec 17 2019 - 16:45:18)`.
+- The ARM reset vector at `0xFF704020` is `0xEA00000F` and branches to `0xFF704064`; that stub then branches to `0xFF7040B4`.
+- Seven exception vector pointer words at `0xFF704040..0xFF704058` contain `0xFF704060`.
+- The analysis recognized 6,317 instructions, a number of SPL/MMC functions and source-level diagnostic strings. The initial decompilation is **not** a verified complete boot flow; initial stubs and nonreturning functions can confuse Ghidra's function reconstruction.
+
+### Newly established literal references
+
+| Object | SRAM location | Ghidra read reference | Confidence |
+| --- | --- | --- | --- |
+| RK3288 reboot-mode register literal `0xFF730094` | `0xFF705290` (p1 `+0x1A90`) | `0xFF70527A` | Measured reference |
+| Fastboot magic `0x5242C309` | `0xFF705294` (p1 `+0x1A94`) | `0xFF70527C` | Measured reference |
+
+The early SPL therefore contains **code referencing both literals**, not just unused string data. This does not yet prove the register-store instruction, handler invocation path, or any BootROM download behavior. Trace the instructions around `0xFF70527A`/`0xFF70527C` before assigning semantics.
+
+### New command-descriptor lead
+
+- SPL string `reset_bootloader`: `0xFF709A67`, with a raw pointer at `0xFF709D00`.
+- SPL help text `reset to fastboot mode`: `0xFF709A78`, pointer at `0xFF709D10`.
+- If the standard 32-bit U-Boot command table applies, the adjacent pointer at **`0xFF709D0C`** should be the handler. **Its actual value has not yet been read.** The descriptor's presence alone does not establish that an interactive command parser is reachable in SPL.
+
+Additional SPL text references include `Trying to boot from`, `SPL: failed to boot from all boot devices` and `spl: mmc: wrong boot mode`, associated with the vicinity of `0xFF705350` and `0xFF7054A4`.
+
+### Negative evidence for software MaskROM
+
+The full 32,764-byte extracted SPL contains **zero exact 32-bit little-endian matches** for `BOOT_BROM_DOWNLOAD=0xEF08A53C`, `ROCKUSB_LOADER=0x5242C301`, or the alternate early BootROM tag `0x5242C302`, and zero aligned halfword hits for `0xA53C`/`0xEF08`. The Fastboot request `0x5242C309` was found once.
+
+A software USB MaskROM path requires cooperation from early stage code. Mainline U-Boot's `bootrom.c` explains that the silicon ROM does **not** directly check the warm-reboot mode register: early loader code must check `BOOT_BROM_DOWNLOAD` and return to the ROM with the appropriate status. This behavior has **not** been shown in this 2019 InMusic SPL. See https://coral.googlesource.com/u-boot-mtk/+/refs/heads/master/arch/arm/mach-rockchip/bootrom.c .
+
+**Next offline pass:** read the command descriptor's fields and handler pointer at `0xFF709D00..`, extract assembly around `0xFF70527A` and its function, decompile available functions without assuming a correct noreturn graph, and determine whether early startup checks the reboot-mode register. Separate report outside Git.
+
+**No device-side register writes, reboots or eMMC modifications are authorized by this follow-up.**
