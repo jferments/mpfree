@@ -214,6 +214,13 @@ class KexecStickTests(unittest.TestCase):
                       self.dfs(root_img, "stat /etc/systemd/system-generators/acva-emmc-content-generator"))
         self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-sshd.service"',
                       self.dfs(root_img, "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service"))
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-logs.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"))
+        self.assertIn("File not found",
+                      self.dfs(root_img, "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-logs.service"))
+        log_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-logs.service")
+        for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target"):
+            self.assertIn(line + "\n", log_unit)
         self.assertIn("What=tmpfs", self.dfs(root_img, "cat /etc/systemd/system/data.mount"))
         self.assertIn("kernel.kexec_load_disabled = 1", self.dfs(root_img, "cat /etc/sysctl.d/90-mpfree-test.conf"))
         for prog in ("/usr/sbin/az01-update", "/usr/bin/dfu-util", "/usr/bin/fw_setenv", "/usr/bin/az01-launch-MPC"):

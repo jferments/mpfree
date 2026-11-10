@@ -1,6 +1,6 @@
 # Test-booting another firmware version by kexec (MPC One)
 
-**Status (2026-11-10):** the tools that prepare the test are written and tested on fakes. The owner has run the read-only steps. **The boot step is not written yet, and nothing has been booted.**
+**Status (2026-11-10):** all the tools are written and tested against a fake MPC. The owner has run the read-only steps and written the stick. **Nothing has been booted yet:** the boot step waits for the owner's go.
 
 **Goal:** boot Akai's 3.10.0 once on the reference unit without installing it, in a way where nothing in the MPC's own storage can change. 3.6.0 starts kexec from its running system, and 3.10.0's root filesystem comes from a USB stick.
 
@@ -43,11 +43,35 @@ Some points here are inferences, not yet checked on the unit:
 | 2 | `bash tools/mpc-one/collect-over-ssh.sh --kexec-preflight` | Read-only on the MPC. It copies the running tree to `~/mpfree-work/kexec-preflight-*/live.dtb` |
 | 3 | `python3 tools/mpc-one/offline-kexec-stick.py` | Workstation only, no devices. It changes a copy of the rootfs and writes a new folder `~/mpfree-work/kexec-stick-<UTC>-*/`: `stick.img` (GPT, with the rootfs as partition 1 and a 32 MiB log partition as partition 2), `zImage`, `kexec.dtb`, `cmdline.txt` and `known_hosts` |
 | 4 | `python3 tools/mpc-one/write-test-stick.py` | **Erases one USB stick.** It writes only to the one removable whole disk on USB of 256 GiB or less, with nothing mounted, no swap and no holders, and only after you type `WRITE` |
-| 5 | The boot step (not written yet) | It copies `zImage` and `kexec.dtb` to RAM on the MPC, loads them with `kexec -l`, and reboots into 3.10.0 only after a typed confirmation |
+| 5 | `MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot` | **State-changing, RAM only on the MPC.** With the stick in the MPC's USB-A port, it runs [`host_kexec_boot.py`](../../tools/mpc-one/host_kexec_boot.py): checks on the workstation and on 3.6.0 (read-only), copies `zImage` and `kexec.dtb` to `/run`, runs `kexec --load`, and jumps (`systemctl kexec`) only after you type `BOOT 3.10`. Then it checks 3.10.0 over SSH. Details below |
+| 6 | Power-cycle with the stick out, then `collect-over-ssh.sh --boot-map` | The MPC is back on 3.6.0. The boot map compares the boot-partition hashes and write counters with the run before the test |
+| 7 | `python3 tools/mpc-one/read-stick-logs.py` | Read-only, with the stick in the workstation. It copies the log partition once with `sudo cat`, replays its journal on the copy, and writes every log of every test boot to `~/mpfree-work/stick-logs-*/report.txt`, with MACs and USB serials replaced |
 
 Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](SURVEY_TOOLS.md#one-folder-and-one-zip-per-test-round)).
 
-When 3.10.0 doesn't come up on the network, power-cycle the MPC and read the stick's log partition on the workstation. It holds `dmesg`, the journal, failed units and the network state, written every 10 seconds.
+## The boot step
+
+`host_kexec_boot.py` goes in this order and stops at the first problem:
+
+1. **Workstation, read-only.** The newest `kexec-stick-*` folder matches its `SHA256SUMS`, its `kexec.dtb` hides both controllers (the same check the builder runs), and `cmdline.txt` has one `root=PARTUUID=` plus `ro rootwait=60 panic=10 sysctl.kernel.kexec_load_disabled=1`.
+2. **3.6.0, read-only.** The running release is the one the build was made for, no kexec kernel is loaded, kexec is allowed, lockdown is off, this build's stick is on USB (3.6.0 may have mounted it; it unmounts it when it shuts down), `/run` has 64 MiB free, and no unit or shutdown hook other than systemd's own reacts to kexec. It records the eMMC write counters.
+3. **RAM.** It copies `zImage` and `kexec.dtb` to `/run/mpfree-kexec` and compares their hashes. Undo: deleted on any later stop; `/run` is RAM.
+4. **Kernel memory.** `kexec --load`, then `kexec_loaded` must read 1. Undo: `kexec --unload`.
+5. **Your go.** You type `BOOT 3.10`. Anything else, or Ctrl-C, unloads the kernel, deletes the files and stops. 3.6.0 keeps running.
+6. **The jump.** `systemctl kexec`: 3.6.0 shuts down cleanly and jumps to 3.10.0. If the jump itself fails, systemd reboots normally into 3.6.0.
+7. **3.10.0, read-only.** It waits up to 300 s for SSH and accepts only the test build's own host key (`known_hosts`, alias `mpfree-kexec-test`). Then it checks: the release, that no `mmcblk` device exists and no driver is bound to either controller, that kexec is off, that `/` is the stick's partition 1 mounted read-only, and that `/data` is tmpfs. It also lists failed units, the masked units' states and every `mpfree-test: blocked` line.
+
+The possible endings, and what to do after each:
+
+| What it prints | Meaning | Next |
+| --- | --- | --- |
+| `RESULT: the test build is running from the stick, and it cannot see the eMMC or SD card.` | The test passed | Power-cycle with the stick out, then steps 6 and 7 |
+| A `PROBLEM` line from the 3.10.0 checks | 3.10.0 is running, but something is not as designed | The same: power-cycle with the stick out, then steps 6 and 7 |
+| `the MPC came back to 3.6` | The jump failed and systemd rebooted into 3.6.0 | Step 6, then step 7 |
+| Nothing answered in time | 3.10.0 hung, or has no network | Power-cycle with the stick out, then steps 6 and 7. The stick's log partition shows how far it got |
+| A stop before you type | Nothing was loaded, or the load was undone | Nothing to undo |
+
+The stick's log service starts early in 3.10.0's boot (in `sysinit.target`) and keeps running through a switch to emergency mode. Every 10 seconds it saves `dmesg`, the journal, failed units, all units, the network state and the command line to the stick's partition 2, which is mounted `sync`. If the kernel cannot mount the root partition, it panics and reboots after 10 seconds (`panic=10`) and U-Boot boots 3.6.0 from the eMMC.
 
 ## Keep it private
 
