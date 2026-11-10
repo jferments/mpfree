@@ -727,3 +727,37 @@ jobs:
           PY
           echo "No executables uploaded or run on MPC by CI."
 
+      - name: Build and check the static startup screen program (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-splash
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-splash
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-splash must be statically linked"; exit 1
+          fi
+          # Run it under qemu against a fake framebuffer and sysfs folder (no device).
+          sudo apt-get install -y --no-install-recommends qemu-user
+          t=$(mktemp -d)
+          mkdir "$t/sys"
+          printf 'U:800x1280p-0\n' > "$t/sys/modes"
+          echo 3200 > "$t/sys/stride"
+          echo 32 > "$t/sys/bits_per_pixel"
+          : > "$t/sys/pan"
+          truncate -s $((800 * 3840 * 4)) "$t/fb"
+          timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 2
+          test "$(cat "$t/sys/pan")" = "0,0"
+          test "$(stat -c %s "$t/fb")" = $((800 * 3840 * 4))
+          python3 - "$t/fb" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          frame = 800 * 1280 * 4
+          assert any(data[:frame]), "nothing was drawn"
+          assert not any(data[frame:]), "wrote past the visible frame"
+          print("PASS: static ARMv7 startup screen draws one frame's bytes on a fake framebuffer under qemu")
+          PY
