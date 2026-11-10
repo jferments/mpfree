@@ -29,7 +29,9 @@
 
 #![deny(unsafe_code)] // the few C calls live in sys.rs, the only module allowed unsafe code
 
+mod akai;
 mod alsa;
+mod kit;
 mod sys;
 
 use mpfree_controller::midi::{Message, Parser};
@@ -53,6 +55,9 @@ const PERIOD: usize = 128;
 const PERIODS: u32 = 3;
 const EPIPE: i32 = 32;
 const EAGAIN: i32 = 11;
+/// The drum kit the host tool copies next to the program (see kit.rs).
+const KIT_PATH: &str = "/run/mpfree-hello/kit.bin";
+const MAX_KIT_BYTES: u64 = 48 << 20;
 
 struct Options {
     command: String,
@@ -78,7 +83,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "inventory" | "screen" | "touch" | "pads" | "click" if o.command.is_empty() => o.command = arg.clone(),
+            "inventory" | "screen" | "touch" | "pads" | "lights" | "setup" | "drums" | "click" if o.command.is_empty() => {
+                o.command = arg.clone()
+            }
             "--seconds" => {
                 o.seconds = value()?.parse().map_err(|_| "--seconds needs a whole number".to_string())?;
                 if !(1..=MAX_SECONDS).contains(&o.seconds) {
@@ -99,7 +106,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         }
     }
     if o.preview.is_none() && o.command.is_empty() {
-        return Err("usage: mpfree-hello inventory|screen|touch|pads|click [options]".to_string());
+        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|click [options]".to_string());
     }
     if o.keepalive && o.command != "pads" {
         return Err("--keepalive goes with pads".to_string());
@@ -151,13 +158,19 @@ impl Out {
     }
 
     fn say(&mut self, line: &str) {
+        self.note(line);
+        if self.last_draw.elapsed() >= Duration::from_millis(100) {
+            self.draw();
+        }
+    }
+
+    /// Like `say`, but never redraws the screen (a redraw takes longer than an
+    /// audio period, so the drum loop only uses this).
+    fn note(&mut self, line: &str) {
         println!("{line}");
         let _ = io::stdout().flush();
         self.file_line(line);
         self.view.push(line);
-        if self.last_draw.elapsed() >= Duration::from_millis(100) {
-            self.draw();
-        }
     }
 
     fn draw(&mut self) {
@@ -529,7 +542,25 @@ fn message_bytes(msg: &Message<'_>) -> (Vec<u8>, bool) {
 
 /// One line for one message: time, port, the bytes in hex, and what it means if known.
 fn message_line(t: f64, port: &str, bytes: &[u8], truncated: bool, event: Option<&ControlEvent>) -> String {
+    if akai::is_identity_reply(bytes) {
+        let shown = &bytes[..bytes.len().min(akai::IDENTITY_SHOWN)];
+        return format!("+{t:.3} s {port}: {} ... = identity reply (the rest is the serial number, not shown)", hex(shown));
+    }
+    if let Some((token, status)) = akai::session_reply(bytes) {
+        let what = match status {
+            akai::SESSION_HELD => "held by another token",
+            akai::SESSION_RUNNING => "running",
+            akai::SESSION_ACCEPTED => "accepted",
+            _ => "unknown status",
+        };
+        return format!("+{t:.3} s {port}: {} = session reply, token {}, {what}", hex(bytes), hex(&token));
+    }
     let meaning = match event {
+        // Without Akai's app the controller sends the Q-Links on Public as
+        // absolute values 0-127, not steps (Hello MPC round 2, 2026-11-10).
+        Some(ControlEvent::QLinkTurn { knob, .. }) if port == "Public" && bytes.len() == 3 => {
+            format!("Q-Link {} at {} (absolute)", knob + 1, bytes[2])
+        }
         Some(e) => describe_event(e),
         None => "not recognised".to_string(),
     };
@@ -545,12 +576,9 @@ struct PortIn {
     messages: u64,
 }
 
-fn pads(o: &Options) -> Result<(), String> {
-    let heading = if o.keepalive { "pads, with keep-alive" } else { "pads (listen only)" };
-    let mut out = Out::new(o, heading, true);
-    let card = midi_card()?;
-    // Listen on all three cables: Akai's app gets every control on Private, but
-    // without the app the controller might use another one.
+/// All three of the controller's inputs. Akai's app gets every control on
+/// Private; without the app they arrive on Public (Hello MPC round 2).
+fn open_inputs(card: u32, out: &mut Out) -> Result<Vec<PortIn>, String> {
     let mut inputs = Vec::new();
     for (sub, word) in MIDI_PORTS {
         let (file, info) = alsa::open_rawmidi(card, sub, alsa::Direction::Input)
@@ -561,6 +589,365 @@ fn pads(o: &Options) -> Result<(), String> {
         }
         inputs.push(PortIn { name: word, file, parser: Parser::default(), bytes: 0, messages: 0 });
     }
+    Ok(inputs)
+}
+
+fn open_output(card: u32, sub: u32, word: &str, out: &mut Out) -> Result<File, String> {
+    let (file, info) = alsa::open_rawmidi(card, sub, alsa::Direction::Output)
+        .map_err(|e| format!("opening MIDI output {sub} ({word}): {e}"))?;
+    out.say(&format!("sending to card {card} subdevice {} \"{}\"", info.subdevice, info.subname));
+    if info.subdevice != sub || info.stream != alsa::RAWMIDI_STREAM_OUTPUT || !info.subname.contains(word) {
+        return Err(format!("that is not the controller's {word} port; stopping before sending anything"));
+    }
+    Ok(file)
+}
+
+/// Write one whole message to a non-blocking MIDI output, waiting up to half a
+/// second for room in the kernel's buffer.
+fn send_all(file: &mut File, msg: &[u8]) -> io::Result<()> {
+    let mut done = 0;
+    let give_up = Instant::now() + Duration::from_millis(500);
+    while done < msg.len() {
+        match file.write(&msg[done..]) {
+            Ok(0) => return Err(io::Error::new(ErrorKind::WriteZero, "the MIDI port took nothing")),
+            Ok(n) => done += n,
+            Err(e) if (e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN)) && Instant::now() < give_up => {
+                thread::sleep(Duration::from_millis(1))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// One message that came in: which input, its bytes, and what it means if known.
+struct Incoming {
+    port: usize,
+    bytes: Vec<u8>,
+    event: Option<ControlEvent>,
+}
+
+/// The controller's inputs and outputs for the steps that send something.
+struct Ports {
+    inputs: Vec<PortIn>,
+    public: File,
+    private: Option<File>,
+    start: Instant,
+    sent: u64,
+    shown: u64,
+    /// Print without redrawing the screen (the drum loop).
+    quiet: bool,
+}
+
+impl Ports {
+    fn open(out: &mut Out, with_private: bool) -> Result<Ports, String> {
+        let card = midi_card()?;
+        let inputs = open_inputs(card, out)?;
+        let public = open_output(card, mpc_one::Port::Public as u32, "Public", out)?;
+        let private = if with_private {
+            Some(open_output(card, mpc_one::Port::Private as u32, "Private", out)?)
+        } else {
+            None
+        };
+        Ok(Ports { inputs, public, private, start: Instant::now(), sent: 0, shown: 0, quiet: false })
+    }
+
+    fn t(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
+    }
+
+    fn line(&self, out: &mut Out, text: &str) {
+        if self.quiet {
+            out.note(text);
+        } else {
+            out.say(text);
+        }
+    }
+
+    fn send(&mut self, private: bool, msg: &[u8]) -> Result<(), String> {
+        let (file, name) = if private {
+            (self.private.as_mut().ok_or("the Private output is not open")?, "Private")
+        } else {
+            (&mut self.public, "Public")
+        };
+        send_all(file, msg).map_err(|e| format!("sending {} on {name}: {e}", hex(msg)))?;
+        self.sent += 1;
+        Ok(())
+    }
+
+    /// Send a list of messages and show them all, six to a line.
+    fn send_batch(&mut self, out: &mut Out, private: bool, what: &str, msgs: &[&[u8]]) -> Result<(), String> {
+        let port = if private { "Private" } else { "Public" };
+        self.line(out, &format!("+{:.3} s sending {} messages on {port}: {what}", self.t(), msgs.len()));
+        for chunk in msgs.chunks(6) {
+            for m in chunk {
+                self.send(private, m)?;
+            }
+            let text = chunk.iter().map(|m| hex(m)).collect::<Vec<_>>().join(" | ");
+            self.line(out, &format!("    {text}"));
+        }
+        Ok(())
+    }
+
+    /// Read whatever has arrived on the three inputs, show each message (pad
+    /// pressure only counted), and return them.
+    fn poll(&mut self, out: &mut Out, buf: &mut [u8]) -> Result<Vec<Incoming>, String> {
+        let mut got = Vec::new();
+        let t = self.t();
+        for i in 0..self.inputs.len() {
+            let n = match self.inputs[i].file.read(buf) {
+                Ok(n) => n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN) => 0,
+                Err(e) => return Err(format!("reading MIDI ({}): {e}", self.inputs[i].name)),
+            };
+            self.inputs[i].bytes += n as u64;
+            let name = self.inputs[i].name;
+            for &b in &buf[..n] {
+                let Some(msg) = self.inputs[i].parser.feed(b) else { continue };
+                let event = mpc_one::decode(&msg);
+                let (bytes, truncated) = message_bytes(&msg);
+                self.inputs[i].messages += 1;
+                if !matches!(event, Some(ControlEvent::PadPressure { .. })) {
+                    self.shown += 1;
+                    if self.shown <= MAX_SHOWN {
+                        let text = message_line(t, name, &bytes, truncated, event.as_ref());
+                        self.line(out, &text);
+                    } else if self.shown == MAX_SHOWN + 1 {
+                        self.line(out, &format!("(more than {MAX_SHOWN} messages: only counting from here)"));
+                    }
+                }
+                got.push(Incoming { port: i, bytes, event });
+            }
+        }
+        Ok(got)
+    }
+
+    /// Light a pad brighter while it is held, as Akai's app does.
+    fn light_hit(&mut self, event: &Option<ControlEvent>, rest: &[[u8; 3]; 16]) -> Result<(), String> {
+        match *event {
+            Some(ControlEvent::PadDown { pad, .. }) if pad < 16 => {
+                self.send(false, &akai::pad_colour(pad, akai::hit_colour(rest[pad as usize])))
+            }
+            Some(ControlEvent::PadUp { pad }) if pad < 16 => self.send(false, &akai::pad_colour(pad, rest[pad as usize])),
+            _ => Ok(()),
+        }
+    }
+
+    fn counts(&self, out: &mut Out) {
+        for p in &self.inputs {
+            out.say(&format!("{}: {} bytes, {} messages", p.name, p.bytes, p.messages));
+        }
+    }
+}
+
+fn pad_colours(colours: &[[u8; 3]; 16]) -> Vec<[u8; 12]> {
+    (0..16u8).map(|pad| akai::pad_colour(pad, colours[pad as usize])).collect()
+}
+
+fn as_slices<const N: usize>(msgs: &[[u8; N]]) -> Vec<&[u8]> {
+    msgs.iter().map(|m| &m[..]).collect()
+}
+
+/// Listen for `seconds`, lighting pads as they are hit and, with a session,
+/// pinging every few seconds. Returns pad hits per input port.
+fn listen_and_light(out: &mut Out, ports: &mut Ports, seconds: u64, rest: &[[u8; 3]; 16],
+                    ping: bool) -> Result<[u64; 3], String> {
+    let mut buf = [0u8; 256];
+    let mut hits = [0u64; 3];
+    let mut last_ping = Instant::now();
+    let end = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < end {
+        if ping && last_ping.elapsed() >= Duration::from_secs(akai::PING_SECONDS) {
+            ports.send(false, &akai::session_ping(akai::SESSION_TOKEN))?;
+            last_ping = Instant::now();
+        }
+        let got = ports.poll(out, &mut buf)?;
+        for m in &got {
+            if matches!(m.event, Some(ControlEvent::PadDown { .. })) {
+                hits[m.port] += 1;
+            }
+            ports.light_hit(&m.event, rest)?;
+        }
+        if got.is_empty() {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    Ok(hits)
+}
+
+// ---------------------------------------------------------------- lights
+
+/// Pad colours and button lights, with no session: Akai's startup gradient and
+/// button lights, then the resting colours of the owner's project, then 15 s
+/// where each pad lights brighter while it is held.
+fn lights(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "lights (no session)", true);
+    let mut ports = Ports::open(&mut out, true)?;
+    out.say("every message sent is one Akai's app sent at startup (Hello MPC round 2), or a pad colour");
+    out.say("made by the app's own rule for a hit pad");
+    let gradient = pad_colours(&akai::STARTUP_GRADIENT);
+    ports.send_batch(&mut out, false, "Akai's startup pad colours, orange (pad 1) to teal (pad 16)", &as_slices(&gradient))?;
+    let lights: Vec<[u8; 3]> = akai::STARTUP_BUTTON_LIGHTS.iter().map(|&[n, v]| akai::button_light(n, v)).collect();
+    ports.send_batch(&mut out, true, "Akai's startup button lights", &as_slices(&lights))?;
+    out.say("holding these for 4 s");
+    listen_and_light(&mut out, &mut ports, 4, &akai::STARTUP_GRADIENT, false)?;
+    let rest = pad_colours(&akai::RESTING_COLOURS);
+    ports.send_batch(&mut out, false, "your project's pad colours, as Akai's app left them", &as_slices(&rest))?;
+    out.say(&format!("hit pads: each should light brighter while held ({} s)", o.seconds));
+    out.draw();
+    let hits = listen_and_light(&mut out, &mut ports, o.seconds, &akai::RESTING_COLOURS, false)?;
+    ports.counts(&mut out);
+    out.say(&format!("lights done: {} messages sent, pad hits on Public {}, Private {}, MIDI Port {}",
+                     ports.sent, hits[0], hits[1], hits[2]));
+    Ok(())
+}
+
+// ---------------------------------------------------------------- setup
+
+/// Akai's startup, replayed: identity request and session ping until the
+/// controller accepts the token, then the setup messages, lights, and a listening
+/// window with pings every 4 s. Stops before any setup message if the session
+/// is not accepted within 20 s.
+fn setup(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "Akai's setup (session)", true);
+    let mut ports = Ports::open(&mut out, true)?;
+    let mut buf = [0u8; 256];
+    out.say(&format!("asking for a session with token {}: identity request, then a ping, every {} s, for up to 20 s",
+                     hex(&akai::SESSION_TOKEN), akai::PING_SECONDS));
+    let give_up = Instant::now() + Duration::from_secs(20);
+    let mut next_ping = Instant::now();
+    let mut accepted = None;
+    while accepted.is_none() && Instant::now() < give_up {
+        if Instant::now() >= next_ping {
+            ports.send_batch(&mut out, false, "identity request and session ping",
+                             &[&akai::IDENTITY_REQUEST[..], &akai::session_ping(akai::SESSION_TOKEN)[..]])?;
+            next_ping = Instant::now() + Duration::from_secs(akai::PING_SECONDS);
+        }
+        for m in ports.poll(&mut out, &mut buf)? {
+            if let Some((token, status)) = akai::session_reply(&m.bytes) {
+                if token == akai::SESSION_TOKEN && (status == akai::SESSION_ACCEPTED || status == akai::SESSION_RUNNING) {
+                    accepted = Some(status);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    if accepted.is_none() {
+        return Err("the controller did not accept the session within 20 s; no setup message was sent".to_string());
+    }
+    out.say("session accepted; sending Akai's setup exactly as the app did");
+    ports.send_batch(&mut out, false, "setup, part 1 (as at +25.772 s)", &akai::SETUP_FIRST)?;
+    let wait = |out: &mut Out, ports: &mut Ports, ms: u64| -> Result<(), String> {
+        let until = Instant::now() + Duration::from_millis(ms);
+        let mut b = [0u8; 256];
+        while Instant::now() < until {
+            ports.poll(out, &mut b)?;
+            thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    };
+    wait(&mut out, &mut ports, 12)?;
+    ports.send_batch(&mut out, false, "setup, part 2 (sent twice, as at +25.784 s)", &[&akai::SETUP_5A[..], &akai::SETUP_5A[..]])?;
+    let gradient = pad_colours(&akai::STARTUP_GRADIENT);
+    ports.send_batch(&mut out, false, "Akai's startup pad colours", &as_slices(&gradient))?;
+    let lights: Vec<[u8; 3]> = akai::STARTUP_BUTTON_LIGHTS.iter().map(|&[n, v]| akai::button_light(n, v)).collect();
+    ports.send_batch(&mut out, true, "Akai's startup button lights", &as_slices(&lights))?;
+    wait(&mut out, &mut ports, 340)?;
+    ports.send_batch(&mut out, false, "setup, part 3 (as at +26.170 s)", &akai::SETUP_LAST)?;
+    wait(&mut out, &mut ports, 960)?;
+    let rest = pad_colours(&akai::RESTING_COLOURS);
+    ports.send_batch(&mut out, false, "your project's pad colours", &as_slices(&rest))?;
+    ports.send(false, &akai::session_ping(akai::SESSION_TOKEN))?;
+    out.say(&format!("hit pads, turn Q-Link 1 and the wheel, press a few buttons ({} s); pings go on every {} s",
+                     o.seconds, akai::PING_SECONDS));
+    out.draw();
+    let hits = listen_and_light(&mut out, &mut ports, o.seconds, &akai::RESTING_COLOURS, true)?;
+    ports.counts(&mut out);
+    out.say(&format!("setup done: {} messages sent, pad hits on Public {}, Private {}, MIDI Port {}",
+                     ports.sent, hits[0], hits[1], hits[2]));
+    out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- drums
+
+/// Play the drum kit in KIT_PATH from the pads, through ACVA.
+fn drums(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "factory drums", true);
+    let size = fs::metadata(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e} (the host tool copies it there)"))?.len();
+    if size > MAX_KIT_BYTES {
+        return Err(format!("{KIT_PATH} is {size} bytes; at most {MAX_KIT_BYTES} are allowed"));
+    }
+    let sounds = kit::parse(&fs::read(KIT_PATH).map_err(|e| format!("{KIT_PATH}: {e}"))?)?;
+    let mut rest = [[0u8; 3]; 16];
+    out.say(&format!("kit: {} sounds", sounds.len()));
+    for s in &sounds {
+        match mpc_one::pad_index(s.note) {
+            Some(pad) => {
+                rest[pad as usize] = akai::RESTING_COLOURS[pad as usize];
+                out.say(&format!("  pad {:2} (note {:3}): {} ({:.2} s)", pad + 1, s.note, s.name,
+                                 s.frames() as f64 / RATE as f64));
+            }
+            None => out.say(&format!("  note {}: {} (no pad sends this note)", s.note, s.name)),
+        }
+    }
+    let mut mixer = kit::Mixer::new(sounds);
+    let mut ports = Ports::open(&mut out, false)?;
+    let colours = pad_colours(&rest);
+    ports.send_batch(&mut out, false, "pad colours: lit where the kit has a sound, dark elsewhere", &as_slices(&colours))?;
+    let pcm = open_acva(&mut out)?;
+    let master = 10f32.powf(o.gain_db / 20.0);
+    out.say(&format!("play the pads for {} s; each sound peaks at most {:.0} dB below full scale at full velocity",
+                     o.seconds, -o.gain_db));
+    out.draw();
+    ports.quiet = true;
+    let mut play = Playback::start(pcm)?;
+    let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let mut frames = [0i32; PERIOD * 2];
+    let mut buf = [0u8; 256];
+    let total_periods = o.seconds * RATE as u64 / PERIOD as u64;
+    let (mut hits, mut silent_hits, mut clipped, mut peak, mut voices) = (0u64, 0u64, 0u64, 0f32, 0usize);
+    for i in 0..total_periods {
+        for m in ports.poll(&mut out, &mut buf)? {
+            if let Some(ControlEvent::PadDown { pad, velocity }) = m.event {
+                let note = mpc_one::PAD_NOTES.get(pad as usize).copied().unwrap_or(0);
+                match mixer.hit(note, velocity) {
+                    Some(k) => {
+                        hits += 1;
+                        let name = mixer.sounds[k].name.clone();
+                        out.note(&format!("    pad {} -> {name}", pad + 1));
+                    }
+                    None => silent_hits += 1,
+                }
+            }
+            ports.light_hit(&m.event, &rest)?;
+        }
+        voices = voices.max(mixer.playing());
+        let p = mixer.render(&mut left, &mut right, master);
+        peak = peak.max(p);
+        if p > 1.0 {
+            clipped += 1;
+        }
+        for f in 0..PERIOD {
+            frames[2 * f] = float_to_s32(left[f]);
+            frames[2 * f + 1] = float_to_s32(right[f]);
+        }
+        play.write(&frames, i)?;
+    }
+    let summary = play.finish(&mut out)?;
+    ports.quiet = false;
+    ports.counts(&mut out);
+    out.say(&format!("drums done: {hits} pad hits played, {silent_hits} on pads without a sound, at most {voices} \
+                      sounds at once, peak {:.1} dBFS, {clipped} periods clipped; {summary}",
+                     20.0 * peak.max(1e-6).log10()));
+    Ok(())
+}
+
+fn pads(o: &Options) -> Result<(), String> {
+    let heading = if o.keepalive { "pads, with keep-alive" } else { "pads (listen only)" };
+    let mut out = Out::new(o, heading, true);
+    let card = midi_card()?;
+    let mut inputs = open_inputs(card, &mut out)?;
     let mut output = None;
     if o.keepalive {
         let (f, oi) = alsa::open_rawmidi(card, mpc_one::Port::Public as u32, alsa::Direction::Output)
@@ -643,8 +1030,9 @@ fn pads(o: &Options) -> Result<(), String> {
 
 // ---------------------------------------------------------------- click
 
-fn click(o: &Options) -> Result<(), String> {
-    let mut out = Out::new(o, "click", true);
+/// Open ACVA at the stock stream settings (S32_LE, 44.1 kHz, 128 x 3 periods),
+/// lock memory and ask for SCHED_FIFO. Stops before playing if anything differs.
+fn open_acva(out: &mut Out) -> Result<alsa::Pcm, String> {
     let card = audio_card()?;
     let path = format!("/dev/snd/pcmC{card}D0p");
     out.say(&format!("opening {path} ({AUDIO_CARD_ID})"));
@@ -686,6 +1074,95 @@ fn click(o: &Options) -> Result<(), String> {
         Ok(()) => out.say("SCHED_FIFO priority 70"),
         Err(e) => out.say(&format!("SCHED_FIFO failed: {e} (continuing at normal priority)")),
     }
+    Ok(pcm)
+}
+
+/// A running ACVA stream: writes one period at a time, recovers from
+/// underruns, and keeps the timing of every period.
+struct Playback {
+    pcm: alsa::Pcm,
+    xruns: u64,
+    late: u64,
+    errors: u64,
+    gaps: Vec<Duration>,
+    notes: Vec<String>,
+    started: Instant,
+    prev: Instant,
+    periods: u64,
+}
+
+impl Playback {
+    fn start(pcm: alsa::Pcm) -> Result<Playback, String> {
+        pcm.prepare().map_err(|e| format!("prepare: {e}"))?;
+        // Queue the whole buffer: the stream starts when it is full.
+        for _ in 0..PERIODS {
+            pcm.write_frames(&[0i32; PERIOD * 2]).map_err(|e| format!("first write: {e}"))?;
+        }
+        Ok(Playback { pcm, xruns: 0, late: 0, errors: 0, gaps: Vec::with_capacity(1 << 16), notes: Vec::new(),
+                      started: Instant::now(), prev: Instant::now(), periods: 0 })
+    }
+
+    fn write(&mut self, frames: &[i32; PERIOD * 2], i: u64) -> Result<(), String> {
+        match self.pcm.write_frames(frames) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(EPIPE) => {
+                self.xruns += 1;
+                if self.notes.len() < 20 {
+                    self.notes.push(format!("underrun at period {i} ({:.3} s)", self.started.elapsed().as_secs_f64()));
+                }
+                self.pcm.prepare().map_err(|e| format!("prepare after underrun: {e}"))?;
+                for _ in 0..PERIODS {
+                    self.pcm.write_frames(&[0i32; PERIOD * 2]).map_err(|e| format!("refill after underrun: {e}"))?;
+                }
+            }
+            Err(e) => {
+                self.errors += 1;
+                if self.errors > 3 {
+                    return Err(format!("write failed: {e}"));
+                }
+                self.notes.push(format!("write error at period {i}: {e}"));
+            }
+        }
+        let now = Instant::now();
+        let gap = now - self.prev;
+        self.prev = now;
+        if i >= PERIODS as u64 {
+            self.gaps.push(gap);
+            if gap > period_time() * 2 {
+                self.late += 1;
+                if self.notes.len() < 20 {
+                    self.notes.push(format!("late period {i}: {:.2} ms after the previous one", gap.as_secs_f64() * 1e3));
+                }
+            }
+        }
+        self.periods += 1;
+        Ok(())
+    }
+
+    /// Drain, show the notes, and return the timing summary.
+    fn finish(self, out: &mut Out) -> Result<String, String> {
+        if let Err(e) = self.pcm.drain() {
+            out.say(&format!("drain: {e}"));
+            let _ = self.pcm.drop_stream();
+        }
+        for n in &self.notes {
+            out.say(n);
+        }
+        let (avg, max) = gap_stats(&self.gaps);
+        Ok(format!("{} periods ({:.1} s), {} underruns, {} late periods (over 2 periods apart), {} other errors; \
+                    period gap mean {:.3} ms, max {:.3} ms (one period is {:.3} ms)",
+                   self.periods, self.started.elapsed().as_secs_f64(), self.xruns, self.late, self.errors,
+                   avg * 1e3, max * 1e3, period_time().as_secs_f64() * 1e3))
+    }
+}
+
+fn period_time() -> Duration {
+    Duration::from_secs_f64(PERIOD as f64 / RATE as f64)
+}
+
+fn click(o: &Options) -> Result<(), String> {
+    let mut out = Out::new(o, "click", true);
+    let pcm = open_acva(&mut out)?;
     let mut engine = ClickEngine::new();
     if !engine.configure(ClickConfig { sample_rate: RATE, bpm: 120.0, beats_per_bar: 4 }) {
         return Err("the click engine refused its settings".to_string());
@@ -695,72 +1172,20 @@ fn click(o: &Options) -> Result<(), String> {
                       keep the volume knob low", o.seconds, o.gain_db, 20.0 * (0.47 * gain).log10()));
     out.draw();
 
-    let period_time = Duration::from_secs_f64(PERIOD as f64 / RATE as f64);
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
-    let silence = [0i32; PERIOD * 2];
     let total_periods = o.seconds * RATE as u64 / PERIOD as u64;
-    let (mut xruns, mut late, mut errors) = (0u64, 0u64, 0u64);
-    let mut gaps = Vec::with_capacity(total_periods as usize);
-    let mut notes: Vec<String> = Vec::new();
-    pcm.prepare().map_err(|e| format!("prepare: {e}"))?;
-    // Queue the whole buffer: the stream starts when it is full.
-    for _ in 0..PERIODS {
-        pcm.write_frames(&silence).map_err(|e| format!("first write: {e}"))?;
-    }
-    let started = Instant::now();
-    let mut prev = Instant::now();
+    let mut play = Playback::start(pcm)?;
     for i in 0..total_periods {
         engine.render(&mut left, &mut right).map_err(|e| format!("click engine: {e:?}"))?;
         for f in 0..PERIOD {
             frames[2 * f] = float_to_s32(left[f] * gain);
             frames[2 * f + 1] = float_to_s32(right[f] * gain);
         }
-        match pcm.write_frames(&frames) {
-            Ok(_) => {}
-            Err(e) if e.raw_os_error() == Some(EPIPE) => {
-                xruns += 1;
-                if notes.len() < 20 {
-                    notes.push(format!("underrun at period {i} ({:.3} s)", started.elapsed().as_secs_f64()));
-                }
-                pcm.prepare().map_err(|e| format!("prepare after underrun: {e}"))?;
-                for _ in 0..PERIODS {
-                    pcm.write_frames(&silence).map_err(|e| format!("refill after underrun: {e}"))?;
-                }
-            }
-            Err(e) => {
-                errors += 1;
-                if errors > 3 {
-                    return Err(format!("write failed: {e}"));
-                }
-                notes.push(format!("write error at period {i}: {e}"));
-            }
-        }
-        let now = Instant::now();
-        let gap = now - prev;
-        prev = now;
-        if i >= PERIODS as u64 {
-            gaps.push(gap);
-            if gap > period_time * 2 {
-                late += 1;
-                if notes.len() < 20 {
-                    notes.push(format!("late period {i}: {:.2} ms after the previous one", gap.as_secs_f64() * 1e3));
-                }
-            }
-        }
+        play.write(&frames, i)?;
     }
-    if let Err(e) = pcm.drain() {
-        out.say(&format!("drain: {e}"));
-        let _ = pcm.drop_stream();
-    }
-    for n in &notes {
-        out.say(n);
-    }
-    let (avg, max) = gap_stats(&gaps);
-    out.say(&format!("click done: {total_periods} periods ({:.1} s), {xruns} underruns, {late} late periods \
-                      (over 2 periods apart), {errors} other errors; period gap mean {:.3} ms, max {:.3} ms \
-                      (one period is {:.3} ms)",
-                     started.elapsed().as_secs_f64(), avg * 1e3, max * 1e3, period_time.as_secs_f64() * 1e3));
+    let summary = play.finish(&mut out)?;
+    out.say(&format!("click done: {summary}"));
     Ok(())
 }
 
@@ -810,6 +1235,9 @@ fn main() {
             "screen" => screen(&o),
             "touch" => touch(&o),
             "pads" => pads(&o),
+            "lights" => lights(&o),
+            "setup" => setup(&o),
+            "drums" => drums(&o),
             "click" => click(&o),
             _ => unreachable!(),
         }
@@ -842,6 +1270,11 @@ mod tests {
         assert!(parse_args(&args("format")).is_err());
         assert!(parse_args(&args("")).is_err());
         assert!(parse_args(&args("pads click")).is_err());
+        for step in ["lights", "setup", "drums"] {
+            let o = parse_args(&args(&format!("{step} --seconds 20"))).unwrap();
+            assert_eq!((o.command.as_str(), o.seconds), (step, 20));
+            assert!(parse_args(&args(&format!("{step} --keepalive"))).is_err());
+        }
     }
 
     #[test]
@@ -905,13 +1338,38 @@ mod tests {
         input.extend_from_slice(&other);
         input.extend_from_slice(&[0x99, 0x25, 0x40, 0x25, 0x00, 0xB0, 0x64, 0x7F, 0xC3, 0x05]);
         assert_eq!(lines_for("Private", &input), vec![
-            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 01 F7 = keep-alive reply, token [7D, 6D, 57, 35]",
-            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 00 F7 = not recognised",
+            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 01 F7 = session reply, token 7D 6D 57 35, running",
+            "+1.500 s Private: F0 47 7F 46 53 00 05 7D 6D 57 35 00 F7 = session reply, token 7D 6D 57 35, held by another token",
             "+1.500 s Private: 99 25 40 = pad 1 down, velocity 64",
             "+1.500 s Private: 99 25 00 = pad 1 up",
             "+1.500 s Private: B0 64 7F = data wheel -1",
             "+1.500 s Private: C3 05 = not recognised",
         ]);
+    }
+
+    #[test]
+    fn hides_the_serial_number() {
+        let mut reply = vec![0xF0, 0x7E, 0x00, 0x06, 0x02, 0x47, 0x46, 0x00, 0x19, 0x00, 0x00, 0x01, 0x00, 0x7F, 0x00, 0x00,
+                             0x00, 0x00];
+        reply.extend_from_slice(b"XX000000000"); // a made-up serial
+        reply.extend_from_slice(&[0x00, 0xF7]);
+        let lines = lines_for("Public", &reply);
+        assert_eq!(lines, vec!["+1.500 s Public: F0 7E 00 06 02 47 46 00 19 00 00 01 00 7F 00 00 00 00 ... = identity reply \
+                                (the rest is the serial number, not shown)"]);
+        assert!(!lines[0].contains("58 58"));
+    }
+
+    #[test]
+    fn public_qlinks_are_absolute() {
+        // Round 2: Q-Link 1 on Public counted up 01, 02, ... and back down.
+        let input = [0x90, 0x54, 0x7F, 0xB0, 0x10, 0x35, 0xB0, 0x10, 0x34];
+        assert_eq!(lines_for("Public", &input), vec![
+            "+1.500 s Public: 90 54 7F = Q-Link 1 touched",
+            "+1.500 s Public: B0 10 35 = Q-Link 1 at 53 (absolute)",
+            "+1.500 s Public: B0 10 34 = Q-Link 1 at 52 (absolute)",
+        ]);
+        // On Private (with Akai's setup) they are steps.
+        assert_eq!(lines_for("Private", &[0xB0, 0x10, 0x02]), vec!["+1.500 s Private: B0 10 02 = Q-Link 1 turned +2"]);
     }
 
     #[test]
