@@ -876,3 +876,64 @@ The fact that a recognized OEM string writes the flag does **not** demonstrate t
 - Separately continue tracing p3 reboot-mode reader and p1's ROM-return paths. Nothing in these Fastboot findings proves any MaskROM software entry.
 
 Scripts used so far have only read the private local backup; **no changes to the MPC, emmc, firmware or other repository files**.
+
+## 18. Verified Fastboot bootm, download window and continue flag (2026-11-10)
+
+Owner-supplied `fastboot-next-trace.txt` was produced by reading only the known p3 uImage from the previously verified offline eMMC backup. The payload's SHA-256 was checked against `b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`. The selected Thumb instruction windows were decoded independently for this report. **These are static findings; no USB boot test has been performed.**
+
+### 18.1 Definitive boot-related strings and candidate buffer address
+
+The report directly reads these exact strings from the p3 binary:
+- `0x0013B8B4` = `bootm`.
+- `0x0013467B` = `Booting kernel..\n`.
+- `0x0013468D` = `0x%lx` (formats the RAM address).
+- `0x00138FE8` = `FAILpermission denied`.
+- `0x00132BA6` = `OKAY`.
+
+The **file bytes** located at linked VA `0x00143E34` decode to `0x00800800` (an 8-MiB-plus-2-KiB RAM address). The deferred `boot` USB completion function `0x001226B4` has already been shown to assemble an argument vector and call `0x00101744` with the U-Boot command signature `(cmdtp, flags, argc=2, argv)`, then call the CPU reset wrapper if the boot operation returns. With the exact `bootm` and address-format strings now verified, **this is compelling binary-level evidence for Fastboot RAM-boot implementation**, not proof that a given downloaded MPFree image will boot.
+
+### 18.2 Download command and USB receive callback
+
+The actual `download:` callback at **`0x00122980`**:
+
+1. Calls shared gate `0x00122834` and exits on a zero return; the gate's failure response is confirmed to be **`FAILpermission denied`**.
+2. Parses the request size using a conversion helper called with **base 16**, consistent with Fastboot's hexadecimal download length.
+3. Writes zero to the receive-count global at **`0x0014D680`** and writes requested size to **`0x0014D684`**.
+4. Checks `size <= 0x70000000`, i.e. at most **1.75 GiB**; this is a protocol acceptance limit, **not a memory safety guarantee**. A zero-size or oversized request follows an error/response path. The exact further error text remains unclassified.
+5. Installs Thumb completion callback **`0x00122A11`** (instruction address `0x00122A10`) into the USB request at field offset `+0x10` and prepares a Fastboot `DATA...` reply.
+
+The USB receive callback at **`0x00122A10`** (partially available in report) reads USB request status, `actual` length, the cumulative byte count and expected length. It limits each memcpy-shaped transfer to remaining requested bytes, and constructs its destination from:
+
+```text
+destination = 0x00800000 + 0x00000800 + bytes_received
+            = 0x00800800 + bytes_received
+```
+
+The code calls a memcpy-shaped routine at `0x0012DDA2` with source `request->buf`, destination as above and the bounded length. It increments the byte count at `0x0014D680` and later checks whether all requested bytes have arrived. The tail of the callback (`0x00122A80` onward) was **not** included; final USB reply, requeue logic, zero-length handling and failure behavior still need to be traced.
+
+**Safety:** the 1.75-GiB request bound is far too broad to treat as a safe test-image limit without a complete RAM map and verified reserved regions. Physical memory capacity alone does not establish free RAM, the range must avoid U-Boot code/data/stack, DTB, secure carveouts and other DMA buffers. No on-device download or boot experiment should be attempted from this evidence alone.
+
+### 18.3 Continue callback actually sets the gadget exit flag
+
+The previously identified `continue` post-response callback is **`0x001226B0`**, an unconditional Thumb branch to **`0x00121DD0`**. The latter function is now decoded:
+
+```asm
+00121DD0 ldr  r3,[pc,#4]    ; literal [0x00121DD8] = 0x0014D658
+00121DD2 movs r2,#1
+00121DD4 strb r2,[r3]
+00121DD6 bx   lr
+```
+
+An adjacent sibling at `0x00121DDC` writes zero to the **same byte**. The interpretation that `continue` requests exiting the Fastboot gadget session is strongly supported, but the actual USB polling loop's reader of `0x0014D658` is still to be traced. The callback itself does **not** reset the CPU or enter MaskROM.
+
+### 18.4 Important correction about the permission flag's “initial value”
+
+Reading the **on-disk payload bytes** at linked VA `0x0014D690` yields `0x00000017`, but **that does not establish that the running U-Boot gate starts enabled, locked, or set to 23**. Relocation, BSS/data initialization, code/data mapping and other startup writes have not been reconstructed. The *runtime* shared check at `0x00122834` compares the actual value stored at that address to zero, and the vendor OEM branch writes `1` to the same global. Until the runtime initialization and all writers are traced, make **no assertion about default lock/unlock state**. The apparently unusual raw value 23 is precisely why the distinction matters.
+
+### 18.5 Next proof targets
+
+- Trace `0x00122A80` onward to recover final transfer success/failure, actual maximum safe ranges and USB requeue behavior.
+- Resolve xrefs and runtime initialization for `0x0014D680`, `0x0014D684`, `0x0014D690`, `0x00143E34`, and `0x0014D658`.
+- Confirm image types supported by `0x00101744` (bootm-like), the validated `bootm` arguments, any boot-signature checks, and device-tree/ramdisk handoff.
+- Preserve distinction between U-Boot Fastboot USB RAM boot and genuine RK3288 silicon MaskROM recovery. The former is now strongly supported by the binary; the latter remains unproven.
+- No live Fastboot `download`, `boot`, `flash`, `erase`, `oem` or ROM register experiments have been performed.
