@@ -48,6 +48,7 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-ethernet.sh
           sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           sh -n tools/mpc-one/read-only-audio-midi.sh
@@ -74,6 +75,7 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
@@ -98,6 +100,7 @@ jobs:
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-boot-map.sh"),
               Path("tools/mpc-one/read-only-kexec-preflight.sh"),
+              Path("tools/mpc-one/read-only-ethernet.sh"),
               Path("tools/mpc-one/read-only-backup-preflight.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
               Path("tools/mpc-one/read-only-audio-midi.sh"),
@@ -140,6 +143,7 @@ jobs:
           assert '"--boot-map")' in wrapper
           assert '"--backup")' in wrapper
           assert '"--kexec-preflight")' in wrapper
+          assert '"--ethernet")' in wrapper
           # The kexec preflight may ask kexec only for its version and help text.
           kexec_exec = [line for line in Path("tools/mpc-one/read-only-kexec-preflight.sh").read_text().splitlines()
                         if not line.lstrip().startswith("#")]
