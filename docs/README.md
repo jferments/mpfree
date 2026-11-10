@@ -12,6 +12,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Sampler design](project/sampler-design.md): how MPFree records, chops, edits, assigns and plays samples, including granular tools (proposal, 2026-11-10).
 - [Sampler feature map](project/sampler-features.md): every MPC sampler feature rebuilt with a better UI, what other samplers add, and what makes a sampler great for production and performance (proposal, 2026-11-10).
 - [Sampler architecture](project/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler (proposal, 2026-11-10).
+- [Arpeggiator, Latch and latch patterns](project/arpeggiator.md): research, design and plan for Note Repeat, Latch, the arpeggiator and custom patterns (engine in `rust/mpfree-arp`).
 
 ## Decisions
 

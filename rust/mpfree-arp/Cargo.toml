@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-arp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-first Latch, Note Repeat, arpeggiator and latch-pattern engine: notes in, sample-timed notes out; no device I/O, no allocation while running"
+
+[lib]
+name = "mpfree_arp"
+path = "src/lib.rs"
+
+[dependencies]
