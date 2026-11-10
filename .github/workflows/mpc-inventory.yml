@@ -873,6 +873,15 @@ jobs:
           printf '\260\144\001\260\144\177\231\045\100' > "$t/right-left-pad.mid"   # cw, ccw, a pad
           r=$(menu --midi-file "$t/right-left-pad.mid"); test "$r" = "choice=mpfree rc=0"
           echo "PASS: boot menu choices and exit codes under qemu"
+          # Title from a font file; a broken font file falls back to the block letters.
+          run1() { timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 1 "$@" > "$t/out.txt" 2>&1; }
+          dejavu=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          if [ -f "$dejavu" ]; then
+            run1 --font "$dejavu" --tracking 0.1; grep -q 'title font: DejaVu' "$t/out.txt"
+          fi
+          echo "not a font" > "$t/bad.ttf"
+          run1 --font "$t/bad.ttf"; grep -q 'using the built-in block letters' "$t/out.txt"
+          echo "PASS: title fonts under qemu"
   splash-gl:
     name: SDL3/GLES startup screen (desktop build, headless render)
     runs-on: ubuntu-latest

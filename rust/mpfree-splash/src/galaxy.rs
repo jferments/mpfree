@@ -12,7 +12,7 @@
 //! top pixel and whose background colour is the bottom pixel. That works the
 //! same in a desktop terminal and on the MPC's framebuffer backend.
 
-use crate::title::{self, TitleMask};
+use crate::title::{self, TitleFont, TitleMask};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use crate::menu;
@@ -102,6 +102,7 @@ struct Layout {
 pub struct Galaxy {
     particles: Vec<Particle>,
     stars: Vec<Star>,
+    font: TitleFont,
     layout: RefCell<Option<Layout>>,
 }
 
@@ -122,7 +123,13 @@ fn arm_width(rn: f32) -> f32 {
 }
 
 impl Galaxy {
+    /// The galaxy with the built-in block letters.
     pub fn new() -> Galaxy {
+        Galaxy::with_font(TitleFont::Block)
+    }
+
+    /// The galaxy with the title in `font`.
+    pub fn with_font(font: TitleFont) -> Galaxy {
         let mut rng = Rng(0x4d50_4346_7265_6521);
         let mut particles = Vec::new();
         // Stars along the arms: young blue and white ones, pink star-forming knots.
@@ -168,13 +175,13 @@ impl Galaxy {
                 phase: rng.unit() * TAU,
             })
             .collect();
-        Galaxy { particles, stars, layout: RefCell::new(None) }
+        Galaxy { particles, stars, font, layout: RefCell::new(None) }
     }
 
     fn layout(&self, width: usize, height: usize) -> Layout {
-        let (lines, cap) = title_layout(width, height);
-        let title = title::rasterise(&lines, cap);
-        let (heart, radius) = galaxy_size(width, height);
+        let (lines, cap) = title_layout(&self.font, width, height);
+        let title = title::rasterise(&self.font, &lines, cap);
+        let (heart, radius) = galaxy_size(&self.font, width, height);
         let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
         let span = radius - heart;
         let mut disc = vec![0.0; width * height];
@@ -317,11 +324,11 @@ fn splat(acc: &mut [[f32; 3]], width: usize, height: usize, x: f32, y: f32, rgb:
 /// The title's lines and its cap height in pixels: as big as fits in at most
 /// 40% of the screen's width and 30% of its height, on one line or two,
 /// whichever is bigger. Never smaller than 6 pixels.
-pub fn title_layout(width: usize, height: usize) -> (Vec<&'static str>, f32) {
+pub fn title_layout(font: &TitleFont, width: usize, height: usize) -> (Vec<&'static str>, f32) {
     let fit = |lines: &[&str]| {
         let mut cap = 80.0;
         while cap > 6.0 {
-            let (w, h) = title::size(lines, cap);
+            let (w, h) = title::size(font, lines, cap);
             if w * 10 <= width * 4 && h * 10 <= height * 3 {
                 break;
             }
@@ -337,9 +344,9 @@ pub fn title_layout(width: usize, height: usize) -> (Vec<&'static str>, f32) {
 /// The heart's radius (where the arms start) and the galaxy's radius, in
 /// pixels along the long axis. The heart holds the title with a margin; the
 /// galaxy fills the screen, or grows past it when the title is big for the screen.
-pub fn galaxy_size(width: usize, height: usize) -> (f32, f32) {
-    let (lines, cap) = title_layout(width, height);
-    let (tw, th) = title::size(&lines, cap);
+pub fn galaxy_size(font: &TitleFont, width: usize, height: usize) -> (f32, f32) {
+    let (lines, cap) = title_layout(font, width, height);
+    let (tw, th) = title::size(font, &lines, cap);
     let heart = (tw as f32 / 2.0 + 2.0).max((th as f32 / 2.0 + 2.0) / TILT);
     let fit = (width as f32 * 0.56).min(height as f32 * 0.6 / TILT);
     (heart, fit.max(heart * 2.4))
@@ -438,21 +445,22 @@ mod tests {
     #[test]
     fn title_layouts() {
         // The MPC One at 4x8-pixel cells: 320x100 cells, 320x200 pixels. Two lines.
-        let (lines, cap) = title_layout(320, 200);
+        let (lines, cap) = title_layout(&TitleFont::Block, 320, 200);
         assert_eq!(lines, TITLE_LINES);
         assert!(cap >= 18.0, "{cap}");
         // A wide, short terminal gets one line.
-        assert_eq!(title_layout(400, 100).0, [TITLE]);
+        assert_eq!(title_layout(&TitleFont::Block, 400, 100).0, [TITLE]);
         // A tiny one still gets a title.
-        assert_eq!(title_layout(40, 20).1, 6.0);
+        assert_eq!(title_layout(&TitleFont::Block, 40, 20).1, 6.0);
     }
 
     #[test]
     fn the_title_fits_inside_the_heart() {
         for (w, h) in [(320, 200), (160, 100), (80, 48), (250, 128), (40, 20), (1000, 600)] {
-            let (heart, radius) = galaxy_size(w, h);
-            let (lines, cap) = title_layout(w, h);
-            let (tw, th) = title::size(&lines, cap);
+            let font = TitleFont::Block;
+            let (heart, radius) = galaxy_size(&font, w, h);
+            let (lines, cap) = title_layout(&font, w, h);
+            let (tw, th) = title::size(&font, &lines, cap);
             assert!(heart >= tw as f32 / 2.0 + 1.0, "{w}x{h}: heart {heart}, title {tw}");
             assert!(heart * TILT >= th as f32 / 2.0 + 1.0, "{w}x{h}: heart {heart}, title {th}");
             assert!(radius >= heart * 2.0, "{w}x{h}: arms need room");
@@ -471,7 +479,7 @@ mod tests {
         assert!(bright(a[0]) < 200, "{:?}", a[0]);
         assert!(bright(a[100 * 320 + 160]) > 250, "{:?}", a[100 * 320 + 160]);
         // The disc is lit well outside the heart: no sparse, empty galaxy.
-        let (heart, radius) = galaxy_size(320, 200);
+        let (heart, radius) = galaxy_size(&TitleFont::Block, 320, 200);
         let lit = (0..360)
             .filter(|deg| {
                 let t = *deg as f32 * PI / 180.0;

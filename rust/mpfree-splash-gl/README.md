@@ -6,8 +6,9 @@ resolution. The galaxy's disc (four arms, dust lanes, star-forming knots, a
 gold bulge) is drawn once into a 2048x2048 texture by a shader; each frame
 turns and tilts that texture, adds a nebula sky, about 12,000 point stars
 that twinkle and a chrome title with a glow. It shares its layout, spiral
-constants and title font (`mpfree_splash::blockfont`) with the
-character-cell version.
+constants and title font with the character-cell version: the built-in
+block letters, or any TTF/OTF file given with `--font FILE [--tracking N]`
+(see [`mpfree-splash`'s README](../mpfree-splash/README.md#title-font)).
 
 It is its own Cargo workspace, outside `rust/Cargo.toml`, because the `sdl3`
 crate builds SDL 3 from source (statically linked; zlib licence). That needs

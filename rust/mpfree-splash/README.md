@@ -1,7 +1,7 @@
 # mpfree-splash
 
 The MPFree startup screen: an outer-space scene with a four-armed (Milky Way-style)
-spiral galaxy turning around the words **MPCFree OS v0.1**, in block letters in its glowing heart. The galaxy is sized around the title: its arms start just outside the words and sweep outwards.
+spiral galaxy turning around the words **MPCFree OS v0.1** in its glowing heart. The galaxy is sized around the title: its arms start just outside the words and sweep outwards.
 It is drawn with [ratatui](https://ratatui.rs) (MIT).
 
 Every frame is a grid of upper-half-block cells (`▀`), each holding two
@@ -49,4 +49,48 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
 
 CI builds it that way and runs it under `qemu-arm` against a fake framebuffer.
 
-The framebuffer geometry, rotation and the 8x8 fallback font are shared with `mpfree-screen-log`. The title uses `src/blockfont.rs`, a heavy squared sci-fi face in the spirit of display fonts like Antares and Jupiter. Its shapes are our own polygons; no font file is copied. The SDL3/GLES version, [`mpfree-splash-gl`](../mpfree-splash-gl), uses the same font and layout.
+The framebuffer geometry, rotation and the 8x8 fallback font are shared with `mpfree-screen-log`.
+
+## Boot menu
+
+`--menu` adds the boot menu under the galaxy (any mode). MPFree OS is the
+default and starts by itself after `--menu-seconds` (5). The factory OS
+starts only when someone turns the data wheel to it and presses PLAY or a
+pad. Turning the wheel stops the countdown; 30 s without input goes back to
+the default. `--no-mpfree` (stick missing or failed its check) shows a
+message and picks the factory OS after 3 s.
+
+The program prints `choice=mpfree` and exits 0, or `choice=factory` and
+exits 3. A boot script must treat any other exit as "start the factory OS".
+Input: `--midi CARD,DEVICE,SUBDEVICE` reads the controller's Private cable
+from ALSA RawMIDI, read only; `--midi-file PATH` reads raw MIDI bytes (tests);
+in a terminal, the arrow keys turn and Enter confirms.
+
+## Title font
+
+By default the title uses `src/blockfont.rs`, our own squared sci-fi block
+letters (no font file needed). Any TrueType or OpenType file can replace
+them at run time, in this program and in
+[`mpfree-splash-gl`](../mpfree-splash-gl):
+
+```bash
+mpfree-splash --font SomeFont.otf --tracking 0.15
+```
+
+`--tracking` adds space between letters, in cap heights (some display fonts
+crowd their letters so that small marks like the "." in "v0.1" disappear).
+A font that can't be loaded, or lacks a letter of the title, falls back to
+the block letters with a message; it never stops the startup screen.
+
+To try a font, run from the repository root:
+
+```bash
+rust/mpfree-splash/preview-font.sh ~/Downloads/SomeFont.otf 0.15
+```
+
+It writes the MPC One framebuffer frames and the SDL3/GLES frames into one
+`splash-font-NAME-TIMESTAMP` folder plus a zip, in a few seconds once built.
+
+Font licences: fonts are not committed to this MIT repository unless their
+licence clearly allows redistribution (for example the SIL Open Font
+Licence). Others stay outside the repository and are passed with `--font`.
