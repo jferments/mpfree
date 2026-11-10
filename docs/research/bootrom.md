@@ -642,3 +642,9 @@ For the ACVA board both DTBs describe `usb@ff580000` as DWC2 peripheral, with `s
 5. Separately research RK3288 ROM return ABI and USB recovery over public source/TRM. **The BootROM is silicon ROM, not within p1/p3**. Genuine on-device MaskROM behavior requires separately authorized enumeration or hardware evidence.
 
 Scripts are distributed privately, **not committed**. The repository authorization remains restricted to `docs/research/bootrom.md`. No destructive device commands are approved by this section.
+
+### 13.7 Appended device-tree boundary observation
+
+The p3 Ghidra/host reports identify a valid FDT header at raw U-Boot payload offset `0x502F4`, with `totalsize=0x898D`. Their sum is **`0x58C81`**, exactly **363,649 bytes**, the verified U-Boot payload length. Thus the DTB **ends at the exact end of the U-Boot image payload**, a strong structural indication that this build uses U-Boot with an appended DTB (`u-boot-dtb.bin`-style layout). This is an arithmetic observation from verified metadata, not a demonstration of how its internal DTB is selected or relocated at runtime.
+
+The first-stage embedded DTB begins at stage offset `0x627C` and has `totalsize=0xCA7`; it is within the 32-KiB SPL stage and does not extend to its end. Compare the two embedded bootloader DTBs with the 3.6.0 and 3.10.0 ACVA kernel DTBs. The separately distributed offline deepmap tool supports `--extract-embedded-dtbs`, saving private validated FDTs under `~/mpfree-work` without touching the device or Git.
