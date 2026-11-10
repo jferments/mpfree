@@ -737,3 +737,35 @@ Separately, mapping p3 at zero hides references because **internal pointers are 
 3. In p1, trace the image descriptor flags in `0xFF7052C0` and indirect `BLX` at `0xFF705314` to determine actual p3 handoff. Confirm read addresses and CRC/image validation.
 4. In p1, resolve the sysreset callback registration pointer to the already-confirmed CRU MMIO writer `0xFF704214`, and resolve the base getter `0xFF706798`.
 5. No software MaskROM handoff has been proven. Continue reference-source research and board-side USB routing/test-point inventory; **no register writes, firmware modification, Fastboot OEM, flash, erase or hardware reboot is authorized by this document update.**
+
+## 15. Actual eight-entry Fastboot command dispatch resolved (2026-11-10)
+
+The owner ran a **per-byte Ghidra Python Console inspection** of the original 363,649-byte p3 payload, using its verified `0x00100000` linked address convention but without relying on the mis-based Ghidra pointer analysis. It returned **eight consecutive string-pointer/Thumb-callback pairs** at raw p3 offsets `0x2F2B0..0x2F2E8` (eight bytes per pair). This is stronger evidence than strings alone and supersedes the unresolved names in §14.3.
+
+| Command prefix (verified from firmware) | Raw pair offset | Thumb function pointer | Code address (linked VA) |
+| --- | --- | --- | --- |
+| `reboot` | `+0x2F2B0` | `0x00122CF9` | **`0x00122CF8`** |
+| `getvar:` | `+0x2F2B8` | `0x00122D39` | **`0x00122D38`** |
+| `download:` | `+0x2F2C0` | `0x00122981` | **`0x00122980`** |
+| **`boot`** | `+0x2F2C8` | `0x00122965` | **`0x00122964`** |
+| `continue` | `+0x2F2D0` | `0x00122949` | **`0x00122948`** |
+| `flash` | `+0x2F2D8` | `0x00122C5D` | **`0x00122C5C`** |
+| `erase` | `+0x2F2E0` | `0x00122BF9` | **`0x00122BF8`** |
+| **`oem`** | `+0x2F2E8` | `0x00122855` | **`0x00122854`** |
+
+The low bit marks Thumb state. Although the pairs match the expected `struct { char *prefix; void (*cb)(...); }` layout, the dispatcher search loop and its exact matching semantics have **not** been independently decompiled. The table is a concrete code-level registration, but execution reachability, state prerequisites, and permissions still require the function bodies.
+
+### Consequences for a reversible installer
+
+- **Highest-priority target: `boot` at `0x00122964`**, plus `download:` at `0x00122980`. Together they establish that the stock loader has code intended to load an image into memory and boot it. This could allow **RAM-only boot via USB-B Fastboot**, independent of an already-running Linux kernel, while preserving p1/p3/eMMC. It remains unproven whether the firmware accepts our boot-image type, allows it without an unlock, and whether the complete execution path has side effects.
+- `continue` at `0x00122948` is conventionally an exit from the Fastboot session back to normal U-Boot boot; it is **not** synonymous with `boot`.
+- `flash`, `erase`, and particularly vendor-specific `oem` have potentially persistent/destructive effects. **Do not send these commands for exploratory analysis.** Determine authorization checks and the supported partition aliases from disassembly first. The owner has not approved any such device-side tests.
+- `reboot-bootloader` is present as a string/callback neighborhood in p3 but is **not a ninth standalone entry in this eight-row sample**. It may be handled within a prefix callback or separately; determine its exact dispatch path rather than assuming absence or reachability.
+- The `oem` subdispatcher warrants a separate *offline* audit of whether there is an InMusic unlock gate, its conditions, and effects, without publishing any embedded unlock marker/token.
+- Upstream U-Boot documentation says `boot` normally executes `bootm <FASTBOOT_BUF_ADDR>` unless `fastboot_bootcmd` overrides it. It may require Android boot-image layout and a compatible kernel/DTB/ramdisk. **This is comparison-source behavior**, not yet measured in Akai's 2019 build. https://github.com/ARM-software/u-boot/blob/master/doc/README.android-fastboot
+
+### Next independent analysis
+
+Use the separately distributed `MPFreeFastbootCallbacksAudit.py` inside Ghidra with the raw p3 payload open, ideally from a **second import mapped at `0x00100000` and auto-analyzed** (existing base-zero program remains unchanged). The script validates the table, scans for adjacent entries, records existing callback assembly/call edges/decompilation when available and outputs `~/mpfree-work/fastboot-callback-audit-*.txt`. It is **read-only to Ghidra**, does not contact MPC, and redacts any embedded vendor unlock token. Python syntax validated; not tested in the owner's Ghidra.
+
+Prioritize checking whether `boot` calls `bootm` on the download buffer or invokes vendor logic; whether `continue` resumes Akai's boot sequence; whether `download:` enforces size/bounds; and whether the host USB response-completion callback is needed before the transition. No software MaskROM entry is implied by any of these Fastboot findings.
