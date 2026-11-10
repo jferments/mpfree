@@ -390,8 +390,10 @@ if [[ "${1:-}" == "--kexec-preflight" ]]; then
   mkdir -p -- "$work_abs"
   fdt_dir="$(mktemp -d "$work_abs/kexec-preflight-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
   running="$("${ssh_ro[@]}" 'uname -r')" || die "could not read the running kernel release; report: $REPORT"
+  [[ "$running" =~ ^[A-Za-z0-9._+-]+$ ]] || die "unexpected kernel release from the MPC; report: $REPORT"
   "${ssh_ro[@]}" 'cat /sys/firmware/fdt' > "$fdt_dir/live.dtb" ||
     die "could not copy the running device tree; report: $REPORT"
+  printf '%s\n' "$running" > "$fdt_dir/release.txt"  # which boot-files folder live.dtb came from
   {
     echo
     echo "=== Running device tree, compared on the workstation ==="

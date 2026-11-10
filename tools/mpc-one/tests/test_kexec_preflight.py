@@ -171,6 +171,8 @@ class KexecPreflightTests(unittest.TestCase):
         [copy] = glob.glob(os.path.join(self.work, "kexec-preflight-*", "live.dtb"))
         with open(copy, "rb") as a, open(self.fdt, "rb") as b:
             self.assertEqual(a.read(), b.read())
+        with open(os.path.join(os.path.dirname(copy), "release.txt")) as fh:
+            self.assertEqual(fh.read(), RELEASE + "\n")
         with open(self.log) as fh:
             calls = fh.read().splitlines()
         self.assertEqual([c for c in calls if c.startswith("ssh: ")],

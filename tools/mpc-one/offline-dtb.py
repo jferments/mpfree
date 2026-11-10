@@ -4,6 +4,10 @@
 Commands:
   boards DTB...        one line per file: file name, model and compatible
   match COMPAT DTB...  the files whose root compatible list contains COMPAT exactly
+  same-board LIVE DTB...
+                       the files whose root compatible list is the same as
+                       LIVE's, in the same order: the board file U-Boot picked
+                       (for the MPC One, rk3288-az01-acva.dtb, not -acva-c)
   summary DTB...       what matters for booting a kernel by kexec: model,
                        compatible, the storage controllers (with their status
                        and aliases), the memory node and the /chosen node
@@ -499,6 +503,12 @@ def main(argv):
         if len(args) >= 3 and args[0] == "match":
             for path in args[2:]:
                 if args[1] in compatible(load(path)):
+                    print(path)
+            return 0
+        if len(args) >= 3 and args[0] == "same-board":
+            want = compatible(load(args[1]))
+            for path in args[2:]:
+                if compatible(load(path)) == want:
                     print(path)
             return 0
         if len(args) >= 2 and args[0] == "summary":

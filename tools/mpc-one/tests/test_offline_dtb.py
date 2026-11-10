@@ -163,6 +163,14 @@ class DtbTests(unittest.TestCase):
         self.assertIn(f"{junk}: ERROR not a device tree", res.stdout)
         res = self.cli("match", "inmusic,acva", acva, acva2)
         self.assertEqual(res.stdout.split(), [acva], "acva2 must not match acva")
+        variant = board_tree()
+        variant.root.set_prop("compatible", s("inmusic,acva", "inmusic,az01", "rockchip,rk3288-c", "rockchip,rk3288"))
+        acva_c = self.save("acva-c.dtb", variant)
+        res = self.cli("match", "inmusic,acva", acva, acva_c)
+        self.assertEqual(res.stdout.split(), [acva, acva_c])
+        live = self.save("live.dtb", board_tree(serial=SERIAL, mac=MAC))
+        res = self.cli("same-board", live, acva_c, acva2, acva)
+        self.assertEqual((res.returncode, res.stdout.split()), (0, [acva]), "only the exact board file")
 
     def test_damaged_trees_are_refused(self):
         good = dtb.build(board_tree())
