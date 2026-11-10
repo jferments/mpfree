@@ -40,7 +40,7 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 - Remaining button numbers and LED color/brightness meaning of values 0–4 (capture each button once).
 - Data wheel push, any display/screen messages, and what each setup message (`41`, `5A`, `62`–`6A`) means.
-- Whether the lights work without a session, and whether Akai's setup is what moves the controls to cable 1 with relative Q-Links (Hello MPC round 3 tests both).
+- Which of the setup messages switches the controls to cable 1, and what happens to that mode when the session lapses.
 
 ## Without Akai's app (Hello MPC rounds 1 and 2, 2026-11-10)
 
@@ -86,4 +86,7 @@ In every Akai message above, byte 6 is the number of data bytes that follow it, 
 
 **Pad colour while hit.** When a pad is hit, the app sends it its resting colour scaled from 0–63 to 0–127, rounded down (`3F 00 00` → `7F 00 00`, `3B 3B 09` → `76 76 12`, `3F 22 00` → `7F 44 00`), then fades it back to the resting colour in a few steps (pad 1: `7F 00 00`, `72 00 00`, `54 00 00`, `3F 00 00` over about 0.19 s). Hello MPC sends the hit colour on press and the resting colour on release.
 
-Inferred, to be checked in round 3: this setup is what moves the controls to cable 1 with relative Q-Links.
+**Checked on the test build (Hello MPC round 3, 2026-11-10):**
+
+- Pad colours work without any session or setup: the pads lit, and hit colours showed while a pad was held. (The button lights were not reported either way.)
+- Replaying this sequence moves the controls to cable 1 with relative Q-Links, as under Akai's app. With nothing holding the controller, it accepted a new token at once (`02`), echoed the `64` messages and answered `41` exactly as above, and replied `01` to every later ping. After the setup, pads, Q-Link 1 (1/2 clockwise, 127/126/125 counter-clockwise), the wheel and the buttons arrived on cable 1, and only the identity replies came on cable 0.
