@@ -8,6 +8,7 @@
 
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
+use crate::scale::Scale;
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
@@ -80,12 +81,16 @@ pub enum Order {
     /// The order the notes were pressed.
     Played,
     Random,
+    /// Random, but no note repeats until every note has played.
+    RandomOther,
+    /// One random order, kept until the held notes change.
+    RandomOnce,
     /// All notes together on every step.
     Chord,
 }
 
 impl Order {
-    pub const ALL: [Order; 9] = [
+    pub const ALL: [Order; 11] = [
         Order::Up,
         Order::Down,
         Order::UpDown,
@@ -94,6 +99,8 @@ impl Order {
         Order::Diverge,
         Order::Played,
         Order::Random,
+        Order::RandomOther,
+        Order::RandomOnce,
         Order::Chord,
     ];
 
@@ -107,6 +114,8 @@ impl Order {
             Order::Diverge => "Diverge",
             Order::Played => "As played",
             Order::Random => "Random",
+            Order::RandomOther => "Random, no repeats",
+            Order::RandomOnce => "Random once",
             Order::Chord => "Chord",
         }
     }
@@ -146,6 +155,15 @@ pub struct Settings {
     pub velocity: Velocity,
     /// Velocity of accented pattern steps.
     pub accent: u8,
+    /// Keeps generated notes in key, applied last. None for drum pads.
+    pub scale: Option<Scale>,
+    /// Spreads the notes of a chord step across 0..=100 % of the step,
+    /// lowest first, like a strum.
+    pub strum: u8,
+    /// A new note restarts the order and pattern from their first step.
+    pub retrigger: bool,
+    /// Steps to play after the notes start, then stop; 0 = keep going.
+    pub repeats: u16,
 }
 
 impl Default for Settings {
@@ -159,6 +177,10 @@ impl Default for Settings {
             swing: 50,
             velocity: Velocity::Played,
             accent: 127,
+            scale: None,
+            strum: 0,
+            retrigger: false,
+            repeats: 0,
         }
     }
 }
@@ -170,6 +192,7 @@ impl Settings {
         self.gate = self.gate.clamp(1, 100);
         self.swing = self.swing.clamp(50, 75);
         self.accent = self.accent.clamp(1, 127);
+        self.strum = self.strum.min(100);
         if let Velocity::Fixed(v) = self.velocity {
             self.velocity = Velocity::Fixed(v.clamp(1, 127));
         }
@@ -223,6 +246,29 @@ impl Events {
     }
 }
 
+/// How one note of a step is played.
+#[derive(Clone, Copy, Debug)]
+struct Hit {
+    /// Octaves added to the held note.
+    octave: i16,
+    /// Scale degrees (or semitones without a scale) added after the octave.
+    degree: i16,
+    /// Overrides the note's own velocity.
+    velocity: Option<u8>,
+    ratchet: u8,
+    gate: u8,
+    /// Frames after the step's start (strum).
+    delay: f64,
+}
+
+impl Hit {
+    fn plain(gate: u8) -> Self {
+        Self { octave: 0, degree: 0, velocity: None, ratchet: 1, gate, delay: 0.0 }
+    }
+}
+
+const MAX_ORDER: usize = MAX_NOTES * 4;
+
 #[derive(Clone, Copy, Debug)]
 struct Pending {
     /// Absolute time in frames.
@@ -249,6 +295,11 @@ pub struct Engine {
     /// tie steps that follow it.
     tied: f64,
     rng: u32,
+    /// Random no-repeat: which positions of the order have played.
+    bag: u128,
+    /// Random once: the order, and whether it still matches the notes.
+    once: [u8; MAX_ORDER],
+    once_len: usize,
     /// Notes that could not be queued, since the engine started.
     pub overflow: u64,
 }
@@ -270,6 +321,9 @@ impl Engine {
             queued: 0,
             tied: 0.0,
             rng: 0x2545_f491,
+            bag: 0,
+            once: [0; MAX_ORDER],
+            once_len: 0,
             overflow: 0,
         }
     }
@@ -327,6 +381,10 @@ impl Engine {
                 }
             }
             self.running = false;
+        }
+        if settings.octaves != self.settings.octaves || settings.order != self.settings.order {
+            self.once_len = 0;
+            self.bag = 0;
         }
         self.settings = settings;
         self.update_running();
@@ -408,6 +466,16 @@ impl Engine {
     }
 
     fn after_change(&mut self, before: &NoteSet) {
+        let added = self.notes.active().as_slice().iter().any(|h| !before.contains(h.note));
+        let removed = before.as_slice().iter().any(|h| !self.notes.active().contains(h.note));
+        if added || removed {
+            self.once_len = 0;
+            self.bag = 0;
+        }
+        if added && self.running && self.settings.retrigger {
+            self.step = 0;
+            self.arp_counter = 0;
+        }
         if self.settings.mode == Mode::Direct {
             let at = self.now as f64;
             for h in before.as_slice() {
@@ -466,65 +534,64 @@ impl Engine {
         if n == 0 {
             return;
         }
+        if self.settings.repeats > 0 && self.step >= u64::from(self.settings.repeats) {
+            return;
+        }
         let gate = self.settings.gate;
         self.tied = 0.0;
         match self.settings.mode {
             Mode::Direct => {}
-            Mode::Repeat => {
-                for h in &sorted[..n] {
-                    self.hit(h.note, self.velocity_of(h.velocity), at, len, 1, gate);
-                }
-            }
-            Mode::Arp => {
-                self.play_next(&sorted[..n], 0, None, at, len, 1, gate);
-            }
+            Mode::Repeat => self.chord(&sorted[..n], Hit::plain(gate), at, len),
+            Mode::Arp => self.play_next(&sorted[..n], Hit::plain(gate), at, len),
             Mode::Pattern => {
                 let step = self.pattern.steps()[(self.step % self.pattern.len() as u64) as usize];
-                match step {
-                    // A tie was already added to the notes of the step before
-                    // it, when they were scheduled.
-                    Step::Rest | Step::Tie => {}
-                    Step::Play { pick, octave, accent, gate: g, ratchet, chance } => {
-                        self.tied = self.ties_after(self.step) as f64 * len;
-                        if chance < 100 && self.random(100) >= usize::from(chance) {
-                            return;
-                        }
-                        let gate = if g == 0 { gate } else { g };
-                        let vel = if accent { Some(self.settings.accent) } else { None };
-                        let shift = i16::from(octave) * 12;
-                        match pick {
-                            Pick::Next => self.play_next(&sorted[..n], shift, vel, at, len, ratchet, gate),
-                            Pick::All => {
-                                for h in &sorted[..n] {
-                                    self.shifted_hit(*h, shift, vel, at, len, ratchet, gate);
-                                }
-                            }
-                            Pick::Index(i) => {
-                                let h = sorted[(usize::from(i.max(1)) - 1) % n];
-                                self.shifted_hit(h, shift, vel, at, len, ratchet, gate);
-                            }
-                            Pick::Random => {
-                                let h = sorted[self.random(n)];
-                                self.shifted_hit(h, shift, vel, at, len, ratchet, gate);
-                            }
-                            Pick::Lowest => self.shifted_hit(sorted[0], shift, vel, at, len, ratchet, gate),
-                            Pick::Highest => self.shifted_hit(sorted[n - 1], shift, vel, at, len, ratchet, gate),
-                        }
+                // A tie was already added to the notes of the step before it,
+                // when they were scheduled.
+                let Step::Play { pick, octave, accent, gate: g, ratchet, chance } = step else { return };
+                self.tied = self.ties_after(self.step) as f64 * len;
+                if chance < 100 && self.random(100) >= usize::from(chance) {
+                    return;
+                }
+                let lanes = self.pattern.lanes;
+                let lane_vel = lanes.velocity.at(self.step).filter(|&v| v > 0);
+                let lane_gate = lanes.gate.at(self.step).filter(|&v| v > 0);
+                let hit = Hit {
+                    octave: i16::from(octave) + i16::from(lanes.octave.at(self.step).unwrap_or(0)),
+                    degree: i16::from(lanes.degree.at(self.step).unwrap_or(0)),
+                    velocity: if accent { Some(self.settings.accent) } else { lane_vel },
+                    ratchet,
+                    gate: if g != 0 { g } else { lane_gate.unwrap_or(gate) },
+                    delay: 0.0,
+                };
+                match pick {
+                    Pick::Next => self.play_next(&sorted[..n], hit, at, len),
+                    Pick::All => self.chord(&sorted[..n], hit, at, len),
+                    Pick::Index(i) => self.play(sorted[(usize::from(i.max(1)) - 1) % n], hit, at, len),
+                    Pick::Random => {
+                        let h = sorted[self.random(n)];
+                        self.play(h, hit, at, len)
                     }
+                    Pick::Lowest => self.play(sorted[0], hit, at, len),
+                    Pick::Highest => self.play(sorted[n - 1], hit, at, len),
                 }
             }
         }
     }
 
+    /// Every note at once, strummed if the strum setting asks for it.
+    fn chord(&mut self, notes: &[Held], hit: Hit, at: f64, len: f64) {
+        let spread = len * f64::from(self.settings.strum) / 100.0 / notes.len() as f64;
+        for (k, h) in notes.iter().enumerate() {
+            self.play(*h, Hit { delay: hit.delay + spread * k as f64, ..hit }, at, len);
+        }
+    }
+
     /// One step of the arpeggiator's order.
-    #[allow(clippy::too_many_arguments)]
-    fn play_next(&mut self, sorted: &[Held], shift: i16, vel: Option<u8>, at: f64, len: f64, ratchet: u8, gate: u8) {
+    fn play_next(&mut self, sorted: &[Held], hit: Hit, at: f64, len: f64) {
         let n = sorted.len();
         let order = self.settings.order;
         if order == Order::Chord {
-            for h in sorted {
-                self.shifted_hit(*h, shift, vel, at, len, ratchet, gate);
-            }
+            self.chord(sorted, hit, at, len);
             return;
         }
         let mut played = [Held::default(); MAX_NOTES];
@@ -534,7 +601,7 @@ impl Engine {
         } else {
             sorted
         };
-        let total = n * usize::from(self.settings.octaves);
+        let total = (n * usize::from(self.settings.octaves)).min(MAX_ORDER);
         let c = self.arp_counter as usize;
         self.arp_counter += 1;
         let i = match order {
@@ -554,17 +621,55 @@ impl Engine {
                 if k % 2 == 0 { total - 1 - k / 2 } else { k / 2 }
             }
             Order::Random => self.random(total),
+            Order::RandomOther => {
+                let full = if total == 128 { u128::MAX } else { (1u128 << total) - 1 };
+                if self.bag & full == full {
+                    self.bag = 0;
+                }
+                let free = total - (self.bag & full).count_ones() as usize;
+                let mut r = self.random(free);
+                let mut pick = 0;
+                for p in 0..total {
+                    if self.bag & (1 << p) == 0 {
+                        if r == 0 {
+                            pick = p;
+                            break;
+                        }
+                        r -= 1;
+                    }
+                }
+                self.bag |= 1 << pick;
+                pick
+            }
+            Order::RandomOnce => {
+                if self.once_len != total {
+                    for p in 0..total {
+                        self.once[p] = p as u8;
+                    }
+                    for p in (1..total).rev() {
+                        let q = self.random(p + 1);
+                        self.once.swap(p, q);
+                    }
+                    self.once_len = total;
+                }
+                usize::from(self.once[c % total])
+            }
         };
         let h = base[i % n];
-        self.shifted_hit(h, shift + 12 * (i / n) as i16, vel, at, len, ratchet, gate);
+        self.play(h, Hit { octave: hit.octave + (i / n) as i16, ..hit }, at, len);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn shifted_hit(&mut self, h: Held, shift: i16, vel: Option<u8>, at: f64, len: f64, ratchet: u8, gate: u8) {
-        let note = i16::from(h.note) + shift;
+    /// Works out the pitch and queues the note; notes outside 0..=127 are
+    /// skipped.
+    fn play(&mut self, h: Held, hit: Hit, at: f64, len: f64) {
+        let mut note = i16::from(h.note) + 12 * hit.octave;
+        note = match self.settings.scale {
+            Some(scale) => scale.step(note, hit.degree),
+            None => note + hit.degree,
+        };
         if (0..=127).contains(&note) {
-            let v = vel.unwrap_or_else(|| self.velocity_of(h.velocity));
-            self.hit(note as u8, v, at, len, ratchet, gate);
+            let v = hit.velocity.unwrap_or_else(|| self.velocity_of(h.velocity));
+            self.hit(note as u8, v, at + hit.delay, len - hit.delay, hit.ratchet, hit.gate);
         }
     }
 
@@ -887,10 +992,109 @@ mod tests {
         assert!(out.dropped > 0 || e.overflow > 0);
     }
 
+    fn notes_of(e: &mut Engine, steps: u64) -> Vec<u8> {
+        ons(&run(e, STEP * steps, 128)).into_iter().map(|(_, n)| n).collect()
+    }
+
+    #[test]
+    fn random_without_repeats_plays_every_note_once_per_round() {
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::RandomOther, octaves: 2, ..Settings::default() });
+        for n in [60, 64, 67] {
+            e.press(n, 100);
+        }
+        let got = notes_of(&mut e, 18);
+        for round in got.chunks(6) {
+            let mut r = round.to_vec();
+            r.sort();
+            assert_eq!(r, [60, 64, 67, 72, 76, 79], "{got:?}");
+        }
+    }
+
+    #[test]
+    fn random_once_repeats_one_order_until_the_notes_change() {
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::RandomOnce, ..Settings::default() });
+        e.set_seed(99);
+        for n in [60, 62, 64, 65, 67] {
+            e.press(n, 100);
+        }
+        let got = notes_of(&mut e, 15);
+        assert_eq!(got[..5], got[5..10]);
+        assert_eq!(got[..5], got[10..]);
+        let mut sorted = got[..5].to_vec();
+        sorted.sort();
+        assert_eq!(sorted, [60, 62, 64, 65, 67]);
+    }
+
+    #[test]
+    fn lanes_loop_at_their_own_length() {
+        let mut e = engine(Mode::Pattern);
+        e.set_pattern(Pattern::parse("1 1 1 1 | oct 0 1 0 | vel 100 50").unwrap());
+        e.press(60, 90);
+        let got = run(&mut e, STEP * 6, 128);
+        let on: Vec<(u8, u8)> = got
+            .iter()
+            .filter_map(|(_, k)| match k {
+                EventKind::On { note, velocity } => Some((*note, *velocity)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(on, [(60, 100), (72, 50), (60, 100), (60, 50), (72, 100), (60, 50)]);
+    }
+
+    #[test]
+    fn scales_apply_after_offsets() {
+        let mut e = engine(Mode::Pattern);
+        e.set_settings(Settings {
+            mode: Mode::Pattern,
+            scale: Some(Scale::new(0, crate::scale::MAJOR)),
+            ..Settings::default()
+        });
+        e.set_pattern(Pattern::parse("1 1 1 1 | deg 0 2 4 7").unwrap());
+        e.press(61, 100); // C#: snaps to C
+        assert_eq!(notes_of(&mut e, 4), [60, 64, 67, 72]);
+        let mut e = engine(Mode::Pattern);
+        e.set_pattern(Pattern::parse("1 1 | deg 0 3").unwrap());
+        e.press(61, 100); // no scale: semitones
+        assert_eq!(notes_of(&mut e, 2), [61, 64]);
+    }
+
+    #[test]
+    fn strum_spreads_a_chord_across_the_step() {
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::Chord, strum: 60, ..Settings::default() });
+        for n in [60, 64, 67] {
+            e.press(n, 100);
+        }
+        let got = ons(&run(&mut e, STEP, 128));
+        let gap = STEP * 60 / 100 / 3;
+        assert_eq!(got, [(0, 60), (gap, 64), (2 * gap, 67)]);
+    }
+
+    #[test]
+    fn retrigger_restarts_the_order_and_repeats_stop_after_n_steps() {
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Arp, retrigger: true, ..Settings::default() });
+        e.press(60, 100);
+        e.press(64, 100);
+        e.press(67, 100);
+        assert_eq!(notes_of(&mut e, 2), [60, 64]);
+        e.press(55, 100); // restarts from the lowest
+        assert_eq!(notes_of(&mut e, 2), [55, 60]);
+
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Arp, repeats: 3, ..Settings::default() });
+        e.press(60, 100);
+        e.press(64, 100);
+        assert_eq!(notes_of(&mut e, 6), [60, 64, 60]);
+    }
+
     #[test]
     fn settings_are_clamped() {
-        let s = Settings { octaves: 9, gate: 0, swing: 99, accent: 0, velocity: Velocity::Fixed(0), ..Settings::default() }
+        let s = Settings { octaves: 9, gate: 0, swing: 99, accent: 0, velocity: Velocity::Fixed(0), strum: 200, ..Settings::default() }
             .clamped();
+        assert_eq!(s.strum, 100);
         assert_eq!((s.octaves, s.gate, s.swing, s.accent, s.velocity), (4, 1, 75, 1, Velocity::Fixed(1)));
     }
 }

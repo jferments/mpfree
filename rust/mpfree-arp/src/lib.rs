@@ -9,7 +9,9 @@
 pub mod engine;
 pub mod notes;
 pub mod pattern;
+pub mod scale;
 
 pub use engine::{Engine, Event, EventKind, Events, Mode, Order, Rate, Settings, Velocity, PPQ};
 pub use notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
-pub use pattern::{ParseError, Pattern, Pick, Step, BUILT_IN, MAX_STEPS};
+pub use pattern::{Lane, Lanes, ParseError, Pattern, Pick, Step, BUILT_IN, MAX_STEPS};
+pub use scale::{Scale, SCALES};
