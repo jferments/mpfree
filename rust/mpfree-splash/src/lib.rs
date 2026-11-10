@@ -7,6 +7,6 @@
 #![forbid(unsafe_code)]
 
 pub mod fb;
-pub mod font;
 pub mod galaxy;
 pub mod png;
+pub mod title;

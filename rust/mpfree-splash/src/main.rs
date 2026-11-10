@@ -14,7 +14,7 @@
 //!       It never writes storage. Stops after --seconds (0 = until killed).
 #![forbid(unsafe_code)]
 
-use mpfree_splash::fb::{FramebufferBackend, Geometry, Rotation};
+use mpfree_splash::fb::{self, FramebufferBackend, Geometry, Rotation};
 use mpfree_splash::galaxy::{Galaxy, GalaxyWidget};
 use mpfree_splash::png;
 use ratatui::Terminal;
@@ -130,7 +130,7 @@ fn run_terminal(o: &Options) -> Result<(), String> {
 fn run_preview(o: &Options, dir: &Path) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let galaxy = Galaxy::new();
-    let g = Geometry::mpc_one();
+    let g = fb::mpc_one();
     let backend = FramebufferBackend::new(g, o.rotation)?;
     let mut term = Terminal::new(backend).map_err(|e| e.to_string())?;
     let (lw, lh) = g.logical_size(o.rotation);
