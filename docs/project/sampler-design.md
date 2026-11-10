@@ -2,6 +2,8 @@
 
 **Status:** proposal, 2026-11-10, for the owner's review. No code yet. Research behind it: [samplers: what people like, what they don't, and what to borrow](../research/sampler-landscape.md).
 
+Companions: the [feature map](sampler-features.md) (every MPC sampler feature rebuilt with a better UI, features from other samplers, and what makes a sampler great for production and performance) and the [architecture](sampler-architecture.md) (crates, threads, data flow, real-time rules, files). Mockups of the screens and the sampler skill tree are in the [mpfree-claude repo](https://github.com/jferments/mpfree-claude/tree/main/sampler).
+
 The sampler is the core of the MPC. This document proposes how MPFree records sound, chops and edits it, puts it on pads and plays it back, including granular tools. It builds on what exists: the pad player in `rust/mpfree-hello` (kits on pads, a `SCHED_FIFO` audio thread, direct ALSA playback), the `mpfree-ui` toolkit ([UI architecture](ui-architecture.md)), the host-only `mpfree-sampler` crate, and the decisions already made: direct ALSA ([ADR-0002](../decisions/adr-0002-direct-alsa-audio.md)), MIT licence, a GUI-first, modular UI, one design for beatmakers and performers.
 
 ## Goals
