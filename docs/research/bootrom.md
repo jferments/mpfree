@@ -521,3 +521,124 @@ The independently delivered **`mpfree_bootchain_offline.py`** performs a privacy
 **`MPFreeBootChainGhidraAudit.py`** runs in the Ghidra Python Console for **both** the p1 program (`ARM:LE:32:v7`, memory start `0xFF704004`) and the p3 raw payload program (base 0 or recommended `0x00100000`). It produces separate private stage reports with entry paths, code windows, literal cross-references, candidates for ROM return, indirect branch clues, Fastboot strings and potential embedded FDTs. It does not modify Ghidra's analysis database, firmware bytes or MPFree repository files. Neither script has been executed in the owner's Ghidra; Python syntax and the offline script's synthetic-image test have been performed.
 
 This section and the accompanying earlier research chapters do **not** establish software MaskROM entry. The next evidence should be read-only reports from both stages and extracted DTB comparisons.
+
+## 13. Complete p1/p3 boot-chain audits: confirmed CRU reset, SPL loader, Fastboot command leads and DTBs (2026-11-10)
+
+**Owner data:** `bootchain-offline-20261110T134821.txt`, `bootchain-offline-20261110T134836.txt`, `bootchain-ghidra-p1-spl-20261110T134948.txt`, `bootchain-ghidra-p3-uboot-20261110T135049.txt`. All reports were generated offline or by Ghidra. This section **supersedes the earlier assertion that the RK3288 hardware reset callback remained unidentified.** It does not authorize hardware changes.
+
+### 13.1 Firmware identity and container integrity
+
+- Verified p1 and p3 SHA256 hashes still match the baseline; Rockchip p1 ID-block signature `0x0FF0AA55`, 32 KiB `RK32` initial stage, `disable_rc4=1`, first ARM reset vector `0xEA00000F` at p1+0x820.
+- p3 U-Boot legacy uImage name `U-Boot 2016.05-inmusic-20191010`, 363,649-byte payload, linked/load address `0x00100000`, **both header and data CRCs pass**. p2 8-KiB environment's CRC also passes; all environment values were deliberately omitted from the shared report.
+- p1 contains an in-bounds embedded DTB at **p1+0x6A7C** (3,239 bytes). p3 contains an in-bounds DTB at payload **+0x502F4** (`0x898D` bytes); an additional `D00DFEED` at payload `+0x287AC` has an **out-of-bounds claimed size** and must **not** be treated as a valid DTB without separate verification.
+- A raw scan of the 3.10.0 `AZ01` update image does not inspect its compressed rootfs. The existing project extractor already established that this particular 3.10.0 update has only the rootfs payload and no replacement p1/p3 U-Boot.
+
+### 13.2 A hardware-reset driver has been located in the p1 executable
+
+**New measured function:** `0xFF704214` contains the actual reset operation in the 2019 InMusic SPL. Its Ghidra disassembly (Thumb) is:
+
+```asm
+ff704214 push {r4,lr}
+ff704216 mov  r4,r1             ; reset type from callback
+ff704218 bl   0xff706798       ; resolve a device-associated base
+...
+ff704222 cbz  r4,ff70422e
+ff704224 cmp  r4,#1
+ff704226 beq  ff704240
+
+; reset type 0: warm
+ff70422e ldr  r3,[ff704250]
+ff704230 str  r3,[r0,#0x50]
+ff704232 movw r3,#0xeca8
+ff704236 str.w r3,[r0,#0x1b4]
+
+; reset type 1: cold
+ff704240 ldr  r3,[ff704250]
+ff704242 str  r3,[r0,#0x50]
+ff704244 movw r3,#0xfdb9
+ff704248 str.w r3,[r0,#0x1b0]
+```
+
+This precisely matches the **operation and reset keys** of Rockchip's U-Boot sysreset driver. The **effective destination** depends on `0xFF706798`'s returned base; the expected RK3288 CRU base is `0xFF760000`, making warm and cold destinations `0xFF7601B4` and `0xFF7601B0` respectively. Recover and verify that base before recording actual effective MMIO addresses as experimentally established.
+
+The full reset request path through `reset_bootloader`, `reset_cpu`, `sysreset_walk_halt`, `sysreset_walk` and driver-model dispatch was already established in §§9–12. The remaining target is the registration/ops-table pointer chain **from sysreset uclass through `0xFF704214`**, not another search for reset magic.
+
+**Why the earlier literal scans missed it:** `MOVW` encodes `0xECA8` and `0xFDB9` in Thumb instructions; neither the complete CRU register addresses nor the warm key need appear as contiguous 32-bit literals. This provides a concrete example that **absence of an exact `BOOT_BROM_DOWNLOAD` word is negative but not exhaustive evidence**.
+
+Reference: https://nest-open-source.googlesource.com/manifest_repos/u-boot/+/06419a4bae2adcdd0ed4e73f93f3f40a82172e45/drivers/sysreset/sysreset_rockchip.c
+
+### 13.3 SPL startup and eMMC U-Boot loading
+
+The Ghidra call graph from the reset vector is:
+
+```text
+ff704020 ARM vector -> ff704064 -> ff7040b4 -> ff704068 ARM CPU setup
+                                                      |
+                                      bl ff7040b8 (cache/MMU handling)
+                                      bl ff704118 (thunk toward Thumb)
+                                      bl ff705208 (stack/BSS and SPL setup)
+                                                       |
+                                            indirect branch to ff705350
+                                                       |
+                                            iterate five boot-device entries
+                                                       |
+                                            bl ff7054a4 (MMC loader)
+```
+
+The `ff705350` decompilation explicitly loops through boot-device candidates, with a direct call to `ff7054a4`. `ff7054a4` initializes MMC, queries boot mode, reads one sector at **LBA `0x100`** using the device's block-read callback, validates an image header and reads additional blocks. This strongly supports **SPL directly loading the p3 U-Boot uImage from eMMC**, rather than always handing off loading to the BootROM. Final read destination, exact header validation, DRAM initialization and branch-to-next-stage remain unproven.
+
+The `ff704120` function should **not** be labelled `save_boot_params` solely because it appears near startup: it references `r9` global state and returns ordinary status codes. Mainline RK3288's SPL-to-ROM continuation capability is optional (`CONFIG_SPL_ROCKCHIP_BACK_TO_BROM`) and has not been demonstrated in the stock InMusic SPL. A generic `BX LR` is not evidence of returning to immutable ROM.
+
+External reference: https://qemu.googlesource.com/u-boot/+/fd6e425be243dce518a02710482514faccf3c211/arch/arm/include/asm/arch-rockchip/bootrom.h
+
+### 13.4 p3 Fastboot has more functionality than the initial reset command
+
+The verified p3 *payload strings* (payload+ offsets) include:
+
+| Feature/clue | Approximate offset(s) | Confidence |
+| --- | --- | --- |
+| `getvar:` and `download:` prefixes | `0x3F092`, `0x3F09A` | Strings present; dispatcher registration untraced |
+| `cb_getvar` | `0x31A5A` | String present; callback link not proven |
+| `do_fastboot`, `usb_dnl_fastboot`, `f_fastboot` | `0x31C00`, `0x35166`, `0x37255` | Strings present |
+| `fb_mmc_flash_write`, `fb_mmc_erase` | `0x317FD`, `0x31823` | Dangerous MMC handler identifiers; runtime reachability unproven |
+| `reboot-bootloader`, `FAILCannot set reboot flag` | `0x32C0D`, `0x32C1F` | String present |
+| `inmusic-unlock-magic-...`, `unlock`, `FAILunknown oem command` | `0x32BAB`, `0x32BDA`, `0x32BF5` | Vendor-specific path likely; protection model, arguments and effects unknown. **Do not publish the complete unlock token in logs or this document.** |
+| `gpt write mmc %x $partitions` | `0x32B84` | Potential destructive GPT rewrite command, not proven reachable |
+| `fastboot_partition_alias_` | `0x39B5D` | Partition alias machinery present |
+| `az01_recovercmd`, `az01_bootcmd` | `0x33459`, `0x33491` | Built-in recovery/default boot path |
+| `boot_targets=mmc0 mmc1` | `0x3363F` | Built-in target preference |
+
+The existing p3 Ghidra raw import has **mapped memory base `0x00000000`**, but its internal absolute data pointers and uImage load address use **`0x00100000`**. As a result, the Ghidra report displays most Fastboot strings without references. **This is a mapping problem, not evidence those strings are unused.** For proper pointer recognition, create a *separate* raw p3 import at memory base `0x00100000`, auto-analyze it, and compare the results to the original base-0 import. Alternatively, recover raw absolute linked-pointer references with the standalone read-only `mpfree_bootchain_deepmap.py` tool, without changing the Ghidra database.
+
+Safety distinction: a visible `gpt write` or unlock string does **not** authorize issuing USB commands. Especially avoid `oem`, `format`, `flash`, `erase`, `mmc` writes or unlock operations during an initial read-only Fastboot survey.
+
+U-Boot fastboot reference: https://github.com/u-boot/u-boot/blob/main/doc/android/fastboot.rst
+
+### 13.5 Device-tree comparison: ACVA 3.6.0 vs 3.10.0
+
+The offline inventory parsed both:
+- 3.6.0 `rk3288-az01-acva.dtb`, under `~/mpfree-work/boot-files/6.6.95-az01-2025-06-27-rt55/`.
+- 3.10.0 `rk3288-az01-acva.dtb`, under `~/mpfree-work/boot-files/6.18.44-az01-2026-08-10-rt6/`.
+
+Both define `/power-management@ff730000/reboot-mode` (`syscon-reboot-mode`, offset `0x94`) with:
+```text
+mode-normal        = 0x5242C300
+mode-recovery      = 0x5242C303
+mode-bootloader    = 0x5242C309
+mode-loader        = 0x5242C301
+```
+The 3.10.0 ACVA DTB also adds `mode-update=0x5242C301`.
+
+These properties specify **what Linux writes on reboot with the corresponding argument**; they do *not* prove InMusic SPL or silicon ROM interprets all values. In particular, `mode-loader` is **not proof of working Rockusb/MaskROM entry**.
+
+For the ACVA board both DTBs describe `usb@ff580000` as DWC2 peripheral, with `status="disabled"`, and `usb@ff540000` as host. This does not rule out the silicon ROM or U-Boot's own USB stack using the controller; Linux `status` is not an immutable hardware policy. Both DTBs have secure-efuse nodes, but their existence does **not** reveal secure-boot eFuse state.
+
+### 13.6 Version-scoped, non-destructive next pass
+
+1. Run `mpfree_bootchain_deepmap.py` locally on the verified reference `mmcblk0.img`. It reconstructs p3's linked-pointer references to Fastboot strings and contextual command tables without printing unlock secrets or environment values.
+2. Run `MPFreeBootChainDecisions.py` in Ghidra, once with p1 and once with p3 open. It prints bounded SPL boot-path, hardware sysreset, and p3 Fastboot pointer-table neighborhoods. It makes **no Ghidra database changes**.
+3. Use those reports to map Fastboot callback pointers and exact verification/partition policy, then to trace where SPL's MMC reader loads p3 and jumps into U-Boot.
+4. Analyze the embedded **SPL DTB** and **U-Boot DTB** against both ACVA kernel DTBs; confirm sysreset driver registration, boot-source configuration and DWC2 controller bindings.
+5. Separately research RK3288 ROM return ABI and USB recovery over public source/TRM. **The BootROM is silicon ROM, not within p1/p3**. Genuine on-device MaskROM behavior requires separately authorized enumeration or hardware evidence.
+
+Scripts are distributed privately, **not committed**. The repository authorization remains restricted to `docs/research/bootrom.md`. No destructive device commands are approved by this section.
