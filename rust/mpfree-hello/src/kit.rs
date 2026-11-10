@@ -150,6 +150,8 @@ struct Voice {
     kit: usize,
     sound: usize,
     pos: usize,
+    /// Frames of silence before the sound starts (its place in the period).
+    wait: usize,
     gain: f32,
     started: u64,
 }
@@ -187,6 +189,12 @@ impl Mixer {
     /// the level linearly. Returns the sound's index, or None if the kit has
     /// nothing on that note.
     pub fn hit(&mut self, note: u8, velocity: u8) -> Option<usize> {
+        self.hit_at(note, velocity, 0)
+    }
+
+    /// Like `hit`, but the sound starts `offset` frames into the next
+    /// `render`, so a hit lands on its exact frame (Note Repeat).
+    pub fn hit_at(&mut self, note: u8, velocity: u8, offset: usize) -> Option<usize> {
         let kit = self.kit;
         let sound = self.kits[kit].sounds.iter().position(|s| s.note == note)?;
         if self.voices.len() >= MAX_VOICES {
@@ -194,8 +202,14 @@ impl Mixer {
             self.voices.swap_remove(oldest);
         }
         self.hits += 1;
-        self.voices.push(Voice { kit, sound, pos: 0, gain: velocity.min(127) as f32 / 127.0, started: self.hits });
+        self.voices.push(Voice { kit, sound, pos: 0, wait: offset, gain: velocity.min(127) as f32 / 127.0,
+                                 started: self.hits });
         Some(sound)
+    }
+
+    /// Stop every sound at once.
+    pub fn stop_all(&mut self) {
+        self.voices.clear();
     }
 
     pub fn playing(&self) -> usize {
@@ -208,14 +222,20 @@ impl Mixer {
         left.fill(0.0);
         right.fill(0.0);
         let kits = &self.kits;
+        let len = left.len().min(right.len());
         self.voices.retain_mut(|v| {
+            if v.wait >= len {
+                v.wait -= len;
+                return true;
+            }
+            let start = std::mem::take(&mut v.wait);
             let audio = &kits[v.kit].sounds[v.sound].audio;
             let frames = audio.len() / 2;
-            let n = left.len().min(frames - v.pos);
+            let n = (len - start).min(frames - v.pos);
             let g = v.gain * master / 32768.0;
             for f in 0..n {
-                left[f] += audio[2 * (v.pos + f)] as f32 * g;
-                right[f] += audio[2 * (v.pos + f) + 1] as f32 * g;
+                left[start + f] += audio[2 * (v.pos + f)] as f32 * g;
+                right[start + f] += audio[2 * (v.pos + f) + 1] as f32 * g;
             }
             v.pos += n;
             v.pos < frames
@@ -314,6 +334,32 @@ mod tests {
         m.hit(37, 0);
         m.render(&mut l, &mut r, 1.0);
         assert_eq!(l, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn hits_can_start_later_in_the_period() {
+        let kick: Vec<i16> = vec![16384; 2 * 3]; // 3 frames at half scale
+        let data = build(&[(37, "Kick", &kick)]);
+        let mut m = Mixer::new(one_kit(parse(&data).unwrap()));
+        let (mut l, mut r) = ([0f32; 4], [0f32; 4]);
+        // Two frames in: frames 2 and 3 of this period, then the last one next period.
+        assert_eq!(m.hit_at(37, 127, 2), Some(0));
+        m.render(&mut l, &mut r, 1.0);
+        assert_eq!(l, [0.0, 0.0, 0.5, 0.5]);
+        m.render(&mut l, &mut r, 1.0);
+        assert_eq!(l, [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(m.playing(), 0);
+        // An offset past this period waits for the next one.
+        m.hit_at(37, 127, 5);
+        m.render(&mut l, &mut r, 1.0);
+        assert_eq!(l, [0.0; 4]);
+        m.render(&mut l, &mut r, 1.0);
+        assert_eq!(l, [0.0, 0.5, 0.5, 0.5]);
+        // stop_all silences everything at once.
+        m.hit(37, 127);
+        m.stop_all();
+        m.render(&mut l, &mut r, 1.0);
+        assert_eq!((l, m.playing()), ([0.0; 4], 0));
     }
 
     #[test]
