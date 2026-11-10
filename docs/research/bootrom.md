@@ -362,3 +362,44 @@ This follow-up strengthens the finding that the stock 2019 SPL implements a **Fa
 The reset framework behavior closely resembles U-Boot `reset_cpu()`, `sysreset_walk_halt()` and driver-model dispatch. However the exact identity of `0xFF708282` and the final RK3288 reset register accesses must be confirmed from its instructions. For context, upstream U-Boot's `drivers/sysreset/sysreset-uclass.c` implements `sysreset_walk_halt` and `reset_cpu`: https://android.googlesource.com/platform/external/u-boot/+/825936815a752ce15f5a883c23bc54be76403268/drivers/sysreset/sysreset-uclass.c
 
 **Next offline step:** run the separately distributed **`MPFreeP1SysresetDeepTrace.py`** Ghidra script, which reads `0xFF708282`, disassembles already-recognized functions, checks raw callback pointers and emits a private report at `~/mpfree-work/p1-sysreset-deep-trace-*.txt`. It does not patch Ghidra, firmware or MPC storage. Any hardware reboot/BootROM experiment still requires explicit owner approval.
+
+## 11. SPL sysreset call chain now identified (owner report, 2026-11-10)
+
+The owner ran the separately distributed read-only Ghidra helper and provided the private report `p1-sysreset-deep-trace-20261110T132622.txt`. The active binary is the 2019 InMusic `p1-initial-stage-code.bin` with actual SRAM memory-block base `0xFF704004`. The report confirms the `reset_bootloader` register write and resolves the immediate call chain to the system-reset framework.
+
+### Measured Thumb call sequence
+
+```text
+0xFF705278  reset_bootloader command handler
+    LDR r3, =0xFF730094
+    LDR r2, =0x5242C309
+    STR r2, [r3]                  ; Fastboot requested, not MaskROM
+    BL  0xFF708296
+        0xFF708296  reset_cpu-like wrapper
+            MOVS r0, #0           ; warm reset type
+            BL   0xFF708282
+                0xFF708282  sysreset_walk_halt-like routine
+                    BL   0xFF70823E
+                    ADDS r0, #0x73
+                    BNE  fallback
+                    MOVS r0, #0x64
+                    BL   0xFF708DB0         ; likely mdelay(100)
+                    fallback:
+                    BL   0xFF708B74         ; likely nonreturning hang()
+```
+
+The `ADDS r0,#0x73` followed by `BNE` tests whether the reset-walk return is `-115`, i.e. `-EINPROGRESS`. This implementation closely matches upstream U-Boot `sysreset_walk_halt()` and `reset_cpu()`, whose contract is to initiate a reset, wait briefly if `-EINPROGRESS`, then halt if control returns. Comparison source: https://android.googlesource.com/platform/external/u-boot/+/825936815a752ce15f5a883c23bc54be76403268/drivers/sysreset/sysreset-uclass.c .
+
+**Current confidence:** `0xFF708296` = reset_cpu-like wrapper and `0xFF708282` = sysreset_walk_halt-like routine are very high confidence from instruction structure. The exact U-Boot function at **`0xFF70823E`** has **not yet been disassembled in the supplied report**. Identifying the precise `rk3288_sysreset` request callback and hardware reset registers remains the immediate task. The potential `mdelay` and `hang` functions at `0xFF708DB0` and `0xFF708B74` likewise remain to be independently inspected.
+
+### Important callback correction
+
+The earlier indirect dispatcher at `0xFF7082C0` is called at least from **MMC image-loading code** at `0xFF705538`, and from `0xFF7071DA`. It looks up a registration and dispatches through a function pointer at offset `0x14`; **the current evidence does not show that it belongs to the sysreset call chain**. Do not call it the RK3288 reset driver callback without an actual call edge.
+
+The string `rk3288_sysreset` is present at `0xFF7099D9`, with raw references at `0xFF706794` and `0xFF709F78`. They are candidates for reverse engineering the real driver, but no callback pointer has yet been recovered from the registered structure.
+
+### Consequences for MaskROM
+
+The available p1 and p3 disassemblies firmly establish **Fastboot** flag writes. They do not demonstrate a check for `BOOT_BROM_DOWNLOAD=0xEF08A53C` at first-stage startup, or any handoff to the immutable RK3288 BootROM. The absence of the magic word in scanned p1/p3 bytes is meaningful negative evidence but does not exclude computed registers or alternative ROM entry methods.
+
+Next: collect the private Ghidra report from the separately distributed `MPFreeP1ResetDriverTrace.py` script. It inspects `0xFF70823E`, `0xFF708DB0`, `0xFF708B74`, the reset-driver name references, and bounded direct-call targets. It performs **read-only Ghidra database operations** and must not be added to the MPFree repository under the current one-file permission. No MPC reset or register writes are part of this investigation.
