@@ -27,6 +27,9 @@ case "${1:-}" in
   "--touchscreen") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-touchscreen.sh"; REPORT_KIND="mpc-one-touchscreen" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
+  "--audio-midi") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-audio-midi.sh"; REPORT_KIND="mpc-one-audio-midi" ;;
+  "--midi-activity") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-activity" ;;
+  "--midi-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-capture" ;;
   "--boot-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-boot-map.sh"; REPORT_KIND="mpc-one-boot-map" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
   "--ram-smoke-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-smoke-preflight" ;;
@@ -40,7 +43,7 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -85,6 +88,18 @@ elif [[ "${1:-}" == "--touch-capture-check" || "${1:-}" == "--touch-capture" ]];
         "${MPFREE_ACCEPT_TOUCH_CAPTURE:-}" != 'YES' ) ]]; then
     die 'M12 dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_TOUCH_CAPTURE=YES bash tools/mpc-one/collect-over-ssh.sh --touch-capture'
   fi
+elif [[ "${1:-}" == "--midi-activity" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-activity on workstation'
+  [[ -r "$SCRIPT_DIR/host_midi_activity.py" ]] || die 'Missing host_midi_activity.py'
+  [[ -r "$SCRIPT_DIR/read-only-midi-counters.sh" ]] || die 'Missing read-only-midi-counters.sh'
+  [[ -t 0 ]] || die '--midi-activity is interactive: run it from a terminal'
+elif [[ "${1:-}" == "--midi-capture" ]]; then
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-capture on workstation'
+  [[ -r "$SCRIPT_DIR/host_midi_capture.py" ]] || die 'Missing host_midi_capture.py'
+  [[ -r "$SCRIPT_DIR/passive-usbmon-capture.sh" ]] || die 'Missing passive-usbmon-capture.sh'
+  [[ -t 0 ]] || die '--midi-capture is interactive: run it from a terminal'
+  [[ "${MPFREE_ACCEPT_USBMON:-}" == 'YES' ]] ||
+    die 'Opt-in required (passive usbmon reader, max 240 s): MPFREE_ACCEPT_USBMON=YES bash tools/mpc-one/collect-over-ssh.sh --midi-capture'
 elif [[ "${1:-}" == "--netbench" ]]; then
   [[ -r "$SCRIPT_DIR/network-bench.py" ]] || die "Missing host-only network benchmark: $SCRIPT_DIR/network-bench.py"
   command -v python3 >/dev/null 2>&1 || die "python3 is required for --netbench on workstation"
@@ -194,7 +209,11 @@ fi
 mkdir -p -- "$MPC_REPORT_DIR"
 REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
-if [[ "${1:-}" == "--netbench" ]]; then
+if [[ "${1:-}" == "--midi-capture" ]]; then
+  echo "OWNER OPT-IN: passive usbmon capture of the internal controller (max 240 s) to $REPORT"
+elif [[ "${1:-}" == "--midi-activity" ]]; then
+  echo "Guided READ-ONLY MIDI counter map (procfs reads only) to $REPORT"
+elif [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
 elif [[ "${1:-}" == "--touch-axes-check" ]]; then
   echo "READ-ONLY M10 exact MPC/ILI2117/ARM ABI preflight (NO upload): $REPORT"
@@ -256,6 +275,21 @@ elif [[ "${1:-}" == "--touch-capture-check" || "${1:-}" == "--touch-capture" ]];
   events_log="${REPORT%.txt}.events.log"
   if [[ -f "$events_log" ]]; then
     sha256sum "$events_log" > "$events_log.sha256"
+  fi
+elif [[ "${1:-}" == "--midi-capture" ]]; then
+  if ! timeout --foreground 600 python3 "$SCRIPT_DIR/host_midi_capture.py" \
+      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --script "$SCRIPT_DIR/passive-usbmon-capture.sh" --report "$REPORT"; then
+    echo "MIDI capture stopped or failed; partial report kept: $REPORT" >&2
+    exit 1
+  fi
+elif [[ "${1:-}" == "--midi-activity" ]]; then
+  # --foreground keeps the prompts readable from the terminal.
+  if ! timeout --foreground 900 python3 "$SCRIPT_DIR/host_midi_activity.py" \
+      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --script "$SCRIPT_DIR/read-only-midi-counters.sh" --report "$REPORT"; then
+    echo "MIDI activity map stopped or failed; partial report kept: $REPORT" >&2
+    exit 1
   fi
 elif [[ "${1:-}" == "--netbench" ]]; then
   echo "ACTIVE BENCHMARK REQUESTED: two 4 MiB SSH data transfers plus 20 ICMP pings."
