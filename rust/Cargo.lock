@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "mpfree-controller"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-core"
 version = "0.1.0"
 
@@ -25,6 +29,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-handoff-model"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-headless"
 version = "0.1.0"
 dependencies = [
@@ -34,12 +42,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "mpfree-handoff-model"
+name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
-name = "mpfree-network"
+name = "mpfree-render"
 version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]
+
+[[package]]
+name = "mpfree-sampler"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]
 
 [[package]]
 name = "mpfree-session"
@@ -51,17 +69,3 @@ dependencies = [
 [[package]]
 name = "mpfree-touch"
 version = "0.1.0"
-
-[[package]]
-name = "mpfree-sampler"
-version = "0.1.0"
-dependencies = [
- "mpfree-core",
-]
-
-[[package]]
-name = "mpfree-render"
-version = "0.1.0"
-dependencies = [
- "mpfree-core",
-]
