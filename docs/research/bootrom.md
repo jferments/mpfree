@@ -403,3 +403,121 @@ The string `rk3288_sysreset` is present at `0xFF7099D9`, with raw references at 
 The available p1 and p3 disassemblies firmly establish **Fastboot** flag writes. They do not demonstrate a check for `BOOT_BROM_DOWNLOAD=0xEF08A53C` at first-stage startup, or any handoff to the immutable RK3288 BootROM. The absence of the magic word in scanned p1/p3 bytes is meaningful negative evidence but does not exclude computed registers or alternative ROM entry methods.
 
 Next: collect the private Ghidra report from the separately distributed `MPFreeP1ResetDriverTrace.py` script. It inspects `0xFF70823E`, `0xFF708DB0`, `0xFF708B74`, the reset-driver name references, and bounded direct-call targets. It performs **read-only Ghidra database operations** and must not be added to the MPFree repository under the current one-file permission. No MPC reset or register writes are part of this investigation.
+
+## 12. Whole-boot-chain research programme: BootROM, SPL, U-Boot, Fastboot, DTB and installer (2026-11-10)
+
+### Scope of this round and new source distinction
+
+The owner asked to expand the investigation beyond reset handling, to **early boot-mode decisions, Fastboot command behavior, complete architecture, and true MaskROM/BootROM code**. The latest owner report is `p1-reset-driver-trace-20261110T133440.txt`. Findings about this unit below derive from that report and earlier verified owner surveys; general RK3288/U-Boot behavior is labelled **upstream** and is **not assumed to be present** in the 2019 InMusic binary.
+
+**Important for versions:** the existing [Akai updater offline research](../hardware/akai-updater-offline.md) established that the official `MPC-3.10.0-Gen1-update.img` is an **AZ01 container with a single xz-compressed rootfs partition**; it **does not contain replacement p1/p3 bootloader payloads**. Thus the reference unit's verified 2019 p1/p3 loaders remain the ones to map for the 3.6.0-to-3.10.0 RAM-only kexec tests. The rootfs/kernel/DTB and software-update logic do change. This statement is about the specific examined 3.10.0 image, **not** a guarantee that all future Akai update images leave the bootloader untouched.
+
+### 12.1 Direct result of latest SPL reset-driver trace
+
+The p1 SPL reset chain can now be reconstructed with high confidence from Thumb instructions:
+
+```text
+reset_bootloader                     ff705278
+  store 0x5242c309 -> 0xff730094    ff70527e
+  reset_cpu-like wrapper            ff708296
+    sysreset_walk_halt-like         ff708282
+      sysreset_walk-like            ff70823e
+         attempts reset types 0..2
+         discovers reset devices    ff7060b4
+         requests driver reset      ff70822e
+         advances device iterator   ff7060d2
+      if result == -EINPROGRESS, delay(100)  ff708db0
+      always call hang fallback             ff708b74
+```
+
+- `0xFF70823E` enumerates reset types, requests a reset device using device-model calls and returns `-115` when a reset is in progress. This precisely matches the control structure expected of U-Boot's `sysreset_walk()`; the symbolic function name is inferred, not from surviving symbols.
+- `0xFF708DB0` calls `0xFF708D90(1000)` repeatedly for each millisecond, confirming that a `100` argument produces ~100 ms delay.
+- `0xFF708B74` prints a diagnostic and branches to itself indefinitely, confirming it is a non-returning hang/error routine. Ghidra's decompiler incorrectly includes subsequent function bodies after it; prefer bounded assembly.
+- Device registration string `rk3288_sysreset` is present at `0xFF7099D9` and referenced at `0xFF706794` and `0xFF709F78`.
+- An indirect call at `0xFF7067DC` loads a callback from a device's driver operations table `[[dev]+0x3C]+0x34` and executes `BLX r3`. It **may be relevant to sysreset**, but the specific call edge to this function and its ultimate hardware register write are **not proven yet**.
+
+Upstream U-Boot's Rockchip sysreset driver specifies an implementation such as `writel(0xECA8, CRU_BASE+0x1B4)` for a warm reset, or `writel(0xFDB9, CRU_BASE+0x1B0)` for cold reset. Using the RK3288's CRU base `0xFF760000`, these candidate hardware addresses are **`0xFF7601B4` and `0xFF7601B0`**. The actual InMusic SPL driver may compute these from a base pointer and offset, leaving no full 32-bit address literal; direct tracing is still needed. References:
+- https://nest-open-source.googlesource.com/manifest_repos/u-boot/+/06419a4bae2adcdd0ed4e73f93f3f40a82172e45/drivers/sysreset/sysreset_rockchip.c
+- https://nest-open-source.googlesource.com/manifest_repos/u-boot/+/06419a4bae2adcdd0ed4e73f93f3f40a82172e45/drivers/clk/rockchip/clk_rk3288.c
+- https://docs.u-boot.org/en/stable/api/sysreset.html
+
+### 12.2 Critical distinction: BootROM code is not stored in p1/p3
+
+RK3288 **BootROM is immutable silicon ROM**, while the stock `RK32` loader in p1 is **InMusic U-Boot SPL** running from internal SRAM; p3 is U-Boot proper. The eMMC backup cannot contain the silicon BootROM program. Therefore:
+
+1. **Static inspection of private p1/p3** can detect *calls back into the ROM*, saved ROM return context, boot-mode registers, Fastboot commands and USB code, but not the full silicon-ROM implementation.
+2. **Public U-Boot source and Rockchip TRM** can establish ROM-entry/exit conventions, boot priority, SRAM map, register behavior and USB protocol design for relevant chips. They are not substitutes for physical measurements on the MPC One.
+3. **Actual BootROM behavior on this unit** would need to be inferred from USB enumeration, protocol captures in a genuinely established MaskROM session, passive boot console evidence, or explicitly authorized JTAG/debug access where permitted by silicon security settings. Normal eMMC dump and Ghidra disassembly cannot prove the internal silicon-ROM implementation.
+4. Code associated with **Rockusb Loader** may live in a downloaded RAM image/usbplug, not necessarily in p1 or p3; **Akai Update Mode** runs U-Boot Fastboot, not the silicon ROM USB protocol.
+
+### 12.3 Two distinct BootROM handoffs, and the most important new target
+
+Rockchip's U-Boot documentation says the RK3288 supports a **return-to-BootROM next-stage loading mode**: the silicon ROM loads SPL, SPL performs initialization, then returns to the ROM, which may load another stage. Upstream `SPL_ROCKCHIP_BACK_TO_BROM` is an optional configuration, **not yet established for this particular InMusic SPL**.
+
+An additional **return-to-ROM download mode** is illustrated in later upstream `bootrom.c`: very early `save_boot_params()` saves a ROM-return context, optionally checks the scratch register for `BOOT_BROM_DOWNLOAD=0xEF08A53C`, clears it, and returns to ROM with a nonzero return value; the ROM itself does not inspect that scratch register in the described implementation. The ROM can also be asked to continue normal second-stage loading. The latter capability does not imply the former was enabled in InMusic's older code.
+
+References:
+- https://android.googlesource.com/platform/external/u-boot/+/d58779cb6425416074fce00f36066d76dc6d850b/doc/README.rockchip
+- https://coral.googlesource.com/u-boot-mtk/+/refs/heads/master/arch/arm/mach-rockchip/bootrom.c
+- https://qemu.googlesource.com/u-boot/+/fd6e425be243dce518a02710482514faccf3c211/arch/arm/include/asm/arch-rockchip/bootrom.h
+
+**Priority:** trace ARM startup at `0xFF704020 -> 0xFF704064 -> 0xFF7040B4 -> 0xFF704068`, the ARM/Thumb handoff near `0xFF7041E4` and main initialization `0xFF705208`, looking for saved LR/SP, setjmp/longjmp, early return to ROM, and how boot-device source is passed to `0xFF705350`. Determine whether p3 gets loaded by SPL's own MMC loader or by the BootROM continuation code, or whether the implementation supports both. The existing `0xFF7054A4` MMC loader and its indirect block-read callback are evidence for SPL-side loading but do not yet prove all stage transitions.
+
+### 12.4 Systematic MaskROM signature search — limits
+
+For each of p1, p3, the extracted DTBs, the Linux reboot-mode configuration and any verified loader RAM blobs:
+
+1. Search raw LE32 values for `0xEF08A53C` (BootROM download), `0x5242C301` (Rockusb loader), `0x5242C309` (Fastboot), and `0xFF730094` (reboot register).
+2. Examine **references to each literal pool** and inspect the actual ARM/Thumb `LDR` / `STR` instructions to classify **read**, **write**, **compare**, or unused data. Confirm no false positives in ASCII, compressed data or data structures.
+3. Search code for `MOVW`/`MOVT`, shifted `ORR`, or arithmetic that **constructs constants without storing them literally**; enumerate indirect branches and saved ROM return context.
+4. Detect `RK32`, `RK33`, legacy `uImage`, FIT/FDT (`D00DFEED`) and embedded device trees, then reconstruct the second-stage loader's addresses and bounds from validated metadata, not just string matches.
+5. Examine *both* reset writers and **early-stage readers** of `0xFF730094`. A reboot flag written by Linux/U-Boot cannot trigger ROM mode unless early code checks it.
+6. Search strings and code references to `save_boot_params`, `back_to_bootrom`, `usbplug`, `rockusb`, `Fastboot`, `rk3288_sysreset`, `secureboot`, `getvar`, `oem`, `lock` and `unlock`. Strings are clues; linkage and control flow are required for conclusions.
+
+The reference 2019 p1 and p3 lack exact `0xEF08A53C` and `0x5242C301` literals, so a stock **software-only** MaskROM request currently has **no positive evidence**. Absence cannot rule out synthesized constants, an unused continuation capability, or other stages. Do not modify the register and reset until a complete supported handoff has been established and the owner explicitly approves the device-side experiment.
+
+### 12.5 Fastboot questions for full architectural coverage
+
+The U-Boot environment says `az01_recovercmd=...; fastboot 0` and boot target order `mmc0 mmc1`. The full bootloader analysis must document:
+
+- The exact **entry path**: update button/key sampling, `dorecovery` environment variable, Linux `reboot loader` / `reboot bootloader` scratch value, fastboot-request reset path, and the recovery condition on cold boot vs warm reboot.
+- The actual **USB gadget controller**, physical USB-B path, descriptors (VID/PID/interface), Fastboot enumeration and handshake.
+- The full **Fastboot command dispatcher** and capabilities: `getvar`, `download`, `boot`, `reboot`, `reboot-bootloader`, `flash`, `erase`, `format`, and vendor `oem` commands. Each must be classified by its code path, requirements and side effects before use.
+- **Authorization / lock model:** whether Fastboot RAM boot is implemented and permitted, which commands require vendor unlock, partition allowlist/denylist, anti-rollback checks and signature policy. No assumption that the MPC Live's unlock state is identical to the MPC One.
+- **Partition map:** relationship of U-Boot GPT template, the actual GPT, `p2` environment, `p6` kernel+DTB, `p7` content and `p8` data; CRC/signature validation and backup/restore rules.
+- **Fallback behaviors:** corrupt kernel/rootfs, failed boot script, failed eMMC, removable SD, missing SPL and interrupted flash. The precise recovery tier depends on which stage can still execute.
+- **3.6.0 vs 3.10.0 device trees:** `syscon-reboot-mode` properties (`mode-bootloader`, `mode-loader`, others), USB OTG/peripheral configuration, button nodes, eFuse/security nodes and memory reservations. A Linux DTB value is not proof the 2019 SPL implements an equivalent mode.
+
+Offline mapping first. The appropriate *later*, owner-approved dynamic test is a **read-only** USB Fastboot enumeration/`getvar` capture in Akai Update Mode. Never send `flash`, `erase`, `oem unlock` or destructive commands as an exploratory test. True MaskROM `rkdeveloptool ld` and RAM-loader tests remain a separate, gated recovery investigation.
+
+### 12.6 Where else to look
+
+| Source | What we can establish | Status / constraints |
+| --- | --- | --- |
+| p1 SPL executable & embedded DTB | Early startup, boot-media choice, BootROM-return clues, reboot flag reads, reset driver | Private offline copy available; BootROM itself is not inside |
+| p2 U-Boot environment | Exact boot/recovery scripts and target order; per-unit secrets possible | Prior boot map exists; redact serial/MAC and private parameters |
+| p3 U-Boot proper | Fastboot dispatcher, USB gadget, commands, partition operations, key checks, kernel/DTB boot | Private offline copy available |
+| p6 `/boot`, 3.6.0 and 3.10.0 | kernel command line, reboot-mode DTB and USB/efuse/buttons; boot script | Existing offline rootfs/DTB tooling in repository |
+| 3.10.0 `AZ01` updater, its rootfs and RAM updater | Updated Linux/userspace interface, signing and update plan; **not** a new p1/p3 for this examined file | Current image has a rootfs-only `PART` record |
+| Public RK3288 TRM, U-Boot source, Rockchip rkbin | ROM boot priority, SRAM conventions, CRU reset regs, return ABI, USB download and compatible DDR loaders | Upstream reference; may differ from board firmware |
+| Off-device USB trace (future) | Observed Akai Fastboot protocol or real MaskROM enumeration | State-changing mode transition requires owner go-ahead; no flash |
+| Passive UART/JTAG (future) | Actual boot source/ROM/SPL messages, optional debug trace and secure-boot state | Need board access, safety review, no assumption ROM is readable |
+
+### 12.7 Installer implications and gates
+
+The intended **USB-A stick installer** and **USB-B Fastboot/MaskROM recovery cable** are different product paths.
+
+- **Track A, lowest risk:** USB autorun / persistent SSH on stock boot stack; install MPFree userspace to removable media or approved `/data` locations; keep `p1`–`p6` unmodified. Removal and power-cycle restore stock behavior.
+- **Track B, RAM-only kernel testing:** already-demonstrated kexec to a USB-backed 3.10.0 kernel with eMMC controllers disabled, and power-cycle back into 3.6.0. This is our concrete non-destructive OS testing precedent. Extend it toward an MPFree distribution once userspace, display and safety gates pass.
+- **Tier 2 repair:** Akai U-Boot Fastboot, conditional on intact p1/p3. It is a **rootfs/data recovery mechanism**, not a guaranteed repair for a destroyed first-stage loader.
+- **Tier 3 repair:** independently proven silicon BootROM USB recovery, compatible DDR/usbplug loader, read-back of the entire eMMC matched against the SSH backup, then a separately authorized **restore** plan for p1/p3. No bootloader/env/critical-storage writes before Tier 3.
+
+No need to add a persistent bootloader change as an early installer prerequisite. Map Fastboot and ROM fully, use stock userspace and RAM-only kexec first, and preserve the verified recovery path for the eventual custom OS.
+
+### 12.8 Scripts distributed outside the repository
+
+The independently delivered **`mpfree_bootchain_offline.py`** performs a privacy-conscious, read-only scan of p1/p2/p3 from the existing workstation eMMC backup, RC4 legacy header checks, uImage CRC checks, magic/string/FDT searches, and optional extracted DTB inspection or streaming scan of a supplied update image. It does not execute code or connect to the MPC.
+
+**`MPFreeBootChainGhidraAudit.py`** runs in the Ghidra Python Console for **both** the p1 program (`ARM:LE:32:v7`, memory start `0xFF704004`) and the p3 raw payload program (base 0 or recommended `0x00100000`). It produces separate private stage reports with entry paths, code windows, literal cross-references, candidates for ROM return, indirect branch clues, Fastboot strings and potential embedded FDTs. It does not modify Ghidra's analysis database, firmware bytes or MPFree repository files. Neither script has been executed in the owner's Ghidra; Python syntax and the offline script's synthetic-image test have been performed.
+
+This section and the accompanying earlier research chapters do **not** establish software MaskROM entry. The next evidence should be read-only reports from both stages and extracted DTB comparisons.
