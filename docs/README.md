@@ -65,5 +65,6 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../rus
 - [Controller protocol](hardware/MPC_ONE_3_6_0_CONTROLLER_PROTOCOL_20261109.md): the internal controller's USB-MIDI messages, observed with passive usbmon.
 - [Touchscreen and display](hardware/MPC_ONE_TOUCHSCREEN_ILI2117_RESEARCH.md): ILI2117 driver, evdev, DSI panel and Panfrost.
 - [Boot chain and recovery map](hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
+- [MaskROM over USB](hardware/maskrom-usb.md): how the RK3288 boot ROM's USB recovery mode could be reached on the MPC One, what it can do RAM-only, secure-boot risk, and the first checks (research, 2026-11-10).
 - [Research matrix](hardware/RESEARCH_MATRIX.md): subsystem-by-subsystem mapping plan and safety gates.
 - [Observed data (JSON)](hardware/data/mpc-one-3.6.0-observed.json): redacted, machine-readable observations.
