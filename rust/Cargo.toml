@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-screen-log", "mpfree-splash"]
+members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-arp", "mpfree-screen-log", "mpfree-splash"]
 resolver = "2"
 exclude = ["mpfree-splash-gl"]
 
