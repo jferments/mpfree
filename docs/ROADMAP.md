@@ -95,6 +95,13 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 - [ ] Package signed/reproducible releases with backup/recovery documentation.
 - [ ] Test on MPC One, then separately evaluate One+ and other models.
 
+## Future: firmware-proof installation
+
+**Core principle (owner, 2026-11-10):** installing MPFree must be effortless for every MPC owner, in perpetuity, and must keep working when Akai ships new firmware. Nobody should have to repeat the reverse engineering done for 3.6.0 and 3.10.0. These two tasks are recorded now and scheduled later; neither is started, and neither may touch a device outside the [recovery tiers](engineering/RECOVERY_AND_OS_STRATEGY.md).
+
+- [ ] **Automated firmware analyzer.** One workstation command takes a new Akai update image and reports everything the MPFree installer needs to change. It chains the offline tools written for the 3.10.0 analysis (image format listing, extraction with hash checks, read-only rootfs survey, DTB, kernel config and kexec details, updater/flasher inventory; in PR #23, `tools/mpc-one/offline-*.py` and `docs/hardware/akai-updater-offline.md`). Output: a human report, a diff against the last known-good firmware profile, and a machine-readable firmware profile that the installer and the firmware allowlist consume. It never runs on the MPC and never writes the image. Things it must flag: a changed image format, a bootloader record or signature tool (3.10.0 adds `az01-bootloader-sig` and LoadPin trust points, inferred from file names only), changed DTB compatibles or eMMC/PHY nodes, kexec removed from the kernel, and new boot-time flashers (touch firmware, controller MCU via `dfu-util`).
+- [ ] **Guaranteed bootloader access.** Find a route to the boot chain that no official firmware can take away. The candidate is the RK3288 MaskROM, which is in the SoC's boot ROM rather than on the eMMC, entered over USB (the USB-B port is the likely MaskROM port; unconfirmed) by a button or eMMC test point (not yet found on this board). This is the Tier 3 work in the recovery strategy. To check, all unverified today: how MaskROM is forced on this board; whether the SoC's secure-boot fuses are or could be programmed so that only signed loaders run; and what Akai's new bootloader signature tool implies. The installer should read and report this state read-only and refuse to continue on firmware whose bootloader the analyzer hasn't cleared.
+
 ## Prioritization principles
 
 Prioritize low menu depth, immediate physical control, reliable audio, reversible operations, and expressive sequencing. Do not let 'all factory features' delay a useful, independently playable first release.
