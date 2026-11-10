@@ -992,3 +992,9 @@ The offline scan found the on-disk words at `0x0014D658` and `0x0014D690` equal 
 - Continue separate Rockchip silicon BootROM/MaskROM study; nothing here proves an SPL-to-MaskROM handoff.
 
 No MPC reboot, USB Fastboot traffic, eMMC writes or permission-changing commands were performed in this phase.
+
+### 19.7 Independently parsed U-Boot DTB confirms 2 GiB physical memory (private p3 FDT)
+
+The owner supplied private `p3-uboot-00-offset-0502f4.dtb` (35,213 bytes). It was independently parsed here from its FDT structure and string blocks; this is not inferred from a board datasheet. Its `/memory@0` node has `device_type="memory"` and `reg=<0x00000000 0x80000000>`, with 1 address cell and 1 size cell at the root. Thus the *declared physical DRAM bank* spans `[0x00000000, 0x80000000)` = **2 GiB**. The FDT's memory reservation map has no entries, but this does **not** establish that U-Boot has no runtime reserved allocations or relocation/stack regions.
+
+The Fastboot download buffer base from p3 code is `0x00800800`; the source-level size-bound from the download callback is `0x70000000`, placing the theoretical end at **`0x70800800`**, still **`0x0F7FF800` (~248 MiB)** below the declared physical RAM limit. This arithmetic is consistent with an intentional high-memory margin, but the *actual safe writable area* is unproven. The maximum must **not** be used to size an experimental MPFree image. The proper next gate is a runtime U-Boot memory map/relocation/stack/heap/USB DMA allocation review plus an independently verified small image.
