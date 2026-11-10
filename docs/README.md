@@ -10,6 +10,8 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
 - [USB installer architecture](project/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
 - [Sampler design](project/sampler-design.md): how MPFree records, chops, edits, assigns and plays samples, including granular tools (proposal, 2026-11-10).
+- [Sampler feature map](project/sampler-features.md): every MPC sampler feature rebuilt with a better UI, what other samplers add, and what makes a sampler great for production and performance (proposal, 2026-11-10).
+- [Sampler architecture](project/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler (proposal, 2026-11-10).
 
 ## Decisions
 
