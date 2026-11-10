@@ -1,6 +1,6 @@
 # Test-booting another firmware version by kexec (MPC One)
 
-**Status (2026-11-10):** 3.10.0 has booted three times on the reference unit, from the stick. Nothing in the MPC's storage changed any time: the boot maps before and after match the first baseline, and 3.10.0 saw no MMC device. Since the second boot it shows its live log on the MPC's screen. On the third boot Ethernet and SSH worked, after the test build started `eth0` a second time (see [Third boot](#third-boot-2026-11-10)).
+**Status (2026-11-10):** 3.10.0 has booted three times on the reference unit, from the stick. Nothing in the MPC's storage changed any time: the boot maps before and after match the first baseline, and 3.10.0 saw no MMC device. Since the second boot it shows its live log on the MPC's screen. On the third boot Ethernet and SSH worked, after the test build started `eth0` a second time (see [Third boot](#third-boot-2026-11-10)). **The test is finished** (owner's decision, 2026-11-10): the goal is met. The first-start failure of `eth0` is left open until a system of ours is started by kexec.
 
 **Goal:** boot Akai's 3.10.0 once on the reference unit without installing it, in a way where nothing in the MPC's own storage can change. 3.6.0 starts kexec from its running system, and 3.10.0's root filesystem comes from a USB stick.
 
