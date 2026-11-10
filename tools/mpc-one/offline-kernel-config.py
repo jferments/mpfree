@@ -8,9 +8,9 @@ decompresses it in memory and pulls the config out. It is the same method
 as the kernel's scripts/extract-ikconfig, without needing a kernel tree.
 
 gzip, xz and lzma payloads are handled with Python's standard library, and
-lz4 (the kernel's "legacy" lz4 format) by a small decoder here, or the lz4
-command if it is installed. lzo and zstd payloads need the lzop or zstd
-command. Commands are fed from memory and nothing is written to disk.
+lz4 (the kernel's "legacy" lz4 format) by the lz4 command if it is installed,
+else (or if the command fails) by a small decoder here. lzo and zstd payloads
+need the lzop or zstd command. Commands are fed from memory and nothing is written to disk.
 
 It only reads the file it is given and prints to stdout.
 
@@ -62,6 +62,7 @@ class ConfigError(Exception):
 
 LZ4_LEGACY_MAGIC = 0x184C2102
 LZ4_LEGACY_BLOCK = 8 << 20
+LZ4_LEGACY_BOUND = LZ4_LEGACY_BLOCK + (LZ4_LEGACY_BLOCK >> 7) + 64  # largest compressed block
 
 
 def unlz4_block(src, out):
@@ -107,26 +108,59 @@ def unlz4_block(src, out):
             raise ValueError("block decodes to more than 8 MiB")
 
 
-def unlz4_legacy(data):
-    """Decode an lz4 'legacy' stream (what the kernel's lz4 compression writes). Trailing bytes are ignored."""
+def lz4_legacy_blocks(data):
+    """(start, size) of each block of the lz4 'legacy' stream (what the kernel's lz4
+    compression writes) at the start of data, or [] if data doesn't start with one.
+
+    The format has no end marker. The stream ends where the next 4 bytes can't be a
+    block size (zero, too big, or longer than what is left): in a zImage that is the
+    kernel's appended length.
+    """
     if len(data) < 4 or int.from_bytes(data[:4], "little") != LZ4_LEGACY_MAGIC:
-        return None
-    out, pos = bytearray(), 4
+        return []
+    blocks, pos = [], 4
     while pos + 4 <= len(data):
         size = int.from_bytes(data[pos:pos + 4], "little")
         if size == LZ4_LEGACY_MAGIC:  # another stream follows
             pos += 4
             continue
-        if size == 0 or size > len(data) - pos - 4 or size > LZ4_LEGACY_BLOCK + (LZ4_LEGACY_BLOCK >> 7) + 64:
-            break  # the kernel's appended length, or the end of the payload
-        try:
-            unlz4_block(data[pos + 4:pos + 4 + size], out)
-        except (ValueError, IndexError):
-            return bytes(out) if out else None
+        if size == 0 or size > len(data) - pos - 4 or size > LZ4_LEGACY_BOUND:
+            break
+        blocks.append((pos + 4, size))
         pos += 4 + size
+    return blocks
+
+
+def unlz4_legacy(data):
+    """Decode an lz4 'legacy' stream. Trailing bytes, and a damaged block with everything after it, are ignored."""
+    out = bytearray()
+    for start, size in lz4_legacy_blocks(data):
+        try:
+            unlz4_block(data[start:start + size], out)
+        except (ValueError, IndexError):
+            break
         if len(out) > MAX_KERNEL:
             return None
     return bytes(out) if out else None
+
+
+def inflate_lz4(tail):
+    """Decompress the lz4 legacy stream at the start of tail, or None."""
+    blocks = lz4_legacy_blocks(tail)
+    if not blocks:
+        return None
+    start, size = blocks[-1]
+    stream = tail[:start + size]
+    tool = shutil.which("lz4")
+    if tool:
+        # Only the stream itself goes to lz4, so it ends cleanly at a block boundary. Given
+        # the bytes after it, lz4 stops with a read error, and lz4 1.10 can then exit before
+        # its writer thread has written the blocks it already decoded (seen in CI as a
+        # missing config). Its output is used only if it exits 0.
+        run = subprocess.run((tool, "-dc"), input=stream, capture_output=True, check=False)
+        if run.returncode == 0 and run.stdout:
+            return run.stdout
+    return unlz4_legacy(stream)
 
 
 def inflate(data, offset, how):
@@ -140,13 +174,15 @@ def inflate(data, offset, how):
         d = lzma.LZMADecompressor(lzma.FORMAT_XZ if how == "xz" else lzma.FORMAT_ALONE)
         out = d.decompress(tail, MAX_KERNEL)
         return out if d.eof else None
+    if how[0] == "lz4":
+        return inflate_lz4(tail)
     tool = shutil.which(how[0])
-    if not tool and how[0] == "lz4":
-        return unlz4_legacy(tail)
     if not tool:
         raise ConfigError(f"the payload looks {how[0]}-compressed; install the '{how[0]}' command")
     run = subprocess.run((tool,) + how[1:], input=tail, capture_output=True, check=False)
-    # lz4 and friends report trailing garbage as an error but still write the whole stream first.
+    # lzop and zstd report trailing garbage as an error but still write the whole stream first.
+    # The config's own gzip CRC and end marker are checked afterwards, so a cut-short
+    # output can only mean "not found", never a wrong config.
     return run.stdout if run.stdout else None
 
 

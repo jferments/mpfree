@@ -26,6 +26,25 @@ CONFIG = (b"#\n# Automatically generated file; DO NOT EDIT.\n"
           b"CONFIG_BLK_DEV_SD=m\n"
           b"CONFIG_NOT_SELECTED_FAKE=y\n")
 EXTERNAL = {"lz4": ["lz4", "-l", "-9", "-c"], "lzo": ["lzop", "-9", "-c"], "zstd": ["zstd", "-19", "-q", "-c"]}
+# Stands in for lz4 1.10, which can exit on a read error before its writer thread has
+# written the blocks it decoded: given any bytes after the last whole block, this one
+# writes nothing and exits 1. Otherwise it runs the real lz4. With "broken" it always fails.
+FAKE_LZ4 = """#!/bin/sh
+exec "$MPFREE_TEST_PYTHON" -I -c '
+import os, subprocess, sys
+data = sys.stdin.buffer.read()
+pos = 4
+while pos + 4 <= len(data):
+    size = int.from_bytes(data[pos:pos + 4], "little")
+    if pos + 4 + size > len(data):
+        sys.exit(1)
+    pos += 4 + size
+if sys.argv[1] == "broken" or pos != len(data):
+    sys.exit(1)
+sys.stdout.buffer.write(subprocess.run([os.environ["MPFREE_REAL_LZ4"], "-dc"], input=data,
+                                       capture_output=True, check=True).stdout)
+' MODE
+"""
 
 
 def noise(n, seed):
@@ -118,6 +137,30 @@ class KernelConfigTests(unittest.TestCase):
         os.makedirs(empty, exist_ok=True)
         return subprocess.run([sys.executable, "-I", TOOL, path, "--select"], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, timeout=120, env={"PATH": empty})
+
+    def run_with_fake_lz4(self, data, mode):
+        path = os.path.join(self.tmp, "zImage")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        fake = os.path.join(self.tmp, "fake-bin")
+        os.makedirs(fake, exist_ok=True)
+        with open(os.path.join(fake, "lz4"), "w") as fh:
+            fh.write(FAKE_LZ4.replace("MODE", mode))
+        os.chmod(os.path.join(fake, "lz4"), 0o755)
+        env = {"PATH": fake + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+               "MPFREE_TEST_PYTHON": sys.executable, "MPFREE_REAL_LZ4": shutil.which("lz4")}
+        return subprocess.run([sys.executable, "-I", TOOL, path, "--select"], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=120, env=env)
+
+    def test_lz4_command_gets_only_the_stream_and_must_succeed(self):
+        if not shutil.which("lz4"):
+            self.skipTest("lz4 is not installed (needed to make the test data)")
+        for mode in ("strict", "broken"):
+            with self.subTest(mode):
+                res = self.run_with_fake_lz4(zimage("lz4"), mode)
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertIn("(config found: lz4 payload at offset 20000;", res.stdout)
+                self.assertIn("CONFIG_USB_STORAGE=y", res.stdout)
 
     def test_lz4_without_the_lz4_command(self):
         if not shutil.which("lz4"):
