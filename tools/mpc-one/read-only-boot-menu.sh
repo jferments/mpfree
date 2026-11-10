@@ -17,6 +17,22 @@
 # anything, and never reads file contents from a USB stick.
 set -u
 printf 'MPFREE BOOT MENU SURVEY - READ ONLY\n'
+
+# Only meaningful on the stock system (Akai's app, script runner, autorun).
+# The kexec test stick boots another kernel with kexec disabled on its
+# command line: refuse there, before reading anything else.
+release=$(uname -r 2>/dev/null)
+case "$(cat /proc/cmdline 2>/dev/null)" in
+  *kexec_load_disabled=1*) stick=1 ;;
+  *) stick=0 ;;
+esac
+case "$release" in 6.6.*) ;; *) stick=1 ;; esac
+if [ "$stick" = 1 ]; then
+  printf 'REFUSED: this is not the stock 3.6 system (kernel %s).\n' "$release"
+  printf 'Power-cycle the MPC without the USB stick, wait for Akai'"'"'s app, then run this again.\n'
+  exit 3
+fi
+printf 'stock system: kernel %s\n' "$release"
 section() { printf '\n=== %s ===\n' "$1"; }
 show() { for f in "$@"; do [ -r "$f" ] && printf '%s: %s\n' "$f" "$(cat "$f" 2>/dev/null | tr '\n' ' ')"; done; }
 
