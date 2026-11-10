@@ -14,6 +14,7 @@ name = "mpfree-splash"
 path = "src/main.rs"
 
 [dependencies]
+fontdue = { version = "0.9", default-features = false, features = ["std"] }
 libc = "0.2"
 mpfree-controller = { path = "../mpfree-controller" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }

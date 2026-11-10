@@ -14,6 +14,7 @@
 mod render;
 mod shaders;
 
+use mpfree_splash::title::TitleFont;
 use render::Renderer;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
@@ -28,13 +29,17 @@ struct Options {
     screenshot: Option<PathBuf>,
     frames: usize,
     every: f32,
+    font: Option<PathBuf>,
+    tracking: f32,
 }
 
-const USAGE: &str = "usage: mpfree-splash-gl [--fullscreen] [--size WxH] [--seconds N]\n       \
-    mpfree-splash-gl --screenshot DIR [--size WxH] [--frames N] [--every S]";
+const USAGE: &str = "usage: mpfree-splash-gl [--fullscreen] [--size WxH] [--seconds N] [--font FILE [--tracking N]]\n       \
+    mpfree-splash-gl --screenshot DIR [--size WxH] [--frames N] [--every S] [--font FILE [--tracking N]]\n\
+    --font: the title's TrueType/OpenType font (default: built-in block letters)\n\
+    --tracking N: extra letter spacing for --font, in cap heights (e.g. 0.2)";
 
 fn parse_args() -> Result<Options, String> {
-    let mut o = Options { fullscreen: false, size: (1280, 800), seconds: 0.0, screenshot: None, frames: 4, every: 3.0 };
+    let mut o = Options { fullscreen: false, size: (1280, 800), seconds: 0.0, screenshot: None, frames: 4, every: 3.0, font: None, tracking: 0.0 };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -63,6 +68,9 @@ fn parse_args() -> Result<Options, String> {
                     "--screenshot" => o.screenshot = Some(PathBuf::from(value)),
                     "--frames" => o.frames = number("--frames")? as usize,
                     "--every" => o.every = number("--every")?,
+                    "--font" => o.font = Some(PathBuf::from(value)),
+                    "--tracking" => o.tracking = value.parse::<f32>().ok().filter(|v| v.is_finite())
+                .ok_or_else(|| format!("--tracking needs a number, not {value:?}"))?,
                     _ => return Err(format!("unknown option {arg}\n{USAGE}")),
                 }
             }
@@ -101,7 +109,15 @@ fn run(o: &Options) -> Result<(), String> {
     }
     let started = Instant::now();
     let (pw, ph) = window.size_in_pixels();
-    let mut renderer = Renderer::new(gl, pw as i32, ph as i32)?;
+    let font = match &o.font {
+        None => TitleFont::Block,
+        Some(path) => TitleFont::load(path).map(|f| f.with_tracking(o.tracking)).unwrap_or_else(|e| {
+            eprintln!("mpfree-splash-gl: {e}; using the built-in block letters");
+            TitleFont::Block
+        }),
+    };
+    eprintln!("mpfree-splash-gl: title font: {}", font.name());
+    let mut renderer = Renderer::new(gl, pw as i32, ph as i32, font)?;
     renderer.finish();
     eprintln!("mpfree-splash-gl: textures ready in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
 

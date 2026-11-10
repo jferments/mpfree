@@ -22,6 +22,11 @@
 //!       --no-mpfree: the MPFree stick is missing or failed its check.
 //!       --midi: reads the internal controller from ALSA RawMIDI, read only.
 //!       --midi-file: reads raw MIDI bytes from a file or pipe (for tests).
+//!
+//! Every mode takes --font PATH: draw the title with this TrueType/OpenType
+//! file instead of the built-in block letters. If the file can't be used,
+//! the program says why and carries on with the block letters. --tracking N
+//! adds N cap heights between letters (for fonts that crowd them).
 #![deny(unsafe_code)]
 
 mod midi_in;
@@ -32,6 +37,7 @@ use mpfree_splash::fb::{self, FramebufferBackend, Geometry, Rotation};
 use mpfree_splash::galaxy::{Galaxy, GalaxyWidget};
 use mpfree_splash::menu::{BootMenu, Choice};
 use mpfree_splash::png;
+use mpfree_splash::title::TitleFont;
 use ratatui::Terminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::fs::{self, OpenOptions};
@@ -69,12 +75,16 @@ struct Options {
     mpfree_available: bool,
     menu_seconds: f32,
     midi: Option<MidiSource>,
+    font: Option<PathBuf>,
+    tracking: f32,
 }
 
 const USAGE: &str = "usage: mpfree-splash [--seconds N] [--fps N] [MENU]\n       \
     mpfree-splash --preview DIR [--frames N] [--every SECONDS] [--rotation 0|90|180|270] [MENU]\n       \
     mpfree-splash --framebuffer [--fb DEVICE] [--sysfs DIR] [--rotation N] [--seconds N] [--fps N] [MENU]\n\
-    MENU: --menu [--no-mpfree] [--menu-seconds N] [--midi CARD,DEVICE,SUBDEVICE | --midi-file PATH]";
+    MENU: --menu [--no-mpfree] [--menu-seconds N] [--midi CARD,DEVICE,SUBDEVICE | --midi-file PATH]\n\
+    Any mode: --font FILE.ttf|FILE.otf [--tracking N] (title typeface; default: built-in block letters;\n\
+    N: extra letter spacing in cap heights, e.g. 0.2)";
 
 fn parse_args() -> Result<Options, String> {
     let mut o = Options {
@@ -91,6 +101,8 @@ fn parse_args() -> Result<Options, String> {
         mpfree_available: true,
         menu_seconds: 5.0,
         midi: None,
+        font: None,
+        tracking: 0.0,
     };
     let mut fps_given = false;
     let mut args = std::env::args().skip(1);
@@ -144,6 +156,9 @@ fn parse_args() -> Result<Options, String> {
                 o.midi = Some(MidiSource::Alsa { card, device, subdevice });
             }
             "--midi-file" => o.midi = Some(MidiSource::File(PathBuf::from(value))),
+            "--font" => o.font = Some(PathBuf::from(value)),
+            "--tracking" => o.tracking = value.parse::<f32>().ok().filter(|v| v.is_finite())
+                .ok_or_else(|| format!("--tracking needs a number, not {value:?}"))?,
             _ => return Err(format!("unknown option {arg}\n{USAGE}")),
         }
     }
@@ -151,6 +166,20 @@ fn parse_args() -> Result<Options, String> {
         o.fps = 20.0;
     }
     Ok(o)
+}
+
+/// The scene, with the title in the font asked for. A font that can't be
+/// used never stops the startup screen: it falls back to the block letters.
+fn make_galaxy(o: &Options) -> Galaxy {
+    let font = match &o.font {
+        None => TitleFont::Block,
+        Some(path) => TitleFont::load(path).map(|f| f.with_tracking(o.tracking)).unwrap_or_else(|e| {
+            eprintln!("mpfree-splash: {e}; using the built-in block letters");
+            TitleFont::Block
+        }),
+    };
+    eprintln!("mpfree-splash: title font: {}", font.name());
+    Galaxy::with_font(font)
 }
 
 /// Menu input, from any source.
@@ -206,7 +235,7 @@ fn finish(choice: Choice) -> ! {
 }
 
 fn run_terminal(o: &Options) -> Result<Option<Choice>, String> {
-    let galaxy = Galaxy::new();
+    let galaxy = make_galaxy(o);
     let mut terminal = ratatui::init();
     let start = Instant::now();
     let frame = Duration::from_secs_f32(1.0 / o.fps);
@@ -273,7 +302,7 @@ fn run_terminal(o: &Options) -> Result<Option<Choice>, String> {
 
 fn run_preview(o: &Options, dir: &Path) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let galaxy = Galaxy::new();
+    let galaxy = make_galaxy(o);
     let g = fb::mpc_one();
     let backend = FramebufferBackend::new(g, o.rotation)?;
     let mut term = Terminal::new(backend).map_err(|e| e.to_string())?;
@@ -344,7 +373,7 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
               g.width, g.height, g.stride, g.format, o.rotation, size.width, size.height, o.fps);
     // Write only: no create, no truncate. Each frame goes to offset 0, the shown page.
     let mut fbdev = OpenOptions::new().write(true).open(&o.fb).map_err(|e| format!("{}: {e}", o.fb.display()))?;
-    let galaxy = Galaxy::new();
+    let galaxy = make_galaxy(o);
     let frame = Duration::from_secs_f32(1.0 / o.fps);
     let mut menu = o.menu.then(|| BootMenu::new(o.mpfree_available, o.menu_seconds, 0.0));
     let midi = match (&o.midi, o.menu) {

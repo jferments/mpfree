@@ -3,7 +3,8 @@
 use crate::shaders;
 use glow::HasContext;
 use mpfree_splash::galaxy::{self, ARMS, HEART_SPEED, TILT, TURN_SECONDS, WIND};
-use mpfree_splash::{blockfont, title};
+use mpfree_splash::title::{self, TitleFont};
+use mpfree_splash::blockfont;
 
 /// The disc texture's side, in pixels. Drawn once at start.
 const DISC_SIZE: i32 = 2048;
@@ -27,6 +28,10 @@ pub struct Renderer {
     title_box: (f32, f32),
     title_ppu: f32,
     title_pad: f32,
+    /// Line pitch and cap height in title units (ppu pixels each).
+    title_pitch: f32,
+    title_cap: f32,
+    font: TitleFont,
 }
 
 fn compile(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Program, String> {
@@ -133,7 +138,7 @@ fn make_stars(heart: f32) -> Vec<f32> {
 }
 
 impl Renderer {
-    pub fn new(gl: glow::Context, width: i32, height: i32) -> Result<Renderer, String> {
+    pub fn new(gl: glow::Context, width: i32, height: i32, font: TitleFont) -> Result<Renderer, String> {
         unsafe {
             let textured = compile(&gl, shaders::FULLSCREEN_VS, shaders::TEXTURE_FS)?;
             let disc_prog = compile(&gl, shaders::DISC_VS, shaders::TEXTURE_FS)?;
@@ -157,7 +162,7 @@ impl Renderer {
 
             // The disc is the same at every screen size: the heart's share of the
             // radius comes from the default 1280x800 layout.
-            let (heart_px, radius_px) = galaxy::galaxy_size(1280, 800);
+            let (heart_px, radius_px) = galaxy::galaxy_size(&font, 1280, 800);
             let heart = heart_px / radius_px;
             let disc_tex = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(disc_tex));
@@ -216,6 +221,9 @@ impl Renderer {
                 title_box: (0.0, 0.0),
                 title_ppu: 1.0,
                 title_pad: 0.0,
+                title_pitch: 1.0,
+                title_cap: 1.0,
+                font,
             };
             r.resize(width, height)?;
             Ok(r)
@@ -229,7 +237,7 @@ impl Renderer {
         }
         self.size = (width, height);
         let (w, h) = (width as usize, height as usize);
-        let (_, radius) = galaxy::galaxy_size(w, h);
+        let (_, radius) = galaxy::galaxy_size(&self.font, w, h);
         self.radius = radius;
         let gl = &self.gl;
         unsafe {
@@ -258,8 +266,8 @@ impl Renderer {
 
             // The title: the same lines and size rule as the character-cell
             // version, rasterised at full resolution with a soft glow.
-            let (lines, cap) = galaxy::title_layout(w, h);
-            let inner = title::rasterise(&lines, cap);
+            let (lines, cap) = galaxy::title_layout(&self.font, w, h);
+            let inner = title::rasterise(&self.font, &lines, cap);
             // Room around the letters for the glow to fade out completely.
             let glow_r = ((cap / 9.0) as usize).max(2);
             let margin = glow_r * 4;
@@ -268,6 +276,9 @@ impl Renderer {
                 height: inner.height + 2 * margin,
                 ink: Vec::new(),
                 halo: Vec::new(),
+                cap_top: inner.cap_top + margin as f32,
+                cap: inner.cap,
+                pitch: inner.pitch,
             };
             mask.ink = vec![0.0; mask.width * mask.height];
             mask.halo = vec![0.0; mask.width * mask.height];
@@ -298,9 +309,11 @@ impl Renderer {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
             self.title_tex = Some(tex);
             self.title_box = (mask.width as f32, mask.height as f32);
+            // The shader works in units of 1/12 cap height (the block font's units).
             self.title_ppu = cap / blockfont::CAP;
-            // Padding: the outline's from title::rasterise plus the glow margin.
-            self.title_pad = ((mask.width as f32) - blockfont::block_size(&lines).0 * self.title_ppu) / 2.0;
+            self.title_pad = mask.cap_top;
+            self.title_pitch = mask.pitch / self.title_ppu;
+            self.title_cap = mask.cap / self.title_ppu;
         }
         Ok(())
     }
@@ -355,8 +368,8 @@ impl Renderer {
             gl.uniform_1_f32(gl.get_uniform_location(p, "time").as_ref(), seconds);
             gl.uniform_1_f32(gl.get_uniform_location(p, "ppu").as_ref(), self.title_ppu);
             gl.uniform_1_f32(gl.get_uniform_location(p, "pad").as_ref(), self.title_pad);
-            gl.uniform_1_f32(gl.get_uniform_location(p, "line_pitch").as_ref(), blockfont::CAP + blockfont::LINE_GAP);
-            gl.uniform_1_f32(gl.get_uniform_location(p, "cap").as_ref(), blockfont::CAP);
+            gl.uniform_1_f32(gl.get_uniform_location(p, "line_pitch").as_ref(), self.title_pitch);
+            gl.uniform_1_f32(gl.get_uniform_location(p, "cap").as_ref(), self.title_cap);
             gl.bind_texture(glow::TEXTURE_2D, self.title_tex);
             gl.bind_vertex_array(Some(self.quad));
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
