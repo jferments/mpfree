@@ -381,7 +381,7 @@ class KexecBootTests(unittest.TestCase):
 
     def test_jump_outcomes(self):
         cases = (("no-jump", "RESULT: the jump did not start. 3.6 is running as before.", True),
-                 ("stock-back", "RESULT: the MPC is back on 3.6 by itself.", False),
+                 ("stock-back", "RESULT: the MPC is on 3.6 again. If you did not switch it off", False),
                  ("nothing", "RESULT: nothing answered. Switch the MPC off", False))
         for scenario, result, undone in cases:
             with self.subTest(scenario):

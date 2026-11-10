@@ -5,6 +5,7 @@ Needs e2fsprogs (debugfs, e2fsck, mke2fs), sfdisk and ssh-keygen. Set
 MPFREE_REQUIRE_OFFLINE_TOOLS=1 (CI does) to fail instead of skip without them.
 """
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -258,6 +259,22 @@ class KexecStickTests(unittest.TestCase):
         run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-screen-log {program}", root_img])
         self.assertEqual(sha(program), sha(self.screen_log))
         self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree-screen-log"), r"Type: regular\s+Mode:\s+0755")
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-ethernet.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"))
+        eth_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-ethernet.service")
+        for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target",
+                     "After=systemd-journald.service sys-kernel-debug.mount",
+                     "ExecStart=/bin/sh /etc/mpfree-test/ethernet-retry.sh"):
+            self.assertIn(line + "\n", eth_unit)
+        details = os.path.join(self.tmp, "ethernet-details-copy")
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/ethernet-details.sh {details}", root_img])
+        self.assertEqual(sha(details), sha(os.path.join(TOOLS, "read-only-ethernet.sh")))
+        retry = self.dfs(root_img, "cat /etc/mpfree-test/ethernet-retry.sh")
+        self.assertIn("sh /etc/mpfree-test/ethernet-details.sh > \"$out/ethernet-$1.txt\"", retry)
+        self.assertIn("for at in 20 45 90; do", retry)
+        self.assertIn('cp /run/mpfree-test-eth/*.txt "$d/" 2>/dev/null', self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+        for path in ("/etc/mpfree-test/ethernet-details.sh", "/etc/mpfree-test/ethernet-retry.sh"):
+            self.assertRegex(self.dfs(root_img, f"stat {path}"), r"Type: regular\s+Mode:\s+0755")
         log_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-logs.service")
         for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target"):
             self.assertIn(line + "\n", log_unit)
@@ -372,6 +389,29 @@ class KexecStickTests(unittest.TestCase):
 
 
 class StaticTests(unittest.TestCase):
+    def test_ethernet_script_changes_only_ram(self):
+        spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        busybox = shutil.which("busybox")
+        if busybox:
+            for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000")):
+                res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
+                self.assertEqual(res.returncode, 0, res.stderr)
+        lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
+        # The only commands that change anything: mounting debugfs, starting eth0, and its own files in /run.
+        changing = [line for line in lines if re.search(r"\b(mount|ip|mkdir)\b", line)]
+        self.assertEqual(changing, [
+            'mkdir -p "$out"',
+            "grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug",
+            "ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'",
+        ])
+        for line in lines:
+            for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "").replace("2>/dev/null", "")):
+                self.assertEqual(target, '"$out/ethernet-$1.txt"', line)
+        for forbidden in ("/dev/mmc", "/dev/sd", "systemctl", "devmem", "/bind", "/unbind", "rm ", "dd "):
+            self.assertNotIn(forbidden, tool.ETHERNET_SCRIPT)
+
     def test_never_contacts_the_mpc_or_writes_devices(self):
         with open(TOOL) as fh:
             code = "\n".join(line for line in fh.read().splitlines() if not line.lstrip().startswith("#"))

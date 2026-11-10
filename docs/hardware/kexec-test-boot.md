@@ -1,6 +1,6 @@
 # Test-booting another firmware version by kexec (MPC One)
 
-**Status (2026-11-10):** 3.10.0 has booted once on the reference unit, from the stick. Nothing in the MPC's storage changed: the boot maps before and after match, and 3.10.0 saw no MMC device. It reached its normal running state with no failed units, but had no Ethernet, so SSH never answered (see [First boot](#first-boot-2026-11-10)).
+**Status (2026-11-10):** 3.10.0 has booted twice on the reference unit, from the stick. Nothing in the MPC's storage changed either time: the boot maps before and after match the first baseline, and 3.10.0 saw no MMC device. The second boot showed its live log on the MPC's screen and found the Ethernet PHY, but the Ethernet controller's DMA reset timed out, so SSH still never answered (see [Second boot](#second-boot-2026-11-10)).
 
 **Goal:** boot Akai's 3.10.0 once on the reference unit without installing it, in a way where nothing in the MPC's own storage can change. 3.6.0 starts kexec from its running system, and 3.10.0's root filesystem comes from a USB stick.
 
@@ -63,6 +63,7 @@ The builder refuses anything but a static ARM EABI5 hard-float executable. CI bu
 | 6 | Power-cycle with the stick out, then `collect-over-ssh.sh --boot-map` | The MPC is back on 3.6.0. The boot map compares the boot-partition hashes and write counters with the run before the test |
 | 7 | `python3 tools/mpc-one/read-stick-logs.py` | Read-only, with the stick in the workstation. It copies the log partition once with `sudo cat`, replays its journal on the copy, and writes every log of every test boot to `~/mpfree-work/stick-logs-*/report.txt`, with MACs and USB serials replaced |
 | 8 | `python3 tools/mpc-one/offline-kexec-details.py` | Workstation only. When something fails in the test boot, it prints the Ethernet, display, backlight and reserved-memory nodes of both releases' board files, the running tree and `kexec.dtb` (MAC and serial values hidden), every difference between the two board files, and both kernels' build configs |
+| 9 | `bash tools/mpc-one/collect-over-ssh.sh --ethernet` | Read-only on the MPC. Runs [`read-only-ethernet.sh`](../../tools/mpc-one/read-only-ethernet.sh) on 3.6.0: the interfaces, the MDIO bus and PHY, the PHY's reset and interrupt pins, the Ethernet clocks (debugfs, only if already mounted), and the kernel's Ethernet messages, with MACs replaced. The test build runs the same script and keeps its output on the stick, so the two can be compared |
 
 Each step runs through [`results.py`](../../tools/mpc-one/results.py), so every log and report of a round lands in `~/mpfree-results/current/` and comes back as one zip ([how](SURVEY_TOOLS.md#one-folder-and-one-zip-per-test-round)).
 
@@ -98,6 +99,14 @@ The stick's log service starts early in 3.10.0's boot (in `sysinit.target`) and 
 - **Screen:** the display driver came up (`fb0`) and a getty started on `tty1`, but nothing appeared. The kernel log has no framebuffer console line, so 3.10.0's kernel probably has none built in (inferred; its build config, step 8, settles it).
 - **Fixes for the next boot:** the PHY's ID in `kexec.dtb` ([which device tree](#which-device-tree)), and the on-screen log ([the screen](#the-screen)). `offline-kexec-details.py` showed the PHY's reset line in both board files and confirmed that neither kernel has a framebuffer console.
 - **Reserved memory:** 3.10.0's kernel skipped U-Boot's `framebuffer` and `dma-unusable` regions as `invalid reg property`, after Akai's own fixup converted them, so DRM had no reserved framebuffer. That only affects the splash hand-over.
+
+## Second boot (2026-11-10)
+
+- **Storage:** the hashes of p1–p6 and the boot areas match before and after, and match the first baseline of 2026-11-09.
+- **Screen:** works. The title, the status row (`up 98 s | network: eth0 down, sit0 down`) and the live log appeared, the right way up (photo from the owner).
+- **Ethernet:** the PHY's ID fixed the first problem: `PHY [stmmac-0:01] driver [RTL8211E Gigabit Ethernet] (irq=54)`. The network service then opened `eth0` at 7.4 s, and the controller's DMA software reset timed out: `Failed to reset the dma`, `stmmac_hw_setup: DMA engine initialization failed`. That reset finishes only when the controller's clocks run, and with `clock_in_out = "input"` its 125 MHz clock and the receive clock come from the PHY. **Inferred, not verified:** the PHY is not giving those clocks after the jump. The upstream 6.6 and 6.18 code on this path (Rockchip MAC glue, DMA reset, RK3288 clocks, RTL8211E driver, PHY reset handling) is the same, so the difference is the hardware state, not a setting.
+- **Note for later rounds:** the first boot's `MDIO device at address 1 is missing` means the MDIO reads finished and returned all ones, so the controller's register clock worked and only the PHY was silent.
+- **Next:** the Ethernet details from 3.6.0 (step 9) and from the test build at several moments (before the network starts, after it fails, and after each of three retries of `ip link set eth0 up` at 20, 45 and 90 s), to compare the PHY reset line, the clock tree and the pins.
 
 ## Keep it private
 

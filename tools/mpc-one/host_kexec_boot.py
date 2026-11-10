@@ -390,7 +390,8 @@ def wait_for_test_build(mpc, out, args):
         if rc == 0 and found:
             uptime = float(found.group(1))
             if uptime < elapsed + 30:
-                out.say(f"  3.6 is back (up {int(uptime)} s): the jump failed or the test build restarted.")
+                out.say(f"  3.6 is running again (up {int(uptime)} s): the MPC was switched off and on, the jump failed,"
+                        " or the test build restarted.")
                 return "stock-back"
             if state and state.group(1) in ("running", "degraded") and elapsed > args.still_up_after:
                 out.say(f"  3.6 is still {state.group(1)} (up {int(uptime)} s): the jump never started.")
@@ -465,7 +466,8 @@ def main(argv):
 
         out.say("\n[5/7] Your go")
         out.say("  Typing BOOT 3.10 shuts 3.6 down and starts the test build from the stick.")
-        out.say("  The screen may go dark or freeze; that is expected. The test build has no MPC app.")
+        out.say("  The screen should show the test build's log within about 10 s of the jump (it has no MPC app).")
+        out.say("  If it stays dark or frozen, keep waiting here: the stick still keeps the logs.")
         out.say(f"  Wait up to {int(args.wait)} s for it here. To go back at any time: switch the MPC off,")
         out.say("  take out the stick, wait 10 s, switch it on.")
         answer = ask(f"  Type {CONFIRM} and press Enter to go on (anything else unloads it and stops): ")
@@ -502,7 +504,8 @@ def jump_and_check(mpc, out, args, build):
         out.say("\nRESULT: the jump did not start. 3.6 is running as before. Send the zip.")
         return 1
     if state == "stock-back":
-        out.say("\nRESULT: the MPC is back on 3.6 by itself. Nothing to switch off.")
+        out.say("\nRESULT: the MPC is on 3.6 again. If you did not switch it off, the jump failed or the test")
+        out.say("build restarted by itself. Either way there is nothing to switch off now.")
         out.say("Take out the stick, then send the zip; the stick's log partition says what happened.")
         return 1
     if state == "nothing":

@@ -35,6 +35,11 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     mpfree-screen-log (rust/mpfree-screen-log, built for ARM beforehand) reads
     `journalctl -f` and draws it on /dev/fb0, turned by the panel's rotation
     from the device tree; it writes only the framebuffer
+  - a service that records the Ethernet details (read-only-ethernet.sh, the
+    same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
+    starts and after, and if eth0 failed to start, starts it again at 20, 45
+    and 90 seconds; it changes only RAM (it mounts debugfs if systemd has not)
+    and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
     to "*" so OpenSSH accepts key logins; no password works either way
 
@@ -202,6 +207,7 @@ while :; do
   systemctl list-units --no-pager > "$d/units.txt" 2>&1
   {{ ip addr; ip route; }} > "$d/network.txt" 2>&1
   cat /proc/cmdline > "$d/cmdline.txt" 2>&1
+  cp /run/mpfree-test-eth/*.txt "$d/" 2>/dev/null
   sync
   sleep 10
 done
@@ -242,6 +248,57 @@ ExecStart=/bin/sh /etc/mpfree-test/save-logs.sh
 [Install]
 WantedBy=sysinit.target
 """
+
+# Records the Ethernet details (tools/mpc-one/read-only-ethernet.sh, copied in as
+# ethernet-details.sh) early, before the network starts, and later; and if eth0 failed to
+# start, starts it again a few times. It changes only RAM: it mounts debugfs if systemd has
+# not, and runs `ip link set eth0 up`. It writes only to /run/mpfree-test-eth, which the log
+# service copies to the stick.
+ETHERNET_SCRIPT = """#!/bin/sh
+# MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.
+out=/run/mpfree-test-eth
+mkdir -p "$out"
+say() { echo "mpfree-test-ethernet: $*"; }
+grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug
+uptime_s() { cut -d. -f1 /proc/uptime; }
+wait_until() { while [ "$(uptime_s)" -lt "$1" ]; do sleep 1; done; }
+details() { sh /etc/mpfree-test/ethernet-details.sh > "$out/ethernet-$1.txt" 2>&1; say "recorded ethernet-$1.txt"; }
+eth0_up() { f=$(cat /sys/class/net/eth0/flags 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }
+details "1-early-$(uptime_s)s"
+wait_until 15
+details 2-at-15s
+n=3
+for at in 20 45 90; do
+  wait_until "$at"
+  if eth0_up; then
+    say "eth0 is up at $at s (operstate $(cat /sys/class/net/eth0/operstate)); no retry needed"
+    details "$n-at-${at}s-eth0-up"
+    exit 0
+  fi
+  say "eth0 is not up at $at s; starting it again"
+  ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'
+  sleep 3
+  details "$n-at-${at}s-after-retry"
+  n=$((n + 1))
+done
+say "eth0 retries done"
+"""
+ETHERNET_UNIT = """[Unit]
+Description=MPFree test boot: record the Ethernet details, and start eth0 again if it failed
+DefaultDependencies=no
+After=systemd-journald.service sys-kernel-debug.mount
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /etc/mpfree-test/ethernet-retry.sh
+
+[Install]
+WantedBy=sysinit.target
+"""
+ETHERNET_DETAILS = os.path.join(HERE, "read-only-ethernet.sh")
 
 
 class Stop(Exception):
@@ -497,6 +554,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
                   "/etc/systemd/system/mpfree-test-logs.service", "/etc/mpfree-test",
                   "/etc/systemd/system/mpfree-test-screen.service",
+                  "/etc/systemd/system/mpfree-test-ethernet.service",
+                  "/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service",
                   "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service",
@@ -522,6 +581,10 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
     add("/etc/systemd/system/mpfree-test-logs.service", LOG_UNIT, 0o644)
     add("/etc/mpfree-test/mpfree-screen-log", screen_log, 0o755)
     add("/etc/systemd/system/mpfree-test-screen.service", SCREEN_UNIT.format(rotation=rotation), 0o644)
+    with open(ETHERNET_DETAILS, "rb") as fh:
+        add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
+    add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
+    add("/etc/systemd/system/mpfree-test-ethernet.service", ETHERNET_UNIT, 0o644)
     stubbed, absent = [], []
     for prog in STUB_PROGRAMS:
         kind = img.kind(prog)
@@ -558,6 +621,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
         "/etc/systemd/system/mpfree-test-logs.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"] = \
         "/etc/systemd/system/mpfree-test-screen.service"
+    links["/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"] = \
+        "/etc/systemd/system/mpfree-test-ethernet.service"
 
     commands = ["mkdir /etc/mpfree-test"]
     for folder in MADE_IF_MISSING:
