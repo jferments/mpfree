@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-analysis"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Offline audio analysis for the MPFree sampler: waveform peak pyramids (onsets, tempo and pitch come next)"
+
+[dependencies]
