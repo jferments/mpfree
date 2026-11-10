@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-hello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "mpfree-hello"
+path = "src/main.rs"
+
+[dependencies]
+mpfree-core = { path = "../mpfree-core" }
+mpfree-controller = { path = "../mpfree-controller" }
+mpfree-screen-log = { path = "../mpfree-screen-log" }

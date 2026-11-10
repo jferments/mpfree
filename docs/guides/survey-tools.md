@@ -51,6 +51,8 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 
 **Test boot of another firmware version.** `--kexec-boot` boots the test build on the USB stick once by kexec. It changes only RAM on the MPC, jumps only after you type `BOOT 3.10`, and requires `MPFREE_ACCEPT_KEXEC_BOOT=YES`. After it, [`read-stick-logs.py`](../../tools/mpc-one/read-stick-logs.py) copies the test build's logs off the stick, read-only, on the workstation, and [`offline-kexec-details.py`](../../tools/mpc-one/offline-kexec-details.py) prints the device-tree nodes and kernel configs behind the build when something fails in it. See [the kexec test boot](../hardware/kexec-test-boot.md).
 
+**Hello MPC on the test build.** `--hello` runs Phase 1 on the running test build: our own program draws on the screen, reads touches and pads, and plays a quiet click, one step per Enter. It connects only to the test build (by its host key), copies the program to `/run`, changes RAM only, and requires `MPFREE_ACCEPT_HELLO=YES`. See [Hello MPC](hello-mpc.md).
+
 **Passive capture.** `--midi-capture` reads the kernel's usbmon interface for the controller's USB bus while you use the controller. It is interactive, stops itself within 240 s and requires `MPFREE_ACCEPT_USBMON=YES`. See [audio and MIDI diagnostics](audio-midi-diagnostics.md).
 
 **Active test.** `--netbench` runs [`network-bench.py`](../../tools/mpc-one/network-bench.py) on the workstation: 20 pings and a 4 MiB SSH transfer in each direction. It writes no files on the MPC but loads its CPU and network briefly, so only run it while the MPC is idle.

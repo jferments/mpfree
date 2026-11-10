@@ -42,6 +42,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-hello"
+version = "0.1.0"
+dependencies = [
+ "mpfree-controller",
+ "mpfree-core",
+ "mpfree-screen-log",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
