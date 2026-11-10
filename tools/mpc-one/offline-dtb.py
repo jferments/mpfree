@@ -11,6 +11,17 @@ Commands:
                        Values are left out unless --values is given, so it is
                        safe to run on a tree read from the MPC, which carries
                        the unit's serial number and MAC address.
+  kexec-dtb --target NEW.dtb --reference OLD.dtb --live LIVE.dtb --out OUT.dtb
+            [--drop /path/property]...
+                       build the device tree for booting another kernel by
+                       kexec: NEW (the other version's board file) plus what
+                       U-Boot added at boot (the differences from OLD, the
+                       running version's board file, to LIVE, the running
+                       tree), with the eMMC controller disabled. bootargs,
+                       initrd and random-seed properties of /chosen are not
+                       copied, because kexec sets them. --drop removes a
+                       property from the result. OUT must not exist. The
+                       printed report names properties only, never values.
 
 It only reads the files it is given and prints to stdout. It never contacts
 the MPC.
@@ -19,6 +30,8 @@ The parser and writer here are shared with the tool that builds the device
 tree for a kexec boot test, so the round trip is covered by the tests:
 parse(build(tree)) gives back the same tree.
 """
+import copy
+import os
 import struct
 import sys
 
@@ -344,6 +357,127 @@ def diff(a_path, b_path, values, out):
     return changes
 
 
+CHOSEN_NOT_COPIED = ("bootargs", "linux,initrd-start", "linux,initrd-end", "kaslr-seed", "rng-seed")
+
+
+def parent_of(path):
+    return path.rsplit("/", 1)[0] or "/"
+
+
+def prop_path(path, name):
+    return f"{path.rstrip('/')}/{name}"
+
+
+def kexec_dtb(target, reference, live, drops=()):
+    """Apply U-Boot's runtime changes (reference -> live) to target and disable the eMMC.
+
+    Returns (notes, problems). Notes name every change; problems are reasons to stop.
+    """
+    notes, problems = [], []
+    ref_nodes = dict(reference.walk())
+    live_nodes = dict(live.walk())
+    for path, lnode in live.walk():
+        rnode = ref_nodes.get(path)
+        if rnode is None:
+            if parent_of(path) not in ref_nodes:
+                continue  # inside a node that is copied whole
+            tparent = target.find(parent_of(path))
+            if tparent is None:
+                problems.append(f"U-Boot added node {path}, but the new tree has no {parent_of(path)}")
+            elif target.find(path) is not None:
+                problems.append(f"U-Boot added node {path}, but the new tree already has one")
+            else:
+                tparent.children.append(copy.deepcopy(lnode))
+                notes.append(f"copied node added by U-Boot: {path}")
+            continue
+        for name, value in lnode.props:
+            if rnode.prop(name) == value:
+                continue
+            if path == "/chosen" and name in CHOSEN_NOT_COPIED:
+                notes.append(f"not copied (kexec sets it): {prop_path(path, name)}")
+                continue
+            tnode = target.find(path)
+            if tnode is None:
+                problems.append(f"U-Boot set {prop_path(path, name)}, but the new tree has no {path}")
+                continue
+            what = "replaced" if tnode.prop(name) is not None else "added"
+            tnode.set_prop(name, value)
+            notes.append(f"{what} from the running tree ({len(value)} bytes): {prop_path(path, name)}")
+        for name, _ in rnode.props:
+            if lnode.prop(name) is None:
+                problems.append(f"U-Boot removed {prop_path(path, name)}; decide by hand")
+    for path in ref_nodes:
+        if path not in live_nodes and parent_of(path) in live_nodes:
+            problems.append(f"U-Boot removed node {path}; decide by hand")
+    for item in drops:
+        path, name = parent_of(item), item.rsplit("/", 1)[1]
+        node = target.find(path)
+        if node is None or node.prop(name) is None:
+            problems.append(f"--drop {item}: no such property in the result")
+            continue
+        node.del_prop(name)
+        notes.append(f"dropped as asked: {item}")
+    emmc = nodes_at(target, EMMC_ADDRESS)
+    if len(emmc) != 1:
+        problems.append(f"expected one node at the eMMC address {EMMC_ADDRESS} in the new tree, found {len(emmc)}")
+    else:
+        path, node = emmc[0]
+        node.set_prop("status", b"disabled\x00")
+        notes.append(f"eMMC controller disabled: {path} status = \"disabled\"")
+    return notes, problems
+
+
+def verify_kexec_dtb(tree, board):
+    """Reasons the built tree must not be used (empty if it is fine)."""
+    reasons = []
+    if board not in compatible(tree):
+        reasons.append(f"the tree is not for {board}: {', '.join(compatible(tree))}")
+    emmc = nodes_at(tree, EMMC_ADDRESS)
+    if len(emmc) != 1 or strings_of(emmc[0][1].prop("status") or b"") != ["disabled"]:
+        reasons.append("the eMMC controller is not disabled")
+    for path, node in tree.walk():
+        if (node.name == "memory" or node.name.startswith("memory@")) and \
+                not any(node.prop("reg") or b"\x00"):
+            reasons.append(f"{path} has no memory size (U-Boot normally fills it in)")
+    return reasons
+
+
+def kexec_dtb_main(args, out):
+    opts, drops, i = {}, [], 0
+    while i < len(args):
+        key = args[i]
+        if key not in ("--target", "--reference", "--live", "--out", "--drop") or i + 1 >= len(args):
+            return 2
+        if key == "--drop":
+            drops.append(args[i + 1])
+        else:
+            opts[key] = args[i + 1]
+        i += 2
+    if set(opts) != {"--target", "--reference", "--live", "--out"}:
+        return 2
+    if os.path.exists(opts["--out"]):
+        raise DtbError(f"{opts['--out']} already exists; not overwriting it")
+    target, reference, live = load(opts["--target"]), load(opts["--reference"]), load(opts["--live"])
+    board = (compatible(live) or ["?"])[0]
+    for label, tree in (("--target", target), ("--reference", reference)):
+        if board not in compatible(tree):
+            raise DtbError(f"{label} is not a {board} tree: {', '.join(compatible(tree))}")
+    notes, problems = kexec_dtb(target, reference, live, drops)
+    for note in notes:
+        out.write(note + "\n")
+    blob = build(target)
+    reasons = problems + verify_kexec_dtb(parse(blob), board)
+    if reasons:
+        for reason in reasons:
+            out.write(f"STOP: {reason}\n")
+        out.write("No file written.\n")
+        return 1
+    with open(opts["--out"], "xb") as fh:
+        fh.write(blob)
+    out.write(f"written: {opts['--out']} ({len(blob)} bytes); its eMMC controller is disabled\n")
+    return 0
+
+
 def main(argv):
     args = argv[1:]
     try:
@@ -359,7 +493,11 @@ def main(argv):
             for path in args[1:]:
                 summary(path, sys.stdout)
             return 0
-        if args[:1] == ["diff"] and len(args) in (3, 4) and (len(args) == 3 or args[3] == "--values"):
+        if args[:1] == ["kexec-dtb"]:
+            rc = kexec_dtb_main(args[1:], sys.stdout)
+            if rc != 2:
+                return rc
+        elif args[:1] == ["diff"] and len(args) in (3, 4) and (len(args) == 3 or args[3] == "--values"):
             diff(args[1], args[2], len(args) == 4, sys.stdout)
             return 0
     except (OSError, DtbError) as err:
