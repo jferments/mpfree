@@ -168,10 +168,10 @@ class KexecStickTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, **extra):
+    def build(self, *args, **extra):
         env = {"HOME": self.home, "LC_ALL": "C", "PATH": SBIN_PATH, "MPC_KEY": self.key,
                "MPFREE_SCREEN_LOG": self.screen_log, **extra}
-        return subprocess.run([sys.executable, "-I", TOOL], env=env, stdout=subprocess.PIPE,
+        return subprocess.run([sys.executable, "-I", TOOL, *args], env=env, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, timeout=300)
 
     def outputs(self):
@@ -304,6 +304,56 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(fh.read().split(), ["mpfree-kexec-test"] + derived)
         with open(os.path.join(out, "report.txt")) as fh:
             self.assertNotIn(SERIAL, fh.read())
+
+    def test_startup_screen_before_the_log(self):
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        font = os.path.join(self.tmp, "Cynatar.otf")
+        write(font, b"OTTO" + os.urandom(2000))
+        res = self.build("--splash", splash, "--splash-font", font)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("shown for 6 s before the log", res.stdout)
+        self.assertIn(f"startup screen font: {os.path.realpath(font)}", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-splash.service")
+        for line in ("DefaultDependencies=no", "Type=oneshot", "Before=shutdown.target mpfree-test-screen.service",
+                     "ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation 270 --seconds 6 "
+                     "--font /etc/mpfree-test/splash-font.otf --tracking 0.15",
+                     "TimeoutStartSec=20", "WantedBy=sysinit.target"):
+            self.assertIn(line + "\n", unit)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-splash.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"))
+        self.assertIn("After=systemd-journald.service mpfree-test-splash.service\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        for name, source, mode in (("mpfree-splash", splash, "0755"), ("splash-font.otf", font, "0644")):
+            copy = os.path.join(self.tmp, name + "-copy")
+            run(["debugfs", "-R", f"dump /etc/mpfree-test/{name} {copy}", root_img])
+            self.assertEqual(sha(copy), sha(source))
+            self.assertRegex(self.dfs(root_img, f"stat /etc/mpfree-test/{name}"), rf"Type: regular\s+Mode:\s+{mode}")
+
+    def test_startup_screen_is_optional_and_checked(self):
+        res = self.build()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("startup screen: none (no --splash)", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/systemd/system/mpfree-test-splash.service"))
+        self.assertIn("After=systemd-journald.service\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        not_font = os.path.join(self.tmp, "notes.otf")
+        write(not_font, b"hello, not a font")
+        for args, problem in ((("--splash-font", not_font), "--splash-font needs --splash"),
+                              (("--splash", splash, "--splash-font", not_font), "is not a single TrueType or OpenType"),
+                              (("--splash", self.key + ".pub"), "is not a 32-bit little-endian ELF")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
 
     def test_unlocked_root_is_left_alone(self):
         os.unlink(self.image)

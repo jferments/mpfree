@@ -35,6 +35,10 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     mpfree-screen-log (rust/mpfree-screen-log, built for ARM beforehand) reads
     `journalctl -f` and draws it on /dev/fb0, turned by the panel's rotation
     from the device tree; it writes only the framebuffer
+  - only with --splash: a startup screen first. Our program mpfree-splash
+    (rust/mpfree-splash, built for ARM beforehand) draws the galaxy on
+    /dev/fb0 for 6 seconds, in the --splash-font font if one is given, and
+    the log display starts when it ends; it writes only the framebuffer
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
     starts and after, and if eth0 failed to start, starts it again at 20, 45
@@ -59,6 +63,12 @@ Inputs, found automatically:
                     RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
                     cargo build --manifest-path rust/Cargo.toml --release --locked \
                       --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+
+Optional inputs:
+  --splash FILE       the startup-screen program (mpfree-splash), a static ARM
+                      EABI5 hard-float executable built like the screen log
+  --splash-font FILE  a TrueType or OpenType font for its title (only with
+                      --splash); without it the title uses built-in letters
 
 The device tree also gets the Ethernet PHY's ID (Realtek RTL8211E, as 3.6.0
 reads it on the reference unit). 3.6.0 holds the PHY in reset when it shuts
@@ -216,7 +226,7 @@ done
 SCREEN_UNIT = """[Unit]
 Description=MPFree test boot: show the live log on the MPC's screen
 DefaultDependencies=no
-After=systemd-journald.service
+After=systemd-journald.service{after}
 Conflicts=shutdown.target
 Before=shutdown.target
 IgnoreOnIsolate=yes
@@ -228,6 +238,23 @@ ExecStart=/bin/sh -c 'journalctl -b -f -n 100 --no-pager --no-hostname -o short-
 Restart=always
 RestartSec=5
 Nice=10
+
+[Install]
+WantedBy=sysinit.target
+"""
+# Only with --splash. The log display waits for it (After= in its unit); if it fails, the log simply starts.
+SPLASH_SECONDS = 6
+SPLASH_UNIT = """[Unit]
+Description=MPFree test boot: startup screen before the live log
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target mpfree-test-screen.service
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation {rotation} --seconds {seconds}{font}
+TimeoutStartSec={timeout}
 
 [Install]
 WantedBy=sysinit.target
@@ -437,6 +464,35 @@ def screen_log_program():
     path = os.path.realpath(os.environ.get("MPFREE_SCREEN_LOG", SCREEN_LOG_BUILT))
     if not os.path.isfile(path):
         raise Stop(f"missing {path}: build the screen log program first (see the top of this file, or the docs)")
+    return path, static_arm_program(path)
+
+
+FONT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+
+
+def splash_inputs(args):
+    """The startup-screen program and its font, if asked for. Returns (program bytes, font name, font bytes)."""
+    if args.splash_font and not args.splash:
+        raise Stop("--splash-font needs --splash")
+    if not args.splash:
+        return None, None, None
+    path = os.path.realpath(args.splash)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build the startup-screen program first")
+    program = static_arm_program(path)
+    if not args.splash_font:
+        return program, None, None
+    font_path = os.path.realpath(args.splash_font)
+    with open(font_path, "rb") as fh:
+        font = fh.read(SCREEN_LOG_MAX + 1)
+    ext = os.path.splitext(font_path)[1].lower()
+    if len(font) > SCREEN_LOG_MAX or font[:4] not in FONT_MAGIC or ext not in (".ttf", ".otf"):
+        raise Stop(f"{font_path} is not a single TrueType or OpenType font (.ttf or .otf) under 16 MiB")
+    return program, "splash-font" + ext, font
+
+
+def static_arm_program(path):
+    """The file's bytes, checked to be a static ARM EABI5 hard-float executable."""
     with open(path, "rb") as fh:
         data = fh.read(SCREEN_LOG_MAX + 1)
     problem = None
@@ -457,7 +513,7 @@ def screen_log_program():
             problem = "dynamically linked (it must be static: 3.10.0's C library may differ)"
     if problem:
         raise Stop(f"{path} is {problem}; rebuild it as shown at the top of this file")
-    return path, data
+    return data
 
 
 def newest(pattern):
@@ -537,7 +593,7 @@ def running_release(pre, work, target_release):
     return release, how
 
 
-def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation):
+def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None)):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note."""
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
@@ -547,8 +603,10 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
         found = img.kind(path)
         if found is None or (kind and found != kind):
             raise Stop(f"the image has no {kind or 'file'} {path}; this tool does not know this layout")
+    splash_program, font_name, font = splash
+    extra = len(splash_program or b"") + len(font or b"")
     free_bytes, free_inodes = img.free()
-    if free_bytes < len(screen_log) + (4 << 20) or free_inodes < 64:
+    if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
     new_paths = (["/etc/systemd/system/" + u for u in MASK_UNITS] +
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
@@ -560,7 +618,9 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service",
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
-                 ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS])
+                 ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS] +
+                 (["/etc/systemd/system/mpfree-test-splash.service",
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -580,7 +640,17 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
     add("/etc/systemd/system/mpfree-test-sshd.service", SSHD_UNIT, 0o644)
     add("/etc/systemd/system/mpfree-test-logs.service", LOG_UNIT, 0o644)
     add("/etc/mpfree-test/mpfree-screen-log", screen_log, 0o755)
-    add("/etc/systemd/system/mpfree-test-screen.service", SCREEN_UNIT.format(rotation=rotation), 0o644)
+    add("/etc/systemd/system/mpfree-test-screen.service",
+        SCREEN_UNIT.format(rotation=rotation, after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if splash_program:
+        add("/etc/mpfree-test/mpfree-splash", splash_program, 0o755)
+        font_args = ""
+        if font:
+            add(f"/etc/mpfree-test/{font_name}", font, 0o644)
+            font_args = f" --font /etc/mpfree-test/{font_name} --tracking 0.15"
+        add("/etc/systemd/system/mpfree-test-splash.service",
+            SPLASH_UNIT.format(rotation=rotation, seconds=SPLASH_SECONDS, font=font_args,
+                               timeout=SPLASH_SECONDS + 14), 0o644)
     with open(ETHERNET_DETAILS, "rb") as fh:
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
@@ -623,6 +693,9 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
         "/etc/systemd/system/mpfree-test-screen.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"] = \
         "/etc/systemd/system/mpfree-test-ethernet.service"
+    if splash_program:
+        links["/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] = \
+            "/etc/systemd/system/mpfree-test-splash.service"
 
     commands = ["mkdir /etc/mpfree-test"]
     for folder in MADE_IF_MISSING:
@@ -713,6 +786,8 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch):
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", help="the version's rootfs image (default: found as described above)")
+    ap.add_argument("--splash", help="the startup-screen program (mpfree-splash, static ARM)")
+    ap.add_argument("--splash-font", help="a .ttf or .otf font for the startup screen's title (with --splash)")
     args = ap.parse_args(argv)
     for tool in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"):
         if not shutil.which(tool):
@@ -728,6 +803,7 @@ def main(argv):
     if len(pubkey.splitlines()) != 1 or run(["ssh-keygen", "-l", "-f", pub_path]).returncode != 0:
         raise Stop(f"{pub_path} is not a single public key")
     screen_path, screen_log = screen_log_program()
+    splash = splash_inputs(args)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     os.makedirs(work, exist_ok=True)
@@ -804,8 +880,19 @@ def main(argv):
         root_uuid, log_uuid = str(uuid.uuid4()), str(uuid.uuid4())
         OUT.say(f"screen log program: {screen_path} ({len(screen_log)} bytes, "
                 f"sha256 {hashlib.sha256(screen_log).hexdigest()}, static ARM EABI5 hard-float)")
+        if splash[0]:
+            OUT.say(f"startup screen program: {os.path.realpath(args.splash)} ({len(splash[0])} bytes, "
+                    f"sha256 {hashlib.sha256(splash[0]).hexdigest()}, static ARM EABI5 hard-float), "
+                    f"shown for {SPLASH_SECONDS} s before the log")
+            if splash[2]:
+                OUT.say(f"startup screen font: {os.path.realpath(args.splash_font)} ({len(splash[2])} bytes, "
+                        f"sha256 {hashlib.sha256(splash[2]).hexdigest()})")
+            else:
+                OUT.say("startup screen font: none given, so the title uses built-in letters")
+        else:
+            OUT.say("startup screen: none (no --splash)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
-                                                                  screen_log, rotation)
+                                                                  screen_log, rotation, splash)
         for path in links:
             OUT.say(f"link     {path} -> {img.link(path)}")
         for path in written:

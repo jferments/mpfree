@@ -40,4 +40,13 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 - Remaining button numbers and LED color/brightness meaning of values 0–4 (capture each button once).
 - Data wheel push, the `0x5A` bulk message, any display/screen messages, and whether the keep-alive is mandatory.
-- Behavior when the factory app is not running (startup handshake, default LED state). Needs the reversible handoff gate.
+- Behavior when the factory app is not running (startup handshake, default LED state). First evidence below.
+
+## Without the factory app (Hello MPC round 1, 2026-11-10)
+
+On the [kexec test build](kexec-test-boot.md) (Akai 3.10.0 rootfs, kernel 6.18, Akai's app masked), our [`mpfree-hello`](../../rust/mpfree-hello) listened on the Private input for 15 s while the owner hit pads, turned Q-Links and the wheel:
+
+- **Nothing arrived**: 0 bytes, with nothing sent to the controller.
+- **With the keep-alive** (`F0 47 00 46 52 00 04 7D 6D 57 35 F7` on Public every 5 s, three sent), still no control data. 39 bytes arrived on Private: three 13-byte replies. Two matched the reply the factory app gets (`F0 47 7F 46 53 00 05 7D 6D 57 35 01 F7`). The first, right after our first keep-alive, did not match it, and round 1 did not record its bytes.
+
+So the controller answers the keep-alive without the app, but sends no control data. **Inferred, not yet verified:** the factory app sends some setup message at startup. Round 2 records the Public, Private and MIDI Port inputs byte for byte on the test build, and captures what the factory app sends while it restarts on stock 3.6 (`collect-over-ssh.sh --app-start-capture`, see [Hello MPC](../guides/hello-mpc.md)).

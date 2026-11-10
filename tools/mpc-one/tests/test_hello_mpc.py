@@ -214,9 +214,13 @@ class HelloTests(unittest.TestCase):
             self.assertIn("RESULT: all steps ran", fh.read())
 
     def test_keepalive_only_without_pad_hits(self):
-        res = self.run_helper(FAKE_PADS="0")
+        # Enter and an answer for: inventory, screen, touch, pads, the keep-alive try, click.
+        res = self.run_helper("\n\nscreen ok\n\ntouch ok\n\npads 1 to 4, wheel\n\npads again\n\nclick ok\n",
+                              FAKE_PADS="0")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("No pad hits arrived.", res.stdout)
+        for answer in ("screen ok", "touch ok", "pads 1 to 4, wheel", "pads again", "click ok"):
+            self.assertIn(f"your answer: {answer}", res.stdout)
         self.assertEqual(self.log_lines("program: "),
                          ["inventory", "screen", "touch --seconds 10", "pads --seconds 15",
                           "pads --seconds 15 --keepalive", "click --seconds 10 --gain-db -12"])

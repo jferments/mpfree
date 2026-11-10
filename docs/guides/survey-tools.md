@@ -53,6 +53,8 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 
 **Hello MPC on the test build.** `--hello` runs Phase 1 on the running test build: our own program draws on the screen, reads touches and pads, and plays a quiet click, one step per Enter. It connects only to the test build (by its host key), copies the program to `/run`, changes RAM only, and requires `MPFREE_ACCEPT_HELLO=YES`. See [Hello MPC](hello-mpc.md).
 
+**Akai's app at startup.** `--app-start-capture` runs on stock 3.6 only. It records the controller's USB traffic (usbmon, passive) while systemd restarts Akai's app once, so the report shows what the app sends to the controller as it starts. The restart is the one state change: it needs `MPFREE_ACCEPT_APP_RESTART=YES` and a typed `RESTART`, and checks afterwards that the app runs again and the controller is the same USB device. See [Hello MPC](hello-mpc.md#round-2-why-the-pads-were-silent).
+
 **Passive capture.** `--midi-capture` reads the kernel's usbmon interface for the controller's USB bus while you use the controller. It is interactive, stops itself within 240 s and requires `MPFREE_ACCEPT_USBMON=YES`. See [audio and MIDI diagnostics](audio-midi-diagnostics.md).
 
 **Active test.** `--netbench` runs [`network-bench.py`](../../tools/mpc-one/network-bench.py) on the workstation: 20 pings and a 4 MiB SSH transfer in each direction. It writes no files on the MPC but loads its CPU and network briefly, so only run it while the MPC is idle.
