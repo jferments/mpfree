@@ -129,6 +129,7 @@ def main(argv):
     if argv:
         print(__doc__.strip())
         return 2
+    os.environ["PATH"] = os.environ.get("PATH", "/usr/bin:/bin") + ":/usr/sbin:/sbin"  # debugfs and e2fsck
     for tool in ("debugfs", "e2fsck") + (() if TEST_ROOT else ("sudo",)):
         if not shutil.which(tool):
             raise Stop(f"missing '{tool}'. Install e2fsprogs with your package manager")

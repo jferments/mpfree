@@ -23,7 +23,8 @@ ROOT_UUID = "0f0e0d0c-0b0a-4908-8706-050403020100"
 LOG_UUID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 BOOT = "boot-11111111-2222-4333-8444-555555555555"
 LOG_SIZE = 32 << 20
-HAVE_TOOLS = all(shutil.which(t) for t in ("mke2fs", "debugfs", "e2fsck"))
+SBIN_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+HAVE_TOOLS = all(shutil.which(t, path=SBIN_PATH) for t in ("mke2fs", "debugfs", "e2fsck"))
 if not HAVE_TOOLS and os.environ.get("MPFREE_REQUIRE_OFFLINE_TOOLS") == "1":
     raise SystemExit("e2fsprogs is required (MPFREE_REQUIRE_OFFLINE_TOOLS=1)")
 
@@ -71,7 +72,7 @@ class ReaderTests(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         res = subprocess.run(["mke2fs", "-q", "-F", "-t", "ext4", "-L", "MPFREE-LOG", "-E", "root_owner=0:0",
                               "-d", src, path, f"{LOG_SIZE // 1024}k"], stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True)
+                             stderr=subprocess.STDOUT, text=True, env={**os.environ, "PATH": SBIN_PATH})
         self.assertEqual(res.returncode, 0, res.stdout)
 
     def plug(self, name="sdc2", usb=True, sectors=LOG_SIZE // 512, logs=None):
@@ -89,7 +90,8 @@ class ReaderTests(unittest.TestCase):
         return dev
 
     def reader(self, *args):
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "MPFREE_TEST_ROOT": self.root,
+        # Without /usr/sbin, as in a user's PATH on some systems: the tool adds it for debugfs and e2fsck.
+        env = {"PATH": "/usr/bin:/bin", "MPFREE_TEST_ROOT": self.root,
                "MPFREE_WORK_DIR": self.work, "HOME": self.root}
         return subprocess.run([sys.executable, "-I", TOOL, *args], env=env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
@@ -165,13 +167,13 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("no kexec-stick folder with a stick.img", res.stdout)
         self.assertEqual(self.reader("--help").returncode, 2)
 
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("mount"), "needs root to loop-mount")
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("mount", path=SBIN_PATH), "needs root to loop-mount")
     def test_replays_the_journal_of_a_partition_cut_off_while_mounted(self):
         dev = self.plug(logs={})
         mnt = os.path.join(self.root, "mnt")
         os.makedirs(mnt)
         res = subprocess.run(["mount", "-o", "loop,rw,sync", dev, mnt], stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True)
+                             stderr=subprocess.STDOUT, text=True, env={**os.environ, "PATH": SBIN_PATH})
         if res.returncode != 0:
             self.skipTest("loop mount failed: " + res.stdout)
         try:
@@ -180,7 +182,7 @@ class ReaderTests(unittest.TestCase):
             cut = os.path.join(self.root, "cut.img")
             shutil.copyfile(dev, cut)  # the partition as a power cut leaves it: still marked mounted
         finally:
-            subprocess.run(["umount", mnt])
+            subprocess.run(["umount", mnt], env={**os.environ, "PATH": SBIN_PATH})
         shutil.copyfile(cut, dev)
         res = self.reader()
         self.assertEqual(res.returncode, 0, res.stdout)
