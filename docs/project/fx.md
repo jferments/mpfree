@@ -55,7 +55,9 @@ Every strip has an insert chain (8 slots by default) and a fader (volume -80 to 
 - **Cheap when quiet:** a strip silent for longer than its delays, with nothing moving, skips its work; one nothing wrote to this block does not even scan its input.
 - **Profiling:** `set_profiling(true)` times the whole mixer, each strip and each insert slot into `mpfree-prof` probes (off by default; two clock reads each).
 
-What it does not do yet: the wiring into mpfree-hello (the sampler's `render_routed` for pad channels, the tracks, the Mixer page), the recorder that uses the capture points, saving the mixer with a project, and the "print FX" option for recording through inserts. The Mixer page is proposed to the Hello thread, which owns the layout.
+**The mixer screen** is [`rust/mpfree-mixer-ui`](../../rust/mpfree-mixer-ui): the panel TRACK MIX (or the mixer icon at the top bar's right edge) opens over the current page, as the layout spec places it. Views for Tracks, Pads (SHIFT + TRACK MIX), Inputs, and Submixes with returns; pages of ten strips with the master always on the right. Each strip has its name and colour, four insert rows (a tap opens the slot, "+ Insert" adds one, "SC" marks a keyed slot), sends A to D (drag; a tap on the letter takes it before the fader), pan (drag; a tap centres it), a fader beside a stereo meter (drag, relative, with a 0 dB detent; a tap on the level sets 0 dB), Mute and Solo (and Arm on an input, whose meter shows what comes in), and its output, which opens a picker of only the allowed destinations. The master shows Master safety's mode, ceiling, what it caught and its limiting. While profiling, a chip shows the mixer's share of a period and each insert row a cost bar. A meter-only update redraws only the meters. `cargo run --release -p mpfree-mixer-ui --bin mpfree-mixer-preview` draws the sample screens with a real mixer playing behind them. Wiring it into mpfree-hello is the Hello thread's, which owns the layout.
+
+What it does not do yet: the wiring into mpfree-hello (the sampler's `render_routed` for pad channels, the tracks, the mixer screen), the recorder that uses the capture points, saving the mixer with a project, and the "print FX" option for recording through inserts.
 
 ## Tests
 
@@ -91,6 +93,6 @@ What it does not do yet: the wiring into mpfree-hello (the sampler's `render_rou
 ## Next
 
 - F2 is in: the Cloud reverb, the EQ, chorus, flanger, phaser and lo-fi (the Cloud reverb's Plate character covers the plate for now).
-- F3 is in: the mixer, with the MPC's routing (inputs, pad channels, tracks, 8 submixes, 4 returns, the master), per-insert sidechain keys, latency compensation, capture points and profiling. Next for it: the Mixer page (proposed to the Hello thread) and the wiring into mpfree-hello.
+- F3 is in: the mixer, with the MPC's routing (inputs, pad channels, tracks, 8 submixes, 4 returns, the master), per-insert sidechain keys, latency compensation, capture points and profiling. Next for it: the wiring into mpfree-hello (the mixer screen is built, in mpfree-mixer-ui).
 - F4: FX pages in the GUI, built from each effect's parameter list.
 - F5: Perform FX (punch-in, beat repeat, filter and tape stop on pads).
