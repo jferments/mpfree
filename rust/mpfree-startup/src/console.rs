@@ -179,8 +179,7 @@ impl Console {
             for c in 0..cols {
                 let v = grid[r * cols + c];
                 let (ci, ri) = (c as i32, r as i32);
-                let shadow = v < 0.12 && grid.get((r.wrapping_sub(1)) * cols + c.wrapping_sub(1)).copied().unwrap_or(0.0) > 0.4
-                    && r > 0 && c > 0;
+                let shadow = v < 0.12 && r > 0 && c > 0 && grid[(r - 1) * cols + c - 1] > 0.4;
                 if v < 0.12 && !shadow {
                     continue;
                 }
