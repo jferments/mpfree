@@ -26,6 +26,13 @@
 //! comes back as an `Insert` to be dropped off the audio thread. They do
 //! not fade by themselves: the mixer ducks a strip around them.
 //!
+//! Every slot has a **slot id** ([`Chain::uid`]): a number the chain gives
+//! the insert when it goes in, which stays with it when it is moved,
+//! bypassed or taken out and put back, so a parameter lock, a macro or a
+//! Q-Link binding that names an insert (`mpfree_param::Owner::Insert`)
+//! follows the effect, not the position. A project saves the ids and gives
+//! them back on load ([`Insert::with_uid`]).
+//!
 //! Each slot can listen to its own sidechain ([`Chain::set_key`] and
 //! [`Chain::process_keyed`]), and, while profiling is on
 //! ([`Chain::set_profiling`]), times its block into an `mpfree_prof`
@@ -67,12 +74,14 @@ struct Slot {
     /// The slot's time per block while the chain is profiling; it moves
     /// with the slot.
     probe: Box<Probe>,
+    /// The slot id (see the module docs); 0 until the chain gives one.
+    uid: u16,
 }
 
 impl Slot {
     fn new(node: Box<dyn Node>) -> Slot {
         let lat = node.latency() as usize;
-        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS), key: None, probe: Box::new(Probe::new(u64::MAX)) }
+        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS), key: None, probe: Box::new(Probe::new(u64::MAX)), uid: 0 }
     }
 }
 
@@ -83,6 +92,8 @@ pub struct Insert {
     slot: Slot,
     rate: u32,
     max_block: usize,
+    /// The slot id it asks for; `None` takes the chain's next free one.
+    uid: Option<u16>,
 }
 
 impl Insert {
@@ -91,7 +102,7 @@ impl Insert {
     pub fn new(mut node: Box<dyn Node>, rate: u32, max_block: usize) -> Insert {
         let (rate, max_block) = (rate.max(1), max_block.max(1));
         node.prepare(rate, max_block);
-        Insert { slot: Slot::new(node), rate, max_block }
+        Insert { slot: Slot::new(node), rate, max_block, uid: None }
     }
 
     pub fn node(&self) -> &dyn Node { self.slot.node.as_ref() }
@@ -107,6 +118,22 @@ impl Insert {
         self.slot.resting = true;
         self
     }
+
+    /// Asks for slot id `uid` (loading a project). The chain refuses the
+    /// insert if another slot has it. Ids start at 1.
+    pub fn with_uid(mut self, uid: u16) -> Insert {
+        self.uid = Some(uid.max(1));
+        self
+    }
+
+    /// Lets the chain give it a new slot id (moving it to another chain).
+    pub fn without_uid(mut self) -> Insert {
+        self.uid = None;
+        self
+    }
+
+    /// The slot id it has (taken out of a chain) or asks for.
+    pub fn uid(&self) -> Option<u16> { self.uid }
 
     /// The node back, to drop or to wrap again elsewhere.
     pub fn into_node(self) -> Box<dyn Node> { self.slot.node }
@@ -129,6 +156,8 @@ pub struct Chain {
     part: Vec<Timed>,
     stats: ChainStats,
     profiling: bool,
+    /// Where the search for a free slot id starts.
+    next_uid: u16,
 }
 
 impl Default for Chain {
@@ -137,7 +166,7 @@ impl Default for Chain {
 
 impl Chain {
     pub fn new() -> Chain {
-        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default(), profiling: false };
+        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default(), profiling: false, next_uid: 1 };
         c.prepare(48_000, mpfree_node::MAX_BLOCK);
         c
     }
@@ -165,7 +194,10 @@ impl Chain {
         if at > self.slots.len() || self.slots.len() >= self.slots.capacity() || !self.fits(&ins) {
             return Err(ins);
         }
-        self.slots.insert(at, ins.slot);
+        let Some(uid) = self.claim_uid(ins.uid, None) else { return Err(ins) };
+        let mut slot = ins.slot;
+        slot.uid = uid;
+        self.slots.insert(at, slot);
         Ok(())
     }
 
@@ -178,9 +210,15 @@ impl Chain {
         if at >= self.slots.len() || !self.fits(&ins) {
             return Err(ins);
         }
+        // A new effect gets a new id: what named the old one's parameters
+        // means nothing to it. An id asked for may be the old one's.
+        let Some(uid) = self.claim_uid(ins.uid, Some(at)) else { return Err(ins) };
         let (rate, max_block) = (self.rate, self.max_block);
-        let old = std::mem::replace(&mut self.slots[at], ins.slot);
-        Ok(Insert { slot: old, rate, max_block })
+        let mut slot = ins.slot;
+        slot.uid = uid;
+        let old = std::mem::replace(&mut self.slots[at], slot);
+        let old_uid = old.uid;
+        Ok(Insert { slot: old, rate, max_block, uid: Some(old_uid) })
     }
 
     /// Takes the insert at `at` out and hands it back. Real-time safe.
@@ -189,7 +227,8 @@ impl Chain {
             return None;
         }
         let slot = self.slots.remove(at);
-        Some(Insert { slot, rate: self.rate, max_block: self.max_block })
+        let uid = Some(slot.uid);
+        Some(Insert { slot, rate: self.rate, max_block: self.max_block, uid })
     }
 
     /// Moves the insert at `from` to `to`, with its state and queued
@@ -209,11 +248,38 @@ impl Chain {
 
     fn fits(&self, ins: &Insert) -> bool { ins.rate == self.rate && ins.max_block == self.max_block }
 
+    /// The slot id for an insert going in: the one it asks for if no other
+    /// slot (leaving out `except`) has it, else the next free one. Never
+    /// allocates.
+    fn claim_uid(&mut self, want: Option<u16>, except: Option<usize>) -> Option<u16> {
+        let taken = |c: &Chain, u: u16| c.slots.iter().enumerate().any(|(i, s)| s.uid == u && Some(i) != except);
+        if let Some(u) = want {
+            if taken(self, u) { return None; }
+            self.next_uid = self.next_uid.max(u.wrapping_add(1).max(1));
+            return Some(u);
+        }
+        // At most MAX_SLOTS-ish slots, so a free id is always close by.
+        let mut u = self.next_uid.max(1);
+        while taken(self, u) {
+            u = u.wrapping_add(1).max(1);
+        }
+        self.next_uid = u.wrapping_add(1).max(1);
+        Some(u)
+    }
+
+    /// A slot's id (see the module docs).
+    pub fn uid(&self, slot: usize) -> Option<u16> { self.slots.get(slot).map(|s| s.uid) }
+
+    /// The slot that has id `uid` now.
+    pub fn slot_of(&self, uid: u16) -> Option<usize> { self.slots.iter().position(|s| s.uid == uid) }
+
     /// Adds a node at the end, prepared for the chain's rate (control
     /// thread). Returns its slot index.
     pub fn push(&mut self, mut node: Box<dyn Node>) -> usize {
         node.prepare(self.rate, self.max_block);
-        self.slots.push(Slot::new(node));
+        let mut slot = Slot::new(node);
+        slot.uid = self.claim_uid(None, None).unwrap_or(0);
+        self.slots.push(slot);
         self.slots.len() - 1
     }
 
