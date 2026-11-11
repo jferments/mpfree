@@ -25,3 +25,4 @@ mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
+mpfree-looper = { path = "../mpfree-looper" }

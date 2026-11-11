@@ -24,6 +24,8 @@
 
 use crate::app::{tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView};
 use crate::debug_page::{AudioNumbers, DebugPages};
+use crate::looper_page::{LooperPage, LOOPER_PAGE};
+use crate::looping::{LoopWave, LooperView};
 use crate::perf::ProcView;
 use crate::touchlab_page::TouchLabView;
 use mpfree_touch::mt::Phase;
@@ -246,6 +248,10 @@ pub enum ToUi {
     ClipsWheel { delta: i32, scroll: bool },
     /// The Map controls page (debug mode).
     Map(Box<MapView>),
+    /// What the Looper tab shows: the looper, the line input's meter.
+    Looper(Box<LooperView>),
+    /// The loop's waveform (no frames: the loop was cleared).
+    LoopWave(Arc<LoopWave>),
     Quit,
 }
 
@@ -275,6 +281,8 @@ pub enum FromUi {
     MapRow(usize),
     /// The mapper card's buttons: Listen, Skip, Clear.
     MapButton(usize),
+    /// A button on the Looper tab (`looper_page::BUTTONS`).
+    Looper(usize),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -323,6 +331,9 @@ pub struct Player {
     pub time: TimeState,
     /// The Debug tab's Performance and Map controls pages.
     debug: DebugPages,
+    /// The Looper tab, and what it shows.
+    looper_page: LooperPage,
+    pub looper: LooperView,
 }
 
 impl Player {
@@ -353,6 +364,7 @@ impl Player {
         ui.add_full_page("Loading", "loading").expect("loading layout");
         ui.add_page("Play", &with_bar(PLAY_LAYOUT)).expect("play layout");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
+        let looper_page = LooperPage::add(&mut ui).expect("looper layout");
         ui.add_page("Console", SYSLOG_LAYOUT).expect("console layout");
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT).expect("options layout");
@@ -377,7 +389,8 @@ impl Player {
                              session: ("Starting".to_string(), Tone::Dim),
                              console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
                              synth: None, arp_panel, workspace, arp, qlink_focus: None, arp_chip: None,
-                             fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default(), debug };
+                             fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default(), debug,
+                             looper_page, looper: LooperView::default() };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
@@ -506,6 +519,8 @@ impl Player {
                 View::Play => format!("Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   \
                                        MENU: options   ·   {stop}"),
                 View::Clips => CLIPS_HINT.to_string(),
+                View::Looper => format!("REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   PLAY / STOP: \
+                                         the transport   ·   MENU: looper options   ·   {stop}"),
                 View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
@@ -677,6 +692,16 @@ impl Player {
                 self.debug.set_audio(&mut self.ui, t.audio);
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
+            ToUi::Looper(v) => {
+                self.looper = *v;
+                if self.view == View::Looper {
+                    self.looper_page.update(&mut self.ui, &self.looper, &self.settings);
+                }
+            }
+            ToUi::LoopWave(w) => {
+                self.looper_page.set_wave(&mut self.ui, w);
+                self.looper_page.update(&mut self.ui, &self.looper, &self.settings);
+            }
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -952,6 +977,7 @@ impl Player {
             View::Play => "Play".to_string(),
             View::Clips => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
+            View::Looper => LOOPER_PAGE.to_string(),
             View::Debug | View::Perf | View::Map => {
                 DebugPages::set_strip(&mut self.ui, v);
                 DebugPages::page(v).unwrap_or("Debug").to_string()
@@ -969,6 +995,9 @@ impl Player {
         if v == View::Clips {
             // How many slots fit is known once the grid is on screen.
             self.time_page.update(&mut self.ui, &self.time);
+        }
+        if v == View::Looper {
+            self.looper_page.update(&mut self.ui, &self.looper, &self.settings);
         }
         if relabel {
             self.label_pads();
@@ -1053,6 +1082,7 @@ impl Player {
             }
             ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
             ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
+            ("lbuttons", EventKind::Tab(i)) => Some(FromUi::Looper(i)),
             ("pads", EventKind::Pad { index, down }) => Some(FromUi::Pad { pad: index, down }),
             ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
             ("level", EventKind::Value(v)) => Some(FromUi::Level(v)),
@@ -1445,7 +1475,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
-            | Effect::Time(_) | Effect::Octave(_) | Effect::Bank { .. } => {}
+            | Effect::Time(_) | Effect::Octave(_) | Effect::Bank { .. } | Effect::Looper(_) => {}
         }
     }
 }
@@ -1549,6 +1579,73 @@ fn sample_app() -> crate::app::App {
 /// showing it), for previews: loading, play, debug, console, prefs, options,
 /// the guide, and the arp's quick band, panel and pattern workspace (each
 /// with the real app and engine behind it).
+/// The Looper tab with a real loop: two bars of the pads (a kick and hats)
+/// and an overdub (a bass line), recorded by the looper on a transport.
+fn sample_looper(fonts: Fonts) -> Result<Player, String> {
+    use crate::looping::{LoopHost, PERIOD};
+    use mpfree_looper::Command as L;
+    use mpfree_transport::{Block, Command as T, Transport};
+    use std::f32::consts::TAU;
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::Show(View::Looper));
+    let mut h = LoopHost::new(44_100, 20);
+    let mut t = Transport::new(44_100, 120.0).map_err(|e| format!("{e:?}"))?;
+    let mut b = Block::new();
+    h.command(L::SetBars(Some(2)));
+    h.command(L::SetLatency(0));
+    h.command(L::Record);
+    t.command(0, T::Play);
+    const BEAT: u64 = 22_050;
+    const LOOP: u64 = 8 * BEAT;
+    let mut wave = None;
+    // Two passes, an overdub on the third, and into the fourth.
+    let periods = (3 * LOOP + 5 * BEAT) / PERIOD as u64;
+    for i in 0..periods {
+        let start = i * PERIOD as u64;
+        if start <= 2 * LOOP && 2 * LOOP < start + PERIOD as u64 {
+            h.command(L::Overdub);
+        }
+        if start <= 3 * LOOP && 3 * LOOP < start + PERIOD as u64 {
+            h.command(L::Overdub);
+        }
+        if !t.process(PERIOD as u32, &mut b) {
+            return Err("the transport refused a period".into());
+        }
+        let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+        for f in 0..PERIOD {
+            let n = start + f as u64;
+            let in_beat = (n % BEAT) as f32 / 44_100.0;
+            let half = (n % (BEAT / 2)) as f32 / 44_100.0;
+            let mut v = if n < LOOP {
+                // The first pass: a kick on the beats, a hat between.
+                let kick = (TAU * (50.0 + 90.0 * (-in_beat * 30.0).exp()) * in_beat).sin() * (-in_beat * 9.0).exp();
+                let noise = ((n.wrapping_mul(2_654_435_761) >> 7) % 2000) as f32 / 1000.0 - 1.0;
+                let hat = if (n / (BEAT / 2)) % 2 == 1 { noise * (-half * 60.0).exp() * 0.25 } else { 0.0 };
+                0.7 * kick + hat
+            } else if (2 * LOOP..3 * LOOP).contains(&n) {
+                // The overdub: a bass note on each beat, up a fifth on 3 and 4.
+                let note = if (n / BEAT) % 4 >= 2 { 82.4 } else { 55.0 };
+                0.35 * (TAU * note * in_beat).sin() * (-in_beat * 3.0).exp()
+            } else {
+                0.0
+            };
+            v = v.clamp(-1.0, 1.0);
+            (l[f], r[f]) = (v, v);
+        }
+        h.take_pads(&l, &r);
+        h.period(&b, &mut l, &mut r);
+        h.changes(String::new);
+        if let Some(w) = h.wave_step(i, 344) {
+            wave = Some(w);
+        }
+    }
+    p.apply(ToUi::LoopWave(wave.ok_or("no wave")?));
+    let mut v = h.view(120.0);
+    v.meter_db = [-6.5, -6.5];
+    p.apply(ToUi::Looper(Box::new(v)));
+    Ok(p)
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -1631,6 +1728,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match sample_clips(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
+    }
+    match sample_looper(fonts()) {
+        Ok(p) => out.push(("looper", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
     }
     // The synth on the pads (the kit list's last entry), then its page.
     let synth_kit = sample_kits().len();

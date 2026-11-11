@@ -289,6 +289,17 @@ impl TimeHost {
         self.click.mix(left, right)
     }
 
+    /// The transport's description of the last period (for the looper).
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    /// The song position as bar.beat.tick, for log lines.
+    pub fn position_text(&self) -> String {
+        let t = &self.transport;
+        t.meter().position(t.position()).to_string()
+    }
+
     pub fn info(&self) -> TransportInfo {
         TransportInfo::of(&self.transport)
     }

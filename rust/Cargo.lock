@@ -434,6 +434,7 @@ dependencies = [
  "mpfree-arp-ui",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-looper",
  "mpfree-node",
  "mpfree-play",
  "mpfree-sampler",
