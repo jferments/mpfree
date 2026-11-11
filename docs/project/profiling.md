@@ -138,8 +138,9 @@ synth budget, so two Supersaw tracks get half each. "16+ (75)" means every
 count measured fits and the line runs out at 75. Mono and legato presets
 play one voice, so they show one cost. With `--calibration` the times and
 counts are MPC estimates (the kernel range in brackets); on the MPC they are
-its own. It is not in round 7's device step, which was frozen before it
-existed; it goes in a later round.
+its own. `host_bench_mpc.py` runs it on the device after the other two
+runs; round 7's step was frozen before that, so it first runs in a later
+round.
 
 On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
@@ -176,7 +177,7 @@ faster" as unproven.
 `tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
 (the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
 it copies the two builds to `/run/mpfree-bench`, runs each with fixed
-arguments (`--calibrate`, then `--json <build>.json`), and prints the output
+arguments (`--calibrate`, `--json <build>.json`, then `--afford`), and prints the output
 and the JSON into the results log. It starts, stops and changes no service,
 and the benchmark opens no device. It runs as an ordinary process, so the pad
 player's real-time audio thread always comes first. Like host_hello_mpc.py it
