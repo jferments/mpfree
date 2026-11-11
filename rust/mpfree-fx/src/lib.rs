@@ -9,8 +9,16 @@
 //! - [`Crush`]: bit depth and sample-rate reduction (aliasing on purpose).
 //! - [`Delay`]: free or tempo-synced echo with ping-pong, a filter and
 //!   saturation in the feedback, tape-style time changes and freeze.
+//! - [`Eq`]: four parametric bands (bell or shelf) with low and high cuts,
+//!   and the exact response curve for drawing.
+//! - [`Chorus`], [`Flanger`], [`Phaser`]: modulation effects with a free
+//!   or tempo-synced LFO and stereo width.
+//! - [`LoFi`]: tape wow, flutter and saturation, vinyl crackle and hiss
+//!   that ride the music, tone and width, all under one Amount.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
+//! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
+//!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
 //!   look-ahead peak limiter that counts overs, and Soft clip and Raw modes.
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
@@ -34,20 +42,28 @@
 #![forbid(unsafe_code)]
 
 mod chain;
+mod cloud;
 mod comp;
 mod crush;
 mod delay;
 mod drive;
+mod eq;
+mod lofi;
 mod master;
+mod modfx;
 mod oversample;
 mod svf;
 
 pub use chain::{Chain, ChainStats, MAX_SLOT_EVENTS};
+pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
 pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
+pub use eq::Eq;
+pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
+pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 
@@ -56,13 +72,27 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::cloud::ids as cloud;
     pub use crate::comp::ids as compressor;
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
+    pub use crate::eq::ids as eq;
+    pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
+    pub use crate::modfx::chorus;
+    pub use crate::modfx::flanger;
+    pub use crate::modfx::phaser;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
+}
+
+/// A factory preset: a name and the parameter values that differ from the
+/// node's defaults (the same shape as `mpfree_synth::Preset`).
+#[derive(Clone, Copy, Debug)]
+pub struct Preset {
+    pub name: &'static str,
+    pub values: &'static [(u16, f32)],
 }
 
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,
