@@ -13,6 +13,7 @@ use mpfree_looper::Phase;
 use mpfree_ui::wave::{Beats, Waveform};
 use mpfree_ui::widgets::StatList;
 use mpfree_ui::{Align, FontId, PaintCx, Rect, Tone, Ui, Widget};
+use std::cell::RefCell;
 use std::sync::Arc;
 
 pub const LOOPER_PAGE: &str = "Looper";
@@ -98,6 +99,54 @@ impl Widget for Meter {
     }
 }
 
+/// The Play page's loop strip (the All and Loop views): a heading line with
+/// the loop's length and layers, over the loop's waveform. The Looper tab
+/// is where the loop is edited; this is where it is played.
+pub struct LoopStrip {
+    pub wave: Waveform,
+    /// The heading's right-hand text: "4 bars · 3 layers · Playing".
+    pub right: String,
+    /// The heading as last drawn, so a playhead move redraws only its strip.
+    drawn: RefCell<Option<String>>,
+}
+
+/// The strip's widget name, and the height of its heading line.
+pub const LOOP_STRIP: &str = "play-loop";
+const STRIP_HEAD: i32 = 26;
+
+impl Default for LoopStrip {
+    fn default() -> Self {
+        LoopStrip { wave: Waveform::new(), right: String::new(), drawn: RefCell::new(None) }
+    }
+}
+
+impl LoopStrip {
+    /// Where the waveform sits in the strip's rectangle.
+    pub fn wave_area(r: Rect) -> Rect {
+        r.take_top(STRIP_HEAD).1
+    }
+}
+
+impl Widget for LoopStrip {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let (head, _) = r.take_top(STRIP_HEAD);
+        cx.canvas.fill_rect(head, t.bg);
+        let line = head.inset_xy(4, 0);
+        cx.text(FontId::Bold, t.size_small, line, Align::Left, t.text_dim, "LOOPER");
+        cx.text(FontId::Sans, t.size_small, line, Align::Right, t.text_dim, &self.right);
+        self.wave.paint(cx, LoopStrip::wave_area(r));
+        *self.drawn.borrow_mut() = Some(self.right.clone());
+    }
+
+    fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
+        if self.drawn.borrow().as_deref() != Some(self.right.as_str()) {
+            return None;
+        }
+        self.wave.changed_parts(LoopStrip::wave_area(r))
+    }
+}
+
 pub struct LooperPage {
     /// The frames of the wave shown, to know when the bar lines change.
     frames: u64,
@@ -114,23 +163,34 @@ impl LooperPage {
         ui.add(BUTTONS_ID, row);
         ui.add(METER, Meter { title: LoopSource::Pads.name().to_string(), ..Meter::default() });
         ui.add(STATUS, StatList::new("Looper"));
+        ui.add(LOOP_STRIP, LoopStrip::default());
         ui.add_page(LOOPER_PAGE, LOOPER_LAYOUT)?;
         let mut p = LooperPage { frames: 0, hold: [f32::NEG_INFINITY; 2], hold_age: 0 };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
     }
 
-    /// The new loop waveform (empty when the loop was cleared).
-    pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>) {
-        let width = ui.rect_of(WAVE).map_or(600, |r| Waveform::wave_rect(r).w);
+    /// The new loop waveform (empty when the loop was cleared), on the
+    /// Looper tab and on the Play page's strip (`strip_page`: a Play page
+    /// that has it, to size it; every Play view gives it the same width).
+    pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>, strip_page: &str) {
+        let width = ui.rect_on(LOOPER_PAGE, WAVE).map_or(600, |r| Waveform::wave_rect(r).w);
+        let strip = ui.rect_on(strip_page, LOOP_STRIP)
+            .map_or(900, |r| Waveform::wave_rect(LoopStrip::wave_area(r)).w);
         self.frames = wave.frames;
-        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+        let set = |w: &mut Waveform, width: i32| {
             if wave.frames == 0 {
                 w.set_peaks(None, width);
                 w.set_playheads(&[]);
             } else {
-                w.set_peaks(Some(wave), width);
+                w.set_peaks(Some(wave.clone()), width);
             }
+        };
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            set(w, width);
+        }
+        if let Some(s) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
+            set(&mut s.wave, strip);
         }
     }
 
@@ -234,16 +294,41 @@ impl LooperPage {
         // The bar lines (from the loop's own length) and the playhead.
         let fpb = v.frames_per_beat;
         let frames = self.frames;
-        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+        let mark = |w: &mut Waveform| {
             if frames > 0 && fpb > 0.0 {
                 let beats = Some(Beats { first: 0.0, frames_per_beat: fpb, per_bar: v.beats_per_bar.max(1) });
-                w.set_beats(beats);
+                if w.beats() != beats {
+                    w.set_beats(beats);
+                }
                 let at = (f64::from(s.position) * frames as f64) as u64;
                 if s.phase != Phase::Empty {
                     w.set_playheads(&[at.min(frames.saturating_sub(1))]);
                 }
-            } else {
+            } else if w.beats().is_some() {
                 w.set_beats(None);
+            }
+        };
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            mark(w);
+        }
+        // The Play page's strip: the same wave, and a line on the loop.
+        let right = if s.phase == Phase::Empty {
+            "Empty: REC records the pads".to_string()
+        } else {
+            let state = match s.phase {
+                Phase::Armed => "Armed",
+                Phase::Recording => "Recording",
+                Phase::Overdubbing => "Overdubbing",
+                _ if s.muted => "Muted",
+                _ => "Playing",
+            };
+            let len = if s.frames == 0 { String::new() } else { format!("{:.0} bars · ", bars(s.ticks)) };
+            format!("{len}{} layer{} · {state}", s.layers, if s.layers == 1 { "" } else { "s" })
+        };
+        if let Some(st) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
+            mark(&mut st.wave);
+            if st.right != right {
+                st.right = right;
             }
         }
     }
@@ -276,7 +361,7 @@ mod tests {
         v.status.frames = 88_200;
         v.status.ticks = 3_840;
         v.frames_per_beat = 22_050.0;
-        page.set_wave(&mut ui, Arc::new(LoopWave { frames: 88_200, columns: Vec::new() }));
+        page.set_wave(&mut ui, Arc::new(LoopWave { frames: 88_200, columns: Vec::new() }), LOOPER_PAGE);
         page.update(&mut ui, &v, &Settings::default());
         let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
         assert_eq!(b.buttons[B_RECORD].label, "Overdub");

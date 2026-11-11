@@ -11,10 +11,9 @@
 //! - **In key rows**: in sequence, or a fourth apart.
 //!
 //! The app keeps these and hands them to the synth as
-//! [`Effect::SynthPads`]; the audio loop applies them. The quick switch
-//! between Chromatic and In key ([`App::synth_toggle_layout`]) and the PAD
-//! BANK buttons picking a bank's layout ([`App::synth_bank`]) are for the
-//! layout owner to place.
+//! [`Effect::SynthPads`]; the audio loop applies them. The pads panel's
+//! Chromatic | In key switch ([`App::synth_pick_layout`]) and the PAD BANK
+//! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
 
 use super::{App, Effect, Item};
 use crate::synth::{Engine, BANKS};
@@ -135,16 +134,18 @@ impl App {
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
-    /// The quick switch: the bank playing goes Chromatic to In key, and any
-    /// other layout back to Chromatic. Nothing changes with no scale. For
-    /// the layout owner to put on a button or a touch (round 8).
-    #[allow(dead_code)]
-    pub fn synth_toggle_layout(&mut self) -> Vec<Effect> {
-        if self.synth_pads.scale.is_none() {
-            return vec![Effect::Note("pads: pick a scale first (MENU on the Synth tab)".to_string())];
+    /// The pads panel's Chromatic | In key switch (Jay, 12:22Z): the bank
+    /// playing takes In key (`in_key`) or Chromatic. In key needs a scale;
+    /// without one the pads stay Chromatic and a note says so.
+    pub fn synth_pick_layout(&mut self, in_key: bool) -> Vec<Effect> {
+        if in_key && self.synth_pads.scale.is_none() {
+            return vec![Effect::Note("pads: pick a scale first (MENU on the Synth tab, Scale)".to_string())];
         }
-        let l = self.synth_pads.layout().toggled();
-        self.synth_pads.set_layout(l);
+        let want = if in_key { PadLayout::InKey } else { PadLayout::Chromatic };
+        if self.synth_pads.layout() == want {
+            return Vec::new();
+        }
+        self.synth_pads.set_layout(want);
         vec![Effect::SynthPads(self.synth_pads)]
     }
 

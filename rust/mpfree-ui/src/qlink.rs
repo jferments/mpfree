@@ -217,6 +217,8 @@ impl Default for MasterBar {
 
 /// The meter's range: 0 dB at the top to this many dB below at the bottom.
 pub const METER_FLOOR_DB: f32 = 48.0;
+/// The meter's segments: their pitch in pixels (2 of them dark).
+const SEGMENT: i32 = 6;
 
 impl MasterBar {
     pub fn new() -> MasterBar {
@@ -246,14 +248,23 @@ impl Widget for MasterBar {
         cx.text(FontId::Bold, t.size_small - 4.0, head, Align::Center, t.text_dim, "MASTER");
         let tr = MasterBar::track(r);
         let w = (tr.w - 10) / 2;
+        // Segments, lit from the bottom to the peak: green, yellow in the
+        // top 6 dB, red at full scale.
+        let (warn_y, bad_y) = (MasterBar::y_of(tr, -6.0), MasterBar::y_of(tr, -0.5));
         for side in 0..2 {
-            let bar = Rect::new(tr.x + side * (w + 4), tr.y, w.max(1), tr.h);
-            cx.canvas.fill_rect(bar, t.raised);
+            let x = tr.x + side * (w + 4);
             let top = MasterBar::y_of(tr, self.peak_db[side as usize]);
-            if self.peak_db[side as usize] > -METER_FLOOR_DB {
-                let lit = Rect::new(bar.x, top, bar.w, bar.bottom() - top);
-                let c = if self.peak_db[side as usize] > -0.5 { t.bad } else if self.peak_db[side as usize] > -6.0 { t.warn } else { t.good };
-                cx.canvas.fill_rect(lit, c);
+            let mut y = tr.bottom() - SEGMENT;
+            while y >= tr.y {
+                let lit = self.peak_db[side as usize] > -METER_FLOOR_DB && y + SEGMENT > top;
+                let c = match (lit, y) {
+                    (false, _) => t.raised,
+                    (true, y) if y < bad_y => t.bad,
+                    (true, y) if y < warn_y => t.warn,
+                    _ => t.good,
+                };
+                cx.canvas.fill_rect(Rect::new(x, y, w.max(1), SEGMENT - 2), c);
+                y -= SEGMENT;
             }
         }
         // The level's handle across both sides.
