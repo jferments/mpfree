@@ -27,7 +27,7 @@ M12 measured how one MPC One's touch panel is mounted (`swap_xy=true, flip_x=tru
 
 ## In the pad player
 
-**Opening it.** Prefs (SHIFT + MENU), the row **Calibrate touch** (just above Touch lab): turn the wheel to it and press +, or tap its arrows. **Leaving it:** Exit in the middle of the screen, or MENU.
+**Opening it.** Prefs (SHIFT + MENU), the last row **Touch screen**, then **Calibrate touch** (just above Touch lab): turn the wheel to each and press +, or tap its arrows. **Leaving it:** Exit in the middle of the screen, or MENU.
 
 **The page.** A target in one corner at a time, in order: top-left, top-right, bottom-right, bottom-left, as the owner faces the MPC. Each tap counts where the finger lifts. A tap too near the middle, or in a corner that is already done, is asked again with a note. After the fourth tap, the page says one of three things:
 - the panel matches the built-in mapping;
@@ -50,6 +50,10 @@ touch-calibrate-exit
 ```
 
 `outcome` is `ok`, `too_central`, `same_as_<corner>` or `ignored`. `result` is `match`, `differs` or `no_fit fits=N`. The `touch-orientation:` line is the settings line format, logged here so a round shows what would be stored.
+
+## The touch screen section in Prefs
+
+Prefs keeps the touch screen's settings in their own section (Jay, 2026-11-11): its last row, **Touch screen**, opens a list with **Back to Prefs**, **Screen pad velocity**, **Calibrate touch** and **Touch lab**. MENU, or the Back row, returns to Prefs' main rows on the Touch screen row. Prefs always opens on its main rows. Future touch settings (gesture thresholds, a stored orientation) go in this section.
 
 ## Next
 
