@@ -164,6 +164,13 @@ impl Default for Compressor {
 }
 
 impl Compressor {
+    /// The static curve with makeup: the output level for a steady input
+    /// at `in_db`, both dBFS. For drawing.
+    pub fn curve_db(&self, in_db: f32) -> f32 {
+        let (t, ratio, knee) = (self.v[0], self.v[1], self.v[4]);
+        curve(in_db, t, ratio, knee) + self.v[5]
+    }
+
     pub fn new() -> Compressor {
         let v = defaults(&PARAMS);
         let mut c = Compressor {

@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
+mpfree-param = { path = "../mpfree-param" }
 mpfree-arp = { path = "../mpfree-arp" }
 
 [dev-dependencies]

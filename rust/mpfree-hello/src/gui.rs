@@ -437,6 +437,9 @@ pub enum FromUi {
     PlayFx(PlayFx),
     /// The Play page's pattern: a step tapped or changed.
     Steps(StepAction),
+    /// A phrase chopped on the Sample page, for the armed track's first
+    /// empty slot ([`crate::time::TimeHost::put_clip`]).
+    SamplePhrase(Box<mpfree_seq::Clip>),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -1803,6 +1806,10 @@ impl Player {
         match a {
             FromUi::SampleView(swap) => self.sample.unsent(swap.kit),
             FromUi::SampleGrains(c) => self.sample.cloud_unsent(c),
+            FromUi::SamplePhrase(clip) => {
+                println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
+                let _ = io::stdout().flush();
+            }
             _ => {}
         }
     }
@@ -3935,6 +3942,36 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         keys.take_actions();
         out.push(("sample-chop-keys", keys));
     }
+    // The Chop tab putting every eighth on pads with a phrase.
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut phrase = sample_sampler(fonts());
+        phrase.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, -1i32)] {
+            phrase.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        phrase.apply(ToUi::SampleQLink(3, -16));
+        if let Some(list) = phrase.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index(Row::Put);
+        }
+        phrase.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index(Row::Put)),
+        });
+        phrase.take_actions();
+        out.push(("sample-chop-phrase", phrase));
+    }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -5181,6 +5218,62 @@ mod tests {
         assert_eq!(
             p.sample.project(0).unwrap().pads_play(),
             PadsPlay::Keys { from: 36 }
+        );
+    }
+
+    #[test]
+    fn pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        // Every eighth of the loop's beat grid, on A1-A15, with a phrase.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Amount, -1);
+        p.apply(ToUi::SampleQLink(3, -16));
+        step(&mut p, Row::Put, -1);
+        p.take_actions();
+        tap(&mut p, chop_tab::BUTTONS, 2);
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1, "the pads go to the audio thread as ever");
+        let [FromUi::SamplePhrase(clip)] = &rest[..] else {
+            panic!("{rest:?}")
+        };
+        assert_eq!(
+            (clip.name.as_str(), clip.length),
+            ("Break 92 phrase", 8 * 960)
+        );
+        assert_eq!(clip.notes.len(), 15);
+        assert_eq!((clip.notes[0].tick, clip.notes[0].note), (0, 0));
+        assert_eq!(clip.notes[14].note, 14);
+        assert!(clip.notes.windows(2).all(|w| w[0].tick < w[1].tick));
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: phrase \"Break 92 phrase\": 15 hits over 8 beats, for the armed track"),
+            "{:?}",
+            events_log(&p)
+        );
+        // The audio loop puts it in the first empty slot; it doesn't launch.
+        let mut time = crate::time::TimeHost::new(48_000, 92.0).unwrap();
+        assert_eq!(
+            time.put_clip((**clip).clone()).unwrap(),
+            "phrase: 15 notes in slot 1 of Track 1"
         );
     }
 

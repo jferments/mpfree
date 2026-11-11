@@ -1608,6 +1608,42 @@ impl Default for Cloud {
 }
 
 impl Cloud {
+    /// The input's low and high cuts in dB at `hz` (one-pole each, as the
+    /// network runs them), and the damping's loss per pass round the loop
+    /// in dB, for the settings set. For drawing the Tone card.
+    pub fn cuts_db(&self, hz: f32) -> (f32, f32) {
+        Cloud::cuts_db_for(&self.v, self.host, hz)
+    }
+
+    /// [`Cloud::cuts_db`] for `values` (the parameters in id order) at the
+    /// node rate `rate`, without a reverb (a page draws it this way, with
+    /// no second reverb's memory).
+    pub fn cuts_db_for(values: &[f32], rate: u32, hz: f32) -> (f32, f32) {
+        let v = |id: u16| values.get(id as usize).copied().unwrap_or(0.0);
+        let host = rate.max(1);
+        let net = if v(ids::QUALITY) as usize == ECO {
+            (host / 2).max(1)
+        } else {
+            host
+        };
+        let w = 2.0 * PI * hz.min(0.499 * net as f32) / net as f32;
+        // A one-pole low-pass y = (1 - a) x + a y[-1] at w.
+        let lp = |a: f32| {
+            let (c, s) = (w.cos(), w.sin());
+            let den = 1.0 + a * a - 2.0 * a * c;
+            ((1.0 - a) * (1.0 - a * c) / den, -(1.0 - a) * a * s / den)
+        };
+        let coef = |id: u16| one_pole_as(v(id), host, net);
+        let low = lp(coef(ids::LOW_CUT));
+        let high = lp(coef(ids::HIGH_CUT));
+        let damp = lp(coef(ids::DAMPING));
+        // The low cut is the input minus its low-pass.
+        let (hr, hi) = (1.0 - low.0, -low.1);
+        let (r, i) = (hr * high.0 - hi * high.1, hr * high.1 + hi * high.0);
+        let db = |re: f32, im: f32| 10.0 * (re * re + im * im).max(1e-24).log10();
+        (db(r, i), db(damp.0, damp.1))
+    }
+
     /// Allocates for 48 kHz (about 11 MB); [`Node::prepare`] reallocates for
     /// other rates.
     pub fn new() -> Cloud {
