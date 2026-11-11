@@ -568,7 +568,6 @@ impl App {
     /// period, before it, while the transport plays (the time engine gives
     /// the first span of the period). None, or no call, and the arp
     /// free-runs at the app's tempo.
-    #[allow(dead_code)] // the time engine calls it from round 7 (the transport thread wires main.rs)
     pub fn set_clock(&mut self, clock: Option<mpfree_arp::Clock>) {
         self.clock = clock;
     }
