@@ -358,7 +358,8 @@ pub struct Scaling {
 }
 
 /// Every Poly preset at 1 to 16 voices (chords changing every half second,
-/// as in the synth cases) and the sampler at 1 to 32 voices held.
+/// as in the synth cases), the sampler at 1 to 32 voices held, and the
+/// sampler's grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
     let mut v: Vec<Scaling> = PRESETS.iter().map(|p| {
         // Mono and legato presets play one voice whatever the polyphony.
@@ -375,7 +376,56 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
         module: "sampler",
         points: [1usize, 4, 8, 16, 32].iter().map(|&n| (n, held_pads(rate, n))).collect(),
     });
+    v.push(Scaling {
+        name: "Sampler grains (per grain)".to_string(),
+        module: "sampler",
+        points: [16usize, 32, 64, 128, 256].iter().map(|&n| (n, held_grains(rate, n))).collect(),
+    });
     v
+}
+
+/// Four granular pads held down, set so that about `grains` grains are alive
+/// in every block in all: 100 ms grains at `grains / 4 * 10` a second per
+/// pad. 256 is the engine's whole grain budget ([`mpfree_sampler::engine::GRAIN_BUDGET`]) and 64 a
+/// pad is its per-voice cap, so the top point is the worst a grain burst can
+/// cost. The other settings are the round 7 granular pads' (pitch spray,
+/// spread, scan).
+fn held_grains(rate: u32, grains: usize) -> Case {
+    let mut e = grain_engine(rate, grains);
+    Case {
+        name: format!("Sampler grains x{grains}"),
+        module: "sampler",
+        what: "4 granular pads held, grains alive in all",
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The engine behind [`held_grains`].
+fn grain_engine(rate: u32, grains: usize) -> Engine {
+    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
+        .expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let density = grains as f32 / 4.0 * 10.0;
+    for i in 0..4usize {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        r.grain = GrainParams { spray: 0.6, size_ms: 100.0, density, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 1;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, 4);
+    e.set_view(EngineView::build(&p, rate));
+    e
 }
 
 /// The sampler with `n` looping, filtered, stereo pads held down, so exactly
@@ -661,6 +711,22 @@ mod tests {
         let (l, _) = run(&mut c, 100);
         assert!(l.iter().any(|v| v.abs() > 1e-4));
         assert!(scaling(44_100).iter().all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
+    }
+
+    #[test]
+    fn the_grain_points_hold_about_that_many_grains() {
+        for n in [16usize, 64, 256] {
+            let mut e = grain_engine(44_100, n);
+            for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            let mut live = 0usize;
+            for b in 0..700 {
+                e.render(&mut l, &mut r);
+                if b >= 350 { live += e.live_grains(); }
+            }
+            let mean = live as f64 / 350.0;
+            assert!((mean - n as f64).abs() <= n as f64 * 0.25, "{n} grains asked, {mean:.1} alive");
+        }
     }
 
     #[test]

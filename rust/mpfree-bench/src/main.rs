@@ -241,7 +241,7 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         println!("MPC estimate: this machine x {factor:.1} (kernels range {lo:.1} to {hi:.1}); \"voices\" uses x {factor:.1}, the range gives \"(x-y)\".");
     }
     println!();
-    println!("{:<30} {:>9} {:>11}  {:<34}  {:>8}  voices that fit", "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget");
+    println!("{:<30} {:>9} {:>11}  {:<40}  {:>8}  voices that fit", "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget");
     for mut sc in cases::scaling(MPC.rate) {
         let mut pts = Vec::new();
         for (n, c) in sc.points.iter_mut() { pts.push((*n, time_case(c, blocks).p99_ns as f64)); }
@@ -259,13 +259,15 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         let range = if model.is_some() && !on_device { format!(" ({}-{})", show(fits(hi)), show(fits(lo))) } else { String::new() };
         let counts = pts.iter().map(|(n, ns)| format!("{n}:{:.0}", ns * factor / 1e3)).collect::<Vec<_>>().join(" ");
         let per_voice = if most == 1 { "-".to_string() } else { format!("{:.2}", b * factor / 1e3) };
-        println!("{:<30} {:>9.1} {:>11}  {:<34}  {:>4.0} us  {}{range}", sc.name, a * factor / 1e3, per_voice, counts,
+        println!("{:<30} {:>9.1} {:>11}  {:<40}  {:>4.0} us  {}{range}", sc.name, a * factor / 1e3, per_voice, counts,
                  budget_ns / 1e3, show(fits(factor)));
     }
     println!();
     println!("\"voices that fit\" is for that engine alone in its whole module budget (synth 20 %, sampler 25 % of a period, worst block);");
     println!("several synth tracks share the synth budget. \"16+ (87)\": every count measured fits, and the line runs out at 87 (Poly plays");
     println!("at most 16). A preset whose cost does not grow with voices shows a per-voice cost near 0: its p99 is set by something else.");
+    println!("In \"Sampler grains (per grain)\" a voice is one live grain (4 granular pads held, 16 to 256 grains alive): \"us / voice\" is");
+    println!("the cost of a grain, and 256 is the engine's grain budget, the most a burst can reach.");
 }
 
 fn main() -> ExitCode {
