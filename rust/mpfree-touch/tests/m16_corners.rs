@@ -1,7 +1,8 @@
 //! M16: four-corner touch calibration, for all eight panel mountings.
 
 use mpfree_touch::corners::{
-    orientation_line, parse_orientation_line, CalibrationError, Corner, CornerCalibrator, TapOutcome,
+    orientation_line, parse_orientation_line, CalibrationError, Corner, CornerCalibrator,
+    TapOutcome,
 };
 use mpfree_touch::pointer::{AxisMap, Orientation};
 use mpfree_touch::profile::MPC_ONE;
@@ -45,7 +46,10 @@ fn every_mounting_is_found_from_four_taps() {
         assert_eq!(cal.profile(&MPC_ONE).orientation, o);
         // The taps land in their logical corners.
         let (tl, br) = (cal.corners[0], cal.corners[2]);
-        assert!(tl.0 < 300.0 && tl.1 < 200.0 && br.0 > 980.0 && br.1 > 600.0, "{o:?} {cal:?}");
+        assert!(
+            tl.0 < 300.0 && tl.1 < 200.0 && br.0 > 980.0 && br.1 > 600.0,
+            "{o:?} {cal:?}"
+        );
     }
 }
 
@@ -69,7 +73,10 @@ fn central_and_repeated_taps_are_asked_again() {
     assert_eq!(c.tap(1100, 200), TapOutcome::TooCentral); // central on X only
     let tl = raw_for(MPC_ONE.orientation, Corner::TopLeft);
     assert_eq!(c.tap(tl.0, tl.1), TapOutcome::Next(Corner::TopRight));
-    assert_eq!(c.tap(tl.0 + 20, tl.1 - 20), TapOutcome::SameAsEarlier(Corner::TopLeft));
+    assert_eq!(
+        c.tap(tl.0 + 20, tl.1 - 20),
+        TapOutcome::SameAsEarlier(Corner::TopLeft)
+    );
     assert_eq!(c.next_corner(), Some(Corner::TopRight));
     assert_eq!(c.result(), Err(CalibrationError::Incomplete));
 }
@@ -78,7 +85,12 @@ fn central_and_repeated_taps_are_asked_again() {
 fn corners_in_the_wrong_order_fit_nothing() {
     let o = MPC_ONE.orientation;
     let mut c = CornerCalibrator::new(MPC_ONE);
-    for corner in [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight] {
+    for corner in [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomLeft,
+        Corner::BottomRight,
+    ] {
         let (x, y) = raw_for(o, corner);
         c.tap(x, y);
     }
@@ -93,7 +105,10 @@ fn orientation_lines_round_trip_and_reject_damage() {
     for o in Orientation::ALL {
         assert_eq!(parse_orientation_line(&orientation_line(o)), Some(o));
     }
-    assert_eq!(orientation_line(MPC_ONE.orientation), "touch-orientation: swap_xy=1 flip_x=1 flip_y=0");
+    assert_eq!(
+        orientation_line(MPC_ONE.orientation),
+        "touch-orientation: swap_xy=1 flip_x=1 flip_y=0"
+    );
     for bad in [
         "touch-orientation: swap_xy=1 flip_x=1",
         "touch-orientation: swap_xy=1 flip_x=1 flip_y=2",

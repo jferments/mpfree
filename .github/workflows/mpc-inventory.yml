@@ -96,6 +96,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
+          # Source checks below are about what the code says, not how rustfmt wraps it.
+          flat = lambda s: re.sub(r",(?=[)\]])", "", re.sub(r"\s+", "", s))
           paths = [
               Path("tools/mpc-one/read-only-inventory.sh"),
               Path("tools/mpc-one/read-only-detail.sh"),
@@ -298,7 +300,7 @@ jobs:
           assert 'MPFREE_ACCEPT_TOUCH_IOCTL' in touch_main
           assert 'MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED' in touch_main
           assert 'arm_inspection_watchdog()?' in touch_main
-          assert 'event_device.components()' in touch_main
+          assert flat('event_device.components()') in flat(touch_main)
           assert '/sys/bus/i2c/devices/4-0026/driver' in touch_main
           assert '/sys/class/input/event0/device/name' in touch_main
           assert '/sys/bus/i2c/devices/4-0026/name' in touch_main
@@ -355,7 +357,7 @@ jobs:
               hello_code += "\n".join(x for x in f.read_text().splitlines()
                   if not x.lstrip().startswith("//")) + "\n"
           assert hello_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in hello_code
-          assert '.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])' in hello_code
+          assert flat('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])') in flat(hello_code)
           for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'remove_file', 'kexec'):
               assert needle not in hello_code, needle
           ui_fb = Path("rust/mpfree-ui/src/fb.rs").read_text()
@@ -513,8 +515,15 @@ jobs:
         run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install the pinned clippy
         run: |
-          rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy
+          rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --version
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --version
+      - name: rustfmt (the code is formatted; run `cargo fmt` to fix)
+        # The same pinned toolchain, so a new rustfmt can't reformat everything at once.
+        # The job keeps its name so a required status check on it stays valid.
+        run: |
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/Cargo.toml --all --check
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-splash-gl/Cargo.toml --all --check
       - name: Clippy on the whole workspace, every target
         run: |
           # Index loops are the clearest way to write much of our DSP, and

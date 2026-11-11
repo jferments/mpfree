@@ -79,7 +79,11 @@ impl Edit {
 
     /// The edit that puts the clip back as it was.
     pub fn inverse(&self) -> Edit {
-        Edit { erase: self.add.clone(), add: self.erase.clone(), length: self.length.map(|(a, b)| (b, a)) }
+        Edit {
+            erase: self.add.clone(),
+            add: self.erase.clone(),
+            length: self.length.map(|(a, b)| (b, a)),
+        }
     }
 
     fn join(&mut self, other: Edit) {
@@ -129,7 +133,9 @@ const ALL: u8 = 255;
 impl Grid {
     /// Steps of `size` ticks, from a 1/32 to a whole note.
     pub fn new(size: Tick) -> Option<Grid> {
-        (MIN_CLIP_TICKS..=4 * Tick::from(PPQ)).contains(&size).then_some(Grid { size })
+        (MIN_CLIP_TICKS..=4 * Tick::from(PPQ))
+            .contains(&size)
+            .then_some(Grid { size })
     }
 
     pub fn size(self) -> Tick {
@@ -174,7 +180,11 @@ impl Grid {
         let line = i as Tick * self.size;
         // Step 0 reaches back over the clip's end as far as the ticks half
         // a step past the last line.
-        let lo = if i == 0 { (self.steps(length) as Tick * self.size - self.size / 2 - length).min(0) } else { -(self.size / 2) };
+        let lo = if i == 0 {
+            (self.steps(length) as Tick * self.size - self.size / 2 - length).min(0)
+        } else {
+            -(self.size / 2)
+        };
         let hi = (self.size / 2 - 1).min(length - 1 - line);
         (lo, hi)
     }
@@ -205,12 +215,27 @@ impl Grid {
         for n in clip.notes.iter().filter(|n| n.note == pitch) {
             let (i, nudge) = self.place(clip.length, n.tick);
             let Some(slot) = row.get_mut(i) else { continue };
-            let step = Step { velocity: n.velocity, len: n.len, nudge, chance: n.chance, notes: 1 };
+            let step = Step {
+                velocity: n.velocity,
+                len: n.len,
+                nudge,
+                chance: n.chance,
+                notes: 1,
+            };
             *slot = Some(match *slot {
                 None => step,
                 Some(s) => {
-                    let first = if (nudge, n.len, n.velocity, n.chance) < (s.nudge, s.len, s.velocity, s.chance) { step } else { s };
-                    Step { notes: s.notes + 1, ..first }
+                    let first = if (nudge, n.len, n.velocity, n.chance)
+                        < (s.nudge, s.len, s.velocity, s.chance)
+                    {
+                        step
+                    } else {
+                        s
+                    };
+                    Step {
+                        notes: s.notes + 1,
+                        ..first
+                    }
                 }
             });
         }
@@ -226,17 +251,30 @@ impl Grid {
         }
         let notes = self.notes(clip, pitch, i);
         if !notes.is_empty() {
-            return Edit { erase: notes, ..Edit::default() };
+            return Edit {
+                erase: notes,
+                ..Edit::default()
+            };
         }
-        let note = Note::new(self.tick(clip.length, i, 0), self.size, pitch.min(127), velocity.clamp(1, 127));
-        Edit { add: vec![note], ..Edit::default() }
+        let note = Note::new(
+            self.tick(clip.length, i, 0),
+            self.size,
+            pitch.min(127),
+            velocity.clamp(1, 127),
+        );
+        Edit {
+            add: vec![note],
+            ..Edit::default()
+        }
     }
 
     /// Change step `i` of sound `pitch`. Values are kept in range; an
     /// empty step, or one already so, gives an empty edit.
     pub fn change(self, clip: &Clip, pitch: u8, i: usize, change: Change) -> Edit {
         let notes = self.notes(clip, pitch, i);
-        let Some(first) = notes.first() else { return Edit::default() };
+        let Some(first) = notes.first() else {
+            return Edit::default();
+        };
         let (lo, hi) = self.nudges(clip.length, i);
         let shift = match change {
             Change::Nudge(n) => n.clamp(lo, hi) - self.place(clip.length, first.tick).1,
@@ -275,7 +313,10 @@ impl Grid {
     /// Every note in step `i`, all sounds: lowest sound first, then the
     /// earliest note first. A melodic track's step shows its chord this way.
     pub fn chord(self, clip: &Clip, i: usize) -> Vec<Note> {
-        self.sounds_in(clip, i).into_iter().flat_map(|pitch| self.notes(clip, pitch, i)).collect()
+        self.sounds_in(clip, i)
+            .into_iter()
+            .flat_map(|pitch| self.notes(clip, pitch, i))
+            .collect()
     }
 
     /// Step entry: `keys` (sound, velocity), the notes held when step `i`
@@ -290,7 +331,12 @@ impl Grid {
         let mut add: Vec<Note> = Vec::new();
         for &(pitch, velocity) in keys {
             if !add.iter().any(|n| n.note == pitch.min(127)) {
-                add.push(Note::new(tick, self.size, pitch.min(127), velocity.clamp(1, 127)));
+                add.push(Note::new(
+                    tick,
+                    self.size,
+                    pitch.min(127),
+                    velocity.clamp(1, 127),
+                ));
             }
         }
         let mut erase = self.chord(clip, i);
@@ -302,7 +348,11 @@ impl Grid {
             }
             None => true,
         });
-        Edit { erase, add, length: None }
+        Edit {
+            erase,
+            add,
+            length: None,
+        }
     }
 
     /// Add a page: 16 more steps. With `copy`, they repeat the steps of
@@ -333,7 +383,10 @@ impl Grid {
             return Edit::default();
         }
         let n = self.steps(old);
-        let mut edit = Edit { length: Some((old, new)), ..Edit::default() };
+        let mut edit = Edit {
+            length: Some((old, new)),
+            ..Edit::default()
+        };
         for note in &clip.notes {
             let (i, nudge) = self.place(old, note.tick);
             if i >= steps {
@@ -341,7 +394,10 @@ impl Grid {
             } else if i == 0 && nudge < 0 {
                 // Early on step 0: it stays that far before the clip's end.
                 let (lo, _) = self.nudges(new, 0);
-                let moved = Note { tick: self.tick(new, 0, nudge.max(lo)), ..*note };
+                let moved = Note {
+                    tick: self.tick(new, 0, nudge.max(lo)),
+                    ..*note
+                };
                 if moved != *note {
                     edit.erase.push(*note);
                     edit.add.push(moved);
@@ -351,7 +407,8 @@ impl Grid {
         if copy && steps > n {
             let width = n.min(PAGE);
             for j in 0..steps - n {
-                edit.add.extend(self.moved(clip, n - width + j % width, new, n + j));
+                edit.add
+                    .extend(self.moved(clip, n - width + j % width, new, n + j));
             }
         }
         edit
@@ -388,15 +445,22 @@ impl Grid {
             .into_iter()
             .map(|n| {
                 let nudge = self.place(clip.length, n.tick).1;
-                Note { tick: self.tick(length, dst, nudge.clamp(lo, hi)), ..n }
+                Note {
+                    tick: self.tick(length, dst, nudge.clamp(lo, hi)),
+                    ..n
+                }
             })
             .collect()
     }
 
     /// The sounds with notes in step `i`, lowest first.
     fn sounds_in(self, clip: &Clip, i: usize) -> Vec<u8> {
-        let mut s: Vec<u8> =
-            clip.notes.iter().filter(|n| self.place(clip.length, n.tick).0 == i).map(|n| n.note).collect();
+        let mut s: Vec<u8> = clip
+            .notes
+            .iter()
+            .filter(|n| self.place(clip.length, n.tick).0 == i)
+            .map(|n| n.note)
+            .collect();
         s.sort_unstable();
         s.dedup();
         s
@@ -433,7 +497,8 @@ impl Clip {
             }
         }
         if let Some((from, to)) = edit.length {
-            let fits = (MIN_CLIP_TICKS..=MAX_CLIP_TICKS).contains(&to) && self.notes.iter().all(|n| n.tick < to);
+            let fits = (MIN_CLIP_TICKS..=MAX_CLIP_TICKS).contains(&to)
+                && self.notes.iter().all(|n| n.tick < to);
             if self.length != from || !fits {
                 return Err(crate::ModelError::ClipLength);
             }
@@ -454,7 +519,10 @@ mod tests {
 
     fn clip(length: Tick, notes: &[(Tick, u8)]) -> Clip {
         let mut c = Clip::new("steps", length);
-        c.notes = notes.iter().map(|&(tick, note)| Note::new(tick, 60, note, 100)).collect();
+        c.notes = notes
+            .iter()
+            .map(|&(tick, note)| Note::new(tick, 60, note, 100))
+            .collect();
         c
     }
 
@@ -465,16 +533,26 @@ mod tests {
                 let g = Grid::new(size).unwrap();
                 for tick in 0..length {
                     let (i, nudge) = g.place(length, tick);
-                    assert!(i < g.steps(length), "size {size} length {length} tick {tick}");
+                    assert!(
+                        i < g.steps(length),
+                        "size {size} length {length} tick {tick}"
+                    );
                     let (lo, hi) = g.nudges(length, i);
-                    assert!((lo..=hi).contains(&nudge), "size {size} length {length} tick {tick}: {nudge} not in {lo}..={hi}");
+                    assert!(
+                        (lo..=hi).contains(&nudge),
+                        "size {size} length {length} tick {tick}: {nudge} not in {lo}..={hi}"
+                    );
                     assert_eq!(g.tick(length, i, nudge), tick);
                 }
                 // Every nudge a step allows lands back on that step.
                 for i in 0..g.steps(length) {
                     let (lo, hi) = g.nudges(length, i);
                     for nudge in [lo, hi, 0.clamp(lo, hi)] {
-                        assert_eq!(g.place(length, g.tick(length, i, nudge)), (i, nudge), "size {size} length {length} step {i}");
+                        assert_eq!(
+                            g.place(length, g.tick(length, i, nudge)),
+                            (i, nudge),
+                            "size {size} length {length} step {i}"
+                        );
                     }
                 }
             }
@@ -486,7 +564,11 @@ mod tests {
         let g = Grid::new(240).unwrap();
         assert_eq!((g.steps(BAR), g.pages(BAR)), (16, 1));
         assert_eq!((g.steps(4 * BAR), g.pages(4 * BAR)), (64, 4));
-        assert_eq!((g.steps(1000), g.pages(1000)), (5, 1), "the last step is cut short");
+        assert_eq!(
+            (g.steps(1000), g.pages(1000)),
+            (5, 1),
+            "the last step is cut short"
+        );
         let t = Grid::new(320).unwrap();
         assert_eq!(t.steps(BAR), 12, "1/8 triplets: 12 to a bar");
         assert_eq!(Grid::new(119), None);
@@ -498,15 +580,34 @@ mod tests {
         let g = Grid::new(240).unwrap();
         // A kick on 1 and a little late on 3, a two-note roll on step 6,
         // and one early in the last half step: step 0 again.
-        let mut c = clip(BAR, &[(0, 36), (490, 36), (1440, 36), (1500, 36), (3800, 36), (240, 38)]);
+        let mut c = clip(
+            BAR,
+            &[
+                (0, 36),
+                (490, 36),
+                (1440, 36),
+                (1500, 36),
+                (3800, 36),
+                (240, 38),
+            ],
+        );
         c.notes[3].velocity = 70;
         let row = g.row(&c, 36);
         assert_eq!(row.len(), 16);
-        let on: Vec<(usize, Tick, usize)> =
-            row.iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s.nudge, s.notes))).collect();
+        let on: Vec<(usize, Tick, usize)> = row
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.map(|s| (i, s.nudge, s.notes)))
+            .collect();
         assert_eq!(on, vec![(0, -40, 2), (2, 10, 1), (6, 0, 2)]);
         assert_eq!(row[6].unwrap().velocity, 100, "the first note of the roll");
-        assert_eq!(g.notes(&c, 36, 0).iter().map(|n| n.tick).collect::<Vec<_>>(), vec![3800, 0]);
+        assert_eq!(
+            g.notes(&c, 36, 0)
+                .iter()
+                .map(|n| n.tick)
+                .collect::<Vec<_>>(),
+            vec![3800, 0]
+        );
         assert_eq!(c.sounds(), vec![36, 38]);
     }
 
@@ -515,9 +616,18 @@ mod tests {
         let g = Grid::new(240).unwrap();
         let mut c = clip(BAR, &[(1440, 36), (1500, 36)]);
         let on = g.toggle(&c, 36, 4, 90);
-        assert_eq!(on, Edit { add: vec![Note::new(960, 240, 36, 90)], ..Edit::default() });
+        assert_eq!(
+            on,
+            Edit {
+                add: vec![Note::new(960, 240, 36, 90)],
+                ..Edit::default()
+            }
+        );
         c.apply(&on).unwrap();
-        assert_eq!(g.row(&c, 36)[4].map(|s| (s.velocity, s.len, s.nudge, s.chance)), Some((90, 240, 0, 100)));
+        assert_eq!(
+            g.row(&c, 36)[4].map(|s| (s.velocity, s.len, s.nudge, s.chance)),
+            Some((90, 240, 0, 100))
+        );
         let off = g.toggle(&c, 36, 6, 90);
         assert_eq!(off.erase.len(), 2, "the whole roll");
         c.apply(&off).unwrap();
@@ -530,17 +640,32 @@ mod tests {
         let g = Grid::new(240).unwrap();
         let c = clip(BAR, &[(1440, 36), (1500, 36), (1440, 38)]);
         let e = g.change(&c, 36, 6, Change::Velocity(200));
-        assert_eq!(e.add.iter().map(|n| n.velocity).collect::<Vec<_>>(), vec![127, 127]);
+        assert_eq!(
+            e.add.iter().map(|n| n.velocity).collect::<Vec<_>>(),
+            vec![127, 127]
+        );
         assert!(e.add.iter().all(|n| n.note == 36), "only the step's sound");
         assert_eq!(g.change(&c, 36, 6, Change::Chance(0)).add[0].chance, 1);
         assert_eq!(g.change(&c, 36, 6, Change::Length(0)).add[0].len, 1);
-        assert!(g.change(&c, 36, 6, Change::Velocity(100)).is_empty(), "already so");
-        assert!(g.change(&c, 36, 5, Change::Velocity(1)).is_empty(), "an empty step");
+        assert!(
+            g.change(&c, 36, 6, Change::Velocity(100)).is_empty(),
+            "already so"
+        );
+        assert!(
+            g.change(&c, 36, 5, Change::Velocity(1)).is_empty(),
+            "an empty step"
+        );
         // A nudge moves the roll together, and no note leaves the step.
         let e = g.change(&c, 36, 6, Change::Nudge(100));
-        assert_eq!(e.add.iter().map(|n| n.tick).collect::<Vec<_>>(), vec![1540, 1559]);
+        assert_eq!(
+            e.add.iter().map(|n| n.tick).collect::<Vec<_>>(),
+            vec![1540, 1559]
+        );
         let e = g.change(&c, 36, 6, Change::Nudge(-500));
-        assert_eq!(e.add.iter().map(|n| n.tick).collect::<Vec<_>>(), vec![1320, 1380]);
+        assert_eq!(
+            e.add.iter().map(|n| n.tick).collect::<Vec<_>>(),
+            vec![1320, 1380]
+        );
     }
 
     #[test]
@@ -555,16 +680,27 @@ mod tests {
         let c = clip(1000, &[(0, 36)]);
         assert_eq!(g.nudges(1000, 0), (0, 119));
         assert!(g.change(&c, 36, 0, Change::Nudge(-30)).is_empty());
-        assert_eq!(g.nudges(1000, 4), (-120, 39), "the last step ends with the clip");
+        assert_eq!(
+            g.nudges(1000, 4),
+            (-120, 39),
+            "the last step ends with the clip"
+        );
     }
 
     #[test]
     fn an_edit_applies_whole_or_not_at_all() {
         let mut c = clip(BAR, &[(0, 36)]);
-        let bad = Edit { erase: vec![Note::new(0, 60, 36, 100)], add: vec![Note::new(BAR, 60, 36, 100)], length: None };
+        let bad = Edit {
+            erase: vec![Note::new(0, 60, 36, 100)],
+            add: vec![Note::new(BAR, 60, 36, 100)],
+            length: None,
+        };
         assert!(c.apply(&bad).is_err());
         assert_eq!(c.notes, vec![Note::new(0, 60, 36, 100)]);
-        let missing = Edit { erase: vec![Note::new(5, 60, 36, 100)], ..Edit::default() };
+        let missing = Edit {
+            erase: vec![Note::new(5, 60, 36, 100)],
+            ..Edit::default()
+        };
         assert!(c.apply(&missing).is_err());
         assert_eq!(c.notes.len(), 1);
     }
@@ -587,8 +723,24 @@ mod tests {
         assert_eq!(e.length, Some((BAR, 2 * BAR)));
         c.apply(&e).unwrap();
         assert_eq!((g.steps(c.length), g.pages(c.length)), (32, 2));
-        assert_eq!(ticks_of(&c), vec![(0, 36), (1920, 36), (BAR - 30, 42), (BAR, 36), (BAR + 1920, 36), (2 * BAR - 30, 42)]);
-        let on = |c: &Clip, p| g.row(c, p).iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s.nudge))).collect::<Vec<_>>();
+        assert_eq!(
+            ticks_of(&c),
+            vec![
+                (0, 36),
+                (1920, 36),
+                (BAR - 30, 42),
+                (BAR, 36),
+                (BAR + 1920, 36),
+                (2 * BAR - 30, 42)
+            ]
+        );
+        let on = |c: &Clip, p| {
+            g.row(c, p)
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.map(|s| (i, s.nudge)))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(on(&c, 42), vec![(0, -30), (16, -30)]);
         // An empty page, then a copy of it: 64 steps on 4 pages. The early
         // hat stays just before the end.
@@ -609,9 +761,16 @@ mod tests {
         assert_eq!((c.length, g.steps(c.length)), (13 * 240, 13));
         assert_eq!(ticks_of(&c), vec![(0, 36), (1920, 36), (13 * 240 - 30, 42)]);
         c.apply(&g.resize(&c, 5, false)).unwrap();
-        assert_eq!(ticks_of(&c), vec![(0, 36), (5 * 240 - 30, 42)], "step 8's kick went");
+        assert_eq!(
+            ticks_of(&c),
+            vec![(0, 36), (5 * 240 - 30, 42)],
+            "step 8's kick went"
+        );
         assert!(g.resize(&c, 5, true).is_empty());
-        assert_eq!(g.resize(&c, usize::MAX, false).length, Some((5 * 240, MAX_CLIP_TICKS)));
+        assert_eq!(
+            g.resize(&c, usize::MAX, false).length,
+            Some((5 * 240, MAX_CLIP_TICKS))
+        );
     }
 
     #[test]
@@ -621,9 +780,21 @@ mod tests {
         let mut c = clip(3 * 240, &[(0, 36), (250, 42)]);
         c.apply(&g.add_page(&c, true)).unwrap();
         assert_eq!(g.steps(c.length), 19);
-        let row = |p| g.row(&c, p).iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s.nudge))).collect::<Vec<_>>();
-        assert_eq!(row(36), vec![(0, 0), (3, 0), (6, 0), (9, 0), (12, 0), (15, 0), (18, 0)]);
-        assert_eq!(row(42), vec![(1, 10), (4, 10), (7, 10), (10, 10), (13, 10), (16, 10)]);
+        let row = |p| {
+            g.row(&c, p)
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.map(|s| (i, s.nudge)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            row(36),
+            vec![(0, 0), (3, 0), (6, 0), (9, 0), (12, 0), (15, 0), (18, 0)]
+        );
+        assert_eq!(
+            row(42),
+            vec![(1, 10), (4, 10), (7, 10), (10, 10), (13, 10), (16, 10)]
+        );
     }
 
     #[test]
@@ -631,7 +802,10 @@ mod tests {
         let g = Grid::new(240).unwrap();
         let mut c = clip(2 * BAR, &[(0, 36), (250, 42), (BAR + 480, 38)]);
         c.apply(&g.copy_page(&c, 0, 1)).unwrap();
-        assert_eq!(ticks_of(&c), vec![(0, 36), (250, 42), (BAR, 36), (BAR + 250, 42)]);
+        assert_eq!(
+            ticks_of(&c),
+            vec![(0, 36), (250, 42), (BAR, 36), (BAR + 250, 42)]
+        );
         assert!(g.copy_page(&c, 0, 2).is_empty(), "no page 3");
         assert!(g.copy_page(&c, 1, 1).is_empty());
     }
@@ -642,15 +816,26 @@ mod tests {
         let mut c = clip(BAR, &[(240, 60)]);
         // C minor held on step 1: C stays as it was, E flat and G come in.
         let e = g.enter(&c, 1, &[(60, 100), (63, 90), (67, 80), (63, 90)]);
-        assert_eq!(e.erase, vec![Note::new(240, 60, 60, 100)], "the old C was 60 ticks long");
+        assert_eq!(
+            e.erase,
+            vec![Note::new(240, 60, 60, 100)],
+            "the old C was 60 ticks long"
+        );
         assert_eq!(e.add.len(), 3);
         c.apply(&e).unwrap();
-        let chord: Vec<(u8, u8)> = g.chord(&c, 1).iter().map(|n| (n.note, n.velocity)).collect();
+        let chord: Vec<(u8, u8)> = g
+            .chord(&c, 1)
+            .iter()
+            .map(|n| (n.note, n.velocity))
+            .collect();
         assert_eq!(chord, vec![(60, 100), (63, 90), (67, 80)]);
         // The whole chord's velocity and nudge change together.
         c.apply(&g.change_all(&c, 1, Change::Nudge(-20))).unwrap();
         assert!(g.chord(&c, 1).iter().all(|n| n.tick == 220));
-        assert_ne!(Change::Velocity(1).key_all(1), Change::Velocity(1).key(127, 1));
+        assert_ne!(
+            Change::Velocity(1).key_all(1),
+            Change::Velocity(1).key(127, 1)
+        );
         // No keys clears the step; nothing past the end.
         c.apply(&g.enter(&c, 1, &[])).unwrap();
         assert!(c.notes.is_empty());
@@ -660,11 +845,29 @@ mod tests {
     #[test]
     fn a_length_change_applies_whole_or_not_at_all() {
         let mut c = clip(2 * BAR, &[(0, 36), (BAR + 10, 38)]);
-        let shrink = Edit { length: Some((2 * BAR, BAR)), ..Edit::default() };
-        assert_eq!(c.apply(&shrink), Err(crate::ModelError::ClipLength), "a note past the new end");
-        let stale = Edit { length: Some((BAR, 2 * BAR)), ..Edit::default() };
-        assert_eq!(c.apply(&stale), Err(crate::ModelError::ClipLength), "not that long");
-        let whole = Edit { erase: vec![Note::new(BAR + 10, 60, 38, 100)], length: Some((2 * BAR, BAR)), ..Edit::default() };
+        let shrink = Edit {
+            length: Some((2 * BAR, BAR)),
+            ..Edit::default()
+        };
+        assert_eq!(
+            c.apply(&shrink),
+            Err(crate::ModelError::ClipLength),
+            "a note past the new end"
+        );
+        let stale = Edit {
+            length: Some((BAR, 2 * BAR)),
+            ..Edit::default()
+        };
+        assert_eq!(
+            c.apply(&stale),
+            Err(crate::ModelError::ClipLength),
+            "not that long"
+        );
+        let whole = Edit {
+            erase: vec![Note::new(BAR + 10, 60, 38, 100)],
+            length: Some((2 * BAR, BAR)),
+            ..Edit::default()
+        };
         c.apply(&whole).unwrap();
         assert_eq!((c.length, c.notes.len()), (BAR, 1));
         c.apply(&whole.inverse()).unwrap();

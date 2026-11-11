@@ -53,10 +53,19 @@ pub struct QLinkView {
 }
 
 impl QLinkView {
-    pub fn enabled(&self) -> bool { self.id.is_some() }
+    pub fn enabled(&self) -> bool {
+        self.id.is_some()
+    }
 
     fn off(label: &'static str) -> QLinkView {
-        QLinkView { label, text: String::new(), sub: "", value: 0.0, pos: 0.0, id: None }
+        QLinkView {
+            label,
+            text: String::new(),
+            sub: "",
+            value: 0.0,
+            pos: 0.0,
+            id: None,
+        }
     }
 }
 
@@ -71,16 +80,34 @@ pub struct QLinks {
 }
 
 /// The strip the knobs work on: the selected one, if `st` shows it.
-pub fn strip(st: &MixState) -> Option<&StripView> { st.selected.and_then(|s| st.strip(s)) }
+pub fn strip(st: &MixState) -> Option<&StripView> {
+    st.selected.and_then(|s| st.strip(s))
+}
 
 /// What each Q-Link's card says now.
 pub fn show(st: &MixState) -> QLinks {
     let Some(s) = strip(st) else {
-        return QLinks { strip: None, name: String::new(), knobs: LABELS.map(QLinkView::off) };
+        return QLinks {
+            strip: None,
+            name: String::new(),
+            knobs: LABELS.map(QLinkView::off),
+        };
     };
-    let level = |label, id, db: f32, sub| QLinkView { label, text: db_text(db), sub, value: db, pos: db_to_pos(db), id: Some(id) };
+    let level = |label, id, db: f32, sub| QLinkView {
+        label,
+        text: db_text(db),
+        sub,
+        value: db,
+        pos: db_to_pos(db),
+        id: Some(id),
+    };
     let send = |r: usize| match s.sends {
-        Some(x) => level(LABELS[2 + r], mx::send(r), x[r].db, if x[r].pre { "pre" } else { "" }),
+        Some(x) => level(
+            LABELS[2 + r],
+            mx::send(r),
+            x[r].db,
+            if x[r].pre { "pre" } else { "" },
+        ),
         None => QLinkView::off(LABELS[2 + r]),
     };
     QLinks {
@@ -88,7 +115,14 @@ pub fn show(st: &MixState) -> QLinks {
         name: s.name.clone(),
         knobs: [
             level(LABELS[0], mx::VOLUME, s.volume_db, ""),
-            QLinkView { label: LABELS[1], text: pan_text(s.pan), sub: "", value: s.pan, pos: ((s.pan + 100.0) / 200.0).clamp(0.0, 1.0), id: Some(mx::PAN) },
+            QLinkView {
+                label: LABELS[1],
+                text: pan_text(s.pan),
+                sub: "",
+                value: s.pan,
+                pos: ((s.pan + 100.0) / 200.0).clamp(0.0, 1.0),
+                id: Some(mx::PAN),
+            },
             send(0),
             send(1),
         ],
@@ -109,12 +143,19 @@ pub fn turn(st: &MixState, knob: usize, detents: i32, fine: bool) -> Option<MixA
         (k.value + d * step).clamp(-100.0, 100.0).round()
     } else if fine {
         let db = ((k.value.max(SILENT_DB) + d * LEVEL_FINE_DB) * 10.0).round() / 10.0;
-        if db <= SILENT_DB { SILENT_DB } else { db.min(MAX_DB) }
+        if db <= SILENT_DB {
+            SILENT_DB
+        } else {
+            db.min(MAX_DB)
+        }
     } else {
         // The detent at 0 dB holds a step that lands near it; a turn always
         // moves, so take more of the travel until the level changes.
         let p = db_to_pos(k.value);
-        (1..=4).map(|n| pos_to_db(p + d * n as f32 * LEVEL_STEP)).find(|v| *v != k.value).unwrap_or(k.value)
+        (1..=4)
+            .map(|n| pos_to_db(p + d * n as f32 * LEVEL_STEP))
+            .find(|v| *v != k.value)
+            .unwrap_or(k.value)
     };
     set(s, k, value)
 }
@@ -124,7 +165,11 @@ pub fn turn(st: &MixState, knob: usize, detents: i32, fine: bool) -> Option<MixA
 pub fn to(st: &MixState, knob: usize, pos: f32) -> Option<MixAction> {
     let (s, k) = target(st, knob)?;
     let pos = pos.clamp(0.0, 1.0);
-    let value = if k.id == Some(mx::PAN) { (pos * 200.0 - 100.0).round() } else { pos_to_db(pos) };
+    let value = if k.id == Some(mx::PAN) {
+        (pos * 200.0 - 100.0).round()
+    } else {
+        pos_to_db(pos)
+    };
     set(s, k, value)
 }
 
@@ -135,7 +180,11 @@ fn target(st: &MixState, knob: usize) -> Option<(StripId, QLinkView)> {
 }
 
 fn set(strip: StripId, k: QLinkView, value: f32) -> Option<MixAction> {
-    (value != k.value).then_some(MixAction::Set { strip, id: k.id?, value })
+    (value != k.value).then_some(MixAction::Set {
+        strip,
+        id: k.id?,
+        value,
+    })
 }
 
 #[cfg(test)]
@@ -145,12 +194,20 @@ mod tests {
     use mpfree_fx::RETURNS;
 
     fn state() -> MixState {
-        let mut st = MixState { strips: (0..4).map(|t| StripView::new(StripId::Track(t), format!("Track {}", t + 1))).collect(), ..MixState::default() };
+        let mut st = MixState {
+            strips: (0..4)
+                .map(|t| StripView::new(StripId::Track(t), format!("Track {}", t + 1)))
+                .collect(),
+            ..MixState::default()
+        };
         st.strips[3].name = "Bass".into();
         st.strips[3].volume_db = -3.0;
         st.strips[3].pan = -40.0;
         let mut sends = [SendView::default(); RETURNS];
-        sends[0] = SendView { db: -12.0, pre: true };
+        sends[0] = SendView {
+            db: -12.0,
+            pre: true,
+        };
         st.strips[3].sends = Some(sends);
         st.strips.push(StripView::new(StripId::Return(0), "Reverb"));
         st.selected = Some(StripId::Track(3));
@@ -170,16 +227,39 @@ mod tests {
         let q = show(&st);
         assert_eq!(q.strip, Some(StripId::Track(3)));
         assert_eq!(q.name, "Bass");
-        let texts: Vec<(&str, &str, &str)> = q.knobs.iter().map(|k| (k.label, k.text.as_str(), k.sub)).collect();
-        assert_eq!(texts, [("Volume", "-3.0 dB", ""), ("Pan", "L40", ""), ("Send A", "-12.0 dB", "pre"), ("Send B", "off", "")]);
-        assert_eq!(q.knobs.each_ref().map(|k| k.id), [Some(mx::VOLUME), Some(mx::PAN), Some(mx::send(0)), Some(mx::send(1))]);
+        let texts: Vec<(&str, &str, &str)> = q
+            .knobs
+            .iter()
+            .map(|k| (k.label, k.text.as_str(), k.sub))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("Volume", "-3.0 dB", ""),
+                ("Pan", "L40", ""),
+                ("Send A", "-12.0 dB", "pre"),
+                ("Send B", "off", "")
+            ]
+        );
+        assert_eq!(
+            q.knobs.each_ref().map(|k| k.id),
+            [
+                Some(mx::VOLUME),
+                Some(mx::PAN),
+                Some(mx::send(0)),
+                Some(mx::send(1))
+            ]
+        );
         assert!((q.knobs[1].pos - 0.3).abs() < 1e-6);
         assert_eq!(q.knobs[3].pos, 0.0);
         // A return has no sends: Q-Links 3 and 4 are off.
         st.selected = Some(StripId::Return(0));
         let q = show(&st);
         assert_eq!(q.name, "Reverb");
-        assert_eq!(q.knobs.iter().map(|k| k.enabled()).collect::<Vec<_>>(), [true, true, false, false]);
+        assert_eq!(
+            q.knobs.iter().map(|k| k.enabled()).collect::<Vec<_>>(),
+            [true, true, false, false]
+        );
         assert_eq!(q.knobs[2].text, "");
         // The master is always on the screen.
         st.selected = Some(StripId::Master);
@@ -198,14 +278,25 @@ mod tests {
     #[test]
     fn turns_step_levels_by_the_fader_law_and_pan_by_two() {
         let mut st = state();
-        assert_eq!(turn(&st, 0, 1, false), Some(MixAction::Set { strip: StripId::Track(3), id: mx::VOLUME, value: -2.6 }));
+        assert_eq!(
+            turn(&st, 0, 1, false),
+            Some(MixAction::Set {
+                strip: StripId::Track(3),
+                id: mx::VOLUME,
+                value: -2.6
+            })
+        );
         assert_eq!(value(turn(&st, 0, -1, false)), Some(-3.4));
         assert_eq!(value(turn(&st, 0, 1, true)), Some(-2.9));
         assert_eq!(value(turn(&st, 0, -5, true)), Some(-3.5));
         assert_eq!(value(turn(&st, 1, 3, false)), Some(-34.0));
         assert_eq!(value(turn(&st, 1, 3, true)), Some(-37.0));
         assert_eq!(turn(&st, 1, 0, false), None);
-        assert_eq!(value(turn(&st, 3, 1, false)), Some(-78.0), "a send off comes up from the bottom");
+        assert_eq!(
+            value(turn(&st, 3, 1, false)),
+            Some(-78.0),
+            "a send off comes up from the bottom"
+        );
         assert_eq!(value(turn(&st, 3, 1, true)), Some(-79.9));
         assert_eq!(turn(&st, 3, -1, false), None, "already off");
         assert_eq!(turn(&st, 4, 1, false), None);

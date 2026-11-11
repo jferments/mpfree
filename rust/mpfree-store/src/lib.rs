@@ -49,7 +49,10 @@ pub fn valid_name(s: &str) -> bool {
 
 /// A settings key: 1 to [`MAX_NAME`] of `[a-z0-9._-]`.
 pub fn valid_key(s: &str) -> bool {
-    !s.is_empty() && s.len() <= MAX_NAME && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    !s.is_empty()
+        && s.len() <= MAX_NAME
+        && s.bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
 }
 
 /// Ordered `key = value` settings: one owner's `.conf` file.
@@ -76,11 +79,17 @@ impl Settings {
 
     /// The file's text: one `key = value` line each, in order.
     pub fn to_text(&self) -> String {
-        self.entries.iter().map(|(k, v)| format!("{k} = {v}\n")).collect()
+        self.entries
+            .iter()
+            .map(|(k, v)| format!("{k} = {v}\n"))
+            .collect()
     }
 
     pub fn get_str(&self, key: &str) -> Option<&str> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// true / on / yes / 1, or false / off / no / 0.
@@ -98,7 +107,10 @@ impl Settings {
 
     /// A finite number.
     pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.get_str(key)?.parse::<f64>().ok().filter(|v| v.is_finite())
+        self.get_str(key)?
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
     }
 
     /// Sets `key` (in place, or added at the end). False, and nothing
@@ -192,10 +204,19 @@ impl Store {
             Ok(new) => {
                 let (tx, rx) = mpsc::channel();
                 let d = dir.clone();
-                match thread::Builder::new().name("mpfree-store".into()).spawn(move || writer(&d, rx, report)) {
-                    Ok(_) => (Some(tx), new.then(|| Save { folders: Vec::new(), file: "FORMAT".into(),
-                                                              label: "FORMAT".into(),
-                                                              bytes: format!("{FORMAT}\n").into_bytes() })),
+                match thread::Builder::new()
+                    .name("mpfree-store".into())
+                    .spawn(move || writer(&d, rx, report))
+                {
+                    Ok(_) => (
+                        Some(tx),
+                        new.then(|| Save {
+                            folders: Vec::new(),
+                            file: "FORMAT".into(),
+                            label: "FORMAT".into(),
+                            bytes: format!("{FORMAT}\n").into_bytes(),
+                        }),
+                    ),
                     // `report` went with the closure; nothing can be said on this thread.
                     Err(_) => (None, None),
                 }
@@ -204,7 +225,9 @@ impl Store {
         if let (Some(tx), Some(save)) = (&writer, first) {
             let _ = tx.send(Job::Save(save));
         }
-        Store { inner: Some(Arc::new(Inner { dir, writer })) }
+        Store {
+            inner: Some(Arc::new(Inner { dir, writer })),
+        }
     }
 
     /// True when saves can happen (a folder, FORMAT right, the writer running).
@@ -225,7 +248,11 @@ impl Store {
         if !valid_name(owner) {
             return Err(format!("bad owner name {owner:?}"));
         }
-        self.queue(vec!["settings".into()], format!("{owner}.conf"), settings.to_text().into_bytes())
+        self.queue(
+            vec!["settings".into()],
+            format!("{owner}.conf"),
+            settings.to_text().into_bytes(),
+        )
     }
 
     /// `owner`'s file `name`, if it is there and at most [`MAX_FILE`] bytes.
@@ -271,19 +298,41 @@ impl Store {
             return None;
         }
         let mut bytes = Vec::new();
-        File::open(&path).ok()?.take(MAX_FILE as u64 + 1).read_to_end(&mut bytes).ok()?;
+        File::open(&path)
+            .ok()?
+            .take(MAX_FILE as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
         (bytes.len() <= MAX_FILE).then_some(bytes)
     }
 
     fn queue(&self, folders: Vec<String>, file: String, bytes: Vec<u8>) -> Result<(), String> {
-        let label = folders.iter().map(String::as_str).chain([file.as_str()]).collect::<Vec<_>>().join("/");
-        let Some(inner) = &self.inner else { return Ok(()) };
+        let label = folders
+            .iter()
+            .map(String::as_str)
+            .chain([file.as_str()])
+            .collect::<Vec<_>>()
+            .join("/");
+        let Some(inner) = &self.inner else {
+            return Ok(());
+        };
         if bytes.len() > MAX_FILE {
-            return Err(format!("{label}: {} bytes is over the {MAX_FILE}-byte limit", bytes.len()));
+            return Err(format!(
+                "{label}: {} bytes is over the {MAX_FILE}-byte limit",
+                bytes.len()
+            ));
         }
-        let tx = inner.writer.as_ref().ok_or_else(|| format!("{label}: saving is off"))?;
-        tx.send(Job::Save(Save { folders, file, label: label.clone(), bytes }))
-            .map_err(|_| format!("{label}: the writer has stopped"))
+        let tx = inner
+            .writer
+            .as_ref()
+            .ok_or_else(|| format!("{label}: saving is off"))?;
+        tx.send(Job::Save(Save {
+            folders,
+            file,
+            label: label.clone(),
+            bytes,
+        }))
+        .map_err(|_| format!("{label}: the writer has stopped"))
     }
 }
 
@@ -303,7 +352,10 @@ fn check_folder(dir: &Path) -> Result<bool, String> {
                 .map_err(|e| format!("{shown}/FORMAT: {e}"))?;
             match text.lines().next().map(str::trim) {
                 Some(FORMAT) => Ok(false),
-                other => Err(format!("{shown}/FORMAT says {:?}, not {FORMAT:?}", other.unwrap_or(""))),
+                other => Err(format!(
+                    "{shown}/FORMAT says {:?}, not {FORMAT:?}",
+                    other.unwrap_or("")
+                )),
             }
         }
         Ok(_) => Err(format!("{shown}/FORMAT is not a plain file")),
@@ -332,7 +384,8 @@ fn writer(dir: &Path, rx: Receiver<Job>, report: impl Fn(String)) {
             match job {
                 Job::Save(s) => {
                     // A later save of the same file, before any flush, replaces this one.
-                    let later = queue.iter()
+                    let later = queue
+                        .iter()
                         .take_while(|j| matches!(j, Job::Save(_)))
                         .any(|j| matches!(j, Job::Save(t) if t.label == s.label));
                     if later {
@@ -372,7 +425,11 @@ fn save(dir: &Path, s: &Save) -> io::Result<()> {
     }
     let path = folder.join(&s.file);
     match fs::symlink_metadata(&path) {
-        Ok(m) if !m.is_file() => return Err(io::Error::other("there is something other than a file in its place")),
+        Ok(m) if !m.is_file() => {
+            return Err(io::Error::other(
+                "there is something other than a file in its place",
+            ))
+        }
         _ => {}
     }
     let part = folder.join(format!("{}.part", s.file));
@@ -382,7 +439,11 @@ fn save(dir: &Path, s: &Save) -> io::Result<()> {
         _ => {}
     }
     let done = (|| {
-        let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&part)?;
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&part)?;
         f.write_all(&s.bytes)?;
         f.sync_all()?;
         drop(f);
@@ -403,7 +464,11 @@ mod tests {
 
     fn temp() -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let d = std::env::temp_dir().join(format!("mpfree-store-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let d = std::env::temp_dir().join(format!(
+            "mpfree-store-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -420,7 +485,19 @@ mod tests {
         for ok in ["app", "arp", "patterns.txt", "touch-cal_2", "a"] {
             assert!(valid_name(ok), "{ok}");
         }
-        for bad in ["", ".", "..", ".hidden", "a/b", "../x", "App", "x y", "x.part", "é", &"a".repeat(65)] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "a/b",
+            "../x",
+            "App",
+            "x y",
+            "x.part",
+            "é",
+            &"a".repeat(65),
+        ] {
             assert!(!valid_name(bad), "{bad}");
         }
     }
@@ -428,15 +505,23 @@ mod tests {
     #[test]
     fn settings_read_and_write_in_order() {
         let mut s = Settings::parse("# prefs\n\ncurve = soft\n buffer=256 \nbad key = 1\nshow-dev = on\ncurve = hard\nnoequals\n");
-        assert_eq!(s.iter().collect::<Vec<_>>(), vec![("curve", "hard"), ("buffer", "256"), ("show-dev", "on")]);
+        assert_eq!(
+            s.iter().collect::<Vec<_>>(),
+            vec![("curve", "hard"), ("buffer", "256"), ("show-dev", "on")]
+        );
         assert_eq!(s.get_i64("buffer"), Some(256));
         assert_eq!(s.get_bool("show-dev"), Some(true));
         assert_eq!(s.get_bool("curve"), None);
         assert!(s.set_f64("level", 0.5) && s.set_bool("latch", false));
         assert!(!s.set_f64("level", f64::NAN));
-        assert!(!s.set_str("x", "two\nlines") && !s.set_str("Bad", "1") && !s.set_str("x", " padded"));
+        assert!(
+            !s.set_str("x", "two\nlines") && !s.set_str("Bad", "1") && !s.set_str("x", " padded")
+        );
         s.remove("buffer");
-        assert_eq!(s.to_text(), "curve = hard\nshow-dev = on\nlevel = 0.5\nlatch = false\n");
+        assert_eq!(
+            s.to_text(),
+            "curve = hard\nshow-dev = on\nlevel = 0.5\nlatch = false\n"
+        );
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("level = inf\n").get_f64("level"), None);
     }
@@ -450,14 +535,27 @@ mod tests {
         let mut s = Settings::default();
         s.set_str("curve", "soft");
         st.save_settings("app", &s).unwrap();
-        st.write("arp", "patterns.txt", b"Skip = 1 . 3\n".to_vec()).unwrap();
+        st.write("arp", "patterns.txt", b"Skip = 1 . 3\n".to_vec())
+            .unwrap();
         st.flush();
-        assert_eq!(fs::read_to_string(dir.join("FORMAT")).unwrap(), "mpfree-data 1\n");
-        assert_eq!(*lines.lock().unwrap(), vec!["saved: FORMAT (14 bytes)", "saved: settings/app.conf (13 bytes)",
-                                                 "saved: files/arp/patterns.txt (13 bytes)"]);
+        assert_eq!(
+            fs::read_to_string(dir.join("FORMAT")).unwrap(),
+            "mpfree-data 1\n"
+        );
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec![
+                "saved: FORMAT (14 bytes)",
+                "saved: settings/app.conf (13 bytes)",
+                "saved: files/arp/patterns.txt (13 bytes)"
+            ]
+        );
         let (again, _) = store(&dir);
         assert_eq!(again.settings("app").get_str("curve"), Some("soft"));
-        assert_eq!(again.read("arp", "patterns.txt").as_deref(), Some(&b"Skip = 1 . 3\n"[..]));
+        assert_eq!(
+            again.read("arp", "patterns.txt").as_deref(),
+            Some(&b"Skip = 1 . 3\n"[..])
+        );
         assert_eq!(again.read("arp", "missing.txt"), None);
         assert!(again.settings("touch").is_empty());
         let _ = fs::remove_dir_all(&dir);
@@ -469,11 +567,17 @@ mod tests {
         let (st, lines) = store(&dir);
         st.flush();
         for i in 0..50 {
-            st.write("arp", "p.txt", format!("{i}").into_bytes()).unwrap();
+            st.write("arp", "p.txt", format!("{i}").into_bytes())
+                .unwrap();
         }
         st.flush();
         assert_eq!(st.read("arp", "p.txt").as_deref(), Some(&b"49"[..]));
-        let n = lines.lock().unwrap().iter().filter(|l| l.contains("p.txt")).count();
+        let n = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("p.txt"))
+            .count();
         assert!((1..=50).contains(&n));
         assert!(!dir.join("files/arp/p.txt.part").exists());
         let _ = fs::remove_dir_all(&dir);
@@ -519,7 +623,12 @@ mod tests {
         std::os::unix::fs::symlink(&outside, dir.join("files/touch")).unwrap();
         st.write("touch", "cal.txt", b"x".to_vec()).unwrap();
         st.flush();
-        assert!(lines.lock().unwrap().last().unwrap().starts_with("not saved: files/touch/cal.txt"));
+        assert!(lines
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .starts_with("not saved: files/touch/cal.txt"));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
         assert_eq!(st.read("touch", "cal.txt"), None);
         let _ = fs::remove_dir_all(&dir);

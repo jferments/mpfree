@@ -43,7 +43,9 @@ fn self_test() -> Result<ProbeSummary, &'static str> {
     let mut checksum = FNV_OFFSET;
 
     for _ in 0..(FRAMES / BLOCK) {
-        engine.render(&mut left, &mut right).map_err(|_| "channel mismatch")?;
+        engine
+            .render(&mut left, &mut right)
+            .map_err(|_| "channel mismatch")?;
         for (&l, &r) in left.iter().zip(right.iter()) {
             if !l.is_finite() || !r.is_finite() || l != r {
                 return Err("nonfinite or nonidentical stereo samples");

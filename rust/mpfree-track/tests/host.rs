@@ -4,7 +4,9 @@ use mpfree_fx::{Mixer, MixerConfig};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_synth::{Fm, Poly};
-use mpfree_track::{Instrument, Outputs, SwapError, Sum, TrackHost, MAX_EVENTS, QUIET_FRAMES, STOP_FADE};
+use mpfree_track::{
+    Instrument, Outputs, Sum, SwapError, TrackHost, MAX_EVENTS, QUIET_FRAMES, STOP_FADE,
+};
 
 const RATE: u32 = 44_100;
 
@@ -23,7 +25,9 @@ struct Split {
 
 impl Split {
     fn new(tracks: usize, block: usize) -> Split {
-        Split { tracks: vec![(vec![0.0; block], vec![0.0; block]); tracks] }
+        Split {
+            tracks: vec![(vec![0.0; block], vec![0.0; block]); tracks],
+        }
     }
     fn clear(&mut self) {
         for (l, r) in &mut self.tracks {
@@ -39,7 +43,9 @@ impl Split {
 
 impl Outputs for Split {
     fn track(&mut self, track: usize) -> Option<(&mut [f32], &mut [f32])> {
-        self.tracks.get_mut(track).map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()))
+        self.tracks
+            .get_mut(track)
+            .map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()))
     }
 }
 
@@ -49,7 +55,13 @@ fn ctx(frame: u64) -> Ctx<'static> {
 
 /// Runs `periods` blocks of `block` frames into a Split; returns each
 /// block's peak per track.
-fn run(host: &mut TrackHost, out: &mut Split, frame: &mut u64, periods: usize, block: usize) -> Vec<Vec<f32>> {
+fn run(
+    host: &mut TrackHost,
+    out: &mut Split,
+    frame: &mut u64,
+    periods: usize,
+    block: usize,
+) -> Vec<Vec<f32>> {
     let mut peaks = Vec::new();
     for _ in 0..periods {
         out.clear();
@@ -76,7 +88,14 @@ fn a_slot_plays_into_its_own_track_and_routes_move_it() {
     assert!(p[19][2] > 0.01, "FM on track 2");
     // Slot 2 to track 1.
     host.route(2, Some(1));
-    assert_eq!((host.track_of(2), host.slot_of_track(1), host.slot_of_track(2)), (Some(1), Some(2), None));
+    assert_eq!(
+        (
+            host.track_of(2),
+            host.slot_of_track(1),
+            host.slot_of_track(2)
+        ),
+        (Some(1), Some(2), None)
+    );
     let p = run(&mut host, &mut out, &mut frame, 2, 128);
     assert!(p[1][1] > 0.01 && p[1][2] == 0.0, "{:?}", p[1]);
     // Nowhere: silent, still running.
@@ -93,11 +112,26 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
     let mut out = Split::new(1, 128);
     let mut frame = 0;
     // A clip and a pad both play E3.
-    host.send(Out { offset: 0, frame: 0, track: 0, dest: 0, event: Event::NoteOn { note: 52, velocity: 100 } });
+    host.send(Out {
+        offset: 0,
+        frame: 0,
+        track: 0,
+        dest: 0,
+        event: Event::NoteOn {
+            note: 52,
+            velocity: 100,
+        },
+    });
     host.note_on(0, 10, 52, 90);
     run(&mut host, &mut out, &mut frame, 10, 128);
     // The clip's note-off: the pad still holds it.
-    host.send(Out { offset: 0, frame, track: 0, dest: 0, event: Event::NoteOff { note: 52 } });
+    host.send(Out {
+        offset: 0,
+        frame,
+        track: 0,
+        dest: 0,
+        event: Event::NoteOff { note: 52 },
+    });
     let p = run(&mut host, &mut out, &mut frame, 200, 128);
     assert!(p[199][0] > 0.01, "still sounding: {}", p[199][0]);
     // The pad lets go: the release, then silence.
@@ -110,7 +144,13 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
     assert_eq!((s.notes, s.stray_offs, s.dropped, s.resets), (2, 1, 0, 0));
     // AllOff to every destination.
     host.note_on(0, 0, 60, 100);
-    host.send(Out { offset: 0, frame, track: ALL, dest: ALL, event: Event::AllOff });
+    host.send(Out {
+        offset: 0,
+        frame,
+        track: ALL,
+        dest: ALL,
+        event: Event::AllOff,
+    });
     let p = run(&mut host, &mut out, &mut frame, 600, 128);
     assert_eq!(p[599][0], 0.0);
 }
@@ -119,15 +159,57 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
 fn the_same_events_sound_the_same_in_any_block_size() {
     // (frame, slot, event): notes, a shared note, a parameter change.
     let script: Vec<(u64, usize, NodeEvent)> = vec![
-        (3, 0, NodeEvent::NoteOn { note: 48, velocity: 100 }),
-        (70, 1, NodeEvent::NoteOn { note: 60, velocity: 90 }),
-        (500, 0, NodeEvent::NoteOn { note: 55, velocity: 80 }),
-        (900, 0, NodeEvent::Param { id: mpfree_synth::params::CUTOFF, value: 600.0 }),
-        (1200, 1, NodeEvent::Param { id: mpfree_synth::fm_params::FEEDBACK, value: 7.0 }),
+        (
+            3,
+            0,
+            NodeEvent::NoteOn {
+                note: 48,
+                velocity: 100,
+            },
+        ),
+        (
+            70,
+            1,
+            NodeEvent::NoteOn {
+                note: 60,
+                velocity: 90,
+            },
+        ),
+        (
+            500,
+            0,
+            NodeEvent::NoteOn {
+                note: 55,
+                velocity: 80,
+            },
+        ),
+        (
+            900,
+            0,
+            NodeEvent::Param {
+                id: mpfree_synth::params::CUTOFF,
+                value: 600.0,
+            },
+        ),
+        (
+            1200,
+            1,
+            NodeEvent::Param {
+                id: mpfree_synth::fm_params::FEEDBACK,
+                value: 7.0,
+            },
+        ),
         (2000, 0, NodeEvent::NoteOff { note: 48 }),
         (2100, 1, NodeEvent::NoteOff { note: 60 }),
         (2600, 0, NodeEvent::NoteOff { note: 55 }),
-        (3000, 1, NodeEvent::NoteOn { note: 62, velocity: 120 }),
+        (
+            3000,
+            1,
+            NodeEvent::NoteOn {
+                note: 62,
+                velocity: 120,
+            },
+        ),
         (4000, 1, NodeEvent::NoteOff { note: 62 }),
     ];
     let go = |block: usize| {
@@ -146,7 +228,14 @@ fn the_same_events_sound_the_same_in_any_block_size() {
             }
             l[..n].fill(0.0);
             r[..n].fill(0.0);
-            host.render(&ctx(frame), n, &mut Sum { left: &mut l[..n], right: &mut r[..n] });
+            host.render(
+                &ctx(frame),
+                n,
+                &mut Sum {
+                    left: &mut l[..n],
+                    right: &mut r[..n],
+                },
+            );
             out.extend(l[..n].iter().zip(&r[..n]).flat_map(|(a, b)| [*a, *b]));
             frame += n as u64;
         }
@@ -171,7 +260,11 @@ fn a_swapped_out_instrument_rings_out_then_comes_back_to_be_dropped() {
     host.swap(0, Some(fm())).unwrap();
     assert!(host.ringing(0));
     assert!(host.pop_retired().is_none(), "nothing retired yet");
-    assert_eq!(host.params(0).len(), Fm::new(RATE).params().len(), "the slot is FM's now");
+    assert_eq!(
+        host.params(0).len(),
+        Fm::new(RATE).params().len(),
+        "the slot is FM's now"
+    );
     let p = run(&mut host, &mut out, &mut frame, 1, 128);
     assert!(p[0][0] > 0.01, "Poly's release rings on");
     // Poly's release ends; after QUIET_FRAMES of quiet it is retired.
@@ -191,9 +284,15 @@ fn a_swapped_out_instrument_rings_out_then_comes_back_to_be_dropped() {
     host.swap(0, Some(poly())).unwrap();
     host.swap(0, None).unwrap();
     assert!(host.ringing(0));
-    assert_eq!(host.pop_retired().map(|i| i.node().info().id), Some("mpfree.fm"));
+    assert_eq!(
+        host.pop_retired().map(|i| i.node().info().id),
+        Some("mpfree.fm")
+    );
     assert!(host.instrument(0).is_none());
-    assert_eq!(host.swap(5, Some(fm())).map_err(|e| e.0), Err(SwapError::NoSlot));
+    assert_eq!(
+        host.swap(5, Some(fm())).map_err(|e| e.0),
+        Err(SwapError::NoSlot)
+    );
 }
 
 #[test]
@@ -224,20 +323,33 @@ struct Bad {
     resets: u32,
 }
 
-static BAD: NodeInfo = NodeInfo { id: "test.bad", name: "Bad", kind: Kind::Instrument };
+static BAD: NodeInfo = NodeInfo {
+    id: "test.bad",
+    name: "Bad",
+    kind: Kind::Instrument,
+};
 
 impl Node for Bad {
-    fn info(&self) -> &'static NodeInfo { &BAD }
-    fn params(&self) -> &'static [ParamInfo] { &[] }
+    fn info(&self) -> &'static NodeInfo {
+        &BAD
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
     fn set_param(&mut self, _id: u16, _value: f32) {}
-    fn param(&self, _id: u16) -> f32 { 0.0 }
+    fn param(&self, _id: u16) -> f32 {
+        0.0
+    }
     fn prepare(&mut self, _rate: u32, _max_block: usize) {}
     fn reset(&mut self) {
         self.nan = false;
         self.resets += 1;
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
-        if events.iter().any(|e| matches!(e.ev, NodeEvent::NoteOn { .. })) {
+        if events
+            .iter()
+            .any(|e| matches!(e.ev, NodeEvent::NoteOn { .. }))
+        {
             self.nan = true;
         }
         let v = if self.nan { f32::NAN } else { 0.25 };
@@ -250,13 +362,32 @@ impl Node for Bad {
 #[test]
 fn a_non_finite_block_is_dropped_and_the_node_reset() {
     let mut host = TrackHost::new(1, RATE, 1024);
-    host.swap(0, Some(Instrument::new(Box::new(Bad { nan: false, resets: 0 }), RATE, 1024))).unwrap();
+    host.swap(
+        0,
+        Some(Instrument::new(
+            Box::new(Bad {
+                nan: false,
+                resets: 0,
+            }),
+            RATE,
+            1024,
+        )),
+    )
+    .unwrap();
     let mut out = Split::new(1, 64);
     let mut frame = 0;
     assert_eq!(run(&mut host, &mut out, &mut frame, 1, 64)[0][0], 0.25);
     host.note_on(0, 0, 60, 100);
-    assert_eq!(run(&mut host, &mut out, &mut frame, 1, 64)[0][0], 0.0, "the bad block never reaches the track");
-    assert_eq!(run(&mut host, &mut out, &mut frame, 1, 64)[0][0], 0.25, "reset, playing again");
+    assert_eq!(
+        run(&mut host, &mut out, &mut frame, 1, 64)[0][0],
+        0.0,
+        "the bad block never reaches the track"
+    );
+    assert_eq!(
+        run(&mut host, &mut out, &mut frame, 1, 64)[0][0],
+        0.25,
+        "reset, playing again"
+    );
     assert_eq!(host.stats(0).resets, 1);
 }
 
@@ -268,19 +399,31 @@ fn a_full_queue_counts_what_it_drops_and_long_blocks_are_counted() {
         host.param(0, (k % 128) as u32, mpfree_synth::params::CUTOFF, 1000.0);
     }
     assert_eq!(host.stats(0).dropped, 10);
-    assert_eq!(host.param_value(0, mpfree_synth::params::CUTOFF), Some(Poly::new(RATE).param(mpfree_synth::params::CUTOFF)),
-               "not applied until the render");
+    assert_eq!(
+        host.param_value(0, mpfree_synth::params::CUTOFF),
+        Some(Poly::new(RATE).param(mpfree_synth::params::CUTOFF)),
+        "not applied until the render"
+    );
     let mut out = Split::new(1, 512);
     let mut frame = 0;
     run(&mut host, &mut out, &mut frame, 1, 512);
     assert_eq!(host.clipped_frames(), 256);
-    assert_eq!(host.param_value(0, mpfree_synth::params::CUTOFF), Some(1000.0));
+    assert_eq!(
+        host.param_value(0, mpfree_synth::params::CUTOFF),
+        Some(1000.0)
+    );
     assert_eq!(host.param_value(3, 0), None);
 }
 
 #[test]
 fn into_the_mixer_and_out_of_the_master() {
-    let cfg = MixerConfig { inputs: 0, pads: 0, tracks: 4, slots: 2, max_latency_ms: 10.0 };
+    let cfg = MixerConfig {
+        inputs: 0,
+        pads: 0,
+        tracks: 4,
+        slots: 2,
+        max_latency_ms: 10.0,
+    };
     let mut mixer = Mixer::new(cfg, RATE, 256);
     let mut host = TrackHost::new(4, RATE, 256);
     host.swap(1, Some(fm())).unwrap();
@@ -297,5 +440,8 @@ fn into_the_mixer_and_out_of_the_master() {
         peak = peak.max(l.iter().chain(&r).fold(0f32, |m, x| m.max(x.abs())));
         frame += 128;
     }
-    assert!(peak > 0.01 && peak <= 1.0, "FM through track 2 to the master: {peak}");
+    assert!(
+        peak > 0.01 && peak <= 1.0,
+        "FM through track 2 to the master: {peak}"
+    );
 }

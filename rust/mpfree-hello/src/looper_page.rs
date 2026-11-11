@@ -24,7 +24,9 @@ const METER: &str = "lmeter";
 const STATUS: &str = "lstatus";
 
 /// The buttons, in tap order.
-pub const BUTTONS: [&str; 7] = ["Record", "Overdub", "Undo", "Redo", "Clear", "Mute", "Monitor"];
+pub const BUTTONS: [&str; 7] = [
+    "Record", "Overdub", "Undo", "Redo", "Clear", "Mute", "Monitor",
+];
 pub const B_RECORD: usize = 0;
 pub const B_OVERDUB: usize = 1;
 pub const B_UNDO: usize = 2;
@@ -62,7 +64,11 @@ impl Widget for Meter {
         let t = cx.theme.clone();
         let right = if self.on {
             let top = self.hold[0].max(self.hold[1]);
-            if top.is_finite() { format!("peak {top:.1} dBFS") } else { "silent".to_string() }
+            if top.is_finite() {
+                format!("peak {top:.1} dBFS")
+            } else {
+                "silent".to_string()
+            }
         } else {
             "off".to_string()
         };
@@ -74,7 +80,14 @@ impl Widget for Meter {
         for ch in 0..2 {
             let y = body.y + 4 + ch as i32 * (lane_h + 8);
             let label = Rect::new(body.x, y, 22, lane_h);
-            cx.text(FontId::Bold, t.size_small, label, Align::Left, t.text_dim, if ch == 0 { "L" } else { "R" });
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                label,
+                Align::Left,
+                t.text_dim,
+                if ch == 0 { "L" } else { "R" },
+            );
             let lane = Rect::new(body.x + 24, y, (body.w - 24).max(1), lane_h);
             cx.canvas.fill_round_rect(lane, 4, t.raised);
             if !self.on {
@@ -83,18 +96,37 @@ impl Widget for Meter {
             let f = Meter::fraction(self.db[ch]);
             let w = (lane.w as f32 * f).round() as i32;
             let hot = self.db[ch] > -1.0;
-            let tone = if hot { t.bad } else if self.db[ch] > -12.0 { t.warn } else { t.good };
+            let tone = if hot {
+                t.bad
+            } else if self.db[ch] > -12.0 {
+                t.warn
+            } else {
+                t.good
+            };
             if w > 0 {
-                cx.canvas.fill_round_rect(Rect::new(lane.x, lane.y, w, lane.h), 4, tone);
+                cx.canvas
+                    .fill_round_rect(Rect::new(lane.x, lane.y, w, lane.h), 4, tone);
             }
             let h = (lane.w as f32 * Meter::fraction(self.hold[ch])).round() as i32;
             if h > 0 {
-                cx.canvas.fill_rect(Rect::new(lane.x + h - 2, lane.y, 2, lane.h), t.text);
+                cx.canvas
+                    .fill_rect(Rect::new(lane.x + h - 2, lane.y, 2, lane.h), t.text);
             }
         }
         let foot = Rect::new(body.x, body.bottom() - 20, body.w, 20);
-        let note = if self.on { self.note.as_str() } else { "Turn it on in Prefs or MENU (Line input)" };
-        cx.text(FontId::Sans, t.size_small, foot, Align::Left, t.text_dim, note);
+        let note = if self.on {
+            self.note.as_str()
+        } else {
+            "Turn it on in Prefs or MENU (Line input)"
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            foot,
+            Align::Left,
+            t.text_dim,
+            note,
+        );
     }
 }
 
@@ -112,10 +144,20 @@ impl LooperPage {
         row.buttons[B_RECORD].tone = Tone::Bad;
         row.buttons[B_OVERDUB].tone = Tone::Warn;
         ui.add(BUTTONS_ID, row);
-        ui.add(METER, Meter { title: LoopSource::Pads.name().to_string(), ..Meter::default() });
+        ui.add(
+            METER,
+            Meter {
+                title: LoopSource::Pads.name().to_string(),
+                ..Meter::default()
+            },
+        );
         ui.add(STATUS, StatList::new("Looper"));
         ui.add_page(LOOPER_PAGE, LOOPER_LAYOUT)?;
-        let mut p = LooperPage { frames: 0, hold: [f32::NEG_INFINITY; 2], hold_age: 0 };
+        let mut p = LooperPage {
+            frames: 0,
+            hold: [f32::NEG_INFINITY; 2],
+            hold_age: 0,
+        };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
     }
@@ -148,7 +190,10 @@ impl LooperPage {
         // Ready to record: the pads always are, the line input once it is on.
         let ready = v.source == LoopSource::Pads || v.line_on;
         let note = if v.line.overruns + v.line.short + v.line.errors > 0 {
-            format!("{} overruns, {} short periods, {} errors", v.line.overruns, v.line.short, v.line.errors)
+            format!(
+                "{} overruns, {} short periods, {} errors",
+                v.line.overruns, v.line.short, v.line.errors
+            )
         } else if v.source == LoopSource::Pads {
             "Before the click and the loop".to_string()
         } else if v.monitor {
@@ -157,7 +202,13 @@ impl LooperPage {
             "Monitor off".to_string()
         };
         if let Some(m) = ui.get_mut::<Meter>(METER) {
-            let next = (v.source.name().to_string(), ready, v.meter_db, self.hold, note);
+            let next = (
+                v.source.name().to_string(),
+                ready,
+                v.meter_db,
+                self.hold,
+                note,
+            );
             if (m.title.clone(), m.on, m.db, m.hold, m.note.clone()) != next {
                 (m.title, m.on, m.db, m.hold, m.note) = next;
             }
@@ -178,17 +229,47 @@ impl LooperPage {
             _ => "Overdub",
         };
         let want = [
-            Button { label: record.to_string(), tone: Tone::Bad, disabled: !ready && s.phase == Phase::Empty },
-            Button { label: overdub.to_string(), tone: Tone::Warn,
-                     disabled: !matches!(s.phase, Phase::Playing | Phase::Overdubbing | Phase::Recording) },
-            Button { label: "Undo".to_string(), tone: Tone::Normal,
-                     disabled: !(matches!(s.phase, Phase::Armed | Phase::Recording | Phase::Overdubbing) || s.layers > 1) },
-            Button { label: "Redo".to_string(), tone: Tone::Normal, disabled: s.redo == 0 },
-            Button { label: "Clear".to_string(), tone: Tone::Normal, disabled: empty },
-            Button { label: if s.muted { "Unmute" } else { "Mute" }.to_string(),
-                     tone: if s.muted { Tone::Warn } else { Tone::Normal }, disabled: false },
-            Button { label: if v.monitor { "Monitor on" } else { "Monitor" }.to_string(),
-                     tone: if v.monitor { Tone::Good } else { Tone::Normal }, disabled: !v.line_on },
+            Button {
+                label: record.to_string(),
+                tone: Tone::Bad,
+                disabled: !ready && s.phase == Phase::Empty,
+            },
+            Button {
+                label: overdub.to_string(),
+                tone: Tone::Warn,
+                disabled: !matches!(
+                    s.phase,
+                    Phase::Playing | Phase::Overdubbing | Phase::Recording
+                ),
+            },
+            Button {
+                label: "Undo".to_string(),
+                tone: Tone::Normal,
+                disabled: !(matches!(
+                    s.phase,
+                    Phase::Armed | Phase::Recording | Phase::Overdubbing
+                ) || s.layers > 1),
+            },
+            Button {
+                label: "Redo".to_string(),
+                tone: Tone::Normal,
+                disabled: s.redo == 0,
+            },
+            Button {
+                label: "Clear".to_string(),
+                tone: Tone::Normal,
+                disabled: empty,
+            },
+            Button {
+                label: if s.muted { "Unmute" } else { "Mute" }.to_string(),
+                tone: if s.muted { Tone::Warn } else { Tone::Normal },
+                disabled: false,
+            },
+            Button {
+                label: if v.monitor { "Monitor on" } else { "Monitor" }.to_string(),
+                tone: if v.monitor { Tone::Good } else { Tone::Normal },
+                disabled: !v.line_on,
+            },
         ];
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS_ID) {
             if b.buttons != want {
@@ -200,33 +281,98 @@ impl LooperPage {
             Phase::Empty if ready => ("Empty: Record arms it".to_string(), Tone::Dim),
             Phase::Empty => ("Empty: turn on Line input first".to_string(), Tone::Dim),
             Phase::Armed => ("Armed: starts on the next bar".to_string(), Tone::Warn),
-            Phase::Recording => (format!("Recording the first pass{}", if s.ending { ", ends on the next bar" } else { "" }),
-                                 Tone::Bad),
+            Phase::Recording => (
+                format!(
+                    "Recording the first pass{}",
+                    if s.ending {
+                        ", ends on the next bar"
+                    } else {
+                        ""
+                    }
+                ),
+                Tone::Bad,
+            ),
             Phase::Playing => ("Playing".to_string(), Tone::Good),
             Phase::Overdubbing => ("Overdubbing".to_string(), Tone::Bad),
         };
         let bars = |ticks: i64| ticks as f64 / (960.0 * f64::from(v.beats_per_bar.max(1)));
         let rows = vec![
             ("State".to_string(), phase.0, phase.1),
-            ("Records from".to_string(), format!("{}{}", v.source.name(), if ready { "" } else { " (off)" }),
-             if ready { Tone::Normal } else { Tone::Warn }),
-            ("Layers".to_string(), if empty { "-".to_string() } else { format!("{} ({} to redo)", s.layers, s.redo) },
-             Tone::Normal),
-            ("Loop".to_string(), if s.frames == 0 { "-".to_string() } else {
-                format!("{:.0} bars, {:.2} s", bars(s.ticks), s.frames as f64 / 44_100.0)
-            }, Tone::Normal),
-            ("First pass length".to_string(), bars_text(s.bars), Tone::Normal),
-            ("Latency".to_string(), match v.source {
-                LoopSource::Pads => "none (the pads are in time)".to_string(),
-                LoopSource::Line => format!("{} frames, {:.1} ms{}", s.latency, s.latency as f64 / 44.1,
-                                            if settings.loop_latency_set { "" } else { " (estimated)" }),
-            }, Tone::Dim),
-            ("Level".to_string(), format!("{:.1} dB{}", 20.0 * s.level.max(1e-6).log10(),
-                                          if s.muted { ", muted" } else { "" }),
-             if s.muted { Tone::Warn } else { Tone::Normal }),
-            ("Memory".to_string(), format!("{:.0} s for all layers", s.capacity as f64 / 44_100.0), Tone::Dim),
-            ("Problems".to_string(), format!("{} refused, {} thrown away", v.stats.refused, v.stats.aborted),
-             if v.stats.refused + v.stats.aborted > 0 { Tone::Warn } else { Tone::Dim }),
+            (
+                "Records from".to_string(),
+                format!("{}{}", v.source.name(), if ready { "" } else { " (off)" }),
+                if ready { Tone::Normal } else { Tone::Warn },
+            ),
+            (
+                "Layers".to_string(),
+                if empty {
+                    "-".to_string()
+                } else {
+                    format!("{} ({} to redo)", s.layers, s.redo)
+                },
+                Tone::Normal,
+            ),
+            (
+                "Loop".to_string(),
+                if s.frames == 0 {
+                    "-".to_string()
+                } else {
+                    format!(
+                        "{:.0} bars, {:.2} s",
+                        bars(s.ticks),
+                        s.frames as f64 / 44_100.0
+                    )
+                },
+                Tone::Normal,
+            ),
+            (
+                "First pass length".to_string(),
+                bars_text(s.bars),
+                Tone::Normal,
+            ),
+            (
+                "Latency".to_string(),
+                match v.source {
+                    LoopSource::Pads => "none (the pads are in time)".to_string(),
+                    LoopSource::Line => format!(
+                        "{} frames, {:.1} ms{}",
+                        s.latency,
+                        s.latency as f64 / 44.1,
+                        if settings.loop_latency_set {
+                            ""
+                        } else {
+                            " (estimated)"
+                        }
+                    ),
+                },
+                Tone::Dim,
+            ),
+            (
+                "Level".to_string(),
+                format!(
+                    "{:.1} dB{}",
+                    20.0 * s.level.max(1e-6).log10(),
+                    if s.muted { ", muted" } else { "" }
+                ),
+                if s.muted { Tone::Warn } else { Tone::Normal },
+            ),
+            (
+                "Memory".to_string(),
+                format!("{:.0} s for all layers", s.capacity as f64 / 44_100.0),
+                Tone::Dim,
+            ),
+            (
+                "Problems".to_string(),
+                format!(
+                    "{} refused, {} thrown away",
+                    v.stats.refused, v.stats.aborted
+                ),
+                if v.stats.refused + v.stats.aborted > 0 {
+                    Tone::Warn
+                } else {
+                    Tone::Dim
+                },
+            ),
         ];
         if let Some(st) = ui.get_mut::<StatList>(STATUS) {
             st.set(rows);
@@ -236,7 +382,11 @@ impl LooperPage {
         let frames = self.frames;
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             if frames > 0 && fpb > 0.0 {
-                let beats = Some(Beats { first: 0.0, frames_per_beat: fpb, per_bar: v.beats_per_bar.max(1) });
+                let beats = Some(Beats {
+                    first: 0.0,
+                    frames_per_beat: fpb,
+                    per_bar: v.beats_per_bar.max(1),
+                });
                 w.set_beats(beats);
                 let at = (f64::from(s.position) * frames as f64) as u64;
                 if s.phase != Phase::Empty {
@@ -257,35 +407,72 @@ mod tests {
     #[test]
     fn the_page_draws_and_its_buttons_follow_the_state() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
-        ui.add("header", mpfree_ui::widgets::Header::new(&["Play", "Looper"]));
-        ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Center));
+        ui.add(
+            "header",
+            mpfree_ui::widgets::Header::new(&["Play", "Looper"]),
+        );
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Center),
+        );
         let mut page = LooperPage::add(&mut ui).unwrap();
         ui.show(LOOPER_PAGE).unwrap();
         let mut c = SoftCanvas::new(1280, 800);
         ui.paint(&mut c);
         let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
-        assert!(!b.buttons[B_RECORD].disabled, "the pads can always be recorded");
-        let line = LooperView { source: LoopSource::Line, ..LooperView::default() };
+        assert!(
+            !b.buttons[B_RECORD].disabled,
+            "the pads can always be recorded"
+        );
+        let line = LooperView {
+            source: LoopSource::Line,
+            ..LooperView::default()
+        };
         page.update(&mut ui, &line, &Settings::default());
         let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
-        assert!(b.buttons[B_RECORD].disabled, "Record waits for the line input");
+        assert!(
+            b.buttons[B_RECORD].disabled,
+            "Record waits for the line input"
+        );
         assert!(b.buttons[B_MONITOR].disabled);
-        let mut v = LooperView { source: LoopSource::Line, line_on: true, ..LooperView::default() };
+        let mut v = LooperView {
+            source: LoopSource::Line,
+            line_on: true,
+            ..LooperView::default()
+        };
         v.status.phase = Phase::Playing;
         v.status.layers = 2;
         v.status.frames = 88_200;
         v.status.ticks = 3_840;
         v.frames_per_beat = 22_050.0;
-        page.set_wave(&mut ui, Arc::new(LoopWave { frames: 88_200, columns: Vec::new() }));
+        page.set_wave(
+            &mut ui,
+            Arc::new(LoopWave {
+                frames: 88_200,
+                columns: Vec::new(),
+            }),
+        );
         page.update(&mut ui, &v, &Settings::default());
         let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
         assert_eq!(b.buttons[B_RECORD].label, "Overdub");
-        assert!(!b.buttons[B_UNDO].disabled && b.buttons[B_REDO].disabled && !b.buttons[B_CLEAR].disabled);
+        assert!(
+            !b.buttons[B_UNDO].disabled
+                && b.buttons[B_REDO].disabled
+                && !b.buttons[B_CLEAR].disabled
+        );
         ui.paint(&mut c);
         // A tap on Undo comes back as Tab(2).
         let r = ui.rect_of(BUTTONS_ID).unwrap();
-        let undo = ui.get::<ButtonRow>(BUTTONS_ID).unwrap().button_rect(r, B_UNDO);
-        let e = ui.touch(1, mpfree_ui::Touch::Down, undo.x + 5, undo.y + 5).unwrap();
-        assert_eq!((e.widget.as_str(), e.kind), (BUTTONS_ID, mpfree_ui::EventKind::Tab(B_UNDO)));
+        let undo = ui
+            .get::<ButtonRow>(BUTTONS_ID)
+            .unwrap()
+            .button_rect(r, B_UNDO);
+        let e = ui
+            .touch(1, mpfree_ui::Touch::Down, undo.x + 5, undo.y + 5)
+            .unwrap();
+        assert_eq!(
+            (e.widget.as_str(), e.kind),
+            (BUTTONS_ID, mpfree_ui::EventKind::Tab(B_UNDO))
+        );
     }
 }
