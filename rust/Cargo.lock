@@ -437,6 +437,7 @@ dependencies = [
  "mpfree-node",
  "mpfree-play",
  "mpfree-sampler",
+ "mpfree-sampler-ui",
  "mpfree-screen-log",
  "mpfree-seq",
  "mpfree-synth",
