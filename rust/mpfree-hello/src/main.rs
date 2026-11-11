@@ -3034,6 +3034,8 @@ fn player_session(
         }
         voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
+        // Warped pads play at the transport's tempo.
+        player.set_tempo(time.info().bpm);
         // Each pad of the playing kit into its pad channel (Pad Mix); they
         // all go to the Drums track.
         let mut pads = mix.pads();

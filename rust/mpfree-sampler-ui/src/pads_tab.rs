@@ -260,6 +260,7 @@ pub fn with_sound(pad: Option<&Pad>, sound: &Sound) -> Pad {
                 tune_cents: 0,
                 mode: PlayMode::OneShot,
                 grain: GrainParams::default(),
+                warp: None,
             },
         };
         (r.fade_in, r.fade_out) = (Fade::NONE, Fade::NONE);
