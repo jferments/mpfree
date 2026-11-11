@@ -14,8 +14,6 @@ use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 /// The screen as the pad player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The pad player's header tabs (`mpfree-hello`'s `TABS`).
-const APP_TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
 /// The page names the samples add the panel and the quick band under.
 pub const PANEL_PAGE: &str = "Play";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
@@ -94,7 +92,7 @@ fn scene(name: &'static str, about: &'static str, fonts: Fonts, setup: Setup) ->
     let state = ArpState::from_engine(&e, patterns, pattern, mutated);
 
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
-    let mut header = Header::new(&APP_TABS);
+    let mut header = Header::app("Play");
     header.chips = chips(&state);
     ui.add("header", header);
     let mut pads = PadGrid::new(16, 4);
@@ -164,7 +162,7 @@ fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, scene:
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
     let mut e = Engine::new(SAMPLE_RATE, 96.0);
     e.set_settings(Settings { mode: Mode::Pattern, ..Settings::default() });
-    let mut header = Header::new(&APP_TABS);
+    let mut header = Header::app("Play");
     let state = ArpState::from_engine(&e, built_in_patterns(), 3, true);
     header.chips = chips(&state);
     ui.add("header", header);
