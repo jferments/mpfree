@@ -412,6 +412,7 @@ name = "mpfree-chain-ui"
 version = "0.1.0"
 dependencies = [
  "mpfree-fx",
+ "mpfree-fx-ui",
  "mpfree-mod",
  "mpfree-param",
  "mpfree-sampler-ui",
