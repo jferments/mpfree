@@ -20,3 +20,4 @@ mpfree-looper = { path = "../mpfree-looper" }
 mpfree-mod = { path = "../mpfree-mod" }
 mpfree-param = { path = "../mpfree-param" }
 mpfree-track = { path = "../mpfree-track" }
+mpfree-moves = { path = "../mpfree-moves" }

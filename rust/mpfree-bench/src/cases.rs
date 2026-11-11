@@ -4,8 +4,9 @@
 
 use mpfree_fx::ids;
 use mpfree_fx::{
-    Chain, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, StripId,
+    CapturePoint, Chain, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq,
+    Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, Print,
+    PrintJob, PrintState, StripId, Tail,
 };
 use mpfree_grain::GrainNode;
 use mpfree_looper::{
@@ -488,6 +489,9 @@ enum Inserts {
     Song,
     SongLight,
     SongEco,
+    /// The song's inserts with the six tracks that have inserts frozen,
+    /// the transport rolling, and the drum bus printing all the while.
+    SongFrozen,
 }
 
 /// The mixer at its default size (2 inputs, 32 pad channels, 16 tracks, 8
@@ -546,6 +550,42 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
             .set_param(1, ids::compressor::SIDECHAIN, 1.0);
         m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
     }
+    let frozen = with == Inserts::SongFrozen;
+    // Two beats of each frozen track, at 120 BPM.
+    let beat = rate as usize / 2;
+    if frozen {
+        for t in 0..tracks.min(6) {
+            let (mut l, mut r) = (vec![0.0f32; 2 * beat], vec![0.0f32; 2 * beat]);
+            input(
+                rate,
+                t as u64 * 977,
+                &mut Lcg(31 + t as u32),
+                &mut l,
+                &mut r,
+            );
+            let take = Frozen {
+                left: l,
+                right: r,
+                origin: 0.0,
+                beats: 2.0,
+                bpm: 120.0,
+                rate,
+            };
+            assert!(m.freeze(StripId::Track(t), take).is_ok());
+        }
+        assert!(m.set_capture(0, Some((StripId::Bus(0), CapturePoint::BeforeFader))));
+    }
+    // Eight bars of the drum bus, taken again as each one ends.
+    let mut print = frozen.then(|| Print::new(rate, 18.0));
+    let job = |start: f64| PrintJob {
+        start,
+        beats: 32.0,
+        steady: false,
+        tail: Tail::Cut,
+    };
+    if let Some(p) = print.as_mut() {
+        p.arm(job(0.0)).expect("arm");
+    }
     // The sources' audio, rendered once so the timing is the mixer's alone
     // (the sampler and synth cases time making it); each source reads its
     // own offset.
@@ -557,7 +597,9 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
     Case {
         name: name.to_string(),
         module: if inserts { "fx" } else { "mix" },
-        what: if inserts {
+        what: if frozen {
+            "the song's inserts with the 6 tracks that have them frozen, rolling, the drum bus printing"
+        } else if inserts {
             "the routing below plus EQ and compressor on 6 tracks, drive and glue on submixes, reverb, delay, master EQ"
         } else {
             "a song's routing, no inserts (Master safety included)"
@@ -577,7 +619,23 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
                 il[..n].copy_from_slice(&tl[o..o + n]);
                 ir[..n].copy_from_slice(&tr[o..o + n]);
             }
-            m.process(&Ctx::new(rate, f0), out_l, out_r);
+            if !frozen {
+                m.process(&Ctx::new(rate, f0), out_l, out_r);
+                return;
+            }
+            let ctx = Ctx {
+                bpm: 120.0,
+                beats: f0 as f64 * 2.0 / rate as f64,
+                playing: true,
+                ..Ctx::new(rate, f0)
+            };
+            m.process(&ctx, out_l, out_r);
+            if let Some(p) = print.as_mut() {
+                p.process(&ctx, m.capture(0), m.capture_latency(0).unwrap_or(0));
+                if p.state() == PrintState::Done {
+                    let _ = p.arm(job(ctx.beats.ceil()));
+                }
+            }
         }),
         mem_bytes: 0,
     }
@@ -784,8 +842,8 @@ pub fn all(rate: u32) -> Vec<Case> {
         effect("Master safety", rate, Box::new(MasterSafety::new()), &[])
     }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
-    // and the heaviest stack: pitch drop with a gate, both sweeps, crush,
-    // the riser and an echo throw.
+    // the heaviest stack (pitch drop with a gate, both sweeps, crush, the
+    // riser and an echo throw) and the wash throw on its own.
     v.push(measured(|| perform("Perform FX, idle", rate, &[], false)));
     v.push(measured(|| {
         perform(
@@ -802,6 +860,10 @@ pub fn all(rate: u32) -> Vec<Case> {
             &[6, 7, 8, 9, 10, 11, 12],
             false,
         )
+    }));
+    // The wash throw (pad 16) held: its reverb fed and ringing all along.
+    v.push(measured(|| {
+        perform("Perform FX, a wash throw held", rate, &[15], false)
     }));
     // The reverb at Full (its cost before Eco, the worst case) and at
     // Eco, its default.
@@ -905,8 +967,18 @@ pub fn all(rate: u32) -> Vec<Case> {
             Inserts::SongEco,
         )
     }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, a song's inserts, 6 tracks frozen, printing a bus",
+            rate,
+            12,
+            8,
+            Inserts::SongFrozen,
+        )
+    }));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| modulation(rate)));
+    v.push(measured(|| moves(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8, false)));
@@ -1738,9 +1810,114 @@ fn modulation(rate: u32) -> Case {
     }
 }
 
+/// FX moves on a busy clip: 16 lanes (the DJ filter, Perform pads' Holds,
+/// knobs) of a 4-bar clip played period by period, a chase every bar, and
+/// the always-on move log taking two knobs and an XY pad while it rolls.
+fn moves(rate: u32) -> Case {
+    use mpfree_moves::{Input, Kind, Map, MoveLog, Moves, Target};
+    use mpfree_param::{Owner, ParamAddr, Strip};
+    let len = 4 * 4 * PPQ;
+    let addr = |p: u16| ParamAddr::new(Owner::Insert(Strip::Master, 1), p);
+    let mut m = Moves::new();
+    let mut seed = Lcg(77);
+    for lane in 0..16u16 {
+        let toggle = lane >= 12;
+        let map = if toggle {
+            Map::toggle()
+        } else {
+            Map::linear(-100.0, 100.0)
+        };
+        // Gestures of a knob turned every few beats, or pads pressed.
+        let mut t = f64::from(lane) * 97.0;
+        while t < f64::from(len) - 2000.0 {
+            let n = 1 + (seed.next() % 40) as usize;
+            let mut pts: Vec<(f64, f32, Kind)> = (0..n)
+                .map(|k| {
+                    let u = if toggle {
+                        1.0
+                    } else {
+                        (seed.next() % 1000) as f32 / 1000.0
+                    };
+                    (t + k as f64 * 23.0, u, Kind::Ramp)
+                })
+                .collect();
+            let end = t + n as f64 * 23.0 + 10.0;
+            pts.push((end, 0.0, Kind::End));
+            m.put(Target::Fixed(addr(lane)), map, &pts, len)
+                .expect("put");
+            t = end + 400.0 + f64::from(seed.next() % 1500);
+        }
+    }
+    let mut log = MoveLog::new();
+    let mut tp = Transport::new(rate, 120.0).expect("transport");
+    let mut tb = TBlock::new();
+    tp.command(0, T::Play);
+    let mut tick = 0.0f64;
+    let mut sent = 0u64;
+    Case {
+        name: "Moves: 16 lanes playing, the move log taking 3 controls".to_string(),
+        module: "time",
+        what: "a 4-bar clip's FX moves at 120 BPM, a chase each bar, knob and XY moves logged",
+        block: Box::new(move |b, l, r| {
+            let n = l.len() as u32;
+            for (k, a) in [0u16, 1, 2].iter().enumerate() {
+                if (b + k as u64).is_multiple_of(2) {
+                    log.input(
+                        (k as u32 * 37) % n,
+                        Input::Move {
+                            addr: addr(20 + a),
+                            value: ((b % 200) as f32 - 100.0) * 0.9,
+                            map: Map::linear(-100.0, 100.0),
+                        },
+                    );
+                }
+                if b % 300 == 299 {
+                    log.input(n - 1, Input::End { addr: addr(20 + a) });
+                }
+            }
+            tp.process(n, &mut tb);
+            log.process(&tb);
+            let step = f64::from(n) * 2.0 * f64::from(PPQ) / f64::from(rate);
+            let next = tick + step;
+            let lenf = f64::from(len);
+            if next >= lenf {
+                m.play(tick, lenf, |_, _, _| sent += 1);
+                m.play(0.0, next - lenf, |_, _, _| sent += 1);
+                tick = next - lenf;
+            } else {
+                m.play(tick, next, |_, _, _| sent += 1);
+                tick = next;
+            }
+            if b % 690 == 0 {
+                m.chase(tick, |_, _| sent += 1);
+            }
+            l[0] = sent as f32;
+            r[0] = log.seq() as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_moves_case_plays_and_logs() {
+        let mut c = measured(|| moves(44_100));
+        let (l, r) = run(&mut c, 2_000);
+        // 2000 periods is about 5.8 s: 16 lanes sending every 8 ticks
+        // while they move, and the log about 3 moves a period.
+        assert!(l[0] > 5_000.0, "{}", l[0]);
+        assert!(r[0] > 2_000.0, "{}", r[0]);
+    }
+
+    #[test]
+    fn the_frozen_mixer_case_prints_and_plays() {
+        let mut c = measured(|| mixer("frozen", 44_100, 12, 8, Inserts::SongFrozen));
+        let (l, _) = run(&mut c, 400);
+        assert!(l.iter().any(|v| v.abs() > 1e-4), "it plays");
+    }
 
     fn run(c: &mut Case, blocks: u64) -> (Vec<f32>, Vec<f32>) {
         let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);

@@ -7,7 +7,10 @@ use mpfree_fx_ui::perform::{self, PerformPads, XyView};
 use mpfree_fx_ui::sample::{app_ui, samples, BPM, RATE};
 use mpfree_fx_ui::view::{self, FxAction, PLAIN_LAYOUT};
 use mpfree_fx_ui::visual::has_visuals;
-use mpfree_fx_ui::{make, preset_values, FxPanel, FxState, PerformAction, PerformPanel, CATALOGUE};
+use mpfree_fx_ui::{
+    make, preset_values, FxPanel, FxState, Locks, PerformAction, PerformPanel, CATALOGUE,
+};
+use mpfree_synth_ui::widgets::TitleBar;
 use mpfree_synth_ui::widgets::{TileGrid, Visuals};
 use mpfree_ui::{Color, EventKind, Fonts, SoftCanvas, Touch, Ui, UiEvent};
 
@@ -43,7 +46,7 @@ fn ev(widget: &str, kind: EventKind) -> UiEvent {
 #[test]
 fn every_sample_screen_draws() {
     let list = samples(Fonts::embedded).unwrap();
-    assert_eq!(list.len(), 18);
+    assert_eq!(list.len(), 20);
     for mut s in list {
         let (w, h) = s.ui.size();
         let mut c = SoftCanvas::new(w, h);
@@ -376,4 +379,157 @@ fn the_dj_knob_stops_in_the_middle_on_its_way_through() {
     // Q-Link 4 follows the selected pad's Amount.
     p.select(&mut ui, 7);
     assert_eq!(p.qlink_ids()[3], pf::slot(7) + pf::AMOUNT);
+}
+
+#[test]
+fn a_held_step_locks_turns_and_leaves_the_effect_alone() {
+    let (mut ui, mut p) = panel("mpfree.fx.filter", &[(filter::CUTOFF, 1000.0)]);
+    let k = p.pages()[0]
+        .params
+        .iter()
+        .position(|&i| p.state.params[i].id == filter::CUTOFF)
+        .unwrap();
+    let tile = |ui: &Ui| ui.get::<TileGrid>(view::TILES).unwrap().tiles[k].clone();
+    let dot = |ui: &Ui| {
+        ui.get::<Visuals>(view::VISUALS).unwrap().cards[0]
+            .dot
+            .unwrap()
+    };
+    let (base_tile, base_dot) = (tile(&ui), dot(&ui));
+    // Step 5 is held; it already locks the resonance.
+    let mut held = Locks::new("Step 5");
+    held.values.push((filter::RESONANCE, 50.0));
+    p.set_locks(&mut ui, Some(held));
+    assert!(ui
+        .get::<TitleBar>(view::TITLE)
+        .unwrap()
+        .subtitle
+        .starts_with("Locking Step 5 · 1 lock"));
+    p.event(&mut ui, &ev(view::TILES, EventKind::Select(k)));
+    let a = p.wheel(&mut ui, 10).unwrap();
+    let FxAction::Lock { id, value } = a else {
+        panic!("{a:?}")
+    };
+    assert_eq!(id, filter::CUTOFF);
+    assert!(value > 1500.0, "{value}");
+    assert_eq!(
+        p.state.value(filter::CUTOFF),
+        1000.0,
+        "the effect's own value stays"
+    );
+    assert_eq!(p.locks().unwrap().get(filter::CUTOFF), Some(value));
+    let t = tile(&ui);
+    assert_ne!(t.value, base_tile.value, "the tile shows the lock");
+    assert_eq!(t.color, ui.theme.warn, "locked tiles are marked");
+    assert!(
+        dot(&ui) > base_dot + 0.05,
+        "the drawing shows the locked cutoff"
+    );
+    // A second turn starts from the lock.
+    let FxAction::Lock { value: v2, .. } = p.wheel(&mut ui, 1).unwrap() else {
+        panic!()
+    };
+    assert!(v2 > value);
+    // Taking the selected lock off; then every lock.
+    assert_eq!(
+        p.unlock(&mut ui),
+        Some(FxAction::Unlock { id: filter::CUTOFF })
+    );
+    assert_eq!(p.unlock(&mut ui), None, "nothing left on that tile");
+    assert_eq!(tile(&ui).value, base_tile.value);
+    assert_eq!(
+        p.unlock_all(&mut ui),
+        vec![FxAction::Unlock {
+            id: filter::RESONANCE
+        }]
+    );
+    // Let go of the step: turns set the effect again.
+    p.set_locks(&mut ui, None);
+    assert!(matches!(p.wheel(&mut ui, 1), Some(FxAction::Set { .. })));
+}
+
+#[test]
+fn presets_wait_while_a_step_is_held() {
+    let (mut ui, mut p) = panel("mpfree.fx.cloud", &[]);
+    p.set_locks(&mut ui, Some(Locks::new("Step 1")));
+    assert_eq!(
+        p.event(&mut ui, &ev(view::PRESETS, EventKind::Select(2))),
+        None
+    );
+    assert_eq!(p.state.preset, None);
+}
+
+#[test]
+fn a_held_step_locks_perform_pads_turns_and_the_xy_pad() {
+    let (mut ui, mut p) = perform_page();
+    p.set_locks(&mut ui, Some(Locks::new("Step 3")));
+    let r = ui.rect_of(perform::PADS).unwrap();
+    let c = PerformPads::cell(r, 4);
+    let tap = |ui: &mut Ui, p: &mut PerformPanel| {
+        let d = ui.touch(1, Touch::Down, c.x + 5, c.y + 5).unwrap();
+        let mut out = p.event(ui, &d);
+        let u = ui.touch(1, Touch::Up, c.x + 5, c.y + 5).unwrap();
+        out.extend(p.event(ui, &u));
+        out
+    };
+    // A tap locks the pad on for the step: it lights, and plays nothing now.
+    assert_eq!(
+        tap(&mut ui, &mut p),
+        vec![PerformAction::Lock {
+            id: pf::hold(4),
+            value: 1.0
+        }]
+    );
+    let pads = ui.get::<PerformPads>(perform::PADS).unwrap();
+    assert_eq!(pads.pads[4].state, 2);
+    assert_eq!(pads.locking.as_deref(), Some("Step 3"));
+    // Again: the lock comes off.
+    assert_eq!(
+        tap(&mut ui, &mut p),
+        vec![PerformAction::Unlock { id: pf::hold(4) }]
+    );
+    assert_eq!(
+        ui.get::<PerformPads>(perform::PADS).unwrap().pads[4].state,
+        0
+    );
+    // A hardware pad does the same.
+    assert_eq!(
+        p.pad_lock(&mut ui, 9),
+        Some(PerformAction::Lock {
+            id: pf::hold(9),
+            value: 1.0
+        })
+    );
+    // The DJ knob locks; the XY pad locks both its parameters.
+    let a = p.qlink(&mut ui, 0, -20).unwrap();
+    assert!(
+        matches!(
+            a,
+            PerformAction::Lock {
+                id: pf::DJ_FILTER,
+                ..
+            }
+        ),
+        "{a:?}"
+    );
+    let xa = XyView::area(ui.rect_of(perform::XY).unwrap());
+    let (x, y) = (xa.x + xa.w * 3 / 4, xa.bottom() - xa.h / 2);
+    let e = ui.touch(2, Touch::Down, x, y).unwrap();
+    let sent = p.event(&mut ui, &e);
+    assert!(sent.contains(&PerformAction::Lock {
+        id: pf::ECHO,
+        value: p.locks().unwrap().get(pf::ECHO).unwrap()
+    }));
+    assert!(
+        p.locks().unwrap().get(pf::DJ_FILTER).unwrap() > 0.0,
+        "a high-pass"
+    );
+    let e = ui.touch(2, Touch::Up, x, y).unwrap();
+    assert!(p.event(&mut ui, &e).is_empty(), "no glide home for a lock");
+    assert_eq!(p.state.value(pf::DJ_FILTER), 0.0, "the live values stay");
+    assert_eq!(p.state.value(pf::ECHO), 0.0);
+    // Let go of the step: the pads play again.
+    p.set_locks(&mut ui, None);
+    let d = ui.touch(3, Touch::Down, c.x + 5, c.y + 5).unwrap();
+    assert_eq!(p.event(&mut ui, &d), vec![PerformAction::Press(4)]);
 }

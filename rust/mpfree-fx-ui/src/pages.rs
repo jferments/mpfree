@@ -133,6 +133,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
                     perform::DJ_FILTER,
                     perform::ECHO,
                     perform::ECHO_TIME,
+                    perform::MIX,
                 ],
                 &[perform::DJ_FILTER, perform::ECHO, perform::FADE],
             )];

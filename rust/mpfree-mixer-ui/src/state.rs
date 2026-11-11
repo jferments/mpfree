@@ -3,7 +3,9 @@
 
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::mpfree_node::Curve;
-use mpfree_fx::{gain_to_db, mixer_param_applies, strip_params, Mixer, StripId, BUSES, RETURNS};
+use mpfree_fx::{
+    gain_to_db, mixer_param_applies, strip_params, FreezeState, Mixer, StripId, BUSES, RETURNS,
+};
 
 /// Which strips the screen lists. The master is always on the right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -78,6 +80,16 @@ pub struct InputView {
     pub arm: bool,
 }
 
+/// A freeze or a print under way on a strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TakeView {
+    /// A print (to a new sample) rather than a freeze.
+    pub print: bool,
+    /// How far through the take, 0 to 1; `None` while it waits for the
+    /// loop's start.
+    pub done: Option<f32>,
+}
+
 /// One channel strip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripView {
@@ -104,6 +116,10 @@ pub struct StripView {
     pub input: Option<InputView>,
     /// The strip's share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
+    /// It plays a take of its inserts in their place (a track or a pad).
+    pub frozen: bool,
+    /// A freeze or print of it under way (the app's, from its `Print`).
+    pub take: Option<TakeView>,
 }
 
 impl StripView {
@@ -133,7 +149,14 @@ impl StripView {
                 arm: false,
             }),
             cost_pct: None,
+            frozen: false,
+            take: None,
         }
+    }
+
+    /// Whether the strip can be frozen (a track or a pad channel).
+    pub fn can_freeze(&self) -> bool {
+        matches!(self.id, StripId::Track(_) | StripId::Pad(_))
     }
 
     /// Whether the strip has an output to choose (a return and the master
@@ -193,6 +216,11 @@ pub struct MixState {
     pub selected: Option<StripId>,
     /// The whole mixer's share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
+    /// Whether a strip's menu offers Freeze, Thaw and Print. The app sets
+    /// it once it acts on those actions; until then a tap on the selected
+    /// strip's name does nothing more, and the hint is [`crate::MIXER_HINT`]
+    /// rather than [`crate::MIXER_HINT_TAKES`].
+    pub takes: bool,
 }
 
 impl Default for MixState {
@@ -211,6 +239,7 @@ impl Default for MixState {
             tracks: 16,
             selected: None,
             cost_pct: None,
+            takes: false,
         }
     }
 }
@@ -274,6 +303,7 @@ impl MixState {
             tracks: m.tracks(),
             selected: None,
             cost_pct,
+            takes: false,
         }
     }
 }
@@ -305,6 +335,7 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
         };
     }
     v.audible = m.is_audible(s);
+    v.frozen = matches!(m.freeze_state(s), FreezeState::FadingIn | FreezeState::On);
     let rate = m.rate();
     let profiling = m.profiling();
     let keys: Vec<Option<StripId>> = (0..m.chain(s).map_or(0, |c| c.len()))

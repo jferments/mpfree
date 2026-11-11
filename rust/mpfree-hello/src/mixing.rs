@@ -463,6 +463,12 @@ impl MixHost {
             }
             // The insert pages come with the FX pages.
             MixAction::OpenInsert { .. } | MixAction::AddInsert { .. } => None,
+            // Freeze, Thaw and Print: the strip menu stays shut until the
+            // app sets `MixState::takes` and acts on them here.
+            MixAction::Freeze(_)
+            | MixAction::Thaw(_)
+            | MixAction::Print(_)
+            | MixAction::CancelTake(_) => None,
         }
     }
 
