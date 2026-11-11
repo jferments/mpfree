@@ -276,7 +276,7 @@ def main(argv):
         print("The write did not finish cleanly; see above. Do not boot from this stick.")
         return 1
     print()
-    print("Done. Your desktop may now show the stick's two partitions; do not open or change them.")
+    print("Done. Your desktop may now show the stick's partitions; do not open or change them.")
     print("Unplug the stick and keep it for the boot test.")
     return 0
 
