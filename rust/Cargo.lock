@@ -416,6 +416,7 @@ version = "0.1.0"
 name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
+ "mpfree-arp",
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
