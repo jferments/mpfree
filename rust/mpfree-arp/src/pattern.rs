@@ -81,7 +81,14 @@ pub enum Step {
 
 impl Step {
     pub const fn play(pick: Pick) -> Self {
-        Step::Play { pick, octave: 0, accent: false, gate: 0, ratchet: 1, chance: 100 }
+        Step::Play {
+            pick,
+            octave: 0,
+            accent: false,
+            gate: 0,
+            ratchet: 1,
+            chance: 100,
+        }
     }
 }
 
@@ -111,7 +118,11 @@ pub struct Lane<T: Copy> {
 
 impl<T: Copy + Default> Default for Lane<T> {
     fn default() -> Self {
-        Self { values: [T::default(); MAX_STEPS], len: 0, random: 0 }
+        Self {
+            values: [T::default(); MAX_STEPS],
+            len: 0,
+            random: 0,
+        }
     }
 }
 
@@ -184,7 +195,11 @@ pub struct Pattern {
 impl Default for Pattern {
     /// One step that plays the next note: a plain arpeggio.
     fn default() -> Self {
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 1, lanes: Lanes::default() };
+        let mut p = Self {
+            steps: [Step::Rest; MAX_STEPS],
+            len: 1,
+            lanes: Lanes::default(),
+        };
         p.steps[0] = Step::play(Pick::Next);
         p
     }
@@ -208,7 +223,11 @@ impl Pattern {
         if steps.is_empty() || steps.len() > MAX_STEPS {
             return None;
         }
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: steps.len(), lanes: Lanes::default() };
+        let mut p = Self {
+            steps: [Step::Rest; MAX_STEPS],
+            len: steps.len(),
+            lanes: Lanes::default(),
+        };
         p.steps[..steps.len()].copy_from_slice(steps);
         Some(p)
     }
@@ -226,7 +245,11 @@ impl Pattern {
     /// Reads the text form described in the module docs.
     pub fn parse(text: &str) -> Result<Self, ParseError> {
         let mut parts = text.split('|');
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 0, lanes: Lanes::default() };
+        let mut p = Self {
+            steps: [Step::Rest; MAX_STEPS],
+            len: 0,
+            lanes: Lanes::default(),
+        };
         let mut token = 0;
         for word in parts.next().unwrap_or("").split_whitespace() {
             token += 1;
@@ -239,7 +262,10 @@ impl Pattern {
             p.len += 1;
         }
         if p.len == 0 {
-            return Err(ParseError { token: 0, reason: "no steps" });
+            return Err(ParseError {
+                token: 0,
+                reason: "no steps",
+            });
         }
         for part in parts {
             let mut words = part.split_whitespace();
@@ -279,11 +305,13 @@ impl Pattern {
             for w in words {
                 token += 1;
                 let t = token;
-            let at = move |reason| ParseError { token: t, reason };
+                let at = move |reason| ParseError { token: t, reason };
                 if n == MAX_STEPS {
                     return Err(at("more than 64 values in a lane"));
                 }
-                let v: i32 = w.parse().map_err(|_| at("a lane value must be a whole number"))?;
+                let v: i32 = w
+                    .parse()
+                    .map_err(|_| at("a lane value must be a whole number"))?;
                 if !(lo..=hi).contains(&v) {
                     return Err(at(match name {
                         "oct" => "octave must be -3 to 3",
@@ -344,13 +372,55 @@ impl Pattern {
             p.steps[i] = match self.steps[i] {
                 Step::Tie => Step::Tie,
                 Step::Rest => Step::play(Pick::Next),
-                Step::Play { pick, octave, accent, gate, ratchet, chance } => match next(6) {
+                Step::Play {
+                    pick,
+                    octave,
+                    accent,
+                    gate,
+                    ratchet,
+                    chance,
+                } => match next(6) {
                     0 => Step::Rest,
-                    1 => Step::Play { pick, octave: (octave + if next(2) == 0 { 1 } else { -1 }).clamp(-3, 3), accent, gate, ratchet, chance },
-                    2 => Step::Play { pick, octave, accent: !accent, gate, ratchet, chance },
-                    3 => Step::Play { pick, octave, accent, gate, ratchet: if ratchet > 1 { 1 } else { 2 + next(2) as u8 }, chance },
-                    4 => Step::Play { pick: Pick::Index(1 + next(4) as u8), octave, accent, gate, ratchet, chance },
-                    _ => Step::Play { pick: Pick::Random, octave, accent, gate, ratchet, chance },
+                    1 => Step::Play {
+                        pick,
+                        octave: (octave + if next(2) == 0 { 1 } else { -1 }).clamp(-3, 3),
+                        accent,
+                        gate,
+                        ratchet,
+                        chance,
+                    },
+                    2 => Step::Play {
+                        pick,
+                        octave,
+                        accent: !accent,
+                        gate,
+                        ratchet,
+                        chance,
+                    },
+                    3 => Step::Play {
+                        pick,
+                        octave,
+                        accent,
+                        gate,
+                        ratchet: if ratchet > 1 { 1 } else { 2 + next(2) as u8 },
+                        chance,
+                    },
+                    4 => Step::Play {
+                        pick: Pick::Index(1 + next(4) as u8),
+                        octave,
+                        accent,
+                        gate,
+                        ratchet,
+                        chance,
+                    },
+                    _ => Step::Play {
+                        pick: Pick::Random,
+                        octave,
+                        accent,
+                        gate,
+                        ratchet,
+                        chance,
+                    },
                 },
             };
         }
@@ -371,11 +441,31 @@ impl Pattern {
         }
         let l = &self.lanes;
         let lanes: [(&str, u8, Vec<i32>); 5] = [
-            (LANE_NAMES[0], l.octave.random, l.octave.values().iter().map(|&v| i32::from(v)).collect()),
-            (LANE_NAMES[1], l.degree.random, l.degree.values().iter().map(|&v| i32::from(v)).collect()),
-            (LANE_NAMES[2], l.velocity.random, l.velocity.values().iter().map(|&v| i32::from(v)).collect()),
-            (LANE_NAMES[3], l.gate.random, l.gate.values().iter().map(|&v| i32::from(v)).collect()),
-            (LANE_NAMES[4], l.nudge.random, l.nudge.values().iter().map(|&v| i32::from(v)).collect()),
+            (
+                LANE_NAMES[0],
+                l.octave.random,
+                l.octave.values().iter().map(|&v| i32::from(v)).collect(),
+            ),
+            (
+                LANE_NAMES[1],
+                l.degree.random,
+                l.degree.values().iter().map(|&v| i32::from(v)).collect(),
+            ),
+            (
+                LANE_NAMES[2],
+                l.velocity.random,
+                l.velocity.values().iter().map(|&v| i32::from(v)).collect(),
+            ),
+            (
+                LANE_NAMES[3],
+                l.gate.random,
+                l.gate.values().iter().map(|&v| i32::from(v)).collect(),
+            ),
+            (
+                LANE_NAMES[4],
+                l.nudge.random,
+                l.nudge.values().iter().map(|&v| i32::from(v)).collect(),
+            ),
         ];
         for (name, random, vals) in lanes {
             if !vals.is_empty() || random > 0 {
@@ -438,7 +528,9 @@ fn parse_step(token: &str) -> Result<Step, &'static str> {
                 while i < b.len() && b[i].is_ascii_digit() {
                     i += 1;
                 }
-                let n: u32 = token[start..i].parse().map_err(|_| "a number must follow : or %")?;
+                let n: u32 = token[start..i]
+                    .parse()
+                    .map_err(|_| "a number must follow : or %")?;
                 if c == b':' {
                     if !(1..=8).contains(&n) {
                         return Err("ratchet must be 1 to 8");
@@ -454,7 +546,14 @@ fn parse_step(token: &str) -> Result<Step, &'static str> {
             _ => return Err("unknown mark after the note (use + - ! ~ ' :N %N)"),
         }
     }
-    Ok(Step::Play { pick, octave, accent, gate, ratchet, chance })
+    Ok(Step::Play {
+        pick,
+        octave,
+        accent,
+        gate,
+        ratchet,
+        chance,
+    })
 }
 
 fn write_step(s: &mut String, step: &Step) {
@@ -462,7 +561,14 @@ fn write_step(s: &mut String, step: &Step) {
     match *step {
         Step::Rest => s.push('.'),
         Step::Tie => s.push('_'),
-        Step::Play { pick, octave, accent, gate, ratchet, chance } => {
+        Step::Play {
+            pick,
+            octave,
+            accent,
+            gate,
+            ratchet,
+            chance,
+        } => {
             match pick {
                 Pick::Next => s.push('x'),
                 Pick::Index(n) => {
@@ -505,8 +611,14 @@ pub const BUILT_IN: [(&str, &str); 10] = [
     ("Stabs", "* . . * . . * ."),
     ("Rolls", "x x:2 x x:3"),
     ("Drift", "x x%60 ? x%30 . x _ ?"),
-    ("Three over four", "x x x x | oct 0 1 0 | vel 120 70 90 70 80"),
-    ("Climbing line", "1 1 1 1 1 1 1 1 | deg 0 2 4 5 7 4 2 | gate 40 40 80"),
+    (
+        "Three over four",
+        "x x x x | oct 0 1 0 | vel 120 70 90 70 80",
+    ),
+    (
+        "Climbing line",
+        "1 1 1 1 1 1 1 1 | deg 0 2 4 5 7 4 2 | gate 40 40 80",
+    ),
 ];
 
 #[cfg(test)]
@@ -537,11 +649,25 @@ mod tests {
         let p = Pattern::parse("2++!:3%40~ x-'").unwrap();
         assert_eq!(
             p.steps()[0],
-            Step::Play { pick: Pick::Index(2), octave: 2, accent: true, gate: GATE_LEGATO, ratchet: 3, chance: 40 }
+            Step::Play {
+                pick: Pick::Index(2),
+                octave: 2,
+                accent: true,
+                gate: GATE_LEGATO,
+                ratchet: 3,
+                chance: 40
+            }
         );
         assert_eq!(
             p.steps()[1],
-            Step::Play { pick: Pick::Next, octave: -1, accent: false, gate: GATE_SHORT, ratchet: 1, chance: 100 }
+            Step::Play {
+                pick: Pick::Next,
+                octave: -1,
+                accent: false,
+                gate: GATE_SHORT,
+                ratchet: 1,
+                chance: 100
+            }
         );
     }
 
@@ -555,10 +681,18 @@ mod tests {
             ("x:9", 1, "ratchet must be 1 to 8"),
             ("x%0", 1, "chance must be 1 to 100"),
             ("x:", 1, "a number must follow : or %"),
-            ("x x#", 2, "unknown mark after the note (use + - ! ~ ' :N %N)"),
+            (
+                "x x#",
+                2,
+                "unknown mark after the note (use + - ! ~ ' :N %N)",
+            ),
         ];
         for (text, token, reason) in cases {
-            assert_eq!(Pattern::parse(text), Err(ParseError { token, reason }), "{text:?}");
+            assert_eq!(
+                Pattern::parse(text),
+                Err(ParseError { token, reason }),
+                "{text:?}"
+            );
         }
         let long = vec!["x"; 65].join(" ");
         assert_eq!(Pattern::parse(&long).unwrap_err().token, 65);
@@ -588,15 +722,29 @@ mod tests {
         let r = Pattern::parse("x x | vel~20 | gate~30 50 90 | nudge 0 -10 25 | oct~1 0").unwrap();
         assert_eq!(r.lanes.velocity.random(), 20);
         assert!(r.lanes.velocity.values().is_empty() && !r.lanes.velocity.is_off());
-        assert_eq!((r.lanes.gate.random(), r.lanes.gate.values()), (30, &[50, 90][..]));
+        assert_eq!(
+            (r.lanes.gate.random(), r.lanes.gate.values()),
+            (30, &[50, 90][..])
+        );
         assert_eq!(r.lanes.nudge.values(), [0, -10, 25]);
-        assert_eq!(r.to_text(), "x x | oct~1 0 | vel~20 | gate~30 50 90 | nudge 0 -10 25");
+        assert_eq!(
+            r.to_text(),
+            "x x | oct~1 0 | vel~20 | gate~30 50 90 | nudge 0 -10 25"
+        );
         assert_eq!(Pattern::parse(&r.to_text()).unwrap(), r);
         assert!(Pattern::parse("x").unwrap().lanes.nudge.is_off());
         let errors = [
-            ("x | foo 1", 2, "unknown lane (use oct, deg, vel, gate or nudge)"),
+            (
+                "x | foo 1",
+                2,
+                "unknown lane (use oct, deg, vel, gate or nudge)",
+            ),
             ("x |", 2, "an empty lane after |"),
-            ("x | oct", 2, "a lane needs at least one value or a ~random amount"),
+            (
+                "x | oct",
+                2,
+                "a lane needs at least one value or a ~random amount",
+            ),
             ("x | oct~4", 2, "random octaves must be ~1 to ~3"),
             ("x | vel~0 1", 2, "random velocity must be ~1 to ~127"),
             ("x | gate~x", 2, "random gate must be ~1 to ~100"),
@@ -606,7 +754,11 @@ mod tests {
             ("x | gate 101", 3, "gate must be 0 to 100"),
         ];
         for (text, token, reason) in errors {
-            assert_eq!(Pattern::parse(text), Err(ParseError { token, reason }), "{text:?}");
+            assert_eq!(
+                Pattern::parse(text),
+                Err(ParseError { token, reason }),
+                "{text:?}"
+            );
         }
     }
 

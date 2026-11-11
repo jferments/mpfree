@@ -9,14 +9,17 @@ use std::io::{BufWriter, Write};
 fn save_ppm(path: &str, rotation: Option<QuarterTurn>) -> Result<(), String> {
     let logical = render_test_card().map_err(|e| format!("render error: {e:?}"))?;
     let image = match rotation {
-        Some(turn) => logical.rotate_for_panel(turn)
+        Some(turn) => logical
+            .rotate_for_panel(turn)
             .map_err(|e| format!("rotate error: {e:?}"))?,
         None => logical,
     };
     // Only explicit host CLI --preview* can create an output file.
     // create_new avoids destroying an existing sample, project or document.
     let file = OpenOptions::new()
-        .write(true).create_new(true).open(path)
+        .write(true)
+        .create_new(true)
+        .open(path)
         .map_err(|e| format!("cannot create new preview {path:?}: {e}"))?;
     let mut out = BufWriter::new(file);
     write!(out, "P6\n{} {}\n255\n", image.width(), image.height())
@@ -36,12 +39,13 @@ fn save_ppm(path: &str, rotation: Option<QuarterTurn>) -> Result<(), String> {
 
 fn self_test() -> Result<(), String> {
     let logical = render_test_card().map_err(|e| format!("{e:?}"))?;
-    let cw = logical.rotate_for_panel(QuarterTurn::Clockwise)
+    let cw = logical
+        .rotate_for_panel(QuarterTurn::Clockwise)
         .map_err(|e| format!("{e:?}"))?;
-    let ccw = logical.rotate_for_panel(QuarterTurn::CounterClockwise)
+    let ccw = logical
+        .rotate_for_panel(QuarterTurn::CounterClockwise)
         .map_err(|e| format!("{e:?}"))?;
-    if cw.width() != 800 || cw.height() != 1280 ||
-       ccw.width() != 800 || ccw.height() != 1280 {
+    if cw.width() != 800 || cw.height() != 1280 || ccw.width() != 800 || ccw.height() != 1280 {
         return Err("native panel dimensions mismatch".into());
     }
     println!("MPFREE_OFFSCREEN_TEST_CARD_V1");
@@ -61,15 +65,17 @@ fn run() -> Result<(), String> {
     match args.as_slice() {
         [_] => self_test(),
         [_, flag] if flag.as_str() == "--self-test" => self_test(),
-        [_, flag, path] if flag.as_str() == "--preview-logical" =>
-            save_ppm(path, None),
-        [_, flag, path] if flag.as_str() == "--preview-cw" =>
-            save_ppm(path, Some(QuarterTurn::Clockwise)),
-        [_, flag, path] if flag.as_str() == "--preview-ccw" =>
-            save_ppm(path, Some(QuarterTurn::CounterClockwise)),
+        [_, flag, path] if flag.as_str() == "--preview-logical" => save_ppm(path, None),
+        [_, flag, path] if flag.as_str() == "--preview-cw" => {
+            save_ppm(path, Some(QuarterTurn::Clockwise))
+        }
+        [_, flag, path] if flag.as_str() == "--preview-ccw" => {
+            save_ppm(path, Some(QuarterTurn::CounterClockwise))
+        }
         _ => Err("usage: mpfree-display --self-test | \
           --preview-logical NEW_FILE.ppm | --preview-cw NEW_FILE.ppm | \
-          --preview-ccw NEW_FILE.ppm".into()),
+          --preview-ccw NEW_FILE.ppm"
+            .into()),
     }
 }
 

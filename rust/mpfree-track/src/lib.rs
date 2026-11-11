@@ -68,14 +68,19 @@ pub struct Instrument {
 
 impl std::fmt::Debug for Instrument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Instrument").field("node", &self.node.info().id).finish()
+        f.debug_struct("Instrument")
+            .field("node", &self.node.info().id)
+            .finish()
     }
 }
 
 impl Instrument {
     pub fn new(mut node: Box<dyn Node>, rate: u32, max_block: usize) -> Instrument {
         node.prepare(rate, max_block);
-        Instrument { node, probe: Box::new(Probe::new(u64::MAX)) }
+        Instrument {
+            node,
+            probe: Box::new(Probe::new(u64::MAX)),
+        }
     }
 
     pub fn node(&self) -> &dyn Node {
@@ -181,18 +186,29 @@ impl TrackHost {
     /// A host with `slots` destinations (slot `i` feeding track `i`), for
     /// blocks of at most `max_block` frames. Allocates.
     pub fn new(slots: usize, rate: u32, max_block: usize) -> TrackHost {
-        let slots = (0..slots).map(|i| Slot {
-            inst: None,
-            ringing: None,
-            track: Some(i),
-            events: Vec::with_capacity(MAX_EVENTS),
-            held: [0; 128],
-            left: vec![0.0; max_block],
-            right: vec![0.0; max_block],
-            stats: SlotStats::default(),
-        }).collect::<Vec<_>>();
+        let slots = (0..slots)
+            .map(|i| Slot {
+                inst: None,
+                ringing: None,
+                track: Some(i),
+                events: Vec::with_capacity(MAX_EVENTS),
+                held: [0; 128],
+                left: vec![0.0; max_block],
+                right: vec![0.0; max_block],
+                stats: SlotStats::default(),
+            })
+            .collect::<Vec<_>>();
         let retired = Vec::with_capacity(2 * slots.len() + 2);
-        TrackHost { slots, rate, max_block, retired, fade: 0, fading: false, profiling: false, clipped_frames: 0 }
+        TrackHost {
+            slots,
+            rate,
+            max_block,
+            retired,
+            fade: 0,
+            fading: false,
+            profiling: false,
+            clipped_frames: 0,
+        }
     }
 
     pub fn slots(&self) -> usize {
@@ -212,8 +228,14 @@ impl TrackHost {
     /// Puts `inst` in slot `slot` (None empties it). The old instrument
     /// rings out into the same track and is retired once quiet; one still
     /// ringing from an earlier swap is retired at once. Never allocates.
-    pub fn swap(&mut self, slot: usize, inst: Option<Instrument>) -> Result<(), (SwapError, Option<Instrument>)> {
-        let Some(s) = self.slots.get_mut(slot) else { return Err((SwapError::NoSlot, inst)) };
+    pub fn swap(
+        &mut self,
+        slot: usize,
+        inst: Option<Instrument>,
+    ) -> Result<(), (SwapError, Option<Instrument>)> {
+        let Some(s) = self.slots.get_mut(slot) else {
+            return Err((SwapError::NoSlot, inst));
+        };
         if s.ringing.is_some() && self.retired.len() == self.retired.capacity() {
             return Err((SwapError::RetiredFull, inst));
         }
@@ -223,7 +245,13 @@ impl TrackHost {
         if let Some(old) = s.inst.take() {
             let tail = old.node.tail_frames();
             let limit = tail.saturating_add(QUIET_FRAMES).min(MAX_RING_FRAMES);
-            s.ringing = Some(Ringing { inst: old, off: true, frames: 0, quiet: 0, limit });
+            s.ringing = Some(Ringing {
+                inst: old,
+                off: true,
+                frames: 0,
+                quiet: 0,
+                limit,
+            });
             s.stats.swaps += 1;
         }
         // Notes queued for the old instrument end with its AllOff.
@@ -275,7 +303,9 @@ impl TrackHost {
     /// The first slot holding an instrument that feeds mixer track
     /// `track` (an empty slot routed there doesn't count).
     pub fn slot_of_track(&self, track: usize) -> Option<usize> {
-        self.slots.iter().position(|s| s.inst.is_some() && s.track == Some(track))
+        self.slots
+            .iter()
+            .position(|s| s.inst.is_some() && s.track == Some(track))
     }
 
     // ------------------------------------------------------------ events
@@ -294,7 +324,9 @@ impl TrackHost {
     /// Note-ons and note-offs are counted per note (see the crate docs);
     /// `AllOff` ends every note. Returns false if it was dropped.
     pub fn event(&mut self, slot: usize, t: Timed) -> bool {
-        let Some(s) = self.slots.get_mut(slot) else { return false };
+        let Some(s) = self.slots.get_mut(slot) else {
+            return false;
+        };
         match t.ev {
             NodeEvent::NoteOn { note, velocity } if velocity > 0 => {
                 let n = usize::from(note & 0x7F);
@@ -338,7 +370,10 @@ impl TrackHost {
     }
 
     pub fn note_on(&mut self, slot: usize, offset: u32, note: u8, velocity: u8) -> bool {
-        self.event(slot, Timed::new(offset, NodeEvent::NoteOn { note, velocity }))
+        self.event(
+            slot,
+            Timed::new(offset, NodeEvent::NoteOn { note, velocity }),
+        )
     }
 
     pub fn note_off(&mut self, slot: usize, offset: u32, note: u8) -> bool {
@@ -377,7 +412,10 @@ impl TrackHost {
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
         let n = frames.min(self.max_block);
         self.clipped_frames += (frames - n) as u64;
-        let ctx = Ctx { sidechain: None, ..*ctx };
+        let ctx = Ctx {
+            sidechain: None,
+            ..*ctx
+        };
         let fade0 = self.fade;
         let fading = self.fading;
         let profiling = self.profiling;
@@ -434,7 +472,11 @@ impl TrackHost {
                     Self::add(s.track, sl, sr, fading, fade0, out);
                 }
                 r.frames = r.frames.saturating_add(n as u32);
-                r.quiet = if finite && peak < QUIET_LEVEL { r.quiet.saturating_add(n as u32) } else { 0 };
+                r.quiet = if finite && peak < QUIET_LEVEL {
+                    r.quiet.saturating_add(n as u32)
+                } else {
+                    0
+                };
                 // With the retired list full it rings on (quietly) until
                 // the control thread makes room.
                 let done = !finite || r.quiet >= QUIET_FRAMES || r.frames >= r.limit;
@@ -466,7 +508,14 @@ impl TrackHost {
         }
     }
 
-    fn add(track: Option<usize>, sl: &mut [f32], sr: &mut [f32], fading: bool, fade0: u32, out: &mut dyn Outputs) {
+    fn add(
+        track: Option<usize>,
+        sl: &mut [f32],
+        sr: &mut [f32],
+        fading: bool,
+        fade0: u32,
+        out: &mut dyn Outputs,
+    ) {
         if fading {
             for (i, (l, r)) in sl.iter_mut().zip(sr.iter_mut()).enumerate() {
                 let g = fade0.saturating_sub(i as u32) as f32 / STOP_FADE as f32;
@@ -474,7 +523,9 @@ impl TrackHost {
                 *r *= g;
             }
         }
-        let Some((ol, or)) = track.and_then(|t| out.track(t)) else { return };
+        let Some((ol, or)) = track.and_then(|t| out.track(t)) else {
+            return;
+        };
         for (o, x) in ol.iter_mut().zip(sl.iter()) {
             *o += *x;
         }
@@ -486,7 +537,9 @@ impl TrackHost {
     // ------------------------------------------------------------ counters
 
     pub fn stats(&self, slot: usize) -> SlotStats {
-        self.slots.get(slot).map_or_else(SlotStats::default, |s| s.stats)
+        self.slots
+            .get(slot)
+            .map_or_else(SlotStats::default, |s| s.stats)
     }
 
     /// Frames asked of [`TrackHost::render`] past the block size (should

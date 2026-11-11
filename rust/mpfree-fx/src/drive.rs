@@ -29,17 +29,111 @@ pub mod ids {
 const MODES: &[&str] = &["Soft", "Hard", "Tube", "Foldback", "Fuzz", "Rectify"];
 const QUALITY: &[&str] = &["Eco 2x", "HQ 4x"];
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.drive", name: "Drive", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.drive",
+    name: "Drive",
+    kind: Kind::Effect,
+};
 static PARAMS: [ParamInfo; 9] = [
-    ParamInfo { id: 0, name: "Mode", group: "Drive", min: 0.0, max: 5.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(MODES), readonly: false },
-    ParamInfo { id: 1, name: "Drive", group: "Drive", min: 0.0, max: 36.0, default: 12.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 2, name: "Tone", group: "Drive", min: 500.0, max: 20_000.0, default: 20_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 3, name: "Bias", group: "Drive", min: -100.0, max: 100.0, default: 20.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 4, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Output", group: "Output", min: -24.0, max: 12.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Auto-gain", group: "Output", min: 0.0, max: 1.0, default: 1.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: 7, name: "Quality", group: "Output", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(QUALITY), readonly: false },
-    ParamInfo { id: 8, name: "Level change", group: "Meters", min: -48.0, max: 48.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: true },
+    ParamInfo {
+        id: 0,
+        name: "Mode",
+        group: "Drive",
+        min: 0.0,
+        max: 5.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(MODES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Drive",
+        group: "Drive",
+        min: 0.0,
+        max: 36.0,
+        default: 12.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Tone",
+        group: "Drive",
+        min: 500.0,
+        max: 20_000.0,
+        default: 20_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Bias",
+        group: "Drive",
+        min: -100.0,
+        max: 100.0,
+        default: 20.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Output",
+        group: "Output",
+        min: -24.0,
+        max: 12.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Auto-gain",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Quality",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(QUALITY),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 8,
+        name: "Level change",
+        group: "Meters",
+        min: -48.0,
+        max: 48.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: true,
+    },
 ];
 
 /// The delay in base frames. The inner 2x-to-4x pair delays by
@@ -49,7 +143,10 @@ static PARAMS: [ParamInfo; 9] = [
 /// sound in time.
 const LATENCY: usize = (TAPS_2X - 1) / 2 + (TAPS_4X - 1).div_ceil(4);
 const PAD_2X: usize = LATENCY - (TAPS_2X - 1) / 2;
-const _: () = assert!(2 * PAD_2X == (TAPS_4X - 1) / 2 + 1, "the 4x path pads exactly one 2x sample");
+const _: () = assert!(
+    2 * PAD_2X == (TAPS_4X - 1) / 2 + 1,
+    "the 4x path pads exactly one 2x sample"
+);
 /// The level auto-gain matches at: -12 dBFS, the instruments' target peak.
 const REF: f32 = 0.25;
 
@@ -75,20 +172,30 @@ fn auto_gain(mode: usize, drive: f32, b: f32) -> f32 {
     let mut sum = 0.0f32;
     let mut sq = 0.0f32;
     for i in 0..N {
-        let y = shape(mode, REF * drive * (2.0 * PI * i as f32 / N as f32).sin(), b);
+        let y = shape(
+            mode,
+            REF * drive * (2.0 * PI * i as f32 / N as f32).sin(),
+            b,
+        );
         sum += y;
         sq += y * y;
     }
     let mean = sum / N as f32;
     let rms = (sq / N as f32 - mean * mean).max(0.0).sqrt();
     let want = REF / std::f32::consts::SQRT_2;
-    if rms < 1e-6 { 1.0 } else { (want / rms).min(64.0) }
+    if rms < 1e-6 {
+        1.0
+    } else {
+        (want / rms).min(64.0)
+    }
 }
 
 /// `db_to_gain(db)`, recomputed only when `db` changed.
 #[inline]
 fn cached(c: &mut (f32, f32), db: f32) -> f32 {
-    if c.0 != db { *c = (db, db_to_gain(db)); }
+    if c.0 != db {
+        *c = (db, db_to_gain(db));
+    }
     c.1
 }
 
@@ -106,7 +213,16 @@ struct Channel {
 
 impl Channel {
     fn new() -> Channel {
-        Channel { up1: Up2::new(TAPS_2X), down1: Down2::new(TAPS_2X), up2: Up2::new(TAPS_4X), down2: Down2::new(TAPS_4X), pad: FixedDelay::new(PAD_2X), z: 0.0, dry: FixedDelay::new(LATENCY), dc: DcBlock::new() }
+        Channel {
+            up1: Up2::new(TAPS_2X),
+            down1: Down2::new(TAPS_2X),
+            up2: Up2::new(TAPS_4X),
+            down2: Down2::new(TAPS_4X),
+            pad: FixedDelay::new(PAD_2X),
+            z: 0.0,
+            dry: FixedDelay::new(LATENCY),
+            dc: DcBlock::new(),
+        }
     }
     fn reset(&mut self) {
         self.up1.reset();
@@ -141,7 +257,9 @@ pub struct Drive {
 }
 
 impl Default for Drive {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drive {
@@ -170,12 +288,20 @@ impl Drive {
     }
 
     fn comp_target(&self) -> f32 {
-        if self.v[6] < 0.5 { 1.0 } else { auto_gain(self.v[0] as usize, db_to_gain(self.v[1]), self.v[3] / 100.0) }
+        if self.v[6] < 0.5 {
+            1.0
+        } else {
+            auto_gain(self.v[0] as usize, db_to_gain(self.v[1]), self.v[3] / 100.0)
+        }
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
-        if p.readonly { return; }
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
+        if p.readonly {
+            return;
+        }
         let v = p.clamp(value);
         let old = self.v[id as usize];
         self.v[id as usize] = v;
@@ -185,13 +311,32 @@ impl Drive {
             ids::BIAS => self.bias.target = v / 100.0,
             ids::MIX => self.mix.target = v / 100.0,
             ids::OUTPUT => self.out_db.target = v,
-            ids::QUALITY if v != old => for c in &mut self.ch { c.up1.reset(); c.down1.reset(); c.up2.reset(); c.down2.reset(); c.pad.reset(); c.z = 0.0; },
+            ids::QUALITY if v != old => {
+                for c in &mut self.ch {
+                    c.up1.reset();
+                    c.down1.reset();
+                    c.up2.reset();
+                    c.down2.reset();
+                    c.pad.reset();
+                    c.z = 0.0;
+                }
+            }
             _ => {}
         }
-        if matches!(id, ids::MODE | ids::DRIVE | ids::BIAS | ids::AUTO_GAIN) { self.comp.target = self.comp_target(); }
+        if matches!(id, ids::MODE | ids::DRIVE | ids::BIAS | ids::AUTO_GAIN) {
+            self.comp.target = self.comp_target();
+        }
     }
 
-    fn set_tone(&mut self) { self.tone.set(SvfMode::LowPass, self.log_tone.value.exp2(), 0.707, 0.0, self.rate); }
+    fn set_tone(&mut self) {
+        self.tone.set(
+            SvfMode::LowPass,
+            self.log_tone.value.exp2(),
+            0.707,
+            0.0,
+            self.rate,
+        );
+    }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         let mode = self.v[0] as usize;
@@ -237,25 +382,59 @@ impl Drive {
             l[i] = y[0];
             r[i] = y[1];
         }
-        self.v[ids::LEVEL_CHANGE as usize] = if self.ms_in > 1e-10 { (gain_to_db((self.ms_out / self.ms_in).sqrt())).clamp(-48.0, 48.0) } else { 0.0 };
+        self.v[ids::LEVEL_CHANGE as usize] = if self.ms_in > 1e-10 {
+            (gain_to_db((self.ms_out / self.ms_in).sqrt())).clamp(-48.0, 48.0)
+        } else {
+            0.0
+        };
     }
 }
 
 impl Node for Drive {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
-        for s in [&mut self.drive_db, &mut self.bias, &mut self.log_tone, &mut self.mix, &mut self.out_db, &mut self.comp] { s.set_time(self.rate, 20.0); }
-        for c in &mut self.ch { c.dc.set(10.0, self.rate); }
+        for s in [
+            &mut self.drive_db,
+            &mut self.bias,
+            &mut self.log_tone,
+            &mut self.mix,
+            &mut self.out_db,
+            &mut self.comp,
+        ] {
+            s.set_time(self.rate, 20.0);
+        }
+        for c in &mut self.ch {
+            c.dc.set(10.0, self.rate);
+        }
         self.ms_coef = 1.0 - (-1.0 / (0.3 * self.rate as f32)).exp();
         self.set_tone();
     }
     fn reset(&mut self) {
-        for s in [&mut self.drive_db, &mut self.bias, &mut self.log_tone, &mut self.mix, &mut self.out_db, &mut self.comp] { s.snap(s.target); }
-        for c in &mut self.ch { c.reset(); }
+        for s in [
+            &mut self.drive_db,
+            &mut self.bias,
+            &mut self.log_tone,
+            &mut self.mix,
+            &mut self.out_db,
+            &mut self.comp,
+        ] {
+            s.snap(s.target);
+        }
+        for c in &mut self.ch {
+            c.reset();
+        }
         self.tone.reset();
         self.set_tone();
         self.ms_in = 0.0;
@@ -264,12 +443,20 @@ impl Node for Drive {
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
-    fn latency(&self) -> u32 { LATENCY as u32 }
-    fn tail_frames(&self) -> u32 { LATENCY as u32 + self.rate / 20 }
+    fn latency(&self) -> u32 {
+        LATENCY as u32
+    }
+    fn tail_frames(&self) -> u32 {
+        LATENCY as u32 + self.rate / 20
+    }
 }
 
 #[cfg(test)]
@@ -281,7 +468,10 @@ mod tests {
         for mode in 0..6 {
             for drive_db in [0.0f32, 12.0, 30.0] {
                 let g = auto_gain(mode, db_to_gain(drive_db), 0.2);
-                assert!(g.is_finite() && g > 0.0 && g <= 64.0, "mode {mode} drive {drive_db}: {g}");
+                assert!(
+                    g.is_finite() && g > 0.0 && g <= 64.0,
+                    "mode {mode} drive {drive_db}: {g}"
+                );
             }
         }
         // Clean tanh at 0 dB drive and -12 dBFS is nearly linear: gain near 1.

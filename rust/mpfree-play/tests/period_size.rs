@@ -24,7 +24,15 @@ impl Sink for Log {
 }
 
 fn notes(step: i64, count: i64, len: i64, pitch: impl Fn(i64) -> u8) -> Vec<Note> {
-    (0..count).map(|i| Note { tick: i * step, len, note: pitch(i), velocity: 1 + (i * 37 % 127) as u8, chance: 100 }).collect()
+    (0..count)
+        .map(|i| Note {
+            tick: i * step,
+            len,
+            note: pitch(i),
+            velocity: 1 + (i * 37 % 127) as u8,
+            chance: 100,
+        })
+        .collect()
 }
 
 fn session() -> PlayView {
@@ -36,7 +44,11 @@ fn session() -> PlayView {
         t.slots[(p.tracks.len() * 3) % 16] = Some(c);
         let slot = (p.tracks.len() * 3) % 16;
         p.tracks.push(t);
-        Launch { track: p.tracks.len() - 1, slot, origin }
+        Launch {
+            track: p.tracks.len() - 1,
+            slot,
+            origin,
+        }
     };
     let mut launches = vec![];
     // Drums: 1/16s for a bar, three pads.
@@ -58,7 +70,15 @@ fn session() -> PlayView {
     // each with a chance of 40, 70 or 100 %.
     let mut c = Clip::new("", 2 * 3840);
     c.quantise = Quantise::new(240, 70);
-    c.notes = (0..20).map(|i| Note { tick: i * 383 + 17, len: 900, note: 36, velocity: 90, chance: 40 + (i % 3) as u8 * 30 }).collect();
+    c.notes = (0..20)
+        .map(|i| Note {
+            tick: i * 383 + 17,
+            len: 900,
+            note: 36,
+            velocity: 90,
+            chance: 40 + (i % 3) as u8 * 30,
+        })
+        .collect();
     launches.push(add("loose", c, 0, false));
     // A muted track.
     let mut c = Clip::new("", 960);
@@ -68,7 +88,21 @@ fn session() -> PlayView {
 }
 
 fn script(t: &mut Transport) {
-    let map = TempoMap::new(&[Segment { start: 0, bpm: 120.0 }, Segment { start: 1920, bpm: 90.0 }, Segment { start: 5760, bpm: 140.0 }]).unwrap();
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment {
+            start: 1920,
+            bpm: 90.0,
+        },
+        Segment {
+            start: 5760,
+            bpm: 140.0,
+        },
+    ])
+    .unwrap();
     t.set_tempo_map(map).unwrap();
     let cmds = [
         (0, Command::SetCountIn(1)),
@@ -108,7 +142,10 @@ fn run(view: &PlayView, mut next: impl FnMut() -> u32) -> Vec<(u64, u16, u16, Ev
         let before = log.0.len();
         player.process(view, &block, &mut log);
         for e in &log.0[before..] {
-            assert!(e.0 >= block.start_frame && e.0 < block.start_frame + u64::from(n), "event outside its period");
+            assert!(
+                e.0 >= block.start_frame && e.0 < block.start_frame + u64::from(n),
+                "event outside its period"
+            );
         }
     }
     let s = player.stats();
@@ -135,15 +172,33 @@ fn the_same_events_for_every_period_size() {
     // The session plays: plenty of notes on every unmuted track, none on
     // the muted one, frames in order, and every note ends before it starts
     // again.
-    let on = |track| reference.iter().filter(|e| e.1 == track && matches!(e.3, Event::NoteOn { .. })).count();
-    assert!(on(0) > 80 && on(1) > 40 && on(2) > 200 && on(3) > 25, "{} {} {} {}", on(0), on(1), on(2), on(3));
+    let on = |track| {
+        reference
+            .iter()
+            .filter(|e| e.1 == track && matches!(e.3, Event::NoteOn { .. }))
+            .count()
+    };
+    assert!(
+        on(0) > 80 && on(1) > 40 && on(2) > 200 && on(3) > 25,
+        "{} {} {} {}",
+        on(0),
+        on(1),
+        on(2),
+        on(3)
+    );
     assert_eq!(on(4), 0);
     assert!(reference.windows(2).all(|w| w[0].0 <= w[1].0));
     let mut sounding = std::collections::HashSet::new();
     for e in &reference {
         match e.3 {
-            Event::NoteOn { note, .. } => assert!(sounding.insert((e.1, e.2, note)), "{e:?} starts while sounding"),
-            Event::NoteOff { note } => assert!(sounding.remove(&(e.1, e.2, note)), "{e:?} ends a silent note"),
+            Event::NoteOn { note, .. } => assert!(
+                sounding.insert((e.1, e.2, note)),
+                "{e:?} starts while sounding"
+            ),
+            Event::NoteOff { note } => assert!(
+                sounding.remove(&(e.1, e.2, note)),
+                "{e:?} ends a silent note"
+            ),
             Event::AllOff => assert!(sounding.is_empty()),
         }
     }
@@ -153,6 +208,9 @@ fn the_same_events_for_every_period_size() {
         assert!(run(&view, || n) == reference, "period size {n} differs");
     }
     for seed in [3u64, 0x5eed, 987_654_321] {
-        assert!(run(&view, random(seed, 3000)) == reference, "random sizes (seed {seed}) differ");
+        assert!(
+            run(&view, random(seed, 3000)) == reference,
+            "random sizes (seed {seed}) differ"
+        );
     }
 }

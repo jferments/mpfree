@@ -18,7 +18,10 @@ fn main() {
     let rate = 48_000u32;
     let block = 128usize;
     let blocks = 3_000u64;
-    println!("Poly, {block}-frame blocks at {rate} Hz ({:.2} ms each), {blocks} blocks per row", block as f64 * 1000.0 / f64::from(rate));
+    println!(
+        "Poly, {block}-frame blocks at {rate} Hz ({:.2} ms each), {blocks} blocks per row",
+        block as f64 * 1000.0 / f64::from(rate)
+    );
     for unison in [1.0f32, 4.0] {
         for voices in [1usize, 4, 8, 16] {
             let mut s = Poly::new(rate);
@@ -34,14 +37,22 @@ fn main() {
     println!("FM, same blocks");
     let presets = Fm::presets();
     for name in ["Brass Section", "Glass Keys"] {
-        let preset = presets.iter().find(|p| p.name == name).expect("an FM preset");
+        let preset = presets
+            .iter()
+            .find(|p| p.name == name)
+            .expect("an FM preset");
         for voices in [1usize, 4, 8, 16] {
             let mut s = Fm::new(rate);
             s.load_preset(preset);
             s.set_param(fm_params::POLYPHONY, 16.0);
             let per = time_blocks(&mut s, rate, block, blocks, voices);
             let budget = block as f64 / f64::from(rate);
-            println!("  {:<14} {voices:>2} voices: {:>7.1} us per block, {:>5.2} % of real time", format!("{name},"), per * 1e6, per / budget * 100.0);
+            println!(
+                "  {:<14} {voices:>2} voices: {:>7.1} us per block, {:>5.2} % of real time",
+                format!("{name},"),
+                per * 1e6,
+                per / budget * 100.0
+            );
         }
     }
 }
@@ -50,7 +61,17 @@ fn main() {
 fn time_blocks(s: &mut dyn Node, rate: u32, block: usize, blocks: u64, voices: usize) -> f64 {
     let mut l = vec![0.0f32; block];
     let mut r = vec![0.0f32; block];
-    let notes: Vec<Timed> = (0..voices).map(|i| Timed::new(0, NodeEvent::NoteOn { note: 36 + 3 * i as u8, velocity: 100 })).collect();
+    let notes: Vec<Timed> = (0..voices)
+        .map(|i| {
+            Timed::new(
+                0,
+                NodeEvent::NoteOn {
+                    note: 36 + 3 * i as u8,
+                    velocity: 100,
+                },
+            )
+        })
+        .collect();
     s.process(&Ctx::new(rate, 0), &notes, &mut l, &mut r);
     let t = Instant::now();
     for b in 1..=blocks {

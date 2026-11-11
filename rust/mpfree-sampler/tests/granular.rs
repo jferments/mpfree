@@ -8,7 +8,13 @@ const RATE: u32 = 44_100;
 const C: f32 = std::f32::consts::FRAC_1_SQRT_2; // centre pan gain
 
 fn ramp(frames: usize) -> Source {
-    Source::new("ramp", RATE, 1, (1..=frames).map(|i| i as f32 * 1e-4).collect()).unwrap()
+    Source::new(
+        "ramp",
+        RATE,
+        1,
+        (1..=frames).map(|i| i as f32 * 1e-4).collect(),
+    )
+    .unwrap()
 }
 
 fn granular_pad(s: &Source, grain: GrainParams) -> Pad {
@@ -21,7 +27,9 @@ fn granular_pad(s: &Source, grain: GrainParams) -> Pad {
 fn engine_for(pads: &[(usize, Pad)], s: &Source, voices: usize) -> Engine {
     let mut p = Project::new();
     p.add_source(s.clone());
-    for (i, pad) in pads { p.set_pad(*i, Some(pad.clone()), None).unwrap(); }
+    for (i, pad) in pads {
+        p.set_pad(*i, Some(pad.clone()), None).unwrap();
+    }
     let mut e = Engine::new(RATE, voices);
     e.set_view(EngineView::build(&p, RATE));
     e
@@ -53,21 +61,49 @@ fn reference(s: &Source, p: GrainParams, frames: usize) -> Vec<f32> {
 fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
     let s = ramp(44_100);
     // One grain, no randomness in play: the output is exactly a lone grain voice's, panned centre.
-    let base = GrainParams { position: 0.5, size_ms: 10.0, density: 1.0, ..GrainParams::default() };
+    let base = GrainParams {
+        position: 0.5,
+        size_ms: 10.0,
+        density: 1.0,
+        ..GrainParams::default()
+    };
     for (tune, reverse, want) in [
         (0, false, base),
-        (1200, false, GrainParams { pitch: 12.0, ..base }),
-        (-700, true, GrainParams { pitch: -7.0, reverse: 1.0, ..base }),
+        (
+            1200,
+            false,
+            GrainParams {
+                pitch: 12.0,
+                ..base
+            },
+        ),
+        (
+            -700,
+            true,
+            GrainParams {
+                pitch: -7.0,
+                reverse: 1.0,
+                ..base
+            },
+        ),
     ] {
         let mut pad = granular_pad(&s, base);
         pad.layers[0].region.tune_cents = tune;
         pad.layers[0].region.reverse = reverse;
         let mut e = engine_for(&[(0, pad)], &s, 4);
-        e.apply(Event::NoteOn { pad: 0, velocity: 127 });
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
         let (l, r) = run(&mut e, 600, 128);
         let reference = reference(&s, want, 600);
         for k in 0..600 {
-            assert!((l[k] - C * reference[k]).abs() < 1e-6, "tune {tune} rev {reverse} frame {k}: {} vs {}", l[k], C * reference[k]);
+            assert!(
+                (l[k] - C * reference[k]).abs() < 1e-6,
+                "tune {tune} rev {reverse} frame {k}: {} vs {}",
+                l[k],
+                C * reference[k]
+            );
             assert_eq!(l[k], r[k]);
         }
         assert!(l[100] != 0.0);
@@ -77,8 +113,26 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 #[test]
 fn lifting_the_pad_stops_grains_and_releases() {
     let s = ramp(44_100);
-    let mut e = engine_for(&[(3, granular_pad(&s, GrainParams { size_ms: 40.0, density: 80.0, spray: 0.3, ..GrainParams::default() }))], &s, 4);
-    e.apply(Event::NoteOn { pad: 3, velocity: 100 });
+    let mut e = engine_for(
+        &[(
+            3,
+            granular_pad(
+                &s,
+                GrainParams {
+                    size_ms: 40.0,
+                    density: 80.0,
+                    spray: 0.3,
+                    ..GrainParams::default()
+                },
+            ),
+        )],
+        &s,
+        4,
+    );
+    e.apply(Event::NoteOn {
+        pad: 3,
+        velocity: 100,
+    });
     let (held, _) = run(&mut e, 4410, 128);
     assert!(held[2000..].iter().any(|&x| x != 0.0));
     assert!(e.live_grains() > 0);
@@ -94,13 +148,24 @@ fn lifting_the_pad_stops_grains_and_releases() {
 #[test]
 fn stealing_and_the_budget_bound_the_grains() {
     let s = ramp(44_100);
-    let busy = GrainParams { size_ms: 500.0, density: 500.0, spray: 1.0, ..GrainParams::default() };
+    let busy = GrainParams {
+        size_ms: 500.0,
+        density: 500.0,
+        spray: 1.0,
+        ..GrainParams::default()
+    };
     let mut pad = granular_pad(&s, busy);
     pad.polyphony = 1;
     let mut e = engine_for(&[(0, pad)], &s, 8);
-    e.apply(Event::NoteOn { pad: 0, velocity: 100 });
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
     run(&mut e, 4410, 128);
-    e.apply(Event::NoteOn { pad: 0, velocity: 100 });
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
     run(&mut e, usize::from(KILL_FRAMES) + 128, 128);
     assert_eq!(e.active_voices(), 1, "the first hit was pushed out");
     assert!(e.live_grains() <= mpfree_grain::MAX_GRAINS);
@@ -108,7 +173,12 @@ fn stealing_and_the_budget_bound_the_grains() {
     // Eight busy pads at once: the shared budget holds.
     let pads: Vec<(usize, Pad)> = (0..8).map(|i| (i, granular_pad(&s, busy))).collect();
     let mut e = engine_for(&pads, &s, 16);
-    for i in 0..8 { e.apply(Event::NoteOn { pad: i, velocity: 100 }); }
+    for i in 0..8 {
+        e.apply(Event::NoteOn {
+            pad: i,
+            velocity: 100,
+        });
+    }
     for _ in 0..40 {
         run(&mut e, 128, 128);
         assert!(e.live_grains() <= GRAIN_BUDGET);
@@ -122,12 +192,48 @@ fn stealing_and_the_budget_bound_the_grains() {
 
 #[test]
 fn same_hits_same_sound() {
-    let s = Source::new("noise", RATE, 2, (0..88_200).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect()).unwrap();
-    let p = GrainParams { spray: 0.7, size_ms: 60.0, density: 90.0, pitch_spray: 7.0, reverse: 0.3, spread: 1.0, scan: 0.5, ..GrainParams::default() };
+    let s = Source::new(
+        "noise",
+        RATE,
+        2,
+        (0..88_200)
+            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+            .collect(),
+    )
+    .unwrap();
+    let p = GrainParams {
+        spray: 0.7,
+        size_ms: 60.0,
+        density: 90.0,
+        pitch_spray: 7.0,
+        reverse: 0.3,
+        spread: 1.0,
+        scan: 0.5,
+        ..GrainParams::default()
+    };
     let render = || {
-        let mut e = engine_for(&[(0, granular_pad(&s, p)), (1, granular_pad(&s, GrainParams { position: 0.7, ..p }))], &s, 8);
-        e.schedule(10, Event::NoteOn { pad: 0, velocity: 100 });
-        e.schedule(3000, Event::NoteOn { pad: 1, velocity: 60 });
+        let mut e = engine_for(
+            &[
+                (0, granular_pad(&s, p)),
+                (1, granular_pad(&s, GrainParams { position: 0.7, ..p })),
+            ],
+            &s,
+            8,
+        );
+        e.schedule(
+            10,
+            Event::NoteOn {
+                pad: 0,
+                velocity: 100,
+            },
+        );
+        e.schedule(
+            3000,
+            Event::NoteOn {
+                pad: 1,
+                velocity: 60,
+            },
+        );
         let a = run(&mut e, 10_000, 128);
         e.apply(Event::NoteOff { pad: 0 });
         let b = run(&mut e, 10_000, 333);
@@ -141,8 +247,25 @@ fn same_hits_same_sound() {
 #[test]
 fn the_playhead_shows_where_grains_read_and_view_swaps_keep_playing() {
     let s = ramp(44_100);
-    let mut e = engine_for(&[(5, granular_pad(&s, GrainParams { position: 0.25, scan: 0.0, ..GrainParams::default() }))], &s, 4);
-    e.apply(Event::NoteOn { pad: 5, velocity: 100 });
+    let mut e = engine_for(
+        &[(
+            5,
+            granular_pad(
+                &s,
+                GrainParams {
+                    position: 0.25,
+                    scan: 0.0,
+                    ..GrainParams::default()
+                },
+            ),
+        )],
+        &s,
+        4,
+    );
+    e.apply(Event::NoteOn {
+        pad: 5,
+        velocity: 100,
+    });
     run(&mut e, 1000, 128);
     let heads: Vec<_> = e.playheads().collect();
     assert_eq!(heads.len(), 1);
@@ -161,7 +284,11 @@ fn grain_settings_are_checked_and_kept_across_modes() {
     r.grain.density = f32::NAN;
     assert_eq!(r.check(&s), Err(ModelError::BadRegion("grain settings")));
     r.grain.density = 40.0;
-    r.grain.sync = Some(TempoSync { frames_per_beat: f64::INFINITY, grains_per_beat: None, size_beats: None });
+    r.grain.sync = Some(TempoSync {
+        frames_per_beat: f64::INFINITY,
+        grains_per_beat: None,
+        size_beats: None,
+    });
     assert_eq!(r.check(&s), Err(ModelError::BadRegion("grain settings")));
     r.grain.sync = None;
     r.mode = PlayMode::Granular;
@@ -173,22 +300,42 @@ fn grain_settings_are_checked_and_kept_across_modes() {
 #[test]
 fn the_screen_sees_the_grains_of_the_pad_and_layer_it_shows() {
     let s = ramp(RATE as usize);
-    let g = GrainParams { size_ms: 40.0, density: 200.0, spray: 0.3, ..GrainParams::default() };
+    let g = GrainParams {
+        size_ms: 40.0,
+        density: 200.0,
+        spray: 0.3,
+        ..GrainParams::default()
+    };
     let mut e = engine_for(&[(2, granular_pad(&s, g)), (5, granular_pad(&s, g))], &s, 8);
     let mut views = [mpfree_sampler::engine::GrainView::default(); 64];
     assert_eq!(e.grains_of(2, 0, &mut views), 0, "nothing plays yet");
-    e.apply(Event::NoteOn { pad: 2, velocity: 100 });
+    e.apply(Event::NoteOn {
+        pad: 2,
+        velocity: 100,
+    });
     run(&mut e, 4410, 128);
     let n = e.grains_of(2, 0, &mut views);
     assert!((5..=10).contains(&n), "about 200/s of 40 ms grains: {n}");
-    assert!(views[..n].iter().all(|v| (0.0..=1.0).contains(&v.position) && (0.0..=1.0).contains(&v.level)));
+    assert!(views[..n]
+        .iter()
+        .all(|v| (0.0..=1.0).contains(&v.position) && (0.0..=1.0).contains(&v.level)));
     assert_eq!(e.grains_of(5, 0, &mut views), 0, "another pad");
     assert_eq!(e.grains_of(2, 1, &mut views), 0, "another layer");
-    assert_eq!(e.grains_of(2, 0, &mut views[..3]), 3, "a short list holds what fits");
+    assert_eq!(
+        e.grains_of(2, 0, &mut views[..3]),
+        3,
+        "a short list holds what fits"
+    );
     // A second voice on another pad adds its own, not to pad 2's.
-    e.apply(Event::NoteOn { pad: 5, velocity: 100 });
+    e.apply(Event::NoteOn {
+        pad: 5,
+        velocity: 100,
+    });
     run(&mut e, 2205, 128);
-    let (a, b) = (e.grains_of(2, 0, &mut views), e.grains_of(5, 0, &mut [Default::default(); 64]));
+    let (a, b) = (
+        e.grains_of(2, 0, &mut views),
+        e.grains_of(5, 0, &mut [Default::default(); 64]),
+    );
     assert!(a > 0 && b > 0, "{a} and {b}");
     assert!(a + b <= e.live_grains());
 }

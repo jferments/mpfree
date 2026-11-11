@@ -68,7 +68,14 @@ fn feed(d: &mut MtDecoder, s: S) -> Vec<(Step, Vec<Seen>)> {
             let evs = if step == Step::Frame {
                 d.events()
                     .iter()
-                    .map(|e| (e.phase, e.contact.tracking_id, e.contact.raw_x, e.contact.raw_y))
+                    .map(|e| {
+                        (
+                            e.phase,
+                            e.contact.tracking_id,
+                            e.contact.raw_x,
+                            e.contact.raw_y,
+                        )
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -87,8 +94,14 @@ use Phase::*;
 
 #[test]
 fn rejects_bad_slot_counts() {
-    assert_eq!(MtDecoder::new(0).unwrap_err(), ConfigError::InvalidSlotCount);
-    assert_eq!(MtDecoder::new(65).unwrap_err(), ConfigError::InvalidSlotCount);
+    assert_eq!(
+        MtDecoder::new(0).unwrap_err(),
+        ConfigError::InvalidSlotCount
+    );
+    assert_eq!(
+        MtDecoder::new(65).unwrap_err(),
+        ConfigError::InvalidSlotCount
+    );
     assert_eq!(MtDecoder::new(64).unwrap().slot_count(), 64);
 }
 
@@ -98,10 +111,18 @@ fn single_contact_down_move_up_with_implicit_slot_zero() {
     let f = feed(
         &mut d,
         S::new()
-            .id(7).xy(100, 200).btn(true).raw(EV_ABS, ABS_X, 100).syn()
-            .x(110).syn()
-            .x(110).syn() // duplicate value: no Move
-            .id(-1).btn(false).syn(),
+            .id(7)
+            .xy(100, 200)
+            .btn(true)
+            .raw(EV_ABS, ABS_X, 100)
+            .syn()
+            .x(110)
+            .syn()
+            .x(110)
+            .syn() // duplicate value: no Move
+            .id(-1)
+            .btn(false)
+            .syn(),
     );
     assert_eq!(f[0].1, vec![(Down, 7, 100, 200)]);
     assert_eq!(f[1].1, vec![(Move, 7, 110, 200)]);
@@ -117,7 +138,17 @@ fn single_contact_down_move_up_with_implicit_slot_zero() {
 #[test]
 fn two_contacts_publish_coherent_snapshots() {
     let mut d = decoder();
-    feed(&mut d, S::new().slot(0).id(1).xy(10, 10).slot(3).id(2).xy(500, 900).syn());
+    feed(
+        &mut d,
+        S::new()
+            .slot(0)
+            .id(1)
+            .xy(10, 10)
+            .slot(3)
+            .id(2)
+            .xy(500, 900)
+            .syn(),
+    );
     let c = d.contacts();
     assert_eq!(c.len(), 2);
     assert_eq!((c[0].slot, c[0].tracking_id), (0, 1));
@@ -172,12 +203,18 @@ fn malformed_sequences_are_contained() {
     let f = feed(
         &mut d,
         S::new()
-            .slot(10).id(1).xy(1, 1)       // beyond 10 slots: ignored
-            .slot(-1).id(2).xy(2, 2)       // negative: ignored
-            .raw(EV_ABS, 99, 5)            // unknown axis
-            .raw(0x05, 0, 1)               // EV_SW
-            .slot(1).id(-1)                // release with no contact
-            .id(3).xy(3, 3)
+            .slot(10)
+            .id(1)
+            .xy(1, 1) // beyond 10 slots: ignored
+            .slot(-1)
+            .id(2)
+            .xy(2, 2) // negative: ignored
+            .raw(EV_ABS, 99, 5) // unknown axis
+            .raw(0x05, 0, 1) // EV_SW
+            .slot(1)
+            .id(-1) // release with no contact
+            .id(3)
+            .xy(3, 3)
             .syn(),
     );
     assert_eq!(f[0].1, vec![(Down, 3, 3, 3)]);
@@ -205,27 +242,75 @@ fn btn_touch_disagreement_is_counted_not_trusted() {
 #[test]
 fn syn_dropped_discards_until_report_then_requests_resync() {
     let mut d = decoder();
-    feed(&mut d, S::new().slot(0).id(1).xy(10, 10).slot(1).id(2).xy(20, 20).syn());
+    feed(
+        &mut d,
+        S::new()
+            .slot(0)
+            .id(1)
+            .xy(10, 10)
+            .slot(1)
+            .id(2)
+            .xy(20, 20)
+            .syn(),
+    );
     let ids: Vec<_> = d.contacts().iter().map(|c| c.id).collect();
     let f = feed(
         &mut d,
         S::new()
-            .slot(0).x(11)       // partial frame, rolled back by the drop
+            .slot(0)
+            .x(11) // partial frame, rolled back by the drop
             .dropped()
-            .x(999).id(-1)       // lost events: ignored
+            .x(999)
+            .id(-1) // lost events: ignored
             .syn(),
     );
     assert_eq!(f, vec![(Step::ResyncRequired, vec![])]);
     assert_eq!(d.stats().sync_drops, 1);
     // Snapshot: slot 0 kept id 1 but moved, slot 1 lifted, slot 4 is new.
-    let mut slots = vec![SlotSnapshot { tracking_id: -1, raw_x: 0, raw_y: 0 }; 10];
-    slots[0] = SlotSnapshot { tracking_id: 1, raw_x: 15, raw_y: 10 };
-    slots[1] = SlotSnapshot { tracking_id: -1, raw_x: 20, raw_y: 20 };
-    slots[4] = SlotSnapshot { tracking_id: 9, raw_x: 40, raw_y: 40 };
-    assert_eq!(d.resync(&MtSnapshot { current_slot: 4, slots }, 50), Step::Frame);
-    let got: Vec<_> = d.events().iter().map(|e| (e.phase, e.contact.tracking_id)).collect();
+    let mut slots = vec![
+        SlotSnapshot {
+            tracking_id: -1,
+            raw_x: 0,
+            raw_y: 0
+        };
+        10
+    ];
+    slots[0] = SlotSnapshot {
+        tracking_id: 1,
+        raw_x: 15,
+        raw_y: 10,
+    };
+    slots[1] = SlotSnapshot {
+        tracking_id: -1,
+        raw_x: 20,
+        raw_y: 20,
+    };
+    slots[4] = SlotSnapshot {
+        tracking_id: 9,
+        raw_x: 40,
+        raw_y: 40,
+    };
+    assert_eq!(
+        d.resync(
+            &MtSnapshot {
+                current_slot: 4,
+                slots
+            },
+            50
+        ),
+        Step::Frame
+    );
+    let got: Vec<_> = d
+        .events()
+        .iter()
+        .map(|e| (e.phase, e.contact.tracking_id))
+        .collect();
     assert_eq!(got, vec![(Move, 1), (Up, 2), (Down, 9)]);
-    assert_eq!(d.contacts()[0].id, ids[0], "surviving contact keeps its identity");
+    assert_eq!(
+        d.contacts()[0].id,
+        ids[0],
+        "surviving contact keeps its identity"
+    );
     // Current slot restored from the snapshot: slot 4 moves without ABS_MT_SLOT.
     let f = feed(&mut d, S::new().x(41).syn());
     assert_eq!(f[0].1, vec![(Move, 9, 41, 40)]);
@@ -235,17 +320,41 @@ fn syn_dropped_discards_until_report_then_requests_resync() {
 fn snapshot_with_replaced_tracking_id_is_up_then_down() {
     let mut d = decoder();
     feed(&mut d, S::new().id(1).xy(1, 1).syn().dropped().syn());
-    let mut slots = vec![SlotSnapshot { tracking_id: -1, raw_x: 0, raw_y: 0 }; 10];
-    slots[0] = SlotSnapshot { tracking_id: 2, raw_x: 1, raw_y: 1 };
-    d.resync(&MtSnapshot { current_slot: 0, slots }, 9);
-    let got: Vec<_> = d.events().iter().map(|e| (e.phase, e.contact.tracking_id)).collect();
+    let mut slots = vec![
+        SlotSnapshot {
+            tracking_id: -1,
+            raw_x: 0,
+            raw_y: 0
+        };
+        10
+    ];
+    slots[0] = SlotSnapshot {
+        tracking_id: 2,
+        raw_x: 1,
+        raw_y: 1,
+    };
+    d.resync(
+        &MtSnapshot {
+            current_slot: 0,
+            slots,
+        },
+        9,
+    );
+    let got: Vec<_> = d
+        .events()
+        .iter()
+        .map(|e| (e.phase, e.contact.tracking_id))
+        .collect();
     assert_eq!(got, vec![(Up, 1), (Down, 2)]);
 }
 
 #[test]
 fn resync_without_snapshot_cancels_and_waits_for_fresh_contacts() {
     let mut d = decoder();
-    feed(&mut d, S::new().slot(2).id(1).xy(10, 10).syn().dropped().syn());
+    feed(
+        &mut d,
+        S::new().slot(2).id(1).xy(10, 10).syn().dropped().syn(),
+    );
     assert_eq!(d.resync_without_snapshot(5), Step::Frame);
     assert_eq!(d.events()[0].phase, Cancel);
     assert!(d.contacts().is_empty());
@@ -296,7 +405,8 @@ impl Rig {
         for ev in s.ev {
             if self.d.push(ev) == Step::Frame {
                 self.buf.clear();
-                self.buf.extend(self.d.events().iter().map(|ce| self.map.pointer(ce)));
+                self.buf
+                    .extend(self.d.events().iter().map(|ce| self.map.pointer(ce)));
                 self.g.frame(&self.buf, &mut self.out);
             }
         }
@@ -316,8 +426,12 @@ fn kinds(g: &[Gesture]) -> Vec<&'static str> {
             Gesture::LongPress { .. } => "long",
             Gesture::DragStart { .. } => "drag-start",
             Gesture::Drag { .. } => "drag",
-            Gesture::DragEnd { cancelled: false, .. } => "drag-end",
-            Gesture::DragEnd { cancelled: true, .. } => "drag-cancel",
+            Gesture::DragEnd {
+                cancelled: false, ..
+            } => "drag-end",
+            Gesture::DragEnd {
+                cancelled: true, ..
+            } => "drag-cancel",
             Gesture::Swipe { .. } => "swipe",
             Gesture::TwoFingerStart { .. } => "2f-start",
             Gesture::TwoFinger { .. } => "2f",
@@ -330,15 +444,39 @@ fn kinds(g: &[Gesture]) -> Vec<&'static str> {
 #[test]
 fn tap_within_slop_and_time() {
     let mut r = Rig::new(GestureConfig::default());
-    let g = r.run(S::new().at(0).id(1).xy(100, 100).syn().at(50_000).x(105).syn().at(120_000).id(-1).syn());
+    let g = r.run(
+        S::new()
+            .at(0)
+            .id(1)
+            .xy(100, 100)
+            .syn()
+            .at(50_000)
+            .x(105)
+            .syn()
+            .at(120_000)
+            .id(-1)
+            .syn(),
+    );
     assert_eq!(kinds(&g), ["tap"]);
 }
 
 #[test]
 fn slow_release_is_neither_tap_nor_long_press_without_hold() {
-    let cfg = GestureConfig { long_press_us: 10_000_000, ..GestureConfig::default() };
+    let cfg = GestureConfig {
+        long_press_us: 10_000_000,
+        ..GestureConfig::default()
+    };
     let mut r = Rig::new(cfg);
-    let g = r.run(S::new().at(0).id(1).xy(100, 100).syn().at(400_000).id(-1).syn());
+    let g = r.run(
+        S::new()
+            .at(0)
+            .id(1)
+            .xy(100, 100)
+            .syn()
+            .at(400_000)
+            .id(-1)
+            .syn(),
+    );
     assert!(g.is_empty());
 }
 
@@ -356,28 +494,80 @@ fn long_press_fires_from_tick_and_suppresses_tap() {
 fn drag_reports_start_at_origin_and_incremental_deltas() {
     let mut r = Rig::new(GestureConfig::default());
     let g = r.run(
-        S::new().at(0).id(1).xy(100, 100).syn()
-            .at(10_000).x(130).syn()
-            .at(20_000).x(140).syn()
-            .at(30_000).id(-1).syn(),
+        S::new()
+            .at(0)
+            .id(1)
+            .xy(100, 100)
+            .syn()
+            .at(10_000)
+            .x(130)
+            .syn()
+            .at(20_000)
+            .x(140)
+            .syn()
+            .at(30_000)
+            .id(-1)
+            .syn(),
     );
     assert_eq!(kinds(&g), ["drag-start", "drag", "drag", "drag-end"]);
-    assert_eq!(g[0], Gesture::DragStart { id: ContactId(1), x: 100.0, y: 100.0 });
-    let Gesture::Drag { dx, .. } = g[2] else { panic!() };
+    assert_eq!(
+        g[0],
+        Gesture::DragStart {
+            id: ContactId(1),
+            x: 100.0,
+            y: 100.0
+        }
+    );
+    let Gesture::Drag { dx, .. } = g[2] else {
+        panic!()
+    };
     assert_eq!(dx, 10.0);
 }
 
 #[test]
 fn two_fingers_pan_and_pinch() {
     let mut r = Rig::new(GestureConfig::default());
-    let g = r.run(S::new().slot(0).id(1).xy(100, 100).slot(1).id(2).xy(300, 100).syn());
-    assert_eq!(g, vec![Gesture::TwoFingerStart { cx: 200.0, cy: 100.0 }]);
+    let g = r.run(
+        S::new()
+            .slot(0)
+            .id(1)
+            .xy(100, 100)
+            .slot(1)
+            .id(2)
+            .xy(300, 100)
+            .syn(),
+    );
+    assert_eq!(
+        g,
+        vec![Gesture::TwoFingerStart {
+            cx: 200.0,
+            cy: 100.0
+        }]
+    );
     // Spread both fingers outward to double the distance.
     let g = r.run(S::new().slot(0).x(0).slot(1).x(400).syn());
-    assert_eq!(g, vec![Gesture::TwoFinger { cx: 200.0, cy: 100.0, dx: 0.0, dy: 0.0, scale: 2.0 }]);
+    assert_eq!(
+        g,
+        vec![Gesture::TwoFinger {
+            cx: 200.0,
+            cy: 100.0,
+            dx: 0.0,
+            dy: 0.0,
+            scale: 2.0
+        }]
+    );
     // Move both down by 50: pan.
     let g = r.run(S::new().slot(0).y(150).slot(1).y(150).syn());
-    assert_eq!(g, vec![Gesture::TwoFinger { cx: 200.0, cy: 150.0, dx: 0.0, dy: 50.0, scale: 2.0 }]);
+    assert_eq!(
+        g,
+        vec![Gesture::TwoFinger {
+            cx: 200.0,
+            cy: 150.0,
+            dx: 0.0,
+            dy: 50.0,
+            scale: 2.0
+        }]
+    );
     let g = r.run(S::new().slot(0).id(-1).slot(1).id(-1).syn());
     assert_eq!(kinds(&g), ["2f-end"]);
 }
@@ -395,11 +585,25 @@ fn second_finger_never_hijacks_an_active_drag() {
 
 #[test]
 fn two_finger_can_be_disabled_for_independent_touches() {
-    let cfg = GestureConfig { two_finger: false, ..GestureConfig::default() };
+    let cfg = GestureConfig {
+        two_finger: false,
+        ..GestureConfig::default()
+    };
     let mut r = Rig::new(cfg);
     let g = r.run(
-        S::new().slot(0).id(1).xy(100, 100).slot(1).id(2).xy(900, 900).syn()
-            .slot(0).id(-1).slot(1).id(-1).syn(),
+        S::new()
+            .slot(0)
+            .id(1)
+            .xy(100, 100)
+            .slot(1)
+            .id(2)
+            .xy(900, 900)
+            .syn()
+            .slot(0)
+            .id(-1)
+            .slot(1)
+            .id(-1)
+            .syn(),
     );
     assert_eq!(kinds(&g), ["tap", "tap"]);
 }
@@ -410,22 +614,43 @@ fn sync_loss_cancels_gestures_instead_of_completing_them() {
     r.run(S::new().slot(0).id(1).xy(100, 100).syn().x(300).syn());
     r.run(S::new().slot(1).id(2).xy(900, 900).syn()); // pending tap candidate
     r.d.push(InputEvent::new(0, EV_SYN, SYN_DROPPED, 0));
-    assert_eq!(r.d.push(InputEvent::new(0, EV_SYN, SYN_REPORT, 0)), Step::ResyncRequired);
+    assert_eq!(
+        r.d.push(InputEvent::new(0, EV_SYN, SYN_REPORT, 0)),
+        Step::ResyncRequired
+    );
     r.d.resync_without_snapshot(1);
     let mut out = Vec::new();
     let frame: Vec<_> = r.d.events().iter().map(|ce| r.map.pointer(ce)).collect();
     r.g.frame(&frame, &mut out);
-    assert_eq!(kinds(&out), ["drag-cancel"], "the pending contact must not tap");
+    assert_eq!(
+        kinds(&out),
+        ["drag-cancel"],
+        "the pending contact must not tap"
+    );
 }
 
 // ---- M13: seeding a decoder that opens mid-stream ---------------------------
 
 fn snapshot(current_slot: i32, live: &[(usize, i32, i32, i32)]) -> MtSnapshot {
-    let mut slots = vec![SlotSnapshot { tracking_id: -1, raw_x: 0, raw_y: 0 }; 10];
+    let mut slots = vec![
+        SlotSnapshot {
+            tracking_id: -1,
+            raw_x: 0,
+            raw_y: 0
+        };
+        10
+    ];
     for &(s, tracking_id, raw_x, raw_y) in live {
-        slots[s] = SlotSnapshot { tracking_id, raw_x, raw_y };
+        slots[s] = SlotSnapshot {
+            tracking_id,
+            raw_x,
+            raw_y,
+        };
     }
-    MtSnapshot { current_slot, slots }
+    MtSnapshot {
+        current_slot,
+        slots,
+    }
 }
 
 #[test]
@@ -460,10 +685,20 @@ fn seeded_positions_cover_values_the_kernel_will_not_resend() {
     // slot's last contact sends only Y. Without the seeded X the decoder would
     // hold the contact back.
     let mut d = decoder();
-    d.seed(&MtSnapshot {
-        current_slot: 0,
-        slots: vec![SlotSnapshot { tracking_id: -1, raw_x: 640, raw_y: 10 }; 10],
-    }, 0);
+    d.seed(
+        &MtSnapshot {
+            current_slot: 0,
+            slots: vec![
+                SlotSnapshot {
+                    tracking_id: -1,
+                    raw_x: 640,
+                    raw_y: 10
+                };
+                10
+            ],
+        },
+        0,
+    );
     let f = feed(&mut d, S::new().id(9).y(400).syn());
     assert_eq!(f[0].1, vec![(Down, 9, 640, 400)]);
 }
@@ -491,7 +726,11 @@ fn seeding_a_running_decoder_cancels_what_it_had_published() {
     let mut d = decoder();
     feed(&mut d, S::new().slot(1).id(5).xy(1, 2).syn());
     assert_eq!(d.seed(&snapshot(1, &[(1, 5, 1, 2)]), 77), Step::Frame);
-    let got: Vec<_> = d.events().iter().map(|e| (e.phase, e.contact.tracking_id, e.time_us)).collect();
+    let got: Vec<_> = d
+        .events()
+        .iter()
+        .map(|e| (e.phase, e.contact.tracking_id, e.time_us))
+        .collect();
     assert_eq!(got, vec![(Cancel, 5, 77)]);
     assert!(d.contacts().is_empty());
     // The next frame does not repeat the cancel.
@@ -503,7 +742,10 @@ fn seeding_a_running_decoder_cancels_what_it_had_published() {
 fn seed_with_a_bad_current_slot_ignores_updates_until_a_slot_arrives() {
     let mut d = decoder();
     d.seed(&snapshot(-1, &[]), 0);
-    let f = feed(&mut d, S::new().id(1).xy(1, 1).syn().slot(0).id(2).xy(2, 2).syn());
+    let f = feed(
+        &mut d,
+        S::new().id(1).xy(1, 1).syn().slot(0).id(2).xy(2, 2).syn(),
+    );
     assert_eq!(f[0].1, vec![]);
     assert_eq!(f[1].1, vec![(Down, 2, 2, 2)]);
 }

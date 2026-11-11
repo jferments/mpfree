@@ -73,16 +73,22 @@ unsafe impl GlobalAlloc for CountingAlloc {
 /// Allocator calls (alloc, free, realloc) made by this thread so far. 0
 /// forever when [`CountingAlloc`] is not installed.
 #[inline]
-pub fn thread_count() -> u64 { CALLS.try_with(Cell::get).unwrap_or(0) }
+pub fn thread_count() -> u64 {
+    CALLS.try_with(Cell::get).unwrap_or(0)
+}
 
 /// Bytes this thread has allocated and not freed (its frees of memory
 /// another thread allocated count against it). 0 forever when
 /// [`CountingAlloc`] is not installed.
 #[inline]
-pub fn thread_bytes() -> i64 { BYTES.try_with(Cell::get).unwrap_or(0) }
+pub fn thread_bytes() -> i64 {
+    BYTES.try_with(Cell::get).unwrap_or(0)
+}
 
 /// Allocator calls by every thread so far.
-pub fn total_count() -> u64 { TOTAL.load(Ordering::Relaxed) }
+pub fn total_count() -> u64 {
+    TOTAL.load(Ordering::Relaxed)
+}
 
 /// Whether [`CountingAlloc`] is the program's allocator: makes and drops one
 /// small box and looks for it in the counter. Not for the audio thread.

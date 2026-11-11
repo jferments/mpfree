@@ -104,7 +104,11 @@ impl Widget for GrainCloud {
         cx.titled_panel(r, &self.title, &self.right);
         let plot = GrainCloud::plot(r);
         let violet = Color::rgb(GRAIN_COLOR);
-        let wave = if self.granular { t.text_faint } else { t.text_faint.mix(t.surface, 0.5) };
+        let wave = if self.granular {
+            t.text_faint
+        } else {
+            t.text_faint.mix(t.surface, 0.5)
+        };
         let mid = plot.y + plot.h / 2;
         let half = (plot.h / 2) as f32;
         // The band grains start in, round where the voice reads (the
@@ -118,7 +122,8 @@ impl Widget for GrainCloud {
             let mut fill = |a: f32, b: f32| {
                 let (x0, x1) = (x_of(a.clamp(0.0, 1.0)), x_of(b.clamp(0.0, 1.0)));
                 if x1 > x0 {
-                    cx.canvas.fill_rect(Rect::new(x0, plot.y, x1 - x0, plot.h), band);
+                    cx.canvas
+                        .fill_rect(Rect::new(x0, plot.y, x1 - x0, plot.h), band);
                 }
             };
             if self.spray >= 1.0 {
@@ -149,17 +154,21 @@ impl Widget for GrainCloud {
                 }
                 let top = mid - (c.max.clamp(-1.0, 1.0) * half) as i32;
                 let bot = mid - (c.min.clamp(-1.0, 1.0) * half) as i32;
-                cx.canvas.fill_rect(Rect::new(plot.x + x, top, 1, (bot - top).max(1)), wave);
+                cx.canvas
+                    .fill_rect(Rect::new(plot.x + x, top, 1, (bot - top).max(1)), wave);
             }
         }
-        cx.canvas.fill_rect(Rect::new(plot.x, mid, plot.w, 1), t.outline);
+        cx.canvas
+            .fill_rect(Rect::new(plot.x, mid, plot.w, 1), t.outline);
         if self.granular {
             // The position, and where the voice reads now.
             let x = plot.x + (self.position.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
-            cx.canvas.fill_rect(Rect::new(x - 1, plot.y, 2, plot.h), violet);
+            cx.canvas
+                .fill_rect(Rect::new(x - 1, plot.y, 2, plot.h), violet);
             if let Some(h) = self.playhead {
                 let x = plot.x + (h.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
-                cx.canvas.fill_rect(Rect::new(x, plot.y, 1, plot.h), t.text_dim);
+                cx.canvas
+                    .fill_rect(Rect::new(x, plot.y, 1, plot.h), t.text_dim);
             }
             // The grains: a bar each, as long as a grain, brighter while
             // its window is open.
@@ -168,17 +177,35 @@ impl Widget for GrainCloud {
             for (k, g) in self.grains.iter().enumerate() {
                 let x = plot.x + (g.position.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
                 let y = plot.y + 8 + (scatter(k) * rows) as i32;
-                let c = if g.reverse { Color::rgb(REVERSE_COLOR) } else { violet };
+                let c = if g.reverse {
+                    Color::rgb(REVERSE_COLOR)
+                } else {
+                    violet
+                };
                 let c = t.surface.mix(c, 0.35 + 0.65 * g.level.clamp(0.0, 1.0));
                 let bar = Rect::new(x - w / 2, y - 2, w, 5).intersect(plot);
                 cx.canvas.fill_round_rect(bar, 2, c);
             }
         } else if !self.note.is_empty() {
             let note = Rect::new(plot.x, mid - 30, plot.w, 26);
-            cx.text(FontId::Bold, t.size_body, note, Align::Center, t.text, &self.note);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                note,
+                Align::Center,
+                t.text,
+                &self.note,
+            );
         }
         let caption = Rect::new(plot.x, plot.bottom() + 6, plot.w, 20);
-        cx.text(FontId::Sans, t.size_small - 1.0, caption, Align::Center, t.text_dim, &self.caption);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            caption,
+            Align::Center,
+            t.text_dim,
+            &self.caption,
+        );
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -249,12 +276,19 @@ impl XyPad {
     pub fn point(r: Rect, x: f32, y: f32) -> (i32, i32) {
         let p = XyPad::plot(r);
         let (m, w, h) = (DOT / 2, (p.w - DOT) as f32, (p.h - DOT) as f32);
-        (p.x + m + (x.clamp(0.0, 1.0) * w).round() as i32, p.bottom() - m - (y.clamp(0.0, 1.0) * h).round() as i32)
+        (
+            p.x + m + (x.clamp(0.0, 1.0) * w).round() as i32,
+            p.bottom() - m - (y.clamp(0.0, 1.0) * h).round() as i32,
+        )
     }
 
     fn set_at(&mut self, r: Rect, px: i32, py: i32) {
         let p = XyPad::plot(r);
-        let (m, w, h) = (DOT / 2, (p.w - DOT).max(1) as f32, (p.h - DOT).max(1) as f32);
+        let (m, w, h) = (
+            DOT / 2,
+            (p.w - DOT).max(1) as f32,
+            (p.h - DOT).max(1) as f32,
+        );
         self.x = ((px - p.x - m) as f32 / w).clamp(0.0, 1.0);
         self.y = ((p.bottom() - m - py) as f32 / h).clamp(0.0, 1.0);
     }
@@ -269,19 +303,44 @@ impl Widget for XyPad {
         for k in 1..4 {
             let x = p.x + p.w * k / 4;
             let y = p.y + p.h * k / 4;
-            cx.canvas.fill_rect(Rect::new(x, p.y + 4, 1, p.h - 8), t.outline);
-            cx.canvas.fill_rect(Rect::new(p.x + 4, y, p.w - 8, 1), t.outline);
+            cx.canvas
+                .fill_rect(Rect::new(x, p.y + 4, 1, p.h - 8), t.outline);
+            cx.canvas
+                .fill_rect(Rect::new(p.x + 4, y, p.w - 8, 1), t.outline);
         }
         let small = t.size_small - 1.0;
         let xl = Rect::new(p.x + 8, p.bottom() - 24, p.w - 16, 18);
-        cx.text(FontId::Sans, small, xl, Align::Right, t.text_dim, &format!("{} →", self.x_label));
+        cx.text(
+            FontId::Sans,
+            small,
+            xl,
+            Align::Right,
+            t.text_dim,
+            &format!("{} →", self.x_label),
+        );
         let yl = Rect::new(p.x + 8, p.y + 6, p.w - 16, 18);
-        cx.text(FontId::Sans, small, yl, Align::Left, t.text_dim, &format!("↑ {}", self.y_label));
+        cx.text(
+            FontId::Sans,
+            small,
+            yl,
+            Align::Left,
+            t.text_dim,
+            &format!("↑ {}", self.y_label),
+        );
         let violet = Color::rgb(GRAIN_COLOR);
-        let (c, halo) = if self.enabled { (violet, t.bg.mix(violet, 0.3)) } else { (t.text_faint, t.bg.mix(t.text_faint, 0.2)) };
+        let (c, halo) = if self.enabled {
+            (violet, t.bg.mix(violet, 0.3))
+        } else {
+            (t.text_faint, t.bg.mix(t.text_faint, 0.2))
+        };
         let (x, y) = XyPad::point(r, self.x, self.y);
-        cx.canvas.fill_round_rect(Rect::new(x - HALO / 2, y - HALO / 2, HALO, HALO), HALO / 2, halo);
-        cx.canvas.fill_round_rect(Rect::new(x - DOT / 2, y - DOT / 2, DOT, DOT), DOT / 2, c);
+        cx.canvas.fill_round_rect(
+            Rect::new(x - HALO / 2, y - HALO / 2, HALO, HALO),
+            HALO / 2,
+            halo,
+        );
+        cx.canvas
+            .fill_round_rect(Rect::new(x - DOT / 2, y - DOT / 2, DOT, DOT), DOT / 2, c);
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

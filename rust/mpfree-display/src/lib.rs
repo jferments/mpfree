@@ -55,7 +55,11 @@ impl RgbCanvas {
         if bytes > MAX_RGB_BYTES {
             return Err(DisplayError::AllocationLimit);
         }
-        Ok(Self { width, height, data: vec![0; bytes] })
+        Ok(Self {
+            width,
+            height,
+            data: vec![0; bytes],
+        })
     }
 
     pub fn width(&self) -> usize {
@@ -97,9 +101,11 @@ impl RgbCanvas {
     }
 
     pub fn checksum_fnv1a64(&self) -> u64 {
-        self.data.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-        })
+        self.data
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+            })
     }
 
     /// Rotate an offscreen logical 1280x800 frame into a native 800x1280 image.
@@ -126,13 +132,27 @@ impl RgbCanvas {
 fn glyph(letter: char) -> Option<[u8; 7]> {
     // Only the needed letters are encoded. Each row contains five pixels.
     let rows = match letter {
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
         ' ' => [0; 7],
         _ => return None,
     };
@@ -148,8 +168,11 @@ fn draw_label(canvas: &mut RgbCanvas, x: usize, y: usize, label: &str) {
                 for col in 0..5 {
                     if (*bits & (1 << (4 - col))) != 0 {
                         canvas.fill_rect(
-                            x0 + col * SCALE, y + row * SCALE,
-                            SCALE, SCALE, [238, 246, 255],
+                            x0 + col * SCALE,
+                            y + row * SCALE,
+                            SCALE,
+                            SCALE,
+                            [238, 246, 255],
                         );
                     }
                 }
@@ -179,8 +202,11 @@ pub fn render_test_card() -> Result<RgbCanvas, DisplayError> {
     canvas.fill_rect(LOGICAL_WIDTH - MARK, 0, MARK, MARK, [72, 255, 88]); // top-right
     canvas.fill_rect(0, LOGICAL_HEIGHT - MARK, MARK, MARK, [64, 124, 255]); // bottom-left
     canvas.fill_rect(
-        LOGICAL_WIDTH - MARK, LOGICAL_HEIGHT - MARK,
-        MARK, MARK, [255, 210, 64], // bottom-right
+        LOGICAL_WIDTH - MARK,
+        LOGICAL_HEIGHT - MARK,
+        MARK,
+        MARK,
+        [255, 210, 64], // bottom-right
     );
     Ok(canvas)
 }
@@ -219,7 +245,10 @@ mod tests {
     #[test]
     fn allocation_limit_and_clipping() {
         assert_eq!(RgbCanvas::new(0, 10), Err(DisplayError::InvalidDimensions));
-        assert_eq!(RgbCanvas::new(usize::MAX, 10), Err(DisplayError::AllocationLimit));
+        assert_eq!(
+            RgbCanvas::new(usize::MAX, 10),
+            Err(DisplayError::AllocationLimit)
+        );
         let mut c = RgbCanvas::new(2, 3).unwrap();
         c.fill_rect(1, 2, usize::MAX, usize::MAX, [1, 2, 3]);
         assert_eq!(c.pixel(Point { x: 1, y: 2 }), Some([1, 2, 3]));
@@ -256,11 +285,23 @@ mod tests {
             assert_eq!(rotated_xor, original_xor);
         }
         let cw = a.rotate_for_panel(QuarterTurn::Clockwise).unwrap();
-        assert_eq!(cw.pixel(Point { x: 799, y: 0 }), a.pixel(Point { x: 0, y: 0 }));
-        assert_eq!(cw.pixel(Point { x: 0, y: 1279 }), a.pixel(Point { x: 1279, y: 799 }));
+        assert_eq!(
+            cw.pixel(Point { x: 799, y: 0 }),
+            a.pixel(Point { x: 0, y: 0 })
+        );
+        assert_eq!(
+            cw.pixel(Point { x: 0, y: 1279 }),
+            a.pixel(Point { x: 1279, y: 799 })
+        );
         let ccw = a.rotate_for_panel(QuarterTurn::CounterClockwise).unwrap();
-        assert_eq!(ccw.pixel(Point { x: 0, y: 1279 }), a.pixel(Point { x: 0, y: 0 }));
-        assert_eq!(ccw.pixel(Point { x: 799, y: 0 }), a.pixel(Point { x: 1279, y: 799 }));
+        assert_eq!(
+            ccw.pixel(Point { x: 0, y: 1279 }),
+            a.pixel(Point { x: 0, y: 0 })
+        );
+        assert_eq!(
+            ccw.pixel(Point { x: 799, y: 0 }),
+            a.pixel(Point { x: 1279, y: 799 })
+        );
     }
 
     #[test]
@@ -271,23 +312,39 @@ mod tests {
         // Do NOT assume 2047 or make this the default on other devices.
         let measured = AxisRange { min: 0, max: 2048 };
         let cw = QuarterTurn::Clockwise;
-        assert_eq!(map_raw_touch(0, 0, measured, measured, cw),
-                   Some(Point { x: 0, y: 799 }));
-        assert_eq!(map_raw_touch(2048, 0, measured, measured, cw),
-                   Some(Point { x: 0, y: 0 }));
-        assert_eq!(map_raw_touch(0, 2048, measured, measured, cw),
-                   Some(Point { x: 1279, y: 799 }));
-        assert_eq!(map_raw_touch(2048, 2048, measured, measured, cw),
-                   Some(Point { x: 1279, y: 0 }));
-        assert_eq!(map_raw_touch(1024, 1024, measured, measured, cw),
-                   Some(Point { x: 639, y: 400 }));
+        assert_eq!(
+            map_raw_touch(0, 0, measured, measured, cw),
+            Some(Point { x: 0, y: 799 })
+        );
+        assert_eq!(
+            map_raw_touch(2048, 0, measured, measured, cw),
+            Some(Point { x: 0, y: 0 })
+        );
+        assert_eq!(
+            map_raw_touch(0, 2048, measured, measured, cw),
+            Some(Point { x: 1279, y: 799 })
+        );
+        assert_eq!(
+            map_raw_touch(2048, 2048, measured, measured, cw),
+            Some(Point { x: 1279, y: 0 })
+        );
+        assert_eq!(
+            map_raw_touch(1024, 1024, measured, measured, cw),
+            Some(Point { x: 639, y: 400 })
+        );
         let ccw = QuarterTurn::CounterClockwise;
-        assert_eq!(map_raw_touch(0, 0, measured, measured, ccw),
-                   Some(Point { x: 1279, y: 0 }));
-        assert_eq!(map_raw_touch(2048, 2048, measured, measured, ccw),
-                   Some(Point { x: 0, y: 799 }));
-        assert_eq!(map_raw_touch(1024, 1024, measured, measured, ccw),
-                   Some(Point { x: 640, y: 399 }));
+        assert_eq!(
+            map_raw_touch(0, 0, measured, measured, ccw),
+            Some(Point { x: 1279, y: 0 })
+        );
+        assert_eq!(
+            map_raw_touch(2048, 2048, measured, measured, ccw),
+            Some(Point { x: 0, y: 799 })
+        );
+        assert_eq!(
+            map_raw_touch(1024, 1024, measured, measured, ccw),
+            Some(Point { x: 640, y: 399 })
+        );
         assert_eq!(map_raw_touch(2049, 0, measured, measured, cw), None);
         assert_eq!(map_raw_touch(0, -1, measured, measured, cw), None);
     }
@@ -295,7 +352,10 @@ mod tests {
     #[test]
     fn touch_mapping_requires_actual_ranges_and_applies_inverse_rotation() {
         let xr = AxisRange { min: 100, max: 899 }; // 800 range, *test fixture*
-        let yr = AxisRange { min: 500, max: 1779 }; // 1280 range, *test fixture*
+        let yr = AxisRange {
+            min: 500,
+            max: 1779,
+        }; // 1280 range, *test fixture*
         assert_eq!(
             map_raw_touch(100, 500, xr, yr, QuarterTurn::Clockwise),
             Some(Point { x: 0, y: 799 })
@@ -310,8 +370,13 @@ mod tests {
         );
         assert_eq!(map_raw_touch(99, 500, xr, yr, QuarterTurn::Clockwise), None);
         assert_eq!(
-            map_raw_touch(100, 500, AxisRange { min: 5, max: 5 }, yr,
-                          QuarterTurn::Clockwise),
+            map_raw_touch(
+                100,
+                500,
+                AxisRange { min: 5, max: 5 },
+                yr,
+                QuarterTurn::Clockwise
+            ),
             None
         );
     }

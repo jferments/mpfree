@@ -25,7 +25,9 @@
 use std::sync::Arc;
 
 use mpfree_sampler::engine::GrainView;
-use mpfree_sampler::model::{GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source};
+use mpfree_sampler::model::{
+    GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source,
+};
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
@@ -40,7 +42,12 @@ pub const BAR: &str = "smp-grain-bar";
 pub const CLOUD: &str = "smp-grain-cloud";
 pub const XY: &str = "smp-grain-xy";
 pub const LIST: &str = "smp-grain-list";
-pub const QLINKS: [&str; 4] = ["smp-grain-q1", "smp-grain-q2", "smp-grain-q3", "smp-grain-q4"];
+pub const QLINKS: [&str; 4] = [
+    "smp-grain-q1",
+    "smp-grain-q2",
+    "smp-grain-q3",
+    "smp-grain-q4",
+];
 pub const WHEEL: &str = "smp-grain-wheel";
 
 /// The tab's page: the cloud, and beside it the touch pad over the Grain
@@ -57,31 +64,55 @@ pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for t
                         size · tap a row, then the wheel changes it · SHIFT + Q-Link 1 / 4: spray, pitch spray";
 
 /// Grain sizes the arrows step through, in ms.
-const SIZES_MS: [f32; 19] = [2.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0, 200.0, 300.0, 500.0,
-                             750.0, 1000.0, 1500.0, 2000.0];
+const SIZES_MS: [f32; 19] = [
+    2.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0, 200.0, 300.0, 500.0,
+    750.0, 1000.0, 1500.0, 2000.0,
+];
 pub const SIZE_RANGE_MS: (f32, f32) = (2.0, 2000.0);
 /// Densities the arrows step through, grains a second.
-const DENSITIES: [f32; 18] = [1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0,
-                              150.0, 200.0];
+const DENSITIES: [f32; 18] = [
+    1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0,
+    150.0, 200.0,
+];
 pub const DENSITY_RANGE: (f32, f32) = (1.0, 200.0);
 pub const PITCH_LIMIT: f32 = 36.0;
 pub const PITCH_SPRAY_LIMIT: f32 = 12.0;
 /// Scan speeds the arrows step through (1 is the sound's own speed).
-const SCANS: [f32; 13] = [-2.0, -1.0, -0.5, -0.25, -0.125, 0.0, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
+const SCANS: [f32; 13] = [
+    -2.0, -1.0, -0.5, -0.25, -0.125, 0.0, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0,
+];
 pub const SCAN_LIMIT: f32 = 2.0;
 /// Q-Link detents for a doubling of the size or the density.
 const DOUBLING_DETENTS: f32 = 8.0;
 /// Window shapes the Window row steps through.
-const WINDOWS: [GrainWindow; 7] = [GrainWindow::Hann, GrainWindow::Tukey { taper: 0.5 }, GrainWindow::Tukey { taper: 0.2 },
-                                   GrainWindow::Trapezoid { ramp: 0.25 }, GrainWindow::Trapezoid { ramp: 0.05 },
-                                   GrainWindow::Exponential { decay: 4.0 }, GrainWindow::Exponential { decay: 10.0 }];
+const WINDOWS: [GrainWindow; 7] = [
+    GrainWindow::Hann,
+    GrainWindow::Tukey { taper: 0.5 },
+    GrainWindow::Tukey { taper: 0.2 },
+    GrainWindow::Trapezoid { ramp: 0.25 },
+    GrainWindow::Trapezoid { ramp: 0.05 },
+    GrainWindow::Exponential { decay: 4.0 },
+    GrainWindow::Exponential { decay: 10.0 },
+];
 /// Pitch quantise: the notes grains may take, from the sound's own pitch
 /// (bit 0) up (see `mpfree_grain::quantise`).
-const SCALES: [(&str, u16); 7] = [("Off", 0), ("Major", 0b1010_1011_0101), ("Minor", 0b0101_1010_1101),
-                                  ("Pentatonic", 0b0010_1001_0101), ("Fifths", 0b0000_1000_0001), ("Octaves", 0b1),
-                                  ("Chromatic", 0b1111_1111_1111)];
+const SCALES: [(&str, u16); 7] = [
+    ("Off", 0),
+    ("Major", 0b1010_1011_0101),
+    ("Minor", 0b0101_1010_1101),
+    ("Pentatonic", 0b0010_1001_0101),
+    ("Fifths", 0b0000_1000_0001),
+    ("Octaves", 0b1),
+    ("Chromatic", 0b1111_1111_1111),
+];
 /// The play modes the Mode row steps through, as the Wave tab's Mode row.
-const MODES: [PlayMode; 5] = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Toggle, PlayMode::Loop, PlayMode::Granular];
+const MODES: [PlayMode; 5] = [
+    PlayMode::OneShot,
+    PlayMode::Gate,
+    PlayMode::Toggle,
+    PlayMode::Loop,
+    PlayMode::Granular,
+];
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 
@@ -103,8 +134,20 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 12] = [Row::Mode, Row::Scan, Row::Spray, Row::PitchSpray, Row::Window, Row::Reverse, Row::Spread,
-                                Row::Quantise, Row::Position, Row::Size, Row::Density, Row::Pitch];
+    pub const ALL: [Row; 12] = [
+        Row::Mode,
+        Row::Scan,
+        Row::Spray,
+        Row::PitchSpray,
+        Row::Window,
+        Row::Reverse,
+        Row::Spread,
+        Row::Quantise,
+        Row::Position,
+        Row::Size,
+        Row::Density,
+        Row::Pitch,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -150,13 +193,27 @@ impl GrainState {
     /// Layer `layer` of pad `pad`, if it has a sound. `view` gives what the
     /// screens know of a source (the app keeps them, so each is worked out
     /// once).
-    pub fn from_project(p: &Project, pad: usize, layer: usize, mut view: impl FnMut(&Source) -> Arc<SourceView>)
-                        -> Option<GrainState> {
+    pub fn from_project(
+        p: &Project,
+        pad: usize,
+        layer: usize,
+        mut view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<GrainState> {
         let settings = p.pad(pad)?.clone();
         let region = settings.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
-        let sound = LayerSound { name: s.name.clone(), rate: s.rate(), view: view(s) };
-        Some(GrainState { pad, layer, settings, region, sound })
+        let sound = LayerSound {
+            name: s.name.clone(),
+            rate: s.rate(),
+            view: view(s),
+        };
+        Some(GrainState {
+            pad,
+            layer,
+            settings,
+            region,
+            sound,
+        })
     }
 
     pub fn granular(&self) -> bool {
@@ -170,7 +227,12 @@ pub enum GrainAction {
     /// Layer `layer`'s region with new grain settings (or play mode).
     /// `gesture` is the same for every change of one drag, turn or run of
     /// taps on a row, so they merge into one undo step.
-    Region { pad: usize, layer: usize, region: Box<Region>, gesture: u64 },
+    Region {
+        pad: usize,
+        layer: usize,
+        region: Box<Region>,
+        gesture: u64,
+    },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -179,12 +241,22 @@ impl GrainAction {
     /// Applies a change to the project (one undo step per gesture). Other
     /// actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
-        let GrainAction::Region { pad, layer, region, gesture } = self else { return Ok(()) };
+        let GrainAction::Region {
+            pad,
+            layer,
+            region,
+            gesture,
+        } = self
+        else {
+            return Ok(());
+        };
         let (layer, region) = (*layer, (**region).clone());
         if p.pad(*pad).is_none_or(|pd| layer >= pd.layers.len()) {
             return Err(ModelError::BadPad);
         }
-        p.edit_pad(*pad, Some(*gesture), move |pd| pd.layers[layer].region = region)
+        p.edit_pad(*pad, Some(*gesture), move |pd| {
+            pd.layers[layer].region = region
+        })
     }
 }
 
@@ -227,18 +299,29 @@ impl GrainTab {
         let t = ui.theme.clone();
         let colors = [Color::rgb(GRAIN_COLOR), t.accent, t.good, t.warn];
         for (k, row) in QLINK_ROWS.iter().enumerate() {
-            ui.add(QLINKS[k], KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]));
+            ui.add(
+                QLINKS[k],
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
+            );
         }
         ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
         ui.add_page(name, LAYOUT)?;
-        let mut tab = GrainTab { name: name.to_string(), bank: None, shown: None, gesture: None, next_gesture: GESTURE_BASE };
+        let mut tab = GrainTab {
+            name: name.to_string(),
+            bank: None,
+            shown: None,
+            gesture: None,
+            next_gesture: GESTURE_BASE,
+        };
         tab.update(ui, st);
         Ok(tab)
     }
 
     /// The row picked in the Grain list.
     pub fn row(&self, ui: &Ui) -> Row {
-        ui.get::<SettingList>(LIST).and_then(|l| Row::ALL.get(l.selected).copied()).unwrap_or(Row::Scan)
+        ui.get::<SettingList>(LIST)
+            .and_then(|l| Row::ALL.get(l.selected).copied())
+            .unwrap_or(Row::Scan)
     }
 
     /// Ends the drag, turn or run of taps being made: the next edit is a
@@ -260,14 +343,26 @@ impl GrainTab {
     /// The grains the engine plays now for the layer shown (positions 0 to
     /// 1 across its region), the voice's reading place, and how many
     /// grains play in all, out of how many may.
-    pub fn set_cloud(&self, ui: &mut Ui, st: &GrainState, grains: &[GrainView], playhead: Option<f32>, live: usize) {
+    pub fn set_cloud(
+        &self,
+        ui: &mut Ui,
+        st: &GrainState,
+        grains: &[GrainView],
+        playhead: Option<f32>,
+        live: usize,
+    ) {
         let g = &st.region.grain;
-        let Some(c) = ui.get_mut::<GrainCloud>(CLOUD) else { return };
+        let Some(c) = ui.get_mut::<GrainCloud>(CLOUD) else {
+            return;
+        };
         let playing = !grains.is_empty();
         c.grains.clear();
         c.grains.extend_from_slice(grains);
         c.playhead = playhead;
-        let mut caption = vec![format!("position {} %", percent(g.position)), format!("spray ±{} %", percent(g.spray * 0.5))];
+        let mut caption = vec![
+            format!("position {} %", percent(g.position)),
+            format!("spray ±{} %", percent(g.spray * 0.5)),
+        ];
         if st.granular() {
             caption.push(match (playing, grains.len()) {
                 (false, _) => "hit the pad to hear it".to_string(),
@@ -277,7 +372,11 @@ impl GrainTab {
         }
         caption.push(format!("scan {}", scan_text(g.scan)));
         c.caption = caption.join(" · ");
-        c.right = if live > 0 { format!("{live} grains on all pads") } else { "drag for the position".into() };
+        c.right = if live > 0 {
+            format!("{live} grains on all pads")
+        } else {
+            "drag for the position".into()
+        };
     }
 
     fn show(&self, ui: &mut Ui, st: &GrainState) {
@@ -286,10 +385,24 @@ impl GrainTab {
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
             bar.active = TAB;
-            let layer = if n > 1 { format!(" · layer {}", st.layer + 1) } else { String::new() };
-            bar.title = format!("Pad {} · {}{layer}", pad_text(self.bank, st.pad), st.settings.name);
-            let mut about = vec![mode_label(st.region.mode).to_string(), st.sound.name.clone()];
-            about.push(format!("{} long", duration_text(st.region.frames(), st.sound.rate)));
+            let layer = if n > 1 {
+                format!(" · layer {}", st.layer + 1)
+            } else {
+                String::new()
+            };
+            bar.title = format!(
+                "Pad {} · {}{layer}",
+                pad_text(self.bank, st.pad),
+                st.settings.name
+            );
+            let mut about = vec![
+                mode_label(st.region.mode).to_string(),
+                st.sound.name.clone(),
+            ];
+            about.push(format!(
+                "{} long",
+                duration_text(st.region.frames(), st.sound.rate)
+            ));
             if let Some(root) = &st.sound.view.root {
                 about.push(format!("root {root}"));
             }
@@ -297,12 +410,19 @@ impl GrainTab {
         }
         let rate = st.sound.rate.max(1) as f32;
         if let Some(c) = ui.get_mut::<GrainCloud>(CLOUD) {
-            c.set_sound(Some(st.sound.view.peaks.clone()), st.region.start, st.region.end);
+            c.set_sound(
+                Some(st.sound.view.peaks.clone()),
+                st.region.start,
+                st.region.end,
+            );
             c.position = g.position;
             c.spray = g.spray;
             c.grain_len = g.size_ms * 0.001 * rate / st.region.frames().max(1) as f32;
             c.granular = st.granular();
-            c.note = format!("{}: set Mode to Granular to play grains", mode_label(st.region.mode));
+            c.note = format!(
+                "{}: set Mode to Granular to play grains",
+                mode_label(st.region.mode)
+            );
             if !c.granular {
                 c.grains.clear();
                 c.playhead = None;
@@ -313,7 +433,13 @@ impl GrainTab {
             xy.y = size_place(g.size_ms);
             xy.right = format!("{} % · {}", percent(g.position), ms_text(g.size_ms));
         }
-        let rows = Row::ALL.iter().map(|r| Setting { name: r.label().into(), value: value_text(&st.region, *r) }).collect();
+        let rows = Row::ALL
+            .iter()
+            .map(|r| Setting {
+                name: r.label().into(),
+                value: value_text(&st.region, *r),
+            })
+            .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
         }
@@ -324,13 +450,17 @@ impl GrainTab {
         let g = &st.region.grain;
         let row = self.row(ui);
         for (k, r) in QLINK_ROWS.iter().enumerate() {
-            let Some(c) = ui.get_mut::<KnobCard>(QLINKS[k]) else { continue };
+            let Some(c) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+                continue;
+            };
             c.focused = *r == row || SHIFT_ROWS[k] == row;
             (c.value, c.sub) = split_unit(&value_text(&st.region, *r));
             c.pos = match r {
                 Row::Position => g.position,
                 Row::Size => size_place(g.size_ms),
-                Row::Density => (g.density / DENSITY_RANGE.0).ln() / (DENSITY_RANGE.1 / DENSITY_RANGE.0).ln(),
+                Row::Density => {
+                    (g.density / DENSITY_RANGE.0).ln() / (DENSITY_RANGE.1 / DENSITY_RANGE.0).ln()
+                }
                 _ => (g.pitch + PITCH_LIMIT) / (2.0 * PITCH_LIMIT),
             }
             .clamp(0.0, 1.0);
@@ -387,8 +517,19 @@ impl GrainTab {
     /// A Q-Link turned by `delta` detents: `knob` 0 to 3 turns Position,
     /// Size, Density or Pitch; with `shift` held, Q-Link 1 turns the spray
     /// and Q-Link 4 the pitch spray, and Q-Links 2 and 3 turn finer.
-    pub fn qlink(&mut self, ui: &mut Ui, st: &GrainState, knob: usize, delta: i32, shift: bool) -> Option<GrainAction> {
-        let row = if shift { *SHIFT_ROWS.get(knob)? } else { *QLINK_ROWS.get(knob)? };
+    pub fn qlink(
+        &mut self,
+        ui: &mut Ui,
+        st: &GrainState,
+        knob: usize,
+        delta: i32,
+        shift: bool,
+    ) -> Option<GrainAction> {
+        let row = if shift {
+            *SHIFT_ROWS.get(knob)?
+        } else {
+            *QLINK_ROWS.get(knob)?
+        };
         self.pick_row(ui, row);
         self.show_cards(ui, st);
         if delta == 0 {
@@ -423,7 +564,12 @@ impl GrainTab {
                 g
             }
         };
-        Some(GrainAction::Region { pad: st.pad, layer: st.layer, region: Box::new(after), gesture })
+        Some(GrainAction::Region {
+            pad: st.pad,
+            layer: st.layer,
+            region: Box::new(after),
+            gesture,
+        })
     }
 
     fn step(&mut self, st: &GrainState, row: Row, delta: i32) -> Option<GrainAction> {
@@ -448,7 +594,9 @@ pub fn stepped(r: &Region, row: Row, delta: i32) -> Region {
         }
         Row::Scan => g.scan = step_list(&SCANS, g.scan, delta),
         Row::Spray => g.spray = round_to(g.spray + d * 0.05, 0.01).clamp(0.0, 1.0),
-        Row::PitchSpray => g.pitch_spray = round_to(g.pitch_spray + d * 0.5, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT),
+        Row::PitchSpray => {
+            g.pitch_spray = round_to(g.pitch_spray + d * 0.5, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT)
+        }
         Row::Window => {
             let i = WINDOWS.iter().position(|w| *w == g.window).unwrap_or(0);
             g.window = WINDOWS[shift(i, delta, WINDOWS.len())];
@@ -456,7 +604,10 @@ pub fn stepped(r: &Region, row: Row, delta: i32) -> Region {
         Row::Reverse => g.reverse = round_to(g.reverse + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Spread => g.spread = round_to(g.spread + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Quantise => {
-            let i = SCALES.iter().position(|s| s.1 == g.scale & 0xFFF).unwrap_or(0);
+            let i = SCALES
+                .iter()
+                .position(|s| s.1 == g.scale & 0xFFF)
+                .unwrap_or(0);
             g.scale = SCALES[shift(i, delta, SCALES.len())].1;
         }
         Row::Position => g.position = round_to(g.position + d * 0.01, 0.001).clamp(0.0, 1.0),
@@ -481,7 +632,9 @@ pub fn turned(g: &GrainParams, row: Row, d: f32, fine: bool) -> GrainParams {
         Row::Density if fine => g.density = round_to(g.density + d * 0.1, 0.1).clamp(dmin, dmax),
         Row::Density => g.density = doubled(g.density, d, 0.1).clamp(dmin, dmax),
         Row::Pitch => g.pitch = round_to(g.pitch + d, 1.0).clamp(-PITCH_LIMIT, PITCH_LIMIT),
-        Row::PitchSpray => g.pitch_spray = round_to(g.pitch_spray + d * 0.1, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT),
+        Row::PitchSpray => {
+            g.pitch_spray = round_to(g.pitch_spray + d * 0.1, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT)
+        }
         _ => {}
     }
     g
@@ -491,7 +644,11 @@ pub fn turned(g: &GrainParams, row: Row, d: f32, fine: bool) -> GrainParams {
 /// `unit`, moving at least one unit a detent.
 fn doubled(x: f32, d: f32, unit: f32) -> f32 {
     let to = round_to(x * (d / DOUBLING_DETENTS).exp2(), unit);
-    if to == x { x + d.signum() * unit } else { to }
+    if to == x {
+        x + d.signum() * unit
+    } else {
+        to
+    }
 }
 
 /// The entry of `list` after (`delta` > 0) or before `now`, `delta` steps
@@ -522,7 +679,9 @@ pub fn size_place(ms: f32) -> f32 {
 /// The grain size at height `y` (0 to 1) on the touch pad, in whole ms.
 pub fn size_at(y: f32) -> f32 {
     let (lo, hi) = SIZE_RANGE_MS;
-    (lo * (hi / lo).powf(y.clamp(0.0, 1.0))).round().clamp(lo, hi)
+    (lo * (hi / lo).powf(y.clamp(0.0, 1.0)))
+        .round()
+        .clamp(lo, hi)
 }
 
 // ---------------------------------------------------------------- text
@@ -591,7 +750,10 @@ pub fn window_label(w: GrainWindow) -> String {
 }
 
 pub fn quantise_label(mask: u16) -> &'static str {
-    SCALES.iter().find(|s| s.1 == mask & 0xFFF).map_or("Custom", |s| s.0)
+    SCALES
+        .iter()
+        .find(|s| s.1 == mask & 0xFFF)
+        .map_or("Custom", |s| s.0)
 }
 
 /// "84 ms" as ("84", "ms"), for a Q-Link card.
