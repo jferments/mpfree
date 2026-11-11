@@ -30,12 +30,17 @@ use crate::calibrate_page::CalibrateView;
 use crate::debug_page::{AudioNumbers, DebugPages};
 use crate::looper_page::{LooperPage, LOOPER_PAGE};
 use crate::looping::{LoopWave, LooperView};
+use crate::mixing::{PlayFx, PlayLevels};
 use crate::perf::ProcView;
+use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
+use crate::play_widgets::{MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
+use crate::time::{HitInfo, StepAction, StepsData};
 use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_arp::{Mode, Pattern};
 use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
+use mpfree_arp_ui::widgets::SliderStack;
 use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
 use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
@@ -50,9 +55,10 @@ use mpfree_touch::profile::MPC_ONE;
 use mpfree_touch::touchlab::reader_line;
 use mpfree_touch_evdev::{EvdevFile, TouchReader, TouchSource};
 use mpfree_ui::fb::FbTarget;
+use mpfree_ui::qlink::{MasterBar, QLinkCard, QLinkColumn};
 use mpfree_ui::widgets::{
-    Card, Chip, Fader, Header, Label, ListItem, ListView, Loading, LogPanel, OptionList, OptionRow,
-    PadGrid, StatList,
+    Card, Chip, Header, Label, ListItem, ListView, Loading, LogPanel, OptionList, OptionRow,
+    StatList,
 };
 use mpfree_ui::{
     Align, Color, EventKind, Fonts, Image, SoftCanvas, Theme, Tone, Touch, Ui, UiEvent,
@@ -65,14 +71,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub const CONSOLE_LAYOUT: &str = "col(header:60, log:*, hint:26)";
-pub const PLAY_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
-
-/// A page's layout with the time engine's transport bar under the header
-/// (the Play page and the arp's panel and quick band).
-pub fn with_bar(layout: &str) -> String {
-    time_view::with_transport(layout).unwrap_or_else(|| layout.to_string())
-}
+/// The mixer, and the Q-Link column beside it as on the Play page.
+pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:168):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
@@ -99,16 +99,6 @@ const LOADING_HINT: &str = "Tap the screen for the console";
 pub const ARP_PAGE: &str = "Arp";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
 
-/// The Play page with the arp's slim strip at the top of its right-hand
-/// column: the kit list gives up the strip's height, and the pads, level
-/// and timing stay where they are.
-pub fn quick_layout() -> String {
-    PLAY_LAYOUT.replacen(
-        "col(kits:*",
-        &format!("col({}:{}, kits:*", arp_view::MINI, arp_view::MINI_H),
-        1,
-    )
-}
 pub const PATTERN_PAGE: &str = "Pattern";
 pub const RECORD_PAGE: &str = "Pattern, recording";
 
@@ -193,6 +183,12 @@ pub struct KitView {
     pub pads: Vec<Option<String>>,
     /// The kit's pad colour, 0-63 per channel as the controller takes it.
     pub colour: [u8; 3],
+    /// The header chip while it plays, if not "Kit N of M · Bank X" (the
+    /// synth: "Poly · C3 to D#4").
+    pub chip: Option<String>,
+    /// The synth's pad layout, for the pads panel's Chromatic | In key
+    /// switch; None for a kit.
+    pub synth: Option<SynthPads>,
 }
 
 /// Timing numbers from the audio thread.
@@ -249,11 +245,15 @@ pub enum ToUi {
         velocity: u8,
     },
     Kit(usize),
-    /// Level in dB and as 0.0-1.0 of the slider.
+    /// The master fader (the Level), dB.
     Level {
         db: f32,
-        value: f32,
     },
+    /// A finger on Q-Link `0` (0 to 3) or off it: its card lights.
+    QLinkTouch(usize, bool),
+    /// While the mixer is open: Q-Link `0` (or the wheel) turned by `1`
+    /// detents, for the selected strip.
+    MixerQLink(usize, i32),
     Session(String, Tone),
     Timing(Timing),
     Show(View),
@@ -263,12 +263,16 @@ pub enum ToUi {
     Settings(Settings),
     ClearLogs,
     ClearConsole,
-    /// The synth: its parameters, values and presets (at the start).
+    /// The synth: its parameters, values and presets (at the start, and
+    /// when the Synth tab's options pick the other engine).
     Synth(SynthState),
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
+    /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
+    /// live bars (a few times a second).
+    SynthPressures(Vec<f32>),
     /// On the Synth page: a Q-Link (0-3) turned by this many detents.
     SynthQLink(usize, i32),
     /// On the Synth page: the wheel turned (the selected knob).
@@ -299,10 +303,11 @@ pub enum ToUi {
     /// The grains of the pad on the Grain tab, filled in by the audio
     /// thread; the box goes back with the next request.
     SampleGrains(Box<Cloud>),
-    /// New pad labels for one kit (the synth's notes, after an octave change).
-    KitPads {
+    /// One kit's entry changed: its name, pad labels and chip (the synth,
+    /// after an octave, engine or pad layout change).
+    KitChanged {
         kit: usize,
-        pads: Vec<Option<String>>,
+        view: KitView,
     },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
@@ -323,7 +328,7 @@ pub enum ToUi {
     Transport(TransportInfo),
     /// The data wheel in the workspace.
     WorkspaceWheel(i32),
-    /// The data wheel on the Clips page: step the selected record setting,
+    /// The data wheel on the Arrange page: step the selected record setting,
     /// or scroll the grid.
     ClipsWheel {
         delta: i32,
@@ -338,6 +343,23 @@ pub enum ToUi {
     Looper(Box<LooperView>),
     /// The loop's waveform (no frames: the loop was cleared).
     LoopWave(Arc<LoopWave>),
+    /// What the mixer panel shows (its strips and meters), a few times a
+    /// second while it is open (`mixing.rs`).
+    Mixer(Box<mpfree_mixer_ui::MixState>),
+    /// The Play page's pattern: the armed track's clip, when it changes.
+    Steps(Box<StepsData>),
+    /// A pad hit while the transport rolled, for the Play page's timing.
+    Hit(HitInfo),
+    /// The mixer's values the Play page's Q-Links and speakers show.
+    PlayLevels(PlayLevels),
+    /// On the Play page (no arp): Q-Link `0` turned by `1` detents.
+    PlayQLink(usize, i32),
+    /// The master meter: each side's peak and Master safety's gain
+    /// reduction, dB (a few times a second).
+    Meter {
+        peak_db: [f32; 2],
+        limit_db: f32,
+    },
     Quit,
 }
 
@@ -348,8 +370,19 @@ pub enum FromUi {
         down: bool,
     },
     Kit(usize),
-    /// Slider position, 0.0-1.0.
-    Level(f32),
+    /// The master bar dragged: the master fader, dB.
+    LevelDb(f32),
+    /// A drag on a Q-Link card: turn that knob by `delta` detents, as the
+    /// knob itself does.
+    QLink {
+        knob: usize,
+        delta: i32,
+    },
+    /// The pads panel's switch while the synth has the pads: Chromatic
+    /// (false) or In key (true).
+    PadsLayout {
+        in_key: bool,
+    },
     Tab(usize),
     MenuSelect(usize),
     MenuStep(usize, i32),
@@ -360,7 +393,7 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
-    /// A touch on the transport bar or the Clips page.
+    /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
@@ -387,6 +420,23 @@ pub enum FromUi {
     MapButton(usize),
     /// A button on the Looper tab (`looper_page::BUTTONS`).
     Looper(usize),
+    /// A loop layer's control (its speaker on the Play page's loop), by the
+    /// layer's id.
+    LoopLayer {
+        id: u8,
+        command: mpfree_looper::LayerCommand,
+    },
+    /// What a touch on the mixer panel (or a Q-Link while it is open)
+    /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
+    /// on the audio thread.
+    Mixer(mpfree_mixer_ui::MixAction),
+    /// The top bar's mixer icon: open or close the mixer (the app decides).
+    MixerIcon,
+    /// The Play page: a filter, a send, a fader, a speaker, a throw or the
+    /// XY pad, for the mixer (`mixing.rs`).
+    PlayFx(PlayFx),
+    /// The Play page's pattern: a step tapped or changed.
+    Steps(StepAction),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -433,7 +483,7 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
-    /// The time engine's bar and Clips page, and what they show.
+    /// The time engine's bar and Arrange page, and what they show.
     time_page: TimePage,
     pub time: TimeState,
     /// The Debug tab's Performance and Map controls pages.
@@ -443,6 +493,11 @@ pub struct Player {
     /// The Looper tab, and what it shows.
     looper_page: LooperPage,
     pub looper: LooperView,
+    /// The Play page: its view (the screen's own choice, kept while other
+    /// tabs show), pattern, throws, timing and Q-Links.
+    pub play: PlayPage,
+    /// When the CPU chip was last read.
+    cpu_at: f32,
 }
 
 impl Player {
@@ -456,16 +511,25 @@ impl Player {
     ) -> Player {
         let mut ui = Ui::new(Theme::dark(), fonts, size.0, size.1);
         let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
-        ui.add("header", Header::new(&names));
+        let mut header = Header::new(&names);
+        header.mixer_icon = Some(false);
+        ui.add("header", header);
         let mut loading = Loading::new("MPFree", "Pad player");
         loading.set_backdrop(backdrop);
         loading.hint = LOADING_HINT.to_string();
         loading.message = "Starting".to_string();
         ui.add("loading", loading);
-        ui.add("pads", PadGrid::new(16, 4));
+        ui.add(play_page::PADS, MiniPads::default());
         ui.add("kits", ListView::new("Kits"));
-        ui.add("level", Fader::new("Level · Q-Link 1"));
         ui.add("timing", StatList::new("Timing"));
+        ui.add(play_page::TRANSPORT, PlayTransport::default());
+        ui.add(play_page::MASTER, MasterBar::new());
+        ui.add(play_page::QLINKS, QLinkColumn::new());
+        ui.add(play_page::STEPS, StepGrid::default());
+        ui.add(play_page::THROWS, Throws::default());
+        ui.add(play_page::XY, XyPad::default());
+        ui.add(play_page::TIMING, YourTiming::default());
+        ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
@@ -473,16 +537,19 @@ impl Player {
         ui.add("help", Card::new("About this setting"));
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
-        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        // The hint line starts where the panels do (the mockups).
+        ui.add("hint", Label::new("", Tone::Dim, Align::Left).inset(18));
         ui.add("syssw", StatList::new("MPFree and the system"));
         ui.add("syshw", StatList::new("Hardware"));
         let time_page = TimePage::add_to(&mut ui).expect("clips layout");
         ui.add_full_page("Loading", "loading")
             .expect("loading layout");
-        ui.add_page("Play", &with_bar(PLAY_LAYOUT))
-            .expect("play layout");
-        let debug = DebugPages::add(&mut ui).expect("debug layouts");
+        // The Looper tab's widgets first: the Play views show some of them.
         let looper_page = LooperPage::add(&mut ui).expect("looper layout");
+        for v in PlayView::ALL {
+            ui.add_page(v.page(), &v.layout()).expect("play layout");
+        }
+        let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
@@ -508,10 +575,10 @@ impl Player {
         let mut arp_panel =
             ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
         arp_panel
-            .set_layout_wrap(&mut ui, with_bar)
-            .expect("arp layouts with the bar");
+            .set_layout_wrap(&mut ui, play_page::framed)
+            .expect("arp layouts in the Play frame");
         arp_panel
-            .set_quick_layout(&mut ui, &quick_layout())
+            .set_quick_layout(&mut ui, &PlayView::All.quick_layout())
             .expect("quick band layout");
         let workspace = PatternWorkspace::add(&mut ui, PATTERN_PAGE, RECORD_PAGE, &name, pattern)
             .expect("workspace layouts");
@@ -522,6 +589,11 @@ impl Player {
         ui.add_full_page("Calibrate touch", "calibrate")
             .expect("calibrate layout");
         let sample = SamplePage::add(&mut ui).expect("sample layout");
+        // The mixer over the page, under the top bar, with the Q-Link cards
+        // beside it (they turn the selected strip).
+        mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
+        ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
+            .expect("mixer layout");
         let _ = ui.show("Loading");
         let status = Status {
             shift: false,
@@ -566,11 +638,15 @@ impl Player {
             engines: None,
             looper_page,
             looper: LooperView::default(),
+            play: PlayPage::default(),
+            cpu_at: 0.0,
         };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
         p.refresh_hint();
+        p.refresh_qlinks();
+        p.refresh_play();
         p
     }
 
@@ -600,7 +676,11 @@ impl Player {
             return;
         }
         self.kit = k;
-        if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
+        if let Some(g) = self
+            .ui
+            .get_mut::<MiniPads>(play_page::PADS)
+            .map(|m| &mut m.grid)
+        {
             for pad in g.pads.iter_mut() {
                 pad.level = 0.0;
                 pad.held = false;
@@ -611,6 +691,287 @@ impl Player {
             l.selected = k;
         }
         self.refresh_chips();
+        self.refresh_pads_bar();
+    }
+
+    /// The pads panel's heading: the bank and the kit, or the synth with
+    /// its Chromatic | In key switch (not for Drums, whose pads are
+    /// sounds). The Synth tab's copy always shows the synth. The Play
+    /// page's pattern names its lanes after the kit's pads.
+    fn refresh_pads_bar(&mut self) {
+        let drums_engine = self
+            .synth
+            .as_ref()
+            .is_some_and(|p| p.state.info.id == "mpfree.drums");
+        let switch = |s: Option<SynthPads>| s.filter(|_| !drums_engine);
+        let now = self.kits.get(self.kit);
+        let (title, right, synth) = match now {
+            Some(kit) => match kit.synth {
+                Some(s) => (
+                    format!("Synth · Bank {}", crate::app::bank_letter(s.bank)),
+                    kit.name.clone(),
+                    switch(Some(s)),
+                ),
+                // The Drum view says how hits are played (the mockups);
+                // the others name the kit.
+                None if self.play.view == PlayView::Drum => (
+                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
+                    match self.status.pad_level {
+                        PadLevel::Off => "velocity on",
+                        PadLevel::Full => "full level",
+                        PadLevel::Half => "half level",
+                    }
+                    .to_string(),
+                    None,
+                ),
+                None => (
+                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
+                    kit.name.clone(),
+                    None,
+                ),
+            },
+            None => ("Pads".to_string(), String::new(), None),
+        };
+        if let Some(m) = self.ui.get::<MiniPads>(play_page::PADS) {
+            if m.title != title || m.right != right || m.synth != synth {
+                if let Some(m) = self.ui.get_mut::<MiniPads>(play_page::PADS) {
+                    m.title = title;
+                    m.right = right;
+                    m.synth = synth;
+                }
+            }
+        }
+        // The Synth tab's is narrower: the bank only.
+        let mut bar = PadsBar::default();
+        if let Some((_, k)) = self
+            .kits
+            .iter()
+            .enumerate()
+            .find(|(_, k)| k.synth.is_some())
+        {
+            if let Some(s) = k.synth {
+                bar = PadsBar {
+                    title: format!("Pads · Bank {}", crate::app::bank_letter(s.bank)),
+                    synth: switch(Some(s)),
+                };
+            }
+        }
+        if let Some(b) = self.ui.get::<PadsBar>(play_page::SYNTH_PADS_HEAD) {
+            if *b != bar {
+                if let Some(b) = self.ui.get_mut::<PadsBar>(play_page::SYNTH_PADS_HEAD) {
+                    *b = bar;
+                }
+            }
+        }
+        // The pattern's lanes.
+        let pads: Vec<PadInfo> = match now {
+            Some(kit) => (0..16)
+                .map(|i| PadInfo {
+                    label: kit.pads.get(i).cloned().flatten(),
+                    color: Some(Color::from_pad(kit.colour)),
+                })
+                .collect(),
+            None => vec![PadInfo::default(); 16],
+        };
+        if self.play.pads != pads {
+            self.play.pads = pads;
+            self.refresh_play();
+        }
+    }
+
+    /// The Q-Link cards: what each knob does on the page shown. While NOTE
+    /// REPEAT is held or the Arp panel is open they set the arp (as its
+    /// sliders show); on Play, Q-Link 1 is the level.
+    fn refresh_qlinks(&mut self) {
+        let arp = self.view == View::Arp || (self.view == View::Play && self.band_showing());
+        let (title, cards) = if self.view == View::Mixer {
+            // The selected strip's Volume, Pan, Send A and Send B.
+            let q = mpfree_mixer_ui::qlinks(&self.ui);
+            let mut cards: [QLinkCard; 4] = Default::default();
+            for (card, k) in cards.iter_mut().zip(&q.knobs).filter(|(_, k)| k.enabled()) {
+                *card = QLinkCard::new(k.label, &q.name, &k.text, k.pos);
+                card.bipolar = k.label == "Pan";
+            }
+            (
+                if q.name.is_empty() {
+                    "Q-Links · tap a strip's name"
+                } else {
+                    "Q-Links · Mixer"
+                },
+                cards,
+            )
+        } else if arp {
+            let rows = self
+                .ui
+                .get::<SliderStack>(arp_view::QLINKS)
+                .map(|q| q.rows.clone())
+                .unwrap_or_default();
+            let mut cards: [QLinkCard; 4] = Default::default();
+            for (card, row) in cards.iter_mut().zip(&rows) {
+                let name = row.label.split(" · ").next().unwrap_or(&row.label);
+                *card = QLinkCard::new(name, "Arp", &row.text, row.value);
+            }
+            ("Q-Links · Arp", cards)
+        } else {
+            let knobs = self.play.knobs();
+            let pad = self.sample.pad_knobs(self.play.last_pad);
+            let cards: [QLinkCard; 4] = std::array::from_fn(|i| self.play.card(knobs[i], pad));
+            ("Q-Links · Play", cards)
+        };
+        if let Some(q) = self.ui.get_mut::<QLinkColumn>(play_page::QLINKS) {
+            if q.title != title || q.cards != cards {
+                q.title = title.to_string();
+                q.cards = cards;
+            }
+        }
+    }
+
+    /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
+    /// while the mixer is open: the selected strip's Volume, Pan, Send A or
+    /// Send B moves on the panel at once, and the mixer hears it.
+    fn mixer_qlink(&mut self, k: usize, d: i32) {
+        if self.view != View::Mixer || d == 0 {
+            return;
+        }
+        if let Some(a) = mpfree_mixer_ui::qlink_turn(&mut self.ui, k, d, self.status.shift) {
+            self.outbox.push(FromUi::Mixer(a));
+        }
+        self.refresh_qlinks();
+    }
+
+    /// One tap on the switch: the Play page shows view `v`.
+    fn show_play_view(&mut self, v: PlayView) {
+        if v != self.play.view {
+            println!("play view: {}", v.name());
+        }
+        self.play.view = v;
+        if v != PlayView::Beats {
+            self.play.selected = None;
+        }
+        self.refresh_pads_bar();
+        self.refresh_play();
+        self.refresh_qlinks();
+        let _ = self
+            .arp_panel
+            .set_quick_layout(&mut self.ui, &v.quick_layout());
+        if self.ready && self.view == View::Play {
+            self.show_view(View::Play);
+        }
+    }
+
+    /// The Play view showing (for tests and the app check's log).
+    #[cfg(test)]
+    pub fn play_view(&self) -> PlayView {
+        self.play.view
+    }
+
+    /// The Play page's panels, from its state: the transport card, the
+    /// pattern, the throws, the XY pad and the timing. Only what changed
+    /// is marked for drawing.
+    fn refresh_play(&mut self) {
+        let look = self.play.transport_look();
+        if self
+            .ui
+            .get::<PlayTransport>(play_page::TRANSPORT)
+            .is_some_and(|t| t.look != look)
+        {
+            if let Some(t) = self.ui.get_mut::<PlayTransport>(play_page::TRANSPORT) {
+                t.look = look;
+            }
+        }
+        let mut g = StepGrid::default();
+        if let Some(old) = self.ui.get::<StepGrid>(play_page::STEPS) {
+            g.title.clone_from(&old.title);
+            g.right.clone_from(&old.right);
+            g.lanes.clone_from(&old.lanes);
+            g.steps = old.steps;
+            g.play = old.play;
+            g.selected = old.selected;
+        }
+        self.play.fill_steps(&mut g);
+        let same = self
+            .ui
+            .get::<StepGrid>(play_page::STEPS)
+            .is_some_and(|old| {
+                old.title == g.title
+                    && old.right == g.right
+                    && old.lanes == g.lanes
+                    && old.steps == g.steps
+                    && old.play == g.play
+                    && old.selected == g.selected
+            });
+        if !same {
+            if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
+                w.title = g.title;
+                w.right = g.right;
+                w.lanes = g.lanes;
+                w.steps = g.steps;
+                w.play = g.play;
+                w.selected = g.selected;
+            }
+        }
+        let mut th = Throws::default();
+        self.play.fill_throws(&mut th);
+        let same = self
+            .ui
+            .get::<Throws>(play_page::THROWS)
+            .is_some_and(|old| old.items == th.items && old.right == th.right);
+        if !same {
+            if let Some(w) = self.ui.get_mut::<Throws>(play_page::THROWS) {
+                w.items = th.items;
+                w.right = th.right;
+            }
+        }
+        if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
+            let mut label = String::new();
+            let mut probe = XyPad::default();
+            self.play.fill_xy(&mut probe);
+            if xy.label != probe.label {
+                label = probe.label;
+            }
+            if !label.is_empty() {
+                if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
+                    xy.label = label;
+                }
+            }
+        }
+        if self.view == View::Play && self.play.view == PlayView::Drum {
+            if let Some(t) = self.ui.get_mut::<YourTiming>(play_page::TIMING) {
+                self.play.fill_timing(t);
+            }
+        }
+    }
+
+    /// A Q-Link on the Play page (no arp): what it turns there.
+    fn play_qlink(&mut self, k: usize, ticks: i32) {
+        match self.play.turn(k, ticks, self.status.shift) {
+            Some(Turn::Fx(fx)) => self.outbox.push(FromUi::PlayFx(fx)),
+            Some(Turn::Step(a)) => {
+                self.outbox.push(FromUi::Steps(a));
+                self.refresh_play();
+            }
+            Some(Turn::Swing(amount)) => {
+                let grid = self.time.transport.swing.grid;
+                self.outbox.push(FromUi::Time(TimeAction::Transport(
+                    mpfree_transport::Command::SetSwing(mpfree_transport::time::Swing {
+                        grid,
+                        amount,
+                    }),
+                )));
+            }
+            Some(Turn::Pad(knob, d)) => {
+                let pad = self.play.last_pad;
+                let which = if knob == Knob::Tune {
+                    sample_page::PadKnob::Tune
+                } else {
+                    sample_page::PadKnob::Decay
+                };
+                self.sample.turn_pad(pad, which, d, self.status.shift);
+                self.print_sample_lines();
+            }
+            None => {}
+        }
+        self.refresh_qlinks();
     }
 
     /// The pads' names: the kit's sounds, or what each pad writes while a
@@ -618,7 +979,11 @@ impl Player {
     fn label_pads(&mut self) {
         let recording = self.view == View::Pattern && self.workspace.recording;
         let kit = self.kits.get(self.kit).cloned();
-        let Some(g) = self.ui.get_mut::<PadGrid>("pads") else {
+        let Some(g) = self
+            .ui
+            .get_mut::<MiniPads>(play_page::PADS)
+            .map(|m| &mut m.grid)
+        else {
             return;
         };
         if recording {
@@ -647,15 +1012,19 @@ impl Player {
     /// The header's chips, right to left: session, kit, level, tempo, then
     /// the modes that are on, and the time left in the timed step.
     fn refresh_chips(&mut self) {
-        let mut chips = vec![Chip::new(self.session.0.clone(), self.session.1)];
+        // The first chip sits at the right end (the mockups: the CPU, then
+        // the kit). The session shows only when something is wrong with it.
+        let mut chips = Vec::new();
+        if let Some((text, tone)) = self.engines.as_deref().and_then(crate::engines::cpu_chip) {
+            chips.push(Chip::new(text, tone));
+        }
+        if self.session.1 != Tone::Good || !self.ready {
+            chips.push(Chip::new(self.session.0.clone(), self.session.1));
+        }
         match self.kits.get(self.kit) {
-            Some(k) if k.name == crate::synth::KIT_NAME => {
-                let note = |i: usize| k.pads.get(i).cloned().flatten().unwrap_or_default();
-                chips.push(Chip::new(
-                    format!("Poly · {} to {}", note(0), note(15)),
-                    Tone::Accent,
-                ));
-            }
+            Some(KitView {
+                chip: Some(chip), ..
+            }) => chips.push(Chip::new(chip.clone(), Tone::Normal)),
             Some(_) => chips.push(Chip::new(
                 format!(
                     "Kit {} of {} · Bank {}",
@@ -663,20 +1032,22 @@ impl Player {
                     self.kits.len(),
                     crate::app::bank_letter(self.kit)
                 ),
-                Tone::Accent,
+                Tone::Normal,
             )),
             None => {}
         }
-        // The level in dB is on the slider and the tempo only matters while
-        // the arp plays, so the header keeps to the chips that change how the
-        // pads play: four tabs leave room for about five chips. The arp chip
-        // is always there, so a tap on it can open the panel.
-        let mut arp = arp_view::chip(&self.arp);
-        if self.arp.settings.mode != Mode::Direct {
+        // The level is on the master bar and the tempo on the transport, so
+        // the header keeps to the chips that change how the pads play. The
+        // arp chip shows while the arp, a repeat or a pattern is on (a tap
+        // opens the panel; NOTE REPEAT + MENU opens it too).
+        self.arp_chip = None;
+        let s = &self.status;
+        if self.arp.settings.mode != Mode::Direct || self.arp.latched || s.repeat || s.latched {
+            let mut arp = arp_view::chip(&self.arp);
             arp.text = format!("{} · {:.0} BPM", arp.text, self.arp.bpm);
+            self.arp_chip = Some(chips.len());
+            chips.push(arp);
         }
-        self.arp_chip = Some(chips.len());
-        chips.push(arp);
         let s = &self.status;
         match s.pad_level {
             PadLevel::Full => chips.push(Chip::new("Full level", Tone::Warn)),
@@ -724,13 +1095,14 @@ impl Player {
                      + MENU: Arp panel")
         } else {
             match self.view {
-                View::Play => format!("Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   \
-                                       MENU: options   ·   {stop}"),
-                View::Clips => CLIPS_HINT.to_string(),
+                View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
+                                       the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper => format!("REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   PLAY / STOP: \
                                          the transport   ·   MENU: looper options   ·   {stop}"),
-                View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
-                                        - / +: page   ·   {stop}"),
+                View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
+                                        - / +: page   ·   MENU: engine, scale   ·   {stop}",
+                                       self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
                      UNDO: undo   ·   tap the wave: play".to_string()
@@ -768,6 +1140,7 @@ impl Player {
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
+                View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
@@ -949,22 +1322,66 @@ impl Player {
                 self.sample_changed();
             }
             ToUi::PadDown { pad, velocity } => {
-                if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
+                if let Some(g) = self
+                    .ui
+                    .get_mut::<MiniPads>(play_page::PADS)
+                    .map(|m| &mut m.grid)
+                {
                     g.hit(pad, velocity);
                 }
-                // The Sample page edits the pad hit last.
+                // With Drums on the pads, the Synth tab shows the page of
+                // the pad hit last, as the Sample page edits it.
+                let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+                if let Some(p) = self
+                    .synth
+                    .as_mut()
+                    .filter(|p| synth_plays && p.state.info.id == "mpfree.drums")
+                {
+                    let page = mpfree_synth_ui::pages::drum_page(pad);
+                    if p.page() != page {
+                        p.show_page(&mut self.ui, page);
+                    }
+                }
+                // The Sample page edits the pad hit last, and the Play
+                // page's Tune and Decay turn it.
                 self.sample.hit(pad);
                 self.sample.hit_velocity(&mut self.ui, pad, velocity);
                 self.sample_changed();
+                if self.play.last_pad != pad {
+                    self.play.last_pad = pad;
+                    self.refresh_qlinks();
+                }
+                // A loop layer recording now takes its name from what is
+                // played into it.
+                let group = if synth_plays {
+                    Some("Synth")
+                } else {
+                    self.play
+                        .pads
+                        .get(pad)
+                        .and_then(|p| p.label.as_deref())
+                        .and_then(mpfree_ui::draw::sound_group)
+                };
+                if let Some(g) = group {
+                    self.looper_page.hit(g);
+                }
             }
             ToUi::PadUp(pad) => {
-                if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
+                if let Some(g) = self
+                    .ui
+                    .get_mut::<MiniPads>(play_page::PADS)
+                    .map(|m| &mut m.grid)
+                {
                     g.release(pad);
                 }
                 self.sample.pad_up(&mut self.ui, pad);
             }
             ToUi::PadFlash { pad, velocity } => {
-                if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
+                if let Some(g) = self
+                    .ui
+                    .get_mut::<MiniPads>(play_page::PADS)
+                    .map(|m| &mut m.grid)
+                {
                     let held = g.pads.get(pad).is_some_and(|p| p.held);
                     g.hit(pad, velocity);
                     if !held {
@@ -977,10 +1394,65 @@ impl Player {
                 self.sample.set_kit(k);
                 self.sample_changed();
             }
-            ToUi::Level { db, value } => {
-                if let Some(f) = self.ui.get_mut::<Fader>("level") {
-                    f.value = value;
-                    f.text = format!("{db:.1} dB");
+            ToUi::Level { db, .. } => {
+                let text = format!("{db:.1}");
+                if self
+                    .ui
+                    .get::<MasterBar>(play_page::MASTER)
+                    .is_some_and(|m| m.fader_db != db || m.text != text)
+                {
+                    if let Some(m) = self.ui.get_mut::<MasterBar>(play_page::MASTER) {
+                        m.fader_db = db;
+                        m.text = text;
+                    }
+                }
+            }
+            ToUi::Meter { peak_db, limit_db } => {
+                let changed = self
+                    .ui
+                    .get::<MasterBar>(play_page::MASTER)
+                    .is_some_and(|m| m.peak_db != peak_db || m.limit_db != limit_db);
+                if changed {
+                    if let Some(m) = self.ui.get_mut::<MasterBar>(play_page::MASTER) {
+                        m.feed(peak_db);
+                        m.limit_db = limit_db;
+                    }
+                }
+            }
+            ToUi::Steps(st) => {
+                self.play.set_steps(*st);
+                self.refresh_play();
+                if self.view == View::Play {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::Hit(h) => {
+                self.play.hit(h);
+                if self.view == View::Play && self.play.view == PlayView::Drum {
+                    self.refresh_play();
+                }
+            }
+            ToUi::PlayLevels(l) => {
+                if self.play.levels != l {
+                    self.play.set_levels(l);
+                    self.refresh_play();
+                    if self.view == View::Play {
+                        self.refresh_qlinks();
+                    }
+                }
+            }
+            ToUi::PlayQLink(k, ticks) => {
+                if self.view == View::Play {
+                    self.play_qlink(k, ticks);
+                }
+            }
+            ToUi::QLinkTouch(k, on) => {
+                if let Some(q) = self
+                    .ui
+                    .get_mut::<QLinkColumn>(play_page::QLINKS)
+                    .filter(|q| q.touched.get(k) != Some(&on))
+                {
+                    q.touched[k] = on;
                 }
             }
             ToUi::Session(text, tone) => {
@@ -997,7 +1469,7 @@ impl Player {
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
                 self.looper = *v;
-                if self.view == View::Looper {
+                if matches!(self.view, View::Looper | View::Play) {
                     self.looper_page
                         .update(&mut self.ui, &self.looper, &self.settings);
                 }
@@ -1007,6 +1479,14 @@ impl Player {
                 self.looper_page
                     .update(&mut self.ui, &self.looper, &self.settings);
             }
+            // Nothing until the panel is in the Ui (mpfree_mixer_ui::add).
+            ToUi::Mixer(st) => {
+                mpfree_mixer_ui::update(&mut self.ui, *st);
+                if self.view == View::Mixer {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -1052,12 +1532,14 @@ impl Player {
             }
             ToUi::Status(s) => {
                 self.status = s;
+                self.refresh_pads_bar();
                 if self.ready && self.view == View::Play {
                     // The quick band comes and goes with NOTE REPEAT.
                     self.show_view(View::Play);
                 }
                 self.refresh_chips();
                 self.refresh_hint();
+                self.refresh_qlinks();
             }
             ToUi::Settings(s) => self.set_settings(s),
             ToUi::ClearLogs => {
@@ -1088,7 +1570,10 @@ impl Player {
                     let _ = p.load(&mut self.ui, state);
                 }
                 None => match SynthPanel::add(&mut self.ui, "Synth", state) {
-                    Ok(p) => self.synth = Some(p),
+                    Ok(mut p) => {
+                        let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
+                        self.synth = Some(p);
+                    }
                     Err(e) => println!("screen: no Synth page ({e})"),
                 },
             },
@@ -1114,6 +1599,11 @@ impl Player {
                     if changed && self.view == View::Synth {
                         p.refresh(&mut self.ui);
                     }
+                }
+            }
+            ToUi::SynthPressures(values) => {
+                if let Some(p) = self.synth.as_mut() {
+                    p.set_pressures(&mut self.ui, &values);
                 }
             }
             ToUi::SynthQLink(n, ticks) => {
@@ -1166,13 +1656,21 @@ impl Player {
                 }
             }
             ToUi::SampleGrains(c) => self.sample.cloud_back(&mut self.ui, c),
-            ToUi::KitPads { kit, pads } => {
+            ToUi::KitChanged { kit, view } => {
+                if let Some(item) = self
+                    .ui
+                    .get_mut::<ListView>("kits")
+                    .and_then(|l| l.items.get_mut(kit))
+                {
+                    item.text = view.name.clone();
+                }
                 if let Some(k) = self.kits.get_mut(kit) {
-                    k.pads = pads;
+                    *k = view;
                     if kit == self.kit {
                         self.set_kit(kit);
                     }
                 }
+                self.refresh_pads_bar();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
@@ -1223,11 +1721,19 @@ impl Player {
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
+                self.play.set_transport(self.time.transport);
+                self.refresh_play();
             }
             ToUi::Transport(info) => {
                 self.time.transport = info;
                 self.sample.set_tempo(info.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
+                let swing = self.play.transport.swing;
+                self.play.set_transport(info);
+                self.refresh_play();
+                if self.view == View::Play && self.play.transport.swing != swing {
+                    self.refresh_qlinks();
+                }
             }
             ToUi::ClipsWheel {
                 delta,
@@ -1408,6 +1914,7 @@ impl Player {
         self.workspace.update(&mut self.ui, playing);
         self.refresh_chips();
         self.refresh_hint();
+        self.refresh_qlinks();
     }
 
     /// Change page, first letting go of every finger on the screen (the
@@ -1445,8 +1952,8 @@ impl Player {
         self.close_touch_page();
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
-            View::Play => "Play".to_string(),
-            View::Clips => CLIPS_PAGE.to_string(),
+            View::Play => self.play.view.page().to_string(),
+            View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
             View::Sample => {
@@ -1464,6 +1971,7 @@ impl Player {
                 "System info".to_string()
             }
             View::Prefs => "Prefs".to_string(),
+            View::Mixer => mpfree_mixer_ui::MIXER_PAGE.to_string(),
             View::Options => "Options".to_string(),
             View::Guide => "Guide".to_string(),
             View::Arp => ARP_PAGE.to_string(),
@@ -1476,11 +1984,11 @@ impl Player {
         }
         self.switch_page(&page);
         self.view = v;
-        if v == View::Clips {
+        if v == View::Arrange {
             // How many slots fit is known once the grid is on screen.
             self.time_page.update(&mut self.ui, &self.time);
         }
-        if v == View::Looper {
+        if matches!(v, View::Looper | View::Play) {
             self.looper_page
                 .update(&mut self.ui, &self.looper, &self.settings);
         }
@@ -1495,13 +2003,18 @@ impl Player {
         }
         self.mark_tab();
         self.refresh_hint();
+        self.refresh_qlinks();
     }
 
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
+        let mixer = Some(self.view == View::Mixer);
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             h.active = tab.unwrap_or(usize::MAX);
+            if h.mixer_icon != mixer {
+                h.mixer_icon = mixer;
+            }
         }
     }
 
@@ -1628,9 +2141,83 @@ impl Player {
             ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
             ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
             ("lbuttons", EventKind::Tab(i)) => Some(FromUi::Looper(i)),
-            ("pads", EventKind::Pad { index, down }) => Some(FromUi::Pad { pad: index, down }),
+            (play_page::PADS, EventKind::Pad { index, down }) => {
+                Some(FromUi::Pad { pad: index, down })
+            }
+            (play_page::PADS, EventKind::Tab(i)) => Some(FromUi::PadsLayout { in_key: i == 1 }),
             ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
-            ("level", EventKind::Value(v)) => Some(FromUi::Level(v)),
+            (play_page::TRANSPORT, EventKind::Tab(i)) => {
+                self.show_play_view(PlayView::from_index(i));
+                None
+            }
+            (play_page::MASTER, EventKind::Value(v)) => {
+                Some(FromUi::LevelDb(mpfree_ui::draw::meter_db(v)))
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Mixer => {
+                self.mixer_qlink(index, delta);
+                None
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta })
+                if self.view == View::Play && !self.band_showing() =>
+            {
+                self.play_qlink(index, delta);
+                None
+            }
+            (play_page::STEPS, EventKind::Cell { row, col }) => {
+                let a = self.play.tap_step(row, col);
+                self.refresh_play();
+                self.refresh_qlinks();
+                a.map(FromUi::Steps)
+            }
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
+                let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
+                self.play.levels.pad_mutes ^= 1 << pad;
+                self.refresh_play();
+                Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+            }
+            (play_page::THROWS, EventKind::Pad { index, down }) => {
+                let fx = self.play.throw(index, down);
+                self.refresh_play();
+                fx.map(FromUi::PlayFx)
+            }
+            (play_page::XY, EventKind::Xy { x, y, down }) => {
+                let fx = self.play.xy(x, y, down);
+                self.refresh_play();
+                Some(FromUi::PlayFx(fx))
+            }
+            (crate::looper_page::LOOP_STRIP, EventKind::Toggle(k)) => {
+                let l = self.looper_page.layer_info(k)?;
+                Some(FromUi::LoopLayer {
+                    id: l.id,
+                    command: mpfree_looper::LayerCommand::Mute(!l.muted),
+                })
+            }
+            (crate::looper_page::LOOP_STRIP, EventKind::Tab(i)) => {
+                match crate::looper_page::STRIP_TO_BUTTON.get(i).copied()? {
+                    Some(b) => Some(FromUi::Looper(b)),
+                    None => Some(FromUi::Time(TimeAction::Transport(
+                        mpfree_transport::Command::Stop,
+                    ))),
+                }
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta }) => {
+                Some(FromUi::QLink { knob: index, delta })
+            }
+            (mpfree_mixer_ui::MIXER, _) => {
+                let mut acts = mpfree_mixer_ui::take_actions(&mut self.ui)
+                    .into_iter()
+                    .map(FromUi::Mixer);
+                let first = acts.next();
+                self.outbox.extend(acts);
+                self.refresh_qlinks();
+                first
+            }
+            ("header", EventKind::Select(mpfree_ui::widgets::MIXER_ICON)) => {
+                Some(FromUi::MixerIcon)
+            }
+            (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
+                Some(FromUi::PadsLayout { in_key: i == 1 })
+            }
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
@@ -1656,8 +2243,22 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        if self.ui.get::<PadGrid>("pads").is_some_and(|g| g.fading()) {
-            if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
+        self.cpu_at += dt;
+        if self.cpu_at >= 1.0 {
+            self.cpu_at = 0.0;
+            self.refresh_chips();
+        }
+        if self
+            .ui
+            .get::<MiniPads>(play_page::PADS)
+            .map(|m| &m.grid)
+            .is_some_and(|g| g.fading())
+        {
+            if let Some(g) = self
+                .ui
+                .get_mut::<MiniPads>(play_page::PADS)
+                .map(|m| &mut m.grid)
+            {
                 g.fade(dt);
             }
         }
@@ -2048,10 +2649,21 @@ pub fn sample_kits() -> Vec<KitView> {
             .take(16)
             .collect(),
         colour,
+        chip: None,
+        synth: None,
     };
+    // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
+    let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
+    boom_bap.pads = [
+        "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom",
+        "Perc", "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
+    ]
+    .iter()
+    .map(|s| Some(s.to_string()))
+    .collect();
     vec![
         kit("Classic House", [0x3F, 0x22, 0x00], 16),
-        kit("Boom Bap", [0x00, 0x2A, 0x3F], 12),
+        boom_bap,
         kit("Trap", [0x2C, 0x00, 0x3F], 16),
         kit("Lo-Fi", [0x04, 0x3F, 0x00], 9),
         kit("Techno", [0x3F, 0x00, 0x00], 16),
@@ -2070,10 +2682,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
     p.apply(ToUi::Synth(synth.state()));
     p.apply(ToUi::Session("Akai session".into(), Tone::Good));
     p.apply(ToUi::Kit(0));
-    p.apply(ToUi::Level {
-        db: -18.0,
-        value: 0.79,
-    });
+    p.apply(ToUi::Level { db: -18.0 });
     p.apply(ToUi::Status(Status {
         shift: false,
         pad_level: PadLevel::Full,
@@ -2086,7 +2695,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
         p.apply(ToUi::PadDown { pad, velocity: v });
     }
     p.apply(ToUi::PadUp(10));
-    if let Some(g) = p.ui.get_mut::<PadGrid>("pads") {
+    if let Some(g) =
+        p.ui.get_mut::<MiniPads>(play_page::PADS)
+            .map(|m| &mut m.grid)
+    {
         g.pads[10].level = 0.5;
     }
     p.apply(ToUi::Timing(Timing {
@@ -2147,6 +2759,376 @@ pub fn sample_player(fonts: Fonts) -> Player {
     p
 }
 
+/// A real loop for the Play page's screenshots, as mockups F and H show
+/// one: four bars at 92 BPM recorded by the looper on a transport, a drum
+/// pass, then a bass and a chop overdubbed (three layers), playing on.
+/// Recorded once and kept (it takes a moment).
+fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
+    use crate::looping::{LoopHost, PERIOD};
+    use mpfree_looper::Command as L;
+    use mpfree_transport::{Block, Command as T, Transport};
+    use std::f32::consts::TAU;
+    use std::sync::OnceLock;
+    static LOOP: OnceLock<(Arc<LoopWave>, LooperView)> = OnceLock::new();
+    LOOP.get_or_init(|| {
+        const RATE: u32 = 44_100;
+        const BPM: f64 = 92.0;
+        let beat = (f64::from(RATE) * 60.0 / BPM) as u64;
+        let bar = 4 * beat;
+        let len = 4 * bar;
+        // Room for the three layers (each the loop's length).
+        let mut h = LoopHost::new(RATE, 40);
+        let mut t = Transport::new(RATE, BPM).expect("a transport");
+        let mut b = Block::new();
+        h.command(L::SetBars(Some(4)));
+        h.command(L::SetLatency(0));
+        h.command(L::Record);
+        t.command(0, T::Play);
+        let mut wave = None;
+        let noise = |n: u64| ((n.wrapping_mul(2_654_435_761) >> 7) % 2000) as f32 / 1000.0 - 1.0;
+        // Three passes and an eighth of the fourth.
+        let periods = (3 * len + len / 12) / PERIOD as u64;
+        for i in 0..periods {
+            let start = i * PERIOD as u64;
+            // Overdub the bass over the second pass and the chop over the
+            // third (a press each to start and to stop, a moment into the
+            // pass, each in a period of its own).
+            let p = PERIOD as u64;
+            for at in [len + p, 2 * len + p, 2 * len + 8 * p, 3 * len + p] {
+                if (start..start + p).contains(&at) {
+                    h.command(L::Overdub);
+                }
+            }
+            let _ = t.process(PERIOD as u32, &mut b);
+            let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+            for f in 0..PERIOD {
+                let n = start + f as u64;
+                let pass = n / len;
+                let in_beat = (n % beat) as f32 / RATE as f32;
+                let in_half = (n % (beat / 2)) as f32 / RATE as f32;
+                let beat_no = (n % bar) / beat;
+                let v = match pass {
+                    // A kick on 1 and 3, a snare on 2 and 4, hats between.
+                    0 => {
+                        let kick = if beat_no.is_multiple_of(2) {
+                            (TAU * (48.0 + 80.0 * (-in_beat * 30.0).exp()) * in_beat).sin()
+                                * (-in_beat * 8.0).exp()
+                        } else {
+                            noise(n) * (-in_beat * 18.0).exp() * 0.6
+                        };
+                        let hat = noise(n + 7) * (-in_half * 70.0).exp() * 0.15;
+                        0.5 * kick + hat
+                    }
+                    // A bass line, a note each half beat.
+                    1 => {
+                        let note = [55.0, 55.0, 65.4, 49.0][(beat_no % 4) as usize];
+                        0.24 * (TAU * note * in_half).sin()
+                            * (in_half * 40.0).min(1.0)
+                            * (-in_half * 2.0).exp()
+                    }
+                    // A chop phrase in bars 2 and 4.
+                    2 => {
+                        let bar_no = (n % len) / bar;
+                        let in_bar = (n % bar) as f32 / beat as f32;
+                        if bar_no % 2 == 1 && (1.5..3.6).contains(&in_bar) {
+                            0.22 * (TAU * 330.0 * in_beat).sin()
+                                * (0.6 + 0.4 * ((in_bar - 1.5) * 9.0).sin().abs())
+                        } else {
+                            0.0
+                        }
+                    }
+                    _ => 0.0,
+                };
+                let v = v.clamp(-1.0, 1.0);
+                (l[f], r[f]) = (v, v);
+            }
+            h.take_pads(&l, &r);
+            h.period(&b, &mut l, &mut r);
+            h.changes(String::new);
+            if let Some(w) = h.wave_step(i, 64) {
+                wave = Some(w);
+            }
+        }
+        let wave = wave.unwrap_or_else(|| Arc::new(LoopWave::default()));
+        (wave, h.view(BPM))
+    })
+}
+
+/// The recorded loop on the Play page and the Looper tab.
+pub fn sample_loop(p: &mut Player) {
+    let (wave, view) = recorded_loop();
+    p.apply(ToUi::Looper(Box::new(view.clone())));
+    // Named as they would be from the pads played into them.
+    p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
+    p.apply(ToUi::LoopWave(Arc::clone(wave)));
+}
+
+/// A beat programmed on the Play page's pattern with the real sequencer
+/// (mockup F's: kick, snare, hats, a clap, perc, bass and a chop), playing
+/// at 92 BPM until `sixteenths` into bar 9, and the transport.
+pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
+    use crate::time::{Pads, StepAction, TimeHost, STEP_TICKS};
+    struct Quiet;
+    impl Pads for Quiet {
+        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+    }
+    let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
+        return;
+    };
+    let rows: [(u8, &str); 8] = [
+        (0, "X... ..x. X.x. ...."),
+        (2, ".... X... .... X..o"),
+        (4, "x.xo x.xo x.xo x.Xo"),
+        (5, ".... ...x .... ...."),
+        (7, ".... X... .... X..."),
+        (10, "..o. .o.. ..o. o..o"),
+        (12, "X..x ..X. X... ..x."),
+        (13, "X... .... ..x. ...."),
+    ];
+    for (pad, steps) in rows {
+        for (i, c) in steps.chars().filter(|c| !c.is_whitespace()).enumerate() {
+            let velocity = match c {
+                'X' => 120,
+                'x' => 84,
+                'o' => 52,
+                _ => continue,
+            };
+            let _ = h.step_action(StepAction::Tap {
+                pad,
+                step: i,
+                velocity,
+            });
+        }
+    }
+    // The mockups' step 7 of the kick (velocity 96, 1/32 long, 4 ms
+    // early) and their swing (56 %).
+    for change in [
+        mpfree_seq::steps::Change::Velocity(96),
+        mpfree_seq::steps::Change::Length(STEP_TICKS / 2),
+        mpfree_seq::steps::Change::Nudge(-6),
+    ] {
+        let _ = h.step_action(StepAction::Change {
+            pad: 0,
+            step: 6,
+            change,
+        });
+    }
+    h.command(mpfree_transport::Command::SetSwing(
+        mpfree_transport::time::Swing {
+            grid: 240,
+            amount: 56,
+        },
+    ));
+    h.command(mpfree_transport::Command::Play);
+    let target = 8 * 3840 + sixteenths * STEP_TICKS;
+    let mut q = Quiet;
+    while h.info().position < target {
+        h.advance(128);
+        h.period(128, &mut q);
+    }
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+}
+
+/// Hits played on the pads over the last two bars, a little off the grid
+/// as hands are (mostly early, as mockup I), for the Drum view's timing.
+pub fn sample_hits(p: &mut Player) {
+    let t = p.play.transport;
+    let bar = t.meter.bar_ticks() as f64;
+    let now = t.position as f64;
+    let hash = |i: u32| {
+        let x = i.wrapping_mul(2_654_435_761).rotate_left(13) ^ 0x9E37_79B9;
+        (x % 1000) as f64 / 1000.0
+    };
+    let lanes: [(u8, &str); 4] = [
+        (0, "X... ..x. X.x. ...."),
+        (2, ".... X... .... X..."),
+        (4, "x.x. x.x. x.x. x.x."),
+        (13, ".... ..x. ..x. ...."),
+    ];
+    let mut k = 0u32;
+    let start = (now / (2.0 * bar)).floor() * 2.0 * bar - 2.0 * bar;
+    for b in 0..4 {
+        for (pad, steps) in lanes {
+            for (i, c) in steps.chars().filter(|c| !c.is_whitespace()).enumerate() {
+                if c == '.' {
+                    continue;
+                }
+                k += 1;
+                let grid = start + b as f64 * bar + i as f64 * 240.0;
+                // About 6 ms early on average, spread ±9 ms, at 92 BPM.
+                let ms = -6.0 + (hash(k) - 0.5) * 18.0;
+                let tick = grid + ms * 92.0 * 960.0 / 60_000.0;
+                if tick > now || tick < now - 2.0 * bar {
+                    continue;
+                }
+                let velocity = if c == 'X' { 112 } else { 70 } + (hash(k + 99) * 14.0) as u8;
+                p.apply(ToUi::Hit(HitInfo {
+                    pad,
+                    velocity,
+                    tick,
+                    bpm: 92.0,
+                    bar_ticks: bar as i64,
+                }));
+            }
+        }
+    }
+}
+
+/// The Play page as mockups F to I show it, with the app's real state
+/// behind it: kit 2, the recorded loop, the programmed beat playing, the
+/// master near full with the limiter just catching, a throw held, and the
+/// view's own touches (a step picked in Beats, the hits in Drum).
+pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::Kit(1));
+    for pad in 0..16 {
+        p.apply(ToUi::PadUp(pad));
+    }
+    if let Some(g) =
+        p.ui.get_mut::<MiniPads>(play_page::PADS)
+            .map(|m| &mut m.grid)
+    {
+        for pad in g.pads.iter_mut() {
+            pad.held = false;
+            pad.level = 0.0;
+        }
+        g.pads[4].level = 0.9;
+        g.pads[13].level = 0.55;
+    }
+    p.apply(ToUi::Status(Status {
+        shift: false,
+        pad_level: PadLevel::Off,
+        repeat: false,
+        latched: false,
+        rate: "1/16",
+        bpm: 92.0,
+    }));
+    sample_loop(&mut p);
+    if v == PlayView::Loop {
+        // Mockup H: the chop layer muted from its speaker.
+        let mut view = recorded_loop().1.clone();
+        if let Some(l) = view.layers[2].as_mut() {
+            l.muted = true;
+            l.audible = false;
+        }
+        p.apply(ToUi::Looper(Box::new(view)));
+    }
+    let at = match v {
+        PlayView::All => 1,
+        PlayView::Beats => 6,
+        PlayView::Loop => 8,
+        // Bar 10: late in the timing view's two bars, as mockup I.
+        PlayView::Drum => 26,
+    };
+    sample_pattern(&mut p, at);
+    // The kits' projects (Boom Bap's pads with sounds behind them), so the
+    // Tune and Decay Q-Links read the pads' own settings.
+    p.apply(ToUi::SampleKits {
+        projects: vec![mpfree_sampler::model::Project::new(), boom_bap_project()],
+        rate: 44_100,
+    });
+    p.play.last_pad = if v == PlayView::Drum { 4 } else { 0 };
+    p.apply(ToUi::Level { db: -1.5 });
+    for _ in 0..3 {
+        p.apply(ToUi::Meter {
+            peak_db: [-4.5, -6.0],
+            limit_db: 1.2,
+        });
+    }
+    let mut levels = p.play.levels;
+    levels.pad_mutes = 1 << 7;
+    levels.drums_filter = -16.0;
+    levels.loop_db = -3.0;
+    levels.line_db = 6.0;
+    levels.loop_filter = -22.0;
+    levels.drums_send_db = 20.0 * 0.22f32.log10();
+    p.apply(ToUi::PlayLevels(levels));
+    let shared = Arc::new(crate::engines::EngineShared::default());
+    let mut probes = crate::engines::EngineProbes::with_shared(Arc::clone(&shared));
+    for _ in 0..200 {
+        probes.add(crate::engines::PERIOD, Duration::from_micros(610));
+    }
+    probes.publish();
+    p.apply(ToUi::Engines(shared));
+    p.show_play_view(v);
+    match v {
+        PlayView::All => {
+            p.play.throw(2, true);
+            p.play.xy = (0.68, 0.62, true);
+        }
+        PlayView::Beats => {
+            p.play.selected = Some((0, 6));
+            p.play.throw(2, true);
+            p.apply(ToUi::QLinkTouch(0, true));
+        }
+        PlayView::Loop => {
+            p.play.throw(2, true);
+            p.play.xy = (0.68, 0.62, true);
+        }
+        PlayView::Drum => {
+            sample_hits(&mut p);
+            p.play.throw(2, true);
+            p.apply(ToUi::QLinkTouch(2, true));
+            p.play.xy = (0.68, 0.62, true);
+        }
+    }
+    if let Some(xy) = p.ui.get_mut::<XyPad>(play_page::XY) {
+        (xy.x, xy.y, xy.on) = p.play.xy;
+        if xy.on {
+            // The finger's way up to where it is, as the mockups draw it.
+            let (x, y, _) = p.play.xy;
+            let trail: Vec<(f32, f32)> = (0..10)
+                .map(|k| {
+                    let f = k as f32 / 10.0;
+                    (0.3 + (x - 0.3) * f, 0.12 + (y - 0.12) * f * f)
+                })
+                .collect();
+            xy.set_trail(&trail);
+        }
+    }
+    p.refresh_play();
+    p.refresh_chips();
+    p.refresh_qlinks();
+    p
+}
+
+/// Boom Bap's sampler project for the previews: a short made-up sound on
+/// each of its 16 pads, with the mockups' settings on Kick (-2 st) and Hat
+/// (+2 st, 180 ms decay).
+fn boom_bap_project() -> mpfree_sampler::model::Project {
+    use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+    let mut p = Project::new();
+    let names = [
+        "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom",
+        "Perc", "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        let data: Vec<f32> = (0..2_000)
+            .map(|n| (n as f32 * 0.05 * (i + 1) as f32).sin() * (1.0 - n as f32 / 2_000.0))
+            .collect();
+        let source = Source::new(name, 44_100, 1, data).expect("a sound");
+        let region = Region::whole(&source);
+        p.add_source(source);
+        let mut pad = Pad::new(name, Layer::new(region));
+        match i {
+            0 => pad.tune_cents = -200,
+            4 => {
+                pad.tune_cents = 200;
+                pad.amp.sustain = 0.0;
+                pad.amp.decay_ms = 180.0;
+            }
+            _ => {}
+        }
+        p.set_pad(i, Some(pad), None).expect("a pad");
+    }
+    p
+}
+
 /// Hands the app's effects to the screen as the audio thread does (lights,
 /// sounds and kit changes are left out), for previews and tests.
 pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
@@ -2184,7 +3166,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Octave(_)
             | Effect::Bank { .. }
             | Effect::Looper(_)
-            | Effect::SavePatterns(_) => {}
+            | Effect::SavePatterns(_)
+            | Effect::SynthPads(_)
+            | Effect::Mixer(_) => {}
+            Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
         }
     }
 }
@@ -2202,7 +3187,10 @@ fn run_arp(p: &mut Player, app: &mut crate::app::App, frames: u32) {
 /// The sample player with no pad held or fading, for the arp's screens.
 fn quiet_player(fonts: Fonts) -> Player {
     let mut p = sample_player(fonts);
-    if let Some(g) = p.ui.get_mut::<PadGrid>("pads") {
+    if let Some(g) =
+        p.ui.get_mut::<MiniPads>(play_page::PADS)
+            .map(|m| &mut m.grid)
+    {
         for pad in g.pads.iter_mut() {
             pad.held = false;
             pad.level = 0.0;
@@ -2211,7 +3199,7 @@ fn quiet_player(fonts: Fonts) -> Player {
     p
 }
 
-/// The Clips page with the real time engine behind it: tapping Track 1's
+/// The Arrange page with the real time engine behind it: tapping Track 1's
 /// first slot recorded a two-bar beat from the pads (kick, snare, hats),
 /// REC punched out at bar 3, the clip plays on at 3.2, and Track 2 is
 /// armed for the next one.
@@ -2294,7 +3282,7 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     run_to(&mut host, 2 * BAR + 960 + 300)?;
     let mut p = quiet_player(fonts);
     p.apply(ToUi::Time(Box::new(host.state())));
-    p.apply(ToUi::Show(View::Clips));
+    p.apply(ToUi::Show(View::Arrange));
     Ok(p)
 }
 
@@ -2435,6 +3423,44 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     out.push(("loading-failed", failed));
     out.push(("play", sample_player(fonts())));
+    // The Play page's views, as mockups F to I.
+    for (name, v) in [
+        ("play-all-loop", PlayView::All),
+        ("play-beats", PlayView::Beats),
+        ("play-loop", PlayView::Loop),
+        ("play-drum", PlayView::Drum),
+    ] {
+        out.push((name, sample_play(fonts(), v)));
+    }
+    // The synth on the pads, A minor, In key: the pads panel's switch.
+    let mut synth = sample_player(fonts());
+    let mut s = crate::synth::Synth::new(44_100);
+    let mut set = s.settings();
+    set.scale = mpfree_arp::scale::by_name("Minor")
+        .map(|d| mpfree_arp::scale::Scale::with_down(9, d.mask, d.down));
+    set.set_layout(mpfree_arp::scale::pads::PadLayout::InKey);
+    s.set_settings(set);
+    let synth_kit = sample_kits().len();
+    synth.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: s.kit_view(),
+    });
+    synth.apply(ToUi::Kit(synth_kit));
+    sample_loop(&mut synth);
+    out.push(("play-synth-in-key", synth));
+    // The mixer over Play (TRACK MIX), a strip selected for the Q-Links.
+    let mut mixer = sample_player(fonts());
+    let mut m = mpfree_mixer_ui::sample::song_mixer();
+    mpfree_mixer_ui::sample::play(&mut m, 40);
+    let mut st = mpfree_mixer_ui::MixState::from_mixer(
+        &mut m,
+        mpfree_mixer_ui::MixView::Tracks,
+        &mpfree_mixer_ui::sample::name,
+    );
+    st.selected = Some(mpfree_fx::StripId::Track(1));
+    mixer.apply(ToUi::Show(View::Mixer));
+    mixer.apply(ToUi::Mixer(Box::new(st)));
+    out.push(("mixer", mixer));
     let mut debug = sample_player(fonts());
     debug.apply(ToUi::Show(View::Debug));
     out.push(("debug", debug));
@@ -2668,6 +3694,58 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.take_actions();
         out.push((name, p));
     }
+    // FM on the pads with D Dorian chord pads, three chords held; FM's Synth
+    // tab; and the Synth tab's options with FM and a scale picked.
+    let mut fm = crate::synth::Synth::new(44_100);
+    let mut set = fm.settings();
+    set.engine = crate::synth::Engine::Fm;
+    set.scale = mpfree_arp::scale::by_name("Dorian")
+        .map(|d| mpfree_arp::scale::Scale::with_down(2, d.mask, d.down));
+    set.set_layout(mpfree_arp::scale::pads::PadLayout::Chords);
+    fm.set_settings(set);
+    let mut chords = sample_player(fonts());
+    chords.apply(ToUi::Status(Status {
+        shift: false,
+        pad_level: PadLevel::Off,
+        repeat: false,
+        latched: false,
+        rate: "1/16",
+        bpm: 120.0,
+    }));
+    chords.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: fm.kit_view(),
+    });
+    chords.apply(ToUi::Synth(fm.state()));
+    chords.apply(ToUi::Kit(synth_kit));
+    for (pad, v) in [(0usize, 96u8), (3, 90), (12, 101)] {
+        chords.apply(ToUi::PadDown { pad, velocity: v });
+    }
+    out.push(("play-synth-chords", chords));
+    let mut fm_page = sample_player(fonts());
+    fm_page.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: fm.kit_view(),
+    });
+    fm_page.apply(ToUi::Synth(fm.state()));
+    fm_page.apply(ToUi::Kit(synth_kit));
+    fm_page.apply(ToUi::Show(View::Synth));
+    out.push(("synth-fm", fm_page));
+    let mut options = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.step_item(0, 1));
+    for _ in 0..2 {
+        fx.extend(a.step_item(1, 1));
+    }
+    fx.extend(a.step_item(2, 1));
+    fx.extend(a.step_item(2, 1));
+    fx.extend(a.step_item(3, 1));
+    fx.extend(a.select(3));
+    apply_effects(&mut options, fx);
+    out.push(("synth-options", options));
     // The Sample page: the loop on kit 1's pad 5, then zoomed round the
     // loop start after a Q-Link 3 turn, then a pad without a sound, then
     // the Chop tab.
@@ -2918,7 +3996,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     for pad in [0, 2, 4] {
         panel.apply(ToUi::PadFlash { pad, velocity: 100 });
     }
-    if let Some(g) = panel.ui.get_mut::<PadGrid>("pads") {
+    if let Some(g) = panel
+        .ui
+        .get_mut::<MiniPads>(play_page::PADS)
+        .map(|m| &mut m.grid)
+    {
         for pad in [0, 2, 4] {
             g.pads[pad].level = 0.35;
         }
@@ -3024,6 +4106,430 @@ mod tests {
         assert!(p.take_actions().is_empty());
     }
 
+    /// Mockup H: a speaker beside each loop layer's name; a tap mutes
+    /// that layer (by its id, for the looper), and the next view shows it
+    /// crossed out and grey.
+    #[test]
+    fn a_loop_layers_speaker_mutes_it() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        let mut p = sample_player(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card);
+        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        sample_loop(&mut p);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let strip = p.ui.rect_of(LOOP_STRIP).unwrap();
+        // The third layer's speaker: the strip's heading, right of the
+        // names; find it by tapping along the heading.
+        let y = strip.y + 19;
+        let mut hits = Vec::new();
+        for x in (strip.x..strip.x + strip.w / 2).step_by(4) {
+            if let Some(FromUi::LoopLayer { id, command }) = tap(&mut p, (x, y)) {
+                if hits.last().map(|h: &(i32, u8, _)| h.1) != Some(id) {
+                    hits.push((x, id, command));
+                }
+            }
+        }
+        let (_, view) = recorded_loop();
+        let ids: Vec<u8> = (0..3).map(|k| view.layers[k].unwrap().id).collect();
+        assert_eq!(
+            hits.iter().map(|h| (h.1, h.2)).collect::<Vec<_>>(),
+            ids.iter()
+                .map(|&id| (id, mpfree_looper::LayerCommand::Mute(true)))
+                .collect::<Vec<_>>(),
+            "one speaker per layer, in order"
+        );
+        // The looper says the third is muted: the strip crosses it out.
+        let mut v = view.clone();
+        if let Some(l) = v.layers[2].as_mut() {
+            l.muted = true;
+            l.audible = false;
+        }
+        p.apply(ToUi::Looper(Box::new(v)));
+        let st = p.ui.get::<LoopStrip>(LOOP_STRIP).unwrap();
+        assert_eq!(st.muted, [false, false, true]);
+        assert_eq!(st.heard, [true, true, false]);
+        // Its speaker now asks to unmute.
+        assert_eq!(
+            tap(&mut p, (hits[2].0, y)),
+            Some(FromUi::LoopLayer {
+                id: ids[2],
+                command: mpfree_looper::LayerCommand::Mute(false),
+            })
+        );
+    }
+
+    #[test]
+    fn one_tap_switches_the_play_view_and_the_q_links_follow_it() {
+        let mut p = sample_player(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card);
+        let seg = |i: usize| (segs[i].x + segs[i].w / 2, segs[i].y + segs[i].h / 2);
+        let names = |p: &Player| -> Vec<String> {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&p), ["Swing", "Tune", "Filter", "Delay send"]);
+        assert_eq!(tap(&mut p, seg(2)), None, "the screen's own choice");
+        assert_eq!((p.page(), p.play_view()), ("Play · Loop", PlayView::Loop));
+        assert!(p.ui.rect_of(crate::looper_page::LOOP_STRIP).is_some());
+        assert_eq!(
+            names(&p),
+            ["Loop level", "Delay send", "Line level", "Filter"]
+        );
+        assert_eq!(
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .look
+                .view,
+            2
+        );
+        assert_eq!(tap(&mut p, seg(3)), None);
+        assert_eq!(p.page(), "Play · Drum");
+        assert!(p.ui.rect_of(play_page::TIMING).is_some());
+        assert_eq!(names(&p), ["Tune", "Decay", "Swing", "FX mix"]);
+        // Another tab and back: the view is kept.
+        p.apply(ToUi::Show(View::Synth));
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!(p.page(), "Play · Drum");
+        // Each view fits under the transport card, left of the master.
+        for v in PlayView::ALL {
+            tap(&mut p, seg(v.index()));
+            let pads = p.ui.rect_of(play_page::PADS).unwrap();
+            assert!(
+                pads.y > 168 && pads.bottom() <= 750 && pads.right() <= 1010,
+                "{v:?}: {pads:?}"
+            );
+        }
+        tap(&mut p, seg(0));
+        assert_eq!(p.page(), "Play");
+        // A drag up a card turns that knob: Swing, on the transport.
+        let column = p.ui.rect_of(play_page::QLINKS).unwrap();
+        let c = QLinkColumn::card_rects(column)[0];
+        let (x, y) = (c.x + 20, c.y + c.h / 2);
+        assert_eq!(p.touch(3, Touch::Down, x, y), None);
+        assert_eq!(
+            p.touch(3, Touch::Move, x, y - 2 * mpfree_ui::qlink::DRAG_DETENT),
+            None
+        );
+        p.touch(3, Touch::Up, x, y);
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Time(TimeAction::Transport(
+                    mpfree_transport::Command::SetSwing(mpfree_transport::time::Swing {
+                        amount: 52,
+                        ..
+                    })
+                ))]
+            ),
+            "{sent:?}"
+        );
+        assert_eq!(
+            p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].value,
+            "52 %"
+        );
+        // The same from the knob itself, through the audio thread.
+        p.apply(ToUi::PlayQLink(2, -10));
+        assert!(matches!(
+            p.take_actions().as_slice(),
+            [FromUi::PlayFx(PlayFx::Filter { position, .. })] if *position == -20.0
+        ));
+        assert_eq!(
+            p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[2].value,
+            "LP 6.6 kHz"
+        );
+        // A finger on the knob lights its card.
+        p.apply(ToUi::QLinkTouch(2, true));
+        assert!(p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().touched[2]);
+        p.apply(ToUi::QLinkTouch(2, false));
+        assert!(!p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().touched[2]);
+        // The master bar sets the master fader in dB, and shows the one the app keeps.
+        let master = p.ui.rect_of(play_page::MASTER).unwrap();
+        let top = MasterBar::track(master);
+        assert_eq!(tap(&mut p, (top.x + 4, top.y)), Some(FromUi::LevelDb(6.0)));
+        p.apply(ToUi::Level { db: -6.0 });
+        let m = p.ui.get::<MasterBar>(play_page::MASTER).unwrap();
+        assert_eq!((m.text.as_str(), m.fader_db), ("-6.0", -6.0));
+    }
+
+    #[test]
+    fn the_pattern_throws_and_xy_pad_reach_the_engines() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.play.throw(2, false);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        // The pattern: the programmed beat's lanes, the clap muted.
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert_eq!(g.title, "Pattern 1 · Track 1");
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        assert_eq!(
+            g.lanes_shown(r),
+            [0, 2, 4, 5, 7, 10],
+            "the sounds with notes, in pad order"
+        );
+        assert!(g.lanes.iter().find(|l| l.pad == 7).unwrap().muted);
+        assert_eq!(g.lanes[0].steps[0], 120, "the kick on the one");
+        assert_eq!(g.play, Some(1));
+        // A step tapped: on, for the sequencer.
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let cell = |p: &Player, lane: usize, step: usize| {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            let (_, body) = mpfree_ui::draw::card_head(r);
+            let grid = body.take_left(118).1;
+            let cw = (grid.w - 3 * 10 - 15 * 4) / 16;
+            let rh = ((grid.h - 5 * 5) / 6).min(44);
+            (
+                grid.x + step as i32 * (cw + 4) + (step as i32 / 4) * 6 + cw / 2,
+                grid.y + lane as i32 * (rh + 5) + rh / 2,
+            )
+        };
+        let at = cell(&p, 0, 1);
+        assert_eq!(
+            tap(&mut p, at),
+            Some(FromUi::Steps(StepAction::Tap {
+                pad: 0,
+                step: 1,
+                velocity: play_page::TAP_VELOCITY
+            }))
+        );
+        // A speaker: the pad's mute, for the mixer.
+        let (_, body) = mpfree_ui::draw::card_head(r);
+        let names = body.take_left(118).0;
+        let (_, y) = cell(&p, 1, 0);
+        assert_eq!(
+            tap(&mut p, (names.right() - 14, y)),
+            Some(FromUi::PlayFx(PlayFx::PadMute { pad: 2, mute: true }))
+        );
+        // A throw held and let go: the performance effect on the master.
+        let throws = p.ui.rect_of(play_page::THROWS).unwrap();
+        let t0 = p.ui.get::<Throws>(play_page::THROWS).unwrap().cells(throws)[0];
+        let down = p.touch(5, Touch::Down, t0.x + 5, t0.y + 5);
+        assert!(
+            matches!(
+                down,
+                Some(FromUi::PlayFx(PlayFx::Throw {
+                    fx: crate::mixing::ThrowFx::Delay,
+                    down: true
+                }))
+            ),
+            "{down:?}"
+        );
+        assert!(p.ui.get::<Throws>(play_page::THROWS).unwrap().items[0].on);
+        let up = p.touch(5, Touch::Up, t0.x + 5, t0.y + 5);
+        assert!(matches!(
+            up,
+            Some(FromUi::PlayFx(PlayFx::Throw { down: false, .. }))
+        ));
+        // Drop drums mutes the kicks, snares and hats while held.
+        assert_eq!(p.play.drum_pads(), 0x00FF, "pads 1 to 8 of Boom Bap");
+        // The XY pad: where the finger is, and on.
+        let xy = p.ui.rect_of(play_page::XY).unwrap();
+        let first = p.touch(6, Touch::Down, xy.x + xy.w / 2, xy.bottom() - 30);
+        assert!(
+            matches!(first, Some(FromUi::PlayFx(PlayFx::Xy { x, y, down: true })) if (x - 0.5).abs() < 0.02 && y < 0.2),
+            "{first:?}"
+        );
+    }
+
+    #[test]
+    fn beats_picks_a_step_for_the_q_links() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let names: Vec<String> =
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .iter()
+                .map(|c| format!("{} {}", c.name, c.value))
+                .collect();
+        assert_eq!(
+            names,
+            ["Velocity 96", "Length 1/32", "Nudge -4 ms", "Chance 100 %"]
+        );
+        assert_eq!(
+            p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].scope,
+            "STEP 7 · KICK"
+        );
+        // Velocity down 4 detents: on screen at once, and to the sequencer as one undo.
+        p.apply(ToUi::PlayQLink(0, -4));
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Steps(StepAction::Change {
+                    pad: 0,
+                    step: 6,
+                    change: mpfree_seq::steps::Change::Velocity(88)
+                })]
+            ),
+            "{sent:?}"
+        );
+        assert_eq!(
+            p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].value,
+            "88"
+        );
+    }
+
+    #[test]
+    fn the_drum_view_shows_your_timing() {
+        let p = sample_play(Fonts::embedded(), PlayView::Drum);
+        let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
+        assert_eq!(
+            t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),
+            ["Kick", "Snare", "Hat", "Chop 1"]
+        );
+        let avg = t.average_ms.unwrap();
+        assert!((-10.0..-2.0).contains(&avg), "about 6 ms early: {avg}");
+        // Last time round's hits, ahead of the playhead, are drawn faint.
+        let now = t.now.unwrap();
+        for (_, _, _, hits) in &t.lanes {
+            for h in hits {
+                assert_eq!(h.old, h.at > now + 0.5, "{h:?} now {now}");
+            }
+        }
+        assert!(t.spread_ms.unwrap() > 1.0 && t.histogram.iter().sum::<u32>() > 10);
+        assert!(t.now.is_some());
+    }
+
+    #[test]
+    fn track_mix_opens_the_mixer_and_the_q_links_turn_the_selected_strip() {
+        use mpfree_mixer_ui::{MixAction, MixState, MixView, MIXER_PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
+        // TRACK MIX: the mixer over Play, on Track Mix; the icon lights.
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Tracks))),
+            "{fx:?}"
+        );
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), MIXER_PAGE);
+        assert_eq!(p.ui.get::<Header>("header").unwrap().mixer_icon, Some(true));
+        assert!(
+            p.ui.rect_of(play_page::QLINKS).is_some(),
+            "the Q-Link cards stay beside the mixer"
+        );
+        // The audio thread's state, with a strip selected: the cards name it.
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let mut st = MixState::from_mixer(&mut m, MixView::Tracks, &mpfree_mixer_ui::sample::name);
+        st.selected = Some(mpfree_fx::StripId::Track(1));
+        p.apply(ToUi::Mixer(Box::new(st)));
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(
+            (q.cards[0].name.as_str(), q.cards[1].name.as_str()),
+            ("Volume", "Pan")
+        );
+        assert!(q.cards[1].bipolar && !q.cards[0].scope.is_empty());
+        // A Q-Link (or the wheel) moves the strip's volume on the panel and tells the mixer.
+        let fx = app.wheel(2);
+        apply_effects(&mut p, fx);
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Mixer(MixAction::Set {
+                    strip: mpfree_fx::StripId::Track(1),
+                    ..
+                })]
+            ),
+            "{sent:?}"
+        );
+        // TRACK MIX again closes it, back to Play; the icon goes out.
+        let fx = app.button(70, true, 0.0);
+        assert_eq!(fx.first(), Some(&crate::app::Effect::Mixer(None)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), "Play");
+        assert_eq!(
+            p.ui.get::<Header>("header").unwrap().mixer_icon,
+            Some(false)
+        );
+        // The icon in the bar asks the app.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of("header").unwrap();
+        let icon = p.ui.get::<Header>("header").unwrap().icon_rect(r).unwrap();
+        assert_eq!(
+            p.touch(4, Touch::Down, icon.x + 10, icon.y + 10),
+            Some(FromUi::MixerIcon)
+        );
+        // SHIFT + TRACK MIX: Pad Mix; a tab closes the mixer.
+        app.button(70, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let fx = app.button(70, true, 0.0);
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Pads)))
+        );
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        let fx = app.tab(2);
+        assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
+    }
+
+    #[test]
+    fn the_pads_heading_switches_the_synth_to_in_key() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        // A kit: its bank and name, no switch.
+        let m = p.ui.get::<MiniPads>(play_page::PADS).unwrap();
+        assert_eq!(
+            (m.title.as_str(), m.right.as_str(), m.synth),
+            ("Pads · Bank A", "Classic House", None)
+        );
+        // The synth with a scale: the switch, on Play and on the Synth tab.
+        let mut s = crate::synth::Synth::new(44_100);
+        let mut set = s.settings();
+        set.scale = mpfree_arp::scale::by_name("Minor")
+            .map(|d| mpfree_arp::scale::Scale::with_down(9, d.mask, d.down));
+        s.set_settings(set);
+        p.apply(ToUi::KitChanged {
+            kit: synth_kit,
+            view: s.kit_view(),
+        });
+        p.apply(ToUi::Kit(synth_kit));
+        let r = p.ui.rect_of(play_page::PADS).unwrap();
+        let [_, in_key] =
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .unwrap()
+                .parts(r)
+                .1
+                .unwrap();
+        assert_eq!(
+            p.touch(1, Touch::Down, in_key.x + 10, in_key.y + 10),
+            Some(FromUi::PadsLayout { in_key: true })
+        );
+        p.touch(1, Touch::Up, in_key.x + 10, in_key.y + 10);
+        p.apply(ToUi::Show(View::Synth));
+        let head = p.ui.rect_of(play_page::SYNTH_PADS_HEAD).unwrap();
+        assert_eq!(
+            p.ui.get::<PadsBar>(play_page::SYNTH_PADS_HEAD)
+                .unwrap()
+                .title,
+            "Pads · Bank A"
+        );
+        let [chromatic, _] = PadsBar::halves(head);
+        assert_eq!(
+            p.touch(2, Touch::Down, chromatic.x + 10, chromatic.y + 10),
+            Some(FromUi::PadsLayout { in_key: false })
+        );
+    }
+
     #[test]
     fn layouts_fit_the_screen() {
         let mut p = Player::new(Fonts::embedded(), SCREEN, false, None);
@@ -3032,17 +4538,25 @@ mod tests {
             Some(mpfree_ui::Rect::new(0, 0, 1280, 800))
         );
         p.apply(ToUi::Show(View::Play));
-        let pads = p.ui.rect_of("pads").unwrap();
-        assert!(pads.w > 700 && pads.h > 600, "{pads:?}");
-        // Under the transport bar four kits show at once; the list scrolls
-        // to the selected kit.
-        let kits = p.ui.rect_of("kits").unwrap();
-        assert!(kits.h >= 14 + 34 + 4 * 46, "{kits:?}");
+        // The Play page (mockup F): no big pads; the transport card on
+        // top, the master meter and the Q-Link cards at the right edge,
+        // beside the knobs.
+        let pads = p.ui.rect_of(play_page::PADS).unwrap();
+        assert!(pads.w == 270 && pads.h > 250, "{pads:?}");
         assert_eq!(
-            p.ui.rect_of(time_view::TRANSPORT).map(|r| (r.y, r.h)),
-            Some((84, 44))
+            p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
+            Some((84, 84))
         );
-        p.apply(ToUi::Show(View::Clips));
+        assert_eq!(
+            p.ui.rect_of(play_page::QLINKS)
+                .map(|r| (r.right(), r.y, r.bottom())),
+            Some((1268, 84, 750))
+        );
+        assert!(p
+            .ui
+            .rect_of(crate::looper_page::LOOP_STRIP)
+            .is_some_and(|r| r.w > 900));
+        p.apply(ToUi::Show(View::Arrange));
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
         assert!(clips.w > 780 && clips.h > 560, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
@@ -3089,7 +4603,7 @@ mod tests {
         p.set_touch_time(123);
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(
-            p.touch(2, Touch::Down, pads.x + 10, pads.bottom() - 10),
+            p.touch(2, Touch::Down, pads.x + 20, pads.bottom() - 20),
             Some(FromUi::Pad { pad: 0, down: true })
         );
     }
@@ -3164,11 +4678,11 @@ mod tests {
         let pads = p.ui.rect_of("pads").unwrap();
         // Pad 1 sits bottom left.
         assert_eq!(
-            p.touch(1, Touch::Down, pads.x + 10, pads.bottom() - 10),
+            p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),
             Some(FromUi::Pad { pad: 0, down: true })
         );
         assert_eq!(
-            p.touch(1, Touch::Up, pads.x + 10, pads.bottom() - 10),
+            p.touch(1, Touch::Up, pads.x + 20, pads.bottom() - 20),
             Some(FromUi::Pad {
                 pad: 0,
                 down: false
@@ -3202,7 +4716,10 @@ mod tests {
     fn kit_changes_relabel_the_pads() {
         let mut p = sample_player(Fonts::embedded());
         p.apply(ToUi::Kit(3));
-        let g = p.ui.get::<PadGrid>("pads").unwrap();
+        let g =
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap();
         assert_eq!(g.pads[0].label, "Kick");
         assert!(g.pads[9].color.is_none(), "Lo-Fi has 9 pads");
         assert_eq!(p.ui.get::<ListView>("kits").unwrap().selected, 3);
@@ -3565,7 +5082,11 @@ mod tests {
         assert!((0..4).all(|i| view.has_pad(i)) && view.has_pad(pad) && !view.has_pad(5));
         assert_eq!(p.kits[0].pads[1].as_deref(), Some("Break 92 2"));
         assert_eq!(
-            p.ui.get::<PadGrid>("pads").unwrap().pads[3].label,
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[3]
+                .label,
             "Break 92 4"
         );
         assert!(
@@ -4075,6 +5596,121 @@ mod tests {
     }
 
     #[test]
+    fn with_drums_on_the_pads_the_synth_tab_follows_the_pad_hit_last() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        let mut s = crate::synth::Synth::new(44_100);
+        let mut set = s.settings();
+        set.engine = crate::synth::Engine::Drums;
+        s.set_settings(set);
+        p.apply(ToUi::Synth(s.state()));
+        p.apply(ToUi::KitChanged {
+            kit: synth_kit,
+            view: s.kit_view(),
+        });
+        let page = |p: &Player| p.synth.as_ref().unwrap().page();
+        // A sample kit plays the pads: the Synth tab stays put.
+        p.apply(ToUi::PadDown {
+            pad: 5,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), 0);
+        p.apply(ToUi::Kit(synth_kit));
+        assert_eq!(
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[0]
+                .label,
+            "Kick"
+        );
+        p.apply(ToUi::PadDown {
+            pad: 5,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), mpfree_synth_ui::pages::drum_page(5));
+        assert_eq!(p.synth.as_ref().unwrap().pages()[page(&p)].name, "Pad 6");
+        // Another engine's pages don't move with the pads.
+        set.engine = crate::synth::Engine::Pluck;
+        s.set_settings(set);
+        p.apply(ToUi::Synth(s.state()));
+        p.apply(ToUi::PadDown {
+            pad: 2,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), 0);
+    }
+
+    #[test]
+    fn the_synth_kit_and_page_follow_an_engine_switch_and_a_scale() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect()
+        };
+        p.apply(ToUi::Kit(synth_kit));
+        let mut s = crate::synth::Synth::new(44_100);
+        let mut set = s.settings();
+        set.engine = crate::synth::Engine::Fm;
+        s.set_settings(set);
+        p.apply(ToUi::KitChanged {
+            kit: synth_kit,
+            view: s.kit_view(),
+        });
+        p.apply(ToUi::Synth(s.state()));
+        assert_eq!(
+            p.ui.get::<ListView>("kits").unwrap().items[synth_kit].text,
+            "Synth: FM"
+        );
+        assert!(
+            chips(&p).contains(&"FM · C3 to D#4".to_string()),
+            "{:?}",
+            chips(&p)
+        );
+        assert_eq!(p.synth.as_ref().unwrap().state.info.id, "mpfree.fm");
+        // A scale and Chord pads: the chip says so and the pads name their chords.
+        set.scale = mpfree_arp::scale::by_name("Minor")
+            .map(|d| mpfree_arp::scale::Scale::with_down(9, d.mask, d.down));
+        set.set_layout(mpfree_arp::scale::pads::PadLayout::Chords);
+        s.set_settings(set);
+        p.apply(ToUi::KitChanged {
+            kit: synth_kit,
+            view: s.kit_view(),
+        });
+        assert!(
+            chips(&p).contains(&"FM · A Minor · chord pads".to_string()),
+            "{:?}",
+            chips(&p)
+        );
+        assert_eq!(
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[0]
+                .label,
+            "i Am"
+        );
+        // The pads panel's heading has the switch, neither half lit for Chord pads.
+        let m = p.ui.get::<MiniPads>(play_page::PADS).unwrap();
+        assert_eq!(
+            m.synth.map(|s| (s.layout, s.scale)),
+            Some((mpfree_arp::scale::pads::PadLayout::Chords, true))
+        );
+        assert_eq!(
+            (m.title.as_str(), m.right.as_str()),
+            ("Synth · Bank A", "Synth: FM")
+        );
+        // The Pressure page's live bars.
+        p.apply(ToUi::SynthPressures(vec![0.5, 0.25]));
+        assert_eq!(p.synth.as_ref().unwrap().state.pressures, vec![0.5, 0.25]);
+    }
+
+    #[test]
     fn the_synth_page_shows_poly_and_sends_its_changes() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
@@ -4097,7 +5733,14 @@ mod tests {
             "{:?}",
             chips(&p)
         );
-        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[1].label, "C#3");
+        assert_eq!(
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[1]
+                .label,
+            "C#3"
+        );
         // The Synth tab is the third; the app decides, then the page shows.
         let header = p.ui.rect_of("header").unwrap();
         let synth_tab = p.ui.get::<Header>("header").unwrap().tab_rect(header, 2);
@@ -4136,16 +5779,23 @@ mod tests {
         assert_eq!(p.synth.as_ref().unwrap().state.values, s.values());
         // An octave up relabels the synth's pads and its chip.
         s.shift_octave(1);
-        p.apply(ToUi::KitPads {
+        p.apply(ToUi::KitChanged {
             kit: synth_kit,
-            pads: s.pad_labels(),
+            view: s.kit_view(),
         });
         assert!(
             chips(&p).contains(&"Poly · C4 to D#5".to_string()),
             "{:?}",
             chips(&p)
         );
-        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "C4");
+        assert_eq!(
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[0]
+                .label,
+            "C4"
+        );
         // Meters update the page's copy.
         let i = p
             .synth
@@ -4239,7 +5889,10 @@ mod tests {
             pad: 3,
             velocity: 90,
         });
-        let g = p.ui.get::<PadGrid>("pads").unwrap();
+        let g =
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap();
         assert!(!g.pads[3].held && g.pads[3].level == 1.0);
     }
 
@@ -4252,11 +5905,18 @@ mod tests {
         let fx = app.button(NOTE_REPEAT, true, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), QUICK_PAGE);
-        // A slim strip at the top of the column; the pads, level and timing stay put.
+        // A slim strip at the top of the view's first panel; the pads, the
+        // transport, the master bar and the Q-Links stay put, and the cards
+        // turn to the arp's.
         assert_eq!(p.ui.rect_of("pads").unwrap(), pads);
-        for name in ["level", "timing", "kits"] {
+        for name in [play_page::MASTER, play_page::QLINKS, play_page::TRANSPORT] {
             assert!(p.ui.rect_of(name).is_some(), "{name} stays");
         }
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(
+            (q.cards[0].name.as_str(), q.cards[3].name.as_str()),
+            ("Rate", "Octaves")
+        );
         let strip = p.ui.rect_of(arp_view::MINI).unwrap();
         assert_eq!(strip.h, arp_view::MINI_H);
         // Its + is a faster rate.
@@ -4276,6 +5936,12 @@ mod tests {
         let fx = app.button(NOTE_REPEAT, false, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
+        // With the repeat let go the header keeps to its chips; a double
+        // press latches it, and the arp chip shows.
+        assert_eq!(p.arp_chip, None);
+        let mut fx = app.button(NOTE_REPEAT, true, 0.1);
+        fx.extend(app.button(NOTE_REPEAT, false, 0.15));
+        apply_effects(&mut p, fx);
         // The arp chip, drawn once, opens the panel.
         let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
         p.ui.paint(&mut c);
@@ -4293,10 +5959,11 @@ mod tests {
         fx.extend(app.arp_poll());
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), ARP_PAGE);
+        let panel_pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(
-            p.ui.rect_of("pads").unwrap(),
-            pads,
-            "the panel takes the kit column too"
+            (panel_pads.x, panel_pads.w),
+            (pads.x, pads.w),
+            "the panel takes the left; the pads stay right"
         );
         assert_eq!(
             p.ui.get::<Header>("header").unwrap().active,
@@ -4320,7 +5987,7 @@ mod tests {
         let mut p = sample_player(Fonts::embedded());
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(
-            p.touch(1, Touch::Down, pads.x + 10, pads.bottom() - 10),
+            p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),
             Some(FromUi::Pad { pad: 0, down: true })
         );
         let mut app = sample_app();
@@ -4370,12 +6037,23 @@ mod tests {
         let fx = app.workspace_action(WsAction::Record(true));
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), RECORD_PAGE);
-        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[12].label, "Next");
+        assert_eq!(
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[12]
+                .label,
+            "Next"
+        );
         let fx = app.workspace_action(WsAction::Back);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), ARP_PAGE);
         assert_eq!(
-            p.ui.get::<PadGrid>("pads").unwrap().pads[0].label,
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .map(|m| &m.grid)
+                .unwrap()
+                .pads[0]
+                .label,
             "Kick",
             "the kit's names again"
         );

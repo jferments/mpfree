@@ -483,8 +483,9 @@ impl Player {
         master_out(left, right, master)
     }
 
-    /// The engine's sound alone, before the level: the pad player adds the
-    /// synth to it, then calls [`master_out`].
+    /// The engine's sound alone, every pad in one pair, before the level
+    /// (the tests; the pad player renders with [`Player::render_routed`]).
+    #[cfg(test)]
     pub fn render_dry(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -494,8 +495,6 @@ impl Player {
     /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
     /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
     /// [`Player::render_dry`] renders.
-    // The mixer's wiring (round 8) calls it; until then only the tests do.
-    #[allow(dead_code)]
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -503,7 +502,9 @@ impl Player {
 }
 
 /// The level, then the clip to full scale. Returns the peak before the
-/// clip (above 1.0 means the period clipped).
+/// clip (above 1.0 means the period clipped). The pad player's mixer does
+/// this now (the Level is its master fader, Master safety its limit).
+#[cfg(test)]
 pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
     let mut peak = 0f32;
     for s in left.iter_mut().chain(right.iter_mut()) {
