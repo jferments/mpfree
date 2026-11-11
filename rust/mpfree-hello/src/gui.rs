@@ -2696,7 +2696,8 @@ fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
         let beat = (f64::from(RATE) * 60.0 / BPM) as u64;
         let bar = 4 * beat;
         let len = 4 * bar;
-        let mut h = LoopHost::new(RATE, 20);
+        // Room for the three layers (each the loop's length).
+        let mut h = LoopHost::new(RATE, 40);
         let mut t = Transport::new(RATE, BPM).expect("a transport");
         let mut b = Block::new();
         h.command(L::SetBars(Some(4)));
