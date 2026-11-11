@@ -15,6 +15,8 @@
 //! - `--check-allocs` exits with status 2 if any engine allocated inside a
 //!   block (the counting allocator is installed in this program).
 //! - `--calibrate` times the reference kernels and prints a calibration file.
+//! - The "mem MB" column is what each engine holds once it is built (its
+//!   buffers, delay lines, sample memory), from the counting allocator.
 //!
 //! It only reads and computes: it opens no device, writes no file unless
 //! `--json` names one, and runs on one thread at normal priority.
@@ -88,7 +90,11 @@ struct Row {
     module: &'static str,
     what: &'static str,
     s: Summary,
+    mem_bytes: i64,
 }
+
+/// Megabytes (2^20 bytes), for the memory column.
+fn mb(bytes: i64) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
 
 fn esc(s: &str) -> String { s.replace('\\', "\\\\").replace('"', "\\\"") }
 
@@ -104,9 +110,9 @@ fn json(rows: &[Row], kernels: &[(String, f64)], blocks: u64) -> String {
     for (i, r) in rows.iter().enumerate() {
         let s = &r.s;
         let _ = write!(j, "{}\n    {{\"name\": \"{}\", \"module\": \"{}\", \"what\": \"{}\", \"blocks\": {}, \"mean_ns\": {:.0}, \"p50_ns\": {}, \
-                           \"p99_ns\": {}, \"p999_ns\": {}, \"max_ns\": {}, \"allocs\": {}}}",
+                           \"p99_ns\": {}, \"p999_ns\": {}, \"max_ns\": {}, \"allocs\": {}, \"mem_bytes\": {}}}",
                        if i > 0 { "," } else { "" }, esc(&r.name), r.module, esc(r.what), s.blocks, s.mean_ns, s.p50_ns, s.p99_ns,
-                       s.p999_ns, s.max_ns, s.allocs);
+                       s.p999_ns, s.max_ns, s.allocs, r.mem_bytes);
     }
     j.push_str("\n  ]\n}\n");
     j
@@ -164,7 +170,7 @@ fn main() -> ExitCode {
         (None, false) => println!("Desktop numbers only: pass --calibration FILE (from --calibrate on the MPC) for MPC estimates."),
     }
     println!();
-    println!("{:<38} {:>8} {:>8} {:>8} {:>7} {:>7}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %",
+    println!("{:<50} {:>8} {:>8} {:>8} {:>7} {:>7} {:>8}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %", "mem MB",
              if on_device || model.is_some() { "MPC worst vs module budget" } else { "" });
 
     let mut rows = Vec::new();
@@ -196,14 +202,14 @@ fn main() -> ExitCode {
         } else {
             String::new()
         };
-        println!("{:<38} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}%  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
-                 s.max_ns as f64 / 1e3, 100.0 * s.p99_ns as f64 / period_ns, 100.0 * s.max_ns as f64 / period_ns,
+        println!("{:<50} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}% {:>8.2}  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
+                 s.max_ns as f64 / 1e3, 100.0 * s.p99_ns as f64 / period_ns, 100.0 * s.max_ns as f64 / period_ns, mb(c.mem_bytes),
                  if s.allocs > 0 { format!("  ALLOCATES ({} calls)", s.allocs) } else { String::new() });
-        rows.push(Row { name: c.name, module: c.module, what: c.what, s });
+        rows.push(Row { name: c.name, module: c.module, what: c.what, s, mem_bytes: c.mem_bytes });
     }
 
     println!();
-    println!("Budgets (worst block, share of the period; proposal, see docs/project/profiling.md):");
+    println!("Budgets (worst block, share of the period; see docs/project/profiling.md):");
     for b in budget::MPC_BUDGETS {
         println!("  {:<8} {:>5.1} %  {:>6.0} us  {}", b.module, b.worst_pct, b.worst_ns(MPC) as f64 / 1e3, b.covers);
     }
