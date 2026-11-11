@@ -2,7 +2,9 @@
 //! play, and how the pads are laid out from a scale (owner, 2026-11-11;
 //! `docs/project/scales.md`, "The pads").
 //!
-//! - **Engine**: Poly or FM. The other engine's notes finish their release.
+//! - **Engine**: Poly, FM, Drums or Pluck. The other engine's notes finish
+//!   their release. Drums plays a sound on each pad from the kit's Pad 1
+//!   note, so the scale, layout and octave don't apply to it.
 //! - **Scale** and **Scale root**: the pads' own scale, Off until one is
 //!   picked (the arp has its own). With no scale every layout is plain
 //!   Chromatic, as in round 6.
@@ -110,10 +112,12 @@ impl App {
     pub(super) fn synth_item_help(item: SynthItem) -> Vec<&'static str> {
         match item {
             SynthItem::Engine => vec![
-                "The synth the pads play: Poly (subtractive)",
-                "or FM (six operators). A note still ringing",
-                "on the other one finishes its release. The",
-                "Synth tab shows the engine picked.",
+                "The synth the pads play: Poly (subtractive),",
+                "FM (six operators), Drums (a sound on each",
+                "pad; no scale or octave) or Pluck (strings",
+                "and mallets). A note still ringing on the",
+                "other one finishes its release. The Synth",
+                "tab shows the engine picked.",
             ],
             SynthItem::Scale => vec![
                 "The pads' own scale (the arp has its own).",

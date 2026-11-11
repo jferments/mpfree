@@ -2506,14 +2506,20 @@ mod tests {
                 _ => None,
             })
         };
-        // Engine: FM, and no further.
-        let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
-        assert_eq!(p.engine, Engine::Fm);
+        // Engine: FM, Drums, Pluck, and no further; then back to Poly.
+        for want in [Engine::Fm, Engine::Drums, Engine::Pluck] {
+            let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
+            assert_eq!(p.engine, want);
+        }
         assert_eq!(
             pads(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "FM is the last"
+            "Pluck is the last"
         );
+        for _ in 0..3 {
+            app.step_item(row(SynthItem::Engine), -1);
+        }
+        assert_eq!(app.synth_pads.engine, Engine::Poly);
         // No scale: the pads panel's In key only says so; Chromatic is already on.
         assert!(matches!(
             app.synth_pick_layout(true).as_slice(),

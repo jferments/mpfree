@@ -1099,6 +1099,19 @@ impl Player {
                 if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
                     g.hit(pad, velocity);
                 }
+                // With Drums on the pads, the Synth tab shows the page of
+                // the pad hit last, as the Sample page edits it.
+                let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+                if let Some(p) = self
+                    .synth
+                    .as_mut()
+                    .filter(|p| synth_plays && p.state.info.id == "mpfree.drums")
+                {
+                    let page = mpfree_synth_ui::pages::drum_page(pad);
+                    if p.page() != page {
+                        p.show_page(&mut self.ui, page);
+                    }
+                }
                 // The Sample page edits the pad hit last.
                 self.sample.hit(pad);
                 self.sample.hit_velocity(&mut self.ui, pad, velocity);
@@ -4121,6 +4134,45 @@ mod tests {
             EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         );
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    #[test]
+    fn with_drums_on_the_pads_the_synth_tab_follows_the_pad_hit_last() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        let mut s = crate::synth::Synth::new(44_100);
+        let mut set = s.settings();
+        set.engine = crate::synth::Engine::Drums;
+        s.set_settings(set);
+        p.apply(ToUi::Synth(s.state()));
+        p.apply(ToUi::KitChanged {
+            kit: synth_kit,
+            view: s.kit_view(),
+        });
+        let page = |p: &Player| p.synth.as_ref().unwrap().page();
+        // A sample kit plays the pads: the Synth tab stays put.
+        p.apply(ToUi::PadDown {
+            pad: 5,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), 0);
+        p.apply(ToUi::Kit(synth_kit));
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "Kick");
+        p.apply(ToUi::PadDown {
+            pad: 5,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), mpfree_synth_ui::pages::drum_page(5));
+        assert_eq!(p.synth.as_ref().unwrap().pages()[page(&p)].name, "Pad 6");
+        // Another engine's pages don't move with the pads.
+        set.engine = crate::synth::Engine::Pluck;
+        s.set_settings(set);
+        p.apply(ToUi::Synth(s.state()));
+        p.apply(ToUi::PadDown {
+            pad: 2,
+            velocity: 100,
+        });
+        assert_eq!(page(&p), 0);
     }
 
     #[test]
