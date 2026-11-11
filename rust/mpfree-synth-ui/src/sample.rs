@@ -5,7 +5,7 @@
 use crate::view::{SynthPanel, SynthState};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeInfo, ParamInfo, Timed, Unit};
 use mpfree_synth::params as pp;
-use mpfree_synth::Poly;
+use mpfree_synth::{Fm, Poly};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -100,8 +100,33 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     for s in &scenes {
         out.push(poly_scene(s, fonts())?);
     }
+    for (name, about, preset, page) in [
+        ("synth-fm-algo", "FM · Brass Section, Algo page: algorithm 22, feedback 7", "Brass Section", "Algo"),
+        ("synth-fm-op", "FM · Glass Keys, Op 2 page: the ratio-14 tine", "Glass Keys", "Op 2"),
+        ("synth-fm-kbd", "FM · Glass Keys, Kbd 1-2 page: keyboard scaling", "Glass Keys", "Kbd 1-2"),
+    ] {
+        out.push(fm_scene(name, about, preset, page, fonts())?);
+    }
     out.push(generic_scene(fonts())?);
     Ok(out)
+}
+
+const FM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Keys track";
+
+/// FM with a factory preset, on one of its pages.
+fn fm_scene(name: &'static str, about: &'static str, preset: &str, page: &str, fonts: Fonts) -> Result<Sample, String> {
+    let presets = Fm::presets();
+    let i = presets.iter().position(|p| p.name == preset).ok_or_else(|| format!("no FM preset {preset}"))?;
+    let mut node = Fm::new(48_000);
+    node.load_preset(&presets[i]);
+    let names = presets.iter().map(|p| p.name.clone()).collect();
+    let st = SynthState::from_node(&node, "Keys", Color::rgb(0x6EA8FE), names, Some(i));
+    let mut ui = app_ui(fonts, FM_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel.pages().iter().position(|p| p.name == page).ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample { name, about, ui, panel })
 }
 
 // ---------------------------------------------------------------- example effect

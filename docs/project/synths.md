@@ -1,6 +1,6 @@
-# Synths: the node interface and the Poly synth
+# Synths: the node interface, Poly and FM
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths; Poly first). Nothing here is wired to the pad player or has run on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
+**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, then FM). Nothing here is wired to the pad player or has run on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
 
 ## The node interface (`mpfree-node`)
 
@@ -34,6 +34,23 @@ A subtractive synth:
 
 Timing: oscillators, drive, filters, the amp envelope and the steal fade run every frame. Smoothing, the LFO, the filter envelope, glide, pitch and the filter coefficients run once every 16 frames, on frames divisible by 16.
 
+## FM (`mpfree-synth`, `Fm`)
+
+A six-operator FM synth in the DX7's mould. It is DX7-style, not a bit-exact clone: the numbers come from published descriptions of the DX7 (the operator level table, the envelope rate formula, the keyboard scaling curves), and where the original is not public (the LFO speed curve, the pitch envelope's tables, detune) the values are close approximations.
+
+- **Operators:** six sines, each with a ratio (coarse 0 to 31, fine) or a fixed frequency, detune, an output level (0 to 99), a four-rate, four-level envelope, velocity sensitivity, keyboard level scaling (break point, left and right depth and curve), rate scaling and amplitude modulation from the LFO. Each operator can be switched off.
+- **Algorithms:** the DX7's 32 ways of wiring them, with feedback 0 to 7 on one operator or, for algorithms 4 and 6, around a loop of two or three. Feedback averages the last two samples, as the DX7 does, so it stays stable at 7.
+- **Envelopes:** in decibels, falling at a constant rate, with the attack curving over as it nears its level. Rates and levels from 0 to 99 mean what they mean on a DX7.
+- **Global:** a pitch envelope, an LFO (triangle, saw down, saw up, square, sine, sample-and-hold; speed, delay, pitch and amplitude depth, key sync), transpose, oscillator key sync, poly (1 to 16) or mono with a note stack, bend range, pad pressure for extra vibrato, and an output level.
+- **Level:** one carrier at full level is about -12 dBFS. A voice with more carriers is scaled by 1/sqrt(carriers), so changing the algorithm doesn't jump the volume. The output level glides while notes sound and jumps straight to a new value when nothing sounds, so loading a preset never starts with a swell.
+- **Voices:** a stolen voice fades out over 3 ms in one of 4 spare slots, like Poly.
+- **Presets:** Init (one sine), Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad and Steel Pluck. Each plays a chord between -11 and -6 dBFS peak.
+- **DX7 banks** (`dx7`): reads a player's own .syx files, a 32-voice bank (4104 bytes) or a single voice (163 bytes), checks the checksum and maps every byte onto FM parameters; it can also write a bank back. Names are 10 characters, as on a DX7, and the bank has no output level, so imported voices play at 0 dB. Only voice data is read; nothing is sent to any device. MPFree ships no Yamaha voices.
+
+Timing: operators run every frame. Envelopes, pitch and the LFO run once every 16 frames, on frames divisible by 16, with operator gains ramped across each step.
+
+**On the Synth tab** FM has its own pages: Algo (algorithm, feedback, transpose, level, voices), Mod (LFO and pitch envelope), Op 1 to Op 6 (each operator's frequency, level, envelope and velocity; the Q-Links turn output, coarse, fine and velocity) and Kbd 1-2, 3-4 and 5-6 (keyboard scaling, two operators a page). Every FM parameter is on exactly one page. `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the samples `synth-fm-algo`, `synth-fm-op` and `synth-fm-kbd`. FM isn't in the pad player yet; Poly is the pads' synth for round 6.
+
 ## Tests
 
 - `mpfree-node`: curves round-trip, clamping, description checks, event splitting, smoothing.
@@ -50,19 +67,30 @@ Timing: oscillators, drive, filters, the amp envelope and the steal fade run eve
   - parameter descriptions and every preset value are valid
   - every preset plays a chord between -30 and -1 dBFS and is silent at the end
   - a tempo-synced square LFO on the level changes on the beat
-- `tests/no_alloc.rs`: a counting allocator watches 4000 blocks of random notes, pressure, bend, parameter changes over every parameter, AllOff and a reset, and sees no allocation or free.
+- `mpfree-synth/tests/fm.rs`, 18 tests:
+  - the same busy phrase test as Poly (chords, feedback, the pitch envelope, the LFO, pressure, bend, automation, more notes than voices, AllOff, mono) is bit-identical at every block size
+  - A4 at 440 Hz; the Init voice peaks near -12 dBFS; instruments add to the buffer; voices end after release and AllOff
+  - every algorithm has the DX7's carriers, and every route feeds downward or through its feedback loop
+  - a modulator adds harmonics and feedback adds more; ratio, fixed and detune frequencies are right
+  - a decay falls at a steady rate in decibels; velocity sensitivity scales the level; keyboard level and rate scaling follow the note
+  - the pitch envelope starts away from the note and settles on it
+  - the voice limit holds and stealing makes no click; mono plays legato and returns to the held key
+  - extreme settings stay finite; descriptions and presets are valid; every preset plays a chord at a sane level and ends
+  - a DX7 bank written from the presets loads back and plays
+- `tests/no_alloc.rs`: a counting allocator watches 4000 blocks of random notes, pressure, bend, parameter changes over every parameter, AllOff and a reset, and sees no allocation or free. It runs Poly and FM.
 - `dsp` unit tests: oscillator bounds, envelope stages, low-pass and high-pass responses.
 
 ## Listening and timing
 
 - `cargo run --release -p mpfree-synth --example render [out.wav]` writes `~/mpfree-work/synth-demo.wav`: 9 bars at 92 BPM with synthesised drums, where Grit Bass, Acid (a cutoff sweep by automation), Dust Pad, Supersaw and Lead come in one after another, then a final chord rings out. It prints a timeline, each part's level per bar, checks each part sounds only where it should, and trims the master to -1 dBFS. The parts run through `Node::process` in 128-frame blocks.
-- `cargo run --release -p mpfree-synth --example bench` times one 128-frame block with 1 to 16 voices and unison 1 or 4. On the build host (an x86 desktop core) 16 voices take 3.6 % of real time at unison 1 and 5.6 % at unison 4. The MPC One's Cortex-A17 is slower; it needs its own run before voice limits are set.
+- `cargo run --release -p mpfree-synth --example fm_render [out.wav]` writes `~/mpfree-work/fm-demo.wav`: 9 bars at 92 BPM with the same drums. Rubber Bass plays all the way through; Log Drum comes in for bars 3 and 4 (velocity drives its modulator); Glass Keys chords and Brass Section stabs (algorithm 22 and its pitch envelope) take bars 5 and 6; Bell Tower (with a bend down a semitone and back) and Steel Pluck, read back from a DX7 bank written from the presets, take bars 7 and 8; the final chord rings out. It checks the same things as the Poly demo, plus that the end is quiet and no voice is left on.
+- `cargo run --release -p mpfree-synth --example bench` times one 128-frame block with 1 to 16 voices: Poly at unison 1 or 4, and FM's Brass Section and Glass Keys. On the build host (an x86 desktop core) 16 voices take 3.6 % of real time for Poly at unison 1, 5.6 % at unison 4, and about 2.5 % for FM. The MPC One's Cortex-A17 is slower; it needs its own run before voice limits are set.
 
 ## The Synth tab (`rust/mpfree-synth-ui`)
 
 The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works for any `Node`, so hosted plugins and effects get the same page.
 
-- **Pages.** A native engine names its pages and what its Q-Links turn (Poly: Osc, Filter, Env, LFO, Voice). Any other node gets pages from its `ParamInfo` groups: consecutive groups share a page up to 12 tiles, and a group bigger than 16 is split. Every parameter is on exactly one page.
+- **Pages.** A native engine names its pages and what its Q-Links turn (Poly: Osc, Filter, Env, LFO, Voice; FM: see above). Any other node gets pages from its `ParamInfo` groups: consecutive groups share a page up to 12 tiles, and a group bigger than 16 is split. Every parameter is on exactly one page.
 - **Tiles.** Continuous and whole-number parameters are knobs; a bipolar one fills from the top. Choices of up to four show as buttons when they fit, otherwise as the chosen name with arrows. Toggles are switches. Read-only parameters are live meters. A tile's label carries its group when the group isn't the page's ("Env · Attack" on the Filter page).
 - **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. Other nodes get the plain layout without cards.
 - **Control.**
@@ -90,5 +118,6 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 ## Next
 
 - A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
-- FM (6 operators, DX7 banks), then a drum synth for the pads.
+- FM on the pads: an FM choice next to Poly in the pad player, and an algorithm diagram card on its Algo page.
+- A drum synth for the pads.
 - Plugin hosting: CLAP first, in a sandbox process.
