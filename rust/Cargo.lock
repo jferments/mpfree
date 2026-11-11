@@ -575,6 +575,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-node"
 version = "0.1.0"
+dependencies = [
+ "mpfree-tuning",
+]
 
 [[package]]
 name = "mpfree-param"
@@ -699,6 +702,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-node",
+ "mpfree-tuning",
 ]
 
 [[package]]
@@ -749,6 +753,10 @@ version = "0.1.0"
 dependencies = [
  "mpfree-core",
 ]
+
+[[package]]
+name = "mpfree-tuning"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-ui"
