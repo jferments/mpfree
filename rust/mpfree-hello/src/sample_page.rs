@@ -1,6 +1,8 @@
 //! The Sample tab: the sampler's pad editor (`mpfree-sampler-ui`) on the pad
-//! player's kits. It has the Wave tab (Start, End, the loop, the fades and
-//! the region's settings), the Chop tab (slices by transients, beats, a
+//! player's kits. It has the Pads tab (the kit's pads on a compact map, to
+//! pick one, copy, paste or clear it, set it up and put the kit's sounds on
+//! it), the Wave tab (Start, End, the loop, the fades and the region's
+//! settings), the Chop tab (slices by transients, beats, a
 //! grid, silence or by hand, put on the kit's pads) and the Play tab (the
 //! layers' velocities, the amp envelope, the filter, voices, mute group,
 //! pressure); Grain and FX come later. The pad bar's tabs switch between
@@ -8,8 +10,10 @@
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
-//! - The tab edits the playing kit's pad that was hit last. SHIFT + wheel
-//!   and - / + pick the previous or next pad with a sound.
+//! - The tab edits the playing kit's pad that was hit last, or tapped on the
+//!   Pads tab's map. SHIFT + wheel and - / + pick the previous or next pad
+//!   with a sound. A pad without a sound shows the Pads tab, where a sound
+//!   can be put on it.
 //! - An edit changes the project here (drags and turns merge into one undo
 //!   step each), then the kit's engine view is built again here and sent to
 //!   the audio thread in a box ([`SamplePage::take_view`]). The audio thread
@@ -33,8 +37,9 @@ use std::time::{Duration, Instant};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{ChannelPick, Fade, LoopMode, Pad, PlayMode, Project, Region, SourceId};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
+use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
-use mpfree_sampler_ui::wave_tab::{duration_text, mode_label, WaveAction, WaveState, WaveTab};
+use mpfree_sampler_ui::wave_tab::{self, duration_text, mode_label, WaveAction, WaveState, WaveTab};
 use mpfree_sampler_ui::SourceView;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{Tone, Ui, UiEvent};
@@ -49,7 +54,9 @@ pub const PAGE: &str = "Sample";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 /// The Play tab's page.
 pub const PLAY_PAGE: &str = "Sample · Play";
-/// The page shown when the pad has no sound (or the synth has the pads).
+/// The Pads tab's page.
+pub const PADS_PAGE: &str = "Sample · Pads";
+/// The page shown while the kits load, or while the synth has the pads.
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
 pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
@@ -58,6 +65,7 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 pub const PREFIX: &str = "smp-";
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
+const PADS_PREFIX: &str = "smp-pads-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -73,11 +81,14 @@ struct Gesture {
 enum Before {
     Region(Region),
     Pad(Box<Pad>),
+    /// A pad on the Pads tab, which may have had no sound.
+    Slot(Option<Box<Pad>>),
 }
 
 /// The pad editor's tab on show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
+    Pads,
     Wave,
     Chop,
     Play,
@@ -103,6 +114,9 @@ pub struct SamplePage {
     play_state: Option<PlayState>,
     /// The shown pad's last hit, for the Play tab's layer map.
     velocity: Option<u8>,
+    /// The Pads tab, added the first time it shows.
+    pads: Option<PadsTab>,
+    pads_state: Option<PadsState>,
     /// A kit whose pads were renamed or replaced, for the Play page.
     renamed: Option<usize>,
     /// The kit or pad changed since the page was last built.
@@ -130,7 +144,8 @@ impl SamplePage {
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
         let mut p = SamplePage { projects: Vec::new(), names: Vec::new(), rate: 44_100, sources: HashMap::new(), kit: 0,
                                  pad: 0, tab: None, state: None, editor: Editor::Wave, chop: None, chop_state: None,
-                                 play: None, play_state: None, velocity: None, renamed: None, stale: true, dirty: Vec::new(), in_flight: false,
+                                 play: None, play_state: None, velocity: None, pads: None, pads_state: None,
+                                 renamed: None, stale: true, dirty: Vec::new(), in_flight: false,
                                  auditioning: None, last_turn: None, gesture: None, shown_heads: Vec::new(),
                                  lines: Vec::new(), edits: 0, views_sent: 0 };
         p.show_empty(ui);
@@ -189,6 +204,7 @@ impl SamplePage {
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
+        self.light(ui, pad, true);
         if pad != self.pad {
             return;
         }
@@ -231,6 +247,22 @@ impl SamplePage {
         self.chop.as_ref().zip(self.chop_state.as_ref())
     }
 
+    /// A pad let go: the Pads tab's map stops lighting it.
+    pub fn pad_up(&mut self, ui: &mut Ui, pad: usize) {
+        self.light(ui, pad, false);
+    }
+
+    fn light(&mut self, ui: &mut Ui, pad: usize, down: bool) {
+        if let (Some(tab), Some(st)) = (self.pads.as_ref(), self.pads_state.as_ref()) {
+            tab.set_lit(ui, st, pad, down);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn pads(&self) -> Option<(&PadsTab, &PadsState)> {
+        self.pads.as_ref().zip(self.pads_state.as_ref())
+    }
+
     #[cfg(test)]
     pub fn play(&self) -> Option<(&PlayTab, &PlayState)> {
         self.play.as_ref().zip(self.play_state.as_ref())
@@ -241,13 +273,15 @@ impl SamplePage {
         self.editor
     }
 
-    /// The page to show: the editor's tab, or the one for a pad without a
-    /// sound.
+    /// The page to show: the editor's tab; the Pads tab for a pad without
+    /// a sound; or the page that says the kits are loading or the synth
+    /// has the pads.
     pub fn page(&self) -> &'static str {
         match self.editor {
             Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
+            _ if self.pads_state.is_some() && self.pads.is_some() => PADS_PAGE,
             _ => EMPTY_PAGE,
         }
     }
@@ -290,6 +324,10 @@ impl SamplePage {
         if self.editor == Editor::Play {
             self.refresh_play(ui, bank);
         }
+        self.pads_state = None;
+        if self.editor == Editor::Pads || self.state.is_none() {
+            self.refresh_pads(ui, bank);
+        }
         if self.page() == EMPTY_PAGE {
             self.show_empty(ui);
         }
@@ -324,6 +362,33 @@ impl SamplePage {
                 }
             },
         }
+    }
+
+    fn refresh_pads(&mut self, ui: &mut Ui, bank: Option<char>) {
+        let Some(project) = self.projects.get(self.kit) else { return };
+        let st = PadsState::from_project(project, self.pad);
+        let kit = match self.names.get(self.kit) {
+            Some(n) => format!("Kit {} · {n}", self.kit + 1),
+            None => format!("Kit {}", self.kit + 1),
+        };
+        match self.pads.as_mut() {
+            Some(tab) => {
+                (tab.bank, tab.kit) = (bank, kit);
+                tab.update(ui, &st);
+            }
+            None => match PadsTab::add(ui, PADS_PAGE, &st) {
+                Ok(mut tab) => {
+                    (tab.bank, tab.kit) = (bank, kit);
+                    tab.update(ui, &st);
+                    self.pads = Some(tab);
+                }
+                Err(e) => {
+                    self.lines.push(format!("sample: no Pads page ({e})"));
+                    return;
+                }
+            },
+        }
+        self.pads_state = Some(st);
     }
 
     fn refresh_play(&mut self, ui: &mut Ui, bank: Option<char>) {
@@ -415,17 +480,25 @@ impl SamplePage {
             }
             return;
         }
+        if ev.widget.starts_with(PADS_PREFIX) {
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            if let Some(a) = tab.action(ui, ev, st) {
+                self.act_pads(ui, a, out);
+            }
+            return;
+        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else { return };
         if let Some(a) = tab.action(ui, ev, st) {
             self.act(ui, a, out);
         }
     }
 
-    /// Opens the editor's tab `i` (Wave, Chop or Play; the others aren't
-    /// built).
+    /// Opens the editor's tab `i` (Pads, Wave, Chop or Play; the others
+    /// aren't built).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
-            0 => Editor::Wave,
+            pads_tab::TAB => Editor::Pads,
+            wave_tab::TAB => Editor::Wave,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
             _ => return,
@@ -467,6 +540,49 @@ impl SamplePage {
                                                 if n == 1 { "" } else { "s" }));
                     }
                     Err(e) => self.lines.push(format!("sample: chop of pad {} not made ({e:?})", self.pad_text(kit, *pad))),
+                }
+                self.refresh(ui);
+            }
+        }
+    }
+
+    fn act_pads(&mut self, ui: &mut Ui, a: PadsAction, out: &mut Vec<FromUi>) {
+        if !matches!(a, PadsAction::Tab(_)) {
+            // Working on the Pads tab (shown for a pad without a sound, too)
+            // keeps it open.
+            self.editor = Editor::Pads;
+        }
+        match &a {
+            PadsAction::Tab(i) => self.open(ui, *i),
+            PadsAction::Pick(pad) => {
+                self.hit(*pad);
+                self.refresh(ui);
+            }
+            PadsAction::Audition { pad, down } => out.push(FromUi::Pad { pad: *pad, down: *down }),
+            PadsAction::Set { pad, gesture, .. } => {
+                let (kit, pad, gesture) = (self.kit, *pad, *gesture);
+                let before = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned().map(Box::new);
+                if self.gesture.as_ref().is_some_and(|g| Some(g.id) != gesture) {
+                    self.lift();
+                }
+                let one_step = gesture.is_none();
+                if self.gesture.is_none() {
+                    self.gesture = Some(Gesture { id: gesture.unwrap_or(u64::MAX), kit, pad, before: Before::Slot(before) });
+                }
+                let Some(project) = self.projects.get_mut(kit) else { return };
+                match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        self.renamed = Some(kit);
+                    }
+                    Err(e) => self.lines.push(format!("sample: edit of pad {} not made ({e:?})", self.pad_text(kit, pad))),
+                }
+                if one_step {
+                    // Copy, paste, clear and put are a step each: log it now.
+                    self.lift();
                 }
                 self.refresh(ui);
             }
@@ -516,6 +632,13 @@ impl SamplePage {
     /// Resonance.
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
+        if self.page() == PADS_PAGE {
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            if let Some(a) = tab.qlink(ui, st, knob, ticks) {
+                self.act_pads(ui, a, &mut Vec::new());
+            }
+            return;
+        }
         if self.editor == Editor::Play {
             let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else { return };
             if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
@@ -547,7 +670,16 @@ impl SamplePage {
     /// The data wheel: zoom round the marker last moved or the slice picked
     /// (Wave, Chop), or change the row picked (Play).
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
+        if self.page() == PADS_PAGE {
+            self.turned();
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            if let Some(a) = tab.wheel(ui, st, delta) {
+                self.act_pads(ui, a, &mut Vec::new());
+            }
+            return;
+        }
         match self.editor {
+            Editor::Pads => {}
             Editor::Play => {
                 self.turned();
                 let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else { return };
@@ -621,8 +753,20 @@ impl SamplePage {
         if let Some(tab) = self.play.as_mut() {
             tab.lift();
         }
+        if let Some(tab) = self.pads.as_mut() {
+            tab.lift();
+        }
         self.last_turn = None;
         let Some(g) = self.gesture.take() else { return };
+        if let Before::Slot(before) = &g.before {
+            let after = self.projects.get(g.kit).and_then(|p| p.pad(g.pad));
+            let what = describe_slot(before.as_deref(), after);
+            if !what.is_empty() {
+                let kit = self.kit_text_of(g.kit);
+                self.lines.push(format!("sample: {kit} pad {}: {what}", self.pad_text(g.kit, g.pad)));
+            }
+            return;
+        }
         let Some(after) = self.projects.get(g.kit).and_then(|p| p.pad(g.pad)) else { return };
         let what = match &g.before {
             Before::Region(before) => {
@@ -630,6 +774,7 @@ impl SamplePage {
                 describe(before, &l.region, self.rate)
             }
             Before::Pad(before) => play_tab::describe(before, after),
+            Before::Slot(_) => String::new(),
         };
         if !what.is_empty() {
             let name = self.projects[g.kit].pad(g.pad).map_or(String::new(), |p| p.name.clone());
@@ -717,8 +862,8 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            // The Play tab draws no playheads.
-            Editor::Play => {}
+            // The Play and Pads tabs draw no playheads.
+            Editor::Play | Editor::Pads => {}
         }
         self.shown_heads = frames;
     }
@@ -726,6 +871,35 @@ impl SamplePage {
     /// Lines for the log since the last call.
     pub fn take_lines(&mut self) -> Vec<String> {
         std::mem::take(&mut self.lines)
+    }
+}
+
+/// What a Pads tab edit did to a pad, for the log: "now plays Hat closed",
+/// "cleared (was Break 92)", "Break 92 -> Kick 58", or the settings that
+/// changed. Empty if nothing did.
+pub fn describe_slot(before: Option<&Pad>, after: Option<&Pad>) -> String {
+    match (before, after) {
+        (None, None) => String::new(),
+        (None, Some(a)) => format!("now plays {}", a.name),
+        (Some(b), None) => format!("cleared (was {})", b.name),
+        (Some(b), Some(a)) if b.layers.first().map(|l| l.region.source) != a.layers.first().map(|l| l.region.source) => {
+            format!("{} -> {}", b.name, a.name)
+        }
+        (Some(b), Some(a)) => {
+            let mut what = Vec::new();
+            if b.layers.first().map(|l| l.region.mode) != a.layers.first().map(|l| l.region.mode) {
+                let m = |p: &Pad| p.layers.first().map_or("", |l| mode_label(l.region.mode));
+                what.push(format!("mode {} -> {}", m(b), m(a)));
+            }
+            let settings = play_tab::describe(b, a);
+            if !settings.is_empty() {
+                what.push(settings);
+            }
+            if what.is_empty() && b != a {
+                what.push(format!("now a copy of {}", a.name));
+            }
+            what.join(", ")
+        }
     }
 }
 
