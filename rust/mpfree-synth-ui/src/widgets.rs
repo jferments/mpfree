@@ -61,6 +61,9 @@ pub struct TitleBar {
 /// Width of one page tab.
 pub const TAB_W: i32 = 92;
 
+/// Below this width a tab gets a smaller font and a width by its name.
+const NARROW_TAB: i32 = 70;
+
 impl TitleBar {
     pub fn new() -> TitleBar {
         TitleBar { swatch: QLINK_COLORS[1], title: String::new(), subtitle: String::new(), tabs: Vec::new(), active: 0 }
@@ -77,7 +80,17 @@ impl TitleBar {
         let pill = self.tabs_rect(r).inset(4);
         let n = self.tabs.len().max(1) as i32;
         let w = pill.w / n;
-        Rect::new(pill.x + i as i32 * w, pill.y, if i as i32 == n - 1 { pill.w - w * (n - 1) } else { w }, pill.h)
+        if w >= NARROW_TAB {
+            return Rect::new(pill.x + i as i32 * w, pill.y, if i as i32 == n - 1 { pill.w - w * (n - 1) } else { w }, pill.h);
+        }
+        // Many pages (FM has twelve): each tab gets room by its name's
+        // length, so "Pressure" and "Kbd 1-2" stay whole beside "Op 1".
+        let weight = |k: usize| self.tabs.get(k).map_or(1, |t| t.chars().count() as i32 + 3);
+        let total: i32 = (0..self.tabs.len()).map(weight).sum::<i32>().max(1);
+        let x0: i32 = (0..i).map(weight).sum();
+        let left = pill.x + pill.w * x0 / total;
+        let right = if i as i32 == n - 1 { pill.right() } else { pill.x + pill.w * (x0 + weight(i)) / total };
+        Rect::new(left, pill.y, right - left, pill.h)
     }
 }
 
@@ -103,9 +116,10 @@ impl Widget for TitleBar {
             return;
         }
         cx.canvas.fill_round_rect(pill, 12, t.bg);
-        // Many pages (FM has eleven) make narrow tabs: a smaller font keeps
+        // Many pages (FM has twelve) make narrow tabs: a smaller font keeps
         // names like "Kbd 1-2" whole.
-        let size = if self.tab_rect(r, 0).w < 70 { t.size_small } else { t.size_body - 1.0 };
+        let pill = self.tabs_rect(r).inset(4);
+        let size = if pill.w / (self.tabs.len() as i32) < NARROW_TAB { t.size_small } else { t.size_body - 1.0 };
         for (i, name) in self.tabs.iter().enumerate() {
             let c = self.tab_rect(r, i);
             let on = i == self.active;
@@ -153,6 +167,11 @@ pub struct Card {
     pub midline: bool,
     /// A marker dot on the first curve, at this x.
     pub dot: Option<f32>,
+    /// Vertical bars from the bottom, each 0 to 1 high, spread across the
+    /// plot (live pressure per voice). An empty slot shows as a faint stub.
+    pub bars: Vec<f32>,
+    /// The bars' colour.
+    pub bar_color: Option<Color>,
     /// The card belongs to the page shown.
     pub active: bool,
 }
@@ -216,6 +235,18 @@ impl Widget for Visuals {
             }
             if card.midline {
                 cx.canvas.fill_rect(Rect::new(p.x, p.y + p.h / 2, p.w, 1), t.outline);
+            }
+            if !card.bars.is_empty() {
+                let n = card.bars.len() as i32;
+                let slot = (p.w / n).max(1);
+                let bw = (slot * 2 / 3).max(2);
+                let color = card.bar_color.unwrap_or(t.accent);
+                for (k, &b) in card.bars.iter().enumerate() {
+                    let h = ((b.clamp(0.0, 1.0) * p.h as f32).round() as i32).max(2);
+                    let x = p.x + k as i32 * slot + (slot - bw) / 2;
+                    let c = if b > 0.0 { color } else { t.outline };
+                    cx.canvas.fill_rect(Rect::new(x, p.bottom() - h, bw, h), c);
+                }
             }
             let clip = cx.canvas.clip();
             cx.canvas.set_clip(clip.intersect(p.inset_xy(-2, -2)));
