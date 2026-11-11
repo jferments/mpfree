@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-node"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The shared audio-node interface for MPFree instruments and effects: timed events, parameter descriptions, real-time rules"
+
+[dependencies]
