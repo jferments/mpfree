@@ -3,7 +3,7 @@
 //! drags change the region in a real project, one undo step each.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{GrainWindow, PlayMode};
+use mpfree_sampler::model::{GrainWindow, PlayMode, Project};
 use mpfree_sampler_ui::grain_tab::{
     self, describe, size_at, size_place, GrainAction, GrainState, Row,
 };
@@ -25,6 +25,16 @@ fn grain(granular: bool) -> GrainSample {
     let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
     s.ui.paint(&mut c);
     s
+}
+
+/// How many undo steps the project holds (undone on a copy).
+fn undo_steps(p: &Project) -> usize {
+    let mut p = p.clone();
+    let mut n = 0;
+    while p.undo() {
+        n += 1;
+    }
+    n
 }
 
 fn row_value(s: &GrainSample, row: Row) -> String {
@@ -211,7 +221,7 @@ fn a_layer_that_doesnt_play_grains_says_how_and_mode_turns_it_on() {
 #[test]
 fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let mut s = grain(true);
-    let steps = s.project.history_len();
+    let steps = undo_steps(&s.project);
     let a = step(&mut s, Row::Spray, 1).unwrap();
     let g = gesture(&a);
     apply(&mut s, &a);
@@ -219,11 +229,11 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     assert_eq!(gesture(&b), g, "the same row again is the same undo step");
     apply(&mut s, &b);
     assert_eq!(row_value(&s, Row::Spray), "26 %");
-    assert_eq!(s.project.history_len(), steps + 1);
+    assert_eq!(undo_steps(&s.project), steps + 1);
     let c = step(&mut s, Row::Reverse, -1).unwrap();
     assert_ne!(gesture(&c), g, "another row is a new step");
     apply(&mut s, &c);
-    assert_eq!(s.project.history_len(), steps + 2);
+    assert_eq!(undo_steps(&s.project), steps + 2);
     s.project.undo();
     s.project.undo();
     assert_eq!(
@@ -234,7 +244,7 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let mut s = grain(true);
     for (row, delta, value) in [
         (Row::Scan, 1, "0.5×"),
-        (Row::Scan, -3, "0.125×"),
+        (Row::Scan, -3, "Frozen"),
         (Row::PitchSpray, 2, "±1.5 st"),
         (Row::Window, 1, "Tukey 0.2"),
         (Row::Window, -9, "Hann"),
@@ -243,7 +253,7 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Quantise, -9, "Off"),
         (Row::Position, -1, "55.0 %"),
         (Row::Size, 1, "200 ms"),
-        (Row::Size, -2, "100 ms"),
+        (Row::Size, -2, "120 ms"),
         (Row::Density, 1, "150 /s"),
         (Row::Density, 9, "200 /s"),
         (Row::Pitch, 3, "-2 st"),
