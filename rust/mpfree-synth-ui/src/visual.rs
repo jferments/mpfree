@@ -27,8 +27,20 @@ fn wave(shape: f32, t: f32, pw: f32) -> f32 {
     let t = t.rem_euclid(1.0);
     match shape.round() as i32 {
         0 => 1.0 - 2.0 * t,
-        1 => if t < pw { 1.0 } else { -1.0 },
-        2 => if t < 0.5 { 4.0 * t - 1.0 } else { 3.0 - 4.0 * t },
+        1 => {
+            if t < pw {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        2 => {
+            if t < 0.5 {
+                4.0 * t - 1.0
+            } else {
+                3.0 - 4.0 * t
+            }
+        }
         _ => (2.0 * PI * t).sin(),
     }
 }
@@ -37,9 +49,19 @@ fn wave(shape: f32, t: f32, pw: f32) -> f32 {
 /// pitch relative to oscillator 1. Each is scaled by its level. Empty when
 /// the oscillator's level is zero.
 pub fn oscillators(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
-    let o1 = (v.get(p::OSC1_WAVE), v.get(p::OSC1_PW) / 100.0, v.get(p::OSC1_LEVEL) / 100.0, v.get(p::OSC1_OCT));
-    let o2 = (v.get(p::OSC2_WAVE), v.get(p::OSC2_PW) / 100.0, v.get(p::OSC2_LEVEL) / 100.0);
-    let semis = 12.0 * (v.get(p::OSC2_OCT) - o1.3) + v.get(p::OSC2_SEMI) + v.get(p::OSC2_FINE) / 100.0;
+    let o1 = (
+        v.get(p::OSC1_WAVE),
+        v.get(p::OSC1_PW) / 100.0,
+        v.get(p::OSC1_LEVEL) / 100.0,
+        v.get(p::OSC1_OCT),
+    );
+    let o2 = (
+        v.get(p::OSC2_WAVE),
+        v.get(p::OSC2_PW) / 100.0,
+        v.get(p::OSC2_LEVEL) / 100.0,
+    );
+    let semis =
+        12.0 * (v.get(p::OSC2_OCT) - o1.3) + v.get(p::OSC2_SEMI) + v.get(p::OSC2_FINE) / 100.0;
     let ratio = 2f32.powf(semis / 12.0).clamp(1.0 / 16.0, 16.0);
     let trace = |shape: f32, pw: f32, level: f32, cycles: f32| -> Vec<(f32, f32)> {
         if level <= 0.0 {
@@ -52,7 +74,10 @@ pub fn oscillators(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
             })
             .collect()
     };
-    [trace(o1.0, o1.1, o1.2, 2.0), trace(o2.0, o2.1, o2.2, 2.0 * ratio)]
+    [
+        trace(o1.0, o1.1, o1.2, 2.0),
+        trace(o2.0, o2.1, o2.2, 2.0 * ratio),
+    ]
 }
 
 /// The lowest and highest frequency the filter view shows (log scale).
@@ -115,7 +140,11 @@ pub fn filter(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
             .collect()
     };
     let peak = (fc * 2f32.powf(env)).clamp(F_LO, F_HI);
-    let moved = if (peak / fc - 1.0).abs() > 0.01 { curve(peak) } else { Vec::new() };
+    let moved = if (peak / fc - 1.0).abs() > 0.01 {
+        curve(peak)
+    } else {
+        Vec::new()
+    };
     [curve(fc), moved]
 }
 
@@ -123,7 +152,11 @@ pub fn filter(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
 /// long envelopes both read. The sustain is held for a fixed share.
 pub fn envelope(a_ms: f32, d_ms: f32, sustain: f32, r_ms: f32) -> Vec<(f32, f32)> {
     let s = sustain.clamp(0.0, 1.0);
-    let (wa, wd, wr) = (a_ms.max(0.0).sqrt(), d_ms.max(0.0).sqrt(), r_ms.max(0.0).sqrt());
+    let (wa, wd, wr) = (
+        a_ms.max(0.0).sqrt(),
+        d_ms.max(0.0).sqrt(),
+        r_ms.max(0.0).sqrt(),
+    );
     let hold = 0.22;
     let scale = (1.0 - hold) / (wa + wd + wr).max(1e-6);
     let (xa, xd, xr) = (wa * scale, wd * scale, wr * scale);
@@ -152,8 +185,18 @@ pub fn envelope(a_ms: f32, d_ms: f32, sustain: f32, r_ms: f32) -> Vec<(f32, f32)
 /// The amp envelope and the filter envelope.
 pub fn envelopes(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
     [
-        envelope(v.get(p::AMP_A), v.get(p::AMP_D), v.get(p::AMP_S) / 100.0, v.get(p::AMP_R)),
-        envelope(v.get(p::FENV_A), v.get(p::FENV_D), v.get(p::FENV_S) / 100.0, v.get(p::FENV_R)),
+        envelope(
+            v.get(p::AMP_A),
+            v.get(p::AMP_D),
+            v.get(p::AMP_S) / 100.0,
+            v.get(p::AMP_R),
+        ),
+        envelope(
+            v.get(p::FENV_A),
+            v.get(p::FENV_D),
+            v.get(p::FENV_S) / 100.0,
+            v.get(p::FENV_R),
+        ),
     ]
 }
 
@@ -168,9 +211,23 @@ pub fn lfo(v: &impl Values) -> Vec<(f32, f32)> {
             let t = (x * 2.0).rem_euclid(1.0);
             let y = match shape {
                 0 => (2.0 * PI * t).sin(),
-                1 => if t < 0.25 { 4.0 * t } else if t < 0.75 { 2.0 - 4.0 * t } else { 4.0 * t - 4.0 },
+                1 => {
+                    if t < 0.25 {
+                        4.0 * t
+                    } else if t < 0.75 {
+                        2.0 - 4.0 * t
+                    } else {
+                        4.0 * t - 4.0
+                    }
+                }
                 2 => 1.0 - 2.0 * t,
-                3 => if t < 0.5 { 1.0 } else { -1.0 },
+                3 => {
+                    if t < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
                 _ => HELD[((x * 8.0) as usize).min(7)],
             };
             (x, 0.5 + 0.42 * y)
@@ -180,19 +237,36 @@ pub fn lfo(v: &impl Values) -> Vec<(f32, f32)> {
 
 /// The LFO card's caption: its shape and its rate (synced or free).
 pub fn lfo_caption(v: &impl Values) -> String {
-    let shape = p::LFO_SHAPES.get(v.get(p::LFO_SHAPE).round() as usize).copied().unwrap_or("?");
+    let shape = p::LFO_SHAPES
+        .get(v.get(p::LFO_SHAPE).round() as usize)
+        .copied()
+        .unwrap_or("?");
     let sync = v.get(p::LFO_SYNC).round() as usize;
     if sync > 0 && sync < p::LFO_SYNCS.len() {
         format!("{} · {}", shape.to_lowercase(), p::LFO_SYNCS[sync])
     } else {
         let hz = v.get(p::LFO_RATE);
-        format!("{} · {} Hz", shape.to_lowercase(), if hz >= 10.0 { format!("{hz:.0}") } else { format!("{hz:.1}") })
+        format!(
+            "{} · {} Hz",
+            shape.to_lowercase(),
+            if hz >= 10.0 {
+                format!("{hz:.0}")
+            } else {
+                format!("{hz:.1}")
+            }
+        )
     }
 }
 
 /// The oscillator card's caption, such as "saw + pulse".
 pub fn osc_caption(v: &impl Values) -> String {
-    let name = |id: u16| p::WAVES.get(v.get(id).round() as usize).copied().unwrap_or("?").to_lowercase();
+    let name = |id: u16| {
+        p::WAVES
+            .get(v.get(id).round() as usize)
+            .copied()
+            .unwrap_or("?")
+            .to_lowercase()
+    };
     match (v.get(p::OSC1_LEVEL) > 0.0, v.get(p::OSC2_LEVEL) > 0.0) {
         (true, true) => format!("{} + {}", name(p::OSC1_WAVE), name(p::OSC2_WAVE)),
         (true, false) => name(p::OSC1_WAVE),
@@ -205,7 +279,10 @@ pub fn osc_caption(v: &impl Values) -> String {
 /// the shaper settings laid out from `base` (see `mpfree_node::pressure`).
 pub fn pressure_curve(v: &impl Values, base: u16) -> Vec<(f32, f32)> {
     let shape = mpfree_node::PressureShape::from_params(base, |id| v.get(id));
-    (0..=POINTS).map(|i| i as f32 / POINTS as f32).map(|x| (x, shape.map(x))).collect()
+    (0..=POINTS)
+        .map(|i| i as f32 / POINTS as f32)
+        .map(|x| (x, shape.map(x)))
+        .collect()
 }
 
 /// The pressure card's caption: the curve and the live range, such as
@@ -216,10 +293,17 @@ pub fn pressure_caption(v: &impl Values, base: u16) -> String {
     if mode == 2 {
         return "off".to_string();
     }
-    let curve = CURVES.get(v.get(base + field::CURVE).round() as usize).copied().unwrap_or("");
+    let curve = CURVES
+        .get(v.get(base + field::CURVE).round() as usize)
+        .copied()
+        .unwrap_or("");
     let lo = v.get(base + field::THRESHOLD).round();
     let hi = v.get(base + field::FULL_AT).round().max(lo + 1.0);
-    let highest = if mode == 1 { format!(" · {}", MODES[1].to_lowercase()) } else { String::new() };
+    let highest = if mode == 1 {
+        format!(" · {}", MODES[1].to_lowercase())
+    } else {
+        String::new()
+    };
     format!("{curve} · {lo}-{hi} %{highest}")
 }
 
@@ -241,7 +325,12 @@ mod tests {
         // Lowpass: flat below the cutoff, -24 dB an octave above for LP 24.
         let lp24 = |hz| db(filter_gain(0.0, 1000.0, 0.0, hz));
         assert!(lp24(20.0).abs() < 0.1);
-        assert!((lp24(8000.0) - lp24(4000.0) + 24.0).abs() < 1.0, "{} {}", lp24(4000.0), lp24(8000.0));
+        assert!(
+            (lp24(8000.0) - lp24(4000.0) + 24.0).abs() < 1.0,
+            "{} {}",
+            lp24(4000.0),
+            lp24(8000.0)
+        );
         let lp12 = |hz| db(filter_gain(1.0, 1000.0, 0.0, hz));
         assert!((lp12(16000.0) - lp12(8000.0) + 12.0).abs() < 0.5);
         // Highpass mirrors it; bandpass peaks at the cutoff at 0 dB.
@@ -264,7 +353,11 @@ mod tests {
                 all.extend(envelopes(&values).concat());
                 all.extend(lfo(&values));
                 for (x, y) in all {
-                    assert!((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y), "{} = {v}: ({x}, {y})", p.name);
+                    assert!(
+                        (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y),
+                        "{} = {v}: ({x}, {y})",
+                        p.name
+                    );
                 }
             }
         }

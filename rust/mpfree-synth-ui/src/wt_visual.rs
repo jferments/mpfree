@@ -31,7 +31,11 @@ const AMP: f32 = 0.3;
 fn table(v: &impl Values, o: usize) -> &'static Table {
     let f = factory();
     let i = v.get(osc_id(o, wp::TABLE));
-    if i >= wp::USER_TABLE { &f[0] } else { &f[(i.max(0.0) as usize).min(f.len() - 1)] }
+    if i >= wp::USER_TABLE {
+        &f[0]
+    } else {
+        &f[(i.max(0.0) as usize).min(f.len() - 1)]
+    }
 }
 
 /// The frame position (0 to frames - 1) the Position knob reads.
@@ -61,7 +65,11 @@ fn warp(mode: usize, amt: f32, p: f32) -> f32 {
     match mode {
         1 => {
             let k = 0.5 - 0.48 * amt;
-            if p < k { p * 0.5 / k } else { 0.5 + (p - k) * 0.5 / (1.0 - k) }
+            if p < k {
+                p * 0.5 / k
+            } else {
+                0.5 + (p - k) * 0.5 / (1.0 - k)
+            }
         }
         2 => (p * (1.0 + 7.0 * amt)).fract(),
         3 => {
@@ -78,7 +86,10 @@ fn layered(d: f32, f: impl Fn(f32) -> f32) -> Vec<(f32, f32)> {
     (0..=visual::POINTS)
         .map(|i| {
             let x = i as f32 / visual::POINTS as f32;
-            (0.02 + d * DEPTH_X + x * w, 0.12 + d * DEPTH_Y + AMP * 0.5 * (1.0 + f(x)))
+            (
+                0.02 + d * DEPTH_X + x * w,
+                0.12 + d * DEPTH_Y + AMP * 0.5 * (1.0 + f(x)),
+            )
         })
         .collect()
 }
@@ -129,25 +140,51 @@ pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
     let ghost = Color::rgb(0x5A6273);
     let grey = Color::rgb(0x98A1B3);
     let white = Color::rgb(0xE9ECF2);
-    let tr = |pts: Vec<(f32, f32)>, color: Color, width: f32, fill: bool, dashed: bool| Trace { pts, color, width, fill, dashed };
+    let tr = |pts: Vec<(f32, f32)>, color: Color, width: f32, fill: bool, dashed: bool| Trace {
+        pts,
+        color,
+        width,
+        fill,
+        dashed,
+    };
     let osc = |o: usize, color: Color| {
         let (ghosts, front) = stack(v, o);
         let title = if o == 0 { "Osc A" } else { "Osc B" };
-        let mut traces: Vec<Trace> = ghosts.into_iter().map(|g| tr(g, ghost, 1.0, false, false)).collect();
-        if !front.is_empty() { traces.push(tr(front, color, 2.5, false, false)); }
-        Card { title: title.into(), caption: osc_caption(v, o), traces, active: page == title, ..Card::default() }
+        let mut traces: Vec<Trace> = ghosts
+            .into_iter()
+            .map(|g| tr(g, ghost, 1.0, false, false))
+            .collect();
+        if !front.is_empty() {
+            traces.push(tr(front, color, 2.5, false, false));
+        }
+        Card {
+            title: title.into(),
+            caption: osc_caption(v, o),
+            traces,
+            active: page == title,
+            ..Card::default()
+        }
     };
     let [f, moved] = visual::filter(v);
     let [amp, menv] = visual::envelopes(v);
-    let mode = mpfree_synth::params::FILTER_MODES.get(v.get(wp::FILTER_MODE) as usize).copied().unwrap_or("");
-    let freq_grid = [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")].iter().map(|&(hz, s)| (visual::freq_x(hz), s.to_string())).collect();
+    let mode = mpfree_synth::params::FILTER_MODES
+        .get(v.get(wp::FILTER_MODE) as usize)
+        .copied()
+        .unwrap_or("");
+    let freq_grid = [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")]
+        .iter()
+        .map(|&(hz, s)| (visual::freq_x(hz), s.to_string()))
+        .collect();
     vec![
         osc(0, blue),
         osc(1, green),
         Card {
             title: "Filter".into(),
             caption: mode.to_string(),
-            traces: [tr(f, blue, 2.5, true, false)].into_iter().chain((!moved.is_empty()).then(|| tr(moved, grey, 1.5, false, true))).collect(),
+            traces: [tr(f, blue, 2.5, true, false)]
+                .into_iter()
+                .chain((!moved.is_empty()).then(|| tr(moved, grey, 1.5, false, true)))
+                .collect(),
             grid: freq_grid,
             dot: Some(visual::freq_x(v.get(wp::CUTOFF))),
             active: page == "Filter",
@@ -156,7 +193,10 @@ pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
         Card {
             title: "Env".into(),
             caption: "amp, mod".into(),
-            traces: vec![tr(amp, white, 2.5, true, false), tr(menv, blue, 2.5, false, false)],
+            traces: vec![
+                tr(amp, white, 2.5, true, false),
+                tr(menv, blue, 2.5, false, false),
+            ],
             active: page == "Env" || page == "Mod",
             ..Card::default()
         },
@@ -175,11 +215,22 @@ mod tests {
     #[test]
     fn shared_drawings_read_the_same_ids() {
         for (a, b) in [
-            (pp::FILTER_MODE, wp::FILTER_MODE), (pp::CUTOFF, wp::CUTOFF), (pp::RESONANCE, wp::RESONANCE),
-            (pp::FENV_AMOUNT, wp::MENV_CUTOFF), (pp::KEY_TRACK, wp::KEY_TRACK),
-            (pp::FENV_A, wp::MENV_A), (pp::FENV_D, wp::MENV_D), (pp::FENV_S, wp::MENV_S), (pp::FENV_R, wp::MENV_R),
-            (pp::AMP_A, wp::AMP_A), (pp::AMP_D, wp::AMP_D), (pp::AMP_S, wp::AMP_S), (pp::AMP_R, wp::AMP_R),
-            (pp::LFO_SHAPE, wp::LFO_SHAPE), (pp::LFO_RATE, wp::LFO_RATE), (pp::LFO_SYNC, wp::LFO_SYNC),
+            (pp::FILTER_MODE, wp::FILTER_MODE),
+            (pp::CUTOFF, wp::CUTOFF),
+            (pp::RESONANCE, wp::RESONANCE),
+            (pp::FENV_AMOUNT, wp::MENV_CUTOFF),
+            (pp::KEY_TRACK, wp::KEY_TRACK),
+            (pp::FENV_A, wp::MENV_A),
+            (pp::FENV_D, wp::MENV_D),
+            (pp::FENV_S, wp::MENV_S),
+            (pp::FENV_R, wp::MENV_R),
+            (pp::AMP_A, wp::AMP_A),
+            (pp::AMP_D, wp::AMP_D),
+            (pp::AMP_S, wp::AMP_S),
+            (pp::AMP_R, wp::AMP_R),
+            (pp::LFO_SHAPE, wp::LFO_SHAPE),
+            (pp::LFO_RATE, wp::LFO_RATE),
+            (pp::LFO_SYNC, wp::LFO_SYNC),
         ] {
             assert_eq!(a, b);
         }
@@ -188,12 +239,21 @@ mod tests {
     #[test]
     fn the_bright_frame_follows_position_and_warp() {
         let mut s = Wavetable::new(48_000);
-        let read = |s: &Wavetable| { let v = |id: u16| s.param(id); stack(&v, 0) };
+        let read = |s: &Wavetable| {
+            let v = |id: u16| s.param(id);
+            stack(&v, 0)
+        };
         let (ghosts, sine) = read(&s);
         assert_eq!(ghosts.len(), GHOSTS);
         // Basic at 0 is a sine: its peak a quarter through.
-        let top = sine.iter().cloned().fold((0.0, 0.0f32), |m, p| if p.1 > m.1 { p } else { m });
-        assert!((top.0 - (0.02 + 0.25 * (1.0 - DEPTH_X - 0.04))).abs() < 0.02, "{top:?}");
+        let top = sine
+            .iter()
+            .cloned()
+            .fold((0.0, 0.0f32), |m, p| if p.1 > m.1 { p } else { m });
+        assert!(
+            (top.0 - (0.02 + 0.25 * (1.0 - DEPTH_X - 0.04))).abs() < 0.02,
+            "{top:?}"
+        );
         s.set_param(osc_id(0, wp::POSITION), 100.0);
         let (_, square) = read(&s);
         // At the back of the stack and squarer: most points near the extremes.

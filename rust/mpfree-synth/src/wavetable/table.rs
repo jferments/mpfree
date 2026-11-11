@@ -18,7 +18,9 @@ pub const MAX_FRAMES: usize = 256;
 /// 43 Hz at 44.1 kHz).
 pub const MAX_HARMONICS: usize = 512;
 /// Harmonics kept per level, half an octave apart.
-pub const LEVEL_HARMONICS: [usize; 17] = [512, 362, 256, 181, 128, 90, 64, 45, 32, 22, 16, 11, 8, 5, 4, 2, 1];
+pub const LEVEL_HARMONICS: [usize; 17] = [
+    512, 362, 256, 181, 128, 90, 64, 45, 32, 22, 16, 11, 8, 5, 4, 2, 1,
+];
 /// Points per frame in [`Table::preview`].
 pub const PREVIEW: usize = 128;
 
@@ -34,11 +36,15 @@ pub struct Level {
 impl Level {
     /// Every frame, each `len + 1` samples ([`Level::stride`]).
     #[inline]
-    pub fn data(&self) -> &[f32] { &self.data }
+    pub fn data(&self) -> &[f32] {
+        &self.data
+    }
 
     /// Samples from one frame's start to the next's.
     #[inline]
-    pub fn stride(&self) -> usize { self.len + 1 }
+    pub fn stride(&self) -> usize {
+        self.len + 1
+    }
 
     /// Frame `f`'s samples, `len + 1` long (the last repeats the first).
     #[inline]
@@ -57,7 +63,12 @@ pub struct Spectrum {
 }
 
 impl Spectrum {
-    pub fn zero() -> Spectrum { Spectrum { re: vec![0.0; MAX_HARMONICS + 1], im: vec![0.0; MAX_HARMONICS + 1] } }
+    pub fn zero() -> Spectrum {
+        Spectrum {
+            re: vec![0.0; MAX_HARMONICS + 1],
+            im: vec![0.0; MAX_HARMONICS + 1],
+        }
+    }
 
     /// Sine harmonics with these amplitudes (`amps[0]` is harmonic 1): an
     /// additive frame. Sine phase, so a frame starts at zero.
@@ -75,7 +86,11 @@ impl Spectrum {
     /// their steps fold back far below the kept harmonics); any other length
     /// is resampled to [`FRAME`] first.
     pub fn of_cycle(cycle: &[f32]) -> Spectrum {
-        let x = if cycle.len() >= FRAME && cycle.len().is_power_of_two() { cycle.to_vec() } else { resample_cycle(cycle, FRAME) };
+        let x = if cycle.len() >= FRAME && cycle.len().is_power_of_two() {
+            cycle.to_vec()
+        } else {
+            resample_cycle(cycle, FRAME)
+        };
         let n = x.len();
         let mut re: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
         let mut im = vec![0.0; n];
@@ -117,8 +132,12 @@ impl Spectrum {
 /// Brings one cycle to `len` samples with periodic cubic interpolation.
 pub fn resample_cycle(cycle: &[f32], len: usize) -> Vec<f32> {
     let n = cycle.len();
-    if n == len { return cycle.to_vec(); }
-    if n == 0 { return vec![0.0; len]; }
+    if n == len {
+        return cycle.to_vec();
+    }
+    if n == 0 {
+        return vec![0.0; len];
+    }
     let at = |i: isize| cycle[i.rem_euclid(n as isize) as usize];
     (0..len)
         .map(|j| {
@@ -137,7 +156,9 @@ pub fn resample_cycle(cycle: &[f32], len: usize) -> Vec<f32> {
 
 /// A level's table length: 8 samples per cycle of its top harmonic at
 /// least, 64 to [`FRAME`].
-fn level_len(harmonics: usize) -> usize { (harmonics * 8).next_power_of_two().clamp(64, FRAME) }
+fn level_len(harmonics: usize) -> usize {
+    (harmonics * 8).next_power_of_two().clamp(64, FRAME)
+}
 
 /// A built wavetable. Share it with `Arc`; never drop one on the audio
 /// thread (hand it back to the control thread).
@@ -182,46 +203,84 @@ impl Table {
     /// Builds a table from frame spectra, normalised so the loudest frame
     /// peaks at 1. Allocates; call it off the audio thread.
     pub fn from_spectra(name: &str, spectra: &[Spectrum]) -> Result<Table, TableError> {
-        if spectra.is_empty() { return Err(TableError::Empty); }
-        if spectra.len() > MAX_FRAMES { return Err(TableError::TooManyFrames(spectra.len())); }
+        if spectra.is_empty() {
+            return Err(TableError::Empty);
+        }
+        if spectra.len() > MAX_FRAMES {
+            return Err(TableError::TooManyFrames(spectra.len()));
+        }
         let frames = spectra.len();
         // Peak of the full-band frames sets the gain for the whole table.
-        let full: Vec<Vec<f64>> = spectra.iter().map(|s| s.render(MAX_HARMONICS, FRAME)).collect();
-        let peak = full.iter().flat_map(|f| f.iter()).fold(0.0f64, |m, v| m.max(v.abs()));
+        let full: Vec<Vec<f64>> = spectra
+            .iter()
+            .map(|s| s.render(MAX_HARMONICS, FRAME))
+            .collect();
+        let peak = full
+            .iter()
+            .flat_map(|f| f.iter())
+            .fold(0.0f64, |m, v| m.max(v.abs()));
         // NaN counts as silent too.
-        if peak.is_nan() || peak <= 1e-9 { return Err(TableError::Silent); }
+        if peak.is_nan() || peak <= 1e-9 {
+            return Err(TableError::Silent);
+        }
         let gain = 1.0 / peak;
         let mut levels = Vec::with_capacity(LEVEL_HARMONICS.len());
         for &h in &LEVEL_HARMONICS {
             let len = level_len(h);
             let mut data = Vec::with_capacity(frames * (len + 1));
             for (f, s) in spectra.iter().enumerate() {
-                let x = if h == MAX_HARMONICS && len == FRAME { full[f].clone() } else { s.render(h, len) };
+                let x = if h == MAX_HARMONICS && len == FRAME {
+                    full[f].clone()
+                } else {
+                    s.render(h, len)
+                };
                 data.extend(x.iter().map(|&v| (v * gain) as f32));
                 data.push((x[0] * gain) as f32);
             }
-            levels.push(Level { harmonics: h, len, data: data.into_boxed_slice() });
+            levels.push(Level {
+                harmonics: h,
+                len,
+                data: data.into_boxed_slice(),
+            });
         }
         let mut preview = Vec::with_capacity(frames * PREVIEW);
         for f in &full {
             preview.extend((0..PREVIEW).map(|i| (f[i * FRAME / PREVIEW] * gain) as f32));
         }
-        Ok(Table { name: name.to_string(), frames, levels, preview })
+        Ok(Table {
+            name: name.to_string(),
+            frames,
+            levels,
+            preview,
+        })
     }
 
     /// Builds a table from frames of `frame_len` samples laid end to end.
     pub fn from_frames(name: &str, samples: &[f32], frame_len: usize) -> Result<Table, TableError> {
-        if frame_len == 0 || samples.len() < frame_len { return Err(TableError::Empty); }
-        if !samples.len().is_multiple_of(frame_len) { return Err(TableError::NotFrames(samples.len())); }
+        if frame_len == 0 || samples.len() < frame_len {
+            return Err(TableError::Empty);
+        }
+        if !samples.len().is_multiple_of(frame_len) {
+            return Err(TableError::NotFrames(samples.len()));
+        }
         let n = samples.len() / frame_len;
-        if n > MAX_FRAMES { return Err(TableError::TooManyFrames(n)); }
-        let spectra: Vec<Spectrum> = samples.chunks_exact(frame_len).map(Spectrum::of_cycle).collect();
+        if n > MAX_FRAMES {
+            return Err(TableError::TooManyFrames(n));
+        }
+        let spectra: Vec<Spectrum> = samples
+            .chunks_exact(frame_len)
+            .map(Spectrum::of_cycle)
+            .collect();
         Table::from_spectra(name, &spectra)
     }
 
-    pub fn frames(&self) -> usize { self.frames }
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
 
-    pub fn levels(&self) -> &[Level] { &self.levels }
+    pub fn levels(&self) -> &[Level] {
+        &self.levels
+    }
 
     /// The level for a phase increment `dt` (cycles per sample): the most
     /// harmonics that stay below Nyquist.
@@ -229,7 +288,9 @@ impl Table {
     pub fn level_for(&self, dt: f32) -> usize {
         let dt = dt.abs();
         let mut i = 0;
-        while i + 1 < self.levels.len() && self.levels[i].harmonics as f32 * dt > 0.5 { i += 1; }
+        while i + 1 < self.levels.len() && self.levels[i].harmonics as f32 * dt > 0.5 {
+            i += 1;
+        }
         i
     }
 
@@ -249,7 +310,9 @@ impl Table {
 
     /// Bytes this table holds.
     pub fn bytes(&self) -> usize {
-        self.levels.iter().map(|l| l.data.len() * 4).sum::<usize>() + self.preview.len() * 4 + self.name.len()
+        self.levels.iter().map(|l| l.data.len() * 4).sum::<usize>()
+            + self.preview.len() * 4
+            + self.name.len()
     }
 }
 
@@ -266,7 +329,9 @@ pub fn read_level(lv: &Level, frames: usize, pos: f32, ph: f32) -> f32 {
     let stride = lv.len + 1;
     let a = &lv.data[f0 * stride + i..f0 * stride + i + 2];
     let s0 = a[0] + (a[1] - a[0]) * fr;
-    if t == 0.0 || f0 == last { return s0; }
+    if t == 0.0 || f0 == last {
+        return s0;
+    }
     let b = &lv.data[(f0 + 1) * stride + i..(f0 + 1) * stride + i + 2];
     let s1 = b[0] + (b[1] - b[0]) * fr;
     s0 + (s1 - s0) * t
@@ -276,7 +341,9 @@ pub fn read_level(lv: &Level, frames: usize, pos: f32, ph: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn saw(n: usize) -> Vec<f32> { (0..n).map(|i| 1.0 - 2.0 * i as f32 / n as f32).collect() }
+    fn saw(n: usize) -> Vec<f32> {
+        (0..n).map(|i| 1.0 - 2.0 * i as f32 / n as f32).collect()
+    }
 
     fn harmonic_energy(x: &[f32], k: usize) -> f64 {
         let n = x.len();
@@ -298,7 +365,9 @@ mod tests {
             let h = lv.harmonics;
             // The top harmonic is there, the next one is not.
             assert!(harmonic_energy(f, h) > 0.3 / h as f64, "level {h}");
-            if h + 1 < lv.len / 2 { assert!(harmonic_energy(f, h + 1) < 1e-6, "level {h} leaks"); }
+            if h + 1 < lv.len / 2 {
+                assert!(harmonic_energy(f, h + 1) < 1e-6, "level {h} leaks");
+            }
             assert_eq!(lv.frame(0)[lv.len], lv.frame(0)[0]);
         }
     }
@@ -306,7 +375,9 @@ mod tests {
     #[test]
     fn a_sine_of_any_length_comes_back_a_sine() {
         let n = 600; // an AKWF-style single cycle
-        let x: Vec<f32> = (0..n).map(|i| (std::f32::consts::TAU * i as f32 / n as f32).sin() * 0.5).collect();
+        let x: Vec<f32> = (0..n)
+            .map(|i| (std::f32::consts::TAU * i as f32 / n as f32).sin() * 0.5)
+            .collect();
         let t = Table::from_frames("sine", &x, n).unwrap();
         // Normalised to a peak of 1.
         let lv = &t.levels()[0];
@@ -321,8 +392,13 @@ mod tests {
         let t = Table::from_frames("saw", &saw(FRAME), FRAME).unwrap();
         for dt in [0.0005f32, 0.002, 0.01, 0.05, 0.2, 0.45] {
             let l = t.level_for(dt);
-            assert!(t.levels()[l].harmonics as f32 * dt <= 0.5 || l == t.levels().len() - 1, "{dt}");
-            if l > 0 { assert!(t.levels()[l - 1].harmonics as f32 * dt > 0.5); }
+            assert!(
+                t.levels()[l].harmonics as f32 * dt <= 0.5 || l == t.levels().len() - 1,
+                "{dt}"
+            );
+            if l > 0 {
+                assert!(t.levels()[l - 1].harmonics as f32 * dt > 0.5);
+            }
         }
         assert_eq!(t.level_for(0.0), 0);
     }
@@ -331,7 +407,9 @@ mod tests {
     fn frames_crossfade() {
         let mut x = vec![0.0f32; FRAME * 2];
         x[..FRAME].copy_from_slice(&saw(FRAME));
-        for (i, v) in x[FRAME..].iter_mut().enumerate() { *v = -(1.0 - 2.0 * i as f32 / FRAME as f32); }
+        for (i, v) in x[FRAME..].iter_mut().enumerate() {
+            *v = -(1.0 - 2.0 * i as f32 / FRAME as f32);
+        }
         let t = Table::from_frames("two", &x, FRAME).unwrap();
         let a = t.read(5, 0.0, 0.1);
         let b = t.read(5, 1.0, 0.1);
@@ -342,9 +420,21 @@ mod tests {
 
     #[test]
     fn refuses_bad_input() {
-        assert_eq!(Table::from_frames("x", &[], FRAME).unwrap_err(), TableError::Empty);
-        assert_eq!(Table::from_frames("x", &[0.0; 100], 64).unwrap_err(), TableError::NotFrames(100));
-        assert_eq!(Table::from_frames("x", &[0.0; 64], 64).unwrap_err(), TableError::Silent);
-        assert!(matches!(Table::from_frames("x", &vec![0.1; 64 * 300], 64), Err(TableError::TooManyFrames(300))));
+        assert_eq!(
+            Table::from_frames("x", &[], FRAME).unwrap_err(),
+            TableError::Empty
+        );
+        assert_eq!(
+            Table::from_frames("x", &[0.0; 100], 64).unwrap_err(),
+            TableError::NotFrames(100)
+        );
+        assert_eq!(
+            Table::from_frames("x", &[0.0; 64], 64).unwrap_err(),
+            TableError::Silent
+        );
+        assert!(matches!(
+            Table::from_frames("x", &vec![0.1; 64 * 300], 64),
+            Err(TableError::TooManyFrames(300))
+        ));
     }
 }

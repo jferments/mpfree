@@ -23,9 +23,13 @@ thread_local! {
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn count() {
-    if WATCH.with(Cell::get) { CALLS.fetch_add(1, Ordering::Relaxed); }
+    if WATCH.with(Cell::get) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 }
-fn watch(on: bool) { WATCH.with(|w| w.set(on)); }
+fn watch(on: bool) {
+    WATCH.with(|w| w.set(on));
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
@@ -53,7 +57,9 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
     let mut events: Vec<Timed> = Vec::with_capacity(64);
     let mut seed = 99u64;
     let mut rnd = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (seed >> 33) as u32
     };
     let before = CALLS.load(Ordering::Relaxed);
@@ -64,24 +70,44 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
             let ev = match rnd() % 9 {
-                0..=2 => NodeEvent::NoteOn { note, velocity: 1 + (rnd() % 127) as u8 },
+                0..=2 => NodeEvent::NoteOn {
+                    note,
+                    velocity: 1 + (rnd() % 127) as u8,
+                },
                 3..=4 => NodeEvent::NoteOff { note },
-                5 => NodeEvent::Pressure { note, value: (rnd() % 128) as u8 },
-                6 => NodeEvent::Bend { value: (rnd() % 200) as f32 / 100.0 - 1.0 },
+                5 => NodeEvent::Pressure {
+                    note,
+                    value: (rnd() % 128) as u8,
+                },
+                6 => NodeEvent::Bend {
+                    value: (rnd() % 200) as f32 / 100.0 - 1.0,
+                },
                 7 => {
                     let p = &params[rnd() as usize % params.len()];
-                    NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0 }
+                    NodeEvent::Param {
+                        id: p.id,
+                        value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0,
+                    }
                 }
                 _ => NodeEvent::AllOff,
             };
             events.push(Timed::new(off, ev));
         }
         events.sort_by_key(|e| e.offset);
-        let ctx = Ctx { rate, frame: block * 128, bpm: 120.0, beats: block as f64 * 128.0 * 2.0 / rate as f64, playing: true, sidechain: None };
+        let ctx = Ctx {
+            rate,
+            frame: block * 128,
+            bpm: 120.0,
+            beats: block as f64 * 128.0 * 2.0 / rate as f64,
+            playing: true,
+            sidechain: None,
+        };
         l.fill(0.0);
         r.fill(0.0);
         s.process(&ctx, &events, &mut l, &mut r);
-        if block == 2000 { s.reset(); }
+        if block == 2000 {
+            s.reset();
+        }
     }
     watch(false);
     assert!(l.iter().all(|x| x.is_finite()));
@@ -99,19 +125,32 @@ fn fm_process_never_allocates() {
 fn wavetable_process_never_allocates() {
     let mut s = Wavetable::new(44_100);
     let params = s.params();
-    assert_eq!(exercise(&mut s, params, 44_100), 0, "Wavetable::process allocated");
+    assert_eq!(
+        exercise(&mut s, params, 44_100),
+        0,
+        "Wavetable::process allocated"
+    );
     // Swapping a user table in on the audio thread neither allocates nor
     // frees: the old one comes back to the caller.
-    let saw: Vec<f32> = (0..FRAME).map(|i| 1.0 - 2.0 * i as f32 / FRAME as f32).collect();
+    let saw: Vec<f32> = (0..FRAME)
+        .map(|i| 1.0 - 2.0 * i as f32 / FRAME as f32)
+        .collect();
     let a = Arc::new(Table::from_frames("a", &saw, FRAME).unwrap());
     let b = Arc::new(Table::from_frames("b", &saw, FRAME).unwrap());
     s.set_user_table(0, a.clone());
     let before = CALLS.load(Ordering::Relaxed);
     watch(true);
-    s.set_param(mpfree_synth::wavetable::params::TABLE, mpfree_synth::wavetable::params::USER_TABLE);
+    s.set_param(
+        mpfree_synth::wavetable::params::TABLE,
+        mpfree_synth::wavetable::params::USER_TABLE,
+    );
     let old = s.set_user_table(0, b.clone());
     watch(false);
-    assert_eq!(CALLS.load(Ordering::Relaxed) - before, 0, "set_user_table allocated or freed");
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed) - before,
+        0,
+        "set_user_table allocated or freed"
+    );
     drop(old);
 }
 
@@ -119,18 +158,30 @@ fn wavetable_process_never_allocates() {
 fn drums_process_never_allocates() {
     let mut s = Drums::new(48_000);
     let params = s.params();
-    assert_eq!(exercise(&mut s, params, 48_000), 0, "Drums::process allocated");
+    assert_eq!(
+        exercise(&mut s, params, 48_000),
+        0,
+        "Drums::process allocated"
+    );
 }
 
 #[test]
 fn pluck_process_never_allocates() {
     let mut s = Pluck::new(48_000);
     let params = s.params();
-    assert_eq!(exercise(&mut s, params, 48_000), 0, "Pluck::process allocated");
+    assert_eq!(
+        exercise(&mut s, params, 48_000),
+        0,
+        "Pluck::process allocated"
+    );
     // And as a mallet.
     let mut s = Pluck::new(48_000);
     s.set_param(mpfree_synth::pluck_params::MODEL, 1.0);
-    assert_eq!(exercise(&mut s, params, 48_000), 0, "Pluck::process (mallet) allocated");
+    assert_eq!(
+        exercise(&mut s, params, 48_000),
+        0,
+        "Pluck::process (mallet) allocated"
+    );
 }
 
 #[test]
@@ -142,7 +193,9 @@ fn process_never_allocates() {
     let mut events: Vec<Timed> = Vec::with_capacity(64);
     let mut seed = 99u64;
     let mut rnd = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (seed >> 33) as u32
     };
 
@@ -153,24 +206,44 @@ fn process_never_allocates() {
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
             let ev = match rnd() % 9 {
-                0..=2 => NodeEvent::NoteOn { note, velocity: 1 + (rnd() % 127) as u8 },
+                0..=2 => NodeEvent::NoteOn {
+                    note,
+                    velocity: 1 + (rnd() % 127) as u8,
+                },
                 3..=4 => NodeEvent::NoteOff { note },
-                5 => NodeEvent::Pressure { note, value: (rnd() % 128) as u8 },
-                6 => NodeEvent::Bend { value: (rnd() % 200) as f32 / 100.0 - 1.0 },
+                5 => NodeEvent::Pressure {
+                    note,
+                    value: (rnd() % 128) as u8,
+                },
+                6 => NodeEvent::Bend {
+                    value: (rnd() % 200) as f32 / 100.0 - 1.0,
+                },
                 7 => {
                     let p = &PARAMS[rnd() as usize % PARAMS.len()];
-                    NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0 }
+                    NodeEvent::Param {
+                        id: p.id,
+                        value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0,
+                    }
                 }
                 _ => NodeEvent::AllOff,
             };
             events.push(Timed::new(off, ev));
         }
         events.sort_by_key(|e| e.offset);
-        let ctx = Ctx { rate, frame: block * 128, bpm: 120.0, beats: block as f64 * 128.0 * 2.0 / rate as f64, playing: true, sidechain: None };
+        let ctx = Ctx {
+            rate,
+            frame: block * 128,
+            bpm: 120.0,
+            beats: block as f64 * 128.0 * 2.0 / rate as f64,
+            playing: true,
+            sidechain: None,
+        };
         l.fill(0.0);
         r.fill(0.0);
         s.process(&ctx, &events, &mut l, &mut r);
-        if block == 2000 { s.reset(); }
+        if block == 2000 {
+            s.reset();
+        }
     }
     watch(false);
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "process allocated");

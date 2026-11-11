@@ -108,8 +108,15 @@ impl Default for LineIn {
 
 impl LineIn {
     pub fn closed() -> LineIn {
-        LineIn { pcm: None, raw: vec![0; 2 * FIFO], fifo: vec![0.0; 2 * FIFO], head: 0, len: 0,
-                 stats: LineStats::default(), errors_in_row: 0 }
+        LineIn {
+            pcm: None,
+            raw: vec![0; 2 * FIFO],
+            fifo: vec![0.0; 2 * FIFO],
+            head: 0,
+            len: 0,
+            stats: LineStats::default(),
+            errors_in_row: 0,
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -124,19 +131,24 @@ impl LineIn {
             return Ok("line input: already on".to_string());
         }
         let path = format!("/dev/snd/pcmC{card}D0c");
-        let pcm = alsa::Pcm::open_capture(&path).map_err(|e| format!("line input: {path}: {e} (it stays off)"))?;
+        let pcm = alsa::Pcm::open_capture(&path)
+            .map_err(|e| format!("line input: {path}: {e} (it stays off)"))?;
         let mut hw = alsa::HwParams::stock_capture();
         if let Err(e) = pcm.hw_params(&mut hw) {
             let mut any = alsa::HwParams::format_only();
             let allows = match pcm.refine(&mut any) {
-                Ok(()) => format!("the card allows period {}, periods {}, buffer {}",
-                                  any.interval(alsa::PARAM_PERIOD_SIZE).describe(),
-                                  any.interval(alsa::PARAM_PERIODS).describe(),
-                                  any.interval(alsa::PARAM_BUFFER_SIZE).describe()),
+                Ok(()) => format!(
+                    "the card allows period {}, periods {}, buffer {}",
+                    any.interval(alsa::PARAM_PERIOD_SIZE).describe(),
+                    any.interval(alsa::PARAM_PERIODS).describe(),
+                    any.interval(alsa::PARAM_BUFFER_SIZE).describe()
+                ),
                 Err(e2) => format!("asking what it allows failed too: {e2}"),
             };
-            return Err(format!("line input: {path}: the stock capture settings were refused: {e}; {allows} \
-                                (closed; it stays off)"));
+            return Err(format!(
+                "line input: {path}: the stock capture settings were refused: {e}; {allows} \
+                                (closed; it stays off)"
+            ));
         }
         let buffer = hw.interval(alsa::PARAM_BUFFER_SIZE).single().unwrap_or(0);
         if buffer != CAPTURE_BUFFER || !hw.mask_has(alsa::PARAM_FORMAT, alsa::FORMAT_S32_LE) {
@@ -145,9 +157,12 @@ impl LineIn {
         // Wake every period; never start by itself (start() below); stop
         // (an overrun) when the buffer is full.
         let mut sw = alsa::SwParams::new(PERIOD as u32, u32::MAX >> 1, buffer);
-        pcm.sw_params(&mut sw).map_err(|e| format!("line input: sw params: {e} (closed; it stays off)"))?;
-        pcm.prepare().map_err(|e| format!("line input: prepare: {e} (closed; it stays off)"))?;
-        pcm.start().map_err(|e| format!("line input: start: {e} (closed; it stays off)"))?;
+        pcm.sw_params(&mut sw)
+            .map_err(|e| format!("line input: sw params: {e} (closed; it stays off)"))?;
+        pcm.prepare()
+            .map_err(|e| format!("line input: prepare: {e} (closed; it stays off)"))?;
+        pcm.start()
+            .map_err(|e| format!("line input: start: {e} (closed; it stays off)"))?;
         self.pcm = Some(pcm);
         self.head = 0;
         self.len = 0;
@@ -171,8 +186,10 @@ impl LineIn {
 
     pub fn describe(&self) -> String {
         let s = &self.stats;
-        format!("{} periods, {} short, {} frames dropped, {} overruns, {} errors", s.periods, s.short, s.dropped,
-                s.overruns, s.errors)
+        format!(
+            "{} periods, {} short, {} frames dropped, {} overruns, {} errors",
+            s.periods, s.short, s.dropped, s.overruns, s.errors
+        )
     }
 
     /// Interleaved S32 frames that arrived (the stream, or a test).
@@ -237,7 +254,11 @@ impl LineIn {
     /// One period of input into `left` and `right` (silence while off, and
     /// for whatever has not arrived). A note comes back if something went
     /// wrong that the log should say.
-    pub fn period(&mut self, left: &mut [f32; PERIOD], right: &mut [f32; PERIOD]) -> Option<String> {
+    pub fn period(
+        &mut self,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Option<String> {
         if !self.is_open() {
             left.fill(0.0);
             right.fill(0.0);
@@ -267,7 +288,6 @@ impl LineIn {
         }
         note
     }
-
 }
 
 /// The loop's waveform for the Looper tab: min, max and RMS of the playing
@@ -295,7 +315,11 @@ impl Peaks for LoopWave {
         let per = self.frames as f64 / n as f64;
         let a = ((f0.max(0.0) / per).floor() as usize).min(n - 1);
         let b = ((f1 / per).ceil() as usize).clamp(a + 1, n);
-        let mut c = WaveColumn { min: f32::MAX, max: f32::MIN, rms: 0.0 };
+        let mut c = WaveColumn {
+            min: f32::MAX,
+            max: f32::MIN,
+            rms: 0.0,
+        };
         let mut sq = 0.0;
         for col in &self.columns[a..b] {
             c.min = c.min.min(col[ch].min);
@@ -319,8 +343,13 @@ struct WaveBuilder {
 
 impl WaveBuilder {
     fn new() -> WaveBuilder {
-        WaveBuilder { of: (0, 0, Phase::Empty), at: 0, frames: 0, acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
-                      building: false }
+        WaveBuilder {
+            of: (0, 0, Phase::Empty),
+            at: 0,
+            frames: 0,
+            acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
+            building: false,
+        }
     }
 
     fn start(&mut self, frames: usize, of: (usize, usize, Phase)) {
@@ -361,15 +390,28 @@ impl WaveBuilder {
             return None;
         }
         self.building = false;
-        let columns = self.acc.iter().map(|c| {
-            let col = |a: (f32, f32, f32, u32)| if a.3 == 0 {
-                WaveColumn::default()
-            } else {
-                WaveColumn { min: a.0, max: a.1, rms: (a.2 / a.3 as f32).sqrt() }
-            };
-            [col(c[0]), col(c[1])]
-        }).collect();
-        Some(LoopWave { frames: len as u64, columns })
+        let columns = self
+            .acc
+            .iter()
+            .map(|c| {
+                let col = |a: (f32, f32, f32, u32)| {
+                    if a.3 == 0 {
+                        WaveColumn::default()
+                    } else {
+                        WaveColumn {
+                            min: a.0,
+                            max: a.1,
+                            rms: (a.2 / a.3 as f32).sqrt(),
+                        }
+                    }
+                };
+                [col(c[0]), col(c[1])]
+            })
+            .collect();
+        Some(LoopWave {
+            frames: len as u64,
+            columns,
+        })
     }
 }
 
@@ -394,9 +436,17 @@ pub struct LooperView {
 impl Default for LooperView {
     fn default() -> Self {
         let l = Looper::new(44_100, 0);
-        LooperView { status: l.status(), stats: l.stats(), source: LoopSource::Pads, line_on: false,
-                     line: LineStats::default(), monitor: false,
-                     meter_db: [f32::NEG_INFINITY; 2], beats_per_bar: 4, frames_per_beat: 0.0 }
+        LooperView {
+            status: l.status(),
+            stats: l.stats(),
+            source: LoopSource::Pads,
+            line_on: false,
+            line: LineStats::default(),
+            monitor: false,
+            meter_db: [f32::NEG_INFINITY; 2],
+            beats_per_bar: 4,
+            frames_per_beat: 0.0,
+        }
     }
 }
 
@@ -426,38 +476,79 @@ impl LoopHost {
     pub fn new(rate: u32, seconds: u32) -> LoopHost {
         let looper = Looper::new(rate, seconds);
         let last = looper.status();
-        LoopHost { looper, line: LineIn::closed(), monitor: false, source: LoopSource::Pads, input_l: [0.0; PERIOD],
-                   input_r: [0.0; PERIOD], pads_l: [0.0; PERIOD], pads_r: [0.0; PERIOD],
-                   input: vec![0.0; 2 * PERIOD], out: vec![0.0; 2 * PERIOD], last, clipped: 0, wave: WaveBuilder::new(),
-                   meter: [0.0; 2], beats_per_bar: 4 }
+        LoopHost {
+            looper,
+            line: LineIn::closed(),
+            monitor: false,
+            source: LoopSource::Pads,
+            input_l: [0.0; PERIOD],
+            input_r: [0.0; PERIOD],
+            pads_l: [0.0; PERIOD],
+            pads_r: [0.0; PERIOD],
+            input: vec![0.0; 2 * PERIOD],
+            out: vec![0.0; 2 * PERIOD],
+            last,
+            clipped: 0,
+            wave: WaveBuilder::new(),
+            meter: [0.0; 2],
+            beats_per_bar: 4,
+        }
     }
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
         let s = self.looper.status();
         let what = match (c, s.phase) {
-            (Command::Record, Phase::Empty) => format!("Record: armed, the first pass starts on the next bar line ({})",
-                                                       bars_text(s.bars)),
+            (Command::Record, Phase::Empty) => format!(
+                "Record: armed, the first pass starts on the next bar line ({})",
+                bars_text(s.bars)
+            ),
             (Command::Record, Phase::Armed) => "Record again: disarmed".to_string(),
-            (Command::Record, Phase::Recording) => "Record during the first pass: it ends on the next bar line"
-                .to_string(),
-            (Command::Record | Command::Overdub, Phase::Playing) => format!("overdub on (layer {})", s.layers + 1),
+            (Command::Record, Phase::Recording) => {
+                "Record during the first pass: it ends on the next bar line".to_string()
+            }
+            (Command::Record | Command::Overdub, Phase::Playing) => {
+                format!("overdub on (layer {})", s.layers + 1)
+            }
             (Command::Record | Command::Overdub, Phase::Overdubbing) => "overdub off".to_string(),
-            (Command::Overdub, Phase::Recording) if !s.overdub_next => "Overdub during the first pass: the overdub \
-                                                                         starts where it ends".to_string(),
-            (Command::Overdub, Phase::Recording) => "Overdub again: no overdub after the first pass".to_string(),
+            (Command::Overdub, Phase::Recording) if !s.overdub_next => {
+                "Overdub during the first pass: the overdub \
+                                                                         starts where it ends"
+                    .to_string()
+            }
+            (Command::Overdub, Phase::Recording) => {
+                "Overdub again: no overdub after the first pass".to_string()
+            }
             (Command::Overdub, _) => format!("Overdub: nothing to overdub ({:?})", s.phase),
-            (Command::Undo, Phase::Armed | Phase::Recording) => "Undo: first pass thrown away".to_string(),
-            (Command::Undo, Phase::Overdubbing) => "Undo: the overdub in progress fades out".to_string(),
-            (Command::Undo, Phase::Playing) if s.layers > 1 => format!("Undo: layer {} fades out", s.layers),
-            (Command::Undo, _) => "Undo: nothing to undo (Clear removes the first pass)".to_string(),
-            (Command::Redo, Phase::Playing) if s.redo > 0 => format!("Redo: layer {} fades back in", s.layers + 1),
+            (Command::Undo, Phase::Armed | Phase::Recording) => {
+                "Undo: first pass thrown away".to_string()
+            }
+            (Command::Undo, Phase::Overdubbing) => {
+                "Undo: the overdub in progress fades out".to_string()
+            }
+            (Command::Undo, Phase::Playing) if s.layers > 1 => {
+                format!("Undo: layer {} fades out", s.layers)
+            }
+            (Command::Undo, _) => {
+                "Undo: nothing to undo (Clear removes the first pass)".to_string()
+            }
+            (Command::Redo, Phase::Playing) if s.redo > 0 => {
+                format!("Redo: layer {} fades back in", s.layers + 1)
+            }
             (Command::Redo, _) => "Redo: nothing to redo".to_string(),
             (Command::Clear, Phase::Empty) => "Clear: nothing to clear".to_string(),
             (Command::Clear, _) => format!("Clear: the loop fades out ({} layers)", s.layers),
-            (Command::Mute(m), _) => if m { "muted".to_string() } else { "unmuted".to_string() },
+            (Command::Mute(m), _) => {
+                if m {
+                    "muted".to_string()
+                } else {
+                    "unmuted".to_string()
+                }
+            }
             (Command::SetBars(b), _) => format!("first pass length {}", bars_text(b)),
-            (Command::SetLatency(l), _) => format!("latency {l} frames ({:.1} ms)", l as f64 / 44.1),
+            (Command::SetLatency(l), _) => {
+                format!("latency {l} frames ({:.1} ms)", l as f64 / 44.1)
+            }
             (Command::SetLevel(v), _) => format!("loop level {:.1} dB", 20.0 * v.max(1e-6).log10()),
         };
         if !self.looper.command(c) {
@@ -478,8 +569,12 @@ impl LoopHost {
     /// `block` with the source's sound, and add the loop (and the line
     /// input, with Monitor on) to the output, kept within ±1. Returns the
     /// output's peak, and a note for the log if the input had a problem.
-    pub fn period(&mut self, block: &Block, left: &mut [f32; PERIOD], right: &mut [f32; PERIOD])
-                  -> (f32, Option<String>) {
+    pub fn period(
+        &mut self,
+        block: &Block,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> (f32, Option<String>) {
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
             LoopSource::Pads => (&self.pads_l, &self.pads_r),
@@ -544,7 +639,10 @@ impl LoopHost {
                 Phase::Overdubbing => format!("looper: overdubbing layer {} from {at}", s.layers),
             });
         } else if s.layers != was.layers || s.redo != was.redo {
-            lines.push(format!("looper: {} layers, {} to redo, at {at}", s.layers, s.redo));
+            lines.push(format!(
+                "looper: {} layers, {} to redo, at {at}",
+                s.layers, s.redo
+            ));
         }
         lines
     }
@@ -567,7 +665,13 @@ impl LoopHost {
     /// What the Looper tab shows; takes the meter's peaks.
     pub fn view(&mut self, bpm: f64) -> LooperView {
         let m = std::mem::take(&mut self.meter);
-        let db = |v: f32| if v > 0.0 { 20.0 * v.log10() } else { f32::NEG_INFINITY };
+        let db = |v: f32| {
+            if v > 0.0 {
+                20.0 * v.log10()
+            } else {
+                f32::NEG_INFINITY
+            }
+        };
         let s = self.looper.status();
         // A beat at the tempo the loop was recorded at, from its length.
         let frames_per_beat = if s.ticks > 0 {
@@ -575,10 +679,17 @@ impl LoopHost {
         } else {
             44_100.0 * 60.0 / bpm.max(1.0)
         };
-        LooperView { status: s, stats: self.looper.stats(), source: self.source, line_on: self.line.is_open(),
-                     line: self.line.stats,
-                     monitor: self.monitor, meter_db: [db(m[0]), db(m[1])], beats_per_bar: self.beats_per_bar,
-                     frames_per_beat }
+        LooperView {
+            status: s,
+            stats: self.looper.stats(),
+            source: self.source,
+            line_on: self.line.is_open(),
+            line: self.line.stats,
+            monitor: self.monitor,
+            meter_db: [db(m[0]), db(m[1])],
+            beats_per_bar: self.beats_per_bar,
+            frames_per_beat,
+        }
     }
 
     /// One slice of the loop's waveform; the finished wave when it is
@@ -587,12 +698,18 @@ impl LoopHost {
     pub fn wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
         let s = self.looper.status();
         let of = (s.frames, s.layers, s.phase);
-        let overdubbing = s.phase == Phase::Overdubbing && refresh > 0 && period.is_multiple_of(refresh);
+        let overdubbing =
+            s.phase == Phase::Overdubbing && refresh > 0 && period.is_multiple_of(refresh);
         if of != self.wave.of || overdubbing && !self.wave.building {
             if s.frames == 0 {
                 let was_empty = self.wave.of.0 == 0;
                 self.wave.start(0, of);
-                return (!was_empty).then(|| Arc::new(LoopWave { frames: 0, columns: Vec::new() }));
+                return (!was_empty).then(|| {
+                    Arc::new(LoopWave {
+                        frames: 0,
+                        columns: Vec::new(),
+                    })
+                });
             }
             self.wave.start(s.frames, of);
         }
@@ -647,7 +764,10 @@ mod tests {
     fn opening_a_device_that_is_not_there_says_so_and_stays_off() {
         let mut l = LineIn::closed();
         let e = l.open(99).unwrap_err();
-        assert!(e.contains("/dev/snd/pcmC99D0c") && e.contains("stays off"), "{e}");
+        assert!(
+            e.contains("/dev/snd/pcmC99D0c") && e.contains("stays off"),
+            "{e}"
+        );
         assert!(!l.is_open());
     }
 
@@ -655,7 +775,9 @@ mod tests {
     fn the_fifo_hands_out_whole_periods_and_drops_what_runs_ahead() {
         let mut l = LineIn::closed();
         // Pretend it is open: drive the FIFO directly.
-        let frames: Vec<i32> = (0..3 * PERIOD).flat_map(|f| [s32(f as f32 / 1000.0), s32(-0.5)]).collect();
+        let frames: Vec<i32> = (0..3 * PERIOD)
+            .flat_map(|f| [s32(f as f32 / 1000.0), s32(-0.5)])
+            .collect();
         l.push_s32(&frames);
         assert_eq!(l.len, 3 * PERIOD);
         let (mut a, mut b) = ([0.0; PERIOD], [0.0; PERIOD]);
@@ -682,10 +804,22 @@ mod tests {
 
     #[test]
     fn the_wave_covers_the_loop_and_answers_any_zoom() {
-        let w = LoopWave { frames: 1000, columns: (0..10).map(|i| {
-            let v = i as f32 / 10.0;
-            [WaveColumn { min: -v, max: v, rms: v / 2.0 }, WaveColumn::default()]
-        }).collect() };
+        let w = LoopWave {
+            frames: 1000,
+            columns: (0..10)
+                .map(|i| {
+                    let v = i as f32 / 10.0;
+                    [
+                        WaveColumn {
+                            min: -v,
+                            max: v,
+                            rms: v / 2.0,
+                        },
+                        WaveColumn::default(),
+                    ]
+                })
+                .collect(),
+        };
         let c = w.column(0, 0.0, 1000.0);
         assert_eq!((c.min, c.max), (-0.9, 0.9));
         let c = w.column(0, 520.0, 530.0);
@@ -702,8 +836,13 @@ mod tests {
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
         h.monitor = true;
-        assert_eq!(h.command(Command::SetBars(Some(1))), "looper: first pass length 1 bar");
-        assert!(h.command(Command::Record).starts_with("looper: Record: armed"));
+        assert_eq!(
+            h.command(Command::SetBars(Some(1))),
+            "looper: first pass length 1 bar"
+        );
+        assert!(h
+            .command(Command::Record)
+            .starts_with("looper: Record: armed"));
         t.command(0, T::Play);
         let mut lines = Vec::new();
         let mut wave = None;
@@ -718,16 +857,29 @@ mod tests {
             }
         }
         // Armed and recording in the same period: the bar line was at once.
-        assert_eq!(lines[0], "looper: recording the first pass from period 0 (1 bar)");
-        assert!(lines[1].starts_with("looper: loop of 1 bar at period 689: 88200 frames"), "{lines:?}");
+        assert_eq!(
+            lines[0],
+            "looper: recording the first pass from period 0 (1 bar)"
+        );
+        assert!(
+            lines[1].starts_with("looper: loop of 1 bar at period 689: 88200 frames"),
+            "{lines:?}"
+        );
         let w = wave.expect("the wave of the (silent) loop");
         assert_eq!((w.frames, w.columns.len()), (88_200, WAVE_COLUMNS));
         let v = h.view(120.0);
-        assert_eq!((v.status.phase, v.status.layers, v.line_on), (Phase::Playing, 1, false));
+        assert_eq!(
+            (v.status.phase, v.status.layers, v.line_on),
+            (Phase::Playing, 1, false)
+        );
         assert!((v.frames_per_beat - 22_050.0).abs() < 1e-6);
         assert!(h.command(Command::Undo).contains("nothing to undo"));
         assert!(h.command(Command::Overdub).contains("overdub on (layer 2)"));
-        assert!(h.describe().starts_with("looper: Playing, 1 layers"), "{}", h.describe());
+        assert!(
+            h.describe().starts_with("looper: Playing, 1 layers"),
+            "{}",
+            h.describe()
+        );
         assert!(h.describe().contains("line input off, monitor on"));
     }
 
@@ -767,16 +919,25 @@ mod tests {
                 for f in 0..PERIOD {
                     let n = p * PERIOD as u64 + f as u64;
                     if (BAR + 1_000..2 * BAR - 1_000).contains(&n) {
-                        let want = if source == LoopSource::Pads { pads_at(n - BAR) } else { (0.0, 0.0) };
-                        assert!((l[f] - want.0).abs() < 1e-6 && (r[f] - want.1).abs() < 1e-6,
-                                "{source:?} frame {n}: {:?}, want {want:?}", (l[f], r[f]));
+                        let want = if source == LoopSource::Pads {
+                            pads_at(n - BAR)
+                        } else {
+                            (0.0, 0.0)
+                        };
+                        assert!(
+                            (l[f] - want.0).abs() < 1e-6 && (r[f] - want.1).abs() < 1e-6,
+                            "{source:?} frame {n}: {:?}, want {want:?}",
+                            (l[f], r[f])
+                        );
                         checked += 1;
                     }
                 }
             }
             assert_eq!(checked, BAR - 2_000);
             assert_eq!(h.looper.status().phase, Phase::Playing);
-            assert!(h.describe().contains(&format!("records from {}", source.name().to_lowercase())));
+            assert!(h
+                .describe()
+                .contains(&format!("records from {}", source.name().to_lowercase())));
         }
     }
 

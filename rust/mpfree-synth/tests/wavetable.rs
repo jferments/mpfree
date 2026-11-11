@@ -10,7 +10,12 @@ use mpfree_synth::Wavetable;
 
 const RATE: u32 = 48_000;
 
-fn render(synth: &mut Wavetable, frames: usize, events: &[(u64, NodeEvent)], mut cut: impl FnMut(usize) -> usize) -> (Vec<f32>, Vec<f32>) {
+fn render(
+    synth: &mut Wavetable,
+    frames: usize,
+    events: &[(u64, NodeEvent)],
+    mut cut: impl FnMut(usize) -> usize,
+) -> (Vec<f32>, Vec<f32>) {
     let mut l = vec![0.0f32; frames];
     let mut r = vec![0.0f32; frames];
     let mut at = 0usize;
@@ -21,20 +26,39 @@ fn render(synth: &mut Wavetable, frames: usize, events: &[(u64, NodeEvent)], mut
         n += 1;
         buf.clear();
         for &(f, ev) in events {
-            if f >= at as u64 && f < (at + len) as u64 { buf.push(Timed::new((f - at as u64) as u32, ev)); }
+            if f >= at as u64 && f < (at + len) as u64 {
+                buf.push(Timed::new((f - at as u64) as u32, ev));
+            }
         }
-        let ctx = Ctx { rate: RATE, frame: at as u64, bpm: 120.0, beats: at as f64 * 2.0 / RATE as f64, playing: true, sidechain: None };
+        let ctx = Ctx {
+            rate: RATE,
+            frame: at as u64,
+            bpm: 120.0,
+            beats: at as f64 * 2.0 / RATE as f64,
+            playing: true,
+            sidechain: None,
+        };
         synth.process(&ctx, &buf, &mut l[at..at + len], &mut r[at..at + len]);
         at += len;
     }
     (l, r)
 }
 
-fn on(note: u8, velocity: u8) -> NodeEvent { NodeEvent::NoteOn { note, velocity } }
-fn off(note: u8) -> NodeEvent { NodeEvent::NoteOff { note } }
-fn set(id: u16, value: f32) -> NodeEvent { NodeEvent::Param { id, value } }
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt() }
+fn on(note: u8, velocity: u8) -> NodeEvent {
+    NodeEvent::NoteOn { note, velocity }
+}
+fn off(note: u8) -> NodeEvent {
+    NodeEvent::NoteOff { note }
+}
+fn set(id: u16, value: f32) -> NodeEvent {
+    NodeEvent::Param { id, value }
+}
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+}
 
 fn busy_events() -> Vec<(u64, NodeEvent)> {
     let mut ev = vec![
@@ -48,7 +72,13 @@ fn busy_events() -> Vec<(u64, NodeEvent)> {
         (5, on(48, 100)),
         (5, on(55, 90)),
         (7, on(60, 127)),
-        (3_001, NodeEvent::Pressure { note: 60, value: 90 }),
+        (
+            3_001,
+            NodeEvent::Pressure {
+                note: 60,
+                value: 90,
+            },
+        ),
         (6_000, set(osc_id(1, WARP_MODE), 2.0)),
         (6_000, set(osc_id(1, WARP), 50.0)),
         (9_000, NodeEvent::Bend { value: 0.5 }),
@@ -59,7 +89,9 @@ fn busy_events() -> Vec<(u64, NodeEvent)> {
         (14_000, set(osc_id(0, WARP_MODE), 3.0)),
         (15_013, set(FILTER_MODE, 2.0)),
     ];
-    for k in 0..20u64 { ev.push((16_000 + k * 37, on(40 + k as u8, 64 + k as u8))); }
+    for k in 0..20u64 {
+        ev.push((16_000 + k * 37, on(40 + k as u8, 64 + k as u8)));
+    }
     ev.push((22_000, NodeEvent::AllOff));
     ev.push((26_000, set(VOICE_MODE, 2.0)));
     ev.push((26_000, set(GLIDE, 80.0)));
@@ -96,7 +128,16 @@ fn every_preset_sounds_and_stays_in_range() {
     for preset in Wavetable::presets() {
         let mut s = Wavetable::new(RATE);
         s.load_preset(preset);
-        let ev = [(0, on(48, 110)), (0, on(55, 100)), (0, on(60, 100)), (0, on(64, 90)), (30_000, off(48)), (30_000, off(55)), (30_000, off(60)), (30_000, off(64))];
+        let ev = [
+            (0, on(48, 110)),
+            (0, on(55, 100)),
+            (0, on(60, 100)),
+            (0, on(64, 90)),
+            (30_000, off(48)),
+            (30_000, off(55)),
+            (30_000, off(60)),
+            (30_000, off(64)),
+        ];
         let (l, r) = render(&mut s, 48_000, &ev, |_| 128);
         let p = peak(&l).max(peak(&r));
         assert!(l.iter().chain(&r).all(|x| x.is_finite()), "{}", preset.name);
@@ -171,7 +212,12 @@ fn worst_alias(note: u8) -> f64 {
         let h = (f / f0).round();
         // Skip folds that land on (or within 4 bins of) a real harmonic, and
         // the real harmonics themselves.
-        if n as f64 * f0 <= nyq || (f - h * f0).abs() < 4.0 * RATE as f64 / x.len() as f64 || f < 20.0 { continue; }
+        if n as f64 * f0 <= nyq
+            || (f - h * f0).abs() < 4.0 * RATE as f64 / x.len() as f64
+            || f < 20.0
+        {
+            continue;
+        }
         worst = worst.max(bin(x, f));
     }
     10.0 * (worst / fund).log10()
@@ -189,7 +235,9 @@ fn high_notes_do_not_alias() {
 #[test]
 fn a_user_table_plays_and_swaps_back() {
     let mut s = Wavetable::new(RATE);
-    let sq: Vec<f32> = (0..FRAME).map(|i| if i < FRAME / 2 { 1.0 } else { -1.0 }).collect();
+    let sq: Vec<f32> = (0..FRAME)
+        .map(|i| if i < FRAME / 2 { 1.0 } else { -1.0 })
+        .collect();
     let t = Arc::new(Table::from_frames("square", &sq, FRAME).unwrap());
     assert!(s.set_user_table(0, t.clone()).is_none());
     s.set_param(TABLE, USER_TABLE);

@@ -13,12 +13,43 @@
 use mpfree_node::Unit;
 
 /// Poly's targets, by slot target index.
-pub const POLY_TARGETS: &[&str] = &["Off", "Cutoff", "Resonance", "Level", "Vibrato", "LFO rate", "Pitch", "Drive", "Width", "Sub", "Noise"];
+pub const POLY_TARGETS: &[&str] = &[
+    "Off",
+    "Cutoff",
+    "Resonance",
+    "Level",
+    "Vibrato",
+    "LFO rate",
+    "Pitch",
+    "Drive",
+    "Width",
+    "Sub",
+    "Noise",
+];
 /// FM's targets, by slot target index.
-pub const FM_TARGETS: &[&str] = &["Off", "Brightness", "Level", "Vibrato", "LFO rate", "Tremolo", "Pitch", "Feedback"];
+pub const FM_TARGETS: &[&str] = &[
+    "Off",
+    "Brightness",
+    "Level",
+    "Vibrato",
+    "LFO rate",
+    "Tremolo",
+    "Pitch",
+    "Feedback",
+];
 
 /// The Wavetable synth's targets, by slot target index.
-pub const WT_TARGETS: &[&str] = &["Off", "Position", "Warp", "Cutoff", "Resonance", "Level", "Vibrato", "LFO rate", "Pitch"];
+pub const WT_TARGETS: &[&str] = &[
+    "Off",
+    "Position",
+    "Warp",
+    "Cutoff",
+    "Resonance",
+    "Level",
+    "Vibrato",
+    "LFO rate",
+    "Pitch",
+];
 
 /// What a depth of 100 % means for a target, in that target's unit.
 ///
@@ -98,7 +129,9 @@ impl Depths {
     }
 
     #[inline]
-    pub fn get(&self, target: u8) -> f32 { self.by_target[usize::from(target)] }
+    pub fn get(&self, target: u8) -> f32 {
+        self.by_target[usize::from(target)]
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +140,12 @@ mod tests {
 
     #[test]
     fn every_target_has_a_scale() {
-        for t in POLY_TARGETS.iter().chain(FM_TARGETS).chain(WT_TARGETS).filter(|t| **t != "Off") {
+        for t in POLY_TARGETS
+            .iter()
+            .chain(FM_TARGETS)
+            .chain(WT_TARGETS)
+            .filter(|t| **t != "Off")
+        {
             assert!(full_scale(t).is_some(), "{t}");
         }
         assert!(POLY_TARGETS.len() <= 12 && FM_TARGETS.len() <= 12 && WT_TARGETS.len() <= 12);
