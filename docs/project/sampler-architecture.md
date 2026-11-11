@@ -27,7 +27,7 @@ It says which crates hold what, which thread does what, how data moves between t
 └────────────────┘   │ mpfree-project (files, TOML, save) │   │  grain scheduler and grain voices      │
                       │ mpfree-analysis (peaks, onsets,    │   │ mpfree-audio                           │
                       │  tempo, pitch)                     │   │  AudioDevice trait: ALSA playback +    │
-                      │ mpfree-stretch (Signalsmith glue)  │   │  capture (device), file / null (tests) │
+                      │ mpfree-stretch (stretch, pitch)    │   │  capture (device), file / null (tests) │
                       └───────────────────────────────────┘   └───────────────────────────────────────┘
    input: mpfree-controller (pads, Q-Links, wheel, buttons, LEDs) · mpfree-touch (touch)
 ```
@@ -38,7 +38,7 @@ It says which crates hold what, which thread does what, how data moves between t
 | `mpfree-grain` | new | Grain scheduler, windows, grain voice | none | none |
 | `mpfree-analysis` | new | Peak pyramid, onset detection, tempo, pitch (YIN), zero crossings, loudness | `realfft` | none |
 | `mpfree-project` | new | Project folder, `project.toml`, atomic saves, source files (WAV/FLAC) | `hound`, `claxon`, `flacenc` (optional), `toml`, `serde` | none |
-| `mpfree-stretch` | new, later (S7) | High-quality offline time stretch and pitch shift | `signalsmith-stretch` (C++ inside) | in the dependency only |
+| `mpfree-stretch` | started (S7) | Offline time stretch and pitch shift: a phase vocoder with phase locking that keeps hits sharp, warp markers (`TimeMap`), a windowed-sinc resampler for the pitch; run in steps on a worker (`Job`) | `mpfree-analysis` (FFT, hit finder) | none (`forbid`) |
 | `mpfree-audio` | new, split from `mpfree-hello/src/alsa.rs` | `AudioDevice` trait (ADR-0002); ALSA playback **and capture**; a file device and a null device for tests | `libc`-level ioctls via `sys` | yes, isolated in `sys.rs` as today |
 | `mpfree-sampler-ui` | started | The sampler's screens. Built: the pad editor's Pads tab (`pads_tab.rs`), its Wave tab (`wave_tab.rs`), its Chop tab (`chop_tab.rs`), its Play tab (`play_tab.rs`, with its pictures in `play_widgets.rs`) and `SourceView` (peaks, mono mix, onsets, tempo and root note per source, worked out off the audio thread). Still to come: Grain and FX tabs, Record, Browser, Perform | `mpfree-ui`, `mpfree-sampler`, `mpfree-analysis` | none |
 | `mpfree-ui` | exists | New widgets: `Waveform` (with the marker ruler as its tab strip) and `WaveOverview` are built in `wave.rs`, drawn from a `Peaks` source with a playhead redrawing only its strips (`examples/wave_preview.rs` draws the Wave tab to a PNG); still to come: `Meter`, `XYPad`, `EnvelopeEditor`, `LayerMap`, `QLinkStrip`, `PadGrid` additions (waveform thumbnail, pressure ring) | `fontdue` | none |
@@ -226,8 +226,21 @@ The pad player's top bar has a Sample tab (Jay's name for the pad editor). It si
 
 ### Warp and stretch
 
-- **High quality:** `mpfree-stretch` runs Signalsmith Stretch on a worker to render a stretched copy at the project tempo. When the tempo changes, the region keeps playing with the real-time stretch below until the new copy is ready, then crossfades to it at the next loop start.
+- **High quality:** `mpfree-stretch` renders a stretched or pitch-shifted copy on a worker, at the project tempo for a warped region. When the tempo changes, the region keeps playing with the real-time stretch below until the new copy is ready, then crossfades to it at the next loop start.
 - **Real time:** the granular engine in "stretch" mode (grain size 40-90 ms, overlap 4, scan speed = tempo ratio, pitch 0, position jitter 0), which is a form of synchronous granular stretching (close to WSOLA without the cross-correlation search). Cheaper and lower quality; good for live tempo moves and as a deliberate effect.
+
+#### The stretch engine (`mpfree-stretch`)
+
+Our own Rust, not Signalsmith Stretch as first planned: no C++ to cross-build for the MPC, MIT like the rest, and the hit handling is ours to tune with the sampler's own hit finder.
+
+- **Map.** A `TimeMap` says where each input frame lands: one ratio, a target length, or warp markers (input frame, output frame), each part between 0.1 and 10 times.
+- **Stretch.** A phase vocoder: Hann windows of about 46 ms (2048 frames at 44.1 kHz; 256 to 16384 by setting), read where the map says and written at a steady hop of a quarter window. Bins are grouped round the spectrum's peaks and turn with their peak (identity phase locking, Laroche and Dolson), so partials stay whole.
+- **Stereo.** Left and right go through one complex FFT and turn by the same angle, worked out on their sum (or their difference where the sum cancels), so the image and mono compatibility stay as they were (a left-only input keeps its right channel below -60 dB; an out-of-phase pair stays out of phase).
+- **Hits.** The hit finder (`OnsetAnalysis`, the Chop tab's) finds the hits; a hit counts only if its brightness (the energy of the change from frame to frame) jumps at least 6 dB, because beating partials can fool the finder and a restart in a steady sound wobbles the pitch. Each hit is then played at its own speed from half a window before it to three quarters after, the stretch is taken up between hits, and the phases start again at the first window that reaches it, so the attack comes out sample for sample as it went in and lands where the map puts it (within 1.5 ms in the tests, the finder's own error).
+- **Pitch.** Stretched by the pitch ratio, then read that much faster by a windowed-sinc resampler (Kaiser, 24 zero crossings), low-passed first when it reads faster. Formants move with the pitch, as on a sampler; keeping them is a later setting.
+- **Steps.** `Job::new` finds the hits; `Job::run(frames)` does about that many output frames of work and reports progress, so the worker can stop between steps and the old sound plays until the new one is ready. Any step size gives the same output.
+- **Cost.** On the workstation (one core of a 2.1 GHz Xeon) a stereo stretch runs at 50 to 70 times real time, a pitch shift at 18 to 40 (an octave up is the dearest: twice the vocoder work and the longest filter). The round 7 calibration puts the MPC at about 6 to 8 times real time for a stretch and 2 to 5 for a pitch shift, so a 4-bar loop at 120 BPM takes 1 to 4 s. Device numbers win; the stretch goes into the next device round.
+- **Listening.** `mpfree-stretch` (a workstation tool in `mpfree-sampler`) renders examples from a WAV or a demo chord and beat: slower, faster, twice as long, slower without kept hits, up 5, down 7, up an octave and warped, with a report of each one's time (and an MPC estimate with `--calibration docs/perf/mpc-one-calibration.txt`).
 
 ## Granular engine (`mpfree-grain`)
 
