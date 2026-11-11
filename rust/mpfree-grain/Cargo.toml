@@ -6,3 +6,4 @@ publish = false
 description = "The MPFree grain engine: granular playback of a region and granular effects on a live buffer, real-time safe"
 
 [dependencies]
+mpfree-node = { path = "../mpfree-node" }
