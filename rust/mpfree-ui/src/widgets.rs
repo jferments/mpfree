@@ -535,8 +535,8 @@ impl Loading {
     fn starry(cx: &mut PaintCx, r: Rect, title: &str, subtitle: &str) {
         let t = cx.theme.clone();
         let clip = cx.canvas.clip();
-        let top = t.bg.mix(Color::rgb(0x1B2340), 0.0);
-        let bottom = t.bg.mix(Color::rgb(0x1B2340), 0.9);
+        let top = t.bg;
+        let bottom = t.bg.mix(t.backdrop_to, 0.9);
         let rows = r.intersect(clip);
         for y in rows.y..rows.bottom() {
             let k = (y - r.y) as f32 / r.h.max(1) as f32;
