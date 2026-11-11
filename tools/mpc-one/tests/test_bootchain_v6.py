@@ -73,6 +73,18 @@ class MPFreeV6Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'regular'):
                 RUN.verified_zip(link)
 
+    def test_debugfs_ls_p_parses_filenames_not_inode_modes(self):
+        from unittest.mock import patch
+        listing=(b"/2/040755/0/0/./ /\n"
+                 b"/3/040755/0/0/../ /\n"
+                 b"/123/100644/0/0/az0x-loadpin-trustpoints.service/283/\n"
+                 b"/124/100644/0/0/example.conf/53/\n")
+        with patch.object(SCAN,"query",return_value=(listing,b"",0)):
+            names=SCAN.listdir(Path("/tmp/fake-readonly.ext4"),"/usr/lib/systemd/system")
+        self.assertIn("az0x-loadpin-trustpoints.service",names)
+        self.assertIn("example.conf",names)
+        self.assertNotIn("100644",names)
+
     def test_startup_query_no_shell_execution(self):
         self.assertIn('az01config',SCAN.KEYWORDS['fuse_programming'].pattern.decode())
         self.assertTrue(SCAN.PRIVATE.search(b'password=xxxx'))
