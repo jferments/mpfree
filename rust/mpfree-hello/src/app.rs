@@ -696,6 +696,9 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
+    /// Console's chord.
+    erase_held: bool,
     /// When NOTE REPEAT was last pressed to hold, for the double press
     /// that latches.
     repeat_pressed_at: Option<f64>,
@@ -821,6 +824,7 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
+            erase_held: false,
             repeat_pressed_at: None,
             latched: false,
             pad_level: PadLevel::Off,
@@ -1054,6 +1058,9 @@ impl App {
             return fx;
         }
         if !pressed {
+            if Some(note) == self.map.erase {
+                self.erase_held = false;
+            }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
                 fx.extend(self.arp_changed());
@@ -1091,8 +1098,8 @@ impl App {
                 fx.push(Effect::Quit);
             } else if shift {
                 // The MPC's SHIFT + STOP: stop, silence everything and go
-                // back to bar 1 (Jay, 20:40Z; the Console moved to SHIFT +
-                // ERASE).
+                // back to bar 1 (Jay, 20:40Z). The Console has a chord of
+                // its own: SHIFT + ERASE + TAP TEMPO.
                 fx.extend(self.stop());
                 fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
                 fx.push(Effect::Note(
@@ -1175,6 +1182,11 @@ impl App {
             } else if self.view != View::Pattern {
                 fx.extend(self.toggle(View::Options));
             }
+        } else if Some(note) == self.map.tap_tempo && shift && self.erase_held {
+            // The Console's chord: hold SHIFT and ERASE, then press TAP
+            // TEMPO. Nothing else uses it, so a developer opens the Console
+            // only on purpose (Jay, 22:12Z); the press is no tempo tap.
+            fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
@@ -1216,12 +1228,11 @@ impl App {
         let m = self.map;
         let is = |b: Option<u8>| b == Some(note);
         let fx = if is(m.erase) {
-            // SHIFT + ERASE: the Console and back. ERASE alone waits for
-            // live erase.
-            if !shift {
-                return Some(Vec::new());
-            }
-            self.toggle(View::Console)
+            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
+            // mode (with a step held); alone they do nothing. Held with
+            // SHIFT, TAP TEMPO opens the Console.
+            self.erase_held = true;
+            return Some(Vec::new());
         } else if is(m.main) {
             // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
             if self.view == View::Play {
@@ -1529,7 +1540,7 @@ impl App {
     // ------------------------------------------------------------ debug mode
 
     /// A tap on the Dev tab's strip: MIDI, Performance, Map controls or
-    /// Console (the Console alone also opens with SHIFT + ERASE).
+    /// Console (SHIFT + ERASE + TAP TEMPO opens the Console too).
     pub fn debug_page(&mut self, i: usize) -> Vec<Effect> {
         match DEBUG_PAGES.get(i) {
             Some(&v) if self.settings.debug_mode => self.show(v),
@@ -2535,14 +2546,39 @@ mod tests {
     }
 
     #[test]
-    fn stop_ends_the_timed_step_and_shift_erase_toggles_the_console() {
+    fn stop_ends_the_timed_step() {
         let mut timed = App::new(44_100, true);
         assert_eq!(press(&mut timed, button::STOP), vec![Effect::Quit]);
+        let mut held_shift = App::new(44_100, true);
+        held_shift.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut held_shift, button::STOP), vec![Effect::Quit]);
+    }
+
+    /// The Console's chord (Jay, 22:12Z: nothing else may use it): hold
+    /// SHIFT, hold ERASE, press TAP TEMPO. Nothing fires on the way in, and
+    /// the press is no tempo tap.
+    #[test]
+    fn shift_erase_tap_tempo_toggles_the_console_and_nothing_else_does() {
+        const ERASE: u8 = 52;
         let mut app = ready();
-        app.map.learn(mapper::Job::Erase, Some(52));
+        app.map.learn(mapper::Job::Erase, Some(ERASE));
+        let tap = app.map.tap_tempo.unwrap();
         app.button(button::SHIFT, true, 0.0);
-        assert_eq!(press(&mut app, 52), vec![Effect::Show(View::Console)]);
-        assert_eq!(press(&mut app, 52), vec![Effect::Show(View::Play)]);
+        assert!(app.button(ERASE, true, 0.0).is_empty());
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
+        assert!(app.taps.is_empty(), "no tempo tap");
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
+        // Without SHIFT, or once ERASE is let go, TAP TEMPO taps.
+        app.button(button::SHIFT, false, 0.0);
+        press(&mut app, tap);
+        assert_eq!(app.taps.len(), 1);
+        app.button(button::SHIFT, true, 0.0);
+        app.button(ERASE, false, 0.0);
+        assert!(!press(&mut app, tap)
+            .iter()
+            .any(|e| matches!(e, Effect::Show(View::Console))));
+        // SHIFT + STOP is the MPC's now, never the Console.
+        assert!(!press(&mut app, button::STOP).contains(&Effect::Show(View::Console)));
     }
 
     /// Where `item` sits in the menu on screen.
@@ -3921,11 +3957,9 @@ mod tests {
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
         assert!(fx.contains(&Effect::Show(View::Sample)));
         assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
-        // ERASE alone waits for live erase; SHIFT + ERASE: the Console and
-        // back.
+        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
         assert!(press(&mut app, 60).is_empty());
-        assert!(shifted(&mut app, 60).contains(&Effect::Show(View::Console)));
-        assert!(shifted(&mut app, 60).contains(&Effect::Show(View::Sample)));
+        assert!(shifted(&mut app, 60).is_empty());
         // SHIFT + 16 LEVEL: Chromatic | In key (here: no scale yet).
         assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
