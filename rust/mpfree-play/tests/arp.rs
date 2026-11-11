@@ -39,11 +39,11 @@ fn view() -> PlayView {
     let mut p = Project::new();
     let mut arp = Track::new("arp", ARP);
     let mut c = Clip::new("chord", 2 * 3840);
-    c.notes = [9u8, 11, 10].iter().map(|&n| Note { tick: 0, len: 3840, note: n, velocity: 100 }).collect();
+    c.notes = [9u8, 11, 10].iter().map(|&n| Note { tick: 0, len: 3840, note: n, velocity: 100, chance: 100 }).collect();
     arp.slots[0] = Some(c);
     let mut drums = Track::new("drums", 0);
     let mut k = Clip::new("kick", 3840);
-    k.notes = vec![Note { tick: 0, len: 100, note: 0, velocity: 120 }];
+    k.notes = vec![Note { tick: 0, len: 100, note: 0, velocity: 120, chance: 100 }];
     drums.slots[0] = Some(k);
     p.tracks = vec![arp, drums];
     PlayView::compile(&p, &[Launch { track: 0, slot: 0, origin: 0 }, Launch { track: 1, slot: 0, origin: 0 }]).unwrap()
