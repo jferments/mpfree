@@ -2,11 +2,16 @@
 //! track's clip at their exact ticks, with their lengths; punch out, loop
 //! jumps and stop end held notes; a recorded note never plays again right
 //! after it was heard; replace recording erases the old notes for one
-//! pass; a take undoes and redoes as a whole; and the notes are the same
-//! for any period size.
+//! pass; a take undoes and redoes as a whole; knob moves become parameter
+//! locks on the steps they belong to; and the notes and locks are the
+//! same for any period size.
 
-use mpfree_play::{Erased, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, Takes};
-use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
+use mpfree_play::{
+    Erased, ErasedLock, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, TakenLock,
+    Takes,
+};
+use mpfree_seq::mpfree_param::{OnTrack, ParamAddr, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Command, Transport};
@@ -50,6 +55,11 @@ struct Session {
 
 struct Run {
     taken: Vec<Taken>,
+    /// Recorded locks as handed over, period by period.
+    locks: Vec<TakenLock>,
+    /// Knob moves on another track.
+    stray: u64,
+    erased_locks: Vec<ErasedLock>,
     erased: Vec<Erased>,
     played: Vec<Out>,
     project: Project,
@@ -58,8 +68,8 @@ struct Run {
 
 /// Play the session in periods from `next`. After each period the control
 /// thread removes the erased notes from their clips and adds the recorded
-/// ones (through [`Takes`], which remembers them for undo), and compiles a
-/// new view.
+/// notes and locks (through [`Takes`], which remembers them for undo), and
+/// compiles a new view.
 fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut t = Transport::new(44_100, 120.0).unwrap();
     for &(f, c) in &s.commands {
@@ -77,7 +87,9 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut block = Block::new();
     let mut log = Log::default();
     let mut taken = vec![];
+    let mut locks = vec![];
     let mut erased = vec![];
+    let mut erased_locks = vec![];
     let mut takes = Takes::default();
     let mut live = s.live.iter().peekable();
     while t.frame() < s.frames {
@@ -93,7 +105,11 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
             live.next();
         }
         rec.process(&view, &block);
-        if !rec.taken().is_empty() || !player.erased().is_empty() {
+        if !rec.taken().is_empty()
+            || !player.erased().is_empty()
+            || !rec.taken_locks().is_empty()
+            || !player.erased_locks().is_empty()
+        {
             for e in player.erased() {
                 assert!(
                     takes.erase(&mut project, e),
@@ -101,9 +117,20 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
                 );
                 erased.push(*e);
             }
+            for e in player.erased_locks() {
+                assert!(
+                    takes.erase_lock(&mut project, e),
+                    "an erased lock is in its clip"
+                );
+                erased_locks.push(*e);
+            }
             for k in rec.taken() {
                 takes.add(&mut project, k).unwrap();
                 taken.push(*k);
+            }
+            for k in rec.taken_locks() {
+                takes.add_lock(&mut project, k).unwrap();
+                locks.push(*k);
             }
             view = compile(&project);
         }
@@ -112,6 +139,9 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     assert_eq!(player.stats().dropped, 0);
     Run {
         taken,
+        locks,
+        stray: rec.stray_locks(),
+        erased_locks,
         erased,
         played: log.0,
         project,
@@ -626,6 +656,18 @@ fn busy() -> Session {
         ));
         live.push((f + 1 + r() % 20_000, Event::NoteOff { note }));
     }
+    // Knob moves, from their own stream so the notes stay as they were:
+    // the instrument's parameters and some pads' own.
+    let mut r = xorshift(11);
+    for _ in 0..400 {
+        let on = match r() % 3 {
+            0 => OnTrack::Inst,
+            1 => OnTrack::Strip,
+            _ => OnTrack::Pad((r() % 12) as u8),
+        };
+        let value = (r() % 1000) as f32 / 1000.0;
+        live.push((r() % 390_000, knob(on, (r() % 3) as u16, value)));
+    }
     live.sort_by_key(|e| e.0);
     s.live = live;
     s.frames = 400_000;
@@ -651,7 +693,7 @@ fn the_take_is_the_same_for_every_period_size() {
         );
         assert!(
             r.project == reference.project,
-            "period size {n}: the clip differs"
+            "period size {n}: the clip differs (notes or locks)"
         );
     }
     for seed in [3u64, 0xbeef] {
@@ -662,7 +704,296 @@ fn the_take_is_the_same_for_every_period_size() {
             "random sizes (seed {seed}) differ"
         );
     }
+    for seed in [5u64, 0xf00d] {
+        let mut x = xorshift(seed);
+        let r = run(&s, || (x() % 3000) as u32 + 1);
+        assert!(
+            r.project == reference.project,
+            "random sizes (seed {seed}): the clip differs"
+        );
+    }
     let clip = reference.project.tracks[0].slots[3].as_ref().unwrap();
     assert_eq!(clip.check(), Ok(()));
+    assert!(clip.locks.len() > 50, "{}", clip.locks.len());
+    assert!(
+        clip.locks.iter().any(|l| l.sound.is_some()),
+        "pads' own locks"
+    );
     assert!(clip.notes.iter().all(|n: &Note| n.len <= clip.length));
+}
+
+// Knob moves while recording: parameter locks.
+
+/// A knob move on track 0's parameter `param` of `on`.
+fn knob(on: OnTrack, param: u16, value: f32) -> Event {
+    Event::Lock {
+        addr: RelAddr::new(on, param).on(0),
+        value,
+    }
+}
+
+/// The clip's locks as (tick, row, parameter, value), in order.
+fn clip_locks(r: &Run) -> Vec<(i64, Option<u8>, u16, f32)> {
+    let mut l: Vec<_> = r.project.tracks[0].slots[3]
+        .as_ref()
+        .unwrap()
+        .locks
+        .iter()
+        .map(|l| (l.tick, l.sound, l.addr.param, l.value))
+        .collect();
+    l.sort_by_key(|x| (x.0, x.1, x.2));
+    l
+}
+
+/// [`four_beats`] recording with overdub on, so the beats stay.
+fn four_beats_overdub() -> Session {
+    let mut s = four_beats();
+    s.commands = vec![(0, Command::ToggleOverdub), (0, Command::Record)];
+    s
+}
+
+#[test]
+fn a_knob_turned_while_a_pad_is_held_locks_its_note() {
+    let mut s = session(Clip::new("take", 3840), 0);
+    s.live = vec![
+        // Note 2 from tick 253; the knob turns while it is held, over two
+        // periods.
+        (5800, on(2)),
+        (7000, knob(OnTrack::Inst, 3, 0.25)),
+        (8000, knob(OnTrack::Inst, 3, 0.5)),
+        (9000, off(2)),
+        // Tick 1306, nothing played near: trigless, on the line at 1200.
+        (30_000, knob(OnTrack::Inst, 3, 0.75)),
+    ];
+    s.frames = 40_000;
+    let mut r = run(&s, || 128);
+    assert_eq!(r.locks.len(), 3, "one per period the knob moved in");
+    let after = vec![(253, None, 3, 0.5), (1200, None, 3, 0.75)];
+    assert_eq!(clip_locks(&r), after);
+    let take = &r.takes.done()[0];
+    assert_eq!(r.takes.done().len(), 1, "the notes and locks are one take");
+    assert_eq!(
+        (
+            take.added.len(),
+            take.locks_added.len(),
+            take.locks_erased.len()
+        ),
+        (1, 2, 0),
+        "the turn is one lock"
+    );
+    assert_eq!(r.takes.undo(&mut r.project), Some(1));
+    assert_eq!(clip_locks(&r), vec![]);
+    assert_eq!(clip_notes(&r), vec![]);
+    assert_eq!(r.takes.redo(&mut r.project), Some(1));
+    assert_eq!(clip_locks(&r), after);
+}
+
+#[test]
+fn a_turn_just_after_a_note_locks_it_else_the_nearest_line() {
+    let mut s = four_beats_overdub();
+    s.live = vec![
+        // 100 after the beat at 0: on it.
+        (at(0, 100.0), knob(OnTrack::Inst, 3, 0.1)),
+        // 600: too long after; trigless on the line at 720.
+        (at(0, 600.0), knob(OnTrack::Inst, 3, 0.2)),
+        // 1000: the beat at 960.
+        (at(0, 1000.0), knob(OnTrack::Inst, 3, 0.3)),
+        // A pad's parameter looks only at that pad's notes: pad 12 plays
+        // at 1920, so its lock at 1100 is trigless on 1200, on pad 12's
+        // row; pad 11's lock at 1150 is on its note at 960.
+        (at(0, 1100.0), knob(OnTrack::Pad(12), 3, 0.4)),
+        (at(0, 1150.0), knob(OnTrack::Pad(11), 3, 0.5)),
+    ];
+    let r = run(&s, || 128);
+    assert_eq!(
+        clip_locks(&r),
+        vec![
+            (0, None, 3, 0.1),
+            (720, None, 3, 0.2),
+            (960, None, 3, 0.3),
+            (960, Some(11), 3, 0.5),
+            (1200, Some(12), 3, 0.4),
+        ]
+    );
+    assert_eq!(r.stray, 0);
+}
+
+#[test]
+fn a_knob_on_another_track_or_not_recording_is_not_recorded() {
+    let mut s = four_beats();
+    s.commands = vec![
+        (0, Command::ToggleOverdub),
+        (0, Command::Play),
+        (at(0, 2000.0), Command::Record),
+    ];
+    s.live = vec![
+        // Playing, not recording: nothing.
+        (at(0, 100.0), knob(OnTrack::Inst, 3, 0.1)),
+        // Recording, but another track's parameter or a project one.
+        (
+            at(0, 2100.0),
+            Event::Lock {
+                addr: RelAddr::new(OnTrack::Inst, 3).on(1),
+                value: 0.2,
+            },
+        ),
+        (
+            at(0, 2200.0),
+            Event::Lock {
+                addr: ParamAddr::macro_value(0),
+                value: 0.3,
+            },
+        ),
+        // A value that is not a number.
+        (at(0, 2300.0), knob(OnTrack::Inst, 3, f32::NAN)),
+    ];
+    let r = run(&s, || 128);
+    assert_eq!(clip_locks(&r), vec![]);
+    assert_eq!(r.stray, 2);
+}
+
+#[test]
+fn a_recorded_lock_replaces_the_one_there_and_undo_puts_it_back() {
+    let mut s = four_beats_overdub();
+    let clip = s.project.tracks[0].slots[3].as_mut().unwrap();
+    let old = Lock::new(960, None, RelAddr::new(OnTrack::Inst, 3), 0.9);
+    let other = Lock::new(960, None, RelAddr::new(OnTrack::Inst, 4), 0.1);
+    clip.add_lock(old).unwrap();
+    clip.add_lock(other).unwrap();
+    s.live = vec![
+        (at(0, 1000.0), knob(OnTrack::Inst, 3, 0.3)),
+        (at(0, 1100.0), knob(OnTrack::Inst, 3, 0.35)),
+    ];
+    let mut r = run(&s, || 128);
+    assert_eq!(
+        clip_locks(&r),
+        vec![(960, None, 3, 0.35), (960, None, 4, 0.1)]
+    );
+    let take = r.takes.done().last().unwrap();
+    assert_eq!(take.locks_erased, vec![(0, 3, old)]);
+    assert_eq!(take.locks_added.len(), 1);
+    r.takes.undo(&mut r.project).unwrap();
+    assert_eq!(
+        clip_locks(&r),
+        vec![(960, None, 3, 0.9), (960, None, 4, 0.1)]
+    );
+    r.takes.redo(&mut r.project).unwrap();
+    assert_eq!(
+        clip_locks(&r),
+        vec![(960, None, 3, 0.35), (960, None, 4, 0.1)]
+    );
+}
+
+#[test]
+fn a_replace_pass_does_not_lock_the_notes_it_erased() {
+    // Record with overdub off: the first pass erases the beats.
+    let mut s = four_beats();
+    let bar = 88_200;
+    s.live = vec![
+        // The beat at 960 is erased: trigless on 1200.
+        (at(0, 1100.0), knob(OnTrack::Inst, 3, 0.2)),
+        // Note 5, recorded at 2000, and a turn just after it.
+        (at(0, 2000.0), on(5)),
+        (at(0, 2050.0), off(5)),
+        (at(0, 2100.0), knob(OnTrack::Inst, 3, 0.3)),
+        // The next pass goes on as overdub: note 5 is in the clip now.
+        (at(bar, 2150.0), knob(OnTrack::Inst, 3, 0.4)),
+    ];
+    for n in [1u32, 128, 4096] {
+        let r = run(&s, || n);
+        assert_eq!(clip_notes(&r), vec![(2000, 5)], "period size {n}");
+        assert_eq!(
+            clip_locks(&r),
+            vec![(1200, None, 3, 0.2), (2000, None, 3, 0.4)],
+            "period size {n}"
+        );
+        let take = r.takes.done().last().unwrap();
+        assert_eq!(
+            (take.locks_added.len(), take.locks_erased.len()),
+            (2, 0),
+            "period size {n}"
+        );
+    }
+}
+
+#[test]
+fn a_replace_pass_erases_the_old_locks_and_undo_brings_them_back() {
+    // Old locks: on the beat at 960, trigless at 1440, and pad 13's own on
+    // its beat at 2880. Recording with overdub off replaces all three.
+    let mut s = four_beats();
+    let clip = s.project.tracks[0].slots[3].as_mut().unwrap();
+    let old = [
+        Lock::new(960, None, RelAddr::new(OnTrack::Inst, 3), 0.9),
+        Lock::new(1440, None, RelAddr::new(OnTrack::Inst, 3), 0.5),
+        Lock::new(2880, Some(13), RelAddr::new(OnTrack::Pad(13), 0), 0.7),
+    ];
+    for l in old {
+        clip.add_lock(l).unwrap();
+    }
+    let bar = 88_200;
+    s.live = vec![
+        (at(0, 2000.0), on(5)),
+        (at(0, 2050.0), knob(OnTrack::Inst, 3, 0.25)),
+        (at(0, 2100.0), off(5)),
+    ];
+    for n in [1u32, 128, 4096] {
+        let mut r = run(&s, || n);
+        let gone: Vec<Lock> = r.erased_locks.iter().map(|e| e.lock).collect();
+        assert_eq!(gone, old, "period size {n}: in the order reached");
+        assert_eq!(
+            clip_locks(&r),
+            vec![(2000, None, 3, 0.25)],
+            "period size {n}"
+        );
+        // Nothing locks in the pass being replaced; the next pass plays
+        // the new lock just before note 5.
+        let locks: Vec<(u64, f32)> = r
+            .played
+            .iter()
+            .filter_map(|o| match o.event {
+                Event::Lock { value, .. } => Some((o.frame, value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(locks, vec![(at(bar, 2000.0), 0.25)], "period size {n}");
+        let take = r.takes.done().last().unwrap();
+        assert_eq!(
+            (take.locks_erased.len(), take.locks_added.len()),
+            (3, 1),
+            "period size {n}"
+        );
+        r.takes.undo(&mut r.project).unwrap();
+        let mut back: Vec<Lock> = r.project.tracks[0].slots[3].as_ref().unwrap().locks.clone();
+        back.sort_by_key(|l| l.tick);
+        assert_eq!(back, old, "period size {n}: undo puts them back");
+    }
+}
+
+#[test]
+fn a_lock_recorded_before_its_quantised_note_is_not_erased() {
+    // Quantise moves note 7, played at 1430, onto 1440, ahead of the
+    // playhead; its lock plays there too. Both wait until the playhead has
+    // passed 1440, so the replace pass, which erases the old lock on 1440,
+    // does not erase them.
+    let mut c = Clip::new("bar", 3840);
+    c.quantise = Quantise::new(240, 100);
+    c.add_lock(Lock::new(1440, None, RelAddr::new(OnTrack::Inst, 3), 0.5))
+        .unwrap();
+    let mut s = session(c, 0);
+    s.live = vec![
+        (at(0, 1430.0), on(7)),
+        (at(0, 1435.0), knob(OnTrack::Inst, 3, 0.8)),
+        (at(0, 1600.0), off(7)),
+    ];
+    s.frames = 2 * 88_200;
+    for n in [1u32, 64, 128] {
+        let r = run(&s, || n);
+        assert_eq!(clip_notes(&r), vec![(1430, 7)], "period size {n}");
+        assert_eq!(
+            clip_locks(&r),
+            vec![(1430, None, 3, 0.8)],
+            "period size {n}"
+        );
+        assert_eq!(r.erased_locks.len(), 1, "period size {n}: the old one");
+    }
 }

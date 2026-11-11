@@ -29,11 +29,20 @@
 //! on one step. [`Grid::chord`] reads a step across all sounds, and
 //! [`Grid::enter`] puts a held chord on a step (step entry).
 //!
+//! **Parameter locks.** [`Grid::lock`] sets a parameter on a step of a
+//! row (a pad or note number), or of the whole step for a chord; the lock
+//! takes the tick of the step's first note, so it plays with it, and a step
+//! with no note takes a trigless lock on its line. [`Grid::locks`] reads
+//! them and [`Grid::lock_row`] counts them for the lock dots. Locks go
+//! with their step: tapping a step off takes its row's locks out, a nudge
+//! moves them, and pages added, copied or taken off carry them.
+//!
 //! Edits never change the clip themselves: they return an [`Edit`], the
-//! notes to take out and the notes to put in, for the control thread to
+//! notes and locks to take out and to put in, for the control thread to
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
-use crate::{Clip, Note, MAX_CLIP_TICKS, MIN_CLIP_TICKS};
+use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MIN_CLIP_TICKS};
+use mpfree_param::RelAddr;
 use mpfree_transport::time::{Tick, PPQ};
 
 /// Steps on a page.
@@ -63,18 +72,25 @@ pub struct Step {
     pub notes: usize,
 }
 
-/// A change to a clip: take `erase` out, change the length from and to
-/// `length` when there is one, then put `add` in.
+/// A change to a clip: take `erase` and `erase_locks` out, change the
+/// length from and to `length` when there is one, then put `add` and
+/// `add_locks` in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Edit {
     pub erase: Vec<Note>,
     pub add: Vec<Note>,
     pub length: Option<(Tick, Tick)>,
+    pub erase_locks: Vec<Lock>,
+    pub add_locks: Vec<Lock>,
 }
 
 impl Edit {
     pub fn is_empty(&self) -> bool {
-        self.erase.is_empty() && self.add.is_empty() && self.length.is_none()
+        self.erase.is_empty()
+            && self.add.is_empty()
+            && self.length.is_none()
+            && self.erase_locks.is_empty()
+            && self.add_locks.is_empty()
     }
 
     /// The edit that puts the clip back as it was.
@@ -83,12 +99,24 @@ impl Edit {
             erase: self.add.clone(),
             add: self.erase.clone(),
             length: self.length.map(|(a, b)| (b, a)),
+            erase_locks: self.add_locks.clone(),
+            add_locks: self.erase_locks.clone(),
         }
     }
 
     fn join(&mut self, other: Edit) {
         self.erase.extend(other.erase);
         self.add.extend(other.add);
+        self.erase_locks.extend(other.erase_locks);
+        self.add_locks.extend(other.add_locks);
+    }
+
+    /// Take `old` out and put `new` in, unless they are the same.
+    fn move_lock(&mut self, old: Lock, new: Lock) {
+        if old != new {
+            self.erase_locks.push(old);
+            self.add_locks.push(new);
+        }
     }
 }
 
@@ -125,6 +153,23 @@ impl Change {
     pub fn key_all(self, i: usize) -> u64 {
         self.key(ALL, i)
     }
+}
+
+/// A key naming a lock of `addr` on step `i` of row `sound`, so that a
+/// Q-Link turned through many values on a held step joins one undo (as
+/// [`Change::key`] does for a step's velocity).
+pub fn lock_key(sound: Option<u8>, i: usize, addr: RelAddr) -> u64 {
+    use mpfree_param::OnTrack;
+    let on: u64 = match addr.on {
+        OnTrack::Inst => 1,
+        OnTrack::Strip => 2,
+        OnTrack::Arp => 3,
+        OnTrack::Seq => 4,
+        OnTrack::Pad(p) => 0x100 | u64::from(p),
+        OnTrack::Insert(uid) => 0x1_0000 | u64::from(uid),
+    };
+    let a = (on.wrapping_mul(0x9E37_79B9) ^ u64::from(addr.param)) & 0xFF_FFFF;
+    (5 << 56) | (u64::from(sound.unwrap_or(ALL)) << 48) | (a << 24) | (i as u64 & 0xFF_FFFF)
 }
 
 /// No sound has this number: it names every sound of a step in a key.
@@ -253,6 +298,7 @@ impl Grid {
         if !notes.is_empty() {
             return Edit {
                 erase: notes,
+                erase_locks: self.locks(clip, Some(pitch), i),
                 ..Edit::default()
             };
         }
@@ -297,6 +343,14 @@ impl Grid {
                 edit.add.push(new);
             }
         }
+        // The row's locks on the step move with its notes.
+        if shift != 0 {
+            for l in self.locks(clip, Some(pitch), i) {
+                let nudge = (self.place(clip.length, l.tick).1 + shift).clamp(lo, hi);
+                let tick = self.tick(clip.length, i, nudge);
+                edit.move_lock(l, Lock { tick, ..l });
+            }
+        }
         edit
     }
 
@@ -306,6 +360,14 @@ impl Grid {
         let mut edit = Edit::default();
         for pitch in self.sounds_in(clip, i) {
             edit.join(self.change(clip, pitch, i, change));
+        }
+        // The whole step's locks go where the notes' first one does.
+        if let (Change::Nudge(n), false) = (change, edit.is_empty()) {
+            let (lo, hi) = self.nudges(clip.length, i);
+            let tick = self.tick(clip.length, i, n.clamp(lo, hi));
+            for l in self.locks(clip, None, i) {
+                edit.move_lock(l, Lock { tick, ..l });
+            }
         }
         edit
     }
@@ -348,11 +410,24 @@ impl Grid {
             }
             None => true,
         });
-        Edit {
+        let mut edit = Edit {
             erase,
             add,
-            length: None,
+            ..Edit::default()
+        };
+        // The step's locks stay with the sounds entered, on the line; the
+        // rows of sounds no longer there lose theirs.
+        for l in self.step_locks(clip, i) {
+            let kept = !keys.is_empty()
+                && l.sound
+                    .is_none_or(|p| keys.iter().any(|&(k, _)| k.min(127) == p));
+            if kept {
+                edit.move_lock(l, Lock { tick, ..l });
+            } else {
+                edit.erase_locks.push(l);
+            }
         }
+        edit
     }
 
     /// Add a page: 16 more steps. With `copy`, they repeat the steps of
@@ -404,11 +479,24 @@ impl Grid {
                 }
             }
         }
+        // Locks go, or move, with their steps' notes.
+        for l in &clip.locks {
+            let (i, nudge) = self.place(old, l.tick);
+            if i >= steps {
+                edit.erase_locks.push(*l);
+            } else if i == 0 && nudge < 0 {
+                let (lo, _) = self.nudges(new, 0);
+                let tick = self.tick(new, 0, nudge.max(lo));
+                edit.move_lock(*l, Lock { tick, ..*l });
+            }
+        }
         if copy && steps > n {
             let width = n.min(PAGE);
             for j in 0..steps - n {
-                edit.add
-                    .extend(self.moved(clip, n - width + j % width, new, n + j));
+                let src = n - width + j % width;
+                edit.add.extend(self.moved(clip, src, new, n + j));
+                edit.add_locks
+                    .extend(self.moved_locks(clip, src, new, n + j));
             }
         }
         edit
@@ -429,8 +517,11 @@ impl Grid {
                 break;
             }
             edit.erase.extend(self.chord(clip, dst));
+            edit.erase_locks.extend(self.step_locks(clip, dst));
             if src < n {
                 edit.add.extend(self.moved(clip, src, clip.length, dst));
+                edit.add_locks
+                    .extend(self.moved_locks(clip, src, clip.length, dst));
             }
         }
         edit
@@ -451,6 +542,114 @@ impl Grid {
                 }
             })
             .collect()
+    }
+
+    /// The locks of step `src` of `clip`, all rows, as they would be on
+    /// step `dst` of a clip `length` ticks long (as [`Grid::moved`]).
+    fn moved_locks(self, clip: &Clip, src: usize, length: Tick, dst: usize) -> Vec<Lock> {
+        let (lo, hi) = self.nudges(length, dst);
+        self.step_locks(clip, src)
+            .into_iter()
+            .map(|l| {
+                let nudge = self.place(clip.length, l.tick).1;
+                Lock {
+                    tick: self.tick(length, dst, nudge.clamp(lo, hi)),
+                    ..l
+                }
+            })
+            .collect()
+    }
+
+    /// The locks on step `i` of row `sound` (a pad or note number), or with
+    /// None, the whole step's own locks (not the rows'), in the order they
+    /// were written.
+    pub fn locks(self, clip: &Clip, sound: Option<u8>, i: usize) -> Vec<Lock> {
+        clip.locks
+            .iter()
+            .filter(|l| l.sound == sound && self.place(clip.length, l.tick).0 == i)
+            .copied()
+            .collect()
+    }
+
+    /// Every lock on step `i`, every row and the whole step's.
+    fn step_locks(self, clip: &Clip, i: usize) -> Vec<Lock> {
+        clip.locks
+            .iter()
+            .filter(|l| self.place(clip.length, l.tick).0 == i)
+            .copied()
+            .collect()
+    }
+
+    /// How many locks each step of row `sound` shows, all pages: the row's
+    /// own and the whole step's. For the lock dots; a step with locks and
+    /// no note holds trigless locks.
+    pub fn lock_row(self, clip: &Clip, sound: u8) -> Vec<usize> {
+        let mut row = vec![0; self.steps(clip.length)];
+        for l in clip
+            .locks
+            .iter()
+            .filter(|l| l.sound.is_none_or(|p| p == sound))
+        {
+            if let Some(n) = row.get_mut(self.place(clip.length, l.tick).0) {
+                *n += 1;
+            }
+        }
+        row
+    }
+
+    /// Lock `addr` to `value` on step `i` of row `sound` (None: the whole
+    /// step, for a chord). The lock takes the tick of the row's first note
+    /// in the step (of the chord's earliest note, for the whole step), so
+    /// it plays on that note; on a step with no note it is a trigless lock
+    /// on the step's line. It replaces a lock of the same parameter there.
+    /// Nothing past the last step, and nothing for a value that is not
+    /// finite.
+    pub fn lock(self, clip: &Clip, sound: Option<u8>, i: usize, addr: RelAddr, value: f32) -> Edit {
+        if i >= self.steps(clip.length) || !value.is_finite() {
+            return Edit::default();
+        }
+        let notes = match sound {
+            Some(p) => self.notes(clip, p, i),
+            None => self.chord(clip, i),
+        };
+        let tick = notes
+            .iter()
+            .min_by_key(|n| self.place(clip.length, n.tick).1)
+            .map_or(self.tick(clip.length, i, 0), |n| n.tick);
+        let new = Lock::new(tick, sound.map(|p| p.min(127)), addr, value);
+        let old: Vec<Lock> = self
+            .locks(clip, new.sound, i)
+            .into_iter()
+            .filter(|l| l.addr == addr)
+            .collect();
+        if old == [new] {
+            return Edit::default();
+        }
+        Edit {
+            erase_locks: old,
+            add_locks: vec![new],
+            ..Edit::default()
+        }
+    }
+
+    /// Take the lock of `addr` off step `i` of row `sound`.
+    pub fn unlock(self, clip: &Clip, sound: Option<u8>, i: usize, addr: RelAddr) -> Edit {
+        Edit {
+            erase_locks: self
+                .locks(clip, sound, i)
+                .into_iter()
+                .filter(|l| l.addr == addr)
+                .collect(),
+            ..Edit::default()
+        }
+    }
+
+    /// Take every lock off step `i` of row `sound`.
+    pub fn clear_locks(self, clip: &Clip, sound: Option<u8>, i: usize) -> Edit {
+        Edit {
+            erase_locks: self.locks(clip, sound, i),
+            ..Edit::default()
+        }
     }
 
     /// The sounds with notes in step `i`, lowest first.
@@ -476,16 +675,17 @@ impl Clip {
         s
     }
 
-    /// Apply `edit`: take its notes out, change the length, then put its
-    /// new ones in. All or nothing: if a note to take out is not in the
-    /// clip (`MissingNote`), the clip is not `length.0` long or a note
-    /// would be past its new end (`ClipLength`), or a new note does not
-    /// fit, the clip is unchanged and the error says which.
+    /// Apply `edit`: take its notes and locks out, change the length, then
+    /// put its new ones in. All or nothing: if a note or lock to take out
+    /// is not in the clip (`MissingNote`, `MissingLock`), the clip is not
+    /// `length.0` long or a note or lock would be past its new end
+    /// (`ClipLength`), or a new note or lock does not fit, the clip is
+    /// unchanged and the error says which.
     pub fn apply(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
-        let (notes, length) = (self.notes.clone(), self.length);
+        let (notes, locks, length) = (self.notes.clone(), self.locks.clone(), self.length);
         let result = self.apply_all(edit);
         if result.is_err() {
-            (self.notes, self.length) = (notes, length);
+            (self.notes, self.locks, self.length) = (notes, locks, length);
         }
         result
     }
@@ -496,9 +696,15 @@ impl Clip {
                 return Err(crate::ModelError::MissingNote);
             }
         }
+        for l in &edit.erase_locks {
+            if !self.remove_lock(l) {
+                return Err(crate::ModelError::MissingLock);
+            }
+        }
         if let Some((from, to)) = edit.length {
             let fits = (MIN_CLIP_TICKS..=MAX_CLIP_TICKS).contains(&to)
-                && self.notes.iter().all(|n| n.tick < to);
+                && self.notes.iter().all(|n| n.tick < to)
+                && self.locks.iter().all(|l| l.tick < to);
             if self.length != from || !fits {
                 return Err(crate::ModelError::ClipLength);
             }
@@ -506,6 +712,9 @@ impl Clip {
         }
         for n in &edit.add {
             self.add_note(*n)?;
+        }
+        for l in &edit.add_locks {
+            self.add_lock(*l)?;
         }
         Ok(())
     }
@@ -693,7 +902,7 @@ mod tests {
         let bad = Edit {
             erase: vec![Note::new(0, 60, 36, 100)],
             add: vec![Note::new(BAR, 60, 36, 100)],
-            length: None,
+            ..Edit::default()
         };
         assert!(c.apply(&bad).is_err());
         assert_eq!(c.notes, vec![Note::new(0, 60, 36, 100)]);
@@ -703,6 +912,140 @@ mod tests {
         };
         assert!(c.apply(&missing).is_err());
         assert_eq!(c.notes.len(), 1);
+    }
+
+    const CUT: RelAddr = RelAddr::new(mpfree_param::OnTrack::Inst, 12);
+    const TUNE: RelAddr = RelAddr::new(mpfree_param::OnTrack::Pad(2), 0);
+
+    fn lock_ticks(c: &Clip) -> Vec<(Tick, Option<u8>, f32)> {
+        let mut v: Vec<_> = c.locks.iter().map(|l| (l.tick, l.sound, l.value)).collect();
+        v.sort_by_key(|a| (a.0, a.1));
+        v
+    }
+
+    #[test]
+    fn a_lock_sits_on_its_steps_note_or_on_the_line() {
+        let g = Grid::new(240).unwrap();
+        // A kick nudged late on step 2, nothing on step 5.
+        let mut c = clip(BAR, &[(490, 36)]);
+        let on_note = g.lock(&c, Some(36), 2, CUT, 800.0);
+        assert_eq!(
+            on_note.add_locks,
+            vec![Lock::new(490, Some(36), CUT, 800.0)]
+        );
+        c.apply(&on_note).unwrap();
+        let trigless = g.lock(&c, Some(36), 5, CUT, 300.0);
+        assert_eq!(
+            trigless.add_locks,
+            vec![Lock::new(1200, Some(36), CUT, 300.0)]
+        );
+        c.apply(&trigless).unwrap();
+        // The same parameter again replaces it; the same value is no edit.
+        let again = g.lock(&c, Some(36), 2, CUT, 900.0);
+        assert_eq!(again.erase_locks.len(), 1);
+        c.apply(&again).unwrap();
+        assert!(g.lock(&c, Some(36), 2, CUT, 900.0).is_empty());
+        assert_eq!(
+            lock_ticks(&c),
+            vec![(490, Some(36), 900.0), (1200, Some(36), 300.0)]
+        );
+        assert_eq!(g.locks(&c, Some(36), 2).len(), 1);
+        assert!(
+            g.locks(&c, None, 2).is_empty(),
+            "the row's, not the whole step's"
+        );
+        let dots = g.lock_row(&c, 36);
+        assert_eq!((dots[2], dots[5], dots.iter().sum::<usize>()), (1, 1, 2));
+        // Nothing past the last step, and no NaN.
+        assert!(g.lock(&c, Some(36), 16, CUT, 1.0).is_empty());
+        assert!(g.lock(&c, Some(36), 3, CUT, f32::NAN).is_empty());
+        // Unlock and clear.
+        c.apply(&g.unlock(&c, Some(36), 5, CUT)).unwrap();
+        assert_eq!(c.locks.len(), 1);
+        c.apply(&g.clear_locks(&c, Some(36), 2)).unwrap();
+        assert!(c.locks.is_empty());
+    }
+
+    #[test]
+    fn locks_go_with_their_steps() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(480, 36), (480, 38), (960, 36)]);
+        for e in [
+            g.lock(&c, Some(36), 2, CUT, 1.0),
+            g.lock(&c, Some(38), 2, TUNE, 2.0),
+            g.lock(&c, None, 2, CUT, 3.0),
+            g.lock(&c, Some(36), 4, CUT, 4.0),
+        ] {
+            c.apply(&e).unwrap();
+        }
+        // A nudge of one row moves its locks; of the whole step, all.
+        c.apply(&g.change(&c, 36, 2, Change::Nudge(30))).unwrap();
+        assert_eq!(
+            lock_ticks(&c),
+            vec![
+                (480, None, 3.0),
+                (480, Some(38), 2.0),
+                (510, Some(36), 1.0),
+                (960, Some(36), 4.0)
+            ]
+        );
+        c.apply(&g.change_all(&c, 2, Change::Nudge(-20))).unwrap();
+        assert_eq!(
+            lock_ticks(&c)[..3],
+            [(460, None, 3.0), (460, Some(36), 1.0), (460, Some(38), 2.0)]
+        );
+        // Tapping a row's step off takes that row's locks with it.
+        let off = g.toggle(&c, 38, 2, 100);
+        assert_eq!(off.erase_locks, vec![Lock::new(460, Some(38), TUNE, 2.0)]);
+        c.apply(&off).unwrap();
+        // Undo puts notes and locks back.
+        c.apply(&off.inverse()).unwrap();
+        assert_eq!(c.locks.len(), 4);
+        // Copying page 1 to a new page 2 carries the locks.
+        let add = g.add_page(&c, true);
+        c.apply(&add).unwrap();
+        assert_eq!(c.locks.len(), 8);
+        assert_eq!(g.locks(&c, Some(36), 18).len(), 1);
+        assert_eq!(g.locks(&c, Some(36), 20)[0].tick, 960 + BAR);
+        // Taking the page off takes them out again.
+        c.apply(&g.remove_page(&c)).unwrap();
+        assert_eq!(c.locks.len(), 4);
+        // Copy page 0 over itself is nothing; step entry keeps the chord's
+        // locks for the sounds entered, on the line.
+        let entered = g.enter(&c, 2, &[(36, 100)]);
+        c.apply(&entered).unwrap();
+        assert_eq!(
+            lock_ticks(&c)[..2],
+            [(480, None, 3.0), (480, Some(36), 1.0)]
+        );
+        assert_eq!(c.locks.len(), 3, "pad 38's lock went with its note");
+        c.apply(&g.enter(&c, 2, &[])).unwrap();
+        assert_eq!(c.locks.len(), 1, "a cleared step loses every lock");
+    }
+
+    #[test]
+    fn a_lock_out_of_range_is_refused() {
+        let mut c = clip(BAR, &[]);
+        assert_eq!(
+            c.add_lock(Lock::new(BAR, None, CUT, 1.0)),
+            Err(crate::ModelError::BadLock(0))
+        );
+        assert!(c.add_lock(Lock::new(0, None, CUT, f32::INFINITY)).is_err());
+        assert!(c.add_lock(Lock::new(0, Some(128), CUT, 1.0)).is_err());
+        c.add_lock(Lock::new(300, None, CUT, 1.0)).unwrap();
+        assert!(c.check().is_ok());
+        // Shortening past a lock is refused like past a note.
+        let short = Edit {
+            length: Some((BAR, 240)),
+            ..Edit::default()
+        };
+        assert_eq!(c.apply(&short), Err(crate::ModelError::ClipLength));
+        let missing = Edit {
+            erase_locks: vec![Lock::new(301, None, CUT, 1.0)],
+            ..Edit::default()
+        };
+        assert_eq!(c.apply(&missing), Err(crate::ModelError::MissingLock));
+        assert_eq!(c.locks.len(), 1);
     }
 
     fn ticks_of(c: &Clip) -> Vec<(Tick, u8)> {
