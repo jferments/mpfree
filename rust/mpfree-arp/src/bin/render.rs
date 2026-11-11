@@ -4,7 +4,8 @@
 //! It drives the same `mpfree-arp` engine the MPC uses, in 128-frame periods
 //! at 44.1 kHz, and plays its notes on a small built-in synth (or built-in
 //! drum sounds for pad slots). It never touches any device; it only writes
-//! WAV files and a report.txt into one new folder.
+//! WAV files, MIDI files of the same notes and a report.txt into one new
+//! folder.
 //!
 //! ```text
 //! mpfree-arp-render --demo                       every order, every starter pattern, drums, lanes, scales
@@ -20,6 +21,10 @@
 //! `--swing`, `--strum`, `--scale d_dorian`, `--ramp TARGET:STEPS`, `--retrigger`,
 //! `--bars`, `--seed`, `--name`.
 //!
+//! Each WAV has a `.mid` beside it (format 0, 960 ticks per quarter note,
+//! the job's tempo): drum pads on channel 10 from C1 (36) up, notes on
+//! channel 1 as played. It is what `mpfree_arp::MidiOut` would send.
+//!
 //! The report gives two hashes per file. `events` covers the notes the
 //! engine played (frame, pitch, velocity) and is the same on every computer.
 //! `audio` covers the WAV bytes; it repeats on one computer, but the synth
@@ -28,7 +33,8 @@
 #![forbid(unsafe_code)]
 
 use mpfree_arp::scale::SCALES;
-use mpfree_arp::{Engine, EventKind, Events, LatchMode, Library, Mode, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN};
+use mpfree_arp::{midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, Mode, NoteMap, Order, Pattern, Ramp, Rate,
+                 Scale, Settings, BUILT_IN};
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -200,6 +206,8 @@ struct Rendered {
     notes: usize,
     peak: f32,
     dropped: u64,
+    /// The notes as MIDI messages at absolute frames, for the `.mid` file.
+    midi: Vec<(u64, [u8; 3])>,
 }
 
 fn render(job: &Job) -> Rendered {
@@ -218,6 +226,8 @@ fn render(job: &Job) -> Rendered {
     let mut bar = u64::MAX;
     let mut notes = 0;
     let mut log = Vec::new();
+    let mut out = if job.drums { MidiOut::new(9, NoteMap::PADS) } else { MidiOut::new(0, NoteMap::Same) };
+    let mut midi = Vec::new();
     while frame < total {
         let this_bar = frame / bar_frames;
         if this_bar != bar && this_bar < u64::from(job.bars) {
@@ -242,6 +252,9 @@ fn render(job: &Job) -> Rendered {
             synth.render(&mut buf[pos..at]);
             pos = at;
             log.extend_from_slice(&(frame + u64::from(ev.offset)).to_le_bytes());
+            if let Some(m) = out.event(ev) {
+                midi.push((frame + u64::from(m.offset), m.bytes));
+            }
             match ev.kind {
                 EventKind::On { note, velocity } => {
                     synth.on(note, velocity);
@@ -258,8 +271,9 @@ fn render(job: &Job) -> Rendered {
         samples.extend_from_slice(&buf);
         frame += u64::from(PERIOD);
     }
+    out.all_off(0, |m| midi.push((frame, m.bytes)));
     let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
-    Rendered { samples, events: log, notes, peak, dropped: events.dropped + e.overflow }
+    Rendered { samples, events: log, notes, peak, dropped: events.dropped + e.overflow, midi }
 }
 
 fn wav_bytes(samples: &[f32]) -> Vec<u8> {
@@ -616,6 +630,8 @@ fn run(jobs: &[Job], dir: &Path) -> Result<String, String> {
         let bytes = wav_bytes(&r.samples);
         let file = dir.join(format!("{}.wav", job.name));
         std::fs::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mid = dir.join(format!("{}.mid", job.name));
+        std::fs::write(&mid, midi_file(&r.midi, RATE, job.bpm, &job.name)).map_err(|e| format!("{}: {e}", mid.display()))?;
         let line = format!(
             "{}.wav  {:.1} s  {} notes  peak {:.1} dBFS  dropped {}  events {:016x}  audio {:016x}\n    {} ({} bpm, {} bars)\n",
             job.name, r.samples.len() as f64 / f64::from(RATE), r.notes, 20.0 * r.peak.max(1e-9).log10(), r.dropped,
@@ -648,7 +664,7 @@ fn main() {
         work.join(format!("arp-render-{}", utc_stamp()))
     });
     match run(&jobs, &dir) {
-        Ok(_) => println!("\nWAV files and report.txt are in {}", dir.display()),
+        Ok(_) => println!("\nWAV and MIDI files and report.txt are in {}", dir.display()),
         Err(e) => {
             eprintln!("mpfree-arp-render: {e}");
             std::process::exit(1);
@@ -674,6 +690,22 @@ mod tests {
             assert!(!render(job).events.is_empty());
             assert_eq!(&a[..4], b"RIFF");
             assert_eq!(u32::from_le_bytes(a[40..44].try_into().unwrap()) as usize, a.len() - 44);
+        }
+    }
+
+    #[test]
+    fn the_midi_has_one_note_off_per_note_on_and_drums_on_channel_10() {
+        let jobs = demo_jobs();
+        for job in [&jobs[0], jobs.iter().find(|j| j.drums).unwrap()] {
+            let r = render(job);
+            let ons = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x90).count();
+            let offs = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x80).count();
+            assert_eq!((ons, offs), (r.notes, r.notes), "{}", job.name);
+            assert!(r.midi.windows(2).all(|w| w[0].0 <= w[1].0), "in time order");
+            let channel = if job.drums { 9 } else { 0 };
+            assert!(r.midi.iter().all(|(_, b)| b[0] & 0x0F == channel), "{}", job.name);
+            let f = midi_file(&r.midi, RATE, job.bpm, &job.name);
+            assert_eq!(&f[..4], b"MThd");
         }
     }
 
