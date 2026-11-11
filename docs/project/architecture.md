@@ -15,7 +15,7 @@ Design goals:
 ## Proposed layers
 
 ```
-Touchscreen UI + hardware workflow (candidate: Qt Quick/QML or SDL)
+Touchscreen UI + hardware workflow (mpfree-ui; see ui-architecture.md)
                        |
         Application model / commands
                        |
@@ -30,7 +30,7 @@ Touchscreen UI + hardware workflow (candidate: Qt Quick/QML or SDL)
                    MPC One
 ```
 
-**Language choice ACCEPTED:** [ADR-0001](../decisions/adr-0001-rust-first.md) establishes **Rust-first with narrow C/C++ compatibility modules**. [Rust M1](../milestones/m01-rust-metronome-parity.md) has a working native core and desktop WAV renderer with C++ parity and ARMv7 hard-float cross-build checks. The C++ M0 engine is retained as a tested reference, while az0x binary execution is not yet validated. Still undecided: UI framework (Qt, SDL, Slint or custom), direct ALSA vs JACK/PipeWire, plugin ABI, sample streaming implementation, boot integration, and factory-content import details.
+**Language choice ACCEPTED:** [ADR-0001](../decisions/adr-0001-rust-first.md) establishes **Rust-first with narrow C/C++ compatibility modules**. [Rust M1](../milestones/m01-rust-metronome-parity.md) has a working native core and desktop WAV renderer with C++ parity and ARMv7 hard-float cross-build checks. The C++ M0 engine is retained as a tested reference, while az0x binary execution is not yet validated. Since decided: direct ALSA on the device ([ADR-0002](../decisions/adr-0002-direct-alsa-audio.md)) and the UI (SDL3 and a custom Rust UI on OpenGL ES 3, started as [`mpfree-ui`](ui-architecture.md)). Still undecided: plugin ABI, sample streaming implementation, boot integration, and factory-content import details.
 
 **Audio backend ACCEPTED:** [ADR-0002](../decisions/adr-0002-direct-alsa-audio.md) has the engine own the ACVA PCM directly through ALSA, behind an `AudioDevice` trait; JACK, PipeWire and CPAL are desktop or optional backends. On-device xrun and latency qualification is pending.
 

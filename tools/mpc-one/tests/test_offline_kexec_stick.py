@@ -168,10 +168,10 @@ class KexecStickTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, **extra):
+    def build(self, *args, **extra):
         env = {"HOME": self.home, "LC_ALL": "C", "PATH": SBIN_PATH, "MPC_KEY": self.key,
                "MPFREE_SCREEN_LOG": self.screen_log, **extra}
-        return subprocess.run([sys.executable, "-I", TOOL], env=env, stdout=subprocess.PIPE,
+        return subprocess.run([sys.executable, "-I", TOOL, *args], env=env, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, timeout=300)
 
     def outputs(self):
@@ -305,6 +305,154 @@ class KexecStickTests(unittest.TestCase):
         with open(os.path.join(out, "report.txt")) as fh:
             self.assertNotIn(SERIAL, fh.read())
 
+    def test_startup_screen_before_the_log(self):
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        font = os.path.join(self.tmp, "Cynatar.otf")
+        write(font, b"OTTO" + os.urandom(2000))
+        res = self.build("--splash", splash, "--splash-font", font)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("shown for 6 s before the log", res.stdout)
+        self.assertIn(f"startup screen font: {os.path.realpath(font)}", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-splash.service")
+        for line in ("DefaultDependencies=no", "Type=oneshot", "Before=shutdown.target mpfree-test-screen.service",
+                     "ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation 270 --seconds 6 "
+                     "--font /etc/mpfree-test/splash-font.otf --tracking 0.15",
+                     "TimeoutStartSec=20", "WantedBy=sysinit.target"):
+            self.assertIn(line + "\n", unit)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-splash.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"))
+        self.assertIn("After=systemd-journald.service mpfree-test-splash.service\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        for name, source, mode in (("mpfree-splash", splash, "0755"), ("splash-font.otf", font, "0644")):
+            copy = os.path.join(self.tmp, name + "-copy")
+            run(["debugfs", "-R", f"dump /etc/mpfree-test/{name} {copy}", root_img])
+            self.assertEqual(sha(copy), sha(source))
+            self.assertRegex(self.dfs(root_img, f"stat /etc/mpfree-test/{name}"), rf"Type: regular\s+Mode:\s+{mode}")
+
+    def test_startup_screen_is_optional_and_checked(self):
+        res = self.build()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("startup screen: none (no --splash)", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/systemd/system/mpfree-test-splash.service"))
+        self.assertIn("After=systemd-journald.service\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        not_font = os.path.join(self.tmp, "notes.otf")
+        write(not_font, b"hello, not a font")
+        for args, problem in ((("--splash-font", not_font), "--splash-font needs --splash"),
+                              (("--splash", splash, "--splash-font", not_font), "is not a single TrueType or OpenType"),
+                              (("--splash", self.key + ".pub"), "is not a 32-bit little-endian ELF")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
+    def kits_file(self, folder, count=3, size=3 << 20):
+        path = os.path.join(self.work, folder, "kits.bin")
+        write(path, b"MPFKITS1" + struct.pack("<I", count) + os.urandom(size))
+        return path
+
+    def test_pad_player_at_power_on(self):
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        app = os.path.join(self.tmp, "mpfree-hello")
+        write(app, fake_elf() + os.urandom(5000), 0o755)
+        self.kits_file("factory-kit-20260101T000000Z-old", count=1, size=1000)
+        kits = self.kits_file("factory-kit-20260102T000000Z-new")
+        res = self.build("--splash", splash, "--app", app)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"drum kits: {os.path.realpath(kits)} (3 kits, {os.path.getsize(kits)} bytes", res.stdout)
+        self.assertIn("started at power-on in place of the log display, over the startup screen", res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "report.txt")) as fh:
+            report = fh.read()
+        # read-stick-logs.py finds the log partition by this line; it must stay as it was.
+        self.assertRegex(report, r"partition 2 logs PARTUUID [0-9a-f-]{36}\n")
+        kits_uuid = re.search(r"partition 3 kits PARTUUID ([0-9a-f-]{36}) ", report).group(1)
+        self.assertIn("holds Akai's sounds: keep it private", report)
+        stick = os.path.join(out, "stick.img")
+        table = json.loads(run(["sfdisk", "--json", stick]).stdout)["partitiontable"]["partitions"]
+        self.assertEqual([p.get("name") for p in table], ["mpfree-test-root", "mpfree-test-log", "mpfree-test-kits"])
+        self.assertEqual(table[2]["uuid"].lower(), kits_uuid)
+        self.assertEqual(table[2]["start"], table[1]["start"] + table[1]["size"])
+        self.assertEqual(table[2]["start"] % 2048, 0)
+        self.assertEqual(os.path.getsize(stick), (table[2]["start"] + table[2]["size"] + 2048) * 512)
+
+        kits_img = os.path.join(self.tmp, "p3.img")
+        self.partition(stick, 3, kits_img)
+        self.assertEqual(run(["e2fsck", "-fn", kits_img]).returncode, 0)
+        stats = self.dfs(kits_img, "stats")
+        self.assertNotIn("has_journal", re.search(r"^Filesystem features:(.*)$", stats, re.M).group(1))
+        self.assertIn("MPFREE-KITS", stats)
+        self.assertEqual(sorted(n for n in self.dfs(kits_img, "ls -p /").split("/") if n.strip() and
+                                not n.strip().isdigit() and n.strip() not in (".", "..", "lost+found")),
+                         ["kits.bin"])
+        copy = os.path.join(self.tmp, "kits-copy")
+        run(["debugfs", "-R", f"dump /kits.bin {copy}", kits_img])
+        self.assertEqual(sha(copy), sha(kits))
+        self.assertRegex(self.dfs(kits_img, "stat /kits.bin"), r"Type: regular\s+Mode:\s+0644")
+        self.assertRegex(self.dfs(kits_img, "stat /kits.bin"), r"User:\s+0\s+Group:\s+0")
+
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(stick, 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service")
+        for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target",
+                     "After=systemd-journald.service systemd-udevd.service mpfree-test-splash.service",
+                     "OnFailure=mpfree-test-screen.service", "ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"):
+            self.assertIn(line + "\n", unit)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-app.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"))
+        # The log display is still there for OnFailure, but does not start at power-on.
+        self.assertIn("File not found",
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"))
+        self.assertIn("WantedBy=sysinit.target", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        script = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
+        self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
+        self.assertIn('mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits', script)
+        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
+        copy = os.path.join(self.tmp, "app-copy")
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-hello {copy}", root_img])
+        self.assertEqual(sha(copy), sha(app))
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree-hello"), r"Type: regular\s+Mode:\s+0755")
+        self.assertIn("cp /run/mpfree-hello/hello.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+
+    def test_pad_player_without_splash_and_its_checks(self):
+        app = os.path.join(self.tmp, "mpfree-hello")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin\n",
+                      self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh"))
+        self.assertIn("After=systemd-journald.service systemd-udevd.service\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))
+        not_kits = os.path.join(self.tmp, "not-kits.bin")
+        write(not_kits, b"MPFKIT01" + os.urandom(100))
+        too_big = os.path.join(self.tmp, "too-big.bin")
+        write(too_big, b"MPFKITS1" + b"\0" * (48 << 20))
+        for args, problem in ((("--kits", kits), "--kits needs --app"),
+                              (("--app", app), "no drum kits under"),
+                              (("--app", app, "--kits", not_kits), "is not a kits file"),
+                              (("--app", app, "--kits", too_big), "is not a kits file"),
+                              (("--app", self.key + ".pub", "--kits", kits), "is not a 32-bit little-endian ELF"),
+                              (("--app", os.path.join(self.tmp, "missing"), "--kits", kits), "build the pad player")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
     def test_unlocked_root_is_left_alone(self):
         os.unlink(self.image)
         build_rootfs(os.path.dirname(self.image), shadow_root="$6$FAKEHASH")
@@ -395,7 +543,8 @@ class StaticTests(unittest.TestCase):
         spec.loader.exec_module(tool)
         busybox = shutil.which("busybox")
         if busybox:
-            for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000")):
+            for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000"),
+                           tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000", keep="")):
                 res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(res.returncode, 0, res.stderr)
         lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
@@ -412,13 +561,33 @@ class StaticTests(unittest.TestCase):
         for forbidden in ("/dev/mmc", "/dev/sd", "systemctl", "devmem", "/bind", "/unbind", "rm ", "dd "):
             self.assertNotIn(forbidden, tool.ETHERNET_SCRIPT)
 
+    def test_app_start_mounts_the_kits_read_only_and_changes_nothing_else(self):
+        spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        lines = [line.strip() for line in tool.APP_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
+        changing = [line for line in lines if re.search(r"\b(mount|mkdir|rm|mv|cp|dd|systemctl|kill)\b", line)]
+        self.assertEqual(changing, [
+            "mkdir -p /run/mpfree-kits",
+            'mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||',
+            'echo "mpfree-test-app: the kit partition did not mount" > /dev/kmsg',
+        ])
+        for line in lines:
+            for target in re.findall(r">\s*(\S+)", line):
+                self.assertEqual(target, "/dev/kmsg", line)
+        for forbidden in ("/dev/mmc", "/dev/sd", "rw,", "remount"):
+            self.assertNotIn(forbidden, tool.APP_SCRIPT)
+
     def test_never_contacts_the_mpc_or_writes_devices(self):
         with open(TOOL) as fh:
             code = "\n".join(line for line in fh.read().splitlines() if not line.lstrip().startswith("#"))
         for forbidden in ('"ssh"', '"scp"', "'ssh'", "/dev/sd", "/dev/mmc", "of=/dev", "kexec -l", "sudo"):
             self.assertNotIn(forbidden, code)
         self.assertIn('"debugfs", "-w", "-f", script, img.path', code, "-w only on the copy")
-        self.assertEqual(code.count('"-w"'), 1)
+        # ... and on the kits filesystem it has just made in its own scratch folder.
+        self.assertIn('path = os.path.join(scratch, "kits.img")', code)
+        self.assertIn('"debugfs", "-w", "-f", script, path', code)
+        self.assertEqual(code.count('"-w"'), 2)
 
 
 if __name__ == "__main__":

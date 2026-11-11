@@ -69,7 +69,7 @@ None of this touches the MPC. To work with a device, start with [developer acces
 
 MPFree will not distribute Akai/AIR firmware, plugins, presets or factory sample packs, and will not bypass activation. Compatibility with content a user legitimately owns may be researched separately ([policy](docs/project/factory-content-policy.md)). The factory system must always remain recoverable.
 
-Licensed under [MIT](LICENSE). This covers MPFree's own code and documentation, not any Akai/AIR material or third-party projects referenced here.
+Licensed under [MIT](LICENSE). This covers MPFree's own code and documentation, not any Akai/AIR material or third-party projects referenced here. The fonts built into the GUI (Inter and JetBrains Mono) are under the SIL Open Font License 1.1; see [`rust/mpfree-ui/fonts`](rust/mpfree-ui/fonts/README.md).
 
 ## Related projects
 

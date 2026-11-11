@@ -1,6 +1,8 @@
-//! `Player::process` must not allocate or free. A counting global allocator
-//! watches a busy session (five tracks, loops, tempo changes, locates,
-//! stop and panic) at period sizes from 1 to 4096 frames.
+//! `Player::process`, `ArpHost::process` and `Recorder::process` must not
+//! allocate or free. A counting global allocator watches a busy session
+//! (five tracks, one of them through the arp, one recording, with loops,
+//! tempo changes, locates, punch in and out, stop and panic) at period
+//! sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -11,7 +13,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_play::{Launch, Out, PlayView, Player, Sink};
+use mpfree_arp::{Engine, Mode, Rate, Settings};
+use mpfree_play::{ArpHost, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -49,16 +52,21 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// A fixed buffer sink, as the audio thread would use.
+/// A fixed buffer sink, as the audio thread would use. Destination 0
+/// (and a panic's `AllOff`) goes to the arp.
 struct Counter {
     events: u64,
     last: u64,
+    arp: ArpHost,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
         assert!(o.frame >= self.last);
         self.last = o.frame;
         self.events += 1;
+        if o.dest == 0 || o.dest == ALL {
+            self.arp.input(o.offset, o.event);
+        }
     }
 }
 
@@ -81,11 +89,17 @@ fn playing_never_allocates() {
         p.tracks.push(t);
         launches.push(Launch { track: i, slot: i, origin: (i as i64 - 2) * 480 });
     }
-    let view = PlayView::compile(&p, &launches).unwrap();
+    let mut view = PlayView::compile(&p, &launches).unwrap();
+    view.set_armed(Some(3));
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
     let mut block = Block::new();
-    let mut sink = Counter { events: 0, last: 0 };
+    let mut engine = Engine::new(44_100, 120.0);
+    engine.set_settings(Settings { mode: Mode::Arp, rate: Rate::ThirtySecond, octaves: 2, ..Settings::default() });
+    let mut sink = Counter { events: 0, last: 0, arp: ArpHost::new(engine) };
+    let mut arp_notes = 0u64;
+    let mut rec = Recorder::new();
+    let mut recorded = 0usize;
 
     watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
@@ -114,14 +128,30 @@ fn playing_never_allocates() {
             320 => {
                 let _ = t.command(f + 2, Command::Play);
             }
+            50 | 250 | 400 => {
+                let _ = t.command(f + 1, Command::Record);
+            }
             _ => {}
         }
-        t.process(sizes[(i % sizes.len() as u64) as usize], &mut block);
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        t.process(n, &mut block);
         sink.last = block.start_frame;
         player.process(&view, &block, &mut sink);
+        sink.arp.process(&block, &mut |_, _| arp_notes += 1);
+        // Pads on the recording track: notes held a few periods, some overlapping.
+        let note = (i % 7) as u8;
+        rec.input((i as u32 * 31) % n, Event::NoteOn { note, velocity: 100 });
+        rec.input((i as u32 * 17) % n, Event::NoteOff { note: ((i + 4) % 7) as u8 });
+        rec.process(&view, &block);
+        recorded += rec.taken().len();
     }
     watch(false);
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while playing");
     assert!(sink.events > 2000, "{}", sink.events);
     assert_eq!(player.stats().dropped, 0);
+    assert!(player.stats().erased > 20, "{:?}", player.stats());
+    assert!(arp_notes > 500, "{arp_notes}");
+    assert_eq!(sink.arp.dropped(), 0);
+    assert!(recorded > 500, "{recorded}");
+    assert_eq!(rec.dropped(), 0);
 }

@@ -17,7 +17,7 @@ addresses and USB serial numbers replaced. Run it through results.py, which
 copies report.txt into the round's folder. The partition copy stays in the
 folder; keep it private like the other work folders.
 
-Your desktop may mount the stick's two partitions when you plug it in. That
+Your desktop may mount the stick's partitions when you plug it in. That
 does no harm, and this tool does not need it.
 """
 import os

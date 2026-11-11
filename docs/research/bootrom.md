@@ -1466,3 +1466,171 @@ Independently parsed the previously extracted binary DTBs in the current project
 - U-Boot's pinctrl nodes /pinctrl/tsadc/otp-gpio and /pinctrl/tsadc/otp-out refer to the **temperature-sensor over-temperature protection** function. They are **NOT evidence of one-time-programmable eFuse power control**. Do not treat string-matches for "otp" as a fuse-programming mechanism.
 
 Next runtime test should enumerate live /sys/bus/nvmem/devices providers and /proc/device-tree/efuse@ffb40000 status/compatible, without writing to eFuse or disclosing unique hardware IDs. The secure-boot flag, if mapped, is at secure eFuse word 0 per Rockchip's 2020 guide; an absent NVMEM node or all-zero read is not proof of unsigned BootROM access. Any physical diagnosis of P19 VCC_EFUSE must be planned from board identification and schematics.
+
+
+## 32. Owner's live secure/nonsecure eFuse survey: secure enable word reads zero (2026-11-11)
+
+Owner ran the read-only eFuse script over Ethernet SSH on MPC One running `6.6.95-az01-2025-06-27-rt55`:
+
+| NVMEM provider | Live DT compatible | First four bytes |
+| --- | --- | --- |
+| `rockchip-efuse0` | `rockchip,rk3288-secure-efuse` | **00 00 00 00** |
+| `rockchip-efuse1` | `rockchip,rk3288-efuse` | **nonzero** (general eFuse) |
+
+The first four bytes of `efuse0` read as octal `000 000 000 000`. The secure provider has the **exact RK3288 secure-bank compatible**, and Rockchip Secure Boot Application Note v2.2 locates the enable flag in the low byte of 32-bit word 0 of its secure eFuse map. **This is strong evidence that the SoC's secure boot enable flag is presently unset**, provided the vendor NVMEM driver's offset zero corresponds to physical secure-bank offset zero. No secure key hash was dumped. The nonsecure bank being nonzero is expected and must not be confused with secure-boot enable status. The live `efuse@ffb40000` node compatible is rockchip,rk3288-efuse; the secure node is expected at `efuse@ffb10000` on related ACVA family DTBs.
+
+**Critical caveat:** standard mainline `drivers/nvmem/rockchip-efuse.c` handles `rockchip,rk3288-efuse` but does **not** list `rockchip,rk3288-secure-efuse` in the upstream compatible table checked. The Akai runtime apparently uses a vendor-added binding/driver or extension for its secure NVMEM provider. Therefore do **not** equate sysfs byte 0 with the raw silicon security word until that driver's actual mapping is checked, ideally against kernel source. A kernel security access filter could also hide some fuse bytes. A successful native owner SPL launch through true ROM USB/SD ultimately provides the more decisive test of unsigned acceptance.
+
+No sysfs regulator name contained `efuse` or `vqps`. This **does not establish** that the RK3288 P19 (1.5-V eFuse programming supply) is physically absent or disconnected: a factory-test-only rail might be unrepresented in the device tree, and a board LDO may have an unrelated name. A firmware upgrade's potential to burn a security key is still **UNKNOWN** until board wiring is inspected.
+
+### 32.1 Private-data-preserving read-only follow-up
+
+This command runs **on the MPC via SSH** and prints only counts of nonzero bytes in the documented secure regions. It does **not print** the public-key hash, chip identifiers, or full eFuse content. BusyBox uses `od -vb` (GNU `od -t` unavailable on the MPC); `awk` skips the byte offset column. An unexpected short read reports an error rather than silently assuming the region is blank.
+
+~~~bash
+mkdir -p ~/mpfree-work
+ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes   -i /home/jesse/.ssh/mpc_one_autorun_ed25519 -p 2222   root@10.42.0.141 'sh -s' <<'MPC_READONLY'   | tee ~/mpfree-work/mpc-secure-efuse-regions.txt
+set -eu
+S=/sys/bus/nvmem/devices/rockchip-efuse0
+echo "=== Exact secure eFuse provider ==="
+if [ ! -r "$S/of_node/compatible" ] ||
+   ! tr '\000' '\n' <"$S/of_node/compatible" |
+       grep -qx 'rockchip,rk3288-secure-efuse'; then
+    echo "STOP: secure provider compatible mismatch"
+    exit 1
+fi
+tr '\000' '\n' <"$S/of_node/compatible"
+readlink "$S/of_node" 2>/dev/null || true
+if [ -r "$S/of_node/rockchip,efuse-size" ]; then
+    echo "Declared eFuse size, big-endian DT cells (octal bytes):"
+    od -b "$S/of_node/rockchip,efuse-size"
+fi
+if [ ! -r "$S/nvmem" ]; then
+    echo "STOP: secure NVMEM unreadable"
+    exit 1
+fi
+
+region_summary() {
+    label="$1"; skip="$2"; count="$3"
+    printf '%s: ' "$label"
+    dd if="$S/nvmem" bs=1 skip="$skip" count="$count" 2>/dev/null |
+      od -vb |
+      awk -v expected="$count" '
+        NF > 1 {
+          for (i=2; i<=NF; i++) {
+            if ($i ~ /^[0-7][0-7][0-7]$/) {
+              bytes++
+              if ($i != "000") nonzero++
+            }
+          }
+        }
+        END {
+          if (bytes != expected) {
+            printf "INCOMPLETE (%d of %d bytes)\n",bytes,expected
+            exit 1
+          }
+          printf "%d/%d bytes nonzero\n",nonzero,bytes
+        }'
+}
+region_summary "Secure enable word" 0 4
+region_summary "Trusted-key hash region, bytes NOT printed" 32 32
+region_summary "Write-lock word" 124 4
+echo "=== Finished: read-only; no raw key/hash bytes disclosed ==="
+MPC_READONLY
+~~~
+
+The counts may demonstrate an unprovisioned security region (all zero) or a present trusted-key hash with the enable bit unset. They still do not alone prove BootROM accepts owner code, or that fuse programming cannot be enabled by a future update.
+
+### 32.2 A demonstrated RK3288 boot-source switch precedent (not an MPC schematic)
+
+PHYTEC's **phyCORE-RK3288 Hardware Manual L-826e_1**, pp. 33 and 129, documents the boot-order sequence eMMC -> SPI NOR -> SD/MM card -> USB and physical boot-disable controls on its own carrier board. Its S6 DIP switch disables eMMC boot via `X_nEMMC_BOOT_DIS`; S7 disables SPI flash, giving SD -> USB. This is an existing *RK3288 board manufacturer's engineering precedent* for a user-accessible recovery switch. Reference: https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf .
+
+**The signal name `X_nEMMC_BOOT_DIS` is PHYTEC's carrier-board label, not proof of an RK3288 SoC boot strap exposed on Akai MPC One.** The MPC may have a different eMMC power/clock path. We must not suggest wiring this pin from a different board or shorting powered MPC hardware. If independent MPC board tracing establishes an electrically safe eMMC first-loader bypass, the same ROM fallback could support an owner-built SD-card SPL (no host) or MaskROM USB (host) without depending on any Akai Linux or U-Boot code. Booting from independent SD is especially useful for an owner-facing free OS; MaskROM USB remains the emergency recovery route.
+
+### 32.3 Reordered project gates
+
+1. **Secure fuse mapping + programming-power audit:** confirm nonzero counts, exact DT secure provider/driver address mapping, PCB P19 rail topology; avoid programming OTP.
+2. **Physical ROM boot-source override:** documentation/PCB images; no energized probing or eMMC shorts without explicit review/authorization.
+3. **Self-built ROM-loadable RK3288 SPL:** test with intact stock eMMC isolated non-destructively, either on SD or USB; identify secure signature policy by actual execution.
+4. **Full eMMC readback** in independent environment, compared against existing verified backup; no boot-critical writes before this demonstration.
+5. **Owner boot manager and stock fallback**, independent MPFree Linux on removable SD and/or tested A/B storage; upgrade compatibility profile as previously documented.
+
+No evidence yet that Akai is planning to block alternative OS software; engineering safeguards are being developed against that possible future state.
+
+
+## 33. MPC One secure eFuse regions are all blank; external MPC One MaskROM evidence (2026-11-11)
+
+### 33.1 Owner's measured secure eFuse map
+
+The owner ran the documented read-only eFuse follow-up on the *actual MPC One*, with kernel 6.6.95-az01-2025-06-27-rt55. The resulting /sys/bus/nvmem/devices/rockchip-efuse0 node references live DT path **/efuse@ffb10000**, with exact compatible **rockchip,rk3288-secure-efuse** and DT property **rockchip,efuse-size = <0x80> (128 bytes)**. The octal probe returned:
+
+| Segment | Offset/size | Nonzero bytes |
+| --- | --- | --- |
+| secure boot enable word | 0 / 4 | **0/4** |
+| trusted RSA public-key hash | 32 / 32 | **0/32** |
+| eFuse write-lock word | 124 / 4 | **0/4** |
+
+These offsets exactly match Table 2-1 of Rockchip Secure Boot Application Note v2.2 for RK3288, as does the 128-byte device-tree declaration. The nonsecure efuse1 bank was observed nonzero in the earlier survey, establishing that nonzero hardware eFuse bytes are readable through at least the other bank. **This is strong, independent evidence that this specific unit has NOT been provisioned for manufacturer RSA secure boot**, subject to validating the vendor-specific secure-bank driver's byte-to-silicon mapping and ruling out secure-world masking. Avoid claiming ROM unsigned-code acceptance until a live owner-SPL experiment.
+
+**STOP re-reading this bank as routine diagnostics.** The useful measured security-flag, hash-presence and lock-region evidence is already collected without leaking identifiers or raw keys. Next work is *electrical* and actual ROM loader qualification.
+
+### 33.2 Crucial new model-specific field report: first-generation MPC One in real MaskROM
+
+MPC-LiveXplore **issue #80**, dated January 29, 2026, records a firsthand report of an **MPC One Gen1** with failed eMMC. The owner states the MPC was stuck in **MaskROM**, recognized by a host as a generic Rockchip USB device; after eMMC chip replacement, their Rockchip tools again recognized and communicated with the chip. They report the official update image supplied only a rootfs and no bootloader, consistent with our 3.10.0 single-PART container. Link: https://github.com/TheKikGen/MPC-LiveXplore/issues/80 .
+
+**Inference strengthened:** at least one physical MPC One Gen1 appears to have a working Rockchip BootROM-to-external-USB path *when eMMC boot is unavailable*. This is the strongest MPC-One-specific evidence to date for the ROM recovery plan; prior Linux gadget observations only demonstrated Linux USB peripheral ability. This external report **does not demonstrate an owner-built unsigned first stage**, a completed bare-eMMC recovery to working OS, or a safe method for forcing ROM while keeping the owner's eMMC intact. It does **not** prove the owner's exact motherboard revision has identical wiring, though it strongly supports the design.
+
+**New contact opportunity:** ask the issue author (without disclosing our private backup or proprietary full image) for their photos, exact maskrom VID:PID, model/revision of eMMC/RAM, Rockchip loader filename, read-only USB logs, and whether a self-built U-Boot SPL ever executed. The report is still open at the time of this research and no independent full successful recovery is documented in the issue.
+
+### 33.3 Rockchip eFuse programming power: what to verify physically
+
+Rockchip's official application note states RK3288 uses **1.5 V on P19 VCC_EFUSE**, with either a switched board LDO or a factory-only test fixture. If no programming supply exists in the assembled unit, ordinary firmware cannot newly burn a trusted signing-key hash merely by writing registers. However **our MPC One's P19 supply wiring is still unknown**. Lack of regulator names in Linux is not enough: factory-only supplies may not appear in DT. Source and pin table: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md#hardware-conditions .
+
+Prioritize **unpowered** high-resolution MPC One PCB photos and identify exact PCB revision, RK3288 SOM layout, eMMC signals (CLK/CMD/DAT), exposed native SDMMC slot, USB-B D+/D-, and P19 programming rail. The owner has not authorized opening the case, electrical probing or hardware modification. Do not extrapolate MPC Live PCB photographs or PHYTEC switch signals to this board.
+
+Once PCB mapping is established, commission/design a normally-transparent and electrically reviewed owner boot-source selection/recovery control. This should allow ROM fallback even if any Akai bootloader and Linux components are replaced, without eMMC corruption. Prefer a model-specific documented service procedure over a chip-clock short, and first demonstrate true MaskROM enumeration and owner-built first-stage code execution before boot-critical writes. A stock firmware update cannot remove a working silicon-ROM/physical path, although external fuse programming, silicon restrictions or board damage could defeat it.
+
+### 33.4 Test priorities revised
+
+**Already demonstrated on this MPC**: read-only full eMMC backup, live DWC2 ff580000.usb peripheral controller and virtual mux, secure NVMEM flag/hash/lock regions reading zero. **Demonstrated on another MPC One Gen1**: BootROM USB discovery after eMMC failure, not owner-led ROM installation.
+
+**Still missing**: confirmed secure fuse driver mapping; physical board P19 power topology; safe nondestructive forced MaskROM entry; acceptance of unsigned independently compiled SPL; compatible DRAM initialization; complete eMMC readback via RAM-only loader; automatic stock fallback.
+
+Firmware upgrades can remove userspace entrypoints but **cannot erase immutable silicon ROM**. Nevertheless until the physical and fuse risks are resolved we must not promise unconditional independent booting. Do not modify p1/p2/p3, boot arguments or eMMC until the project's Tier 3 recovery gate is actually passed.
+
+
+## 34. ROM independence tooling: validated MPC p1 first 16 bytes and offline Python inspector (2026-11-11)
+
+**New verified forensic result**: the exact first 16 bytes previously recorded by the MPC One boot-map survey for the p1 user-area ID block are:
+
+~~~text
+on-disk RC4: 3b 8c dc fc be 9f 9d 51 eb 30 34 ce 24 51 1f 98
+decoded    : 55 aa f0 0f 00 00 00 00 01 00 00 00 04 00 00 00
+~~~
+
+The decoded first word little-endian is **0x0ff0aa55** (valid Rockchip ID-header signature), the next control word at offset +8 is **disable_rc4=1** (SPL payload is *not* encrypted), and the +12 halfword is **init_offset=4** (the actual initial loader starts 2048 bytes after ID-block start). This is independently reproducible with upstream U-Boot's published RC4 key and RK3288 tools/rkcommon.c layout; only a public-format header was decoded. The owner has **not yet run the new Python inspector on the full private p1**, so full init-size and stage metadata remain pending. Note: the RC4 header is **format obfuscation, not secure boot or digital signature verification**.
+
+- **Added host-only Python tool**: tools/mpc-one/offline-rk3288-rom.py. Subcommand **idblock** reads precisely p1's 64 KiB from an ordinary backup file, checks the reference partition SHA256, decodes only the first 512 header bytes, reports init size/RC4 flag/RK32 first-stage signature. **rkimage** subcommand inspects a local source-built USB SRAM payload, accepting either plain RK32 or RC4-obfuscated prefix. No USB access, no SSH, no raw block-device opens and no writes.
+- **Added synthetic tests**: tools/mpc-one/tests/test_offline_rk3288_rom.py (RC4 known vector, mock first-stage encrypted/plain, wrong signature/hash, symlink/block-device rejection, RKIMAGE identification). The actual private eMMC file is not copied into tests or git.
+- **Added owner ROM engineering plan**: docs/hardware/owner-rom-recovery-plan.md. Separate initial **SRAM** code-execution proof from DDR training, Rockusb eMMC readback and permanent owner boot. Do not assume USB upload ACK proves ARM execution.
+- **Corrected outdated maskrom notes** in docs/hardware/maskrom-usb.md: secure eFuse regions have now all read zero (subject to vendor secure NVMEM mapping); PHYTEC RK3288 ROM priority is eMMC before SD; universal eMMC clock-short claims are unsafe and withdrawn.
+- **Strengthened Tier 3 recovery gate** in docs/research/recovery-and-os-strategy.md: true silicon ROM entry, actual source-built owner SPL execution, and whole eMMC readback required before modifying the bootloader or its environment.
+
+**Crucial new boot route:** upstream U-Boot's historical RK3288 documentation describes a direct **USB-to-internal-SRAM** code-loading path using a chip-specific RK32 image header at 0xff704000, without first requiring external DRAM. This offers a short, non-flashing **owner-code acceptance probe** once genuine ROM entry is safely established. The old USB example additionally RC4-encodes the transmitted RKIMAGE; that is **not** the same as the mandatory header0 obfuscation at SD/eMMC sector64. USB SPL acceptance and SDRAM initialization are separate milestones. Modern upstream maintainers express uncertainty about continued RKIMAGE support for all SoCs; it is not yet demonstrated on the MPC One. Sources:
+
+- https://android.googlesource.com/platform/external/u-boot/+/refs/heads/android10-c2f2-s2-release/tools/rkcommon.c
+- https://github.com/qemu/u-boot/blob/master/doc/README.rockchip
+- https://www.mail-archive.com/u-boot@lists.u-boot-project.org/msg02528.html
+- https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf
+
+**Owner's next offline command** (no hardware/firmware writes):
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+python3 -m unittest discover -s tools/mpc-one/tests -p 'test_offline_rk3288_rom.py' -v
+mkdir -p "$HOME/mpfree-work"
+python3 tools/mpc-one/offline-rk3288-rom.py idblock   "$HOME/mpfree-backups/mpc-one-emmc-20261109T233604Z-datprr67/mmcblk0.img"   | tee "$HOME/mpfree-work/mpc-one-idblock-offline.txt"
+~~~
+
+No live MaskROM entry, ROM upload, SD card formatting, GPIO change, eFuse operation, or storage modifications have been carried out during this update.

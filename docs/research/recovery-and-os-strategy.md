@@ -43,7 +43,11 @@ A gate should match what an experiment can actually damage.
 | --- | --- | --- | --- | --- |
 | 1 | Session only: RAM-resident MPFree, `systemctl stop acvs.service` for one run, no persistent writes | Phase 1: own display, pads, audio | Supervisor restarts `acvs`, else power-cycle | Full off-device eMMC backup taken; per-partition write counters show zero writes to `p1`–`p6` across the session; stub stop → start rehearsal passes (no MPFree code) |
 | 2 | Persistent MPFree files on SD/USB ext4 or a dedicated `/data/mpfree` directory; opt-in launch | Installed MPFree, saved projects, the one-click installer | Remove media; Akai Update Mode reinstalls `p6`; restore `/data` from backup | Tier 1, plus: Update Mode rehearsed once (reinstall 3.6.0 over itself); `/data` restore rehearsed; update scripts read offline |
-| 3 | Anything on `p1`–`p6`, `boot0/1`, U-Boot env, or another kernel | MPFree distribution | RK3288 MaskROM USB reflash from the backup | Tier 2, plus: MaskROM entry found on this board; full eMMC **read-back** over MaskROM matches the SSH backup |
+| 3 | Anything on `p1`–`p6`, `boot0/1`, U-Boot env, or another kernel | MPFree distribution | RK3288 MaskROM USB reflash from the backup | Tier 2, plus: **independent** silicon-ROM entry proven on this board, owner-built SPL accepted and executed, board-compatible recovery loader can read the whole eMMC and **full read-back** matches the SSH backup; physical/eFuse future-lockout risks assessed |
+
+
+
+**Owner freedom gate (2026-11-11 update):** generic Rockchip loader access or an intact vendor Fastboot is **not** adequate proof that an owner can install arbitrary code after a firmware update. Before any boot-critical write, prove that the actual silicon ROM can execute an **independently built** owner first stage, and that a separate RAM recovery path can read back all relevant eMMC sectors. See [owner ROM recovery plan](../hardware/owner-rom-recovery-plan.md). The reference unit's security enable, RSA key-hash region and write-lock region presently read blank through Linux NVMEM, but physical fuse-programming voltage and true ROM code acceptance remain unresolved.
 
 Tier 1 does not need MaskROM because nothing on the eMMC changes, and the
 kernel's write counters (`/sys/class/block/mmcblk0pN/stat`, field 7 =
