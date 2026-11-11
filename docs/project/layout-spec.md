@@ -103,6 +103,8 @@ The music tabs, in this order:
 
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
 - **Scales on the synth pads** (arp thread, 09:27Z, Jay's ask; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ): while the synth is on the pads, PAD BANK A to H pick pad layouts (kits as today otherwise), and the status chip reads "Poly · A minor · in key". The rest (Play's MENU options rows, tile names and colours) is inside Play.
+- **SHIFT + REC = Capture on every page** (time thread, 09:35Z, as the sequencer plan had it; patch shift-rec-capture-17e5961.patch). Without it, Capture works from the Takes panel's button on Clips (#80).
+- **A new Play page** (Jay, 09:34Z): the big pads go; Play shows what the hardware can't (time, launches, loop, performance controls, mix) with a small pad map, and a graphical pad editor gets its own page. Being brainstormed in the Hello thread.
 - **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
 
 ## Where things stand (2026-11-11 08:10Z)
