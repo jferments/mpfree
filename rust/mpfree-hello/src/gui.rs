@@ -3,7 +3,8 @@
 //! - The console (the one-shot steps): a header and the step's log.
 //! - The pad player (`play`, and `app` from power-on): a loading page with a
 //!   progress bar; Play (pads lit in the kit's colour, the kit list, the level
-//!   slider, timing); Debug (every MIDI message in and out, events, timing);
+//!   slider, timing); Synth (the synth's pages, from mpfree-synth-ui); Debug
+//!   (every MIDI message in and out, events, timing);
 //!   Console (the system log, raw); Prefs and each page's options (MENU); and
 //!   the button guide. Tabs in the header switch between the main pages.
 //! - The arp (`mpfree-arp-ui`): the quick band over the pads while NOTE
@@ -36,6 +37,8 @@ use mpfree_time_ui::TimeAction;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::widgets::{Card, Chip, Fader, Header, Label, ListItem, ListView, Loading, LogPanel, OptionList,
                          OptionRow, PadGrid, StatList};
+use mpfree_synth_ui::view as synth_view;
+use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_ui::{Align, Color, EventKind, Fonts, Image, SoftCanvas, Theme, Tone, Touch, Ui, UiEvent};
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -59,7 +62,9 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 
 const CONSOLE_HINT: &str = "Switch the MPC off with its power switch to return to the stock firmware";
 const SHIFT_HINT: &str =
-    "SHIFT +   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+const SHIFT_SYNTH_HINT: &str =
+    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
 const SHIFT_MENU_HINT: &str = "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
@@ -202,6 +207,20 @@ pub enum ToUi {
     Settings(Settings),
     ClearLogs,
     ClearConsole,
+    /// The synth: its parameters, values and presets (at the start).
+    Synth(SynthState),
+    /// Every value of the synth, in its parameter order (after a preset).
+    SynthValues(Vec<f32>),
+    /// The synth's meters, by parameter index.
+    SynthMeters(Vec<(usize, f32)>),
+    /// On the Synth page: a Q-Link (0-3) turned by this many detents.
+    SynthQLink(usize, i32),
+    /// On the Synth page: the wheel turned (the selected knob).
+    SynthWheel(i32),
+    /// On the Synth page: the next or previous page.
+    SynthPage(i32),
+    /// New pad labels for one kit (the synth's notes, after an octave change).
+    KitPads { kit: usize, pads: Vec<Option<String>> },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
     /// What the arp screens show. (Patterns are large, so they travel
@@ -243,6 +262,8 @@ pub enum FromUi {
     ArpChip,
     /// A touch on the transport bar or the Clips page.
     Time(TimeAction),
+    /// A change on the Synth page, for the synth on the audio thread.
+    Synth(SynthAction),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -268,6 +289,8 @@ pub struct Player {
     /// timed step there is none, so the step's own lines go there.
     console_from_lines: bool,
     console_backlog: VecDeque<String>,
+    /// The Synth page, once the synth's state has come.
+    synth: Option<SynthPanel>,
     /// The Touch lab page is on screen (over `view`, which it returns to).
     lab_open: bool,
     arp_panel: ArpPanel,
@@ -339,8 +362,8 @@ impl Player {
                              timed, ready: false, view: View::Play, status, settings: Settings::default(),
                              session: ("Starting".to_string(), Tone::Dim),
                              console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
-                             arp_panel, workspace, arp, qlink_focus: None, arp_chip: None, fingers: Vec::new(),
-                             outbox: Vec::new(), time_page, time: TimeState::default() };
+                             synth: None, arp_panel, workspace, arp, qlink_focus: None, arp_chip: None,
+                             fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default() };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
@@ -409,8 +432,13 @@ impl Player {
     /// the modes that are on, and the time left in the timed step.
     fn refresh_chips(&mut self) {
         let mut chips = vec![Chip::new(self.session.0.clone(), self.session.1)];
-        if !self.kits.is_empty() {
-            chips.push(Chip::new(format!("Kit {} of {}", self.kit + 1, self.kits.len()), Tone::Accent));
+        match self.kits.get(self.kit) {
+            Some(k) if k.name == crate::synth::KIT_NAME => {
+                let note = |i: usize| k.pads.get(i).cloned().flatten().unwrap_or_default();
+                chips.push(Chip::new(format!("Poly · {} to {}", note(0), note(15)), Tone::Accent));
+            }
+            Some(_) => chips.push(Chip::new(format!("Kit {} of {}", self.kit + 1, self.kits.len()), Tone::Accent)),
+            None => {}
         }
         // The level in dB is on the slider and the tempo only matters while
         // the arp plays, so the header keeps to the chips that change how the
@@ -448,6 +476,8 @@ impl Player {
         };
         let text = if self.status.shift && self.ready && matches!(self.view, View::Prefs | View::Options) {
             SHIFT_MENU_HINT.to_string()
+        } else if self.status.shift && self.ready && self.view == View::Synth {
+            SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else if self.view == View::Play && self.band_showing() && self.status.latched {
@@ -461,6 +491,8 @@ impl Player {
                 View::Play => format!("Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   \
                                        MENU: options   ·   {stop}"),
                 View::Clips => CLIPS_HINT.to_string(),
+                View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
+                                        - / +: page   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   MENU: options   ·   {stop}"),
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + STOP: back"
                     .to_string(),
@@ -662,6 +694,58 @@ impl Player {
                 self.ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
+            ToUi::Synth(state) => match self.synth.as_mut() {
+                Some(p) => {
+                    let _ = p.load(&mut self.ui, state);
+                }
+                None => match SynthPanel::add(&mut self.ui, "Synth", state) {
+                    Ok(p) => self.synth = Some(p),
+                    Err(e) => println!("screen: no Synth page ({e})"),
+                },
+            },
+            ToUi::SynthValues(values) => {
+                if let Some(p) = self.synth.as_mut().filter(|p| p.state.values.len() == values.len()) {
+                    p.state.values = values;
+                    p.refresh(&mut self.ui);
+                }
+            }
+            ToUi::SynthMeters(meters) => {
+                if let Some(p) = self.synth.as_mut() {
+                    let mut changed = false;
+                    for (i, v) in meters {
+                        if let Some(old) = p.state.values.get_mut(i).filter(|old| **old != v) {
+                            *old = v;
+                            changed = true;
+                        }
+                    }
+                    if changed && self.view == View::Synth {
+                        p.refresh(&mut self.ui);
+                    }
+                }
+            }
+            ToUi::SynthQLink(n, ticks) => {
+                if let Some(a) = self.synth.as_mut().and_then(|p| p.qlink(&mut self.ui, n, ticks)) {
+                    self.outbox.push(FromUi::Synth(a));
+                }
+            }
+            ToUi::SynthWheel(ticks) => {
+                if let Some(a) = self.synth.as_mut().and_then(|p| p.wheel(&mut self.ui, ticks)) {
+                    self.outbox.push(FromUi::Synth(a));
+                }
+            }
+            ToUi::SynthPage(delta) => {
+                if let Some(p) = self.synth.as_mut() {
+                    p.step_page(&mut self.ui, delta);
+                }
+            }
+            ToUi::KitPads { kit, pads } => {
+                if let Some(k) = self.kits.get_mut(kit) {
+                    k.pads = pads;
+                    if kit == self.kit {
+                        self.set_kit(kit);
+                    }
+                }
+            }
             ToUi::TouchLab => {
                 self.ready = true;
                 if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
@@ -834,6 +918,7 @@ impl Player {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play => "Play".to_string(),
             View::Clips => CLIPS_PAGE.to_string(),
+            View::Synth => "Synth".to_string(),
             View::Debug => "Debug".to_string(),
             View::Console => "Console".to_string(),
             View::Prefs => "Prefs".to_string(),
@@ -851,6 +936,12 @@ impl Player {
         }
         if relabel {
             self.label_pads();
+        }
+        if v == View::Synth {
+            // Meters changed while the page was hidden.
+            if let Some(p) = self.synth.as_mut() {
+                p.refresh(&mut self.ui);
+            }
         }
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             if let Some(t) = v.tab() {
@@ -895,6 +986,12 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        let synth_widget = [synth_view::TITLE, synth_view::VISUALS, synth_view::TILES, synth_view::PRESETS,
+                            synth_view::QLINKS].contains(&ev.widget.as_str());
+        if synth_widget {
+            let p = self.synth.as_mut()?;
+            return p.event(&mut self.ui, &ev).map(FromUi::Synth);
+        }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
@@ -1077,6 +1174,9 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
             while let Ok(m) = rx.try_recv() {
                 quit |= take(&mut player, m);
             }
+            for a in player.take_actions() {
+                let _ = tx.try_send(a);
+            }
             if touch.is_none() && touch_tried.is_none_or(|t| t.elapsed() >= TOUCH_RETRY) {
                 if let Some(open) = open_touch.as_mut() {
                     let first = touch_tried.is_none();
@@ -1198,7 +1298,11 @@ pub fn sample_kits() -> Vec<KitView> {
 /// level, timing, MIDI lines and a few system log lines.
 pub fn sample_player(fonts: Fonts) -> Player {
     let mut p = Player::new(fonts, SCREEN, false, None);
-    p.apply(ToUi::Kits(sample_kits()));
+    let synth = crate::synth::Synth::new(44_100);
+    let mut kits = sample_kits();
+    kits.push(synth.kit_view());
+    p.apply(ToUi::Kits(kits));
+    p.apply(ToUi::Synth(synth.state()));
     p.apply(ToUi::Session("Akai session".into(), Tone::Good));
     p.apply(ToUi::Kit(0));
     p.apply(ToUi::Level { db: -18.0, value: 0.79 });
@@ -1263,8 +1367,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::TouchLab => p.apply(ToUi::TouchLab),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
+            Effect::SynthWheel(d) => p.apply(ToUi::SynthWheel(d)),
+            Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
-            | Effect::Time(_) => {}
+            | Effect::Time(_) | Effect::Octave(_) => {}
         }
     }
 }
@@ -1416,6 +1522,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match sample_clips(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
+    }
+    // The synth on the pads (the kit list's last entry), then its page.
+    let synth_kit = sample_kits().len();
+    let mut play_synth = sample_player(fonts());
+    play_synth.apply(ToUi::Status(Status { shift: false, pad_level: PadLevel::Off, repeat: false, latched: false,
+                                           rate: "1/16", bpm: 120.0 }));
+    play_synth.apply(ToUi::Kit(synth_kit));
+    for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
+        play_synth.apply(ToUi::PadDown { pad, velocity: v });
+    }
+    out.push(("play-synth", play_synth));
+    for (name, page, qlink) in [("synth", 0, (2, 12)), ("synth-filter", 1, (0, -20))] {
+        let mut p = sample_player(fonts());
+        p.apply(ToUi::Kit(synth_kit));
+        p.apply(ToUi::Show(View::Synth));
+        p.apply(ToUi::SynthPage(page));
+        p.apply(ToUi::SynthQLink(qlink.0, qlink.1));
+        p.take_actions();
+        out.push((name, p));
     }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
@@ -1626,6 +1751,49 @@ mod tests {
         assert_eq!(p.ui.get::<ListView>("kits").unwrap().selected, 3);
         p.apply(ToUi::Kit(99)); // ignored
         assert_eq!(p.ui.get::<ListView>("kits").unwrap().selected, 3);
+    }
+
+    #[test]
+    fn the_synth_page_shows_poly_and_sends_its_changes() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header").unwrap().chips.iter().map(|c| c.text.clone()).collect()
+        };
+        assert!(chips(&p).contains(&"Kit 1 of 7".to_string()), "{:?}", chips(&p));
+        p.apply(ToUi::Kit(synth_kit));
+        assert!(chips(&p).contains(&"Poly · C3 to D#4".to_string()), "{:?}", chips(&p));
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[1].label, "C#3");
+        // The Synth tab is the second; the app decides, then the page shows.
+        let header = p.ui.rect_of("header").unwrap();
+        assert_eq!(p.touch(1, Touch::Down, header.x + 170 + 118 + 20, header.y + 30), Some(FromUi::Tab(1)));
+        p.apply(ToUi::Show(View::Synth));
+        assert_eq!(p.page(), "Synth");
+        assert!(p.ui.rect_of(synth_view::TILES).is_some_and(|r| r.h > 300));
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("Q-Links 1-4"));
+        // A Q-Link turns its knob on screen at once and sends the change.
+        assert!(p.take_actions().is_empty());
+        p.apply(ToUi::SynthQLink(0, 5));
+        let acts = p.take_actions();
+        assert!(matches!(acts.as_slice(), [FromUi::Synth(SynthAction::Set { .. })]), "{acts:?}");
+        p.apply(ToUi::SynthWheel(-3));
+        assert_eq!(p.take_actions().len(), 1);
+        // A preset touched goes to the audio thread, whose values come back.
+        let ev = UiEvent { widget: synth_view::PRESETS.to_string(), kind: EventKind::Select(3) };
+        assert_eq!(p.on_event(ev), Some(FromUi::Synth(SynthAction::Preset(3))));
+        let mut s = crate::synth::Synth::new(44_100);
+        s.load_preset(3);
+        p.apply(ToUi::SynthValues(s.values()));
+        assert_eq!(p.synth.as_ref().unwrap().state.values, s.values());
+        // An octave up relabels the synth's pads and its chip.
+        s.shift_octave(1);
+        p.apply(ToUi::KitPads { kit: synth_kit, pads: s.pad_labels() });
+        assert!(chips(&p).contains(&"Poly · C4 to D#5".to_string()), "{:?}", chips(&p));
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "C4");
+        // Meters update the page's copy.
+        let i = p.synth.as_ref().unwrap().state.index(mpfree_synth::params::METER_VOICES).unwrap();
+        p.apply(ToUi::SynthMeters(vec![(i, 3.0)]));
+        assert_eq!(p.synth.as_ref().unwrap().state.values[i], 3.0);
     }
 
     #[test]
