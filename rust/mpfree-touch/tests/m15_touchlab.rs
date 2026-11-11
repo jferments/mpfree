@@ -165,8 +165,8 @@ fn journal_lines_parse_back() {
     let (tag, kv) = parse_line(&lab).unwrap();
     assert_eq!(tag, "touch-lab");
     assert!(kv.contains(&("result", "fail")) && kv.contains(&("note", "missing_direction")));
-    let line = reader_line(true, 3, 0, 1, 0, 5, 12);
-    assert_eq!(line, "touch-reader: seeded=1 slot=3 fingers=0 resyncs=1 fallbacks=0 drained=5 contacts=12");
-    assert_eq!(parse_line(&line).unwrap().1.len(), 7);
+    let line = reader_line(true, 3, 0, 1, 0, 5, 12, 480);
+    assert_eq!(line, "touch-reader: seeded=1 slot=3 fingers=0 resyncs=1 fallbacks=0 drained=5 contacts=12 events=480");
+    assert_eq!(parse_line(&line).unwrap().1.len(), 8);
     assert!(parse_line("status: hits=3").is_none());
 }
