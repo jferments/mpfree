@@ -3458,6 +3458,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         &mpfree_mixer_ui::sample::name,
     );
     st.selected = Some(mpfree_fx::StripId::Track(1));
+    // The costs are timed on this computer: fixed ones, so the picture is
+    // the same on every run (golden/screens.txt).
+    st.cost_pct = st.cost_pct.map(|_| 18.0);
+    for (k, v) in st.strips.iter_mut().chain([&mut st.master]).enumerate() {
+        v.cost_pct = v.cost_pct.map(|_| 0.5 + k as f32 * 0.25);
+        for i in &mut v.inserts {
+            i.cost_pct = i.cost_pct.map(|_| 1.5);
+        }
+    }
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
