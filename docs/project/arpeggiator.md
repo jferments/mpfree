@@ -52,7 +52,7 @@ Threads on MPC-Forums (few posts, so a thin picture): the built-in patterns "get
 
 On the pad player, the "notes" fed to the engine are **pad slots** (pad 1 = 0 … pad 16 = 15), not Akai's scrambled pad note numbers, so "up" means up the pads. With a melodic program (later) they are MIDI notes.
 
-## The engine (`rust/mpfree-arp`, this PR)
+## The engine (`rust/mpfree-arp`)
 
 Notes in, sample-timed notes out. It lives in the audio thread: the app calls `press`, `release`, `pressure` and the setters between periods, then `process(frames)` once per period, which returns the note-ons and note-offs inside that period with their frame offsets. It never allocates, locks or does I/O after `Engine::new`, and its output does not depend on the period size (a test runs the same input in blocks of 1, 64, 127, 1000 and 100 000 frames and gets identical events).
 
@@ -151,11 +151,27 @@ Later: import a MIDI file the owner made (notes become note picks by their rank 
 
 Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persistent storage; on the RAM-only test build they live in memory.
 
+## Hearing it on the workstation (`mpfree-arp-render`)
+
+`mpfree-arp-render` is a workstation-only program in the same crate. It runs the real engine in 128-frame periods at 44.1 kHz, the same way the pad player will, and plays its notes through a small built-in synth (two detuned saws, a low-pass filter and an envelope) or, for drum demos, 16 simple drum sounds made in code (pad 1 kick, 2 snare, 3 closed hat and so on). It needs no samples and no MPC, and its output is the same on every run.
+
+```sh
+# Every order, every starter pattern, drums, lanes, scale, strum and mutate: 29 WAVs
+cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --demo
+
+# One of your own: a chord per bar, looped
+cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- \
+    --chords "57,60,64,67;53,57,60,64" --mode pattern --pattern "1 3 2 3 x:2 . 4 x | oct 0 0 1"
+```
+
+It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and a hash. Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--bars`, `--seed`, `--name`.
+
 ## Implementation plan
 
 | Step | What | Depends on | Device? |
 |---|---|---|---|
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
+| A2 (this PR) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
 | B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
 | C | `StepGrid` widget and the pattern editor (tap, record on pads); pattern files | B | yes |
 | D (engine done, PR #35) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate; scales applied last. Still to do: per-step swing/nudge lane, and the UI | C for the UI | no (engine), then yes |
