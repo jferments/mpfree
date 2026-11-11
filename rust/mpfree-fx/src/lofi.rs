@@ -369,6 +369,22 @@ impl Default for LoFi {
 }
 
 impl LoFi {
+    /// The low and high cuts' response in dB at `hz`, for the Amount and
+    /// corners set (at Amount 0 they open right up). For drawing.
+    pub fn cuts_db(&self, hz: f32) -> f32 {
+        let a = self.v[ids::AMOUNT as usize] / 100.0;
+        let lo = self.v[ids::LOW_CUT as usize].log2();
+        let hi = self.v[ids::HIGH_CUT as usize].log2();
+        let (mut low, mut high) = (Svf::default(), Svf::default());
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let low_hz = lerp(20f32.log2(), lo, a).exp2();
+        let high_hz = lerp(20_000f32.log2(), hi, a).exp2();
+        low.set(SvfMode::HighPass, low_hz, q, 0.0, self.rate);
+        high.set(SvfMode::LowPass, high_hz, q, 0.0, self.rate);
+        let h = crate::svf::cmul(low.response(hz, self.rate), high.response(hz, self.rate));
+        crate::svf::power_db(h)
+    }
+
     pub fn new() -> LoFi {
         let v = defaults(&PARAMS);
         let mut f = LoFi {

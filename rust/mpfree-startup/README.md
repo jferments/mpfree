@@ -1,7 +1,7 @@
 # mpfree-startup
 
 Themed startup screens for MPFree, drawn in software for the 1280x800 screen.
-This crate draws three startup screens (synthwave is the default):
+Each `mpfree-ui` theme names its startup screen; this crate draws three:
 
 | Theme | Scene |
 | --- | --- |

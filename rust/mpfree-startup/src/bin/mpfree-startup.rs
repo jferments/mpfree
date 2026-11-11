@@ -1,7 +1,5 @@
 //! Preview and time the themed startup screens on the workstation.
 //!
-//! --theme NAME is console, synthwave, spaceship or default.
-//!
 //! Usage:
 //!   mpfree-startup --preview DIR [--theme NAME] [--fps N] [--seconds S]
 //!       Draws every frame and saves them as PNG files in DIR (new files
@@ -15,7 +13,7 @@
 //!       On the MPC One: plays the startup screen on /dev/fb0 for --seconds
 //!       (default: the scene's own length), then exits and leaves its last
 //!       frame on the screen for the app's loading page (`app --keep-screen`).
-//!       Without --theme, the default startup screen (synthwave).
+//!       Without --theme, the default theme's startup screen (synthwave).
 //!       It writes only to the framebuffer device and to the framebuffer's
 //!       sysfs `pan` file (which asks the kernel to show the framebuffer;
 //!       nothing is stored), like mpfree-splash. It never writes storage.
@@ -23,9 +21,9 @@
 //! --preview writes only PNG files in DIR.
 
 use mpfree_screen_log::Rotation;
-use mpfree_startup::{scene, Kind, Scene};
+use mpfree_startup::{scene, Scene};
 use mpfree_ui::fb::FbTarget;
-use mpfree_ui::{Rect, SoftCanvas};
+use mpfree_ui::{Rect, SoftCanvas, Theme};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -43,10 +41,8 @@ fn make(name: &str) -> Result<Box<dyn Scene>, String> {
 }
 
 fn make_sized(name: &str, (w, h): (i32, i32)) -> Result<Box<dyn Scene>, String> {
-    let k = Kind::from_name(name).ok_or_else(|| {
-        format!("no startup screen {name:?} (console, synthwave, spaceship or default)")
-    })?;
-    Ok(scene(k, w, h))
+    let t = Theme::builtin(name).ok_or_else(|| format!("no theme {name:?}"))?;
+    scene(t.startup, w, h).ok_or_else(|| format!("{name}: its startup screen is mpfree-splash"))
 }
 
 /// Play the scene on the framebuffer in real time, then leave its last

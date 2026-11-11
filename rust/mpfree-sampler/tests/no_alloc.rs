@@ -130,6 +130,8 @@ fn render_and_events_never_allocate() {
             root: 60,
         });
         pad.chokes = vec![(i + 1) % 16];
+        // Half of them wobble like worn tape.
+        pad.wow = if i % 2 == 1 { 0.8 } else { 0.0 };
         pad.filter = Filter {
             kind: FilterKind::LowPass,
             poles: 4,
@@ -307,6 +309,19 @@ fn render_and_events_never_allocate() {
                 block % 128,
                 Event::Freeze {
                     on: block % 128 == 0,
+                },
+            );
+        }
+        // Tape stops and starts, at once and over a few blocks.
+        if block % 150 == 40 {
+            e.schedule(0, Event::Tape { stop: true, ms: 30 });
+        }
+        if block % 150 == 70 {
+            e.schedule(
+                block % 128,
+                Event::Tape {
+                    stop: false,
+                    ms: (block % 3 * 10) as u16,
                 },
             );
         }
