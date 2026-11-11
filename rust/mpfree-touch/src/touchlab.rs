@@ -10,7 +10,9 @@
 //! Journal lines (one per line, plain ASCII, `key=value` separated by single
 //! spaces, never containing spaces inside a value):
 //!
-//! - `touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12`
+//! - `touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12 events=480`
+//!   (`events` counts raw input events read, so a zero there with touches
+//!   tried points below the reader, at the driver)
 //! - `touch-gesture: step=swipes kind=swipe dir=left speed=1180 t_ms=4521`
 //!   (kinds: tap, long, drag-start, drag-end, swipe, 2f-start, 2f-end;
 //!   drag-end adds `vx`, `vy`, `cancelled`; tap and long add `x`, `y`)
@@ -269,9 +271,11 @@ impl StepSummary {
 }
 
 /// The reader's state, as a journal line.
-pub fn reader_line(seeded: bool, slot: i32, fingers: u32, resyncs: u64, fallbacks: u64, drained: u64, contacts: u64) -> String {
+#[allow(clippy::too_many_arguments)]
+pub fn reader_line(seeded: bool, slot: i32, fingers: u32, resyncs: u64, fallbacks: u64, drained: u64, contacts: u64,
+                   events: u64) -> String {
     format!(
-        "touch-reader: seeded={} slot={slot} fingers={fingers} resyncs={resyncs} fallbacks={fallbacks} drained={drained} contacts={contacts}",
+        "touch-reader: seeded={} slot={slot} fingers={fingers} resyncs={resyncs} fallbacks={fallbacks} drained={drained} contacts={contacts} events={events}",
         u8::from(seeded)
     )
 }
