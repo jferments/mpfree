@@ -16,6 +16,11 @@
 //! guide no longer runs at power-on (Prefs still has it). Latch as SHIFT +
 //! NOTE REPEAT worked in round 5; Half Level as SHIFT + FULL LEVEL is read
 //! from the panel's print and not yet tried.
+//!
+//! The time engine: PLAY plays and STOP stops the transport (a second STOP
+//! also silences everything, as before); REC, OVERDUB, UNDO (SHIFT + UNDO
+//! redoes) and PLAY START come from the button guide. They become
+//! `Effect::Time`, which the audio loop hands to its `TimeHost`.
 
 mod arp;
 
@@ -23,6 +28,8 @@ pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, Recorder};
 use mpfree_controller::mpc_one::button;
+use mpfree_time_ui::TimeAction;
+use mpfree_transport::Command;
 
 /// Button lights take the button's note as the CC number on the Private
 /// cable. Akai's app sends 1 and 3 (dim and bright, inferred); so do we.
@@ -33,6 +40,8 @@ pub const LIGHT_ON: u8 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// The time engine's launch grid, record settings and takes.
+    Clips,
     Debug,
     Console,
     Prefs,
@@ -46,19 +55,20 @@ pub enum View {
     Pattern,
 }
 
-pub const TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
+pub const TABS: [&str; 5] = ["Play", "Clips", "Debug", "Console", "Prefs"];
 
 impl View {
     pub fn from_tab(i: usize) -> View {
-        [View::Play, View::Debug, View::Console, View::Prefs].get(i).copied().unwrap_or(View::Play)
+        [View::Play, View::Clips, View::Debug, View::Console, View::Prefs].get(i).copied().unwrap_or(View::Play)
     }
 
     pub fn tab(self) -> Option<usize> {
         match self {
             View::Play | View::Arp | View::Pattern => Some(0),
-            View::Debug => Some(1),
-            View::Console => Some(2),
-            View::Prefs => Some(3),
+            View::Clips => Some(1),
+            View::Debug => Some(2),
+            View::Console => Some(3),
+            View::Prefs => Some(4),
             View::Options | View::Guide => None,
         }
     }
@@ -320,10 +330,15 @@ pub enum Effect {
     Recorded(Pattern, usize),
     /// The data wheel in the workspace: turn the selected cell.
     WorkspaceWheel(i32),
+    /// The data wheel on the Clips page: step the selected record setting,
+    /// or (with SHIFT) scroll the grid.
+    ClipsWheel { delta: i32, scroll: bool },
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// For the time engine (transport, clips, takes).
+    Time(TimeAction),
 }
 
 pub struct App {
@@ -370,6 +385,8 @@ pub struct App {
     sent_step: u64,
     sent_notes: mpfree_arp::NoteSet,
     arp_dirty: bool,
+    /// The transport is rolling (the audio loop says each period).
+    rolling: bool,
 }
 
 impl App {
@@ -385,7 +402,7 @@ impl App {
                             taps: Vec::new(), beat_zero: 0.0,
                             tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None, qlink_turns: [0; 4],
-                            sent_step: 0, sent_notes, arp_dirty: true };
+                            sent_step: 0, sent_notes, arp_dirty: true, rolling: false };
         app.engine.set_pattern(pattern);
         app.update_engine();
         app
@@ -394,6 +411,12 @@ impl App {
     #[cfg(test)]
     pub fn view(&self) -> View {
         self.view
+    }
+
+    /// Whether the transport is rolling, for STOP (the audio loop tells it
+    /// each period).
+    pub fn set_rolling(&mut self, rolling: bool) {
+        self.rolling = rolling;
     }
 
     /// The first page once everything is ready, and the lights to start with.
@@ -534,9 +557,26 @@ impl App {
                 fx.extend(self.toggle(View::Console));
             } else if self.timed {
                 fx.push(Effect::Quit);
+            } else if self.rolling {
+                // The transport stops; sounds ring out and latched pads keep
+                // going, so a second STOP is what silences everything.
+                fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
+                fx.push(Effect::Note("STOP: transport stopped".to_string()));
             } else {
                 fx.extend(self.stop());
+                // Stopped already: the transport goes back to bar 1.
+                fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY {
+            fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
+        } else if Some(note) == self.map.play_start {
+            fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.rec {
+            fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
+        } else if Some(note) == self.map.overdub {
+            fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
+        } else if Some(note) == self.map.undo {
+            fx.push(Effect::Time(if shift { TimeAction::Redo } else { TimeAction::Undo }));
         } else if Some(note) == self.map.note_repeat {
             if shift || self.latched {
                 // SHIFT + NOTE REPEAT toggles Latch; NOTE REPEAT alone lets it go.
@@ -606,6 +646,18 @@ impl App {
         fx
     }
 
+    /// The tempo, set from elsewhere (the Clips page): Note Repeat, the arp
+    /// and the transport follow it.
+    pub fn set_tempo(&mut self, bpm: f64) -> Vec<Effect> {
+        self.settings.bpm = bpm.clamp(30.0, 300.0);
+        self.update_engine();
+        let mut fx = vec![self.status(), Effect::Note(format!("tempo {:.1} BPM", self.settings.bpm))];
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
+        fx
+    }
+
     /// The TAP TEMPO light, on for the first fifth of each beat. Returns a
     /// light message only when it changes.
     pub fn tick(&mut self, t: f64) -> Option<Effect> {
@@ -634,6 +686,7 @@ impl App {
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            View::Clips => vec![Effect::ClipsWheel { delta, scroll: self.shift }],
             _ => vec![Effect::Kit(delta)],
         }
     }
@@ -647,7 +700,7 @@ impl App {
     /// Show `v`. The page left is remembered for going back, unless it is
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
-        if self.view != v && matches!(self.view, View::Play | View::Debug | View::Console | View::Arp) {
+        if self.view != v && matches!(self.view, View::Play | View::Clips | View::Debug | View::Console | View::Arp) {
             self.back = self.view;
         }
         self.view = v;
@@ -766,8 +819,9 @@ impl App {
             Item::Rate => vec!["How often a held pad repeats with NOTE REPEAT",
                                "or Latch: from quarter notes to 32nd notes,",
                                "T for triplets."],
-            Item::Tempo => vec!["The tempo Note Repeat follows. TAP TEMPO",
-                                "sets it too: tap it three or four times."],
+            Item::Tempo => vec!["The tempo the transport, the clips and",
+                                "Note Repeat follow. TAP TEMPO sets it too:",
+                                "tap it three or four times."],
             Item::PadLevel => vec!["FULL LEVEL plays every hit at 127,",
                                    "SHIFT + FULL LEVEL (Half Level) at 64."],
             Item::Latch => vec!["SHIFT + NOTE REPEAT. Pads you play keep",
@@ -1130,7 +1184,7 @@ mod tests {
         assert_eq!(app.step_item(3, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
         assert!(app.step_item(3, -1).contains(&Effect::Audio(2)));
         // The Debug page's options.
-        app.tab(1);
+        app.tab(View::Debug.tab().unwrap());
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Debug options"));
         // The wheel picks kits outside menus.
@@ -1163,7 +1217,7 @@ mod tests {
     fn the_guide_learns_buttons_by_name() {
         let mut app = ready();
         app.map = ButtonMap::default();
-        app.tab(3);
+        app.tab(View::Prefs.tab().unwrap());
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press MENU")));
@@ -1187,7 +1241,7 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.contains("MENU = button 123")
                                              && n.contains("- = not found") && n.contains("UNDO = not found"))));
         // The guide again from Prefs, every button.
-        app.tab(3);
+        app.tab(View::Prefs.tab().unwrap());
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
@@ -1361,5 +1415,48 @@ mod tests {
         assert_eq!(app.tick(20.61), Some(Effect::Light(button::TAP_TEMPO, LIGHT_ON)));
         assert_eq!(app.tick(20.62), None);
         assert_eq!(app.tick(20.9), Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF)));
+    }
+
+    #[test]
+    fn the_transport_buttons_drive_the_time_engine() {
+        let mut app = ready();
+        let time = |a: TimeAction| Effect::Time(a);
+        assert_eq!(press(&mut app, button::PLAY), vec![time(TimeAction::Transport(Command::Play))]);
+        assert_eq!(press(&mut app, 93), vec![time(TimeAction::Transport(Command::PlayStart))]);
+        assert_eq!(press(&mut app, 90), vec![time(TimeAction::Transport(Command::Record))]);
+        assert_eq!(press(&mut app, 91), vec![time(TimeAction::Transport(Command::ToggleOverdub))]);
+        assert_eq!(press(&mut app, 92), vec![time(TimeAction::Undo)]);
+        assert_eq!(held(&mut app, button::SHIFT, |a| press(a, 92)), vec![time(TimeAction::Redo)]);
+        // Rolling, STOP stops the transport and leaves the sounds alone.
+        app.set_rolling(true);
+        let fx = press(&mut app, button::STOP);
+        assert_eq!(fx[0], time(TimeAction::Transport(Command::Stop)));
+        assert!(!fx.contains(&Effect::StopSounds));
+        // Stopped, STOP silences everything, as before, and goes back to bar 1.
+        app.set_rolling(false);
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::StopSounds) && fx.contains(&time(TimeAction::Transport(Command::Stop))));
+    }
+
+    #[test]
+    fn the_clips_page_takes_the_wheel_and_the_tempo() {
+        let mut app = ready();
+        app.tab(View::Clips.tab().unwrap());
+        assert_eq!(app.view(), View::Clips);
+        assert_eq!(app.wheel(1), vec![Effect::ClipsWheel { delta: 1, scroll: false }]);
+        assert_eq!(held(&mut app, button::SHIFT, |a| a.wheel(-1)), vec![Effect::ClipsWheel { delta: -1, scroll: true }]);
+        // MENU there opens the options and goes back to Clips.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Clips);
+        // The page's tempo is the app's: Note Repeat and the arp follow it.
+        let fx = app.set_tempo(96.5);
+        assert_eq!(app.settings.bpm, 96.5);
+        assert!(fx.contains(&Effect::Note("tempo 96.5 BPM".into())));
+        app.set_tempo(1000.0);
+        assert_eq!(app.settings.bpm, 300.0);
+        app.tab(View::Play.tab().unwrap());
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel picks kits on Play");
     }
 }

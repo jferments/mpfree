@@ -150,6 +150,7 @@ What round 4 runs (`MPFREE_HELLO_STEPS=screen,play`):
    - **Play page:** the 16 pads laid out as on the MPC, lit in the kit's colour with each sound's name, brighter while held; the kit list; the level slider; timing (pad-to-sound delay, underruns, voices, peak level).
    - **Debug page:** every MIDI message in and out with its meaning, the program's events, and the same timing.
    - The tabs at the top switch pages. The pads, the wheel and Q-Link 1 work on either page.
+   - Since the time engine (round 6), a Clips page sits between Play and Debug.
    - The kits file holds up to 8 factory kits ([below](#the-factory-drum-kits)).
 
 It sends the controller nothing new: the session, Akai's setup and pad colours, all as in round 3. Only the colours differ, since each kit's pads rest in one of the seven colours seen from Akai's app.
@@ -188,9 +189,25 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 | TAP TEMPO | Sets the tempo; its light blinks with it |
 | Wheel, − / + | The kit (outside menus) |
 | Q-Link 1, the slider | The level |
-| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back |
+| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back. While the transport plays, STOP stops it first and a second STOP silences everything |
 
 MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built in. At power-on a **button guide** asks only for buttons not known yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. STOP skips one. The numbers go in the log for next time. Prefs > Find the buttons again asks for all nine.
+
+**The time engine** (for round 6, not yet tried on the MPC; see [playback](../project/playback.md#in-the-pad-player-timehost)). A transport bar sits under the header on the Play page and the new Clips page:
+
+| Control | What it does |
+|---|---|
+| PLAY, the bar's ▶ | Plays from where the transport is |
+| PLAY START | Plays from bar 1; while playing, jumps back to bar 1 |
+| REC, the bar's ● | Records into the armed track, from now or after the count-in; again to stop recording and play on |
+| OVERDUB, the bar's mode | Overdub (add notes) or Replace (notes played over erase the old ones) |
+| UNDO, the bar's Undo | Takes back the last take. SHIFT + UNDO: redo |
+| Clips page: a clip | Plays it from the next bar, or stops it |
+| Clips page: an empty slot (+) | Makes a 2-bar clip there (or one as long as the loop), arms its track and records |
+| Clips page: a track's name | Arms that track, or disarms it |
+| Clips page: the wheel | Steps the record setting last touched (the armed track to begin with); SHIFT + wheel scrolls the slots |
+
+Clips play the current kit's pads. A click plays while counting in and recording. The status line also gives the transport, the takes and any notes lost.
 
 Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow.
 
