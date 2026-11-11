@@ -268,7 +268,6 @@ impl TimeHost {
     /// one period later).
     // The arp thread's App::set_clock takes it: `app.set_clock(time.arp_clock())`
     // after `time.advance` in the audio loop. Until that lands only tests call it.
-    #[allow(dead_code)]
     pub fn arp_clock(&mut self) -> Option<mpfree_arp::Clock> {
         let jump = |m: &Mark| matches!(m, Mark::Started { .. } | Mark::CountIn { .. } | Mark::Located { .. }
                                             | Mark::Looped { .. });
