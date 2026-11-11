@@ -32,10 +32,10 @@ The music tabs, in this order:
 | Clips | The time engine's launch grid, record settings, takes | Transport / time |
 | Synth | The synth's pages (Poly, later FM) | Synth |
 | Looper | The audio looper: loop waveform, Record / Overdub / Undo, line input meter | Transport / time |
-| Sample | The pad editor: Wave, then Chop, Grain, FX | Sampler |
+| Sample | The pad editor: Wave, Chop, Play, Grain, FX (Jay, 07:12Z) | Sampler |
 | Dev | Only when Prefs > "Show developer tools" is On | Hello MPC |
 
-- **Dev's pages,** on a strip under the top bar: MIDI log | Performance | Map controls | Console.
+- **Dev's pages,** on a strip under the top bar: MIDI log | Performance | CPU by engine | Processes | Map controls | Console. CPU by engine and Processes were asked for by Jay at 08:19Z (the profiling thread builds them).
 - **Not tabs:**
   - **Prefs.** SHIFT + MENU opens it.
   - **Each page's options.** MENU opens them.
