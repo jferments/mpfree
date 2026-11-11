@@ -406,8 +406,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "mpfree-clap-testplug",
+ "mpfree-fx",
  "mpfree-node",
  "mpfree-prof",
+ "mpfree-track",
 ]
 
 [[package]]

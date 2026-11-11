@@ -156,9 +156,16 @@ fn a_parameter_lands_on_its_frame() {
     let mut l = vec![0f32; 64];
     let mut r = vec![0f32; 64];
     b.process(&Ctx::new(RATE, 512), &[], &mut l, &mut r);
+    // A change queued before a prepare survives it and still lands.
+    b.set_param(gain, -30.0);
+    b.prepare(RATE, 512);
+    assert_eq!(b.param(gain), -30.0);
+    b.process(&Ctx::new(RATE, 576), &[], &mut l, &mut r);
+    assert_eq!(b.control().param_text(gain, b.param(gain)).as_deref(), Some("-30"));
     // Read-only parameters can't be set.
+    // (The prepare reactivated the synth, so no voice sounds now.)
     b.set_param(index(&b, synth_params::VOICES), 9.0);
-    assert_eq!(b.param(index(&b, synth_params::VOICES)), 1.0);
+    assert_eq!(b.param(index(&b, synth_params::VOICES)), 0.0);
 }
 
 #[test]
