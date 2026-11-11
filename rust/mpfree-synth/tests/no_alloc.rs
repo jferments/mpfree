@@ -1,4 +1,4 @@
-//! Poly's and FM's `process` must not allocate or free. A counting global allocator
+//! Poly's, FM's, Drums' and Pluck's `process` must not allocate or free. A counting global allocator
 //! watches a busy session: chords past the voice limit, mono and legato,
 //! glide, bend, pressure, automation of every parameter, AllOff, reset.
 //!
@@ -14,7 +14,7 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
-use mpfree_synth::{Fm, Poly, Wavetable, PARAMS};
+use mpfree_synth::{Drums, Fm, Pluck, Poly, Wavetable, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -113,6 +113,24 @@ fn wavetable_process_never_allocates() {
     watch(false);
     assert_eq!(CALLS.load(Ordering::Relaxed) - before, 0, "set_user_table allocated or freed");
     drop(old);
+}
+
+#[test]
+fn drums_process_never_allocates() {
+    let mut s = Drums::new(48_000);
+    let params = s.params();
+    assert_eq!(exercise(&mut s, params, 48_000), 0, "Drums::process allocated");
+}
+
+#[test]
+fn pluck_process_never_allocates() {
+    let mut s = Pluck::new(48_000);
+    let params = s.params();
+    assert_eq!(exercise(&mut s, params, 48_000), 0, "Pluck::process allocated");
+    // And as a mallet.
+    let mut s = Pluck::new(48_000);
+    s.set_param(mpfree_synth::pluck_params::MODEL, 1.0);
+    assert_eq!(exercise(&mut s, params, 48_000), 0, "Pluck::process (mallet) allocated");
 }
 
 #[test]

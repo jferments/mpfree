@@ -8,6 +8,12 @@
 //!   DX7-style envelopes, keyboard scaling, pitch envelope, LFO), its own
 //!   presets, and [`dx7`] to load a player's DX7 banks (.syx).
 //!
+//! - [`Drums`]: a drum synth with a model per pad (kick, snare, clap, hats,
+//!   toms, rim, cowbell, cymbal, zap, FM perc), choke groups and factory kits.
+//!
+//! - [`Pluck`]: plucked strings (Karplus-Strong) and struck bars and bells
+//!   (a modal bank), with factory presets.
+//!
 //! - [`Wavetable`]: two wavetable oscillators scanning band-limited frame
 //!   stacks with phase warps and unison, Poly's filter and envelopes, ten
 //!   factory tables, and [`wavetable::import`] for WAVs, Serum-style tables
@@ -22,15 +28,21 @@
 #![forbid(unsafe_code)]
 
 pub mod dsp;
+pub mod drum;
+pub mod drum_params;
 pub mod dx7;
 pub mod fm;
 pub mod fm_params;
 pub mod params;
+pub mod pluck;
+pub mod pluck_params;
 pub mod poly;
 pub mod pressure;
 pub mod wavetable;
 
 pub use params::{Preset, PARAMS, PRESETS};
+pub use drum::Drums;
 pub use fm::Fm;
+pub use pluck::Pluck;
 pub use poly::Poly;
 pub use wavetable::Wavetable;
