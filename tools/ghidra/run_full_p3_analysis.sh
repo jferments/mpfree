@@ -7,7 +7,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 SCRIPT_DIR="$REPO_ROOT/tools/ghidra"
 WORKDIR="$HOME/mpfree-work/ghidra"
 BACKUP="$HOME/mpfree-backups/mpc-one-emmc-20261109T233604Z-datprr67/mmcblk0.img"
-if [[ -n "$MPFREE_EMMC_BACKUP" ]]; then BACKUP="$MPFREE_EMMC_BACKUP"; fi
+if [[ -v MPFREE_EMMC_BACKUP && -n "$MPFREE_EMMC_BACKUP" ]]; then BACKUP="$MPFREE_EMMC_BACKUP"; fi
 PAYLOAD="$WORKDIR/p3-uimage-payload.bin"
 SHA='b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a'
 
@@ -16,7 +16,7 @@ find_headless() {
         command -v analyzeHeadless
         return
     fi
-    if [[ -n "$GHIDRA_HOME" && -f "$GHIDRA_HOME/support/analyzeHeadless" ]]; then
+    if [[ -v GHIDRA_HOME && -n "$GHIDRA_HOME" && -f "$GHIDRA_HOME/support/analyzeHeadless" ]]; then
         printf '%s\n' "$GHIDRA_HOME/support/analyzeHeadless"
         return
     fi
