@@ -19,6 +19,12 @@
 //! as recorded and the track records what the arp played
 //! ([`TimeHost::pad`]).
 //!
+//! Perform FX gestures (the XY pad, the DJ knob, a pad's Hold) come in
+//! through [`TimeHost::gesture`]: while recording they become moves in the
+//! armed track's clip (FX moves, played back as lane values), and the
+//! move log keeps them always, so CAPTURE keeps the moves made over its
+//! phrase too.
+//!
 //! Every pad note also goes into the capture history, so CAPTURE
 //! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
 //! last phrase in the armed track even when nothing was recording, as an
@@ -34,8 +40,9 @@
 //! second ([`TimeHost::take_changed`]). Every track plays the current
 //! kit.
 
-use mpfree_capture::{keep, Capture, Now, Pending};
+use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
+use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, Project, Track, SLOTS};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
@@ -236,6 +243,8 @@ pub struct TimeHost {
     player: Box<Player>,
     recorder: Box<Recorder>,
     capture: Box<Capture>,
+    /// Every Perform FX move made while rolling, for CAPTURE.
+    move_log: Box<MoveLog>,
     /// What CAPTURE would keep, as the screen last showed it.
     pending: Option<Pending>,
     block: Box<Block>,
@@ -295,6 +304,7 @@ impl TimeHost {
             player: Box::new(Player::new()),
             recorder: Box::new(Recorder::new()),
             capture: Box::new(Capture::new()),
+            move_log: Box::new(MoveLog::new()),
             pending: None,
             block: Box::new(Block::new()),
             sink: Box::new(Collect {
@@ -642,6 +652,33 @@ impl TimeHost {
             &name,
         )
         .map_err(|e| format!("capture: {e:?}"))?;
+        // The moves made over a phrase played in time go with it.
+        let origin = k.launch.map(|l| l.origin).or_else(|| {
+            self.launches
+                .iter()
+                .find(|l| l.track == track && l.slot == k.slot)
+                .map(|l| l.origin)
+        });
+        let mut moves = 0;
+        if let (Some(s), Some(origin)) = (phrase.song_start, origin) {
+            if let Some(clip) = self.project.clip(track, k.slot) {
+                let list = moves_for_clip(
+                    &self.move_log.phrase(),
+                    s as f64,
+                    (s + phrase.length) as f64,
+                    clip,
+                    origin,
+                    track as u8,
+                );
+                if !list.is_empty() {
+                    moves = self
+                        .takes
+                        .capture_moves(&mut self.project, track, k.slot, k.take, &list)
+                        .unwrap_or(0);
+                }
+            }
+            self.move_log.forget();
+        }
         if let Some(l) = k.launch {
             self.launches.retain(|x| x.track != l.track);
             self.cues.retain(|x| x.track != l.track);
@@ -655,8 +692,13 @@ impl TimeHost {
         } else {
             "into the clip in"
         };
+        let moved = match moves {
+            0 => String::new(),
+            1 => " and 1 move".into(),
+            n => format!(" and {n} moves"),
+        };
         Ok(format!(
-            "capture {}: {} notes, {}, {into} slot {} of {}",
+            "capture {}: {} notes{moved}, {}, {into} slot {} of {}",
             k.take,
             k.notes,
             bars_label(k.bars),
@@ -751,6 +793,19 @@ impl TimeHost {
     #[allow(dead_code)]
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
         self.recorder.input(offset, Event::Lock { addr, value });
+    }
+
+    /// A Perform FX move in the coming period, at `offset`: the XY pad,
+    /// the DJ knob or a pad's Hold moving a parameter (`Input::Move`, the
+    /// first value starting a gesture), or letting go (`Input::End`).
+    /// While the transport records it becomes a move in the armed track's
+    /// clip; while it rolls the move log keeps it for CAPTURE.
+    // The Perform FX page calls it once the pad player runs it (the FX
+    // thread's side); until then only tests do.
+    #[allow(dead_code)]
+    pub fn gesture(&mut self, offset: u32, input: Input) {
+        self.move_log.input(offset, input);
+        self.recorder.input_move(offset, input);
     }
 
     /// FILL on or off from `offset` in the coming period: notes with the
@@ -857,6 +912,7 @@ impl TimeHost {
             return;
         }
         self.capture.process(&self.block);
+        self.move_log.process(&self.block);
         // The Capture button shows what it would keep: a new phrase, or one
         // more bar of it, is a change for the screen (once a bar at most).
         let pending = self.capture.pending();
@@ -926,6 +982,15 @@ impl TimeHost {
             if let Ok(old) = self.takes.add_lock(&mut self.project, &k) {
                 recorded = true;
                 compile |= !self.view.add_lock(k.track, k.slot, &k.lock, old.as_ref());
+            }
+        }
+        for k in self.recorder.taken_moves() {
+            let points = self.recorder.move_points(k);
+            if self.takes.put_move(&mut self.project, k, points).is_ok() {
+                recorded = true;
+                compile |= !self
+                    .view
+                    .put_move(k.track, k.slot, k.target, k.map, points, k.len);
             }
         }
         if compile {
@@ -1110,6 +1175,159 @@ mod tests {
 
     /// Frames per bar at 120 BPM.
     const BAR: u64 = 88_200;
+
+    /// Perform FX gestures at frames: (frame, value or None for letting go).
+    fn gestures(
+        h: &mut TimeHost,
+        pads: &mut Fake,
+        to: u64,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        moves: &[(u64, Option<f32>)],
+    ) {
+        use mpfree_seq::mpfree_moves::Map;
+        while pads.frame < to {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, v) in moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr,
+                            value,
+                            map: Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, pads);
+            pads.frame = end;
+        }
+    }
+
+    /// The XY pad moved while recording becomes a move in the armed
+    /// track's clip, plays back as lane values, and undoes with its take.
+    #[test]
+    fn a_perform_fx_gesture_while_recording_becomes_a_move() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+        use mpfree_seq::mpfree_moves::Target;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        let xy = ParamAddr::new(Owner::Insert(Strip::Master, 1), 0);
+        let moves: Vec<(u64, Option<f32>)> = (0..20)
+            .map(|i| (1000 + i * 2000, Some(i as f32 / 20.0)))
+            .chain([(45_000, None)])
+            .collect();
+        gestures(&mut h, &mut pads, BAR - 1000, xy, &moves);
+        let lane = |h: &TimeHost| {
+            h.project
+                .clip(0, 0)
+                .unwrap()
+                .moves
+                .lane(Target::Fixed(xy))
+                .map(|l| l.points.len())
+        };
+        assert!(lane(&h).is_some_and(|n| n >= 2), "{:?}", lane(&h));
+        assert_eq!(h.view, {
+            let mut v = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
+            v.set_armed(h.armed);
+            v.make_room(RECORD_ROOM, RECORD_ROOM);
+            v
+        });
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        // The next pass plays it as lane values.
+        let mut lanes = 0;
+        while pads.frame < 2 * BAR {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            lanes += h.sink.out[..h.sink.n]
+                .iter()
+                .filter(|o| matches!(o.event, Event::Lane { addr, .. } if addr == xy))
+                .count();
+        }
+        assert!(lanes > 20, "{lanes}");
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        assert_eq!(lane(&h), None);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// CAPTURE keeps the moves made over the phrase it keeps.
+    #[test]
+    fn capture_keeps_the_moves_made_over_its_phrase() {
+        use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+        use mpfree_seq::mpfree_moves::Target;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let knob = ParamAddr::new(Owner::Inst(0), 5);
+        // A pad in bar 2 and a gesture over it.
+        let notes = [(BAR + 1000, 4, 100, 2000)];
+        let mut moves: Vec<(u64, Option<f32>)> = (0..10)
+            .map(|i| (BAR + 3000 + i * 1500, Some(0.1 * i as f32)))
+            .collect();
+        moves.push((BAR + 20_000, None));
+        while pads.frame < 3 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, pad, v, held) in &notes {
+                if (pads.frame..end).contains(&at) {
+                    h.pad(
+                        (at - pads.frame) as u32,
+                        Event::NoteOn {
+                            note: pad,
+                            velocity: v,
+                        },
+                    );
+                }
+                if (pads.frame..end).contains(&(at + held)) {
+                    h.pad(
+                        (at + held - pads.frame) as u32,
+                        Event::NoteOff { note: pad },
+                    );
+                }
+            }
+            for &(at, v) in &moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr: knob,
+                            value,
+                            map: mpfree_seq::mpfree_moves::Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr: knob },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert!(h.state().done.is_empty(), "nothing was recorded");
+        let line = h.act(TimeAction::Capture).unwrap();
+        assert_eq!(
+            line,
+            "capture 1: 1 notes and 1 move, 1 bar, new clip in slot 1 of Track 1"
+        );
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 5));
+        let points = h
+            .project
+            .clip(0, 0)
+            .unwrap()
+            .moves
+            .lane(target)
+            .map(|l| l.points.clone());
+        let points = points.expect("the move went into the kept clip");
+        // On the clip's ticks: bar 2 is its bar, from about tick 125.
+        assert!(points[0].tick.abs_diff(130) <= 2, "{points:?}");
+        assert_eq!(
+            points.last().map(|p| p.kind),
+            Some(mpfree_seq::mpfree_moves::Kind::End)
+        );
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        assert!(h.project.clip(0, 0).is_none());
+    }
 
     /// The arp's clock follows the transport: None while stopped, the
     /// transport's anchor while playing (a whole tick on an exact frame),

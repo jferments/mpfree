@@ -22,7 +22,7 @@
 use std::ops::Range;
 
 use mpfree_param::RelAddr;
-use mpfree_seq::mpfree_moves::Moves;
+use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{DestId, Lock, ModelError, Note, Project, Quantise, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{ceil_to, Swing, Tick};
 
@@ -249,6 +249,32 @@ impl ClipView {
     fn make_room(&mut self, notes: usize, locks: usize) {
         self.notes.reserve(notes);
         self.locks.reserve(locks);
+        // Each lane the clip has gets room for two recorded parts (a new
+        // lane still needs a compile).
+        let lanes: Vec<_> = self
+            .moves
+            .lanes()
+            .iter()
+            .map(|l| (l.target, l.map))
+            .collect();
+        for (target, map) in lanes {
+            let _ = self.moves.reserve(target, map, crate::record::MOVE_ROOM);
+        }
+    }
+
+    /// A recorded gesture written into this clip's moves in place, as
+    /// `Takes::put_move` writes it into the clip. False when its lane is
+    /// new or has no room left.
+    fn put_move(
+        &mut self,
+        target: Target,
+        map: Map,
+        points: &[(f64, f32, Kind)],
+        len: u32,
+    ) -> bool {
+        len == self.length as u32
+            && self.moves.fits(target, points.len())
+            && self.moves.put(target, map, points, len).is_ok()
     }
 }
 
@@ -365,8 +391,10 @@ impl PlayView {
     /// Room for `notes` more notes and `locks` more locks in the armed
     /// track's clips (the one playing and the one cued), so that recording
     /// can put them in with [`PlayView::add_note`] and
-    /// [`PlayView::add_lock`] without allocating. Call it on the control
-    /// thread, after compiling.
+    /// [`PlayView::add_lock`] without allocating, and room in each of
+    /// their lanes for [`crate::record::MOVE_ROOM`] more points, for
+    /// [`PlayView::put_move`]. Call it on the control thread, after
+    /// compiling.
     pub fn make_room(&mut self, notes: usize, locks: usize) {
         let Some(t) = self.armed.and_then(|t| self.tracks.get_mut(t)) else {
             return;
@@ -436,6 +464,25 @@ impl PlayView {
             .into_iter()
             .flatten()
             .all(|c| c.add_lock(l, replaced))
+    }
+
+    /// A recorded gesture was written into clip `slot` of `track` (as
+    /// [`crate::Takes::put_move`] does): write it into this view the same
+    /// way. Real-time safe. False when the lane is new or out of the room
+    /// [`PlayView::make_room`] set aside; then compile instead.
+    pub fn put_move(
+        &mut self,
+        track: usize,
+        slot: usize,
+        target: Target,
+        map: Map,
+        points: &[(f64, f32, Kind)],
+        len: u32,
+    ) -> bool {
+        self.shown(track, slot)
+            .into_iter()
+            .flatten()
+            .all(|c| c.put_move(target, map, points, len))
     }
 
     /// A lock equal to `l` was taken out of clip `slot` of `track` (as
