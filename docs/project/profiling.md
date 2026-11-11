@@ -172,7 +172,10 @@ Runs only the lane cases: the same work on one core and split over two
 threads: a worker per lane case, at normal priority, closed before the next
 case. `--lane-cores A,B` pins the bench's thread to core A and the workers to
 core B (3,2 on the MPC); without it nothing is pinned. The default run is
-unchanged.
+unchanged. The sampler appears three ways: one engine of 24 voices, two
+engines of 12 voices splitting the pads, and one engine of 24 voices split
+natively (`Engine::split`, see the sampler architecture), each on one core
+and on two.
 
 ### The cost model
 
