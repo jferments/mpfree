@@ -29,7 +29,7 @@ filters, so the check always reports.
 | `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, on a pinned toolchain | ~1 min |
-| `rust` | All workspace tests in debug and release; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
+| `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
@@ -94,8 +94,9 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
   gets unit tests. Audio output gets a fixed-output or golden check. A parser
   gets tests on bad input as well as good.
 - **Audio-thread code doesn't allocate or block.** `mpfree-fx` and
-  `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`).
-  New audio paths should do the same.
+  `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`),
+  and CI runs `mpfree-bench --check-allocs` over the profiled engines. New
+  audio paths should do the same.
 - **No test touches a device.** Tests that need device-like input use
   fixtures, fakes (`tools/mpc-one/tests/fake_mpc_ssh.py`) or qemu.
 - **Clippy is pinned** (`MPFREE_CLIPPY_TOOLCHAIN` in the workflow), so a new
@@ -150,10 +151,9 @@ In order. Each step is its own PR.
    for the Hello preview screens, which today are checked only as valid PNGs,
    compared with stored images.
 4. **Real-time safety everywhere.** No-allocation and deadline tests for every
-   audio path (synth, sampler, play, arp), not only FX and grain. Once the
-   `mpfree-bench` profiler (PR #77) is on `main`, the `rust` job runs
-   `cargo run --release -p mpfree-bench -- --quick --check-allocs`, which
-   fails if any engine allocates inside its audio callback. Its timings are
+   audio path (synth, sampler, play, arp), not only FX and grain. The `rust`
+   job already runs `mpfree-bench --quick --check-allocs`, which fails if any
+   engine it profiles allocates inside its audio callback. Its timings are
    not a gate, because wall-clock speed on a shared VM varies from run to run.
    The stable way to gate on CPU cost later is to count instructions per
    engine under qemu-arm (ARMv7, like the MPC) and fail on a regression past
