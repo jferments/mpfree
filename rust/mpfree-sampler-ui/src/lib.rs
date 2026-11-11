@@ -25,6 +25,11 @@
 //!   grain cloud the engine plays over it, a touch pad for position and
 //!   size, and every grain setting, each change a [`GrainAction`]. Its
 //!   pictures are in [`grain_widgets`].
+//! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
+//!   its last half minute, takes that start now, over a threshold or on the
+//!   next bar and end on a press, silence or a length, and Skip back over
+//!   the last seconds or bars, each onto a pad ([`RecAction`]). Its picture
+//!   is in [`rec_widgets`].
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -38,6 +43,8 @@ pub mod grain_widgets;
 pub mod pads_tab;
 pub mod play_tab;
 pub mod play_widgets;
+pub mod rec_tab;
+pub mod rec_widgets;
 pub mod sample;
 pub mod source;
 pub mod wave_tab;
@@ -48,5 +55,6 @@ pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
+pub use rec_tab::{RecAction, RecSettings, RecState, RecTab};
 pub use source::{PyramidPeaks, SourceView};
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

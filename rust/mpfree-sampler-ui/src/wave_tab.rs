@@ -57,9 +57,9 @@ pub const LAYOUT: &str =
 
 /// The pad editor's tabs: Pads (the kit's pads, to pick one and set it
 /// up) first, then the editors for the pad picked.
-pub const TABS: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"];
+pub const TABS: [&str; 7] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 5] = ["Pads", "Wave", "Chop", "Play", "Grain"];
+pub const BUILT: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "Rec"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 1;
 
