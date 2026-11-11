@@ -21,7 +21,9 @@
 //! then [`TrackArps::finish`] with the same block and sink. Notes that skip
 //! the arps and every arp's notes reach the sink together, in frame order
 //! (notes on the same frame keep the order they came in, the player's
-//! first). `AllOff` (a panic) passes through and clears every arp.
+//! first). `AllOff` (a panic) passes through and clears every arp. A
+//! through track's parameter locks skip its arp and reach the sink as the
+//! player sent them, before the arp's notes on the same frame.
 //!
 //! [`TrackArps::new`] allocates (16 engines) and belongs on the control
 //! thread at start; nothing else allocates.
@@ -195,7 +197,9 @@ fn push(out: &mut [Out; MAX_OUT], n: &mut usize, dropped: &mut u64, o: Out) {
 }
 
 /// The player's [`Sink`] for one period: a through track's notes go into
-/// its arp, everything else waits for [`TrackArps::finish`].
+/// its arp, everything else (other tracks' notes, and every parameter
+/// lock and unlock, which an arp has no use for) waits for
+/// [`TrackArps::finish`].
 pub struct Through<'a> {
     arps: &'a mut TrackArps,
 }
@@ -208,7 +212,7 @@ impl Sink for Through<'_> {
             for arp in a.arps.iter_mut() {
                 arp.input(o.offset, Event::AllOff);
             }
-        } else if a.through(t) {
+        } else if a.through(t) && matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. }) {
             a.arps[t].input(o.offset, o.event);
             return;
         }

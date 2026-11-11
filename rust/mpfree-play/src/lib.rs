@@ -33,5 +33,5 @@ pub use arps::{Through, TrackArps};
 pub use mpfree_param;
 pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL};
 pub use record::{Recorder, Taken, TakenLock};
-pub use takes::{Take, Takes};
+pub use takes::{Take, Takes, TAKE_ROOM};
 pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};

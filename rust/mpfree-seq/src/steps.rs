@@ -41,7 +41,7 @@
 //! notes and locks to take out and to put in, for the control thread to
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
-use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MIN_CLIP_TICKS};
+use crate::{Clip, Cond, Lock, Note, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS};
 use mpfree_param::RelAddr;
 use mpfree_transport::time::{Tick, PPQ};
 
@@ -68,6 +68,10 @@ pub struct Step {
     pub nudge: Tick,
     /// Percent, 1 to 100.
     pub chance: u8,
+    /// The trig condition (shown as `cond.to_string()`: "1:2", "FILL" ...).
+    pub cond: Cond,
+    /// Hits, 1 to `MAX_RATCHET`.
+    pub ratchet: u8,
     /// Notes of the sound in the step, 1 or more.
     pub notes: usize,
 }
@@ -132,6 +136,10 @@ pub enum Change {
     Nudge(Tick),
     /// Percent, 1 to 100.
     Chance(u8),
+    /// A trig condition; one out of range leaves the step as it is.
+    Cond(Cond),
+    /// Hits, kept within 1 to `MAX_RATCHET`.
+    Ratchet(u8),
 }
 
 impl Change {
@@ -144,6 +152,8 @@ impl Change {
             Change::Length(_) => 2,
             Change::Nudge(_) => 3,
             Change::Chance(_) => 4,
+            Change::Cond(_) => 6,
+            Change::Ratchet(_) => 7,
         };
         (kind << 56) | (u64::from(pitch) << 48) | (i as u64 & 0xFFFF_FFFF_FFFF)
     }
@@ -265,6 +275,8 @@ impl Grid {
                 len: n.len,
                 nudge,
                 chance: n.chance,
+                cond: n.cond,
+                ratchet: n.ratchet,
                 notes: 1,
             };
             *slot = Some(match *slot {
@@ -333,6 +345,9 @@ impl Grid {
                 Change::Velocity(v) => new.velocity = v.clamp(1, 127),
                 Change::Length(l) => new.len = l.clamp(1, MAX_CLIP_TICKS),
                 Change::Chance(c) => new.chance = c.clamp(1, 100),
+                Change::Cond(c) if c.ok() => new.cond = c,
+                Change::Cond(_) => {}
+                Change::Ratchet(r) => new.ratchet = r.clamp(1, MAX_RATCHET),
                 Change::Nudge(_) => {
                     let nudge = (self.place(clip.length, n.tick).1 + shift).clamp(lo, hi);
                     new.tick = self.tick(clip.length, i, nudge);
@@ -842,6 +857,46 @@ mod tests {
         c.apply(&off).unwrap();
         assert_eq!(c.notes, vec![Note::new(960, 240, 36, 90)]);
         assert!(g.toggle(&c, 36, 16, 90).is_empty(), "past the last step");
+    }
+
+    #[test]
+    fn a_step_takes_a_trig_condition_and_a_ratchet() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(1440, 36), (1500, 36), (1440, 38)]);
+        let quarter = Cond::Every { a: 1, b: 4 };
+        let e = g.change(&c, 36, 6, Change::Cond(quarter));
+        assert_eq!(e.add.len(), 2, "every note of the step");
+        c.apply(&e).unwrap();
+        let e = g.change(&c, 36, 6, Change::Ratchet(20));
+        assert!(e.add.iter().all(|n| n.ratchet == MAX_RATCHET));
+        c.apply(&e).unwrap();
+        let s = g.row(&c, 36)[6].unwrap();
+        assert_eq!((s.cond, s.ratchet, s.notes), (quarter, MAX_RATCHET, 2));
+        assert_eq!(s.cond.to_string(), "1:4");
+        let other = g.row(&c, 38)[6].unwrap();
+        assert_eq!(
+            (other.cond, other.ratchet),
+            (Cond::Always, 1),
+            "only the step's sound"
+        );
+        assert!(
+            g.change(&c, 36, 6, Change::Cond(Cond::Every { a: 5, b: 4 }))
+                .is_empty(),
+            "out of range"
+        );
+        assert_eq!(g.change(&c, 36, 6, Change::Ratchet(0)).add[0].ratchet, 1);
+        assert!(
+            g.change(&c, 36, 6, Change::Cond(quarter)).is_empty(),
+            "already so"
+        );
+        // Each kind joins its own undo.
+        let keys = [
+            Change::Cond(Cond::Fill),
+            Change::Ratchet(2),
+            Change::Chance(50),
+        ]
+        .map(|ch| ch.key(36, 6));
+        assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
     }
 
     #[test]
