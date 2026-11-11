@@ -383,6 +383,7 @@ dependencies = [
  "mpfree-arp",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
  "mpfree-node",
@@ -531,6 +532,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-lanes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-prof",
+]
+
+[[package]]
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
@@ -574,6 +583,7 @@ name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-param",
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
@@ -637,6 +647,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-param",
  "mpfree-transport",
 ]
 

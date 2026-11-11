@@ -224,6 +224,7 @@ fn to_sampler(engine: &mut Engine, offset: u32, event: Event) {
         },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
+        Event::Lock { .. } | Event::Unlock { .. } => return,
     };
     engine.schedule(offset, ev);
 }

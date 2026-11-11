@@ -30,7 +30,8 @@ pub mod view;
 
 pub use arp::ArpHost;
 pub use arps::{Through, TrackArps};
-pub use player::{Erased, Event, Out, Player, Sink, Stats, ALL};
-pub use record::{Recorder, Taken};
+pub use mpfree_param;
+pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL};
+pub use record::{Recorder, Taken, TakenLock};
 pub use takes::{Take, Takes};
 pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};
