@@ -10,13 +10,21 @@
 //! for the audio thread.
 //!
 //! The header and the hint line belong to the app, as on its other pages.
+//!
+//! An engine with pad pressure (Poly, FM) has a Pressure page: the shaper's
+//! settings and four slots, with a drawing of the curve and a live bar for
+//! each sounding voice's pressure (the app passes those in with
+//! [`SynthPanel::set_pressures`]). A slot's depth reads in its target's
+//! unit (+1.5 oct, 9 dB swell).
 
-use crate::format::{value_line, value_text};
+use crate::format::{amount_text, value_text};
 use crate::pages::{plan, qlink_targets, tile_label, Page};
 use crate::visual;
 use crate::widgets::{Card, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, QLINK_COLORS};
+use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
 use mpfree_synth::params as pp;
+use mpfree_synth::{fm_params as fp, pressure as sp};
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -50,6 +58,9 @@ pub struct SynthState {
     /// The preset loaded, and whether it was changed since.
     pub preset: Option<usize>,
     pub edited: bool,
+    /// Each sounding voice's pressure now, 0 to 1 (empty when the app has
+    /// none to show), for the Pressure page's live bars.
+    pub pressures: Vec<f32>,
 }
 
 impl SynthState {
@@ -65,6 +76,7 @@ impl SynthState {
             presets,
             preset,
             edited: false,
+            pressures: Vec::new(),
         }
     }
 
@@ -108,12 +120,59 @@ pub struct SynthPanel {
     /// The selected tile, as an index into the node's parameters.
     focus: Option<usize>,
     visuals: bool,
+    /// The visual cards' titles, for a tap on one.
+    cards: Vec<String>,
     pub state: SynthState,
 }
 
-/// Whether the panel draws visuals for this node.
-fn has_visuals(info: &NodeInfo) -> bool {
-    info.id == "mpfree.poly"
+/// Whether the panel draws visuals for this node on this page: Poly on
+/// every page, any engine with pressure on its Pressure page.
+fn has_visuals(info: &NodeInfo, page: &str) -> bool {
+    info.id == "mpfree.poly" || (page == "Pressure" && press_base(info).is_some())
+}
+
+/// The first pressure parameter of an engine that has them, and what its
+/// slots can drive.
+pub fn press_base(info: &NodeInfo) -> Option<u16> {
+    match info.id {
+        "mpfree.poly" => Some(pp::PRESS_BASE),
+        "mpfree.fm" => Some(fp::PRESS_BASE),
+        _ => None,
+    }
+}
+
+fn press_targets(info: &NodeInfo) -> &'static [&'static str] {
+    match info.id {
+        "mpfree.poly" => sp::POLY_TARGETS,
+        "mpfree.fm" => sp::FM_TARGETS,
+        _ => &[],
+    }
+}
+
+/// A parameter's value text and unit. A pressure slot's depth reads in its
+/// target's unit (Cutoff 37.5 % reads +1.5 oct).
+fn param_text(st: &SynthState, i: usize) -> (String, String) {
+    let p = &st.params[i];
+    let v = st.values[i];
+    if let Some(base) = press_base(st.info) {
+        let off = p.id.wrapping_sub(base);
+        if (field::depth(0)..FIELDS as u16).contains(&off) && (off - field::depth(0)).is_multiple_of(2) {
+            let n = usize::from((off - field::depth(0)) / 2);
+            let target = press_targets(st.info).get(st.value(base + field::target(n)) as usize).copied().unwrap_or("Off");
+            if let Some((a, unit)) = sp::amount(target, v) {
+                let (t, u) = amount_text(target, a, unit);
+                return (t, u.to_string());
+            }
+            return ("—".to_string(), String::new());
+        }
+    }
+    let (t, u) = value_text(p, v);
+    (t, u.to_string())
+}
+
+fn param_line(st: &SynthState, i: usize) -> String {
+    let (n, u) = param_text(st, i);
+    if u.is_empty() { n } else { format!("{n} {u}") }
 }
 
 impl SynthPanel {
@@ -125,7 +184,7 @@ impl SynthPanel {
         ui.add(TILES, TileGrid::new(""));
         ui.add(PRESETS, ListView::new("Presets"));
         ui.add(QLINKS, QLinkStrip::new());
-        let mut panel = SynthPanel { name: name.to_string(), pages: Vec::new(), page: 0, focus: None, visuals: false, state };
+        let mut panel = SynthPanel { name: name.to_string(), pages: Vec::new(), page: 0, focus: None, visuals: false, cards: Vec::new(), state };
         panel.load(ui, panel.state.clone())?;
         Ok(panel)
     }
@@ -140,11 +199,26 @@ impl SynthPanel {
             self.focus = None;
         }
         self.page = self.page.min(self.pages.len().saturating_sub(1));
-        self.visuals = has_visuals(state.info);
         self.state = state;
+        self.visuals = self.wants_visuals();
         ui.add_page(&self.name, self.layout())?;
         self.refresh(ui);
         Ok(())
+    }
+
+    fn wants_visuals(&self) -> bool {
+        has_visuals(self.state.info, self.pages.get(self.page).map_or("", |p| p.name.as_str()))
+    }
+
+    /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
+    /// bars. The app calls it a few times a second while the page shows.
+    pub fn set_pressures(&mut self, ui: &mut Ui, values: &[f32]) {
+        if self.state.pressures != values {
+            self.state.pressures = values.to_vec();
+            if self.visuals {
+                self.refresh(ui);
+            }
+        }
     }
 
     pub fn layout(&self) -> &'static str {
@@ -173,6 +247,13 @@ impl SynthPanel {
         if i != self.page {
             self.page = i;
             self.focus = None;
+        }
+        // FM shows the visual strip on its Pressure page only.
+        let visuals = self.wants_visuals();
+        if visuals != self.visuals {
+            self.visuals = visuals;
+            // Every widget the layouts name is added in `add`, so this holds.
+            let _ = ui.add_page(&self.name, self.layout());
         }
         self.refresh(ui);
     }
@@ -231,8 +312,9 @@ impl SynthPanel {
                 None
             }
             (VISUALS, EventKind::Tab(i)) => {
-                let want = ["Osc", "Filter", "Env", "LFO"].get(*i)?;
-                let page = self.pages.iter().position(|p| p.name == *want)?;
+                let title = self.cards.get(*i)?;
+                let want = if ["Osc", "Filter", "Env", "LFO"].contains(&title.as_str()) { title.as_str() } else { "Pressure" };
+                let page = self.pages.iter().position(|p| p.name == want)?;
                 self.show_page(ui, page);
                 None
             }
@@ -285,8 +367,13 @@ impl SynthPanel {
             w.active = self.page;
         }
         if self.visuals {
+            let cards = match press_base(st.info) {
+                Some(base) if page.name == "Pressure" => pressure_cards(st, base),
+                _ => poly_cards(st, &page.name),
+            };
+            self.cards = cards.iter().map(|c| c.title.clone()).collect();
             if let Some(w) = ui.get_mut::<Visuals>(VISUALS) {
-                w.cards = poly_cards(st, &page.name);
+                w.cards = cards;
             }
         }
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
@@ -316,7 +403,7 @@ impl SynthPanel {
                     let p = &st.params[i];
                     QCell {
                         label: p.name.to_string(),
-                        value: value_line(p, st.values[i]),
+                        value: param_line(st, i),
                         pos: p.to_unit(st.values[i]),
                         bipolar: p.min < 0.0 && p.max > 0.0,
                     }
@@ -326,7 +413,7 @@ impl SynthPanel {
                 Some(i) => {
                     let p = &st.params[i];
                     w.wheel_label = format!("Wheel · {}", tile_label(&page.name, p));
-                    w.wheel_value = value_line(p, st.values[i]);
+                    w.wheel_value = param_line(st, i);
                 }
                 None => {
                     w.wheel_label = "Wheel".to_string();
@@ -360,7 +447,7 @@ fn subtitle(st: &SynthState) -> String {
 fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
     let p = &st.params[i];
     let v = st.values[i];
-    let (value, unit) = value_text(p, v);
+    let (value, unit) = param_text(st, i);
     let kind = if p.readonly {
         TileKind::Meter
     } else {
@@ -375,7 +462,39 @@ fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
         (None, TileKind::Knob { .. }) => Color::rgb(0x98A1B3),
         (None, _) => QLINK_COLORS[0],
     };
-    Tile { label: tile_label(page, p), value, unit: unit.to_string(), kind, qlink, color }
+    Tile { label: tile_label(page, p), value, unit, kind, qlink, color }
+}
+
+/// The Pressure page's two cards: the curve (shaped against raw, with the
+/// threshold and full-at points marked) and a live bar per sounding voice.
+fn pressure_cards(st: &SynthState, base: u16) -> Vec<Card> {
+    let v = |id: u16| st.value(id);
+    let (blue, green) = (QLINK_COLORS[0], QLINK_COLORS[1]);
+    let thr = v(base + field::THRESHOLD) / 100.0;
+    let full = (v(base + field::FULL_AT) / 100.0).max(thr + 1.0 / 127.0);
+    let mode = v(base + field::MODE).round() as usize;
+    let voices = match mode {
+        2 => "off".to_string(),
+        1 => "highest held".to_string(),
+        _ if st.pressures.is_empty() => "play a pad".to_string(),
+        _ => format!("{} sounding", st.pressures.len()),
+    };
+    // Up to 16 bars; empty slots show as stubs so the card keeps its shape.
+    let mut bars = st.pressures.clone();
+    bars.truncate(16);
+    let slots = bars.len().clamp(8, 16);
+    bars.resize(slots, 0.0);
+    vec![
+        Card {
+            title: "Pressure".into(),
+            caption: visual::pressure_caption(&v, base),
+            traces: vec![Trace { pts: visual::pressure_curve(&v, base), color: blue, width: 2.5, fill: true, dashed: false }],
+            grid: vec![(thr, "thr".to_string()), (full, "full".to_string())],
+            active: true,
+            ..Card::default()
+        },
+        Card { title: "Voices".into(), caption: voices, bars, bar_color: Some(green), active: true, ..Card::default() },
+    ]
 }
 
 /// Poly's four cards, from its values. The card for the page shown is marked.
