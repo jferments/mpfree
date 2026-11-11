@@ -38,8 +38,9 @@ use crate::dsp::{
 };
 use crate::model::{
     ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, MasterFx, PlayMode, PressureRoute,
-    PressureTarget, Project, PADS,
+    PressureTarget, Project, WarpMethod, PADS,
 };
+use crate::warp::Warps;
 
 /// Fade length when a voice is choked, muted by its group, or pushed out by
 /// the pad's polyphony limit.
@@ -116,6 +117,18 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
+    /// The tempo the layer's audio is at, when it is warped (0 if not):
+    /// the voice plays it `tempo / warp_bpm` times as fast.
+    warp_bpm: f64,
+    /// It plays a stretched copy, not the source.
+    copy: bool,
+}
+
+impl ViewLayer {
+    /// Whether the layer plays a stretched copy (and how long it is).
+    pub fn stretched_frames(&self) -> Option<i64> {
+        (self.warp_bpm > 0.0 && self.copy).then_some(self.end - self.start)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +162,11 @@ impl EngineView {
             .is_some_and(|p| p.as_ref().is_some_and(|p| !p.layers.is_empty()))
     }
 
+    /// Layer `layer` of pad `pad`, as resolved.
+    pub fn layer(&self, pad: usize, layer: usize) -> Option<&ViewLayer> {
+        self.pads.get(pad)?.as_ref()?.layers.get(layer)
+    }
+
     pub fn empty() -> EngineView {
         EngineView {
             revision: 0,
@@ -158,8 +176,23 @@ impl EngineView {
     }
 
     /// Resolves every pad of a project for an engine running at `rate`.
-    /// Call this off the audio thread; it allocates.
+    /// Call this off the audio thread; it allocates. Warped regions play
+    /// as they were recorded; [`EngineView::build_warped`] plays them at
+    /// the project tempo.
     pub fn build(project: &Project, rate: u32) -> EngineView {
+        Self::resolve(project, rate, None)
+    }
+
+    /// As [`EngineView::build`], with warped regions at the tempo of
+    /// `warps`: a region warped to stretch plays its stretched copy when
+    /// `warps` holds it, and repitches to the tempo until then; one warped
+    /// to repitch always repitches. The engine needs the same tempo
+    /// ([`Engine::set_tempo`]).
+    pub fn build_warped(project: &Project, rate: u32, warps: &mut Warps) -> EngineView {
+        Self::resolve(project, rate, Some(warps))
+    }
+
+    fn resolve(project: &Project, rate: u32, mut warps: Option<&mut Warps>) -> EngineView {
         let mut pads = Vec::with_capacity(PADS);
         for i in 0..PADS {
             pads.push(project.pad(i).map(|p| {
@@ -179,7 +212,7 @@ impl EngineView {
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
-                        Some(ViewLayer {
+                        let mut v = ViewLayer {
                             data: s.data().clone(),
                             stereo: s.channels() == 2,
                             pick: r.channels,
@@ -202,7 +235,56 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
-                        })
+                            warp_bpm: 0.0,
+                            copy: false,
+                        };
+                        let warp = r.warp.filter(|_| r.mode != PlayMode::Granular);
+                        if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
+                            // Tune is in the copy, or left out (repitch):
+                            // the tempo alone sets the speed.
+                            let plain = f64::from(s.rate()) / f64::from(rate);
+                            v.step = ((plain * ONE as f64).round() as i64).max(1);
+                            v.warp_bpm = f64::from(w.bpm);
+                            let copy = match w.method {
+                                WarpMethod::Stretch => ws
+                                    .key_for(r, l.tune_cents + p.tune_cents)
+                                    .and_then(|k| ws.copy(&k).map(|d| (k, d))),
+                                WarpMethod::Repitch => None,
+                            };
+                            if let Some((k, data)) = copy {
+                                let scale = k.scale();
+                                let at = |x: u64| ((x - r.start) as f64 * scale).round() as i64;
+                                let len = k.frames as i64;
+                                v.data = data;
+                                v.start = 0;
+                                v.end = len;
+                                v.sustain_loop = r.sustain_loop.map(|lp| {
+                                    let (a, b) = (at(lp.start), at(lp.end).min(len));
+                                    ViewLoop {
+                                        start: a,
+                                        end: b.max(a + 1),
+                                        crossfade: ((f64::from(lp.crossfade) * scale) as i64)
+                                            .min((b - a) / 2)
+                                            .min(a),
+                                        ping_pong: lp.mode == LoopMode::PingPong,
+                                    }
+                                });
+                                let fade = |f: Fade| Fade {
+                                    frames: (f64::from(f.frames) * scale).round() as u32,
+                                    ..f
+                                };
+                                v.fade_in = fade(r.fade_in);
+                                v.fade_out = fade(r.fade_out);
+                                if i64::from(v.fade_in.frames) + i64::from(v.fade_out.frames) > len
+                                {
+                                    (v.fade_in, v.fade_out) = (r.fade_in, r.fade_out);
+                                }
+                                // The copy is at the tempo it was made for.
+                                v.warp_bpm *= (r.frames() as f64) / (len as f64);
+                                v.copy = true;
+                            }
+                        }
+                        Some(v)
                     })
                     .collect();
                 ViewPad {
@@ -311,6 +393,10 @@ struct Voice {
     press_gain_inc: f32,
     press_fc: f32,
     press_count: u32,
+    /// The layer's tempo when warped (0 if not), and its step before the
+    /// tempo moves it.
+    warp_bpm: f64,
+    plain_step: i64,
 }
 
 impl Voice {
@@ -445,6 +531,8 @@ pub struct Engine {
     /// Frames rendered since the engine was made: the timeline synced grains use.
     frames: u64,
     master: Option<GrainFx>,
+    /// The project tempo, for warped layers.
+    tempo: f64,
 }
 
 impl Engine {
@@ -470,7 +558,33 @@ impl Engine {
             unheard_r: vec![0.0; GRAIN_CHUNK],
             frames: 0,
             master: None,
+            tempo: 120.0,
         }
+    }
+
+    /// The project tempo, in BPM, for warped layers: they play `tempo /
+    /// their tempo` times as fast. Voices already playing follow at once
+    /// (a stretched copy made for another tempo repitches until the next
+    /// hit plays the new one). Cheap when nothing changes; call it every
+    /// period with the transport's tempo.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        if !bpm.is_finite() || bpm <= 0.0 || bpm == self.tempo {
+            return;
+        }
+        self.tempo = bpm;
+        for v in &mut self.voices {
+            if v.active && v.warp_bpm > 0.0 {
+                v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
+                v.step = v.base_step;
+                if v.route.target == PressureTarget::Pitch {
+                    pressure_step(v);
+                }
+            }
+        }
+    }
+
+    pub fn tempo(&self) -> f64 {
+        self.tempo
     }
 
     /// A master effect for an engine at `rate`, holding [`MASTER_MEMORY_S`]
@@ -799,6 +913,11 @@ impl Engine {
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
         let lp = l.sustain_loop.as_ref();
+        let step = if l.warp_bpm > 0.0 {
+            warped_step(l.step, self.tempo, l.warp_bpm)
+        } else {
+            l.step
+        };
         self.clock += 1;
         let v = &mut self.voices[slot];
         *v = Voice {
@@ -810,7 +929,7 @@ impl Engine {
             pick_l,
             pick_r,
             pos: start_frame << 32,
-            step: l.step,
+            step,
             backwards: l.reverse,
             reverse: l.reverse,
             start: l.start,
@@ -850,11 +969,13 @@ impl Engine {
             press_target: 0.0,
             press: 0.0,
             press_coef: 1.0 - (-1.0 / (PRESSURE_SMOOTH_S * self.rate)).exp(),
-            base_step: l.step,
+            base_step: step,
             press_gain: 1.0,
             press_gain_inc: 0.0,
             press_fc: 1.0,
             press_count: 0,
+            warp_bpm: l.warp_bpm,
+            plain_step: l.step,
         };
         if granular {
             let g = &mut self.grains[slot];
@@ -1061,6 +1182,11 @@ fn follow_pressure(v: &mut Voice) {
     }
     v.press_gain += v.press_gain_inc;
     v.press_count = (v.press_count + 1) % FILTER_STEP;
+}
+
+/// A warped layer's step at `tempo`: `tempo / warp_bpm` times its own.
+fn warped_step(step: i64, tempo: f64, warp_bpm: f64) -> i64 {
+    ((step as f64 * tempo / warp_bpm).round() as i64).max(1)
 }
 
 /// [`follow_pressure`]'s update every [`FILTER_STEP`] frames, kept out of

@@ -231,6 +231,38 @@ pub struct PressureRoute {
     pub depth: f32,
 }
 
+/// How a warped region meets the project tempo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WarpMethod {
+    /// The length follows the tempo and the pitch stays (a stretched copy
+    /// made on a worker; until it is ready, the region repitches).
+    #[default]
+    Stretch,
+    /// Played faster or slower like tape: the pitch moves with the tempo.
+    /// The region's tune is left out, as it would pull it off the beat.
+    Repitch,
+}
+
+/// The slowest and fastest tempo a warped region may say it is at.
+pub const WARP_BPM: std::ops::RangeInclusive<f32> = 20.0..=999.0;
+
+/// A region that plays at the project tempo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Warp {
+    /// The tempo the region was played at (detected or typed).
+    pub bpm: f32,
+    pub method: WarpMethod,
+}
+
+impl Warp {
+    pub fn new(bpm: f32) -> Warp {
+        Warp {
+            bpm,
+            method: WarpMethod::Stretch,
+        }
+    }
+}
+
 /// A recipe on part of a source. The source's audio is never changed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
@@ -248,6 +280,9 @@ pub struct Region {
     /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
     /// with the region in every mode, so switching modes loses nothing.
     pub grain: GrainParams,
+    /// Plays at the project tempo (not in granular mode, whose grains have
+    /// their own tempo sync).
+    pub warp: Option<Warp>,
 }
 
 impl Region {
@@ -266,6 +301,7 @@ impl Region {
             tune_cents: 0,
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
+            warp: None,
         }
     }
 
@@ -301,6 +337,9 @@ impl Region {
         }
         if !grain_ok(&self.grain) {
             return Err(ModelError::BadRegion("grain settings"));
+        }
+        if self.warp.is_some_and(|w| !WARP_BPM.contains(&w.bpm)) {
+            return Err(ModelError::BadRegion("warp tempo"));
         }
         Ok(())
     }
@@ -879,6 +918,93 @@ impl Project {
             pads.push(pad);
         }
         Ok(pads)
+    }
+
+    /// Puts processed audio in place of layer `layer` of pad `pad`: `s` is
+    /// that layer's region stretched (or pitch shifted) on a worker, with
+    /// `scale` output frames per input frame. The layer then plays all of
+    /// `s`, with its loop points and fades moved to match and its warp
+    /// tempo too. The old source stays, so one undo brings it all back.
+    pub fn use_processed(
+        &mut self,
+        pad: usize,
+        layer: usize,
+        s: Source,
+        scale: f64,
+    ) -> Result<SourceId, ModelError> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(ModelError::BadRegion("scale"));
+        }
+        let mut p = self.pad(pad).cloned().ok_or(ModelError::BadPad)?;
+        let r = p
+            .layers
+            .get(layer)
+            .ok_or(ModelError::BadPad)?
+            .region
+            .clone();
+        let len = s.frames();
+        let at = |x: u64| ((x.saturating_sub(r.start)) as f64 * scale).round() as u64;
+        let sustain_loop = r.sustain_loop.and_then(|l| {
+            let (a, b) = (at(l.start), at(l.end).min(len));
+            (b > a).then(|| Loop {
+                start: a,
+                end: b,
+                crossfade: ((f64::from(l.crossfade) * scale) as u64)
+                    .min((b - a) / 2)
+                    .min(a) as u32,
+                ..l
+            })
+        });
+        let fade = |f: Fade| Fade {
+            frames: (f64::from(f.frames) * scale).round() as u32,
+            ..f
+        };
+        let (mut fade_in, mut fade_out) = (fade(r.fade_in), fade(r.fade_out));
+        if u64::from(fade_in.frames) + u64::from(fade_out.frames) > len {
+            (fade_in, fade_out) = (Fade::NONE, Fade::NONE);
+        }
+        let mode = if sustain_loop.is_none() && r.mode == PlayMode::Loop {
+            PlayMode::OneShot
+        } else {
+            r.mode
+        };
+        p.layers[layer].region = Region {
+            source: s.id(),
+            start: 0,
+            end: len,
+            sustain_loop,
+            fade_in,
+            fade_out,
+            mode,
+            warp: r.warp.map(|w| Warp {
+                bpm: (f64::from(w.bpm) / scale) as f32,
+                ..w
+            }),
+            ..r
+        };
+        let id = s.id();
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&p) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.pads[pad].replace(p);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(id)
     }
 
     fn place_pads(&mut self, pads: Vec<Pad>, to_pad: usize) -> Vec<Undo> {

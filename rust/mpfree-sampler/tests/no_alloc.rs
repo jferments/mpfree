@@ -106,6 +106,16 @@ fn render_and_events_never_allocate() {
         });
         r.reverse = i % 5 == 4;
         r.tune_cents = (i as i32 - 8) * 50;
+        // Some at the project tempo: repitched, or stretched (no copy is
+        // made here, so those repitch too).
+        r.warp = match i % 4 {
+            1 => Some(Warp {
+                bpm: 100.0,
+                method: WarpMethod::Repitch,
+            }),
+            3 => Some(Warp::new(140.0)),
+            _ => None,
+        };
         let mut pad = Pad::new("p", Layer::new(r.clone()));
         pad.layers.push(Layer::new(r));
         pad.select = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random][i % 3];
@@ -191,7 +201,8 @@ fn render_and_events_never_allocate() {
         p.set_pad(i, Some(pad), None).unwrap();
     }
     let mut e = Engine::new(rate, 24);
-    e.set_view(EngineView::build(&p, rate));
+    let mut warps = mpfree_sampler::warp::Warps::new(120.0);
+    e.set_view(EngineView::build_warped(&p, rate, &mut warps));
     // A second view, swapped in and out while voices play: only the views
     // move, nothing is built or dropped.
     let mut q = Project::new();
@@ -230,9 +241,9 @@ fn render_and_events_never_allocate() {
         None,
     )
     .unwrap();
-    let mut wet = Some(EngineView::build(&p, rate));
+    let mut wet = Some(EngineView::build_warped(&p, rate, &mut warps));
     p.set_master(MasterFx::default(), None).unwrap();
-    let dry = EngineView::build(&p, rate);
+    let dry = EngineView::build_warped(&p, rate, &mut warps);
 
     // The counter itself works: one Vec is one allocation and one free.
     watch(true);
@@ -243,6 +254,8 @@ fn render_and_events_never_allocate() {
     watch(true);
     for block in 0..2000u32 {
         let pad = (block * 7 % 16) as u8;
+        // The transport's tempo, moving now and then.
+        e.set_tempo(120.0 + f64::from(block / 100 % 5) * 7.5);
         if block % 200 == 10 {
             wet = Some(e.set_view(wet.take().unwrap()));
         }
