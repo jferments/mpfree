@@ -19,7 +19,8 @@
 //! `--chords "n,n;n,n"` (one bar each, looped) or `--notes n,n` or `--pads
 //! 1,2` (drum sounds), `--bpm`, `--rate 1/16`, `--octaves`, `--gate`,
 //! `--swing`, `--strum`, `--scale d_dorian`, `--snap down|up|nearest|skip`,
-//! `--chord triad|power|sus2|sus4|seventh|ninth`, `--run`, `--ramp TARGET:STEPS`, `--retrigger`,
+//! `--chord triad|power|sus2|sus4|seventh|ninth`, `--run`, `--turns beat|2beats|bar|2bars`,
+//! `--ramp TARGET:STEPS`, `--retrigger`,
 //! `--bars`, `--seed`, `--name`.
 //!
 //! Each WAV has a `.mid` beside it (format 0, 960 ticks per quarter note,
@@ -444,6 +445,26 @@ fn demo_jobs() -> Vec<Job> {
     j.settings.order = Order::UpDown;
     j.chords = vec![vec![52, 71], vec![57, 76]];
     jobs.push(j);
+    let mut j = base("scale-04-progression", "Four pads held (A, F, C, G in A minor), each a triad from the scale, taking turns a bar each: Am F C G, arp Up-down over 2 octaves", Mode::Arp);
+    j.settings.scale = scale_by_name("a minor");
+    j.settings.chord = mpfree_arp::Chord::Triad;
+    j.settings.turns = mpfree_arp::Turns::Bar;
+    j.settings.order = Order::UpDown;
+    j.settings.octaves = 2;
+    j.chords = vec![vec![57, 53, 60, 55]];
+    j.bars = 8;
+    jobs.push(j);
+    let mut j = base("scale-05-seventh-stabs", "D, G, C and A held in C major, each a seventh chord, taking turns every 2 beats as strummed 1/8 stabs: Dm7 G7 Cmaj7 Am7", Mode::Arp);
+    j.settings.scale = scale_by_name("c major");
+    j.settings.chord = mpfree_arp::Chord::Seventh;
+    j.settings.turns = mpfree_arp::Turns::TwoBeats;
+    j.settings.order = Order::Chord;
+    j.settings.rate = Rate::Eighth;
+    j.settings.strum = 25;
+    j.settings.gate = 70;
+    j.chords = vec![vec![62, 67, 60, 57]];
+    j.bars = 4;
+    jobs.push(j);
     let mut j = base("feel-01-strum", "Chord order with a 40% strum, 1/8", Mode::Arp);
     j.settings.order = Order::Chord;
     j.settings.strum = 40;
@@ -628,6 +649,17 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                         "--chord {v:?}: use triad, power, sus2, sus4, seventh or ninth"
                     ))?;
             }
+            "--turns" => {
+                let v = value(&mut i)?;
+                job.settings.turns = match v.to_ascii_lowercase().as_str() {
+                    "off" => mpfree_arp::Turns::Off,
+                    "beat" => mpfree_arp::Turns::Beat,
+                    "2beats" => mpfree_arp::Turns::TwoBeats,
+                    "bar" => mpfree_arp::Turns::Bar,
+                    "2bars" => mpfree_arp::Turns::TwoBars,
+                    _ => return Err(format!("--turns {v:?}: use beat, 2beats, bar or 2bars")),
+                };
+            }
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -688,7 +720,7 @@ fn main() {
             }
             eprintln!("usage: mpfree-arp-render --demo | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
                        [--mode repeat|arp|pattern] [--order NAME] [--pattern TEXT | --builtin NAME] [--bpm N] [--rate 1/16] \
-                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--snap up] [--chord triad] [--run] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
+                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--snap up] [--chord triad] [--run] [--turns bar] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
                        [--name NAME] [--out DIR]\n       mpfree-arp-render --patterns FILE [the same options; --chords etc. replace the four-chord loop]");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
@@ -810,6 +842,9 @@ mod tests {
         );
         assert!(parse_args(&a("--notes 60 --chord eleventh")).is_err());
         assert!(parse_args(&a("--notes 60 --snap sideways")).is_err());
+        let (jobs, _) = parse_args(&a("--notes 57,53 --chord triad --turns 2beats")).unwrap();
+        assert_eq!(jobs[0].settings.turns, mpfree_arp::Turns::TwoBeats);
+        assert!(parse_args(&a("--notes 60 --turns sometimes")).is_err());
         assert_eq!(slug("Up-down incl."), "up-down-incl");
         assert_eq!(utc_stamp().len(), 16);
     }
