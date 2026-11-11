@@ -9,6 +9,8 @@ description = "Bounded Rust WAV sampler with zero-alloc render and note-off fade
 mpfree-core = { path = "../mpfree-core" }
 mpfree-analysis = { path = "../mpfree-analysis" }
 mpfree-grain = { path = "../mpfree-grain" }
+mpfree-stretch = { path = "../mpfree-stretch" }
+mpfree-prof = { path = "../mpfree-prof" }
 
 [[bin]]
 name = "mpfree-sampler"
@@ -21,3 +23,7 @@ path = "src/bin/chop.rs"
 [[bin]]
 name = "mpfree-grain"
 path = "src/bin/grain.rs"
+
+[[bin]]
+name = "mpfree-stretch"
+path = "src/bin/stretch.rs"
