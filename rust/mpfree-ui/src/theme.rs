@@ -158,7 +158,8 @@ impl Theme {
             glow: 0,
             text_glow: 0,
             backdrop: Backdrop::Solid,
-            backdrop_to: Color::rgb(0x0B0D12),
+            // Unused by a solid backdrop; the loading page's sky fades to it.
+            backdrop_to: Color::rgb(0x1B2340),
             backdrop_line: Color::rgb(0x151922),
             backdrop_step: 40,
             face_body: FontId::Sans,
