@@ -1830,9 +1830,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     app.pressure(pad as usize, pressure);
                     if synth_on && app.arp_plays_notes() {
-                        // The pad's layout notes, which the arp pressed by number.
-                        let notes = synth.pad_layout()[pad as usize];
-                        for &note in notes.notes() {
+                        // The notes this pad pressed (by number), even if the
+                        // layout moved while it was held.
+                        for &note in app.pad_held_notes(pad as usize) {
                             synth.pressure_note(note, pressure);
                         }
                     } else if synth_on {

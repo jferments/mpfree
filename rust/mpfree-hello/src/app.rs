@@ -1794,9 +1794,13 @@ mod tests {
         assert!(!app.engine.active().contains(48), "C was only pad 1's");
         assert!(app.active(2) && !app.active(1));
         assert_eq!(app.pad_of_note(48), Some(0));
-        // A layout change while pad 3 is down still lets go of what it pressed.
+        // A layout change while pad 3 is down: its pressure still goes to
+        // what it pressed, and letting go releases exactly that.
+        let held: Vec<u8> = app.pad_held_notes(2).to_vec();
         app.set_pad_layout(Some(layout(&PadSetup { layout: PadLayout::Chromatic, ..setup })));
+        assert_eq!(app.pad_held_notes(2), held.as_slice());
         app.pad_up(2);
+        assert!(app.pad_held_notes(2).is_empty());
         assert!(app.engine.active().is_empty(), "nothing left held");
         // Back to slots: held pads are let go.
         app.pad_down(5, 100);
