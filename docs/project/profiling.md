@@ -130,13 +130,16 @@ worth it?), or for a change against main on the same machine.
 cargo run --release -p mpfree-bench -- --afford [--calibration FILE]
 ```
 
-It plays each Poly preset at 1, 2, 4, 8 and 16 voices and the sampler with
-1, 4, 8, 16 and 32 looping pads held, fits `p99 = fixed + voices x per
+It plays each Poly preset at 1, 2, 4, 8 and 16 voices, the sampler with
+1, 4, 8, 16 and 32 looping pads held, and four granular pads held with 16,
+32, 64, 128 and 256 grains alive in all. It fits `p99 = fixed + voices x per
 voice`, and prints how many voices fit in the module's budget (synth 20 %,
 sampler 25 %). That is for one engine alone; several synth tracks share the
 synth budget, so two Supersaw tracks get half each. "16+ (75)" means every
 count measured fits and the line runs out at 75. Mono and legato presets
-play one voice, so they show one cost. With `--calibration` the times and
+play one voice, so they show one cost. In the grains row a "voice" is one
+live grain, so its per-voice cost is the cost of a grain; 256 is the
+sampler's whole grain budget. With `--calibration` the times and
 counts are MPC estimates (the kernel range in brackets); on the MPC they are
 its own. `host_bench_mpc.py` runs it on the device after the other two
 runs; round 7's step was frozen before that, so it first runs in a later
