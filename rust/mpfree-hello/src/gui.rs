@@ -443,7 +443,7 @@ impl Player {
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
-                View::Pattern => workspace::hint(self.workspace.recording).to_string(),
+                View::Pattern => self.workspace.hint().to_string(),
             }
         };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
@@ -669,6 +669,7 @@ impl Player {
                     self.workspace.name = w.name;
                 }
                 self.workspace.recording = w.recording;
+                self.workspace.free_time = w.free_time;
                 if self.view == View::Pattern {
                     let page = self.workspace.page().to_string();
                     self.switch_page(&page);
@@ -757,6 +758,7 @@ impl Player {
     fn refresh_arp(&mut self) {
         let _ = self.arp_panel.update(&mut self.ui, &self.arp);
         let playing = self.playing_step();
+        self.workspace.played = playing.map(|_| self.arp.step - 1);
         self.workspace.update(&mut self.ui, playing);
         self.refresh_chips();
         self.refresh_hint();
@@ -865,6 +867,7 @@ impl Player {
                 let a = self.workspace.action(&ev);
                 let playing = self.playing_step();
                 self.workspace.update(&mut self.ui, playing);
+                self.refresh_hint();
                 a.map(|a| FromUi::Workspace(Box::new(a)))
             }
             (w, _) if w.starts_with("arp-") => self.arp_panel.action(&ev, &self.arp, &mut self.qlink_focus).map(FromUi::Arp),
@@ -1209,7 +1212,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
-            Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit => {}
+            Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
+            | Effect::SavePatterns(_) => {}
         }
     }
 }

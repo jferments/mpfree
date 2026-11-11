@@ -466,6 +466,9 @@ pub struct LaneGrid {
     pub cursor: Option<(usize, usize)>,
     /// The column playing, if any.
     pub playing: Option<usize>,
+    /// When rows loop at lengths of their own (the pattern's lanes): the
+    /// column playing in each row. Empty when `playing` says it for all.
+    pub playing_rows: Vec<Option<usize>>,
     drag: Option<(u64, usize, i32)>,
 }
 
@@ -484,6 +487,7 @@ impl LaneGrid {
             columns,
             cursor: None,
             playing: None,
+            playing_rows: Vec::new(),
             drag: None,
         }
     }
@@ -536,7 +540,11 @@ impl Widget for LaneGrid {
                 };
                 let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
                 cx.canvas.fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
-                if self.playing == Some(col) {
+                let playing = match self.playing_rows.get(row) {
+                    Some(p) => *p == Some(col),
+                    None => self.playing == Some(col),
+                };
+                if playing {
                     cx.canvas.stroke_round_rect(cell, 6, 2, t.good);
                 }
                 if self.cursor == Some((row, col)) {
