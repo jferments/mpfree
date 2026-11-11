@@ -57,7 +57,7 @@ find_headless() {
 }
 
 [[ -r "$BACKUP" ]] || { echo "Missing eMMC backup: $BACKUP" >&2; exit 1; }
-[[ -f "$SCRIPT_DIR/MPFreeFinishBootChain.py" ]] || {
+[[ -f "$SCRIPT_DIR/MPFreeFinishBootChain.java" ]] || {
     echo "Missing Ghidra script; git pull --ff-only origin main first" >&2
     exit 1
 }
@@ -115,6 +115,8 @@ LOG="$WORKDIR/$PROJECT_NAME.log"
 echo
 echo "Ghidra headless command: $GHIDRA_DISPLAY"
 echo "MPFree report directory: $MPFREE_REPORT_DIR"
+RUN_MARKER="$WORKDIR/.start-$PROJECT_NAME"
+touch "$RUN_MARKER"
 echo "New, separately saved project: $WORKDIR/projects/$PROJECT_NAME"
 echo "Import base: 0x00100000 (passed to raw BinaryLoader as 100000)"
 echo "Prior base-zero Ghidra program will not be modified."
@@ -130,16 +132,24 @@ echo
     -processor ARM:LE:32:v7 \
     -cspec default \
     -scriptPath "$SCRIPT_DIR" \
-    -preScript MPFreeFinishBootChain.py pre \
-    -postScript MPFreeFinishBootChain.py post \
+    -preScript MPFreeFinishBootChain.java pre \
+    -postScript MPFreeFinishBootChain.java post \
     -max-cpu 8 \
     -log "$LOG" \
     2>&1 | tee "$WORKDIR/$PROJECT_NAME.console.txt"
 
 echo
-echo "Ghidra static analysis complete."
-echo "Project: $WORKDIR/projects/$PROJECT_NAME"
-echo "Ghidra application log: $LOG"
-echo "MPFree report(s):"
-find "$HOME/mpfree-work" -maxdepth 1 -type f -name 'mpfree-ghidra-p3-final-*.txt' -printf '%TY-%Tm-%Td %TH:%TM %p\n' | sort -r | head -5
+echo "Checking that the native Java post-analysis script wrote a fresh report..."
+mapfile -t REPORTS < <(find "$MPFREE_REPORT_DIR" -maxdepth 1 -type f \
+  -name "mpfree-ghidra-p3-final-*.txt" -newer "$RUN_MARKER" -print)
+if [[ "${#REPORTS[@]}" -eq 0 ]]; then
+    echo "ERROR: Ghidra imported the binary but did not produce a new MPFree report." >&2
+    echo "Check errors in: $WORKDIR/$PROJECT_NAME.console.txt" >&2
+    echo "Your previous project and MPC have not been changed." >&2
+    exit 2
+fi
+echo "Ghidra targeted analysis and decompiler export completed."
+echo "New Ghidra project: $WORKDIR/projects/$PROJECT_NAME"
+echo "Log: $LOG"
+printf "MPFree report: %s\n" "${REPORTS[@]}"
 echo "No MPC, USB, firmware, or eMMC changes were made."
