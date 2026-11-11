@@ -28,9 +28,33 @@ pub struct Sample {
 }
 
 const TRACK_NAMES: [&str; 16] = [
-    "Kick", "Snare", "Drum kit", "Bass", "Chords", "Lead", "Vocal chop", "Pad", "Perc", "Keys", "Strings", "FX riser", "Track 13", "Track 14", "Track 15", "Track 16",
+    "Kick",
+    "Snare",
+    "Drum kit",
+    "Bass",
+    "Chords",
+    "Lead",
+    "Vocal chop",
+    "Pad",
+    "Perc",
+    "Keys",
+    "Strings",
+    "FX riser",
+    "Track 13",
+    "Track 14",
+    "Track 15",
+    "Track 16",
 ];
-const PAD_NAMES: [&str; 8] = ["A01 Kick", "A02 Snare", "A03 Hat", "A04 Clap", "A05 Rim", "A06 Tom", "A07 Shaker", "A08 Crash"];
+const PAD_NAMES: [&str; 8] = [
+    "A01 Kick",
+    "A02 Snare",
+    "A03 Hat",
+    "A04 Clap",
+    "A05 Rim",
+    "A06 Tom",
+    "A07 Shaker",
+    "A08 Crash",
+];
 
 /// The strips' names in the sample song.
 pub fn name(s: StripId) -> String {
@@ -68,7 +92,13 @@ pub fn song_mixer() -> Mixer {
     duck.set_param(0, ids::compressor::SIDECHAIN, 1.0);
     duck.push(Box::new(Eq::new()));
     m.set_key(t(3), 0, Some(t(0)));
-    for (s, pan) in [(t(4), -15.0), (t(5), 20.0), (t(7), -30.0), (t(9), 35.0), (t(10), -45.0)] {
+    for (s, pan) in [
+        (t(4), -15.0),
+        (t(5), 20.0),
+        (t(7), -30.0),
+        (t(9), 35.0),
+        (t(10), -45.0),
+    ] {
         m.set_now(s, mx::OUTPUT, output::bus(1));
         m.set_now(s, mx::PAN, pan);
     }
@@ -83,7 +113,9 @@ pub fn song_mixer() -> Mixer {
     m.set_now(t(8), mx::VOLUME, -6.5);
     m.set_now(t(11), mx::VOLUME, -12.0);
     m.set_now(t(11), mx::send(0), -4.0);
-    m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Bus(1))
+        .unwrap()
+        .push(Box::new(Eq::new()));
     let verb = m.chain_mut(StripId::Return(0)).unwrap();
     verb.push(Box::new(Cloud::new()));
     verb.set_param(0, ids::cloud::MIX, 100.0);
@@ -91,7 +123,9 @@ pub fn song_mixer() -> Mixer {
     echo.push(Box::new(Delay::new()));
     echo.set_param(0, ids::delay::MIX, 100.0);
     m.set_now(StripId::Return(1), mx::VOLUME, -4.0);
-    m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Master)
+        .unwrap()
+        .push(Box::new(Eq::new()));
     // Pad channels: the kit's pads that need their own strip, into the kit
     // track; the crash straight to the drum bus.
     for p in 0..8 {
@@ -100,7 +134,9 @@ pub fn song_mixer() -> Mixer {
     }
     m.set_now(StripId::Pad(2), mx::PAN, -25.0);
     m.set_now(StripId::Pad(1), mx::send(0), -12.0);
-    m.chain_mut(StripId::Pad(1)).unwrap().push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Pad(1))
+        .unwrap()
+        .push(Box::new(Eq::new()));
     m.set_now(StripId::Pad(7), mx::OUTPUT, output::bus(0));
     m.set_now(StripId::Pad(5), mx::VOLUME, -4.0);
     // The line input armed and heard through a compressor; the mic on
@@ -120,7 +156,9 @@ pub fn song_mixer() -> Mixer {
 /// tone and level), with profiling on.
 pub fn play(m: &mut Mixer, blocks: u64) {
     m.set_profiling(true);
-    let levels = [0.7f32, 0.5, 0.35, 0.45, 0.3, 0.28, 0.4, 0.2, 0.25, 0.22, 0.15, 0.3];
+    let levels = [
+        0.7f32, 0.5, 0.35, 0.45, 0.3, 0.28, 0.4, 0.2, 0.25, 0.22, 0.15, 0.3,
+    ];
     let mut seed = 1u32;
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
     for b in 0..blocks {
@@ -150,7 +188,15 @@ pub fn play(m: &mut Mixer, blocks: u64) {
             hl[k] = 0.25 * (std::f32::consts::TAU * ph).sin();
             hr[k] = 0.18 * (std::f32::consts::TAU * ph * 1.01).sin();
         }
-        m.process(&Ctx { bpm: 92.0, playing: true, ..Ctx::new(RATE, f0) }, &mut l, &mut r);
+        m.process(
+            &Ctx {
+                bpm: 92.0,
+                playing: true,
+                ..Ctx::new(RATE, f0)
+            },
+            &mut l,
+            &mut r,
+        );
     }
 }
 
@@ -168,7 +214,10 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
     ];
     ui.add("header", header);
     ui.add("mixicon", MixerIcon { open: true });
-    ui.add("hint", mpfree_ui::widgets::Label::new(crate::MIXER_HINT, Tone::Dim, Align::Left));
+    ui.add(
+        "hint",
+        mpfree_ui::widgets::Label::new(crate::MIXER_HINT, Tone::Dim, Align::Left),
+    );
     ui.add(crate::MIXER, MixerView::new());
     ui.add_page(crate::MIXER_PAGE, PREVIEW_LAYOUT)?;
     ui.show(crate::MIXER_PAGE)?;
@@ -211,7 +260,11 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     play(&mut m, 8);
     let mut solo = state(&mut m, MixView::Tracks);
     solo.selected = Some(StripId::Track(3));
-    out.push(Sample { name: "mixer-solo", about: "Solo in place: the bass soloed, the rest dimmed; the returns and the master stay", ui: screen(fonts(), solo)? });
+    out.push(Sample {
+        name: "mixer-solo",
+        about: "Solo in place: the bass soloed, the rest dimmed; the returns and the master stay",
+        ui: screen(fonts(), solo)?,
+    });
     m.set(StripId::Track(3), mx::SOLO, 0.0);
     // The second page of tracks.
     let mut ui = screen(fonts(), tracks)?;
@@ -223,7 +276,11 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let (x, y) = output_button(&ui, 2);
     tap(&mut ui, x, y);
     let _ = crate::take_actions(&mut ui);
-    out.push(Sample { name: "mixer-output-picker", about: "The output picker on a pad channel: the master, a submix, any track, or nowhere", ui });
+    out.push(Sample {
+        name: "mixer-output-picker",
+        about: "The output picker on a pad channel: the master, a submix, any track, or nowhere",
+        ui,
+    });
     Ok(out)
 }
 
@@ -256,13 +313,24 @@ mod tests {
             let damage = sample.ui.paint(&mut c);
             assert!(!damage.is_empty(), "{}", sample.name);
             if sample.name == "mixer-tracks" {
-                st = sample.ui.get::<MixerView>(crate::MIXER).unwrap().state().clone();
+                st = sample
+                    .ui
+                    .get::<MixerView>(crate::MIXER)
+                    .unwrap()
+                    .state()
+                    .clone();
             }
             if sample.name == "mixer-output-picker" {
-                assert_eq!(sample.ui.get::<MixerView>(crate::MIXER).unwrap().picker(), Some(StripId::Pad(2)));
+                assert_eq!(
+                    sample.ui.get::<MixerView>(crate::MIXER).unwrap().picker(),
+                    Some(StripId::Pad(2))
+                );
             }
             if sample.name == "mixer-tracks-page-2" {
-                assert_eq!(sample.ui.get::<MixerView>(crate::MIXER).unwrap().first(), 10);
+                assert_eq!(
+                    sample.ui.get::<MixerView>(crate::MIXER).unwrap().first(),
+                    10
+                );
             }
         }
         let bass = st.strip(StripId::Track(3)).unwrap();
@@ -279,11 +347,19 @@ mod tests {
     #[test]
     fn actions_drive_the_mixer() {
         let mut m = song_mixer();
-        let mut ui = screen(Fonts::embedded(), MixState::from_mixer(&mut m, MixView::Pads, &name)).unwrap();
+        let mut ui = screen(
+            Fonts::embedded(),
+            MixState::from_mixer(&mut m, MixView::Pads, &name),
+        )
+        .unwrap();
         let (x, y) = output_button(&ui, 2);
         tap(&mut ui, x, y);
         let r = ui.rect_of(crate::MIXER).unwrap();
-        let b = ui.get::<MixerView>(crate::MIXER).unwrap().picker_button(r, (output::MASTER as u8, 0)).unwrap();
+        let b = ui
+            .get::<MixerView>(crate::MIXER)
+            .unwrap()
+            .picker_button(r, (output::MASTER as u8, 0))
+            .unwrap();
         tap(&mut ui, b.x + b.w / 2, b.y + b.h / 2);
         for a in crate::take_actions(&mut ui) {
             assert!(crate::apply(&mut m, &a), "{a:?}");
@@ -299,16 +375,25 @@ mod tests {
         st.selected = Some(StripId::Track(3));
         let mut ui = screen(Fonts::embedded(), st).unwrap();
         let q = crate::qlinks(&ui);
-        assert_eq!((q.strip, q.name.as_str()), (Some(StripId::Track(3)), "Bass"));
+        assert_eq!(
+            (q.strip, q.name.as_str()),
+            (Some(StripId::Track(3)), "Bass")
+        );
         let before = q.knobs[0].value;
         assert_eq!(before, m.param(StripId::Track(3), mx::VOLUME));
         let mut c = SoftCanvas::new(1280, 800);
         ui.paint(&mut c);
         let a = crate::qlink_turn(&mut ui, 0, -3, false).expect("the volume moves");
-        assert!(ui.paint(&mut c).iter().any(|r| r.w > 0), "the fader is drawn again");
+        assert!(
+            ui.paint(&mut c).iter().any(|r| r.w > 0),
+            "the fader is drawn again"
+        );
         let after = crate::qlinks(&ui).knobs[0].value;
         assert!(after < before, "{before} -> {after}");
-        assert!(crate::take_actions(&mut ui).is_empty(), "the caller sends a Q-Link's action itself");
+        assert!(
+            crate::take_actions(&mut ui).is_empty(),
+            "the caller sends a Q-Link's action itself"
+        );
         assert!(crate::apply(&mut m, &a));
         play(&mut m, 1);
         assert_eq!(m.param(StripId::Track(3), mx::VOLUME), after);

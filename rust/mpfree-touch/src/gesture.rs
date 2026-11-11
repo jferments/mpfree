@@ -66,22 +66,62 @@ impl Default for GestureConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Gesture {
-    Tap { id: ContactId, x: f32, y: f32 },
-    LongPress { id: ContactId, x: f32, y: f32 },
-    DragStart { id: ContactId, x: f32, y: f32 },
+    Tap {
+        id: ContactId,
+        x: f32,
+        y: f32,
+    },
+    LongPress {
+        id: ContactId,
+        x: f32,
+        y: f32,
+    },
+    DragStart {
+        id: ContactId,
+        x: f32,
+        y: f32,
+    },
     /// `dx`/`dy` are since the previous Drag (or DragStart).
-    Drag { id: ContactId, x: f32, y: f32, dx: f32, dy: f32 },
+    Drag {
+        id: ContactId,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+    },
     /// `vx`/`vy`: release velocity in px/s (zero when cancelled).
-    DragEnd { id: ContactId, x: f32, y: f32, vx: f32, vy: f32, cancelled: bool },
+    DragEnd {
+        id: ContactId,
+        x: f32,
+        y: f32,
+        vx: f32,
+        vy: f32,
+        cancelled: bool,
+    },
     /// A fast, mostly straight drag. Always follows that contact's `DragEnd`,
     /// so a widget that only scrolls can ignore it. `speed` is px/s along the
     /// swipe's direction.
-    Swipe { id: ContactId, direction: SwipeDirection, speed: f32 },
-    TwoFingerStart { cx: f32, cy: f32 },
+    Swipe {
+        id: ContactId,
+        direction: SwipeDirection,
+        speed: f32,
+    },
+    TwoFingerStart {
+        cx: f32,
+        cy: f32,
+    },
     /// Centroid pan since the previous update, and spread relative to the
     /// spread when the gesture started (pinch: <1 in, >1 out).
-    TwoFinger { cx: f32, cy: f32, dx: f32, dy: f32, scale: f32 },
-    TwoFingerEnd { cancelled: bool },
+    TwoFinger {
+        cx: f32,
+        cy: f32,
+        dx: f32,
+        dy: f32,
+        scale: f32,
+    },
+    TwoFingerEnd {
+        cancelled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +146,13 @@ struct History {
 
 impl History {
     fn new(t: u64, x: f32, y: f32) -> Self {
-        let mut h = Self { t: [0; HISTORY], x: [0.0; HISTORY], y: [0.0; HISTORY], len: 0, head: 0 };
+        let mut h = Self {
+            t: [0; HISTORY],
+            x: [0.0; HISTORY],
+            y: [0.0; HISTORY],
+            len: 0,
+            head: 0,
+        };
         h.push(t, x, y);
         h
     }
@@ -189,7 +235,11 @@ pub struct GestureRecognizer {
 
 impl GestureRecognizer {
     pub fn new(config: GestureConfig) -> Self {
-        Self { config, tracks: Vec::with_capacity(crate::mt::MAX_SLOTS), pair: None }
+        Self {
+            config,
+            tracks: Vec::with_capacity(crate::mt::MAX_SLOTS),
+            pair: None,
+        }
     }
 
     /// Fire due long-presses. Call from the UI loop; events also call it.
@@ -199,7 +249,11 @@ impl GestureRecognizer {
                 && now_us.saturating_sub(t.down_us) >= self.config.long_press_us
             {
                 t.state = State::LongPressed;
-                out.push(Gesture::LongPress { id: t.id, x: t.x, y: t.y });
+                out.push(Gesture::LongPress {
+                    id: t.id,
+                    x: t.x,
+                    y: t.y,
+                });
             }
         }
     }
@@ -248,7 +302,13 @@ impl GestureRecognizer {
         {
             let (a, b) = (self.tracks[0], self.tracks[1]);
             let (cx, cy) = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
-            self.pair = Some(Pair { a: a.id, b: b.id, start_spread: spread(&a, &b), cx, cy });
+            self.pair = Some(Pair {
+                a: a.id,
+                b: b.id,
+                start_spread: spread(&a, &b),
+                cx,
+                cy,
+            });
             for t in &mut self.tracks {
                 t.state = State::TwoFinger;
             }
@@ -258,7 +318,9 @@ impl GestureRecognizer {
 
     /// Returns true when a two-finger participant moved.
     fn moved(&mut self, ev: &PointerEvent, out: &mut Vec<Gesture>) -> bool {
-        let Some(i) = self.index(ev.id) else { return false };
+        let Some(i) = self.index(ev.id) else {
+            return false;
+        };
         let slop = self.config.slop_px;
         let t = &mut self.tracks[i];
         let (px, py) = (t.x, t.y);
@@ -269,7 +331,11 @@ impl GestureRecognizer {
             State::Pending | State::LongPressed => {
                 if (t.x - t.start_x).hypot(t.y - t.start_y) > slop {
                     t.state = State::Dragging;
-                    out.push(Gesture::DragStart { id: t.id, x: t.start_x, y: t.start_y });
+                    out.push(Gesture::DragStart {
+                        id: t.id,
+                        x: t.start_x,
+                        y: t.start_y,
+                    });
                     out.push(Gesture::Drag {
                         id: t.id,
                         x: t.x,
@@ -293,12 +359,26 @@ impl GestureRecognizer {
     }
 
     fn emit_two_finger(&mut self, out: &mut Vec<Gesture>) {
-        let Some(pair) = self.pair.as_mut() else { return };
+        let Some(pair) = self.pair.as_mut() else {
+            return;
+        };
         let find = |id| self.tracks.iter().find(|t| t.id == id).copied();
-        let (Some(a), Some(b)) = (find(pair.a), find(pair.b)) else { return };
+        let (Some(a), Some(b)) = (find(pair.a), find(pair.b)) else {
+            return;
+        };
         let (cx, cy) = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
-        let scale = if pair.start_spread > 0.0 { spread(&a, &b) / pair.start_spread } else { 1.0 };
-        out.push(Gesture::TwoFinger { cx, cy, dx: cx - pair.cx, dy: cy - pair.cy, scale });
+        let scale = if pair.start_spread > 0.0 {
+            spread(&a, &b) / pair.start_spread
+        } else {
+            1.0
+        };
+        out.push(Gesture::TwoFinger {
+            cx,
+            cy,
+            dx: cx - pair.cx,
+            dy: cy - pair.cy,
+            scale,
+        });
         pair.cx = cx;
         pair.cy = cy;
     }
@@ -309,21 +389,37 @@ impl GestureRecognizer {
         match t.state {
             State::Pending => {
                 if !cancelled && ev.time_us.saturating_sub(t.down_us) <= self.config.tap_max_us {
-                    out.push(Gesture::Tap { id: t.id, x: t.x, y: t.y });
+                    out.push(Gesture::Tap {
+                        id: t.id,
+                        x: t.x,
+                        y: t.y,
+                    });
                 }
             }
             State::Dragging => {
                 let (vx, vy) = if cancelled {
                     (0.0, 0.0)
                 } else {
-                    t.history.velocity(ev.time_us, self.config.velocity_window_us)
+                    t.history
+                        .velocity(ev.time_us, self.config.velocity_window_us)
                 };
-                out.push(Gesture::DragEnd { id: t.id, x: ev.x, y: ev.y, vx, vy, cancelled });
+                out.push(Gesture::DragEnd {
+                    id: t.id,
+                    x: ev.x,
+                    y: ev.y,
+                    vx,
+                    vy,
+                    cancelled,
+                });
                 if !cancelled {
                     if let Some((direction, speed)) =
                         swipe(&self.config, ev.x - t.start_x, ev.y - t.start_y, vx, vy)
                     {
-                        out.push(Gesture::Swipe { id: t.id, direction, speed });
+                        out.push(Gesture::Swipe {
+                            id: t.id,
+                            direction,
+                            speed,
+                        });
                     }
                 }
             }
@@ -345,9 +441,14 @@ impl GestureRecognizer {
 /// `vx, vy`) as a swipe, or not.
 fn swipe(c: &GestureConfig, dx: f32, dy: f32, vx: f32, vy: f32) -> Option<(SwipeDirection, f32)> {
     let horizontal = dx.abs() >= dy.abs();
-    let (d, d_off, v, v_off) = if horizontal { (dx, dy, vx, vy) } else { (dy, dx, vy, vx) };
+    let (d, d_off, v, v_off) = if horizontal {
+        (dx, dy, vx, vy)
+    } else {
+        (dy, dx, vy, vx)
+    };
     let same_way = d * v > 0.0;
-    let straight = d.abs() >= c.swipe_axis_ratio * d_off.abs() && v.abs() >= c.swipe_axis_ratio * v_off.abs();
+    let straight =
+        d.abs() >= c.swipe_axis_ratio * d_off.abs() && v.abs() >= c.swipe_axis_ratio * v_off.abs();
     if !same_way || !straight || d.abs() < c.swipe_min_px || v.abs() < c.swipe_min_speed {
         return None;
     }
@@ -378,8 +479,16 @@ impl Fling {
     }
 
     pub fn with(velocity: f32, decay: f32, stop_speed: f32) -> Self {
-        let velocity = if velocity.is_finite() && velocity.abs() >= stop_speed { velocity } else { 0.0 };
-        Self { velocity, decay: decay.max(0.01), stop_speed }
+        let velocity = if velocity.is_finite() && velocity.abs() >= stop_speed {
+            velocity
+        } else {
+            0.0
+        };
+        Self {
+            velocity,
+            decay: decay.max(0.01),
+            stop_speed,
+        }
     }
 
     pub fn velocity(&self) -> f32 {

@@ -10,7 +10,11 @@ pub fn rgb(r: u32, g: u32, b: u32) -> u32 {
 
 #[inline]
 pub const fn hex(h: u32) -> [f32; 3] {
-    [((h >> 16) & 255) as f32, ((h >> 8) & 255) as f32, (h & 255) as f32]
+    [
+        ((h >> 16) & 255) as f32,
+        ((h >> 8) & 255) as f32,
+        (h & 255) as f32,
+    ]
 }
 
 #[inline]
@@ -21,7 +25,11 @@ pub fn pack(c: [f32; 3]) -> u32 {
 
 #[inline]
 pub fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 /// `p` plus light `c` scaled by `k` (0-256), each channel saturating.
@@ -59,7 +67,11 @@ pub struct Mask {
 
 impl Mask {
     pub fn new(w: usize, h: usize) -> Mask {
-        Mask { w, h, a: vec![0; w * h] }
+        Mask {
+            w,
+            h,
+            a: vec![0; w * h],
+        }
     }
 
     pub fn at(&self, x: usize, y: usize) -> u8 {
@@ -129,20 +141,27 @@ impl Mask {
                 }
             }
         }
-        Mask { w, h, a: v.into_iter().map(|x| x.min(255) as u8).collect() }
+        Mask {
+            w,
+            h,
+            a: v.into_iter().map(|x| x.min(255) as u8).collect(),
+        }
     }
 }
 
 pub fn font_sans() -> Font {
-    Font::from_bytes(mpfree_ui::text::INTER_SEMIBOLD, FontSettings::default()).expect("built-in Inter SemiBold")
+    Font::from_bytes(mpfree_ui::text::INTER_SEMIBOLD, FontSettings::default())
+        .expect("built-in Inter SemiBold")
 }
 
 pub fn font_regular() -> Font {
-    Font::from_bytes(mpfree_ui::text::INTER_REGULAR, FontSettings::default()).expect("built-in Inter Regular")
+    Font::from_bytes(mpfree_ui::text::INTER_REGULAR, FontSettings::default())
+        .expect("built-in Inter Regular")
 }
 
 pub fn font_mono() -> Font {
-    Font::from_bytes(mpfree_ui::text::JETBRAINS_MONO, FontSettings::default()).expect("built-in JetBrains Mono")
+    Font::from_bytes(mpfree_ui::text::JETBRAINS_MONO, FontSettings::default())
+        .expect("built-in JetBrains Mono")
 }
 
 /// `text` as a mask at `px`, with `tracking` extra pixels between letters.
@@ -155,7 +174,13 @@ pub fn text_mask(font: &Font, px: f32, tracking: f32, text: &str) -> Mask {
     let mut pen = 0.0f32;
     for c in text.chars() {
         let (m, bmp) = font.rasterize(c, px);
-        glyphs.push((pen.round() as i32 + m.xmin, asc - m.height as i32 - m.ymin, m.width, m.height, bmp));
+        glyphs.push((
+            pen.round() as i32 + m.xmin,
+            asc - m.height as i32 - m.ymin,
+            m.width,
+            m.height,
+            bmp,
+        ));
         pen += m.advance_width + tracking;
     }
     let width = (pen - tracking).ceil() as i32 + 2;
@@ -192,7 +217,8 @@ pub fn crop(m: &Mask) -> Mask {
     }
     let mut out = Mask::new(x1 - x0, y1 - y0);
     for y in y0..y1 {
-        out.a[(y - y0) * out.w..(y - y0 + 1) * out.w].copy_from_slice(&m.a[y * m.w + x0..y * m.w + x1]);
+        out.a[(y - y0) * out.w..(y - y0 + 1) * out.w]
+            .copy_from_slice(&m.a[y * m.w + x0..y * m.w + x1]);
     }
     out
 }
@@ -286,7 +312,15 @@ pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 
 /// A line of light from (x0, y0) to (x1, y1), `c` at strength `k` (0-256),
 /// fading from `k0` at the start to `k` at the end. One pixel wide.
-pub fn light_line(px: &mut [u32], w: usize, (x0, y0): (f32, f32), (x1, y1): (f32, f32), c: u32, k0: u32, k: u32) {
+pub fn light_line(
+    px: &mut [u32],
+    w: usize,
+    (x0, y0): (f32, f32),
+    (x1, y1): (f32, f32),
+    c: u32,
+    k0: u32,
+    k: u32,
+) {
     let h = px.len() / w;
     let n = (x1 - x0).abs().max((y1 - y0).abs()).ceil().max(1.0) as i32;
     for i in 0..=n {
@@ -332,7 +366,10 @@ impl Sprite {
     pub fn draw_at(&self, out: &mut [u32], w: usize, x: i32, y: i32, k: u32) {
         let h = (out.len() / w) as i32;
         for &(o, c, a) in &self.px {
-            let (sx, sy) = ((o as usize % self.w) as i32 + x, (o as usize / self.w) as i32 + y);
+            let (sx, sy) = (
+                (o as usize % self.w) as i32 + x,
+                (o as usize / self.w) as i32 + y,
+            );
             if sx >= 0 && sy >= 0 && (sx as usize) < w && sy < h {
                 let i = sy as usize * w + sx as usize;
                 out[i] = add(out[i], c, (a as u32 * k) >> 8);
@@ -342,7 +379,10 @@ impl Sprite {
 
     /// Its height in pixels (to its last covered row).
     pub fn h(&self) -> usize {
-        self.px.last().map(|p| p.0 as usize / self.w.max(1) + 1).unwrap_or(0)
+        self.px
+            .last()
+            .map(|p| p.0 as usize / self.w.max(1) + 1)
+            .unwrap_or(0)
     }
 
     /// Draw as light at (x, y), only the columns left of `upto`.
@@ -376,11 +416,14 @@ impl Sprite {
             }
             let i = sy as usize * w + sx as usize;
             let a = (a as u32 * k) >> 8;
-            out[i] = if light { add(out[i], c, a) } else { over(out[i], c, a) };
+            out[i] = if light {
+                add(out[i], c, a)
+            } else {
+                over(out[i], c, a)
+            };
         }
     }
 }
-
 
 /// VT323, a terminal face (SIL OFL 1.1, see fonts/README.md).
 pub const VT323: &[u8] = include_bytes!("../fonts/VT323-Regular.ttf");
@@ -438,8 +481,16 @@ pub fn slash_letters(raw: &Mask, stretch: f32, lean: f32, s: f32) -> Mask {
         let r = hash(t as u32, 77) as f32 / u32::MAX as f32;
         let l = hash(t as u32, 91) as f32 / u32::MAX as f32;
         // About half the teeth get a blade; the rest leave the end as it is.
-        let right = if r > 0.45 { (tail * shape * (r - 0.3)) as usize } else { 0 };
-        let left = if l > 0.75 { (tail * 0.4 * shape * (l - 0.5)) as usize } else { 0 };
+        let right = if r > 0.45 {
+            (tail * shape * (r - 0.3)) as usize
+        } else {
+            0
+        };
+        let left = if l > 0.75 {
+            (tail * 0.4 * shape * (l - 0.5)) as usize
+        } else {
+            0
+        };
         let mut x = 0;
         while x < w {
             if row[x] < 140 {

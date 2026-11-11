@@ -29,7 +29,9 @@ pub enum ModelError {
 }
 
 impl std::fmt::Display for ModelError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for ModelError {}
 
@@ -39,7 +41,9 @@ impl std::error::Error for ModelError {}
 pub struct SourceId(pub u64);
 
 impl std::fmt::Display for SourceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:016x}", self.0) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
 }
 
 /// Recorded or imported audio. Never changed after it is made.
@@ -63,34 +67,68 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 impl Source {
     /// `data` is interleaved for stereo. Non-finite samples become 0.
     pub fn new(name: &str, rate: u32, channels: u8, data: Vec<f32>) -> Result<Source, ModelError> {
-        if !(8000..=192_000).contains(&rate) { return Err(ModelError::BadSource("rate")); }
-        if channels != 1 && channels != 2 { return Err(ModelError::BadSource("channels")); }
-        if data.is_empty() || !data.len().is_multiple_of(usize::from(channels)) { return Err(ModelError::BadSource("length")); }
+        if !(8000..=192_000).contains(&rate) {
+            return Err(ModelError::BadSource("rate"));
+        }
+        if channels != 1 && channels != 2 {
+            return Err(ModelError::BadSource("channels"));
+        }
+        if data.is_empty() || !data.len().is_multiple_of(usize::from(channels)) {
+            return Err(ModelError::BadSource("length"));
+        }
         let mut data = data;
-        for x in &mut data { if !x.is_finite() { *x = 0.0; } }
+        for x in &mut data {
+            if !x.is_finite() {
+                *x = 0.0;
+            }
+        }
         let mut h = 0xCBF2_9CE4_8422_2325u64;
         fnv1a(&mut h, &rate.to_le_bytes());
         fnv1a(&mut h, &[channels]);
-        for x in &data { fnv1a(&mut h, &x.to_bits().to_le_bytes()); }
-        Ok(Source { id: SourceId(h), name: name.to_string(), rate, channels, data: data.into() })
+        for x in &data {
+            fnv1a(&mut h, &x.to_bits().to_le_bytes());
+        }
+        Ok(Source {
+            id: SourceId(h),
+            name: name.to_string(),
+            rate,
+            channels,
+            data: data.into(),
+        })
     }
 
     /// From the existing WAV loader's prepared frames (always stereo).
     pub fn from_prepared(name: &str, p: &crate::PreparedSample) -> Source {
         let mut data = Vec::with_capacity(p.frames() * 2);
-        for f in p.frame_slice() { data.push(f[0]); data.push(f[1]); }
+        for f in p.frame_slice() {
+            data.push(f[0]);
+            data.push(f[1]);
+        }
         Source::new(name, p.sample_rate(), 2, data).expect("prepared samples are valid")
     }
 
-    pub fn id(&self) -> SourceId { self.id }
-    pub fn rate(&self) -> u32 { self.rate }
-    pub fn channels(&self) -> u8 { self.channels }
-    pub fn frames(&self) -> u64 { (self.data.len() / usize::from(self.channels)) as u64 }
-    pub fn data(&self) -> &Arc<[f32]> { &self.data }
+    pub fn id(&self) -> SourceId {
+        self.id
+    }
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+    pub fn channels(&self) -> u8 {
+        self.channels
+    }
+    pub fn frames(&self) -> u64 {
+        (self.data.len() / usize::from(self.channels)) as u64
+    }
+    pub fn data(&self) -> &Arc<[f32]> {
+        &self.data
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoopMode { Forward, PingPong }
+pub enum LoopMode {
+    Forward,
+    PingPong,
+}
 
 /// A sustain loop inside a region. It is separate from the region's end, so
 /// the sound can leave the loop and play its tail.
@@ -104,13 +142,23 @@ pub struct Loop {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FadeCurve { Linear, Log, Exp }
+pub enum FadeCurve {
+    Linear,
+    Log,
+    Exp,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fade { pub frames: u32, pub curve: FadeCurve }
+pub struct Fade {
+    pub frames: u32,
+    pub curve: FadeCurve,
+}
 
 impl Fade {
-    pub const NONE: Fade = Fade { frames: 0, curve: FadeCurve::Linear };
+    pub const NONE: Fade = Fade {
+        frames: 0,
+        curve: FadeCurve::Linear,
+    };
     /// Gain at `x` in 0..1 of the fade (0 = silent end).
     pub fn shape(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
@@ -123,7 +171,12 @@ impl Fade {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChannelPick { Stereo, MonoSum, Left, Right }
+pub enum ChannelPick {
+    Stereo,
+    MonoSum,
+    Left,
+    Right,
+}
 
 /// What a pad hit does with a region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,34 +253,78 @@ pub struct Region {
 impl Region {
     /// All of a source, one-shot, untouched.
     pub fn whole(source: &Source) -> Region {
-        Region { source: source.id(), start: 0, end: source.frames(), sustain_loop: None,
-            fade_in: Fade::NONE, fade_out: Fade::NONE, gain_db: 0.0, reverse: false,
-            channels: ChannelPick::Stereo, tune_cents: 0, mode: PlayMode::OneShot, grain: GrainParams::default() }
+        Region {
+            source: source.id(),
+            start: 0,
+            end: source.frames(),
+            sustain_loop: None,
+            fade_in: Fade::NONE,
+            fade_out: Fade::NONE,
+            gain_db: 0.0,
+            reverse: false,
+            channels: ChannelPick::Stereo,
+            tune_cents: 0,
+            mode: PlayMode::OneShot,
+            grain: GrainParams::default(),
+        }
     }
 
-    pub fn frames(&self) -> u64 { self.end.saturating_sub(self.start) }
+    pub fn frames(&self) -> u64 {
+        self.end.saturating_sub(self.start)
+    }
 
     pub fn check(&self, source: &Source) -> Result<(), ModelError> {
-        if self.source != source.id() { return Err(ModelError::UnknownSource); }
-        if self.start >= self.end || self.end > source.frames() { return Err(ModelError::BadRegion("start/end")); }
+        if self.source != source.id() {
+            return Err(ModelError::UnknownSource);
+        }
+        if self.start >= self.end || self.end > source.frames() {
+            return Err(ModelError::BadRegion("start/end"));
+        }
         if let Some(l) = self.sustain_loop {
-            if l.start < self.start || l.end > self.end || l.end <= l.start { return Err(ModelError::BadRegion("loop points")); }
-            if u64::from(l.crossfade) > (l.end - l.start) / 2 || u64::from(l.crossfade) > l.start - self.start {
+            if l.start < self.start || l.end > self.end || l.end <= l.start {
+                return Err(ModelError::BadRegion("loop points"));
+            }
+            if u64::from(l.crossfade) > (l.end - l.start) / 2
+                || u64::from(l.crossfade) > l.start - self.start
+            {
                 return Err(ModelError::BadRegion("loop crossfade"));
             }
         }
-        if self.mode == PlayMode::Loop && self.sustain_loop.is_none() { return Err(ModelError::BadRegion("loop mode needs loop points")); }
-        if u64::from(self.fade_in.frames) + u64::from(self.fade_out.frames) > self.frames() { return Err(ModelError::BadRegion("fades longer than the region")); }
-        if !self.gain_db.is_finite() || self.tune_cents.abs() > 4800 { return Err(ModelError::BadRegion("gain/tune")); }
-        if !grain_ok(&self.grain) { return Err(ModelError::BadRegion("grain settings")); }
+        if self.mode == PlayMode::Loop && self.sustain_loop.is_none() {
+            return Err(ModelError::BadRegion("loop mode needs loop points"));
+        }
+        if u64::from(self.fade_in.frames) + u64::from(self.fade_out.frames) > self.frames() {
+            return Err(ModelError::BadRegion("fades longer than the region"));
+        }
+        if !self.gain_db.is_finite() || self.tune_cents.abs() > 4800 {
+            return Err(ModelError::BadRegion("gain/tune"));
+        }
+        if !grain_ok(&self.grain) {
+            return Err(ModelError::BadRegion("grain settings"));
+        }
         Ok(())
     }
 }
 
 /// Grain settings are usable when every number in them is finite.
 fn grain_ok(g: &GrainParams) -> bool {
-    let numbers = [g.position, g.spray, g.size_ms, g.density, g.pitch, g.pitch_spray, g.scan, g.reverse, g.spread, g.gain];
-    let sync_ok = g.sync.is_none_or(|t| t.frames_per_beat.is_finite() && t.grains_per_beat.is_none_or(f32::is_finite) && t.size_beats.is_none_or(f32::is_finite));
+    let numbers = [
+        g.position,
+        g.spray,
+        g.size_ms,
+        g.density,
+        g.pitch,
+        g.pitch_spray,
+        g.scan,
+        g.reverse,
+        g.spread,
+        g.gain,
+    ];
+    let sync_ok = g.sync.is_none_or(|t| {
+        t.frames_per_beat.is_finite()
+            && t.grains_per_beat.is_none_or(f32::is_finite)
+            && t.size_beats.is_none_or(f32::is_finite)
+    });
     numbers.iter().all(|x| x.is_finite()) && sync_ok
 }
 
@@ -252,20 +349,36 @@ impl Default for MasterFx {
     fn default() -> Self {
         MasterFx {
             mix: 0.0,
-            grain: GrainParams { position: 0.85, spray: 0.1, size_ms: 120.0, density: 20.0, pitch_spray: 0.1, spread: 0.6, ..GrainParams::default() },
+            grain: GrainParams {
+                position: 0.85,
+                spray: 0.1,
+                size_ms: 120.0,
+                density: 20.0,
+                pitch_spray: 0.1,
+                spread: 0.6,
+                ..GrainParams::default()
+            },
         }
     }
 }
 
 impl MasterFx {
     pub fn check(&self) -> Result<(), ModelError> {
-        if !(0.0..=1.0).contains(&self.mix) || !grain_ok(&self.grain) { return Err(ModelError::BadMasterFx); }
+        if !(0.0..=1.0).contains(&self.mix) || !grain_ok(&self.grain) {
+            return Err(ModelError::BadMasterFx);
+        }
         Ok(())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChopMode { Transient, Grid, Beat, Manual, Silence }
+pub enum ChopMode {
+    Transient,
+    Grid,
+    Beat,
+    Manual,
+    Silence,
+}
 
 /// A named list of slice points on a source. A source can have several, so
 /// re-chopping never loses an earlier chop.
@@ -282,49 +395,92 @@ pub struct ChopSet {
 
 impl ChopSet {
     pub fn new(name: &str, source: &Source, mode: ChopMode) -> ChopSet {
-        ChopSet { name: name.to_string(), source: source.id(), mode, markers: Vec::new(), frames: source.frames() }
+        ChopSet {
+            name: name.to_string(),
+            source: source.id(),
+            mode,
+            markers: Vec::new(),
+            frames: source.frames(),
+        }
     }
 
     /// `n` equal slices.
     pub fn grid(name: &str, source: &Source, n: usize) -> Result<ChopSet, ModelError> {
-        if n == 0 || n > MAX_SLICES || n as u64 > source.frames() { return Err(ModelError::TooManySlices); }
+        if n == 0 || n > MAX_SLICES || n as u64 > source.frames() {
+            return Err(ModelError::TooManySlices);
+        }
         let mut c = ChopSet::new(name, source, ChopMode::Grid);
-        for i in 1..n { c.markers.push(source.frames() * i as u64 / n as u64); }
+        for i in 1..n {
+            c.markers.push(source.frames() * i as u64 / n as u64);
+        }
         Ok(c)
     }
 
     /// A chop from any list of marker frames: sorted, duplicates and points
     /// outside the source dropped (frame 0 is always a boundary already).
-    pub fn from_markers(name: &str, source: &Source, mode: ChopMode, markers: impl IntoIterator<Item = u64>) -> Result<ChopSet, ModelError> {
+    pub fn from_markers(
+        name: &str,
+        source: &Source,
+        mode: ChopMode,
+        markers: impl IntoIterator<Item = u64>,
+    ) -> Result<ChopSet, ModelError> {
         let mut c = ChopSet::new(name, source, mode);
-        c.markers = markers.into_iter().filter(|&m| m > 0 && m < c.frames).collect();
+        c.markers = markers
+            .into_iter()
+            .filter(|&m| m > 0 && m < c.frames)
+            .collect();
         c.markers.sort_unstable();
         c.markers.dedup();
-        if c.markers.len() + 1 > MAX_SLICES { return Err(ModelError::TooManySlices); }
+        if c.markers.len() + 1 > MAX_SLICES {
+            return Err(ModelError::TooManySlices);
+        }
         Ok(c)
     }
 
     /// Slices of `beats_per_slice` beats at `bpm`, with the first beat at
     /// `first_beat` (a marker goes there too when it isn't 0).
-    pub fn beats(name: &str, source: &Source, bpm: f64, beats_per_slice: f64, first_beat: u64) -> Result<ChopSet, ModelError> {
-        if !(bpm.is_finite() && bpm > 0.0 && beats_per_slice.is_finite() && beats_per_slice > 0.0) { return Err(ModelError::BadSlice); }
+    pub fn beats(
+        name: &str,
+        source: &Source,
+        bpm: f64,
+        beats_per_slice: f64,
+        first_beat: u64,
+    ) -> Result<ChopSet, ModelError> {
+        if !(bpm.is_finite() && bpm > 0.0 && beats_per_slice.is_finite() && beats_per_slice > 0.0) {
+            return Err(ModelError::BadSlice);
+        }
         let step = 60.0 / bpm * beats_per_slice * f64::from(source.rate());
-        if step < 1.0 || (source.frames() as f64 / step) as usize >= MAX_SLICES { return Err(ModelError::TooManySlices); }
+        if step < 1.0 || (source.frames() as f64 / step) as usize >= MAX_SLICES {
+            return Err(ModelError::TooManySlices);
+        }
         let first = first_beat as f64;
         let count = ((source.frames() as f64 - first) / step).ceil().max(0.0) as usize;
-        ChopSet::from_markers(name, source, ChopMode::Beat, (0..count).map(|k| (first + k as f64 * step).round() as u64))
+        ChopSet::from_markers(
+            name,
+            source,
+            ChopMode::Beat,
+            (0..count).map(|k| (first + k as f64 * step).round() as u64),
+        )
     }
 
-    pub fn markers(&self) -> &[u64] { &self.markers }
-    pub fn slices(&self) -> usize { self.markers.len() + 1 }
+    pub fn markers(&self) -> &[u64] {
+        &self.markers
+    }
+    pub fn slices(&self) -> usize {
+        self.markers.len() + 1
+    }
 
     /// Adds a marker (ignored if one is already there). Returns the new slice count.
     pub fn add_marker(&mut self, at: u64) -> Result<usize, ModelError> {
-        if at == 0 || at >= self.frames { return Err(ModelError::BadSlice); }
+        if at == 0 || at >= self.frames {
+            return Err(ModelError::BadSlice);
+        }
         match self.markers.binary_search(&at) {
             Ok(_) => {}
             Err(i) => {
-                if self.markers.len() + 1 >= MAX_SLICES { return Err(ModelError::TooManySlices); }
+                if self.markers.len() + 1 >= MAX_SLICES {
+                    return Err(ModelError::TooManySlices);
+                }
                 self.markers.insert(i, at);
             }
         }
@@ -333,24 +489,32 @@ impl ChopSet {
 
     /// Joins slice `i` with the next one.
     pub fn merge(&mut self, i: usize) -> Result<(), ModelError> {
-        if i >= self.markers.len() { return Err(ModelError::BadSlice); }
+        if i >= self.markers.len() {
+            return Err(ModelError::BadSlice);
+        }
         self.markers.remove(i);
         Ok(())
     }
 
     /// Moves the boundary between slice `i` and slice `i+1`, keeping order.
     pub fn move_marker(&mut self, i: usize, to: u64) -> Result<(), ModelError> {
-        if i >= self.markers.len() { return Err(ModelError::BadSlice); }
+        if i >= self.markers.len() {
+            return Err(ModelError::BadSlice);
+        }
         let lo = if i == 0 { 0 } else { self.markers[i - 1] };
         let hi = self.markers.get(i + 1).copied().unwrap_or(self.frames);
-        if to <= lo || to >= hi { return Err(ModelError::BadSlice); }
+        if to <= lo || to >= hi {
+            return Err(ModelError::BadSlice);
+        }
         self.markers[i] = to;
         Ok(())
     }
 
     /// (start, end) of slice `i`.
     pub fn bounds(&self, i: usize) -> Option<(u64, u64)> {
-        if i >= self.slices() { return None; }
+        if i >= self.slices() {
+            return None;
+        }
         let start = if i == 0 { 0 } else { self.markers[i - 1] };
         let end = self.markers.get(i).copied().unwrap_or(self.frames);
         Some((start, end))
@@ -358,9 +522,15 @@ impl ChopSet {
 
     /// Slice `i` as a one-shot region.
     pub fn region(&self, source: &Source, i: usize) -> Result<Region, ModelError> {
-        if source.id() != self.source { return Err(ModelError::UnknownSource); }
+        if source.id() != self.source {
+            return Err(ModelError::UnknownSource);
+        }
         let (start, end) = self.bounds(i).ok_or(ModelError::BadSlice)?;
-        Ok(Region { start, end, ..Region::whole(source) })
+        Ok(Region {
+            start,
+            end,
+            ..Region::whole(source)
+        })
     }
 }
 
@@ -387,7 +557,16 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn new(region: Region) -> Layer { Layer { region, vel_lo: 1, vel_hi: 127, level_db: 0.0, pan: 0.0, tune_cents: 0 } }
+    pub fn new(region: Region) -> Layer {
+        Layer {
+            region,
+            vel_lo: 1,
+            vel_hi: 127,
+            level_db: 0.0,
+            pan: 0.0,
+            tune_cents: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -418,10 +597,23 @@ pub struct Pad {
 
 impl Pad {
     pub fn new(name: &str, layer: Layer) -> Pad {
-        Pad { name: name.to_string(), layers: vec![layer], select: LayerSelect::All, polyphony: 8,
-            mute_group: None, chokes: Vec::new(), amp: Ahdsr::OPEN, filter: Filter::default(),
-            filter_env: Ahdsr::OPEN, vel_to_level: 1.0, vel_to_start: 0.0, level_db: 0.0, pan: 0.0, tune_cents: 0,
-            pressure: PressureRoute::default() }
+        Pad {
+            name: name.to_string(),
+            layers: vec![layer],
+            select: LayerSelect::All,
+            polyphony: 8,
+            mute_group: None,
+            chokes: Vec::new(),
+            amp: Ahdsr::OPEN,
+            filter: Filter::default(),
+            filter_env: Ahdsr::OPEN,
+            vel_to_level: 1.0,
+            vel_to_start: 0.0,
+            level_db: 0.0,
+            pan: 0.0,
+            tune_cents: 0,
+            pressure: PressureRoute::default(),
+        }
     }
 }
 
@@ -429,11 +621,22 @@ impl Pad {
 /// master effect changed. Each carries what is needed to reverse it.
 #[derive(Clone, Debug)]
 enum Undo {
-    Pad { index: usize, before: Option<Box<Pad>>, gesture: Option<u64> },
-    Master { before: MasterFx, gesture: Option<u64> },
-    AddSource { id: SourceId },
+    Pad {
+        index: usize,
+        before: Option<Box<Pad>>,
+        gesture: Option<u64>,
+    },
+    Master {
+        before: MasterFx,
+        gesture: Option<u64>,
+    },
+    AddSource {
+        id: SourceId,
+    },
     /// Undo pops the newest chop set (keeping it here); redo pushes it back.
-    AddChop { set: Option<Box<ChopSet>> },
+    AddChop {
+        set: Option<Box<ChopSet>>,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
 }
@@ -456,9 +659,16 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn new() -> Project { Project { pads: vec![None; PADS], ..Default::default() } }
+    pub fn new() -> Project {
+        Project {
+            pads: vec![None; PADS],
+            ..Default::default()
+        }
+    }
 
-    pub fn revision(&self) -> u64 { self.revision }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 
     /// Adds a source (or finds the identical one already there) and returns its id.
     pub fn add_source(&mut self, s: Source) -> SourceId {
@@ -472,33 +682,56 @@ impl Project {
 
     /// Adds a chop set (one undo step) and returns its index.
     pub fn add_chop_set(&mut self, c: ChopSet) -> Result<usize, ModelError> {
-        if self.source(c.source).is_none() { return Err(ModelError::UnknownSource); }
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
         self.chop_sets.push(c);
         self.push_undo(Undo::AddChop { set: None });
         Ok(self.chop_sets.len() - 1)
     }
 
-    pub fn source(&self, id: SourceId) -> Option<&Source> { self.sources.iter().find(|s| s.id() == id) }
-    pub fn sources(&self) -> &[Source] { &self.sources }
+    pub fn source(&self, id: SourceId) -> Option<&Source> {
+        self.sources.iter().find(|s| s.id() == id)
+    }
+    pub fn sources(&self) -> &[Source] {
+        &self.sources
+    }
 
-    pub fn pad(&self, index: usize) -> Option<&Pad> { self.pads.get(index).and_then(|p| p.as_ref()) }
+    pub fn pad(&self, index: usize) -> Option<&Pad> {
+        self.pads.get(index).and_then(|p| p.as_ref())
+    }
 
     /// Pads that use a source: shown before anything is deleted.
     pub fn users_of(&self, id: SourceId) -> Vec<usize> {
-        (0..PADS).filter(|&i| self.pad(i).is_some_and(|p| p.layers.iter().any(|l| l.region.source == id))).collect()
+        (0..PADS)
+            .filter(|&i| {
+                self.pad(i)
+                    .is_some_and(|p| p.layers.iter().any(|l| l.region.source == id))
+            })
+            .collect()
     }
 
     fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
-        if pad.layers.len() > MAX_LAYERS { return Err(ModelError::TooManyLayers); }
+        if pad.layers.len() > MAX_LAYERS {
+            return Err(ModelError::TooManyLayers);
+        }
         let depth = pad.pressure.depth;
-        if pad.polyphony == 0 || pad.chokes.iter().any(|&c| c >= PADS) || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
-            || !depth.is_finite() || depth.abs() > 1.0 {
+        if pad.polyphony == 0
+            || pad.chokes.iter().any(|&c| c >= PADS)
+            || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
+            || !depth.is_finite()
+            || depth.abs() > 1.0
+        {
             return Err(ModelError::BadPad);
         }
         for l in &pad.layers {
-            let s = self.source(l.region.source).ok_or(ModelError::UnknownSource)?;
+            let s = self
+                .source(l.region.source)
+                .ok_or(ModelError::UnknownSource)?;
             l.region.check(s)?;
-            if l.vel_lo > l.vel_hi || l.vel_hi > 127 { return Err(ModelError::BadPad); }
+            if l.vel_lo > l.vel_hi || l.vel_hi > 127 {
+                return Err(ModelError::BadPad);
+            }
         }
         Ok(())
     }
@@ -506,23 +739,48 @@ impl Project {
     /// Replaces a pad (None clears it). One undo step, unless `gesture` is
     /// the same as the previous step's on the same pad (a knob turn), which
     /// merges into that step.
-    pub fn set_pad(&mut self, index: usize, pad: Option<Pad>, gesture: Option<u64>) -> Result<(), ModelError> {
-        if index >= PADS { return Err(ModelError::BadPad); }
-        if let Some(p) = &pad { self.check_pad(p)?; }
+    pub fn set_pad(
+        &mut self,
+        index: usize,
+        pad: Option<Pad>,
+        gesture: Option<u64>,
+    ) -> Result<(), ModelError> {
+        if index >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        if let Some(p) = &pad {
+            self.check_pad(p)?;
+        }
         let before = std::mem::replace(&mut self.pads[index], pad);
         let merge = matches!(self.undo.last(), Some(Undo::Pad { index: i, gesture: Some(g), .. }) if *i == index && gesture == Some(*g));
-        if !merge { self.push_undo(Undo::Pad { index, before: before.map(Box::new), gesture }); } else { self.redo.clear(); self.revision += 1; }
+        if !merge {
+            self.push_undo(Undo::Pad {
+                index,
+                before: before.map(Box::new),
+                gesture,
+            });
+        } else {
+            self.redo.clear();
+            self.revision += 1;
+        }
         Ok(())
     }
 
     /// Edits a pad in place through a closure; the change is checked and undoable.
-    pub fn edit_pad(&mut self, index: usize, gesture: Option<u64>, f: impl FnOnce(&mut Pad)) -> Result<(), ModelError> {
+    pub fn edit_pad(
+        &mut self,
+        index: usize,
+        gesture: Option<u64>,
+        f: impl FnOnce(&mut Pad),
+    ) -> Result<(), ModelError> {
         let mut p = self.pad(index).cloned().ok_or(ModelError::BadPad)?;
         f(&mut p);
         self.set_pad(index, Some(p), gesture)
     }
 
-    pub fn master(&self) -> &MasterFx { &self.master }
+    pub fn master(&self) -> &MasterFx {
+        &self.master
+    }
 
     /// Changes the master effect. One undo step, unless `gesture` is the
     /// same as the previous step's (a knob turn), which merges into it.
@@ -530,14 +788,29 @@ impl Project {
         fx.check()?;
         let before = std::mem::replace(&mut self.master, fx);
         let merge = matches!(self.undo.last(), Some(Undo::Master { gesture: Some(g), .. }) if gesture == Some(*g));
-        if !merge { self.push_undo(Undo::Master { before, gesture }); } else { self.redo.clear(); self.revision += 1; }
+        if !merge {
+            self.push_undo(Undo::Master { before, gesture });
+        } else {
+            self.redo.clear();
+            self.revision += 1;
+        }
         Ok(())
     }
 
     /// Puts slices `first..first+count` of a chop set on consecutive pads
     /// from `to_pad`, as one undo step.
-    pub fn slices_to_pads(&mut self, chop: usize, first: usize, count: usize, to_pad: usize) -> Result<(), ModelError> {
-        let c = self.chop_sets.get(chop).ok_or(ModelError::BadSlice)?.clone();
+    pub fn slices_to_pads(
+        &mut self,
+        chop: usize,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+    ) -> Result<(), ModelError> {
+        let c = self
+            .chop_sets
+            .get(chop)
+            .ok_or(ModelError::BadSlice)?
+            .clone();
         let pads = self.slice_pads(&c, first, count, to_pad, None, first + 1)?;
         let steps = self.place_pads(pads, to_pad);
         self.push_undo(Undo::Group(steps));
@@ -550,9 +823,17 @@ impl Project {
     /// layer playing the slice once, keeping the template's first region's
     /// gain, tune and channels; pads are named after the chop and numbered
     /// from 1. Returns the chop set's index.
-    pub fn chop_to_pads(&mut self, c: ChopSet, first: usize, count: usize, to_pad: usize, template: Option<&Pad>)
-        -> Result<usize, ModelError> {
-        if self.source(c.source).is_none() { return Err(ModelError::UnknownSource); }
+    pub fn chop_to_pads(
+        &mut self,
+        c: ChopSet,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+        template: Option<&Pad>,
+    ) -> Result<usize, ModelError> {
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
         let pads = self.slice_pads(&c, first, count, to_pad, template, 1)?;
         self.chop_sets.push(c);
         let mut steps = vec![Undo::AddChop { set: None }];
@@ -563,10 +844,19 @@ impl Project {
 
     /// The pads for slices `first..first+count`, each checked, so a failure
     /// changes nothing.
-    fn slice_pads(&self, c: &ChopSet, first: usize, count: usize, to_pad: usize, template: Option<&Pad>, number: usize)
-        -> Result<Vec<Pad>, ModelError> {
+    fn slice_pads(
+        &self,
+        c: &ChopSet,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+        template: Option<&Pad>,
+        number: usize,
+    ) -> Result<Vec<Pad>, ModelError> {
         let s = self.source(c.source).ok_or(ModelError::UnknownSource)?;
-        if count == 0 || first + count > c.slices() || to_pad + count > PADS { return Err(ModelError::BadSlice); }
+        if count == 0 || first + count > c.slices() || to_pad + count > PADS {
+            return Err(ModelError::BadSlice);
+        }
         let mut pads = Vec::with_capacity(count);
         for k in 0..count {
             let name = format!("{} {}", c.name, number + k);
@@ -574,9 +864,14 @@ impl Project {
             let pad = match template {
                 Some(t) => {
                     if let Some(r) = t.layers.first().map(|l| &l.region) {
-                        (region.gain_db, region.tune_cents, region.channels) = (r.gain_db, r.tune_cents, r.channels);
+                        (region.gain_db, region.tune_cents, region.channels) =
+                            (r.gain_db, r.tune_cents, r.channels);
                     }
-                    Pad { name, layers: vec![Layer::new(region)], ..t.clone() }
+                    Pad {
+                        name,
+                        layers: vec![Layer::new(region)],
+                        ..t.clone()
+                    }
                 }
                 None => Pad::new(&name, Layer::new(region)),
             };
@@ -590,7 +885,11 @@ impl Project {
         let mut steps = Vec::with_capacity(pads.len());
         for (k, pad) in pads.into_iter().enumerate() {
             let before = self.pads[to_pad + k].replace(pad);
-            steps.push(Undo::Pad { index: to_pad + k, before: before.map(Box::new), gesture: None });
+            steps.push(Undo::Pad {
+                index: to_pad + k,
+                before: before.map(Box::new),
+                gesture: None,
+            });
         }
         steps
     }
@@ -603,11 +902,22 @@ impl Project {
 
     fn reverse(&mut self, u: Undo) -> Undo {
         match u {
-            Undo::Pad { index, before, gesture } => {
+            Undo::Pad {
+                index,
+                before,
+                gesture,
+            } => {
                 let now = std::mem::replace(&mut self.pads[index], before.map(|b| *b));
-                Undo::Pad { index, before: now.map(Box::new), gesture }
+                Undo::Pad {
+                    index,
+                    before: now.map(Box::new),
+                    gesture,
+                }
             }
-            Undo::Master { before, gesture } => Undo::Master { before: std::mem::replace(&mut self.master, before), gesture },
+            Undo::Master { before, gesture } => Undo::Master {
+                before: std::mem::replace(&mut self.master, before),
+                gesture,
+            },
             Undo::AddSource { id } => {
                 // Undoing an add removes the source only when nothing uses it,
                 // which holds because later pad steps are undone first.
@@ -620,12 +930,16 @@ impl Project {
                 }
                 Undo::AddSource { id }
             }
-            Undo::AddChop { set: None } => Undo::AddChop { set: self.chop_sets.pop().map(Box::new) },
+            Undo::AddChop { set: None } => Undo::AddChop {
+                set: self.chop_sets.pop().map(Box::new),
+            },
             Undo::AddChop { set: Some(c) } => {
                 self.chop_sets.push(*c);
                 Undo::AddChop { set: None }
             }
-            Undo::Group(steps) => Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect()),
+            Undo::Group(steps) => {
+                Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
+            }
         }
     }
 
@@ -638,11 +952,17 @@ impl Project {
         self.removed.clear();
     }
 
-    pub fn can_undo(&self) -> bool { !self.undo.is_empty() }
-    pub fn can_redo(&self) -> bool { !self.redo.is_empty() }
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
 
     pub fn undo(&mut self) -> bool {
-        let Some(u) = self.undo.pop() else { return false };
+        let Some(u) = self.undo.pop() else {
+            return false;
+        };
         let r = self.reverse(u);
         self.redo.push(r);
         self.revision += 1;
@@ -650,7 +970,9 @@ impl Project {
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(u) = self.redo.pop() else { return false };
+        let Some(u) = self.redo.pop() else {
+            return false;
+        };
         let r = self.reverse(u);
         self.undo.push(r);
         self.revision += 1;

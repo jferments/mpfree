@@ -29,7 +29,9 @@
 //! lines) runs before the sound starts or for the screen and the log, never
 //! inside `render`.
 
-use mpfree_arp::scale::pads::{self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS};
+use mpfree_arp::scale::pads::{
+    self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS,
+};
 use mpfree_arp::scale::Scale;
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::fm_params::FmPreset;
@@ -114,7 +116,13 @@ pub struct PadSettings {
 
 impl Default for PadSettings {
     fn default() -> Self {
-        PadSettings { engine: Engine::Poly, scale: None, rows: InKeyRows::Sequence, banks: DEFAULT_BANKS, bank: 0 }
+        PadSettings {
+            engine: Engine::Poly,
+            scale: None,
+            rows: InKeyRows::Sequence,
+            banks: DEFAULT_BANKS,
+            bank: 0,
+        }
     }
 }
 
@@ -135,7 +143,12 @@ impl PadSettings {
     pub fn setup(&self, octave: i32) -> PadSetup {
         let (layout, up) = self.banks[self.bank % BANKS];
         let up = if self.scale.is_some() { up } else { 0 };
-        PadSetup { layout, rows: self.rows, scale: self.scale, octave: (octave + i32::from(up)).clamp(-9, 9) as i8 }
+        PadSetup {
+            layout,
+            rows: self.rows,
+            scale: self.scale,
+            octave: (octave + i32::from(up)).clamp(-9, 9) as i8,
+        }
     }
 }
 
@@ -199,7 +212,12 @@ pub struct Synth {
 }
 
 fn meters_of(node: &dyn Node) -> Vec<usize> {
-    node.params().iter().enumerate().filter(|(_, p)| p.readonly).map(|(i, _)| i).collect()
+    node.params()
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.readonly)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 impl Synth {
@@ -208,21 +226,46 @@ impl Synth {
     /// starts.
     pub fn new(rate: u32) -> Synth {
         let mut poly = Poly::new(rate);
-        let preset = Poly::presets().iter().position(|p| p.name == START_PRESET).unwrap_or(0);
+        let preset = Poly::presets()
+            .iter()
+            .position(|p| p.name == START_PRESET)
+            .unwrap_or(0);
         poly.load_preset(&Poly::presets()[preset]);
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
-        let fm_preset = fm_presets.iter().position(|p| p.name == FM_START_PRESET).unwrap_or(0);
+        let fm_preset = fm_presets
+            .iter()
+            .position(|p| p.name == FM_START_PRESET)
+            .unwrap_or(0);
         if let Some(p) = fm_presets.get(fm_preset) {
             fm.load_preset(p);
         }
         let meters = [meters_of(&poly), meters_of(&fm)];
         let settings = PadSettings::default();
-        Synth { poly, fm, fm_presets, rate, events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; 2], len: [0; 2],
-                dropped_events: 0, left: [0.0; SCRATCH], right: [0.0; SCRATCH], settings, octave: 0,
-                pads: pads::layout(&settings.setup(0)), playing: [Held::default(); PADS], holders: [0; 128],
-                press: [0; PADS], presets: [preset, fm_preset], fade: 0, fading: false, notes: 0, peak_voices: 0,
-                resets: 0, meters }
+        Synth {
+            poly,
+            fm,
+            fm_presets,
+            rate,
+            events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; 2],
+            len: [0; 2],
+            dropped_events: 0,
+            left: [0.0; SCRATCH],
+            right: [0.0; SCRATCH],
+            settings,
+            octave: 0,
+            pads: pads::layout(&settings.setup(0)),
+            playing: [Held::default(); PADS],
+            holders: [0; 128],
+            press: [0; PADS],
+            presets: [preset, fm_preset],
+            fade: 0,
+            fading: false,
+            notes: 0,
+            peak_voices: 0,
+            resets: 0,
+            meters,
+        }
     }
 
     fn node(&self) -> &dyn Node {
@@ -314,14 +357,17 @@ impl Synth {
     /// the numeral and the chord ("iv7 Dm7"). None for a pad with no notes.
     pub fn pad_labels(&self) -> Vec<Option<String>> {
         let setup = self.setup();
-        self.pads.iter().map(|p| {
-            let (main, small) = pads::pad_name(&setup, p);
-            match (main.is_empty(), small.is_empty()) {
-                (true, _) => None,
-                (false, true) => Some(main),
-                (false, false) => Some(format!("{main} {small}")),
-            }
-        }).collect()
+        self.pads
+            .iter()
+            .map(|p| {
+                let (main, small) = pads::pad_name(&setup, p);
+                match (main.is_empty(), small.is_empty()) {
+                    (true, _) => None,
+                    (false, true) => Some(main),
+                    (false, false) => Some(format!("{main} {small}")),
+                }
+            })
+            .collect()
     }
 
     /// The header chip: "FM · C3 to D#4", with the layout when a scale is on
@@ -331,18 +377,30 @@ impl Synth {
         match setup.scale {
             None => format!("{} · {}", self.engine().name(), self.range_text()),
             // As approved (Jay 12:22Z): "Poly · A minor · in key".
-            Some(s) => format!("{} · {} · {}", self.engine().name(), scale_name(&s),
-                               setup.layout.label().to_lowercase()),
+            Some(s) => format!(
+                "{} · {} · {}",
+                self.engine().name(),
+                scale_name(&s),
+                setup.layout.label().to_lowercase()
+            ),
         }
     }
 
     /// The kit list's entry for the synth.
     pub fn kit_view(&self) -> crate::gui::KitView {
         let setup = self.setup();
-        let synth = crate::play_page::SynthPads { layout: setup.layout, scale: setup.scale.is_some(),
-                                                  bank: self.settings.bank };
-        crate::gui::KitView { name: format!("{KIT_PREFIX}{}", self.engine().name()), pads: self.pad_labels(),
-                              colour: PAD_WHITE, chip: Some(self.chip()), synth: Some(synth) }
+        let synth = crate::play_page::SynthPads {
+            layout: setup.layout,
+            scale: setup.scale.is_some(),
+            bank: self.settings.bank,
+        };
+        crate::gui::KitView {
+            name: format!("{KIT_PREFIX}{}", self.engine().name()),
+            pads: self.pad_labels(),
+            colour: PAD_WHITE,
+            chip: Some(self.chip()),
+            synth: Some(synth),
+        }
     }
 
     /// Resting pad colours. With no scale: C, white and black keys. With a
@@ -397,7 +455,14 @@ impl Synth {
         let p = self.pads[pad];
         let mut held = Held::default();
         for &note in p.notes() {
-            self.push(self.settings.engine, offset, NodeEvent::NoteOn { note, velocity: velocity.min(127) });
+            self.push(
+                self.settings.engine,
+                offset,
+                NodeEvent::NoteOn {
+                    note,
+                    velocity: velocity.min(127),
+                },
+            );
             let h = &mut self.holders[usize::from(note)];
             *h = h.saturating_add(1);
             held.notes[usize::from(held.len)] = note;
@@ -433,7 +498,11 @@ impl Synth {
                     v = v.max(self.press[q]);
                 }
             }
-            self.push(self.settings.engine, 0, NodeEvent::Pressure { note, value: v });
+            self.push(
+                self.settings.engine,
+                0,
+                NodeEvent::Pressure { note, value: v },
+            );
         }
     }
 
@@ -445,7 +514,14 @@ impl Synth {
         if note > 127 || velocity == 0 {
             return;
         }
-        self.push(self.settings.engine, offset, NodeEvent::NoteOn { note, velocity: velocity.min(127) });
+        self.push(
+            self.settings.engine,
+            offset,
+            NodeEvent::NoteOn {
+                note,
+                velocity: velocity.min(127),
+            },
+        );
         let h = &mut self.holders[usize::from(note)];
         *h = h.saturating_add(1);
         self.notes += 1;
@@ -470,7 +546,14 @@ impl Synth {
     /// Pressure, 0 to 127, on a note by number (while something holds it).
     pub fn pressure_note(&mut self, note: u8, value: u8) {
         if note <= 127 && self.holders[usize::from(note)] > 0 {
-            self.push(self.settings.engine, 0, NodeEvent::Pressure { note, value: value.min(127) });
+            self.push(
+                self.settings.engine,
+                0,
+                NodeEvent::Pressure {
+                    note,
+                    value: value.min(127),
+                },
+            );
         }
     }
 
@@ -505,8 +588,10 @@ impl Synth {
             return;
         }
         let on = self.settings.engine.index();
-        let run = [on == 0 || len[0] > 0 || self.poly.active_voices() > 0,
-                   on == 1 || len[1] > 0 || self.fm.active_voices() > 0];
+        let run = [
+            on == 0 || len[0] > 0 || self.poly.active_voices() > 0,
+            on == 1 || len[1] > 0 || self.fm.active_voices() > 0,
+        ];
         // Stable insertion sort by frame (few events, no allocation); late
         // events land on the last frame.
         for (events, &len) in self.events.iter_mut().zip(&len) {
@@ -534,11 +619,20 @@ impl Synth {
                     self.events[k][e[k]].offset -= start as u32;
                     e[k] += 1;
                 }
-                let (sl, sr) = (&mut self.left[..end - start], &mut self.right[..end - start]);
+                let (sl, sr) = (
+                    &mut self.left[..end - start],
+                    &mut self.right[..end - start],
+                );
                 sl.fill(0.0);
                 sr.fill(0.0);
-                let ctx = Ctx { rate: self.rate, frame: frame + start as u64, bpm, beats: 0.0, playing: false,
-                                sidechain: None };
+                let ctx = Ctx {
+                    rate: self.rate,
+                    frame: frame + start as u64,
+                    bpm,
+                    beats: 0.0,
+                    playing: false,
+                    sidechain: None,
+                };
                 let node: &mut dyn Node = if k == 0 { &mut self.poly } else { &mut self.fm };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -585,8 +679,12 @@ impl Synth {
     }
 
     pub fn counters(&self) -> Counters {
-        Counters { notes: self.notes, peak_voices: self.peak_voices,
-                   dropped: self.dropped_events + self.poly.dropped + self.fm.dropped, resets: self.resets }
+        Counters {
+            notes: self.notes,
+            peak_voices: self.peak_voices,
+            dropped: self.dropped_events + self.poly.dropped + self.fm.dropped,
+            resets: self.resets,
+        }
     }
 
     /// The engine's voice count setting, for the status line.
@@ -668,7 +766,10 @@ impl Synth {
     pub fn meters(&self) -> Vec<(usize, f32)> {
         let node = self.node();
         let params = node.params();
-        self.meters[self.settings.engine.index()].iter().map(|&i| (i, node.param(params[i].id))).collect()
+        self.meters[self.settings.engine.index()]
+            .iter()
+            .map(|&i| (i, node.param(params[i].id)))
+            .collect()
     }
 
     /// What the Synth tab shows.
@@ -678,7 +779,13 @@ impl Synth {
             Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
         };
         let preset = Some(self.presets[self.settings.engine.index()]);
-        SynthState::from_node(self.node(), "Pads", Color::from_pad(PAD_WHITE), presets, preset)
+        SynthState::from_node(
+            self.node(),
+            "Pads",
+            Color::from_pad(PAD_WHITE),
+            presets,
+            preset,
+        )
     }
 
     pub fn param_info(&self, id: u16) -> Option<&'static ParamInfo> {
@@ -731,7 +838,11 @@ impl ParamLog {
         let p = synth.param_info(id)?;
         // The node's own (clamped) value, not the one asked for.
         let v = synth.value(id);
-        let name = if p.group == p.name { p.name.to_string() } else { format!("{} {}", p.group, p.name) };
+        let name = if p.group == p.name {
+            p.name.to_string()
+        } else {
+            format!("{} {}", p.group, p.name)
+        };
         Some(format!("synth: {name} {}", value_line(p, v)))
     }
 }
@@ -804,7 +915,10 @@ mod tests {
         s.note_on_note(48, 90, 5);
         s.note_on_note(52, 90, 5);
         s.note_off(0, 10);
-        assert!(!queued(&s).contains(&NodeEvent::NoteOff { note: 48 }), "the arp still holds C3");
+        assert!(
+            !queued(&s).contains(&NodeEvent::NoteOff { note: 48 }),
+            "the arp still holds C3"
+        );
         s.pressure_note(52, 70);
         s.pressure_note(55, 70);
         s.note_off_note(48, 20);
@@ -813,10 +927,22 @@ mod tests {
         assert_eq!(
             queued(&s),
             vec![
-                NodeEvent::NoteOn { note: 48, velocity: 100 },
-                NodeEvent::NoteOn { note: 48, velocity: 90 },
-                NodeEvent::NoteOn { note: 52, velocity: 90 },
-                NodeEvent::Pressure { note: 52, value: 70 },
+                NodeEvent::NoteOn {
+                    note: 48,
+                    velocity: 100
+                },
+                NodeEvent::NoteOn {
+                    note: 48,
+                    velocity: 90
+                },
+                NodeEvent::NoteOn {
+                    note: 52,
+                    velocity: 90
+                },
+                NodeEvent::Pressure {
+                    note: 52,
+                    value: 70
+                },
                 NodeEvent::NoteOff { note: 48 },
                 NodeEvent::NoteOff { note: 52 },
             ]
@@ -839,12 +965,19 @@ mod tests {
         // D Dorian on Chromatic: the root, the scale's notes, the rest.
         with(&mut s, |p| p.scale = scale("Dorian", 2));
         let c = s.pad_colours();
-        assert_eq!((c[2], c[4], c[1]), (PAD_C, PAD_WHITE, PAD_BLACK), "D, E, C#");
+        assert_eq!(
+            (c[2], c[4], c[1]),
+            (PAD_C, PAD_WHITE, PAD_BLACK),
+            "D, E, C#"
+        );
         assert_eq!(c[0], PAD_WHITE, "C is in D Dorian");
         for layout in PadLayout::ALL {
             with(&mut s, |p| p.set_layout(layout));
             for colour in s.pad_colours() {
-                assert!(colour == [0; 3] || crate::akai::RESTING_COLOURS.contains(&colour), "{colour:02X?}");
+                assert!(
+                    colour == [0; 3] || crate::akai::RESTING_COLOURS.contains(&colour),
+                    "{colour:02X?}"
+                );
             }
         }
     }
@@ -901,19 +1034,42 @@ mod tests {
         s.note_off(0, 10);
         let on = |note, velocity| NodeEvent::NoteOn { note, velocity };
         let press = |note, value| NodeEvent::Pressure { note, value };
-        assert_eq!(queued(&s), vec![on(52, 100), on(55, 100), on(48, 100), on(55, 90), on(59, 90), on(52, 90),
-                                    press(52, 70), press(55, 70), press(48, 70),
-                                    // E and G keep the harder press while pad 1 holds them.
-                                    press(55, 70), press(59, 30), press(52, 70),
-                                    // Pad 1 let go: only C ends; E and G still sound for pad 3.
-                                    NodeEvent::NoteOff { note: 48 }]);
+        assert_eq!(
+            queued(&s),
+            vec![
+                on(52, 100),
+                on(55, 100),
+                on(48, 100),
+                on(55, 90),
+                on(59, 90),
+                on(52, 90),
+                press(52, 70),
+                press(55, 70),
+                press(48, 70),
+                // E and G keep the harder press while pad 1 holds them.
+                press(55, 70),
+                press(59, 30),
+                press(52, 70),
+                // Pad 1 let go: only C ends; E and G still sound for pad 3.
+                NodeEvent::NoteOff { note: 48 }
+            ]
+        );
         let mut frame = 0;
         run(&mut s, &mut frame, 1, 128);
         s.note_off(2, 0);
         let mut offs: Vec<NodeEvent> = queued(&s);
-        offs.sort_by_key(|e| match e { NodeEvent::NoteOff { note } => *note, _ => 0 });
-        assert_eq!(offs, vec![NodeEvent::NoteOff { note: 52 }, NodeEvent::NoteOff { note: 55 },
-                              NodeEvent::NoteOff { note: 59 }]);
+        offs.sort_by_key(|e| match e {
+            NodeEvent::NoteOff { note } => *note,
+            _ => 0,
+        });
+        assert_eq!(
+            offs,
+            vec![
+                NodeEvent::NoteOff { note: 52 },
+                NodeEvent::NoteOff { note: 55 },
+                NodeEvent::NoteOff { note: 59 }
+            ]
+        );
         assert_eq!(s.counters().notes, 2, "a chord counts as one pad hit");
     }
 
@@ -928,17 +1084,35 @@ mod tests {
             let mut r = [0.25f32; 128];
             s.render(frame, 120.0, &mut l, &mut r);
             frame += 128;
-            assert!(l[..10].iter().all(|&x| x == 0.25), "{engine:?}: nothing before the note's frame");
-            assert!(l.iter().any(|&x| x != 0.25), "{engine:?} adds to what is there");
+            assert!(
+                l[..10].iter().all(|&x| x == 0.25),
+                "{engine:?}: nothing before the note's frame"
+            );
+            assert!(
+                l.iter().any(|&x| x != 0.25),
+                "{engine:?} adds to what is there"
+            );
             assert_eq!(s.active_voices(), 1);
             let sound = run(&mut s, &mut frame, 40, 128);
             let p = peak(&sound);
-            assert!(p > 0.05 && p < 1.0, "{engine:?}: a note at about -12 dBFS: peak {p}");
+            assert!(
+                p > 0.05 && p < 1.0,
+                "{engine:?}: a note at about -12 dBFS: peak {p}"
+            );
             s.note_off(0, 0);
             run(&mut s, &mut frame, 2000, 128);
             assert_eq!(s.active_voices(), 0, "{engine:?}");
             assert!(peak(&run(&mut s, &mut frame, 2, 128)) == 0.0);
-            assert_eq!(s.counters(), Counters { notes: 1, peak_voices: 1, dropped: 0, resets: 0 }, "{engine:?}");
+            assert_eq!(
+                s.counters(),
+                Counters {
+                    notes: 1,
+                    peak_voices: 1,
+                    dropped: 0,
+                    resets: 0
+                },
+                "{engine:?}"
+            );
         }
     }
 
@@ -961,7 +1135,11 @@ mod tests {
         assert!(queued(&s).is_empty());
         s.note_on(4, 100, 0);
         run(&mut s, &mut frame, 2, 128);
-        assert_eq!((s.poly.active_voices(), s.fm.active_voices()), (1, 1), "Poly releases while FM plays");
+        assert_eq!(
+            (s.poly.active_voices(), s.fm.active_voices()),
+            (1, 1),
+            "Poly releases while FM plays"
+        );
         run(&mut s, &mut frame, 400, 128);
         assert_eq!(s.poly.active_voices(), 0, "Poly's release ended");
         assert_eq!(s.fm.active_voices(), 1);
@@ -969,7 +1147,11 @@ mod tests {
         let id = mpfree_synth::fm_params::LEVEL;
         s.set(id, -6.0);
         assert_eq!(s.value(id), -6.0);
-        assert_eq!(s.poly.param(pp::LEVEL), Poly::new(44_100).param(pp::LEVEL), "Poly untouched");
+        assert_eq!(
+            s.poly.param(pp::LEVEL),
+            Poly::new(44_100).param(pp::LEVEL),
+            "Poly untouched"
+        );
         assert_eq!(s.load_preset(2), Some("Bell Tower"));
         assert_eq!(s.preset_count(), Fm::presets().len());
         assert_eq!(s.kit_view().name, "Synth: FM");
@@ -979,8 +1161,16 @@ mod tests {
     #[test]
     fn the_same_notes_sound_the_same_in_any_block_size() {
         // (frame, pad, on); periods longer than the scratch buffers render in pieces.
-        let script = [(3u64, 0usize, true), (64, 4, true), (500, 7, true), (2000, 0, false), (2100, 4, false),
-                      (2600, 7, false), (3000, 2, true), (4000, 2, false)];
+        let script = [
+            (3u64, 0usize, true),
+            (64, 4, true),
+            (500, 7, true),
+            (2000, 0, false),
+            (2100, 4, false),
+            (2600, 7, false),
+            (3000, 2, true),
+            (4000, 2, false),
+        ];
         for engine in Engine::ALL {
             let go = |block: usize| {
                 let mut s = Synth::new(44_100);
@@ -996,7 +1186,11 @@ mod tests {
                     for &(at, pad, on) in &script {
                         if (frame..frame + n as u64).contains(&at) {
                             let offset = (at - frame) as u32;
-                            if on { s.note_on(pad, 90, offset) } else { s.note_off(pad, offset) }
+                            if on {
+                                s.note_on(pad, 90, offset)
+                            } else {
+                                s.note_off(pad, offset)
+                            }
                         }
                     }
                     out.extend(run(&mut s, &mut frame, 1, n));
@@ -1014,7 +1208,12 @@ mod tests {
     #[test]
     fn stop_fades_out_within_ten_ms() {
         let mut s = Synth::new(44_100);
-        s.load_preset(Poly::presets().iter().position(|p| p.name == "Dust Pad").unwrap());
+        s.load_preset(
+            Poly::presets()
+                .iter()
+                .position(|p| p.name == "Dust Pad")
+                .unwrap(),
+        );
         let mut frame = 0;
         for pad in [0, 4, 7] {
             s.note_on(pad, 120, 0);
@@ -1043,9 +1242,24 @@ mod tests {
         s.pressure(2, 90);
         s.note_on(2, 100, 50);
         s.pressure(9, 90); // not playing: nothing
-        assert_eq!(queued(&s), vec![NodeEvent::NoteOn { note: 50, velocity: 100 },
-                                    NodeEvent::Pressure { note: 50, value: 90 },
-                                    NodeEvent::NoteOff { note: 50 }, NodeEvent::NoteOn { note: 50, velocity: 100 }]);
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::NoteOn {
+                    note: 50,
+                    velocity: 100
+                },
+                NodeEvent::Pressure {
+                    note: 50,
+                    value: 90
+                },
+                NodeEvent::NoteOff { note: 50 },
+                NodeEvent::NoteOn {
+                    note: 50,
+                    velocity: 100
+                }
+            ]
+        );
         // After an octave or layout change the held pad's note-off still ends its note.
         s.shift_octave(1);
         with(&mut s, |p| {
@@ -1083,14 +1297,19 @@ mod tests {
         s.set(pp::CUTOFF, 1e9);
         assert_eq!(s.value(pp::CUTOFF), s.param_info(pp::CUTOFF).unwrap().max);
         let meters = s.meters();
-        assert!(meters.iter().any(|&(i, _)| st.params[i].id == pp::METER_VOICES));
+        assert!(meters
+            .iter()
+            .any(|&(i, _)| st.params[i].id == pp::METER_VOICES));
         assert_eq!(s.polyphony(), 8.0);
         // FM's own presets, values and meters.
         with(&mut s, |p| p.engine = Engine::Fm);
         let st = s.state();
         assert_eq!(st.presets.len(), s.preset_count());
         assert_eq!(st.values, s.values());
-        assert!(s.meters().iter().any(|&(i, _)| st.params[i].id == mpfree_synth::fm_params::METER_VOICES));
+        assert!(s
+            .meters()
+            .iter()
+            .any(|&(i, _)| st.params[i].id == mpfree_synth::fm_params::METER_VOICES));
         // Back to Poly: its preset is still Supersaw.
         with(&mut s, |p| p.engine = Engine::Poly);
         assert_eq!(s.preset_name(), "Supersaw");
@@ -1158,9 +1377,14 @@ mod tests {
         assert_eq!(log.set(&s, pp::CUTOFF, 300.0, t0), None);
         assert_eq!(log.set(&s, pp::CUTOFF, 310.0, t0), None);
         assert_eq!(log.poll(&s, t0 + Duration::from_millis(500)), None);
-        let line = log.set(&s, pp::RESONANCE, 40.0, t0 + Duration::from_millis(600)).unwrap();
+        let line = log
+            .set(&s, pp::RESONANCE, 40.0, t0 + Duration::from_millis(600))
+            .unwrap();
         assert!(line.starts_with("synth: Filter Cutoff "), "{line}");
-        assert!(log.poll(&s, t0 + Duration::from_millis(1700)).unwrap().starts_with("synth: Filter Resonance "));
+        assert!(log
+            .poll(&s, t0 + Duration::from_millis(1700))
+            .unwrap()
+            .starts_with("synth: Filter Resonance "));
         assert_eq!(log.poll(&s, t0 + Duration::from_secs(5)), None);
     }
 

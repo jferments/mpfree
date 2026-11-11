@@ -36,8 +36,12 @@ const RING_SWEEP: f32 = 270.0;
 
 /// Each knob's colour when its target has none of its own: blue, green,
 /// yellow and pink, as in the Play mockups.
-pub const KNOB_COLOURS: [Color; 4] =
-    [Color::rgb(0x6EA8FE), Color::rgb(0x3DDC97), Color::rgb(0xF5C04A), Color::rgb(0xE07BD8)];
+pub const KNOB_COLOURS: [Color; 4] = [
+    Color::rgb(0x6EA8FE),
+    Color::rgb(0x3DDC97),
+    Color::rgb(0xF5C04A),
+    Color::rgb(0xE07BD8),
+];
 
 /// One knob's card.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -60,7 +64,13 @@ pub struct QLinkCard {
 
 impl QLinkCard {
     pub fn new(name: &str, scope: &str, value: &str, pos: f32) -> QLinkCard {
-        QLinkCard { name: name.to_string(), scope: scope.to_string(), value: value.to_string(), pos, ..Default::default() }
+        QLinkCard {
+            name: name.to_string(),
+            scope: scope.to_string(),
+            value: value.to_string(),
+            pos,
+            ..Default::default()
+        }
     }
 
     /// The knob moves nothing here.
@@ -87,7 +97,12 @@ impl Default for QLinkColumn {
 
 impl QLinkColumn {
     pub fn new() -> QLinkColumn {
-        QLinkColumn { cards: Default::default(), touched: [false; 4], title: "Q-LINKS".to_string(), drag: None }
+        QLinkColumn {
+            cards: Default::default(),
+            touched: [false; 4],
+            title: "Q-LINKS".to_string(),
+            drag: None,
+        }
     }
 
     /// The column's heading line, then the four cards under it.
@@ -100,7 +115,9 @@ impl QLinkColumn {
 
     /// The card under (x, y), if any.
     pub fn card_at(r: Rect, x: i32, y: i32) -> Option<usize> {
-        QLinkColumn::card_rects(r).iter().position(|c| c.contains(x, y))
+        QLinkColumn::card_rects(r)
+            .iter()
+            .position(|c| c.contains(x, y))
     }
 
     /// The colour knob `k`'s card draws in.
@@ -116,7 +133,14 @@ impl Widget for QLinkColumn {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         let (head, _) = r.take_top(HEADING);
-        cx.text(FontId::Bold, t.size_small - 2.0, head, Align::Left, t.text_dim, &self.title.to_uppercase());
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            head,
+            Align::Left,
+            t.text_dim,
+            &self.title.to_uppercase(),
+        );
         for (k, cr) in QLinkColumn::card_rects(r).into_iter().enumerate() {
             let card = &self.cards[k];
             let c = self.colour(k);
@@ -126,23 +150,62 @@ impl Widget for QLinkColumn {
             }
             if card.is_free() {
                 let inner = cr.inset(12);
-                cx.text(FontId::Bold, t.size_small, inner.take_top(20).0, Align::Left, t.text_faint, &format!("Q{}", k + 1));
-                cx.text(FontId::Sans, t.size_small, inner, Align::Center, t.text_faint, "free");
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    inner.take_top(20).0,
+                    Align::Left,
+                    t.text_faint,
+                    &format!("Q{}", k + 1),
+                );
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    inner,
+                    Align::Center,
+                    t.text_faint,
+                    "free",
+                );
                 continue;
             }
             // The colour bar down the left edge.
-            cx.canvas.fill_round_rect(Rect::new(cr.x, cr.y + 10, 3, (cr.h - 20).max(0)), 1, c);
+            cx.canvas
+                .fill_round_rect(Rect::new(cr.x, cr.y + 10, 3, (cr.h - 20).max(0)), 1, c);
             let inner = cr.inset_xy(14, 10);
             let (line, rest) = inner.take_top(18);
-            cx.text(FontId::Bold, t.size_small - 2.0, line, Align::Left, c, &format!("Q{}", k + 1));
-            cx.text(FontId::Bold, t.size_small - 4.0, line.take_left(26).1, Align::Right, t.text_faint,
-                    &card.scope.to_uppercase());
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                line,
+                Align::Left,
+                c,
+                &format!("Q{}", k + 1),
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_small - 4.0,
+                line.take_left(26).1,
+                Align::Right,
+                t.text_faint,
+                &card.scope.to_uppercase(),
+            );
             let (name, rest) = rest.take_top(26);
-            cx.text(FontId::Bold, t.size_body, name, Align::Left, t.text, &card.name);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                name,
+                Align::Left,
+                t.text,
+                &card.name,
+            );
             ring(cx, rest, card.pos, card.bipolar, c, t.raised);
             let d = ring_diameter(rest);
             let vr = Rect::new(rest.x, rest.y + (rest.h - 22) / 2 + 2, rest.w, 22);
-            let px = if d < 90 { t.size_small - 2.0 } else { t.size_small };
+            let px = if d < 90 {
+                t.size_small - 2.0
+            } else {
+                t.size_small
+            };
             cx.text(FontId::Bold, px, vr, Align::Center, t.text, &card.value);
         }
     }
@@ -160,7 +223,10 @@ impl Widget for QLinkColumn {
                     return None;
                 }
                 self.drag = Some((k, from - detents * DRAG_DETENT));
-                Some(EventKind::Step { index: k, delta: detents })
+                Some(EventKind::Step {
+                    index: k,
+                    delta: detents,
+                })
             }
             _ => {
                 self.drag = None;
@@ -187,12 +253,24 @@ fn ring(cx: &mut PaintCx, r: Rect, pos: f32, bipolar: bool, lit: Color, unlit: C
     let pos = pos.clamp(0.0, 1.0);
     for i in 0..RING_DOTS {
         let f = i as f32 / (RING_DOTS - 1) as f32;
-        let on = if bipolar { (f - 0.5) * (pos - 0.5) >= 0.0 && (f - 0.5).abs() <= (pos - 0.5).abs() } else { f <= pos };
+        let on = if bipolar {
+            (f - 0.5) * (pos - 0.5) >= 0.0 && (f - 0.5).abs() <= (pos - 0.5).abs()
+        } else {
+            f <= pos
+        };
         // 0 is the bottom left, sweeping clockwise through the top.
         let a = (135.0 + f * RING_SWEEP).to_radians();
         let (x, y) = (ox + rad * a.cos(), oy + rad * a.sin());
-        let c = if on && pos > 0.0 || on && bipolar { lit } else { unlit };
-        cx.canvas.fill_round_rect(Rect::new(x as i32 - dot / 2, y as i32 - dot / 2, dot, dot), dot / 2, c);
+        let c = if on && pos > 0.0 || on && bipolar {
+            lit
+        } else {
+            unlit
+        };
+        cx.canvas.fill_round_rect(
+            Rect::new(x as i32 - dot / 2, y as i32 - dot / 2, dot, dot),
+            dot / 2,
+            c,
+        );
     }
 }
 
@@ -222,7 +300,12 @@ const SEGMENT: i32 = 6;
 
 impl MasterBar {
     pub fn new() -> MasterBar {
-        MasterBar { peak_db: [-120.0; 2], level: 0.75, text: String::new(), limit_db: 0.0 }
+        MasterBar {
+            peak_db: [-120.0; 2],
+            level: 0.75,
+            text: String::new(),
+            limit_db: 0.0,
+        }
     }
 
     /// The meter's track inside the bar.
@@ -245,7 +328,14 @@ impl Widget for MasterBar {
         let t = cx.theme.clone();
         cx.canvas.fill_round_rect(r, t.radius, t.surface);
         let (head, _) = r.take_top(36);
-        cx.text(FontId::Bold, t.size_small - 4.0, head, Align::Center, t.text_dim, "MASTER");
+        cx.text(
+            FontId::Bold,
+            t.size_small - 4.0,
+            head,
+            Align::Center,
+            t.text_dim,
+            "MASTER",
+        );
         let tr = MasterBar::track(r);
         let w = (tr.w - 10) / 2;
         // Segments, lit from the bottom to the peak: green, yellow in the
@@ -263,18 +353,34 @@ impl Widget for MasterBar {
                     (true, y) if y < warn_y => t.warn,
                     _ => t.good,
                 };
-                cx.canvas.fill_rect(Rect::new(x, y, w.max(1), SEGMENT - 2), c);
+                cx.canvas
+                    .fill_rect(Rect::new(x, y, w.max(1), SEGMENT - 2), c);
                 y -= SEGMENT;
             }
         }
         // The level's handle across both sides.
         let hy = tr.y + ((1.0 - self.level.clamp(0.0, 1.0)) * tr.h as f32) as i32;
-        cx.canvas.fill_round_rect(Rect::new(tr.x - 4, hy - 3, tr.w + 8, 6), 3, t.text);
+        cx.canvas
+            .fill_round_rect(Rect::new(tr.x - 4, hy - 3, tr.w + 8, 6), 3, t.text);
         let (foot, _) = r.take_bottom(48);
         let (val, lim) = foot.take_top(26);
-        cx.text(FontId::Bold, t.size_small, val, Align::Center, t.text, &self.text);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            val,
+            Align::Center,
+            t.text,
+            &self.text,
+        );
         if self.limit_db > 0.05 {
-            cx.text(FontId::Bold, t.size_small - 4.0, lim, Align::Center, t.warn, &format!("LIM {:.1}", self.limit_db));
+            cx.text(
+                FontId::Bold,
+                t.size_small - 4.0,
+                lim,
+                Align::Center,
+                t.warn,
+                &format!("LIM {:.1}", self.limit_db),
+            );
         }
     }
 
@@ -302,12 +408,25 @@ mod tests {
     #[test]
     fn four_cards_fill_the_column_in_order() {
         let cards = QLinkColumn::card_rects(column());
-        assert!(cards.windows(2).all(|w| w[0].bottom() < w[1].y), "{cards:?}");
+        assert!(
+            cards.windows(2).all(|w| w[0].bottom() < w[1].y),
+            "{cards:?}"
+        );
         assert!(cards[3].bottom() <= column().bottom());
-        assert!(cards.iter().all(|c| c.h > 140 && c.w == COLUMN_WIDTH), "{cards:?}");
+        assert!(
+            cards.iter().all(|c| c.h > 140 && c.w == COLUMN_WIDTH),
+            "{cards:?}"
+        );
         let mid = cards[2];
-        assert_eq!(QLinkColumn::card_at(column(), mid.x + 10, mid.y + 10), Some(2));
-        assert_eq!(QLinkColumn::card_at(column(), mid.x + 10, column().y + 2), None, "the heading is not a card");
+        assert_eq!(
+            QLinkColumn::card_at(column(), mid.x + 10, mid.y + 10),
+            Some(2)
+        );
+        assert_eq!(
+            QLinkColumn::card_at(column(), mid.x + 10, column().y + 2),
+            None,
+            "the heading is not a card"
+        );
     }
 
     #[test]
@@ -317,11 +436,28 @@ mod tests {
         let c = QLinkColumn::card_rects(r)[1];
         let y = c.y + c.h / 2;
         assert_eq!(q.touch(1, Touch::Down, c.x + 20, y, r), None);
-        assert_eq!(q.touch(1, Touch::Move, c.x + 20, y - DRAG_DETENT + 1, r), None, "less than a detent");
-        assert_eq!(q.touch(1, Touch::Move, c.x + 20, y - 3 * DRAG_DETENT, r), Some(EventKind::Step { index: 1, delta: 3 }));
-        assert_eq!(q.touch(1, Touch::Move, c.x + 20, y - DRAG_DETENT, r), Some(EventKind::Step { index: 1, delta: -2 }));
+        assert_eq!(
+            q.touch(1, Touch::Move, c.x + 20, y - DRAG_DETENT + 1, r),
+            None,
+            "less than a detent"
+        );
+        assert_eq!(
+            q.touch(1, Touch::Move, c.x + 20, y - 3 * DRAG_DETENT, r),
+            Some(EventKind::Step { index: 1, delta: 3 })
+        );
+        assert_eq!(
+            q.touch(1, Touch::Move, c.x + 20, y - DRAG_DETENT, r),
+            Some(EventKind::Step {
+                index: 1,
+                delta: -2
+            })
+        );
         assert_eq!(q.touch(1, Touch::Up, c.x + 20, y, r), None);
-        assert_eq!(q.touch(2, Touch::Move, c.x + 20, y - 40, r), None, "no drag after the lift");
+        assert_eq!(
+            q.touch(2, Touch::Move, c.x + 20, y - 40, r),
+            None,
+            "no drag after the lift"
+        );
     }
 
     #[test]
@@ -339,8 +475,14 @@ mod tests {
         let mut m = MasterBar::new();
         let r = Rect::new(1032, 84, MASTER_WIDTH, 666);
         let tr = MasterBar::track(r);
-        assert_eq!(m.touch(1, Touch::Down, tr.x, tr.y, r), Some(EventKind::Value(1.0)));
-        assert_eq!(m.touch(1, Touch::Move, tr.x, tr.bottom(), r), Some(EventKind::Value(0.0)));
+        assert_eq!(
+            m.touch(1, Touch::Down, tr.x, tr.y, r),
+            Some(EventKind::Value(1.0))
+        );
+        assert_eq!(
+            m.touch(1, Touch::Move, tr.x, tr.bottom(), r),
+            Some(EventKind::Value(0.0))
+        );
         assert_eq!(m.touch(1, Touch::Up, tr.x, tr.y, r), None);
         assert_eq!(MasterBar::y_of(tr, 0.0), tr.y);
         assert_eq!(MasterBar::y_of(tr, -METER_FLOOR_DB), tr.bottom());

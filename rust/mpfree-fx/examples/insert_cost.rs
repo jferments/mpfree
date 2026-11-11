@@ -37,15 +37,29 @@ fn main() {
         c.push(Box::new(Eq::new()));
         c.push(Box::new(Compressor::new()));
     }
-    m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
-    m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
-    m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
+    m.chain_mut(StripId::Bus(1))
+        .unwrap()
+        .push(Box::new(Drive::new()));
+    m.chain_mut(StripId::Bus(3))
+        .unwrap()
+        .push(Box::new(Compressor::new()));
+    m.chain_mut(StripId::Return(0))
+        .unwrap()
+        .push(Box::new(Cloud::new()));
     if light {
-        m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
+        m.chain_mut(StripId::Return(0))
+            .unwrap()
+            .set_param(0, ids::cloud::QUALITY, 1.0);
     }
-    m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
-    m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
-    m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
+    m.chain_mut(StripId::Return(1))
+        .unwrap()
+        .push(Box::new(Delay::new()));
+    m.chain_mut(StripId::Master)
+        .unwrap()
+        .push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Track(1))
+        .unwrap()
+        .set_param(1, ids::compressor::SIDECHAIN, 1.0);
     m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
     m.set_profiling(true);
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
@@ -73,8 +87,13 @@ fn main() {
     }
     let period_us = BLOCK as f64 / RATE as f64 * 1e6;
     let whole = m.probe().lifetime();
-    println!("whole mixer: mean {:.1} us ({:.1} % of a period), p99 {:.1} us ({:.1} %)", whole.mean_ns / 1e3,
-             whole.mean_ns / 1e3 / period_us * 100.0, whole.p99_ns as f64 / 1e3, whole.p99_ns as f64 / 1e3 / period_us * 100.0);
+    println!(
+        "whole mixer: mean {:.1} us ({:.1} % of a period), p99 {:.1} us ({:.1} %)",
+        whole.mean_ns / 1e3,
+        whole.mean_ns / 1e3 / period_us * 100.0,
+        whole.p99_ns as f64 / 1e3,
+        whole.p99_ns as f64 / 1e3 / period_us * 100.0
+    );
     let mut rows = Vec::new();
     let strips: Vec<StripId> = m.strips().collect();
     for s in strips {
@@ -82,7 +101,11 @@ fn main() {
         for slot in 0..c.len() {
             let name = c.node(slot).map_or("?", |n| n.info().name);
             let p = c.probe(slot).unwrap().lifetime();
-            rows.push((format!("{s:?} slot {slot} {name}"), p.mean_ns / 1e3, p.p99_ns as f64 / 1e3));
+            rows.push((
+                format!("{s:?} slot {slot} {name}"),
+                p.mean_ns / 1e3,
+                p.p99_ns as f64 / 1e3,
+            ));
         }
     }
     let inserts: f64 = rows.iter().map(|r| r.1).sum();
@@ -90,6 +113,9 @@ fn main() {
              inserts / period_us * 100.0, whole.mean_ns / 1e3 - inserts);
     rows.sort_by(|a, b| b.1.total_cmp(&a.1));
     for (what, mean, p99) in rows {
-        println!("  {what:<36} mean {mean:6.2} us ({:4.1} %)  p99 {p99:6.2} us", mean / period_us * 100.0);
+        println!(
+            "  {what:<36} mean {mean:6.2} us ({:4.1} %)  p99 {p99:6.2} us",
+            mean / period_us * 100.0
+        );
     }
 }

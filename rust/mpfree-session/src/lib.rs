@@ -6,13 +6,12 @@
 #![forbid(unsafe_code)]
 
 use mpfree_headless::{
-    HeadlessError, HeadlessSession, NullAudioBackend, SessionStats,
-    BLOCK, SAMPLE_RATE, SELF_TEST_FRAMES,
+    HeadlessError, HeadlessSession, NullAudioBackend, SessionStats, BLOCK, SAMPLE_RATE,
+    SELF_TEST_FRAMES,
 };
 use std::time::{Duration, Instant};
 
-pub const EXPECTED_CALLBACKS: usize =
-    (SELF_TEST_FRAMES as usize).div_ceil(BLOCK);
+pub const EXPECTED_CALLBACKS: usize = (SELF_TEST_FRAMES as usize).div_ceil(BLOCK);
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +80,8 @@ pub fn run(paced: bool) -> Result<SessionMetrics, BenchmarkError> {
         let started = Instant::now();
         if paced && started > nominal_start {
             late_starts += 1;
-            max_start_lateness_ns = max_start_lateness_ns.max(
-                elapsed_ns(started.duration_since(nominal_start))
-            );
+            max_start_lateness_ns =
+                max_start_lateness_ns.max(elapsed_ns(started.duration_since(nominal_start)));
         }
         engine.render(n, &mut sink)?;
         let finished = Instant::now();

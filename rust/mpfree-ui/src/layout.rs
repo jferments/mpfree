@@ -59,7 +59,9 @@ impl Parser<'_> {
     fn name(&mut self) -> Result<String, String> {
         self.skip();
         let start = self.i;
-        while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || b"_-".contains(&self.s[self.i])) {
+        while self.i < self.s.len()
+            && (self.s[self.i].is_ascii_alphanumeric() || b"_-".contains(&self.s[self.i]))
+        {
             self.i += 1;
         }
         if start == self.i {
@@ -76,7 +78,11 @@ impl Parser<'_> {
         let mut kids = Vec::new();
         loop {
             let kid = self.node()?;
-            let size = if self.eat(b':') { self.size()? } else { Size::Weight(1.0) };
+            let size = if self.eat(b':') {
+                self.size()?
+            } else {
+                Size::Weight(1.0)
+            };
             kids.push((kid, size));
             if self.eat(b',') {
                 continue;
@@ -101,13 +107,19 @@ impl Parser<'_> {
         }
         let num = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("");
         if self.eat(b'*') {
-            let w = if num.is_empty() { 1.0 } else { num.parse::<f32>().map_err(|_| self.err("bad weight"))? };
+            let w = if num.is_empty() {
+                1.0
+            } else {
+                num.parse::<f32>().map_err(|_| self.err("bad weight"))?
+            };
             if !(w > 0.0 && w <= 1000.0) {
                 return Err(self.err("weight must be above 0"));
             }
             return Ok(Size::Weight(w));
         }
-        let px = num.parse::<i32>().map_err(|_| self.err("expected a size such as 60, 2* or *"))?;
+        let px = num
+            .parse::<i32>()
+            .map_err(|_| self.err("expected a size such as 60, 2* or *"))?;
         if !(0..=10_000).contains(&px) {
             return Err(self.err("size out of range"));
         }
@@ -117,7 +129,10 @@ impl Parser<'_> {
 
 /// Read a spec. Slot names must be unique within it.
 pub fn parse(spec: &str) -> Result<Node, String> {
-    let mut p = Parser { s: spec.as_bytes(), i: 0 };
+    let mut p = Parser {
+        s: spec.as_bytes(),
+        i: 0,
+    };
     let node = p.node()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected text after the layout"));
@@ -161,28 +176,47 @@ fn place(node: &Node, r: Rect, gap: i32, out: &mut Vec<(String, Rect)>) {
     };
     let total = if across { r.w } else { r.h };
     let avail = (total - gap * (kids.len() as i32 - 1)).max(0);
-    let fixed: i32 = kids.iter().map(|(_, s)| if let Size::Px(p) = s { *p } else { 0 }).sum();
-    let weights: f32 = kids.iter().map(|(_, s)| if let Size::Weight(w) = s { *w } else { 0.0 }).sum();
+    let fixed: i32 = kids
+        .iter()
+        .map(|(_, s)| if let Size::Px(p) = s { *p } else { 0 })
+        .sum();
+    let weights: f32 = kids
+        .iter()
+        .map(|(_, s)| if let Size::Weight(w) = s { *w } else { 0.0 })
+        .sum();
     let mut rest = (avail - fixed).max(0);
     let last_weighted = kids.iter().rposition(|(_, s)| matches!(s, Size::Weight(_)));
-    let shares: Vec<i32> = kids.iter().enumerate().map(|(i, (_, s))| match s {
-        Size::Px(p) => *p,
-        Size::Weight(w) => {
-            if Some(i) == last_weighted {
-                0 // gets what is left, below
-            } else {
-                let n = ((avail - fixed).max(0) as f32 * w / weights).floor() as i32;
-                rest -= n;
-                n
+    let shares: Vec<i32> = kids
+        .iter()
+        .enumerate()
+        .map(|(i, (_, s))| match s {
+            Size::Px(p) => *p,
+            Size::Weight(w) => {
+                if Some(i) == last_weighted {
+                    0 // gets what is left, below
+                } else {
+                    let n = ((avail - fixed).max(0) as f32 * w / weights).floor() as i32;
+                    rest -= n;
+                    n
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
     let mut pos = if across { r.x } else { r.y };
     let end = pos + total;
     for (i, (kid, _)) in kids.iter().enumerate() {
         let start = pos.min(end);
-        let len = if Some(i) == last_weighted { rest } else { shares[i] }.min(end - start);
-        let cell = if across { Rect::new(start, r.y, len, r.h) } else { Rect::new(r.x, start, r.w, len) };
+        let len = if Some(i) == last_weighted {
+            rest
+        } else {
+            shares[i]
+        }
+        .min(end - start);
+        let cell = if across {
+            Rect::new(start, r.y, len, r.h)
+        } else {
+            Rect::new(r.x, start, r.w, len)
+        };
         place(kid, cell, gap, out);
         pos += len + gap;
     }
@@ -224,7 +258,16 @@ mod tests {
 
     #[test]
     fn rejects_bad_specs() {
-        for bad in ["", "row(", "row(a b)", "grid(a)", "row(a:x)", "row(a, a)", "row(a) b", "row(a:0*)"] {
+        for bad in [
+            "",
+            "row(",
+            "row(a b)",
+            "grid(a)",
+            "row(a:x)",
+            "row(a, a)",
+            "row(a) b",
+            "row(a:0*)",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert_eq!(parse(" pads ").unwrap(), Node::Slot("pads".into()));

@@ -33,12 +33,31 @@ pub fn mpc_one() -> Geometry {
 /// A terminal colour as RGB. `Reset` is white text on black.
 pub fn rgb(color: Color, foreground: bool) -> [u8; 3] {
     const ANSI: [[u8; 3]; 16] = [
-        [0, 0, 0], [170, 0, 0], [0, 170, 0], [170, 85, 0], [0, 0, 170], [170, 0, 170], [0, 170, 170], [170, 170, 170],
-        [85, 85, 85], [255, 85, 85], [85, 255, 85], [255, 255, 85], [85, 85, 255], [255, 85, 255], [85, 255, 255],
+        [0, 0, 0],
+        [170, 0, 0],
+        [0, 170, 0],
+        [170, 85, 0],
+        [0, 0, 170],
+        [170, 0, 170],
+        [0, 170, 170],
+        [170, 170, 170],
+        [85, 85, 85],
+        [255, 85, 85],
+        [85, 255, 85],
+        [255, 255, 85],
+        [85, 85, 255],
+        [255, 85, 255],
+        [85, 255, 255],
         [255, 255, 255],
     ];
     match color {
-        Color::Reset => if foreground { [200, 200, 200] } else { [0, 0, 0] },
+        Color::Reset => {
+            if foreground {
+                [200, 200, 200]
+            } else {
+                [0, 0, 0]
+            }
+        }
         Color::Black => ANSI[0],
         Color::Red => ANSI[1],
         Color::Green => ANSI[2],
@@ -81,13 +100,15 @@ fn glyph_rows(symbol: &str) -> Option<[u8; CELL_H]> {
     match c {
         '\u{2580}' => rows[..CELL_H / 2].fill(0xff), // upper half block
         '\u{2584}' => rows[CELL_H / 2..].fill(0xff), // lower half block
-        '\u{2588}' => rows.fill(0xff),      // full block
+        '\u{2588}' => rows.fill(0xff),               // full block
         ' '..='~' => {
             let g = font::GLYPHS[(c as u8 - font::FIRST) as usize];
             // Sample the 8x8 glyph at the cell's size.
             for (y, r) in rows.iter_mut().enumerate() {
                 let line = g[y * 8 / CELL_H];
-                *r = (0..CELL_W).filter(|x| line & (1 << (x * 8 / CELL_W)) != 0).fold(0, |acc, x| acc | (1 << x));
+                *r = (0..CELL_W)
+                    .filter(|x| line & (1 << (x * 8 / CELL_W)) != 0)
+                    .fold(0, |acc, x| acc | (1 << x));
             }
         }
         _ => return None,
@@ -139,7 +160,11 @@ impl FramebufferBackend {
             PixelFormat::Xrgb8888 => [self.frame[at + 2], self.frame[at + 1], self.frame[at]],
             PixelFormat::Rgb565 => {
                 let v = u16::from_le_bytes([self.frame[at], self.frame[at + 1]]);
-                [((v >> 11) << 3) as u8, (((v >> 5) & 0x3f) << 2) as u8, ((v & 0x1f) << 3) as u8]
+                [
+                    ((v >> 11) << 3) as u8,
+                    (((v >> 5) & 0x3f) << 2) as u8,
+                    ((v & 0x1f) << 3) as u8,
+                ]
             }
         }
     }
@@ -160,7 +185,10 @@ impl FramebufferBackend {
     /// pixel right and one down (signed, since rotation can run them backwards).
     fn steps(&self, lx: usize, ly: usize) -> (usize, isize, isize) {
         let (x, y) = self.geometry.native(self.rotation, lx, ly);
-        let (bpp, stride) = (self.geometry.bytes_per_pixel() as isize, self.geometry.stride as isize);
+        let (bpp, stride) = (
+            self.geometry.bytes_per_pixel() as isize,
+            self.geometry.stride as isize,
+        );
         let at = y * self.geometry.stride + x * self.geometry.bytes_per_pixel();
         let (right, down) = match self.rotation {
             Rotation::Deg0 => (bpp, stride),
@@ -181,7 +209,9 @@ impl FramebufferBackend {
             std::mem::swap(&mut fg, &mut bg);
         }
         // Anything the 8x8 font can't show is drawn as '?'.
-        let rows = glyph_rows(cell.symbol()).or_else(|| glyph_rows("?")).unwrap();
+        let rows = glyph_rows(cell.symbol())
+            .or_else(|| glyph_rows("?"))
+            .unwrap();
         let (fg, bg) = (self.encode(fg), self.encode(bg));
         let n = self.geometry.bytes_per_pixel();
         let (origin, right, down) = self.steps(col as usize * CELL_W, row as usize * CELL_H);
@@ -246,7 +276,9 @@ impl Backend for FramebufferBackend {
             ClearType::All => self.fill(0, self.rows),
             ClearType::AfterCursor => self.fill(self.cursor.y.saturating_add(1), self.rows),
             ClearType::BeforeCursor => self.fill(0, self.cursor.y),
-            ClearType::CurrentLine | ClearType::UntilNewLine => self.fill(self.cursor.y, self.cursor.y.saturating_add(1)),
+            ClearType::CurrentLine | ClearType::UntilNewLine => {
+                self.fill(self.cursor.y, self.cursor.y.saturating_add(1))
+            }
         }
         Ok(())
     }
@@ -259,7 +291,10 @@ impl Backend for FramebufferBackend {
         let (lw, lh) = self.geometry.logical_size(self.rotation);
         Ok(WindowSize {
             columns_rows: Size::new(self.cols, self.rows),
-            pixels: Size::new(lw.min(u16::MAX as usize) as u16, lh.min(u16::MAX as usize) as u16),
+            pixels: Size::new(
+                lw.min(u16::MAX as usize) as u16,
+                lh.min(u16::MAX as usize) as u16,
+            ),
         })
     }
 
@@ -283,14 +318,20 @@ mod tests {
             let g = Geometry::new(40, 48, stride, bpp).unwrap();
             for degrees in [0, 90, 180, 270] {
                 let r = Rotation::from_degrees(degrees).unwrap();
-                let mut term = Terminal::new(FramebufferBackend::new(g, r).unwrap_or_else(|e| panic!("{degrees}: {e}"))).unwrap();
+                let mut term = Terminal::new(
+                    FramebufferBackend::new(g, r).unwrap_or_else(|e| panic!("{degrees}: {e}")),
+                )
+                .unwrap();
                 let size = term.size().unwrap();
                 term.draw(|f| {
                     let buf = f.buffer_mut();
                     for y in 0..size.height {
                         for x in 0..size.width {
                             let v = (x * 40 + y * 8) as u8;
-                            buf[(x, y)].set_symbol("\u{2580}").set_fg(Color::Rgb(v, 248, 0)).set_bg(Color::Rgb(0, v, 248));
+                            buf[(x, y)]
+                                .set_symbol("\u{2580}")
+                                .set_fg(Color::Rgb(v, 248, 0))
+                                .set_bg(Color::Rgb(0, v, 248));
                         }
                     }
                 })
@@ -304,10 +345,20 @@ mod tests {
                             continue;
                         }
                         let v = (col * 40 + row * 8) as u8;
-                        let want = if ly % CELL_H < CELL_H / 2 { [v, 248, 0] } else { [0, v, 248] };
+                        let want = if ly % CELL_H < CELL_H / 2 {
+                            [v, 248, 0]
+                        } else {
+                            [0, v, 248]
+                        };
                         let got = b.logical_pixel(lx, ly);
-                        let close = got.iter().zip(want).all(|(a, b)| (*a as i32 - b as i32).abs() <= 7);
-                        assert!(close, "{bpp} bits, {degrees}: ({lx},{ly}) got {got:?} want {want:?}");
+                        let close = got
+                            .iter()
+                            .zip(want)
+                            .all(|(a, b)| (*a as i32 - b as i32).abs() <= 7);
+                        assert!(
+                            close,
+                            "{bpp} bits, {degrees}: ({lx},{ly}) got {got:?} want {want:?}"
+                        );
                     }
                 }
             }
@@ -327,9 +378,19 @@ mod tests {
         let mut term = Terminal::new(b).unwrap();
         term.draw(|f| {
             let buf = f.buffer_mut();
-            buf[(0, 0)].set_symbol("\u{2580}").set_fg(Color::Rgb(255, 0, 0)).set_bg(Color::Rgb(0, 0, 255));
-            buf.set_string(1, 0, "A", Style::new().fg(Color::Rgb(0, 255, 0)).bg(Color::Black));
-            buf[(319, 99)].set_symbol("\u{2588}").set_fg(Color::Rgb(9, 8, 7));
+            buf[(0, 0)]
+                .set_symbol("\u{2580}")
+                .set_fg(Color::Rgb(255, 0, 0))
+                .set_bg(Color::Rgb(0, 0, 255));
+            buf.set_string(
+                1,
+                0,
+                "A",
+                Style::new().fg(Color::Rgb(0, 255, 0)).bg(Color::Black),
+            );
+            buf[(319, 99)]
+                .set_symbol("\u{2588}")
+                .set_fg(Color::Rgb(9, 8, 7));
         })
         .unwrap();
         let b = term.backend();
@@ -352,7 +413,9 @@ mod tests {
         let b = FramebufferBackend::new(g, Rotation::Deg270).unwrap();
         let mut term = Terminal::new(b).unwrap();
         term.draw(|f| {
-            f.buffer_mut()[(0, 0)].set_symbol("\u{2588}").set_fg(Color::Rgb(248, 252, 248));
+            f.buffer_mut()[(0, 0)]
+                .set_symbol("\u{2588}")
+                .set_fg(Color::Rgb(248, 252, 248));
         })
         .unwrap();
         assert_eq!(term.backend().logical_pixel(0, 0), [248, 252, 248]);
