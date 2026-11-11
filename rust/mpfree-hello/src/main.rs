@@ -2486,6 +2486,19 @@ fn player_session(
                 } => {
                     player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
                 }
+                gui::FromUi::SampleHit {
+                    kit,
+                    pad,
+                    velocity,
+                    down,
+                } if kit == player.kit() => {
+                    if down {
+                        player.hit_at(pad, velocity, 0);
+                    } else {
+                        player.release_at(pad, 0);
+                    }
+                }
+                gui::FromUi::SampleHit { .. } => {}
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;

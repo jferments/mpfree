@@ -45,7 +45,7 @@ use crate::looping::PERIOD;
 
 /// The engine pans a centred sound −3 dB a side. Pads are raised by this
 /// much, so a kit plays at the level the round 3 mixer played it.
-const CENTRE_DB: f32 = 3.010_3;
+pub const CENTRE_DB: f32 = 3.010_3;
 
 /// What each row of the Grains kit's pads changes with pressure: target,
 /// depth.
