@@ -132,6 +132,9 @@ pub struct SynthPanel {
     card_pages: Vec<String>,
     node_pages: Vec<String>,
     pub state: SynthState,
+    /// Changes the page's layout before it is added, for an app that puts
+    /// widgets of its own on the page (the pad player's pads heading).
+    wrap: Option<fn(&str) -> String>,
 }
 
 /// The visual strip's cards, with the page a tap on each card (and on each
@@ -221,9 +224,22 @@ impl SynthPanel {
             card_pages: Vec::new(),
             node_pages: Vec::new(),
             state,
+            wrap: None,
         };
         panel.load(ui, panel.state.clone())?;
         Ok(panel)
+    }
+
+    /// Lays the page out again with `wrap` applied to its layout, now and
+    /// whenever the layout changes. The widgets `wrap` adds must be in `ui`
+    /// already.
+    pub fn set_layout_wrap(&mut self, ui: &mut Ui, wrap: fn(&str) -> String) -> Result<(), String> {
+        self.wrap = Some(wrap);
+        ui.add_page(&self.name, &self.spec())
+    }
+
+    fn spec(&self) -> String {
+        self.wrap.map_or_else(|| self.layout().to_string(), |f| f(self.layout()))
     }
 
     /// Shows another node, or the same node after a preset load or any
@@ -238,7 +254,7 @@ impl SynthPanel {
         self.page = self.page.min(self.pages.len().saturating_sub(1));
         self.state = state;
         self.visuals = self.wants_visuals();
-        ui.add_page(&self.name, self.layout())?;
+        ui.add_page(&self.name, &self.spec())?;
         self.refresh(ui);
         Ok(())
     }
@@ -289,8 +305,9 @@ impl SynthPanel {
         let visuals = self.wants_visuals();
         if visuals != self.visuals {
             self.visuals = visuals;
-            // Every widget the layouts name is added in `add`, so this holds.
-            let _ = ui.add_page(&self.name, self.layout());
+            // Every widget the layouts name is added in `add` (or before
+            // `set_layout_wrap`), so this holds.
+            let _ = ui.add_page(&self.name, &self.spec());
         }
         self.refresh(ui);
     }

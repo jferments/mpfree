@@ -78,6 +78,7 @@ mod looper_page;
 mod looping;
 mod mixing;
 mod perf;
+mod play_page;
 mod sample_page;
 mod sampler;
 mod synth;
@@ -1216,7 +1217,7 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
                 pads[pad as usize] = Some(s.name.clone());
             }
         }
-        gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k), chip: None }
+        gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k), chip: None, synth: None }
     }).collect();
     views.push(synth.kit_view());
     views
@@ -1763,6 +1764,17 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     mix.set_level(level_db);
                     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
                 }
+                // A drag on a Q-Link card on the Play page: as the knob turned.
+                gui::FromUi::QLink { knob, delta } => {
+                    if let Some(e) = app.qlink(knob, delta, None) {
+                        fx.extend(e);
+                    } else if knob == 0 {
+                        level_db = (level_db + LEVEL_STEP_DB * delta as f32).clamp(LEVEL_MIN_DB, max_db);
+                        mix.set_level(level_db);
+                        out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                    }
+                }
+                gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
                 // The mixer panel. Its master fader is the Level, so the Play page follows it.
                 gui::FromUi::Mixer(a) => {
                     if let Some(db) = mix.action(&a) {
@@ -1893,13 +1905,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 Some(ControlEvent::Button { note, pressed }) => fx.extend(app.button(note, pressed, t)),
-                // The control mapper names the Q-Links and takes CCs nothing else knows.
-                Some(ControlEvent::QLinkTouch { knob, touched: true }) if (knob as usize) < 4 => {
-                    fx.extend(app.known_control(app::Code::Button(mpc_one::QLINK_TOUCH_NOTES[knob as usize])));
+                // A finger on a Q-Link lights its card. The control mapper names the
+                // Q-Links; letting go ends a turn on the Sample page (one undo step).
+                Some(ControlEvent::QLinkTouch { knob, touched }) if (knob as usize) < 4 => {
+                    out.show(gui::ToUi::QLinkTouch(knob as usize, touched));
+                    if touched {
+                        fx.extend(app.known_control(app::Code::Button(mpc_one::QLINK_TOUCH_NOTES[knob as usize])));
+                    } else if app.view() == app::View::Sample {
+                        out.show(gui::ToUi::SampleLift);
+                    }
                 }
-                // Letting go of a Q-Link ends its turn on the Sample page (one undo step).
-                Some(ControlEvent::QLinkTouch { knob, touched: false }) if (knob as usize) < 4
-                    && app.view() == app::View::Sample => out.show(gui::ToUi::SampleLift),
                 None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => fx.extend(app.unknown_cc(m.bytes[1])),
                 _ => {}
             }

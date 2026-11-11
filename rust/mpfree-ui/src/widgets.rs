@@ -156,6 +156,8 @@ pub struct PadGrid {
 }
 
 const PAD_GAP: i32 = 12;
+/// Pads shorter than this show their name only, without the number.
+const SMALL_PAD_H: i32 = 70;
 
 impl PadGrid {
     pub fn new(count: usize, cols: usize) -> PadGrid {
@@ -242,12 +244,18 @@ impl Widget for PadGrid {
             if pad.color.is_none() {
                 cx.canvas.stroke_round_rect(body, t.radius, 1, t.outline);
             }
-            let inner = body.inset(12);
-            let (top, rest) = inner.take_top(22);
-            cx.text(FontId::Bold, t.size_small, top, Align::Left, sub, &format!("{}", i + 1));
-            let (bottom, _) = rest.take_bottom(26);
             let label = if pad.label.is_empty() { "—" } else { pad.label.as_str() };
-            cx.text(FontId::Sans, t.size_body, bottom, Align::Left, ink, label);
+            if body.h < SMALL_PAD_H {
+                // A small pad (the Play page's pads panel): the name only.
+                let inner = body.inset_xy(8, 4);
+                cx.text(FontId::Sans, t.size_small, inner, Align::Center, ink, label);
+            } else {
+                let inner = body.inset(12);
+                let (top, rest) = inner.take_top(22);
+                cx.text(FontId::Bold, t.size_small, top, Align::Left, sub, &format!("{}", i + 1));
+                let (bottom, _) = rest.take_bottom(26);
+                cx.text(FontId::Sans, t.size_body, bottom, Align::Left, ink, label);
+            }
             if lit > 0.0 && pad.velocity > 0 {
                 let w = ((body.w - 24) as f32 * pad.velocity as f32 / 127.0) as i32;
                 let bar = Rect::new(body.x + 12, body.bottom() - 9, w.max(4), 4);

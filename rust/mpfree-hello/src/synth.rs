@@ -330,15 +330,19 @@ impl Synth {
         let setup = self.setup();
         match setup.scale {
             None => format!("{} · {}", self.engine().name(), self.range_text()),
-            Some(s) => format!("{} · {} · {} · {}", self.engine().name(), scale_name(&s), setup.layout.label(),
-                               self.range_text()),
+            // As approved (Jay 12:22Z): "Poly · A minor · in key".
+            Some(s) => format!("{} · {} · {}", self.engine().name(), scale_name(&s),
+                               setup.layout.label().to_lowercase()),
         }
     }
 
     /// The kit list's entry for the synth.
     pub fn kit_view(&self) -> crate::gui::KitView {
+        let setup = self.setup();
+        let synth = crate::play_page::SynthPads { layout: setup.layout, scale: setup.scale.is_some(),
+                                                  bank: self.settings.bank };
         crate::gui::KitView { name: format!("{KIT_PREFIX}{}", self.engine().name()), pads: self.pad_labels(),
-                              colour: PAD_WHITE, chip: Some(self.chip()) }
+                              colour: PAD_WHITE, chip: Some(self.chip()), synth: Some(synth) }
     }
 
     /// Resting pad colours. With no scale: C, white and black keys. With a
@@ -851,7 +855,7 @@ mod tests {
         with(&mut s, |p| p.scale = scale("Minor", 9));
         // A: Chromatic, the notes as before.
         assert_eq!(s.notes(0), &[48]);
-        assert_eq!(s.chip(), "Poly · A Minor · Chromatic · C3 to D#4");
+        assert_eq!(s.chip(), "Poly · A Minor · chromatic");
         // B: In key from A3.
         with(&mut s, |p| p.bank = 1);
         let in_key: Vec<u8> = (0..8).filter_map(|p| s.root(p)).collect();

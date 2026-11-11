@@ -313,6 +313,10 @@ impl Waveform {
         self.changed();
     }
 
+    pub fn beats(&self) -> Option<Beats> {
+        self.beats
+    }
+
     pub fn set_beats(&mut self, beats: Option<Beats>) {
         self.beats = beats.filter(|b| b.frames_per_beat.is_finite() && b.frames_per_beat > 0.0 && b.per_bar > 0);
         self.changed();

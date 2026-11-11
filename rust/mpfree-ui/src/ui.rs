@@ -195,6 +195,13 @@ impl Ui {
         page.slots.iter().find(|(i, _)| self.widgets[*i].0 == name).map(|(_, r)| *r)
     }
 
+    /// Where `name` sits on page `page`, shown or not (for a widget that
+    /// sizes what it shows to its rectangle before its page is up).
+    pub fn rect_on(&self, page: &str, name: &str) -> Option<Rect> {
+        let page = self.pages.iter().find(|p| p.name == page)?;
+        page.slots.iter().find(|(i, _)| self.widgets[*i].0 == name).map(|(_, r)| *r)
+    }
+
     pub fn get<W: Widget>(&self, name: &str) -> Option<&W> {
         let (_, w, _) = self.widgets.iter().find(|(n, _, _)| n == name)?;
         let any: &dyn Any = w.as_ref();

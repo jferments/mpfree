@@ -1999,8 +1999,9 @@ mod tests {
         let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
         assert_eq!(p.engine, Engine::Fm);
         assert_eq!(pads(&app.step_item(row(SynthItem::Engine), 1)), None, "FM is the last");
-        // No scale: the quick switch only says so.
-        assert!(matches!(app.synth_toggle_layout().as_slice(), [Effect::Note(_)]));
+        // No scale: the pads panel's In key only says so; Chromatic is already on.
+        assert!(matches!(app.synth_pick_layout(true).as_slice(), [Effect::Note(_)]));
+        assert!(app.synth_pick_layout(false).is_empty());
         // Scale: Major (Chromatic is skipped; Off stands for it), root D.
         let p = pads(&app.step_item(row(SynthItem::Scale), 1)).unwrap();
         let major = mpfree_arp::scale::by_name("Major").unwrap();
@@ -2015,9 +2016,10 @@ mod tests {
         app.step_item(row(SynthItem::Layout), 1);
         assert_eq!(pads(&app.step_item(row(SynthItem::Layout), 1)).unwrap().layout(), PadLayout::Chords);
         assert_eq!(pads(&app.step_item(row(SynthItem::Rows), 1)).unwrap().rows, InKeyRows::Fourths);
-        // The quick switch and the banks, for the layout owner to place.
-        assert_eq!(pads(&app.synth_toggle_layout()).unwrap().layout(), PadLayout::Chromatic);
-        assert_eq!(pads(&app.synth_toggle_layout()).unwrap().layout(), PadLayout::InKey);
+        // The pads panel's switch (from Chord pads), and the banks.
+        assert_eq!(pads(&app.synth_pick_layout(false)).unwrap().layout(), PadLayout::Chromatic);
+        assert_eq!(pads(&app.synth_pick_layout(true)).unwrap().layout(), PadLayout::InKey);
+        assert!(app.synth_pick_layout(true).is_empty(), "In key already");
         let p = pads(&app.synth_bank(2)).unwrap();
         assert_eq!((p.bank, p.layout()), (2, PadLayout::Chords));
         assert!(app.synth_bank(2).is_empty());
