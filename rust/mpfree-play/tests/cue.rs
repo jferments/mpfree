@@ -133,7 +133,7 @@ fn same_everywhere(s: &Session) -> Run {
 }
 
 fn note(tick: i64, len: i64, n: u8) -> Note {
-    Note { tick, len, note: n, velocity: 100 }
+    Note::new(tick, len, n, 100)
 }
 
 /// Track 0: slot 0 holds A, a bar of beats (note 1), playing from 0; slot 1
