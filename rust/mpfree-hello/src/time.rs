@@ -16,7 +16,6 @@
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::{Clip, Project, Track};
 use mpfree_time_ui::view::{launches_after, TimeAction, TimeState, TransportInfo};
-use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State, Transport};
 use std::f32::consts::TAU;
 
@@ -309,8 +308,11 @@ impl TimeHost {
         self.sink.dropped + self.recorder.dropped() + self.player.stats().dropped
     }
 
-    pub fn position(&self) -> Tick {
-        self.transport.position()
+    /// The time engine's part of the status line.
+    pub fn describe(&self) -> String {
+        let t = &self.transport;
+        format!("time: {:?} at {}, {:.1} BPM, {} takes, {} notes lost to full tables",
+                t.state(), t.meter().position(t.position()), t.bpm(), self.takes.done().len(), self.dropped())
     }
 }
 
