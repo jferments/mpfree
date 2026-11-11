@@ -21,7 +21,9 @@ use crate::state::{macro_color, on_accent, MacrosState};
 /// What a touch on the panel meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MacroAction {
-    /// Set macro `m` (0 to 1): send `ModEvent::Set` for `ParamAddr::macro_value(m)`.
+    /// Set macro `m` (0 to 1): send `ModEvent::hand` for
+    /// `ParamAddr::macro_value(m)` (a `Set` unless it has a lane or its
+    /// track is recording).
     Macro { m: usize, value: f32 },
     /// Show macros 1-4 (0) or 5-8 (1).
     Bank(usize),
