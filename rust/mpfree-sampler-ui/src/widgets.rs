@@ -338,3 +338,110 @@ impl Widget for ButtonRow {
         self.enabled.get(i).copied().unwrap_or(false).then_some(EventKind::Tab(i))
     }
 }
+
+// ---------------------------------------------------------------- pad map
+
+/// One pad on the [`PadMap`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct PadCell {
+    /// The pad's name on the MPC, such as "A5".
+    pub label: String,
+    /// What the pad is called; empty for a pad without a sound.
+    pub name: String,
+    /// A short line under the name, such as "3 layers · Loop".
+    pub detail: String,
+    /// The clip the pad launches, if any.
+    pub clip: Option<String>,
+    pub color: Color,
+}
+
+/// A kit's pads, four to a row as on the MPC (pad 1 bottom left), small
+/// enough to sit beside the pad's settings. A tap on a pad picks it
+/// ([`EventKind::Select`]); a tap on the pad already picked plays it while
+/// the finger is down ([`EventKind::Pad`]).
+pub struct PadMap {
+    pub title: String,
+    pub right: String,
+    pub cells: Vec<PadCell>,
+    pub selected: usize,
+    /// Pads held down now (on the hardware or here).
+    pub lit: Vec<bool>,
+    held: Option<(u64, usize)>,
+}
+
+const MAP_COLS: usize = 4;
+const MAP_GAP: i32 = 8;
+
+impl PadMap {
+    pub fn new(title: &str) -> PadMap {
+        PadMap { title: title.to_string(), right: String::new(), cells: Vec::new(), selected: 0, lit: Vec::new(), held: None }
+    }
+
+    /// Pad `i`'s rectangle.
+    pub fn cell_rect(&self, r: Rect, i: usize) -> Rect {
+        let b = r.inset(14).take_top(34).1;
+        let rows = self.cells.len().div_ceil(MAP_COLS).max(1) as i32;
+        let cols = MAP_COLS as i32;
+        let w = (b.w - MAP_GAP * (cols - 1)) / cols;
+        let h = (b.h - MAP_GAP * (rows - 1)) / rows;
+        let (col, row) = ((i % MAP_COLS) as i32, rows - 1 - (i / MAP_COLS) as i32);
+        Rect::new(b.x + col * (w + MAP_GAP), b.y + row * (h + MAP_GAP), w.max(0), h.max(0))
+    }
+}
+
+impl Widget for PadMap {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.titled_panel(r, &self.title, &self.right);
+        for (i, c) in self.cells.iter().enumerate() {
+            let b = self.cell_rect(r, i);
+            let filled = !c.name.is_empty();
+            let lit = self.lit.get(i).copied().unwrap_or(false);
+            let fill = match (lit, filled) {
+                (true, _) => c.color.mix(t.surface, 0.25),
+                (false, true) => c.color.mix(t.surface, 0.8),
+                (false, false) => t.raised,
+            };
+            cx.canvas.fill_round_rect(b, 10, fill);
+            if filled {
+                cx.canvas.fill_rect(Rect::new(b.x, b.y + 8, 4, b.h - 16), c.color);
+            }
+            if i == self.selected {
+                cx.canvas.stroke_round_rect(b, 10, 3, t.accent);
+            }
+            let inner = b.inset_xy(10, 6);
+            let (top, rest) = inner.take_top(20);
+            cx.text(FontId::Bold, t.size_small - 1.0, top, Align::Left, t.text_dim, &c.label);
+            if let Some(clip) = &c.clip {
+                cx.text(FontId::Bold, t.size_small - 2.0, top, Align::Right, t.good, &format!("▶ {clip}"));
+            }
+            let (name, detail) = rest.take_top(rest.h / 2 + 4);
+            if filled {
+                cx.text(FontId::Bold, t.size_small, name, Align::Left, t.text, &c.name);
+                cx.text(FontId::Sans, t.size_small - 2.0, detail, Align::Left, t.text_dim, &c.detail);
+            } else {
+                cx.text(FontId::Sans, t.size_small - 1.0, name, Align::Left, t.text_faint, "empty");
+            }
+        }
+    }
+
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {
+                let k = (0..self.cells.len()).find(|&k| self.cell_rect(r, k).contains(x, y))?;
+                if k == self.selected {
+                    self.held = Some((finger, k));
+                    Some(EventKind::Pad { index: k, down: true })
+                } else {
+                    self.selected = k;
+                    Some(EventKind::Select(k))
+                }
+            }
+            Touch::Up | Touch::Cancel => {
+                let (_, k) = self.held.take_if(|(f, _)| *f == finger)?;
+                Some(EventKind::Pad { index: k, down: false })
+            }
+            Touch::Move => None,
+        }
+    }
+}

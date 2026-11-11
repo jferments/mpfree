@@ -49,10 +49,13 @@ pub const WHEEL: &str = "smp-wheel";
 pub const LAYOUT: &str = "col(header:60, smp-bar:60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
                           row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:26)";
 
-/// The pad editor's tabs.
-pub const TABS: [&str; 5] = ["Wave", "Chop", "Play", "Grain", "FX"];
+/// The pad editor's tabs: Pads (the kit's pads, to pick one and set it
+/// up) first, then the editors for the pad picked.
+pub const TABS: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 3] = ["Wave", "Chop", "Play"];
+pub const BUILT: [&str; 4] = ["Pads", "Wave", "Chop", "Play"];
+/// The Wave tab's place in [`TABS`].
+pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or turn the wheel to zoom · tap the wave to \
@@ -400,6 +403,7 @@ impl WaveTab {
     pub fn add(ui: &mut Ui, name: &str, st: &WaveState) -> Result<WaveTab, String> {
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| BUILT.contains(t)).collect();
+        bar.active = TAB;
         ui.add(BAR, bar);
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());
@@ -812,8 +816,8 @@ impl WaveTab {
     }
 }
 
-/// A loop over the middle half of a region.
-fn default_loop(r: &Region) -> Loop {
+/// A loop over the middle half of `r`, for a region turned to Loop mode.
+pub fn default_loop(r: &Region) -> Loop {
     let q = r.frames() / 4;
     Loop { start: r.start + q, end: r.end - q, crossfade: 0, mode: LoopMode::Forward }
 }
