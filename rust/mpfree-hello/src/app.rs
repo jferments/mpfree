@@ -29,11 +29,13 @@
 //! once found, pick banks A-H (`Effect::Bank`).
 
 mod arp;
+mod synth_pads;
 pub mod mapper;
 pub mod saved;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
+pub use synth_pads::SynthItem;
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
@@ -56,7 +58,7 @@ pub enum View {
     Play,
     /// The time engine's launch grid, record settings and takes.
     Clips,
-    /// The synth's page (mpfree-synth-ui): Poly's controls.
+    /// The synth's page (mpfree-synth-ui): the controls of Poly or FM.
     Synth,
     /// The audio looper: the loop's waveform, its buttons and the line
     /// input's meter.
@@ -451,6 +453,8 @@ pub enum Item {
     LoopLevel,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
+    /// The synth's engine and pad layouts (the Synth tab's options).
+    Synth(SynthItem),
 }
 
 /// The menu on screen: its rows (name, value), the selected row and help.
@@ -498,6 +502,9 @@ pub enum Effect {
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
+    /// The Synth tab's options changed: the engine, the scale or the pad
+    /// layouts, for the synth on the audio thread.
+    SynthPads(crate::synth::PadSettings),
     /// The wheel on the Synth page: turn the selected knob.
     SynthWheel(i32),
     /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
@@ -591,6 +598,13 @@ pub struct App {
     /// owner's (kept as a place, since an owner's scale may have the same
     /// notes as a built-in one).
     scale_pick: usize,
+    /// The synth pads' engine, scale and bank layouts (the Synth tab's
+    /// options), as handed to the synth.
+    synth_pads: crate::synth::PadSettings,
+    /// The pads' Scale row's choice and root, as `scale_pick` and
+    /// `scale_root` are for the arp.
+    pad_scale_pick: usize,
+    pad_scale_root: u8,
     /// The transport's clock for the next period ([`App::set_clock`]).
     clock: Option<mpfree_arp::Clock>,
     /// While the transport plays: its swing (true) or the arp's own.
@@ -650,7 +664,7 @@ impl App {
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, custom_scales: Vec::new(), scale_pick: 0, clock: None, swing_from_transport: true, patterns,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, custom_scales: Vec::new(), scale_pick: 0, synth_pads: Default::default(), pad_scale_pick: 0, pad_scale_root: 0, clock: None, swing_from_transport: true, patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
@@ -1290,6 +1304,7 @@ impl App {
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
+            (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
     }
@@ -1334,6 +1349,7 @@ impl App {
                                                                      if s.loop_latency_set { "" } else { " (estimated)" })),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
             Item::Arp(a) => self.arp_item_text(a),
+            Item::Synth(a) => self.synth_item_text(a),
         }
     }
 
@@ -1424,6 +1440,7 @@ impl App {
             Item::LoopLevel => vec!["The loop's playback level, -24 to +6 dB.",
                                     "0 dB plays it as it was recorded."],
             Item::Arp(a) => Self::arp_item_help(a),
+            Item::Synth(a) => Self::synth_item_help(a),
         }
     }
 
@@ -1584,6 +1601,7 @@ impl App {
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(10f32.powf(s.loop_level_db / 20.0)))));
             }
             Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
+            Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
         fx.push(self.menu_view());
@@ -1885,6 +1903,57 @@ mod tests {
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Synth);
         assert_eq!(app.tab(0), vec![Effect::Show(View::Play)]);
+    }
+
+    #[test]
+    fn the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts() {
+        use crate::synth::Engine;
+        use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let fx = press(&mut app, MENU);
+        let Effect::Menu(m) = &fx[0] else { panic!("{fx:?}") };
+        let names: Vec<&str> = m.rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Engine", "Scale", "Scale root", "Pad layout", "In key rows", "Note repeat rate", "Tempo",
+                           "Pad level", "Latch"]);
+        assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[1].1, "Off");
+        assert_eq!(m.rows[3].1, "Chromatic (no scale)");
+        let row = |a: SynthItem| synth_pads::SYNTH_OPTIONS.iter().position(|&i| i == Item::Synth(a)).unwrap();
+        let pads = |fx: &[Effect]| fx.iter().find_map(|e| match e {
+            Effect::SynthPads(p) => Some(*p),
+            _ => None,
+        });
+        // Engine: FM, and no further.
+        let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
+        assert_eq!(p.engine, Engine::Fm);
+        assert_eq!(pads(&app.step_item(row(SynthItem::Engine), 1)), None, "FM is the last");
+        // No scale: the quick switch only says so.
+        assert!(matches!(app.synth_toggle_layout().as_slice(), [Effect::Note(_)]));
+        // Scale: Major (Chromatic is skipped; Off stands for it), root D.
+        let p = pads(&app.step_item(row(SynthItem::Scale), 1)).unwrap();
+        let major = mpfree_arp::scale::by_name("Major").unwrap();
+        assert_eq!(p.scale.map(|s| (s.root, s.mask)), Some((0, major.mask)));
+        app.step_item(row(SynthItem::Root), 1);
+        let fx = app.step_item(row(SynthItem::Root), 1);
+        assert_eq!(pads(&fx).unwrap().scale.unwrap().root, 2);
+        let Some(Effect::Menu(m)) = fx.last() else { panic!("{fx:?}") };
+        assert_eq!((m.rows[1].1.as_str(), m.rows[2].1.as_str()), ("Major", "D"));
+        assert_eq!(m.rows[3].1, "Chromatic (bank A)");
+        // Pad layout: bank A to Chord pads; In key rows a fourth apart.
+        app.step_item(row(SynthItem::Layout), 1);
+        assert_eq!(pads(&app.step_item(row(SynthItem::Layout), 1)).unwrap().layout(), PadLayout::Chords);
+        assert_eq!(pads(&app.step_item(row(SynthItem::Rows), 1)).unwrap().rows, InKeyRows::Fourths);
+        // The quick switch and the banks, for the layout owner to place.
+        assert_eq!(pads(&app.synth_toggle_layout()).unwrap().layout(), PadLayout::Chromatic);
+        assert_eq!(pads(&app.synth_toggle_layout()).unwrap().layout(), PadLayout::InKey);
+        let p = pads(&app.synth_bank(2)).unwrap();
+        assert_eq!((p.bank, p.layout()), (2, PadLayout::Chords));
+        assert!(app.synth_bank(2).is_empty());
+        assert_eq!(pads(&app.synth_bank(0)).unwrap().layout(), PadLayout::InKey, "bank A kept its layout");
+        // Scale Off again: every layout plays as Chromatic.
+        let p = pads(&app.step_item(row(SynthItem::Scale), -1)).unwrap();
+        assert_eq!(p.scale, None);
     }
 
     #[test]

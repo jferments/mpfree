@@ -8,7 +8,7 @@
 //!   write to the sound card (MIDI in, the app, every engine, the mix), not
 //!   the write's own wait.
 //! - `sampler`: the pads (`render_dry`), with the master grain effect.
-//! - `synth`: Poly.
+//! - `synth`: Poly or FM.
 //! - `looper`: the audio looper and the line input.
 //! - `time`: the transport, the clips and the arp (`time.advance`,
 //!   `app.process`).
@@ -39,7 +39,7 @@ pub const TIME: usize = 4;
 pub const MIX: usize = 5;
 
 /// What the page calls each stage.
-const LABELS: [&str; 6] = ["Whole period", "Sampler (pads, grains)", "Synth (Poly)", "Looper and line input",
+const LABELS: [&str; 6] = ["Whole period", "Sampler (pads, grains)", "Synth (Poly or FM)", "Looper and line input",
                            "Transport, clips, arp", "Mix, metronome"];
 
 /// The numbers the audio loop publishes: each stage's last window (about
