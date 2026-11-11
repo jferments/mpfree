@@ -34,7 +34,8 @@ filters, so the check always reports.
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
 The coverage table appears in the run's summary page, and the lcov file is
-kept as an artifact for 14 days.
+kept as an artifact for 7 days. If the account's artifact storage is full,
+the upload fails without failing the run.
 
 ### Where it runs
 
