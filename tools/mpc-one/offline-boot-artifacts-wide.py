@@ -226,11 +226,26 @@ def inspect_rootfs(backup_path, out):
                 text = p.stdout.decode("utf-8", "replace")
                 lines = text.splitlines()
                 hits = []
+                seen_indices = set()
                 for i, row in enumerate(lines):
                     if any(k in row.lower() for k in DTB_HINTS):
-                        hits.extend(lines[max(0, i-2):min(len(lines), i+4)])
-                # Line order and duplicates retained intentionally for context.
-                dt["relevant_dts_excerpt"] = "\n".join(hits)[:22000]
+                        for j in range(max(0, i-2), min(len(lines), i+4)):
+                            if j in seen_indices:
+                                continue
+                            seen_indices.add(j)
+                            excerpt_line = lines[j]
+                            if re.search(r"(?:local-)?mac-address|serial-number|"
+                                         r"partuuid|device-uuid|password|secret",
+                                         excerpt_line, re.I):
+                                excerpt_line = "[PRIVATE DEVICE IDENTIFIER REDACTED]"
+                            hits.append(excerpt_line)
+                # Deduplicate by *line index*, retaining repeated property
+                # names in distinct nodes and preserving the original order.
+                # Old reports wasted most of their 22-KiB cap repeating
+                # context and truncated potentially relevant board metadata.
+                dt["relevant_dts_excerpt"] = "\n".join(hits)[:70000]
+                dt["dtc_lines_scanned"] = len(lines)
+                dt["excerpt_truncated"] = len("\n".join(hits)) > 70000
                 dt["dtc_success"] = p.returncode == 0
             else:
                 strings = re.findall(rb"[\x20-\x7e]{5,}", raw)
