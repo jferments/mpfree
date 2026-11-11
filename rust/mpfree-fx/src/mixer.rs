@@ -295,9 +295,15 @@ impl Default for MixerConfig {
 
 /// A change to a strip's inserts while the mixer plays. See the module docs.
 pub enum Edit {
-    /// Puts `insert` in at slot `at` (0 to the number of slots).
+    /// Puts `insert` in at slot `at` (0 to the number of slots). A refused
+    /// insert (no room, or a slot id another slot has: see
+    /// [`Chain::insert`]) comes back through [`Mixer::pop_retired`] and
+    /// counts in [`MixerStats::bad_edits`], so a host loading a project
+    /// looks there. Retired inserts keep their slot id: call
+    /// [`Insert::without_uid`] before using one on another strip.
     Insert { strip: StripId, at: usize, insert: Insert },
-    /// Swaps the insert at `at` for `insert`; the old one is retired.
+    /// Swaps the insert at `at` for `insert`; the old one is retired. A
+    /// refused one comes back as for [`Edit::Insert`].
     Replace { strip: StripId, at: usize, insert: Insert },
     /// Takes the insert at `at` out; it is retired.
     Remove { strip: StripId, at: usize },
