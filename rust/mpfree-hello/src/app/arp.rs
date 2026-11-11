@@ -838,6 +838,12 @@ impl App {
         self.pad_layout.is_some()
     }
 
+    /// The notes pad `slot` holds now (what it pressed, even if the layout
+    /// changed since), for its pressure; none for a kit or a pad let go.
+    pub fn pad_held_notes(&self, slot: usize) -> &[u8] {
+        self.pad_pressed.get(slot).map_or(&[], |p| p.notes())
+    }
+
     /// The first pad whose layout plays `note`, to flash on the screen.
     pub fn pad_of_note(&self, note: u8) -> Option<usize> {
         self.pad_layout.as_ref()?.iter().position(|p| p.notes().contains(&note))
