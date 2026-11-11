@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-clap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A CLAP plugin host: CLAP instruments and effects as mpfree-node nodes, with two small test plugins of our own"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+libc = "0.2"
+
+[dev-dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
+mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-track = { path = "../mpfree-track" }
+mpfree-fx = { path = "../mpfree-fx" }
