@@ -1456,3 +1456,13 @@ We **do not yet know** whether the MPC One has burned a secure-boot key, whether
 7. P6: Investigate physical prevention of **new fuse provisioning** only if the fuse is currently unprogrammed and board wiring actually exposes a firmware-controllable programming supply. Any modification requires qualified circuit analysis and explicit authorization; do not promise this capability today.
 
 **Installer policy:** stock firmware update packages must be inspected offline and treated as untrusted capability changes; a single verified 3.10 rootfs-only image cannot establish that later updates are harmless. Until the independent MaskROM+owner-SPL boot and readback are proven, do not change p1/p2/p3, eMMC boot settings or any boot-critical partition. No full firmware independence guarantee is currently supported.
+
+
+### 31.6 Further offline DTB confirmation from the existing p1/p3 attachments
+
+Independently parsed the previously extracted binary DTBs in the current project research:
+- p3 embedded U-Boot DTB (35213 bytes) has an eFuse node at /efuse@ffb40000 with compatible rockchip,rk3288-efuse, register base 0xFFB40000 size 0x10000, but its **status is disabled**. This only states how the 2019 U-Boot DTB describes its driver and is **not evidence that the RK3288 silicon fuse is unprogrammed**, nor that a Linux 6.6 runtime device tree has the same status.
+- p1 embedded SPL DTB (3239 bytes) does not have a visible eFuse node.
+- U-Boot's pinctrl nodes /pinctrl/tsadc/otp-gpio and /pinctrl/tsadc/otp-out refer to the **temperature-sensor over-temperature protection** function. They are **NOT evidence of one-time-programmable eFuse power control**. Do not treat string-matches for "otp" as a fuse-programming mechanism.
+
+Next runtime test should enumerate live /sys/bus/nvmem/devices providers and /proc/device-tree/efuse@ffb40000 status/compatible, without writing to eFuse or disclosing unique hardware IDs. The secure-boot flag, if mapped, is at secure eFuse word 0 per Rockchip's 2020 guide; an absent NVMEM node or all-zero read is not proof of unsigned BootROM access. Any physical diagnosis of P19 VCC_EFUSE must be planned from board identification and schematics.
