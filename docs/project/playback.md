@@ -49,6 +49,7 @@ A clip launched while the music plays does not cut in at once. It waits for the 
 - **Then it keeps its place against the song.** A started clip's origin is `anchored`: the bar line, moved back by whole passes to before any position the song can reach (`EARLIEST`, about 12 days at 120 BPM). So after a loop jump back or a locate it plays on in phase, and doesn't go silent until it reaches the bar line again.
 - **The control thread catches up.** `Player::started()` names each switch (track, slot, the tick, the new origin). The app applies it with `Started::apply`, which makes the clip the track's launch (starting on that tick) and removes the cue, and compiles again. Until that view arrives, the player and the recorder carry the switch themselves, so when the view arrives changes nothing that plays.
 - **Recording.** On the armed track, notes held at the switch end on its bar line, in the clip that was playing. Notes played from that tick on go into the new clip. A switch ends a replace pass, and the take goes on as overdub.
+- **A mute with the cue.** A cue can carry its track's mute (`PlayView::set_cue_mute`, for a scene's mutes). The player switches the track's mute on the cue's bar line, and `Started::mute` tells the app. Scenes and follow actions use this: see [scenes.md](scenes.md).
 
 ## Playing (`Player::process`)
 
@@ -254,6 +255,8 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
   - tapping the playing clip cues a stop ("stops 6.1").
   - tapping what is cued takes the cue back.
 
+  - tapping a row's number launches the row as a scene, and the square over the row numbers stops every track ([scenes.md](scenes.md)).
+
   While stopped, a tap launches or stops at once. A clip launched while stopped plays as if it had started on the bar line before the position, wherever the song goes after. `clips_after` works out the launches and cues after a tap.
 - **The record settings** set the armed track, the record mode, the count-in (0 to 4 bars), the loop (off, 1, 2, 4, 8 or 16 bars from bar 1) and the tempo.
 - **The takes list** shows the newest take first and dims undone takes, with Undo and Redo.
@@ -280,6 +283,6 @@ Cues that start become launches right after the period they started in (`Started
 - Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
 - Move the other edits (launches, arming, undo, capture) out of the audio loop, and the screen's state with them.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
-- Launching on the bar line (cues) is built. Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), scenes (a row of clips launched together), and a new clip that waits for its bar line without stopping the track's clip first.
+- Launching on the bar line (cues), scenes and follow actions are built ([scenes.md](scenes.md)). Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), an editor for scene names and follow actions, and a new clip that waits for its bar line without stopping the track's clip first.
 - The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.
 - The looper (T4).

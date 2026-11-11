@@ -41,6 +41,7 @@
 //! kit.
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
+use mpfree_perform::{Perform, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
@@ -254,6 +255,9 @@ pub struct TimeHost {
     launches: Vec<Launch>,
     /// Launches and stops waiting for the next bar line.
     cues: Vec<Cue>,
+    /// Scenes and follow actions: cues the rows and chains clips and
+    /// scenes on their bar lines.
+    perform: Perform,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -316,6 +320,7 @@ impl TimeHost {
             project,
             launches: Vec::new(),
             cues: Vec::new(),
+            perform: Perform::default(),
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -346,6 +351,8 @@ impl TimeHost {
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
+        // A scene's mutes switch with its cues.
+        self.perform.dress(&mut v);
         // Room to record into the armed track's clips without allocating.
         v.make_room(RECORD_ROOM, RECORD_ROOM);
         if let Some(t) = self.armed {
@@ -584,7 +591,51 @@ impl TimeHost {
                     None => "armed: none".into(),
                 })
             }
+            TimeAction::LaunchScene(_) | TimeAction::StopAll => {
+                let when = if info.state.rolling() {
+                    When::Cued
+                } else {
+                    When::Now(info.position - info.position.rem_euclid(info.meter.bar_ticks()))
+                };
+                let before = (
+                    self.launches.clone(),
+                    self.cues.clone(),
+                    self.perform.clone(),
+                    self.project
+                        .tracks
+                        .iter()
+                        .map(|t| t.mute)
+                        .collect::<Vec<_>>(),
+                );
+                let (launches, cues) = (&mut self.launches, &mut self.cues);
+                let line = match a {
+                    TimeAction::LaunchScene(row) => {
+                        if !self
+                            .perform
+                            .launch_scene(&mut self.project, row, when, launches, cues)
+                        {
+                            return Err(format!("no scene {}", row + 1));
+                        }
+                        format!("scene {}", row + 1)
+                    }
+                    _ => {
+                        self.perform.stop_all(when, launches, cues);
+                        "stop all".to_string()
+                    }
+                };
+                if let Err(e) = self.compile() {
+                    (self.launches, self.cues, self.perform) = (before.0, before.1, before.2);
+                    for (t, m) in self.project.tracks.iter_mut().zip(before.3) {
+                        t.mute = m;
+                    }
+                    return Err(e);
+                }
+                Ok(line)
+            }
             TimeAction::Launch { .. } | TimeAction::StopClip(_) | TimeAction::Uncue(_) => {
+                if let TimeAction::Uncue(track) = a {
+                    self.perform.uncue(track);
+                }
                 // While the music plays, they wait for the next bar line.
                 let after = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
                 let before = (
@@ -950,8 +1001,24 @@ impl TimeHost {
         // view is compiled again.
         let mut compile = false;
         for i in 0..self.player.started().len() {
-            self.player.started()[i].apply(&mut self.launches, &mut self.cues);
+            let st = self.player.started()[i];
+            self.perform.started(&mut self.project, &st);
+            st.apply(&mut self.launches, &mut self.cues);
             compile = true;
+        }
+        // Follow actions coming due are cued for their bar lines.
+        if self.transport.state().rolling() {
+            let bar = self.transport.meter().bar_ticks();
+            compile |= self
+                .perform
+                .due(
+                    &mut self.project,
+                    &mut self.launches,
+                    &mut self.cues,
+                    self.transport.position(),
+                    bar,
+                )
+                .changed();
         }
         // Recorded and erased notes and locks go into the clips and, in
         // place, into the view, unless it has no room left.
@@ -1055,6 +1122,8 @@ impl TimeHost {
         );
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.cues = self.cues.clone();
+        st.scene_playing = self.perform.playing().map(|p| p.row);
+        st.scene_cued = self.perform.cued();
         st
     }
 
@@ -1635,6 +1704,65 @@ mod tests {
         for ((f, p), (at, pad)) in hits.iter().zip(want) {
             assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
         }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A row's scene button: stopped, the row plays at once; playing, it
+    /// waits for the bar line, where track 2 goes quiet (the scene mutes
+    /// it) and track 1 switches row. Row 2 follows on to row 1 after a bar.
+    #[test]
+    fn a_scene_plays_its_row_with_its_mutes_and_follows_on() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        let s1 = h.project.scene_mut(1).unwrap();
+        s1.mutes = Some(0b10);
+        s1.follow = Some(mpfree_seq::Follow::after(
+            1,
+            mpfree_seq::FollowAction::Previous,
+        ));
+        h.project.scene_mut(0).unwrap().mutes = Some(0);
+        assert_eq!(h.act(TimeAction::LaunchScene(0)).unwrap(), "scene 1");
+        let st = h.state();
+        assert_eq!((st.launches.len(), st.scene_playing), (2, Some(0)));
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        assert_eq!(h.state().scene_cued, Some(1));
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        // Bar 1: row 1. Bar 2: row 2, track 2 muted. Bar 3: back to row 1
+        // (the follow), track 2 heard again. Bar 4: row 1.
+        let want = [
+            (0, 4),
+            (0, 30),
+            (BAR, 5),
+            (2 * BAR, 4),
+            (2 * BAR, 30),
+            (3 * BAR, 4),
+            (3 * BAR, 30),
+        ];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        let st = h.state();
+        assert_eq!(
+            (st.scene_playing, st.scene_cued, st.tracks[1].mute),
+            (Some(0), None, false)
+        );
+        assert_eq!(h.act(TimeAction::StopAll).unwrap(), "stop all");
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        assert!(h.state().launches.is_empty());
+        assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 

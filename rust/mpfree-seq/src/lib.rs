@@ -27,10 +27,17 @@
 //! played, and so on) and a **ratchet** (it plays several times, evenly
 //! spread over its length). The player (`mpfree-play`) decides them.
 //!
-//! Audio clips, scenes and the arrangement come in later roadmap steps.
+//! **Scenes** ([`scenes`]) are the rows of the launch grid: launched
+//! together, with mutes, follow actions and stored values for the morph.
+//! A clip can have a follow action too ([`Clip::follow`]).
+//!
+//! Audio clips and the arrangement come in later roadmap steps.
 #![forbid(unsafe_code)]
 
+pub mod scenes;
 pub mod steps;
+
+pub use scenes::{Follow, FollowAction, Scene, SCENES};
 
 pub use mpfree_moves;
 use mpfree_moves::Moves;
@@ -308,6 +315,9 @@ pub struct Clip {
     /// Recorded parameter moves (automation): Perform FX gestures, as
     /// lanes of points on the clip's ticks (`mpfree-moves`).
     pub moves: Moves,
+    /// After some bars, its track plays another clip or stops
+    /// ([`scenes`]).
+    pub follow: Option<Follow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,6 +342,11 @@ pub enum ModelError {
     /// The clip's moves are not sound for its length, or not the ones an
     /// edit expected to change (see [`steps::Edit`]).
     BadMoves,
+    /// A follow action waits 0 bars or more than 999, or its chance is
+    /// over 100.
+    BadFollow,
+    /// A scene's mutes, values or count are out of range.
+    BadScene,
 }
 
 impl Clip {
@@ -346,6 +361,7 @@ impl Clip {
             notes: Vec::new(),
             locks: Vec::new(),
             moves: Moves::new(),
+            follow: None,
         }
     }
 
@@ -451,6 +467,9 @@ impl Clip {
                 return Err(ModelError::BadLock(i));
             }
         }
+        if let Some(f) = &self.follow {
+            f.check()?;
+        }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
     }
@@ -494,6 +513,9 @@ impl Track {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Project {
     pub tracks: Vec<Track>,
+    /// Scene `k` holds what row `k` of the slots has besides its clips;
+    /// rows past the end are plain (see [`Project::scene`]).
+    pub scenes: Vec<Scene>,
 }
 
 impl Project {
@@ -516,7 +538,38 @@ impl Project {
                 c.check()?;
             }
         }
+        if self.scenes.len() > SCENES {
+            return Err(ModelError::BadScene);
+        }
+        for s in &self.scenes {
+            s.check()?;
+        }
         Ok(())
+    }
+
+    /// Scene `row`, or `None` when the project keeps nothing for it (a
+    /// plain row: launching it still plays its clips).
+    pub fn scene(&self, row: usize) -> Option<&Scene> {
+        self.scenes.get(row)
+    }
+
+    /// Scene `row` to change, made (with the plain ones before it) if
+    /// needed. `None` past the last row.
+    pub fn scene_mut(&mut self, row: usize) -> Option<&mut Scene> {
+        if row >= SCENES {
+            return None;
+        }
+        while self.scenes.len() <= row {
+            self.scenes.push(Scene::default());
+        }
+        self.scenes.get_mut(row)
+    }
+
+    /// Whether row `row` has a clip on any track.
+    pub fn row_filled(&self, row: usize) -> bool {
+        self.tracks
+            .iter()
+            .any(|t| t.slots.get(row).is_some_and(Option::is_some))
     }
 
     /// The clip in a slot, if there is one.
