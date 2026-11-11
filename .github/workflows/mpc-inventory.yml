@@ -38,6 +38,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, mpfree-ci]
     timeout-minutes: 120
     steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # Each runner has its own /tmp (PrivateTmp) that lasts between jobs, unlike
+        # a GitHub host's; the steps below write fixed /tmp/mpfree-* names, and
+        # some create them with create_new, so leftovers fail the next job.
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
       - name: Validate shell syntax
         run: |
@@ -453,6 +459,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, mpfree-ci]
     timeout-minutes: 120
     steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # Each runner has its own /tmp (PrivateTmp) that lasts between jobs, unlike
+        # a GitHub host's; the steps below write fixed /tmp/mpfree-* names, and
+        # some create them with create_new, so leftovers fail the next job.
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
       - name: Configure C++ core
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -491,6 +503,12 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
       MPFREE_CARGO_TARGET_BUDGET_GIB: 15
     steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # Each runner has its own /tmp (PrivateTmp) that lasts between jobs, unlike
+        # a GitHub host's; the steps below write fixed /tmp/mpfree-* names, and
+        # some create them with create_new, so leftovers fail the next job.
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
@@ -994,6 +1012,12 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
       MPFREE_CARGO_TARGET_BUDGET_GIB: 15
     steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # Each runner has its own /tmp (PrivateTmp) that lasts between jobs, unlike
+        # a GitHub host's; the steps below write fixed /tmp/mpfree-* names, and
+        # some create them with create_new, so leftovers fail the next job.
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
       - uses: actions/checkout@v4
       - name: Keep the Cargo target between runs (self-hosted only)
         if: runner.environment == 'self-hosted'
