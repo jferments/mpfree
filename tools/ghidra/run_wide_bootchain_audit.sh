@@ -209,6 +209,39 @@ run_evidence_graph p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" \
 run_evidence_graph p3 "$P3_PROJECT" "p3-uimage-payload.bin" \
     "$REPORT_DIR/p3-evidence-graph-v3.json" || true
 
+# Fourth pass: systematically cover *every remaining recognized function*
+# not already decompiled by the V3 graph. This is deliberately broad
+# rather than another handful of fixed hard-coded function probes.
+run_remaining_coverage() {
+    local kind="$1" project="$2" filename="$3" graph="$4" output="$5"
+    local log="$REPORT_DIR/$kind-coverage-v4-ghidra.log"
+    if [[ ! -s "$graph" ]]; then
+        echo "WARNING: $kind coverage skipped, V3 graph unavailable." >&2
+        return 1
+    fi
+    echo
+    echo "Fourth pass: $kind every remaining recognized function..."
+    if ! "${GHIDRA[@]}" "$PROJECTS" "$project" \
+        -process "$filename" -readOnly -noanalysis \
+        -scriptPath "$ROOT/tools/ghidra" \
+        -postScript MPFreeBootChainCoverageV4.py "$kind" "$graph" "$output" \
+        -log "$log" \
+        >"$REPORT_DIR/$kind-coverage-v4-console.txt" 2>&1; then
+        echo "WARNING: $kind coverage pass failed; failure logs included in ZIP." >&2
+        return 1
+    fi
+    if [[ ! -s "$output" ]] || ! python3 -m json.tool "$output" >/dev/null; then
+        echo "WARNING: $kind coverage report missing/invalid." >&2
+        return 1
+    fi
+    echo "$kind recognized function coverage complete: $output"
+}
+run_remaining_coverage p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" \
+    "$REPORT_DIR/p1-evidence-graph-v3.json" "$REPORT_DIR/p1-coverage-v4.json" || true
+run_remaining_coverage p3 "$P3_PROJECT" "p3-uimage-payload.bin" \
+    "$REPORT_DIR/p3-evidence-graph-v3.json" "$REPORT_DIR/p3-coverage-v4.json" || true
+
+
 
 # Cross-check newer Akai userspace, boot scripts, and DTBs if the existing
 # extracted 3.10 rootfs image is on the workstation. Do not extract/run update.
@@ -279,6 +312,15 @@ if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
         --report "$REPORT_DIR/firmware-3.10-boot-compare.json" \
         >"$REPORT_DIR/firmware-3.10-boot-compare-console.txt" 2>&1 ||
         echo "WARNING: optional 3.10 rootfs comparison failed; see ZIP logs." >&2
+
+    echo
+    echo "V4: comparing executable boot scripts, DTB properties and updater/security ELF callsites..."
+    python3 "$ROOT/tools/mpc-one/offline-bootchain-v4-compare.py" \
+        --backup "$BACKUP" \
+        --rootfs-310 "$ROOTFS_310" \
+        --report "$REPORT_DIR/firmware-3.10-bootchain-v4-compare.json" \
+        >"$REPORT_DIR/firmware-3.10-bootchain-v4-console.txt" 2>&1 ||
+        echo "WARNING: deeper 3.6/3.10 executable/linkage comparison failed; see ZIP logs." >&2
 else
     printf 'No verified extracted 3.10 rootfs was identified (see locator report). Skipping comparison.\n' |
         tee "$REPORT_DIR/firmware-3.10-boot-compare-skipped.txt"
