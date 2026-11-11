@@ -216,7 +216,7 @@ for match in re.finditer(rb"[\x20-\x7e]{4,}", bytes(payload)):
         "at": hexaddr(va), "text": safe, "keywords": categories[:10],
         "xrefs": allrefs(va, 25),
     })
-    if len(result["strings"]) >= 550:
+    if len(result["strings"]) >= 3000:
         result["string_list_truncated"] = True
         break
 
@@ -364,7 +364,9 @@ try:
         try:
             for ref in refs.getReferencesFrom(ins.getAddress()):
                 target = int(ref.getToAddress().getOffset())
-                if target < 0xff000000 or base <= target < base+size:
+                # Exclude sign-extended negative/sentinel values near 0xffffffff.
+                # Include plausible SoC MMIO and the ARM high-vector anchor.
+                if not (0xff000000 <= target <= 0xffefffff or target == 0xffff0000) or base <= target < base+size:
                     continue
                 mmio_counts[hexaddr(target)] += 1
                 if len(mmio_sites) < 350:
