@@ -409,6 +409,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-mod",
  "mpfree-param",
+ "mpfree-sampler-ui",
  "mpfree-synth-ui",
  "mpfree-ui",
 ]

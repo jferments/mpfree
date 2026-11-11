@@ -7,9 +7,14 @@
 //! same fields as the mixer's Q-Link cards (`mpfree_mixer_ui::qlinks`),
 //! so every page's Q-Links draw the same way.
 //!
-//! A page owner sets a page's default knobs; a user binding overrides
-//! them (the app asks [`Bindings::card`] first and falls back to the
-//! page's own when it says the knob is free).
+//! **Pages and banks.** The page on screen sets its own four knobs with
+//! [`Bindings::set_page`] (the chain editor: the selected effect's first
+//! four knobs). They show wherever the bank shown leaves a knob free, so a
+//! user binding overrides them. [`Bindings::with_macros`] makes the usual
+//! banks: bank 0 has no bindings of its own (the page's knobs show), banks
+//! 1 and 2 are Macros 1-4 and 5-8; [`Bindings::next_bank`] steps through
+//! them. A page that sets no knobs leaves its free knobs free, and the
+//! app draws its own cards there ([`QLinkCard::target`] is `None`).
 //!
 //! **Learn:** [`Bindings::learn`] arms a parameter (the user touched it
 //! on screen); the next knob turned takes it, in the bank shown.
@@ -96,12 +101,65 @@ pub struct Bindings {
     shown: usize,
     values: HashMap<ParamAddr, f32>,
     learning: Option<(ParamAddr, ParamInfo, String)>,
+    /// The page's own knobs and its name (not saved).
+    page: [Option<Binding>; KNOBS],
+    page_name: String,
     /// The knob being touched, for lighting its card.
     pub touched: Option<usize>,
 }
 
 impl Bindings {
     pub fn new() -> Bindings { Bindings::default() }
+
+    /// The usual banks: bank 0 with no bindings of its own (the page's
+    /// knobs show), bank 1 "Macros 1-4" and bank 2 "Macros 5-8", each knob
+    /// in its macro's colour. `names` are the macros' names.
+    pub fn with_macros(names: &[String]) -> Bindings {
+        let mut b = Bindings::new();
+        b.show(0);
+        for bank in 1..=2 {
+            let first = (bank - 1) * KNOBS;
+            b.bank_mut(bank).name = format!("Macros {}-{}", first + 1, first + KNOBS);
+            for k in 0..KNOBS {
+                let m = first + k;
+                let name = names.get(m).cloned().unwrap_or_else(|| format!("Macro {}", m + 1));
+                let addr = ParamAddr::macro_value(m as u8);
+                b.bind(bank, k, Binding { colour: Some(m as u8), ..Binding::new(addr, crate::engine::macro_info(m), &name) });
+            }
+        }
+        b.bank_mut(0).name = String::new();
+        b
+    }
+
+    /// The page on screen's own knobs (`None` for a knob it leaves free)
+    /// and its name ("Drive"). They show wherever the bank shown has no
+    /// binding of its own. Not saved; set them again when the page or
+    /// what it shows changes.
+    pub fn set_page(&mut self, name: &str, knobs: [Option<Binding>; KNOBS]) {
+        for b in knobs.iter().flatten() {
+            self.values.entry(b.target).or_insert(b.info.default);
+        }
+        self.page = knobs;
+        self.page_name = name.to_string();
+    }
+
+    /// The page's own knobs.
+    pub fn page(&self) -> &[Option<Binding>; KNOBS] { &self.page }
+
+    /// What the column's title says: the bank's name, or the page's when
+    /// the bank has none ("Drive", "Macros 1-4").
+    pub fn title(&self) -> &str {
+        match self.banks.get(self.shown) {
+            Some(b) if !b.name.is_empty() => &b.name,
+            _ => &self.page_name,
+        }
+    }
+
+    /// Shows the next bank (after the last, the first).
+    pub fn next_bank(&mut self) {
+        let n = self.banks.len().max(1);
+        self.show((self.shown + 1) % n);
+    }
 
     pub fn banks(&self) -> &[Bank] { &self.banks }
     pub fn shown(&self) -> usize { self.shown }
@@ -136,7 +194,10 @@ impl Bindings {
 
     pub fn unbind(&mut self, b: usize, k: usize) -> Option<Binding> { self.banks.get_mut(b)?.knobs.get_mut(k)?.take() }
 
-    pub fn binding(&self, k: usize) -> Option<&Binding> { self.banks.get(self.shown)?.knobs.get(k)?.as_ref() }
+    /// Knob `k`'s binding: the bank shown's, else the page's.
+    pub fn binding(&self, k: usize) -> Option<&Binding> {
+        self.banks.get(self.shown).and_then(|b| b.knobs.get(k)?.as_ref()).or_else(|| self.page.get(k)?.as_ref())
+    }
 
     /// Tells the bindings a parameter's value (read back from the engine
     /// or its owner), so cards and turns start from it.
@@ -154,7 +215,8 @@ impl Bindings {
     /// Knob `k` turned by `detents` (clockwise positive); `fine` while
     /// SHIFT is held. The value to set, or `None` when nothing changes
     /// (a free knob, the end of the range, or a learn that just bound
-    /// the knob).
+    /// the knob). A learn binds the knob in the bank shown, over the
+    /// page's knob, on every page, until it is unbound.
     pub fn turn(&mut self, k: usize, detents: i32, fine: bool) -> Option<Write> {
         if k >= KNOBS { return None; }
         if let Some((addr, info, label)) = self.learning.take() {
@@ -316,6 +378,44 @@ mod tests {
         assert_eq!(b.turn(2, 5, false).unwrap().value, 3.0);
         assert_eq!(b.card(2).text, "Notch");
         assert_eq!(b.turn(2, 1, false), None);
+    }
+
+    #[test]
+    fn the_page_fills_the_knobs_a_bank_leaves_free() {
+        let names: Vec<String> = ["Wash", "Grit"].map(String::from).to_vec();
+        let mut b = Bindings::with_macros(&names);
+        assert_eq!(b.banks().len(), 3);
+        assert_eq!(b.title(), "", "no page yet");
+        assert!(!b.card(0).enabled(), "bank 0 has no bindings of its own");
+        b.set_page("Filter", [Some(Binding::new(addr(4), MODE, "Mode")), Some(Binding::new(addr(3), CUT, "Cutoff")), None, None]);
+        assert_eq!((b.title(), b.card(0).label.as_str(), b.card(1).label.as_str()), ("Filter", "Mode", "Cutoff"));
+        assert!(!b.card(2).enabled(), "a knob the page leaves free");
+        b.observe(addr(3), 2000.0);
+        assert_eq!(b.card(1).text, value_text(&CUT, 2000.0));
+        assert_eq!(b.turn(0, 1, false).unwrap(), Write { addr: addr(4), value: 1.0 });
+        // A learned knob overrides the page's knob in the bank shown.
+        b.learn(addr(3), CUT, "Cutoff");
+        b.turn(0, 1, false);
+        assert_eq!(b.card(0).label, "Cutoff");
+        // The macro banks.
+        b.next_bank();
+        assert_eq!(b.title(), "Macros 1-4");
+        let c = b.card(1);
+        assert_eq!((c.label.as_str(), c.colour, c.target), ("Grit", Some(1), Some(ParamAddr::macro_value(1))));
+        assert_eq!(b.card(2).label, "Macro 3");
+        b.next_bank();
+        assert_eq!((b.title(), b.card(3).label.as_str()), ("Macros 5-8", "Macro 8"));
+        b.next_bank();
+        assert_eq!(b.shown(), 0, "round to the first");
+        // A new page replaces the old one's knobs; the user's stays.
+        b.set_page("Drive", [None, None, None, None]);
+        assert_eq!((b.card(0).label.as_str(), b.card(1).enabled()), ("Cutoff", false));
+        let (back, skipped) = Bindings::load(&b.save(), &|a| match a.owner {
+            Owner::Macro(m) => Some(crate::engine::macro_info(m as usize)),
+            _ => (a == addr(3)).then_some(CUT),
+        });
+        assert_eq!((skipped, back.banks().len()), (0, 3));
+        assert_eq!(back.banks()[1].name, "Macros 1-4");
     }
 
     #[test]

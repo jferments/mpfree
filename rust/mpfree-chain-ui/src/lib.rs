@@ -2,10 +2,18 @@
 //! built on `mpfree-ui` over `mpfree-fx`'s [`mpfree_fx::Chain`] and
 //! `mpfree-mod`'s [`mpfree_mod::ModEngine`].
 //!
-//! **A proposal to the Hello MPC thread,** which owns the app's layout:
-//! where these panels open (a mixer strip's insert row, the Sample tab's FX
-//! sub-tab, a bank of the Play page's Q-Link column) is its call and Jay's.
-//! This crate is the panel inside whatever area it gets.
+//! **Where they open is the Hello MPC thread's call and Jay's** (layout
+//! spec, "The FX chain editor and macros"). Hello proposes: the chain
+//! editor takes the mixer's place when an insert is tapped there, with a
+//! Back to the mixer ([`ChainState::back`]), and sits in the Sample tab's
+//! FX sub-tab under the pad bar (with a switch between the pad's chain and
+//! the track's, [`ChainState::scopes`], to agree with the sampler thread);
+//! Macros 1-4 and 5-8 are banks of the Q-Link column, and a long press on
+//! a macro card opens the macros panel over the page under the top bar,
+//! with Back in its corner. While the chain editor is open, the Q-Links
+//! default to the selected effect's first four knobs: pass
+//! [`ChainState::qlinks`] to `Bindings::set_page`. This crate is the panel
+//! inside whatever area it gets.
 //!
 //! - [`state`]: what the panels show ([`ChainState`], [`MacrosState`]),
 //!   built on the control thread; `from_chain` and `from_engine` read a
@@ -31,7 +39,7 @@ pub mod state;
 pub mod view;
 
 pub use macros::{MacroAction, MacrosView};
-pub use state::{macro_color, ChainState, MacrosState, ParamView, SlotView};
+pub use state::{macro_color, strip_id, strip_of, ChainState, MacrosState, ParamView, SlotView};
 pub use view::{ChainAction, ChainView};
 
 use mpfree_ui::Ui;
@@ -41,15 +49,18 @@ pub const CHAIN: &str = "chain";
 pub const CHAIN_PAGE: &str = "chain";
 pub const MACROS_W: &str = "macros";
 pub const MACROS_PAGE: &str = "macros";
-/// The pages: the app's header, the panel, the hint line. The app puts its
-/// Q-Link column wherever its layout has it.
-pub const CHAIN_LAYOUT: &str = "col(header:60, chain:*, hint:26)";
-pub const MACROS_LAYOUT: &str = "col(header:60, macros:*, hint:26)";
-pub const CHAIN_HINT: &str = "Tap an effect to edit it  ·  drag a knob  ·  a knob you touch can go on a macro, a Q-Link or an LFO";
-pub const MACROS_HINT: &str = "Drag a macro  ·  tap a target for its range  ·  the morph glides every scene parameter from A to B";
+/// The pages: the app's top bar, the panel beside the app's Q-Link column
+/// (the Play page's width), the hint line. In the Sample tab the chain
+/// editor goes under the pad bar instead, in the sampler's page.
+pub const QLINKS_W: i32 = 168;
+pub const CHAIN_LAYOUT: &str = "col(header:60, row(chain:*, qlinks:168):*, hint:26)";
+pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hint:26)";
+/// The hint lines: what the buttons do on the page.
+pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
+pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to set its range  ·  Back closes";
 
-/// Adds both widgets and their pages. The app's `header` and `hint`
-/// widgets must be there already.
+/// Adds both widgets and their pages. The app's `header`, `qlinks` and
+/// `hint` widgets must be there already.
 pub fn add(ui: &mut Ui) -> Result<(), String> {
     ui.add(CHAIN, ChainView::new());
     ui.add(MACROS_W, MacrosView::new());

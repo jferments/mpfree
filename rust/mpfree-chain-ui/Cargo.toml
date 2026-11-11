@@ -10,6 +10,8 @@ description = "The FX chain editor and the macros and morph panel for the MPC On
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-mod = { path = "../mpfree-mod" }
 mpfree-param = { path = "../mpfree-param" }
+# The Sample tab's pad bar, for the preview of the chain editor in its FX sub-tab.
+mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-ui = { path = "../mpfree-ui" }
 

@@ -1,10 +1,11 @@
-//! The macros and morph panel's widget.
+//! The macros and morph panel's widget. It opens over a page, under the
+//! top bar (as the mixer does), with Back in its corner.
 //!
 //! Left: four macro cards (macros 1-4 or 5-8, a tap on the bank chips
 //! switches). Each card has its knob (drag up or down), its name in its
-//! colour, and up to eight targets, each a bar with the part of the
-//! parameter's travel the macro covers, a mark where it is now, and the
-//! range as text. A tap on a target row asks the app to edit its range
+//! colour, and up to eight targets, each its name over a bar with the part
+//! of the parameter's travel the macro covers, a mark where it is now, and
+//! the range as text. A tap on a target row asks the app to edit its range
 //! and curve.
 //!
 //! Right: the morph between scene A and scene B: a slider (drag), what
@@ -30,14 +31,23 @@ pub enum MacroAction {
     Morph(f32),
     /// Store the values as they are now as scene A (0) or B (1).
     Capture(usize),
+    /// Close the panel (back to the page it opened over).
+    Back,
 }
 
 pub const MORPH_W: i32 = 360;
 const GAP: i32 = 10;
-const TARGET_H: i32 = 34;
+/// A macro card's top: its knob and name.
+const CARD_HEAD: i32 = 80;
+const TARGET_H: i32 = 30;
+const CHANGE_H: i32 = 42;
+const KNOB_D: f32 = 60.0;
+/// The range text's width on a target's bar line.
+const RANGE_W: i32 = 128;
 const DRAG_TRAVEL: f32 = 300.0;
 
 pub struct MacrosLayout {
+    pub back: Rect,
     pub banks: [Rect; 2],
     pub cards: [Rect; 4],
     pub knobs: [(f32, f32, f32); 4],
@@ -50,18 +60,24 @@ pub struct MacrosLayout {
 pub fn layout(r: Rect) -> MacrosLayout {
     let (morph, left) = r.take_right(MORPH_W);
     let left = Rect::new(left.x, left.y, left.w - GAP, left.h);
-    let (head, grid) = left.take_top(40);
-    let banks = [Rect::new(head.right() - 2 * 112 - 6, head.y + 2, 112, 32), Rect::new(head.right() - 112, head.y + 2, 112, 32)];
+    let (head, grid) = left.take_top(44);
+    let back = Rect::new(head.x, head.y, 96, 34);
+    let banks = [Rect::new(head.right() - 2 * 112 - 6, head.y + 1, 112, 32), Rect::new(head.right() - 112, head.y + 1, 112, 32)];
     let (cw, ch) = ((grid.w - GAP) / 2, (grid.h - GAP) / 2);
     let cards = std::array::from_fn(|i| Rect::new(grid.x + (i as i32 % 2) * (cw + GAP), grid.y + (i as i32 / 2) * (ch + GAP), cw, ch));
-    let knobs = cards.map(|c| (c.x as f32 + 16.0 + 38.0, c.y as f32 + 18.0 + 38.0, 76.0));
+    let knobs = cards.map(|c| (c.x as f32 + 14.0 + KNOB_D * 0.5, c.y as f32 + 10.0 + KNOB_D * 0.5, KNOB_D));
     let inner = morph.inset(16);
     let slider = Rect::new(inner.x, inner.y + 70, inner.w, 44);
     let (foot, _) = inner.take_bottom(48);
     let snap = Rect::new(foot.x, foot.y, (foot.w - 8) / 2, foot.h);
     let half = ((foot.w - 8) / 2 - 6) / 2;
     let save = [Rect::new(snap.right() + 8, foot.y, half, foot.h), Rect::new(snap.right() + 8 + half + 6, foot.y, half, foot.h)];
-    MacrosLayout { banks, cards, knobs, morph, slider, snap, save }
+    MacrosLayout { back, banks, cards, knobs, morph, slider, snap, save }
+}
+
+/// A card's target rows, full width under its knob and name.
+fn target_rows(card: Rect) -> Rect {
+    Rect::new(card.x + 14, card.y + CARD_HEAD, card.w - 28, card.h - CARD_HEAD - 8)
 }
 
 enum Drag {
@@ -110,9 +126,11 @@ impl Widget for MacrosView {
         let st = &self.state;
         let l = layout(r);
         cx.canvas.fill_rect(r, t.bg);
-        let head = Rect::new(r.x, r.y, l.banks[0].x - r.x, 40);
+        cx.canvas.fill_round_rect(l.back, 9, t.raised);
+        cx.text(FontId::Bold, t.size_small, l.back, Align::Center, t.text, "‹  Back");
+        let head = Rect::new(l.back.right() + 14, l.back.y, l.banks[0].x - l.back.right() - 14, l.back.h);
         cx.text(FontId::Bold, t.size_small, head, Align::Left, t.text_dim, "MACROS");
-        cx.text(FontId::Sans, t.size_small, head.inset_xy(90, 0), Align::Left, t.text_faint, "each moves up to 8 parameters");
+        cx.text(FontId::Sans, t.size_small, head.inset_xy(72, 0), Align::Left, t.text_faint, "each moves up to 8 parameters");
         for (b, (br, label)) in l.banks.iter().zip(["Macros 1-4", "Macros 5-8"]).enumerate() {
             let on = b == st.bank;
             cx.canvas.fill_round_rect(*br, 9, if on { t.raised } else { t.surface });
@@ -125,19 +143,25 @@ impl Widget for MacrosView {
             cx.canvas.fill_round_rect(*card, t.radius, t.surface);
             let (kx, ky, d) = l.knobs[i];
             knob(cx, kx, ky, d, mv.value, false, t.outline, c);
-            cx.text(FontId::Bold, t.size_small, Rect::new((kx - d * 0.5) as i32, (ky - 10.0) as i32, d as i32, 20), Align::Center, t.text, &format!("{:.0} %", mv.value * 100.0));
-            let text_x = (kx + d * 0.5) as i32 + 18;
-            let title = Rect::new(text_x, card.y + 14, card.right() - text_x - 14, 30);
-            cx.text(FontId::Bold, t.size_title - 2.0, title, Align::Left, c, &format!("Macro {} · {}", m + 1, mv.name));
-            let rows = Rect::new(text_x, title.bottom() + 8, title.w, card.bottom() - title.bottom() - 40);
+            cx.text(FontId::Bold, t.size_small - 1.0, Rect::new((kx - d * 0.5) as i32, (ky - 10.0) as i32, d as i32, 20), Align::Center, t.text, &format!("{:.0} %", mv.value * 100.0));
+            let text_x = (kx + d * 0.5) as i32 + 16;
+            let title = Rect::new(text_x, card.y + 14, card.right() - text_x - 14, 28);
+            cx.text(FontId::Bold, t.size_title, title, Align::Left, c, &format!("Macro {} · {}", m + 1, mv.name));
+            let note = if mv.targets.is_empty() { "no targets yet".to_string() } else { format!("{} of 8 targets", mv.targets.len()) };
+            cx.text(FontId::Sans, t.size_small - 1.0, Rect::new(text_x, title.bottom() + 2, title.w, 20), Align::Left, t.text_faint, &note);
+            let rows = target_rows(*card);
+            let fit = (rows.h / TARGET_H).max(1) as usize;
             for (k, tv) in mv.targets.iter().enumerate() {
                 let row = Rect::new(rows.x, rows.y + k as i32 * TARGET_H, rows.w, TARGET_H);
-                if row.bottom() > rows.bottom() { break; }
-                let (line, bar) = row.take_top(20);
-                let (range, name) = line.take_right(line.w * 2 / 5);
+                if k + 1 == fit && mv.targets.len() > fit {
+                    cx.text(FontId::Sans, t.size_small - 1.0, row.take_top(18).0, Align::Left, t.text_faint, &format!("+ {} more", mv.targets.len() - k));
+                    break;
+                }
+                let (name, line) = row.take_top(17);
                 cx.text(FontId::Sans, t.size_small, name, Align::Left, t.text, &tv.label);
-                cx.text(FontId::Mono, t.size_small - 3.0, range, Align::Right, t.text_dim, &tv.range_text);
-                let track = Rect::new(bar.x, bar.y + 3, bar.w, 5);
+                let (range, bar) = line.take_right(RANGE_W);
+                cx.text(FontId::Mono, t.size_small - 3.0, range.take_top(12).0, Align::Right, t.text_dim, &tv.range_text);
+                let track = Rect::new(bar.x, bar.y + 4, bar.w - 10, 5);
                 cx.canvas.fill_round_rect(track, 3, t.raised);
                 let (a, b) = (tv.from.min(tv.to), tv.from.max(tv.to));
                 let xa = track.x + (a * track.w as f32) as i32;
@@ -146,9 +170,10 @@ impl Widget for MacrosView {
                 let xn = track.x + (tv.now.clamp(0.0, 1.0) * track.w as f32) as i32;
                 cx.canvas.fill_round_rect(Rect::new(xn - 2, track.y - 4, 4, track.h + 8), 2, c);
             }
-            let foot = Rect::new(text_x, card.bottom() - 32, title.w, 22);
-            let note = if mv.targets.is_empty() { "No targets: touch a knob, then this macro's number".to_string() } else { format!("{} of 8 targets · tap one for its range", mv.targets.len()) };
-            cx.text(FontId::Sans, t.size_small - 2.0, foot, Align::Left, t.text_faint, &note);
+            if mv.targets.is_empty() {
+                let empty = Rect::new(rows.x, rows.y, rows.w, 44);
+                cx.text(FontId::Sans, t.size_small, empty, Align::Left, t.text_dim, "Touch a knob in an effect, then this macro's number");
+            }
         }
         // Morph.
         cx.canvas.fill_round_rect(l.morph, t.radius, t.surface);
@@ -176,16 +201,19 @@ impl Widget for MacrosView {
         if st.changes.is_empty() {
             cx.text(FontId::Sans, t.size_small, Rect::new(inner.x, y, inner.w, 44), Align::Left, t.text_dim, "Save A, change some knobs, save B");
         }
-        for ch in &st.changes {
-            if y + 36 > l.snap.y - 8 { break; }
-            let row = Rect::new(inner.x, y, inner.w, 34);
+        for (k, ch) in st.changes.iter().enumerate() {
+            let row = Rect::new(inner.x, y, inner.w, CHANGE_H - 2);
+            if row.bottom() + CHANGE_H > l.snap.y - 8 && k + 1 < st.changes.len() {
+                cx.text(FontId::Sans, t.size_small - 1.0, row.take_top(20).0, Align::Left, t.text_faint, &format!("+ {} more", st.changes.len() - k));
+                break;
+            }
             cx.canvas.fill_rect(Rect::new(row.x, row.bottom(), row.w, 1), t.outline);
-            let (label, right) = row.take_left(row.w * 2 / 5);
+            let (top, bottom) = row.take_top(20);
+            let (now, label) = top.take_right(90);
             cx.text(FontId::Sans, t.size_small, label, Align::Left, t.text, &ch.label);
-            let (ab, now) = right.take_left(right.w * 3 / 5);
-            cx.text(FontId::Mono, t.size_small - 3.0, ab, Align::Right, t.text_dim, &format!("{} → {}", ch.a, ch.b));
             cx.text(FontId::Bold, t.size_small, now, Align::Right, t.text, &ch.now);
-            y += 36;
+            cx.text(FontId::Mono, t.size_small - 3.0, bottom.take_top(16).0, Align::Left, t.text_dim, &format!("A {}  →  B {}", ch.a, ch.b));
+            y += CHANGE_H;
         }
         cx.canvas.fill_round_rect(l.snap, 10, t.raised);
         cx.text(FontId::Bold, t.size_small, l.snap, Align::Center, t.text, "Snap back to A");
@@ -199,6 +227,10 @@ impl Widget for MacrosView {
         let l = layout(r);
         match phase {
             Touch::Down => {
+                if l.back.contains(x, y) {
+                    self.push(MacroAction::Back);
+                    return None;
+                }
                 if let Some(b) = l.banks.iter().position(|b| b.contains(x, y)) {
                     self.push(MacroAction::Bank(b));
                     return None;
@@ -213,11 +245,9 @@ impl Widget for MacrosView {
                 }
                 for (i, card) in l.cards.iter().enumerate() {
                     let m = self.state.bank * 4 + i;
-                    let (kx, _, d) = l.knobs[i];
-                    let text_x = (kx + d * 0.5) as i32 + 18;
-                    let top = card.y + 14 + 30 + 8;
-                    if card.contains(x, y) && x >= text_x && y >= top {
-                        let k = ((y - top) / TARGET_H) as usize;
+                    let rows = target_rows(*card);
+                    if rows.contains(x, y) {
+                        let k = ((y - rows.y) / TARGET_H) as usize;
                         if let Some(tv) = self.state.macros.get(m).and_then(|v| v.targets.get(k)) {
                             let target = tv.addr;
                             self.push(MacroAction::EditTarget { m, target });
