@@ -80,8 +80,10 @@ pub enum View {
     System,
 }
 
-/// The header's tabs: the music pages, and the Dev tab only with the
-/// developer tools on. Prefs is not a tab (SHIFT + MENU).
+/// The header's tabs, in the order of the approved layout spec
+/// (docs/project/layout-spec.md, approved by the owner 2026-11-11): the music
+/// pages, and the Dev tab only with the developer tools on. Prefs is not a
+/// tab (SHIFT + MENU).
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![View::Play, View::Clips, View::Synth, View::Looper];
     if dev {
