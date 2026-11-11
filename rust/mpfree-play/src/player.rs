@@ -23,16 +23,23 @@
 //! goes on as overdub. Erased notes are not played; [`Player::erased`]
 //! names them for the control thread to remove (`Clip::remove_note`).
 //!
+//! **Cues** (see [`crate::view`]). A track's waiting cue starts on the
+//! first bar line the playhead plays: the clip so far plays the ticks
+//! before it, its notes still sounding end on it, and the cued clip plays
+//! from it. [`Player::started`] names each switch for the control thread.
+//! A switch on the armed track ends a replace pass (the take goes on as
+//! overdub).
+//!
 //! **No allocation, locks or panics** in `process`: fixed tables only. Full
 //! tables are counted in [`Stats`], never silently dropped.
 
 use std::ops::Range;
 
-use mpfree_seq::{DestId, Note};
+use mpfree_seq::{DestId, Note, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
-use crate::view::{ClipView, PlayView};
+use crate::view::{ClipView, PlayView, Started, Switches};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -131,6 +138,10 @@ pub struct Player {
     replaced: bool,
     /// Record-ons so far: the number of the latest take.
     take: u32,
+    /// Cues started that the view does not show yet.
+    switches: Switches,
+    started: [Started; MAX_TRACKS],
+    n_started: usize,
 }
 
 const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
@@ -155,7 +166,17 @@ impl Player {
             replacing: None,
             replaced: false,
             take: 0,
+            switches: Switches::new(),
+            started: [Started { track: 0, slot: None, at: 0, origin: 0 }; MAX_TRACKS],
+            n_started: 0,
         }
+    }
+
+    /// The cues that started in the last [`Player::process`] call, in the
+    /// order they did. Apply each to the launches ([`Started::apply`]) and
+    /// compile a new view.
+    pub fn started(&self) -> &[Started] {
+        &self.started[..self.n_started]
     }
 
     /// The notes replace recording erased in the last
@@ -176,6 +197,8 @@ impl Player {
     /// Play one period: the transport's `block` for it, the clips in `view`.
     pub fn process(&mut self, view: &PlayView, block: &Block, out: &mut impl Sink) {
         self.n_erased = 0;
+        self.n_started = 0;
+        self.switches.follow(view);
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
@@ -231,13 +254,34 @@ impl Player {
         }
         self.replace_state(view, span, &ticks);
         self.n_starts = 0;
+        let bar = span.meter.bar_ticks();
         for (i, track) in view.tracks.iter().enumerate() {
             let replace = if view.armed == Some(i) { self.replacing } else { None };
-            if track.mute && replace.is_none() {
-                continue;
+            // A cue starting in this span: the clip so far plays up to it.
+            let switch = self.switches.due(view, i, &ticks, bar);
+            let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
+            if let Some((clip, origin)) = self.switches.playing(view, i) {
+                if !(track.mute && replace.is_none()) {
+                    self.collect(clip, origin, i as u16, track.dest, span.swing, &before, replace, !track.mute, switch);
+                }
             }
-            if let Some(clip) = &track.clip {
-                self.collect(clip, i as u16, track.dest, span.swing, &ticks, replace, !track.mute);
+            let Some(at) = switch else { continue };
+            // A track starts one cue a call at most, and there are at most
+            // MAX_TRACKS tracks, so this always fits.
+            if let (Some(s), Some(slot)) = (self.switches.start(view, i, at), self.started.get_mut(self.n_started)) {
+                *slot = s;
+                self.n_started += 1;
+            }
+            for s in &mut self.sounding[..self.n_sounding] {
+                if usize::from(s.track) == i {
+                    s.off = s.off.min(at);
+                }
+            }
+            if view.armed == Some(i) {
+                self.replacing = None;
+            }
+            if let (Some((clip, origin)), false) = (self.switches.playing(view, i), track.mute) {
+                self.collect(clip, origin, i as u16, track.dest, span.swing, &(at..ticks.end), None, true, None);
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -291,29 +335,32 @@ impl Player {
         if self.replaced {
             return;
         }
-        let clip = view.armed.and_then(|t| view.tracks.get(t)).and_then(|t| t.clip.as_ref());
-        if let Some(clip) = clip.filter(|c| c.song_len > 0.0 && ticks.end > c.origin) {
-            let from = (ticks.start - clip.origin).max(0) as f64;
+        let clip = view.armed.and_then(|t| self.switches.playing(view, t));
+        if let Some((clip, origin)) = clip.filter(|(c, o)| c.song_len > 0.0 && ticks.end > *o) {
+            let from = (ticks.start - origin).max(0) as f64;
             self.replacing = Some((from / clip.song_len).floor() as i64);
             self.replaced = true;
         }
     }
 
-    /// The notes of `clip` whose tick is in `ticks`. With `replace`, the
-    /// notes of that pass are erased instead; without `sound`, the rest are
-    /// not played.
+    /// The notes of `clip`, from `origin`, whose tick is in `ticks`. With
+    /// `replace`, the notes of that pass are erased instead; without
+    /// `sound`, the rest are not played. With `cut`, notes end there at the
+    /// latest.
     #[allow(clippy::too_many_arguments)]
     fn collect(
         &mut self,
         clip: &ClipView,
+        origin: Tick,
         track: u16,
         dest: DestId,
         transport_swing: Swing,
         ticks: &Range<Tick>,
         replace: Option<i64>,
         sound: bool,
+        cut: Option<Tick>,
     ) {
-        if clip.notes.is_empty() || clip.song_len <= 0.0 {
+        if clip.notes.is_empty() || clip.song_len <= 0.0 || ticks.is_empty() {
             return;
         }
         let swing = clip.swing.unwrap_or(transport_swing);
@@ -322,7 +369,7 @@ impl Player {
         let delay = f64::from(swing.grid) * f64::from(swing.amount.saturating_sub(50)) / 50.0;
         let lo = ticks.start as f64 - delay - 1.0;
         let hi = ticks.end as f64 + 1.0;
-        let origin = clip.origin as f64;
+        let origin = origin as f64;
         let first_pass = ((lo - origin) / clip.song_len).floor().max(0.0);
         let last_pass = ((hi - origin) / clip.song_len).floor();
         if last_pass < first_pass {
@@ -357,6 +404,7 @@ impl Player {
                     continue;
                 }
                 let off = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
+                let off = cut.map_or(off, |c| off.min(c));
                 if self.n_starts == MAX_STARTS {
                     self.stats.dropped += 1;
                     continue;
