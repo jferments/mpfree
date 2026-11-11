@@ -679,6 +679,75 @@ pub enum PadsPlay {
     /// Notes: pad 1 plays note `from`, each pad after it a semitone
     /// higher, through the kit's keygroups (pads with [`Keys`]).
     Keys { from: u8 },
+    /// 16 Levels: every pad of a bank plays pad `pad`, pad 1 to 16 at
+    /// sixteen steps of `by` (pad 1 the lowest).
+    Levels { pad: u8, by: Levels },
+}
+
+/// What 16 Levels spreads across the pads. Pad `k` (0 to 15) plays at the
+/// step [`Levels::velocity`], [`Levels::semitones`] and so on give it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Levels {
+    /// Pad 1 the softest (velocity 8) to pad 16 the hardest (127).
+    #[default]
+    Velocity,
+    /// A semitone a pad: pad 9 as recorded, pad 1 eight below, pad 16
+    /// seven above.
+    Tune,
+    /// The filter's cutoff, 100 Hz to 20 kHz evenly in octaves (a 2-pole
+    /// low-pass when the pad's filter is off).
+    Cutoff,
+    /// The amp envelope's decay, 25 ms to about 4.5 s, falling to
+    /// silence.
+    Decay,
+    /// Where the sound starts, pad `k` at `k / 16` of the way through (a
+    /// granular pad's grain position, `k / 15`).
+    Start,
+}
+
+impl Levels {
+    pub const ALL: [Levels; 5] = [
+        Levels::Velocity,
+        Levels::Tune,
+        Levels::Cutoff,
+        Levels::Decay,
+        Levels::Start,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Levels::Velocity => "Velocity",
+            Levels::Tune => "Tune",
+            Levels::Cutoff => "Cutoff",
+            Levels::Decay => "Decay",
+            Levels::Start => "Start",
+        }
+    }
+
+    /// Pad `k`'s velocity: 8, 16, ... 127.
+    pub fn velocity(k: usize) -> u8 {
+        ((k.min(15) as u32 + 1) * 127).div_ceil(16) as u8
+    }
+
+    /// Pad `k`'s semitones from the sound as recorded: -8 to +7.
+    pub fn semitones(k: usize) -> i32 {
+        k.min(15) as i32 - 8
+    }
+
+    /// Pad `k`'s cutoff: 100 Hz to 20 kHz.
+    pub fn cutoff_hz(k: usize) -> f32 {
+        100.0 * 200f32.powf(k.min(15) as f32 / 15.0)
+    }
+
+    /// Pad `k`'s decay: 25 ms doubling every two pads.
+    pub fn decay_ms(k: usize) -> f32 {
+        25.0 * (k.min(15) as f32 / 2.0).exp2()
+    }
+
+    /// Pad `k`'s start, 0 to 15/16 of the region.
+    pub fn start(k: usize) -> f32 {
+        k.min(15) as f32 / 16.0
+    }
 }
 
 /// Where slices go on the keyboard by default: from note 36 (C2 as
@@ -1079,13 +1148,15 @@ impl Project {
         self.pads_play
     }
 
-    /// What the pads play: their own sounds, or notes through the
-    /// keygroups. One undo step.
+    /// What the pads play: their own sounds, notes through the
+    /// keygroups, or 16 Levels of one pad. One undo step.
     pub fn set_pads_play(&mut self, play: PadsPlay) -> Result<(), ModelError> {
-        if let PadsPlay::Keys { from } = play {
-            if from > 127 - 15 {
-                return Err(ModelError::BadPad);
+        match play {
+            PadsPlay::Keys { from } if from > 127 - 15 => return Err(ModelError::BadPad),
+            PadsPlay::Levels { pad, .. } if usize::from(pad) >= PADS => {
+                return Err(ModelError::BadPad)
             }
+            _ => {}
         }
         if play == self.pads_play {
             return Ok(());
