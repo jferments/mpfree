@@ -22,6 +22,6 @@ pub mod record;
 pub mod view;
 
 pub use arp::ArpHost;
-pub use player::{Event, Out, Player, Sink, Stats, ALL};
+pub use player::{Erased, Event, Out, Player, Sink, Stats, ALL};
 pub use record::{Recorder, Taken};
 pub use view::{CompileError, Launch, PlayView};
