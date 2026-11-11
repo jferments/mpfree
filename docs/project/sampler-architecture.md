@@ -159,6 +159,15 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 - **Pressure:** each pad has one pressure route (`Pad.pressure`: a `PressureTarget` and a depth from −1 to 1). `Event::Pressure { pad, value }` (0-127, from the pad's polyphonic aftertouch) moves that pad's playing voices; a voice that starts later begins unpressed. Pressure is smoothed with a 5 ms one-pole. Full pressure at depth 1 gives +12 dB level (the gain glides over each 16-frame sub-block, so it never clicks), +12 semitones pitch (sample voices change their step; granular voices change the grain pitch), +4 octaves of filter cutoff (needs the pad's filter on), ×16 grain density, ×8 grain length, the grain position moved by the whole region (wrapping), or +100 % spray. A negative depth moves the other way. Built and tested (`tests/pressure.rs`); it also runs in `tests/no_alloc.rs`.
 - **Voice allocation:** a fixed pool (start at 64, set by measurement). Stealing order: same pad's oldest voice if the pad's polyphony is exceeded, then the quietest releasing voice, then the oldest.
 
+### In the pad player
+
+From round 6 the pad player (`mpfree-hello`, `src/sampler.rs`) plays through this engine instead of its round 3 mixer. The `drums` step keeps the old mixer.
+- Each kit in `kits.bin` becomes a project with one engine view, built before the sound starts. Picking a kit swaps views, so nothing is built, allocated or freed in the audio loop, and sounds already playing finish.
+- Levels match the old mixer: pads are raised 3.01 dB to undo the centre pan, and velocity is sent as `round(127·√(v/127))`, so the engine's squared level law comes out linear.
+- A Grains kit plays the first kit's sounds as granular pads while they are held. Pressure moves density, grain size, position or pitch, one per row of pads.
+- Pad pressure from the controller goes to the engine as `Event::Pressure`, and Note Repeat's note-offs go to it as `Event::NoteOff`.
+- The 30 s status line adds the engine's render time per period (mean and max, and as a share of the 2.9 ms period), steals, dropped events, and peak and skipped grains. On the RK3288, these figures set the voice and grain limits.
+
 ### Warp and stretch
 
 - **High quality:** `mpfree-stretch` runs Signalsmith Stretch on a worker to render a stretched copy at the project tempo. When the tempo changes, the region keeps playing with the real-time stretch below until the new copy is ready, then crossfades to it at the next loop start.
