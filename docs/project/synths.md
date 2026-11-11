@@ -199,4 +199,4 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
 - A drum synth for the pads.
-- Plugin hosting: the CLAP host is built ([Plugins](plugins.md)); next, the sandbox process.
+- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).

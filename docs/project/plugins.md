@@ -1,6 +1,6 @@
 # Plugins: the CLAP host
 
-**Status:** 2026-11-11, step P1 of the plugin plan, host-only and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../rust/mpfree-clap). Nothing in the pad player uses it yet, and no third-party plugin has been tried. The plan for plugins is in the design doc "MPFree synths and plugins: design" and the synth skill tree (P1 to P6).
+**Status:** 2026-11-11, steps P1 (the host) and P2 (the sandbox) of the plugin plan, host-only and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../rust/mpfree-plughost). Nothing in the pad player uses them yet, and no third-party plugin has been tried. The plan for plugins is in the design doc "MPFree synths and plugins: design" and the synth skill tree (P1 to P6).
 
 MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
 
@@ -38,14 +38,37 @@ CLAP names two threads. The main thread is the control thread that opened the fi
 - `ClapNode::process` never allocates or locks. Its event list and audio buffers are made in `prepare`, and parameter values are atomics shared with `ClapControl`. `tests/no_alloc.rs` checks this with the counting allocator: 2000 blocks of notes, pressure, bend, parameters and an effect after the synth.
 - `prepare` and dropping the node stop processing and deactivate from the control thread. Nothing else can touch the node at that moment, and for that moment the host's thread-check calls this thread the audio thread, which CLAP allows.
 - A plugin's id, name and parameter list become `'static` data, because nodes describe themselves that way. Each distinct plugin is kept once, for the life of the program.
-- The host can only check its own side. A plugin that allocates or blocks in `process` would still hurt the audio thread. That is what the sandbox process (P2) is for: the plugin runs in its own process with a deadline each period, and gives silence and a count when it misses.
+- The host can only check its own side. A plugin that allocates or blocks in `process` would still hurt the audio thread. That is what the sandbox (P2, below) is for: the plugin runs in its own process with a deadline each block, and gives silence and a count when it misses.
+
+## P2: the sandbox
+
+[`rust/mpfree-plughost`](../../rust/mpfree-plughost) runs each plugin in its own process, `mpfree-plughost`, so a plugin that crashes, hangs or blocks can't take MPFree's audio thread with it. The node interface stays the same: a sandboxed plugin goes wherever an in-process one goes.
+
+- **Starting one.** `spawn(exe, plugin_file, id)` starts the process for one plugin. It returns a `SandboxNode`, which is a `Node` with the same `clap:` id and the same parameters as the in-process node, and a `Sandbox`, the control-thread handle. The process loads the plugin with `mpfree-clap` and reports its name, kind and parameters. A missing file or plugin id comes back as `Error::Plugin` with the reason.
+- **Each block.** The node writes the block's context, events and input into memory it shares with the process (a memfd of about 144 KB). It bumps a sequence number and wakes the process with a futex. The process runs the plugin on its own audio thread, writes the output and the parameter values back, and bumps its own number. The node waits for that until a deadline: half the block's length by default (`Deadline::Fraction(0.5)`), or a fixed time for offline work (`Deadline::Fixed`).
+  - **On time:** the plugin's output, sample for sample what it gives in-process.
+  - **Late, a miss:** an instrument adds nothing and an effect passes its input through. The late block's events still reach the plugin. Until the process catches up, the node doesn't post again, and those blocks count as **busy**.
+  - Blocks longer than the size the process was prepared for are cut into pieces, one round trip each.
+  - A `reset()` reaches the plugin just before its next block.
+- **Crashes.** `Sandbox::poll()`, called from the control thread (every UI frame, say), finds a process gone. It gives the exit code, or the signal as a negative number. From then on the node is silent without waiting, and those blocks count as **down**. `Sandbox::restart(state)` starts a new process on the same shared memory, prepares it as the node was, and loads state saved earlier with `save_state()`. The process dies with MPFree (`PR_SET_PDEATHSIG`), and a crash leaves no core file.
+- **Main-thread work.** Prepare, state and a value's text go over a socket from the control thread. The process answers the plugin's own main-thread requests (`on_main_thread` callbacks) itself, after each message and every 100 ms.
+- **Counters.** `SandboxNode::stats()` gives blocks, misses, busy, down, crashes, restarts and the plugin's own failed blocks.
+
+Real time: the node's side of a block never allocates or locks. `tests/no_alloc.rs` checks this with the counting allocator, including a miss and busy blocks. Its wait is a futex wait, bounded by the deadline. The price is one round trip per block: a wake, two context switches, and copying the block in and out (an effect's input both ways). That isn't measured on the MPC yet; it comes with the plugin passports (P4).
+
+Not yet:
+
+- The plugin's restart and rescan requests (CLAP `request_restart`, a parameter or port rescan) are seen inside the process but not passed back to MPFree.
+- A sidechain input isn't passed to the process.
+- The process's audio thread runs at normal priority. Real-time priority on the device comes with MPFree's own priority setup there.
+- One process per plugin. If round trips cost too much on the MPC, several cheap plugins could share one process.
 
 ## Our test plugins
 
 `mpfree_clap::testplug` holds two small CLAP plugins of our own, so the host is tested without anyone else's binary:
 
 - **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects; pressure and tuning expressions.
-- **MPFree Test Gain:** a stereo effect, with a Fail switch that makes `process` return an error.
+- **MPFree Test Gain:** a stereo effect, with a Fail switch that makes `process` return an error. For the sandbox's tests only, a Stall setting makes `process` sleep and a Crash switch makes it abort its process.
 
 `rust/mpfree-clap-testplug` builds the same two as a real shared library, `libmpfree_clap_testplug.so`, which the tests load with `dlopen`.
 
@@ -70,9 +93,25 @@ CLAP names two threads. The main thread is the control thread that opened the fi
 
 The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including the `dlopen` test.
 
+`cargo test --locked -p mpfree-plughost` (from `rust/`), with the real `.clap` file in a real `mpfree-plughost` process:
+
+- the control messages round-trip and junk is refused; the process's arguments and events read back;
+- the sandboxed node has the same id, name, kind, parameters and values as the in-process one;
+- the test synth gives exactly the same samples sandboxed as in-process, for notes, pressure, bend, a parameter event and `AllOff`, and the values it sends back arrive; a reset silences it in both;
+- the test gain matches in-process sample for sample, with blocks cut to the prepared size;
+- a plugin that sleeps 1 s in `process` against a 30 ms deadline: the node doesn't wait for it, the effect stays dry, the next block is busy, and once it wakes the queued change goes with the next block;
+- a frozen process (`SIGSTOP`) is a silent miss for an instrument, and when it thaws the note from the missed block sounds;
+- a plugin that aborts its process: a miss, `poll()` sees `SIGABRT`, the node is down without waiting, and `restart()` brings it back with the saved state; a process killed from outside is counted once and plays again after a restart;
+- state saved in one process loads in another, junk state is refused, and value text matches in-process;
+- a missing plugin id, a missing file and a missing binary fail cleanly;
+- dropping the node and the handle ends and reaps the process;
+- a sandboxed synth plays on a track host track (`tests/sandbox.rs`);
+- no allocation on the node's side of a block (`tests/no_alloc.rs`).
+
+These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PLUGHOST_TEST_EXE` names a wrapper that starts the ARM build of the process under qemu, because a process started from inside qemu-user runs on the host CPU. Under load (eight runs at once, 80 runs) they passed every time.
+
 ## Next
 
-- **P2, the sandbox:** `mpfree-plughost`, a separate process per plugin with shared-memory blocks, a deadline each period, silence and a count on a miss, and a restart from saved state after a crash. The node interface stays the same.
 - **P3, ARM builds:** reproducible armv7 build recipes for free plugins (Surge XT, Dexed, Airwindows first), with their licenses and sources.
 - **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
 - In the app: a plugin as a track host instrument and as a mixer insert, and plugins in the instrument browser. The pad player's wiring goes through the Hello MPC work.
