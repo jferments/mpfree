@@ -6,6 +6,7 @@
 //!   sensitivity that can change without re-analysing.
 //! - [`estimate_tempo`] and [`loop_tempo`]: tempo for beat chop and warp.
 //! - [`sound_spans`]: silence split and trim.
+//! - [`root_pitch`]: the note a sample plays (YIN), for tuning and keygroups.
 //! - [`nearest_zero_crossing`]: snapping markers so slices don't click.
 //!
 //! Design: `docs/project/sampler-architecture.md` (Analysis). Nothing here
@@ -15,12 +16,14 @@
 pub mod fft;
 pub mod onsets;
 pub mod peaks;
+pub mod pitch;
 pub mod silence;
 pub mod tempo;
 pub mod zero;
 
 pub use onsets::{Onset, OnsetAnalysis};
 pub use peaks::{Column, PeakError, PeakPyramid, BASE_BLOCK, LEVELS};
+pub use pitch::{note_name, root_pitch, yin, Pitch, PitchSettings};
 pub use silence::{sound_spans, SilenceSettings};
 pub use tempo::{estimate_tempo, loop_tempo, Tempo};
 pub use zero::{nearest_zero_crossing, previous_zero_crossing};
