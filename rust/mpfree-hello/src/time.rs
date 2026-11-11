@@ -615,7 +615,7 @@ mod tests {
         let mut pads = Fake::default();
         let one_bar = |name: &str, notes: &[(i64, u8)]| {
             let mut c = Clip::new(name, 3840);
-            c.notes = notes.iter().map(|&(tick, note)| mpfree_seq::Note { tick, len: 100, note, velocity: 100 }).collect();
+            c.notes = notes.iter().map(|&(tick, note)| mpfree_seq::Note { tick, len: 100, note, velocity: 100, chance: 100 }).collect();
             c
         };
         h.project.tracks[0].slots[0] = Some(one_bar("A", &[(0, 4), (1920, 4)]));
