@@ -159,18 +159,21 @@ impl MasterSafety {
     #[inline]
     fn window_min(&mut self, need: f32) -> f32 {
         let cap = self.q.len();
+        // Ring positions: head < cap and len <= cap, so one wrap is enough
+        // (no division per sample).
+        let wrap = |i: usize| if i >= cap { i - cap } else { i };
         // Drop queued values that are no smaller than the new one.
         while self.q_len > 0 {
-            let back = (self.q_head + self.q_len - 1) % cap;
+            let back = wrap(self.q_head + self.q_len - 1);
             if self.q[back].1 >= need { self.q_len -= 1; } else { break; }
         }
-        let at = (self.q_head + self.q_len) % cap;
+        let at = wrap(self.q_head + self.q_len);
         self.q[at] = (self.n, need);
         self.q_len += 1;
         // Drop values older than the window.
         let oldest = self.n.saturating_sub(self.look as u64);
         while self.q[self.q_head].0 < oldest {
-            self.q_head = (self.q_head + 1) % cap;
+            self.q_head = wrap(self.q_head + 1);
             self.q_len -= 1;
         }
         self.q[self.q_head].1
@@ -181,8 +184,16 @@ impl MasterSafety {
         let ceil = db_to_gain(self.v[2]);
         let knee = ceil * 0.5;
         let look = self.look as f64;
+        // The trim as a gain, worked out again only while it glides; the
+        // loudest output, turned into dB once per piece.
+        let (mut t_db, mut t) = (f32::NAN, 1.0);
+        let mut loudest = 0.0f32;
         for i in 0..l.len() {
-            let t = db_to_gain(self.trim.next());
+            let d = self.trim.next();
+            if d != t_db {
+                t_db = d;
+                t = db_to_gain(d);
+            }
             let a = self.dc[0].run(l[i] * t);
             let b = self.dc[1].run(r[i] * t);
             let peak = a.abs().max(b.abs());
@@ -213,11 +224,12 @@ impl MasterSafety {
             self.gain_now = if mode == 0 { g } else { 1.0 };
             let out_peak = ya.abs().max(yb.abs());
             if out_peak > 1.0 { self.stats.clipped += 1; }
-            let pd = gain_to_db(out_peak);
-            if pd > self.stats.peak_out_db { self.stats.peak_out_db = pd; }
+            loudest = loudest.max(out_peak);
             l[i] = ya;
             r[i] = yb;
         }
+        let pd = gain_to_db(loudest);
+        if pd > self.stats.peak_out_db { self.stats.peak_out_db = pd; }
         let red = gain_to_db(self.gain_now).min(0.0);
         if red < self.stats.max_reduction_db { self.stats.max_reduction_db = red; }
         self.v[ids::REDUCTION as usize] = red.max(-60.0);
