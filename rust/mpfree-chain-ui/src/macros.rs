@@ -5,28 +5,38 @@
 //! switches). Each card has its knob (drag up or down), its name in its
 //! colour, and up to eight targets, each its name over a bar with the part
 //! of the parameter's travel the macro covers, a mark where it is now, and
-//! the range as text. A tap on a target row asks the app to edit its range
-//! and curve.
+//! the range as text. A tap on a target row opens its editor over the
+//! cards: drag the From and To handles along the parameter's travel, pick
+//! a curve (a drawing shows what the macro's turn does to the target),
+//! Flip swaps the ends, Remove takes the target off the macro, Done
+//! closes.
 //!
 //! Right: the morph between scene A and scene B: a slider (drag), what
 //! changes from A to B with where each parameter is now, Snap back to A,
 //! and Save as A or B (the values as they are now).
 
+use mpfree_mod::{value_text, MacroMap, MapCurve};
 use mpfree_param::ParamAddr;
+use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::knob;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 
-use crate::state::{macro_color, on_accent, MacrosState};
+use crate::state::{macro_color, range_text, MacrosState, TargetView};
 
 /// What a touch on the panel meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MacroAction {
-    /// Set macro `m` (0 to 1): send `ModEvent::Set` for `ParamAddr::macro_value(m)`.
+    /// Set macro `m` (0 to 1): send `ModEvent::hand` for
+    /// `ParamAddr::macro_value(m)` (a `Set` unless it has a lane or its
+    /// track is recording).
     Macro { m: usize, value: f32 },
     /// Show macros 1-4 (0) or 5-8 (1).
     Bank(usize),
-    /// Open the range and curve editor for one of macro `m`'s targets.
-    EditTarget { m: usize, target: ParamAddr },
+    /// Change one of macro `m`'s targets (its range or curve, from the
+    /// target editor): send `Change::Map { m, map }`.
+    Map { m: usize, map: MacroMap },
+    /// Take a target off its macro: `Change::Unmap`.
+    Unmap(ParamAddr),
     /// Set the morph position (0 = A, 1 = B).
     Morph(f32),
     /// Store the values as they are now as scene A (0) or B (1).
@@ -45,6 +55,8 @@ const KNOB_D: f32 = 60.0;
 /// The range text's width on a target's bar line.
 const RANGE_W: i32 = 128;
 const DRAG_TRAVEL: f32 = 300.0;
+/// The curves the target editor offers, in its chips' order.
+pub const CURVES: [MapCurve; 4] = [MapCurve::Linear, MapCurve::Exp, MapCurve::Log, MapCurve::S];
 
 pub struct MacrosLayout {
     pub back: Rect,
@@ -55,6 +67,48 @@ pub struct MacrosLayout {
     pub slider: Rect,
     pub snap: Rect,
     pub save: [Rect; 2],
+    pub editor: EditorLayout,
+}
+
+/// The target editor, over the macro cards.
+pub struct EditorLayout {
+    pub area: Rect,
+    pub done: Rect,
+    /// The parameter's travel, with the From and To handles on it.
+    pub track: Rect,
+    /// What a turn of the macro does to the target, 0 to 100 %.
+    pub graph: Rect,
+    pub curves: [Rect; 4],
+    pub flip: Rect,
+    pub remove: Rect,
+}
+
+fn editor_layout(area: Rect) -> EditorLayout {
+    let inner = area.inset(20);
+    let done = Rect::new(inner.right() - 104, inner.y, 104, 38);
+    let track = Rect::new(inner.x + 24, inner.y + 120, inner.w - 48, 44);
+    let (foot, _) = inner.take_bottom(46);
+    let curves_y = foot.y - 24 - 44;
+    let cw = (inner.w - 3 * 8) / 4;
+    let curves =
+        std::array::from_fn(|i| Rect::new(inner.x + i as i32 * (cw + 8), curves_y, cw, 44));
+    let graph_top = track.bottom() + 44;
+    let graph = Rect::new(
+        inner.x + 24,
+        graph_top,
+        inner.w - 48,
+        (curves_y - 58 - graph_top).max(40),
+    );
+    let half = (foot.w - 8) / 2;
+    EditorLayout {
+        area,
+        done,
+        track,
+        graph,
+        curves,
+        flip: Rect::new(foot.x, foot.y, half, foot.h),
+        remove: Rect::new(foot.x + half + 8, foot.y, half, foot.h),
+    }
 }
 
 pub fn layout(r: Rect) -> MacrosLayout {
@@ -91,7 +145,9 @@ pub fn layout(r: Rect) -> MacrosLayout {
         Rect::new(snap.right() + 8, foot.y, half, foot.h),
         Rect::new(snap.right() + 8 + half + 6, foot.y, half, foot.h),
     ];
+    let editor = editor_layout(grid);
     MacrosLayout {
+        editor,
         back,
         banks,
         cards,
@@ -114,8 +170,16 @@ fn target_rows(card: Rect) -> Rect {
 }
 
 enum Drag {
-    Macro { m: usize, y0: i32, v0: f32 },
+    Macro {
+        m: usize,
+        y0: i32,
+        v0: f32,
+    },
     Morph,
+    /// The From (`to` false) or To handle of the target being edited.
+    End {
+        to: bool,
+    },
 }
 
 /// See the module docs.
@@ -142,8 +206,15 @@ impl MacrosView {
     pub fn state(&self) -> &MacrosState {
         &self.state
     }
+    /// Shows a new state. Of the old one it keeps only an open target
+    /// editor, while its target is still there.
     pub fn update(&mut self, st: MacrosState) {
+        let editing = st.editing.or(self.state.editing);
         self.state = st;
+        self.state.editing = editing;
+        if self.editing().is_none() {
+            self.state.editing = None;
+        }
     }
     pub fn take_actions(&mut self) -> Vec<MacroAction> {
         std::mem::take(&mut self.actions)
@@ -156,11 +227,62 @@ impl MacrosView {
                     v.value = value;
                 }
             }
-            MacroAction::Bank(b) => self.state.bank = b,
+            MacroAction::Bank(b) => {
+                self.state.bank = b;
+                self.state.editing = None;
+            }
             MacroAction::Morph(p) => self.state.morph = p,
-            _ => {}
+            MacroAction::Map { m, map } => {
+                let tv = self
+                    .state
+                    .macros
+                    .get_mut(m)
+                    .and_then(|v| v.targets.iter_mut().find(|t| t.addr == map.target));
+                if let Some(tv) = tv {
+                    tv.from = map.from;
+                    tv.to = map.to;
+                    tv.curve = map.curve;
+                    if let Some(i) = tv.info {
+                        tv.range_text = range_text(&i, i.from_unit(map.from), i.from_unit(map.to));
+                    }
+                }
+            }
+            MacroAction::Unmap(target) => {
+                for v in &mut self.state.macros {
+                    v.targets.retain(|t| t.addr != target);
+                }
+                self.state.editing = None;
+            }
+            MacroAction::Back => self.state.editing = None,
+            MacroAction::Capture(_) => {}
         }
         self.actions.push(a);
+    }
+
+    /// The target being edited, and its macro.
+    fn editing(&self) -> Option<(usize, &TargetView)> {
+        let (m, k) = self.state.editing?;
+        Some((m, self.state.macros.get(m)?.targets.get(k)?))
+    }
+
+    /// The editing target's map with `f` applied, as an action.
+    fn edit(&mut self, f: impl Fn(&mut MacroMap)) {
+        let Some((m, tv)) = self.editing() else {
+            return;
+        };
+        let mut map = MacroMap {
+            target: tv.addr,
+            from: tv.from,
+            to: tv.to,
+            curve: tv.curve,
+        };
+        f(&mut map);
+        self.push(MacroAction::Map { m, map });
+    }
+
+    fn track_pos(l: &MacrosLayout, x: i32) -> f32 {
+        let t = l.editor.track;
+        (((x - t.x) as f32 / t.w.max(1) as f32).clamp(0.0, 1.0) * 100.0).round() / 100.0
     }
 
     fn slider_pos(l: &MacrosLayout, x: i32) -> f32 {
@@ -219,7 +341,13 @@ impl Widget for MacrosView {
                 label,
             );
         }
+        if let Some((m, tv)) = self.editing() {
+            paint_editor(cx, &l.editor, m, &st.macros[m].name, tv);
+        }
         for (i, card) in l.cards.iter().enumerate() {
+            if self.editing().is_some() {
+                break;
+            }
             let m = st.bank * 4 + i;
             let Some(mv) = st.macros.get(m) else { continue };
             let c = macro_color(&t, m);
@@ -445,7 +573,7 @@ impl Widget for MacrosView {
                 t.size_small,
                 *b,
                 Align::Center,
-                on_accent(&t),
+                t.on_accent,
                 if k == 0 { "Save A" } else { "Save B" },
             );
         }
@@ -463,6 +591,28 @@ impl Widget for MacrosView {
                     self.push(MacroAction::Bank(b));
                     return None;
                 }
+                if self.editing().is_some() && l.editor.area.contains(x, y) {
+                    let e = &l.editor;
+                    if e.done.contains(x, y) {
+                        self.state.editing = None;
+                    } else if e.track.inset_xy(-16, -14).contains(x, y) {
+                        let (_, tv) = self.editing()?;
+                        let p = Self::track_pos(&l, x);
+                        let to = (p - tv.to).abs() < (p - tv.from).abs()
+                            || ((p - tv.to).abs() == (p - tv.from).abs() && p > tv.to);
+                        self.drag = Some((finger, Drag::End { to }));
+                        self.edit(|m| *if to { &mut m.to } else { &mut m.from } = p);
+                    } else if let Some(c) = e.curves.iter().position(|c| c.contains(x, y)) {
+                        self.edit(|m| m.curve = CURVES[c]);
+                    } else if e.flip.contains(x, y) {
+                        self.edit(|m| std::mem::swap(&mut m.from, &mut m.to));
+                    } else if e.remove.contains(x, y) {
+                        let (_, tv) = self.editing()?;
+                        let target = tv.addr;
+                        self.push(MacroAction::Unmap(target));
+                    }
+                    return None;
+                }
                 for (i, &(kx, ky, d)) in l.knobs.iter().enumerate() {
                     let m = self.state.bank * 4 + i;
                     if ((x as f32 - kx).powi(2) + (y as f32 - ky).powi(2)).sqrt() <= d * 0.5 + 8.0 {
@@ -476,9 +626,11 @@ impl Widget for MacrosView {
                     let rows = target_rows(*card);
                     if rows.contains(x, y) {
                         let k = ((y - rows.y) / TARGET_H) as usize;
-                        if let Some(tv) = self.state.macros.get(m).and_then(|v| v.targets.get(k)) {
-                            let target = tv.addr;
-                            self.push(MacroAction::EditTarget { m, target });
+                        let fit = (rows.h / TARGET_H).max(1) as usize;
+                        let n = self.state.macros.get(m).map_or(0, |v| v.targets.len());
+                        // The last row is "+ n more" when they don't all fit.
+                        if k < n && !(k + 1 == fit && n > fit) {
+                            self.state.editing = Some((m, k));
                         }
                         return None;
                     }
@@ -518,6 +670,13 @@ impl Widget for MacrosView {
                             self.push(MacroAction::Morph(p));
                         }
                     }
+                    Drag::End { to } => {
+                        let p = Self::track_pos(&l, x);
+                        let (_, tv) = self.editing()?;
+                        if p != if to { tv.to } else { tv.from } {
+                            self.edit(|m| *if to { &mut m.to } else { &mut m.from } = p);
+                        }
+                    }
                 }
                 None
             }
@@ -529,4 +688,149 @@ impl Widget for MacrosView {
             }
         }
     }
+}
+
+/// The target editor: what it edits, the range on the parameter's travel,
+/// the drawing of the curve, the curve chips, Flip and Remove.
+fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &TargetView) {
+    let t = cx.theme.clone();
+    let c = macro_color(&t, m);
+    cx.canvas.fill_round_rect(e.area, t.radius, t.surface);
+    let inner = e.area.inset(20);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        Rect::new(inner.x, inner.y, inner.w - 120, 20),
+        Align::Left,
+        c,
+        &format!("MACRO {} · {}", m + 1, name.to_uppercase()),
+    );
+    cx.text(
+        FontId::Bold,
+        t.size_title,
+        Rect::new(inner.x, inner.y + 22, inner.w - 120, 34),
+        Align::Left,
+        t.text,
+        &tv.label,
+    );
+    cx.canvas.fill_round_rect(e.done, 9, t.accent);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        e.done,
+        Align::Center,
+        t.on_accent,
+        "Done",
+    );
+    cx.text(
+        FontId::Sans,
+        t.size_body,
+        Rect::new(inner.x, inner.y + 64, inner.w, 26),
+        Align::Left,
+        t.text_dim,
+        &format!("Macro 0 → 100 % moves it {}", tv.range_text),
+    );
+    // The travel, the covered part, the handles and where it is now.
+    let tr = e.track;
+    let bar = Rect::new(tr.x, tr.y + tr.h / 2 - 4, tr.w, 8);
+    cx.canvas.fill_round_rect(bar, 4, t.raised);
+    let x_of = |p: f32| tr.x + (p.clamp(0.0, 1.0) * tr.w as f32) as i32;
+    let (xa, xb) = (x_of(tv.from.min(tv.to)), x_of(tv.from.max(tv.to)));
+    cx.canvas.fill_round_rect(
+        Rect::new(xa, bar.y, (xb - xa).max(3), bar.h),
+        4,
+        c.mix(t.surface, 0.35),
+    );
+    let xn = x_of(tv.now);
+    cx.canvas
+        .fill_round_rect(Rect::new(xn - 2, tr.y + 4, 4, tr.h - 8), 2, t.text_dim);
+    for (p, label) in [(tv.from, "From"), (tv.to, "To")] {
+        let x = x_of(p);
+        let h = Rect::new(x - 14, tr.y, 28, tr.h);
+        cx.canvas.fill_round_rect(h, 8, c);
+        cx.canvas.stroke_round_rect(h, 8, 1, t.outline);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            Rect::new(x - 60, tr.bottom() + 4, 120, 20),
+            Align::Center,
+            t.text_dim,
+            &match tv.info {
+                Some(i) => format!("{label} {}", value_text(&i, i.from_unit(p))),
+                None => format!("{label} {:.0} %", p * 100.0),
+            },
+        );
+    }
+    // What a turn of the macro does: macro along, target up.
+    let g = e.graph;
+    cx.canvas.stroke_round_rect(g, 8, 1, t.outline);
+    let pg = g.inset(10);
+    let pts: Vec<(f32, f32)> = (0..=48)
+        .map(|i| {
+            let x = i as f32 / 48.0;
+            let y = tv.from + (tv.to - tv.from) * tv.curve.apply(x);
+            (
+                pg.x as f32 + x * pg.w as f32,
+                pg.bottom() as f32 - y * pg.h as f32,
+            )
+        })
+        .collect();
+    let mut mask = Mask::new(g);
+    mask.polyline(&pts, 2.5);
+    mask.draw(cx.canvas, c);
+    cx.text(
+        FontId::Sans,
+        t.size_small - 2.0,
+        Rect::new(pg.x, g.bottom() + 4, pg.w, 18),
+        Align::Left,
+        t.text_faint,
+        "macro 0 %",
+    );
+    cx.text(
+        FontId::Sans,
+        t.size_small - 2.0,
+        Rect::new(pg.x, g.bottom() + 4, pg.w, 18),
+        Align::Right,
+        t.text_faint,
+        "macro 100 %",
+    );
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        Rect::new(inner.x, e.curves[0].y - 24, inner.w, 20),
+        Align::Left,
+        t.text_faint,
+        "CURVE",
+    );
+    for (k, r) in e.curves.iter().enumerate() {
+        let on = CURVES[k] == tv.curve;
+        cx.canvas
+            .fill_round_rect(*r, 10, if on { c } else { t.raised });
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            *r,
+            Align::Center,
+            if on { t.on_accent } else { t.text },
+            MapCurve::NAMES[k],
+        );
+    }
+    cx.canvas.fill_round_rect(e.flip, 10, t.raised);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        e.flip,
+        Align::Center,
+        t.text,
+        "Flip the range",
+    );
+    cx.canvas.stroke_round_rect(e.remove, 10, 1, t.bad);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        e.remove,
+        Align::Center,
+        t.bad,
+        "Remove from the macro",
+    );
 }

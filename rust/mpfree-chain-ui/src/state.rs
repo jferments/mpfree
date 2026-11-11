@@ -4,27 +4,21 @@
 
 use mpfree_fx::mpfree_node::{Curve, Node, ParamInfo};
 use mpfree_fx::{Chain, StripId};
-use mpfree_mod::{value_text, Binding, ModEngine, Source, KNOBS, MACROS};
+use mpfree_fx_ui::visual;
+use mpfree_fx_ui::{FxState, Scratch, CATALOGUE};
+use mpfree_mod::{value_text, Binding, MapCurve, ModEngine, Source, KNOBS, MACROS};
 use mpfree_param::{Owner, ParamAddr, Strip};
+use mpfree_synth_ui::widgets::Card;
 use mpfree_ui::{Color, Theme};
 
 /// Knobs on one page of an effect.
 pub const KNOBS_PER_PAGE: usize = 8;
 
-/// A macro's colour, from the theme: macro `m` always wears the same one,
-/// on its card, its Q-Link and every knob it moves.
+/// A macro's colour, from the theme's series colours (`Theme::track`):
+/// macro `m` always wears the same one, on its card, its Q-Link and every
+/// knob it moves, and every theme picks its own eight.
 pub fn macro_color(t: &Theme, m: usize) -> Color {
-    let palette = [
-        t.accent.mix(t.bad, 0.55),
-        t.warn.mix(t.bad, 0.35),
-        t.good,
-        t.warn,
-        t.accent,
-        t.bad,
-        t.good.mix(t.accent, 0.5),
-        t.text_dim,
-    ];
-    palette[m % palette.len()]
+    t.track[m % t.track.len()]
 }
 
 /// The parameter address's name for a mixer strip (`None` past 255).
@@ -50,13 +44,6 @@ pub fn strip_id(s: Strip) -> StripId {
         Strip::Return(i) => StripId::Return(i.into()),
         Strip::Master => StripId::Master,
     }
-}
-
-/// Text on an accent-coloured fill. The theme system (PR #72) adds
-/// `Theme::on_accent`; until it lands, the page's background reads on
-/// every accent of the dark theme.
-pub fn on_accent(t: &Theme) -> Color {
-    t.bg
 }
 
 /// One knob of the effect's page.
@@ -136,6 +123,10 @@ pub struct ChainState {
     /// one shown; empty for none.
     pub scopes: Vec<String>,
     pub scope: usize,
+    /// Open the effect picker (the mixer's "+" on a strip,
+    /// `MixAction::AddInsert`). The editor opens it itself from its own
+    /// "+ Add effect".
+    pub picking: bool,
 }
 
 impl Default for ChainState {
@@ -157,6 +148,7 @@ impl Default for ChainState {
             back: None,
             scopes: Vec::new(),
             scope: 0,
+            picking: false,
         }
     }
 }
@@ -321,6 +313,7 @@ impl ChainState {
             back: None,
             scopes: Vec::new(),
             scope: 0,
+            picking: false,
         }
     }
 
@@ -361,6 +354,9 @@ pub struct TargetView {
     pub range_text: String,
     /// Where the target is now, as a knob position.
     pub now: f32,
+    pub curve: MapCurve,
+    /// The parameter's description, for the range editor's values.
+    pub info: Option<ParamInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -388,6 +384,9 @@ pub struct MacrosState {
     pub morph: f32,
     pub scene_names: [String; 2],
     pub changes: Vec<ChangeView>,
+    /// The target editor is open on macro `m`'s target `k` (the panel
+    /// opens it itself from a tap on the target).
+    pub editing: Option<(usize, usize)>,
 }
 
 impl Default for MacrosState {
@@ -398,6 +397,7 @@ impl Default for MacrosState {
             morph: 0.0,
             scene_names: ["A".into(), "B".into()],
             changes: Vec::new(),
+            editing: None,
         }
     }
 }
@@ -436,6 +436,8 @@ impl MacrosState {
                             to: map.to,
                             range_text,
                             now,
+                            curve: map.curve,
+                            info,
                         }
                     })
                     .collect(),
@@ -460,6 +462,7 @@ impl MacrosState {
             morph: engine.morph(),
             scene_names: ["A".into(), "B".into()],
             changes,
+            editing: None,
         }
     }
 }
@@ -472,5 +475,71 @@ pub fn range_text(info: &ParamInfo, a: f32, b: f32) -> String {
             format!("{na} → {nb} {ub}")
         }
         _ => format!("{ta} → {tb}"),
+    }
+}
+
+/// The drawings of insert `slot`'s effect for page `page` (its group's
+/// name), from `mpfree-fx-ui`'s effect pages: what goes above the knobs.
+/// Empty for an effect the pages don't draw (a hosted plugin, Perform FX).
+pub fn picture(
+    chain: &Chain,
+    slot: usize,
+    page: &str,
+    t: &Theme,
+    rate: u32,
+    bpm: f64,
+) -> Vec<Card> {
+    let Some(n) = chain.node(slot) else {
+        return Vec::new();
+    };
+    if !visual::has_visuals(n.info().id) {
+        return Vec::new();
+    }
+    let st = FxState::from_node(n, "", t.accent, bpm, rate);
+    let scratch = Scratch::new(&st);
+    visual::strip(&st, page, None, &scratch, t).cards
+}
+
+/// One effect the picker offers: its id (for `mpfree_fx_ui::make`), its
+/// name and a line about it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pick {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub about: &'static str,
+}
+
+/// The effects the picker offers on `strip`, in the catalogue's order.
+/// Master safety only on the master strip.
+pub fn picks(strip: Strip) -> Vec<Pick> {
+    CATALOGUE
+        .iter()
+        .filter(|(id, _)| *id != "mpfree.fx.master_safety" || strip == Strip::Master)
+        .map(|&(id, name)| Pick {
+            id,
+            name,
+            about: about(id),
+        })
+        .collect()
+}
+
+fn about(id: &str) -> &'static str {
+    match id {
+        "mpfree.fx.eq" => "Shelves and bands",
+        "mpfree.fx.filter" => "Low, high, band, notch",
+        "mpfree.fx.dj_filter" => "One knob: low-pass to high-pass",
+        "mpfree.fx.drive" => "Tube, tape, fold, fuzz",
+        "mpfree.fx.comb" => "Tuned resonance",
+        "mpfree.fx.crush" => "Bits and sample rate",
+        "mpfree.fx.delay" => "Synced echoes",
+        "mpfree.fx.chorus" => "Width and shimmer",
+        "mpfree.fx.flanger" => "Jet sweeps",
+        "mpfree.fx.phaser" => "Swirling notches",
+        "mpfree.fx.lofi" => "Wear, wow and noise",
+        "mpfree.fx.compressor" => "Glue and pump",
+        "mpfree.fx.cloud" => "Plate, room, hall, cloud",
+        "mpfree.fx.master_safety" => "Keeps the output from clipping",
+        "mpfree.fx.perform" => "Throws, stutters, the XY pad",
+        _ => "",
     }
 }

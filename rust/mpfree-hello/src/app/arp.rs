@@ -303,10 +303,21 @@ impl App {
             }
             ArpAction::Pattern(i) => self.load_pattern(i),
             ArpAction::Settings(s) => {
+                // Swing follows the transport until it is turned (design
+                // decision 6); the Options row "Swing from" turns it back.
+                let took_swing = s.swing != self.arp.swing && self.swing_from_transport;
+                if took_swing {
+                    self.swing_from_transport = false;
+                }
                 self.arp.gate = s.gate;
                 self.arp.swing = s.swing;
                 self.arp.octaves = s.octaves;
                 let mut fx = self.arp_changed();
+                if took_swing {
+                    fx.push(Effect::Note(
+                        "arp swing from: arp (turned; Options > Swing from goes back to the transport)".to_string(),
+                    ));
+                }
                 fx.extend(self.set_rate(s.rate));
                 fx
             }
