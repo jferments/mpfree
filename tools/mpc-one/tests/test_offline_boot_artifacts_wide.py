@@ -27,7 +27,7 @@ class OfflineArtifactsWideTests(unittest.TestCase):
         self.assertTrue(parsed["crc_valid_for_standard_layout"])
         self.assertEqual(parsed["boot_related_variables"]["boot_targets"], "mmc0 mmc1")
         self.assertNotIn("serial#", parsed["boot_related_variables"])
-        self.assertNotIn("private", str(parsed))
+        self.assertNotIn("serial#", str(parsed))
 
     def test_environment_bad_crc_is_reported_not_silently_accepted(self):
         raw = bytearray(8192)
