@@ -9,13 +9,25 @@ for tool in arm-linux-gnueabihf-gcc make tar python3; do
   command -v "$tool" >/dev/null || { echo "Missing $tool. Install cross-compiler/build packages." >&2; exit 1; }
 done
 shopt -s nullglob
-sources=(/usr/src/linux-source-6.8.0/linux-source-6.8.0.tar.*)
-((${#sources[@]})) || { echo "Missing /usr/src/linux-source-6.8.0 source archive. Install linux-source-6.8.0." >&2; exit 1; }
+# Ubuntu 24.04 ships 6.8; Ubuntu 26.04 (resolute) ships 7.0.
+# Accept whichever *installed* version is present; do not fetch sources.
+sources=(/usr/src/linux-source-[0-9]*/linux-source-[0-9]*.tar.*)
+if (("${#sources[@]}" == 0)); then
+  sources=(/usr/src/linux-source-[0-9]*.tar.*)
+fi
+(("${#sources[@]}" > 0)) || {
+  echo "No installed kernel-source tarball found under /usr/src." >&2
+  echo "Install the release-appropriate package: sudo apt install linux-source" >&2
+  exit 1
+}
+mapfile -t sorted_sources < <(printf '%s\n' "${sources[@]}" | sort -V)
+SOURCE_TARBALL="${sorted_sources[${#sorted_sources[@]}-1]}"
+echo "Using installed kernel source: $SOURCE_TARBALL"
 mkdir -p "$WORK" "$OBJ"
 if [[ ! -f "$SRC/Makefile" ]]; then
   mkdir -p "$SRC"
-  echo "Unpacking 6.8 kernel source into $SRC ..."
-  tar -xf "${sources[0]}" -C "$SRC" --strip-components=1
+  echo "Unpacking installed kernel source into $SRC ..."
+  tar -xf "$SOURCE_TARBALL" -C "$SRC" --strip-components=1
 fi
 [[ -f "$SRC/arch/arm/configs/multi_v7_defconfig" ]] || { echo "Kernel source unpack invalid" >&2; exit 1; }
 echo "Generating ARMv7 virt kernel config..."
