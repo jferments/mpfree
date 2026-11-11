@@ -506,6 +506,10 @@ jobs:
           fi
           rm -rf rust/target && ln -s "$t" rust/target
           echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # The runner service's PATH has no ~/.cargo/bin; After's ci.yml does the same.
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install Rust stable with ARMv7 target
         run: |
           rustup toolchain install stable --profile minimal
@@ -1005,6 +1009,10 @@ jobs:
           fi
           rm -rf rust/mpfree-splash-gl/target && ln -s "$t" rust/mpfree-splash-gl/target
           echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # The runner service's PATH has no ~/.cargo/bin; After's ci.yml does the same.
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install Rust stable (self-hosted only; GitHub's hosts have it)
         if: runner.environment == 'self-hosted'
         run: rustup toolchain install stable --profile minimal
