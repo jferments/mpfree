@@ -156,3 +156,60 @@ fn hold_stats_summarise_a_wandering_finger() {
     assert!((s.max_dev - 2.0).abs() < 1e-4);
     assert!(hold_stats(&reports[..1]).is_none());
 }
+
+// ---- GestureRouter ------------------------------------------------------------
+
+use mpfree_touch::route::GestureRouter;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum W {
+    Pad,
+    Pages,
+    List,
+}
+
+#[test]
+fn a_held_pad_and_a_swipe_elsewhere_stay_independent() {
+    let mut r = GestureRouter::new();
+    // Pages wants swipes; the pad isn't registered (raw touches only).
+    r.register(W::Pages, GestureConfig::default());
+    let mut out = Vec::new();
+    r.frame(&[(W::Pad, ev(1, Phase::Down, 100.0, 600.0, 0)), (W::Pages, ev(2, Phase::Down, 900.0, 300.0, 0))], &mut out);
+    for i in 1..=20u64 {
+        r.frame(&[(W::Pages, ev(2, Phase::Move, 900.0 - 12.0 * i as f32, 300.0, i * DT))], &mut out);
+    }
+    r.frame(&[(W::Pages, ev(2, Phase::Up, 660.0, 300.0, 21 * DT))], &mut out);
+    // No two-finger gesture, nothing for the pad, and a left swipe for Pages.
+    assert!(out.iter().all(|(k, _)| *k == W::Pages));
+    assert!(!out.iter().any(|(_, g)| matches!(g, Gesture::TwoFingerStart { .. })));
+    assert!(out.iter().any(|(_, g)| matches!(g, Gesture::Swipe { direction: SwipeDirection::Left, .. })));
+}
+
+#[test]
+fn each_owner_has_its_own_config_and_long_press_comes_from_tick() {
+    let mut r = GestureRouter::new();
+    r.register(W::List, GestureConfig { long_press_us: 300_000, ..GestureConfig::default() });
+    r.register(W::Pad, GestureConfig { long_press_us: 800_000, ..GestureConfig::default() });
+    let mut out = Vec::new();
+    r.frame(&[(W::List, ev(1, Phase::Down, 10.0, 10.0, 0)), (W::Pad, ev(2, Phase::Down, 500.0, 500.0, 0))], &mut out);
+    assert!(out.is_empty());
+    r.tick(400_000, &mut out);
+    assert_eq!(out.len(), 1);
+    assert!(matches!(out[0], (W::List, Gesture::LongPress { .. })));
+    r.tick(900_000, &mut out);
+    assert!(matches!(out[1], (W::Pad, Gesture::LongPress { .. })));
+}
+
+#[test]
+fn unregistering_or_clearing_drops_an_owner() {
+    let mut r = GestureRouter::new();
+    r.register(W::List, GestureConfig::default());
+    assert!(r.is_registered(W::List));
+    r.unregister(W::List);
+    let mut out = Vec::new();
+    r.frame(&[(W::List, ev(1, Phase::Down, 0.0, 0.0, 0)), (W::List, ev(1, Phase::Up, 0.0, 0.0, 50_000))], &mut out);
+    assert!(out.is_empty());
+    r.register(W::Pages, GestureConfig::default());
+    r.clear();
+    assert!(!r.is_registered(W::Pages));
+}

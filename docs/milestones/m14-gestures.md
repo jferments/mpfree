@@ -11,12 +11,12 @@
 
 ## How the GUI should use it
 
-One `GestureRecognizer` per widget that wants gestures, fed only the fingers that widget owns (`mpfree-ui` already gives each finger to the widget it first touched). Then a pad press and a fader drag in different places can never pair up into a pinch, and plain widgets (pads, buttons, faders) keep using raw down/move/up with no gesture delay. Long press needs `tick(now)` from the UI loop, because a still finger sends no events.
+One `GestureRecognizer` per widget that wants gestures, fed only the fingers that widget owns. `route::GestureRouter` does this: a widget registers with its own `GestureConfig`, the GUI tags each pointer event with its owning widget, and the router feeds each owner's recognizer and ticks them all (`mpfree-ui` already gives each finger to the widget it first touched). Then a pad press and a fader drag in different places can never pair up into a pinch, and plain widgets (pads, buttons, faders) keep using raw down/move/up with no gesture delay. Long press needs `tick(now)` from the UI loop, because a still finger sends no events.
 
 Planned wiring, after PR #31 (which carries `mpfree-ui` and `mpfree-hello`) and M13 merge:
 
 1. `TouchIn` in `mpfree-hello` switches to `mpfree_touch_evdev::EvdevTouch`.
-2. `mpfree-ui` gets an optional per-widget gesture hook (`Widget::gesture`) fed by a recognizer the `Ui` keeps for that widget, with ticks from the UI loop.
+2. `mpfree-ui` gets an optional per-widget gesture hook (`Widget::gesture`) fed by a `GestureRouter` the `Ui` keeps, keyed by widget, with ticks from the UI loop.
 3. First users: swipe left and right between pages, a drag-scroll list with fling (kit list), and long press for a context action on a pad. The GUI's Debug page and the workstation log record every gesture decision with its numbers (distance, velocity, hold time).
 
 ## Next device round (planned, needs Jay's go)
