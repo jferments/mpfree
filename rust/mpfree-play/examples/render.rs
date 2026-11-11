@@ -9,19 +9,23 @@
 //!
 //! The song: 92 BPM, 1/16 swing at 56, a four-bar loop played twice.
 //! Drums (a one-bar clip), hats at double speed with their own swing, a
-//! two-bar bass line on gated pads (note-offs end the notes), and a
-//! seven-sixteenths pluck clip that drifts against the bar (polymeter).
+//! two-bar bass line on gated pads (note-offs end the notes), a
+//! seven-sixteenths pluck clip that drifts against the bar (polymeter),
+//! and a track of held chords played through the arpeggiator
+//! (`mpfree-arp`), whose 1/16s follow the transport's tempo and swing.
 //! Every sound is synthesised here; no sample files are used.
 //!
-//! It prints two hashes. `events` covers every note the player sent (frame,
-//! track, note, velocity) and is the same on every computer and for every
-//! period size; the tool checks that itself at 1, 128 and 4096 frames.
+//! It prints two hashes. `events` covers every note the player and the arp
+//! sent (frame, track, note, velocity) and is the same on every computer
+//! and for every period size; the tool checks that itself at 1, 128 and
+//! 4096 frames.
 //! `audio` covers the WAV bytes; it repeats on one computer but can differ
 //! between computers (the sounds use the system's maths library).
 
 use std::f32::consts::TAU;
 
-use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink};
+use mpfree_arp::{Engine as Arp, EventKind, Mode, Rate, Settings};
+use mpfree_play::{ArpHost, Event, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event as SEvent};
 use mpfree_sampler::model::{Layer, Pad, PlayMode, Project as SProject, Region, Source};
@@ -32,6 +36,10 @@ use mpfree_transport::{Block, Command, Transport};
 const RATE: u32 = 44_100;
 const BPM: f64 = 92.0;
 const BAR: i64 = 3840;
+/// The arp track's destination; every other track plays the sampler (0).
+const ARP: u16 = 1;
+/// The track number the arp's own notes are logged under.
+const ARP_OUT: u16 = 5;
 
 fn main() {
     let mut period = 128u32;
@@ -59,8 +67,13 @@ fn main() {
     // The events must not depend on the period size.
     let hashes: Vec<(u32, u64, usize)> = [1u32, 128, 4096].iter().map(|&p| {
         let mut log = EventLog::default();
-        play(&view, frames, p, |_, _, block, player| player.process(&view, block, &mut log));
-        (p, fnv(&log.bytes), log.notes)
+        let mut arp = arp();
+        play(&view, frames, p, |_, _, block, player| {
+            player.process(&view, block, &mut Route { arp: &mut arp, log: &mut log, sampler: None });
+            arp.process(block, &mut |offset, kind| log.add(&arp_out(block, offset, kind)));
+        });
+        assert_eq!(arp.dropped(), 0, "the arp dropped notes");
+        (p, log.hash(), log.notes)
     }).collect();
     let same = hashes.windows(2).all(|w| w[0].1 == w[1].1);
 
@@ -68,12 +81,17 @@ fn main() {
     let mut engine = Engine::new(RATE, 32);
     engine.set_view(EngineView::build(&sounds(), RATE));
     let mut log = EventLog::default();
+    let mut arp = arp();
     let mut left = vec![0.0f32; 8192];
     let mut right = vec![0.0f32; 8192];
     let mut pcm = Vec::with_capacity(frames as usize * 4);
     play(&view, frames, period, |_, n, block, player| {
-        let mut sink = SamplerSink { engine: &mut engine, log: &mut log };
-        player.process(&view, block, &mut sink);
+        player.process(&view, block, &mut Route { arp: &mut arp, log: &mut log, sampler: Some(&mut engine) });
+        arp.process(block, &mut |offset, kind| {
+            let o = arp_out(block, offset, kind);
+            log.add(&o);
+            to_sampler(&mut engine, &o);
+        });
         let (l, r) = (&mut left[..n as usize], &mut right[..n as usize]);
         engine.render(l, r);
         for (a, b) in l.iter().zip(r.iter()) {
@@ -93,13 +111,13 @@ fn main() {
 
     println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
     println!("notes played: {}  dropped by the sampler: {}", log.notes, engine.stats().dropped_events);
-    println!("events {:016x}  (the same on every computer)", fnv(&log.bytes));
+    println!("events {:016x}  (the same on every computer)", log.hash());
     println!("audio  {:016x}  (repeats on this computer)", fnv(&wav));
     for (p, h, n) in &hashes {
         println!("  events at period {p:>4}: {h:016x} ({n} notes)");
     }
-    println!("same events for every period size: {}", if same && fnv(&log.bytes) == hashes[0].1 { "yes" } else { "NO" });
-    if !same || fnv(&log.bytes) != hashes[0].1 {
+    println!("same events for every period size: {}", if same && log.hash() == hashes[0].1 { "yes" } else { "NO" });
+    if !same || log.hash() != hashes[0].1 {
         std::process::exit(1);
     }
 }
@@ -127,13 +145,21 @@ fn play(view: &PlayView, frames: u64, period: u32, mut each: impl FnMut(&PlayVie
     }
 }
 
+/// The player's events and the arp's, each in frame order. They are kept
+/// apart because the order between them within one period depends on the
+/// period size.
 #[derive(Default)]
 struct EventLog {
-    bytes: Vec<u8>,
+    player: Vec<u8>,
+    arp: Vec<u8>,
     notes: usize,
 }
 
 impl EventLog {
+    fn hash(&self) -> u64 {
+        fnv(&[&self.player[..], &self.arp[..]].concat())
+    }
+
     fn add(&mut self, o: &Out) {
         let (kind, note, vel) = match o.event {
             Event::NoteOn { note, velocity } => (1u8, note, velocity),
@@ -143,46 +169,71 @@ impl EventLog {
         if kind == 1 {
             self.notes += 1;
         }
-        self.bytes.extend_from_slice(&o.frame.to_le_bytes());
-        self.bytes.extend_from_slice(&o.track.to_le_bytes());
-        self.bytes.extend_from_slice(&[kind, note, vel]);
+        let bytes = if o.track == ARP_OUT { &mut self.arp } else { &mut self.player };
+        bytes.extend_from_slice(&o.frame.to_le_bytes());
+        bytes.extend_from_slice(&o.track.to_le_bytes());
+        bytes.extend_from_slice(&[kind, note, vel]);
     }
 }
 
-impl Sink for EventLog {
-    fn send(&mut self, o: Out) {
-        self.add(&o);
-    }
-}
-
-/// Every track plays the sampler; a note number is a pad.
-struct SamplerSink<'a> {
-    engine: &'a mut Engine,
+/// Logs every event the player sends. The arp track's notes (and a
+/// panic's `AllOff`) go to the arp; the rest go to the sampler, if there
+/// is one, where a note number is a pad.
+struct Route<'a> {
+    arp: &'a mut ArpHost,
     log: &'a mut EventLog,
+    sampler: Option<&'a mut Engine>,
 }
 
-impl Sink for SamplerSink<'_> {
+impl Sink for Route<'_> {
     fn send(&mut self, o: Out) {
         self.log.add(&o);
-        let ev = match o.event {
-            Event::NoteOn { note, velocity } => SEvent::NoteOn { pad: note, velocity },
-            Event::NoteOff { note } => SEvent::NoteOff { pad: note },
-            Event::AllOff => SEvent::AllOff,
-        };
-        self.engine.schedule(o.offset, ev);
+        if o.dest == ARP || o.dest == ALL {
+            self.arp.input(o.offset, o.event);
+        }
+        if o.dest != ARP {
+            if let Some(engine) = self.sampler.as_deref_mut() {
+                to_sampler(engine, &o);
+            }
+        }
     }
+}
+
+fn to_sampler(engine: &mut Engine, o: &Out) {
+    let ev = match o.event {
+        Event::NoteOn { note, velocity } => SEvent::NoteOn { pad: note, velocity },
+        Event::NoteOff { note } => SEvent::NoteOff { pad: note },
+        Event::AllOff => SEvent::AllOff,
+    };
+    engine.schedule(o.offset, ev);
+}
+
+/// The arpeggiator: up through the held chord in 1/16s, short notes.
+fn arp() -> ArpHost {
+    let mut engine = Arp::new(RATE, BPM);
+    engine.set_settings(Settings { mode: Mode::Arp, rate: Rate::Sixteenth, gate: 45, ..Settings::default() });
+    ArpHost::new(engine)
+}
+
+/// One of the arp's notes as an event for the sampler (and the log).
+fn arp_out(block: &Block, offset: u32, kind: EventKind) -> Out {
+    let event = match kind {
+        EventKind::On { note, velocity } => Event::NoteOn { note, velocity },
+        EventKind::Off { note } => Event::NoteOff { note },
+    };
+    Out { offset, frame: block.start_frame + u64::from(offset), track: ARP_OUT, dest: 0, event }
 }
 
 fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
     list.iter().map(|&(tick, len, note, velocity)| Note { tick, len, note, velocity }).collect()
 }
 
-/// The demo song: four tracks on the sampler's pads.
+/// The demo song: four tracks on the sampler's pads and one on the arp.
 fn song() -> PlayView {
     const S: i64 = 240; // a 1/16
     let mut p = Project::new();
     let mut add = |name: &str, c: Clip| {
-        let mut t = Track::new(name, 0);
+        let mut t = Track::new(name, if name == "arp" { ARP } else { 0 });
         t.slots[0] = Some(c);
         p.tracks.push(t);
     };
@@ -209,11 +260,18 @@ fn song() -> PlayView {
     pluck.notes = notes(&[(0, S, 9, 90), (2 * S, S, 11, 70), (3 * S, S, 10, 80), (5 * S, 2 * S, 12, 85)]);
     add("pluck", pluck);
 
-    let launches: Vec<Launch> = (0..4).map(|track| Launch { track, slot: 0, origin: if track == 3 { 2 * BAR } else { 0 } }).collect();
+    // Pads 13 to 19, through the arp: a chord held for each bar.
+    let mut chords = Clip::new("arp", 4 * BAR);
+    let held = [[13u8, 14, 16], [14, 16, 17], [15, 17, 18], [16, 17, 19]];
+    chords.notes = held.iter().enumerate().flat_map(|(bar, c)| c.iter().map(move |&n| Note { tick: bar as i64 * BAR, len: BAR, note: n, velocity: 85 })).collect();
+    add("arp", chords);
+
+    let origin = [0, 0, 0, 2 * BAR, 0];
+    let launches: Vec<Launch> = (0..5).map(|track| Launch { track, slot: 0, origin: origin[track] }).collect();
     PlayView::compile(&p, &launches).expect("valid song")
 }
 
-/// Synthesised sounds on pads 0 to 12.
+/// Synthesised sounds on pads 0 to 19.
 fn sounds() -> SProject {
     let rate = RATE as f32;
     let mut noise_state = 0x1234_5678u32;
@@ -281,6 +339,10 @@ fn sounds() -> SProject {
     // Pluck: A4, C5, D5, E5.
     for (i, hz) in [440.0, 523.25, 587.33, 659.26].iter().enumerate() {
         put(9 + i, "pluck", tone(*hz, 0.5, 0.3).iter().enumerate().map(|(k, s)| s * 0.5 * (-(k as f32) / rate * 6.0).exp()).collect(), false);
+    }
+    // Arp: A3, C4, D4, E4, G4, A4, C5 on gated pads, so the arp's gate is heard.
+    for (i, hz) in [220.0, 261.63, 293.66, 329.63, 392.0, 440.0, 523.25].iter().enumerate() {
+        put(13 + i, "arp", tone(*hz, 1.0, 1.0).iter().map(|s| s * 0.45).collect(), true);
     }
     p
 }

@@ -14,7 +14,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Sampler architecture](project/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler (proposal, 2026-11-10).
 - [Arpeggiator, Latch and latch patterns](project/arpeggiator.md): research, design and plan for Note Repeat, Latch, the arpeggiator and custom patterns (engine in `rust/mpfree-arp`).
 - [Transport](project/transport.md): the time engine's clock that the sequencer, looper, arp and sampler follow: ticks, tempo map, loop, count-in, punch, and the same output for any period size (engine in `rust/mpfree-transport`, 2026-11-11).
-- [Playback](project/playback.md): clips of any length on the transport: the model, compiling, sample-exact playback, note-offs, and a WAV renderer (engine in `rust/mpfree-seq` and `rust/mpfree-play`, 2026-11-11).
+- [Playback](project/playback.md): clips of any length on the transport: the model, compiling, sample-exact playback, note-offs, a track through the arp, and a WAV renderer (engine in `rust/mpfree-seq` and `rust/mpfree-play`, 2026-11-11).
 
 ## Decisions
 
