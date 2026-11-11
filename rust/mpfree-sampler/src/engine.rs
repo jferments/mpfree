@@ -13,13 +13,20 @@
 //! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; the
 //! envelope, gain, pan, filter and fades after it are the same. One grain
 //! [`Budget`] ([`GRAIN_BUDGET`]) caps the grains of all voices together.
+//!
+//! The master effect is a [`GrainFx`] on everything the voices play: grains
+//! from the last [`MASTER_MEMORY_S`] seconds of the output, mixed back over
+//! it, with freeze ([`Event::Freeze`]). Its settings come with the view
+//! ([`crate::model::MasterFx`]); the effect itself, which holds the memory,
+//! is made off the audio thread with [`Engine::make_master_fx`] and put in
+//! with [`Engine::set_master_fx`]. Its grains come out of the same budget.
 
 use std::sync::Arc;
 
-use mpfree_grain::{Budget, Clip, GrainVoice};
+use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
 
 use crate::dsp::{db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf};
-use crate::model::{ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, PlayMode, PressureRoute, PressureTarget, Project, PADS};
+use crate::model::{ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, MasterFx, PlayMode, PressureRoute, PressureTarget, Project, PADS};
 
 /// Fade length when a voice is choked, muted by its group, or pushed out by
 /// the pad's polyphony limit.
@@ -31,6 +38,8 @@ pub const MAX_EVENTS: usize = 256;
 /// Grains alive at once across every granular voice. Past it, new grains
 /// are skipped. A first guess, to be set by measurement on the MPC.
 pub const GRAIN_BUDGET: usize = 256;
+/// Seconds of output the master effect remembers for its grains.
+pub const MASTER_MEMORY_S: f32 = 8.0;
 /// Granular voices render their grains in chunks of this many frames.
 const GRAIN_CHUNK: usize = 256;
 /// Filter coefficients, and anything pressure moves, are recomputed every
@@ -88,10 +97,11 @@ pub struct ViewPad {
 pub struct EngineView {
     pub revision: u64,
     pads: Vec<Option<ViewPad>>,
+    master: MasterFx,
 }
 
 impl EngineView {
-    pub fn empty() -> EngineView { EngineView { revision: 0, pads: vec![None; PADS] } }
+    pub fn empty() -> EngineView { EngineView { revision: 0, pads: vec![None; PADS], master: MasterFx::default() } }
 
     /// Resolves every pad of a project for an engine running at `rate`.
     /// Call this off the audio thread; it allocates.
@@ -141,7 +151,7 @@ impl EngineView {
                 }
             }));
         }
-        EngineView { revision: project.revision(), pads }
+        EngineView { revision: project.revision(), pads, master: *project.master() }
     }
 }
 
@@ -154,6 +164,10 @@ pub enum Event {
     Pressure { pad: u8, value: u8 },
     /// Releases every voice (gate-style), e.g. on STOP.
     AllOff,
+    /// Freezes the master effect (on) or lets it take in new audio again
+    /// (off). Frozen, its grains keep playing the audio it holds while
+    /// the pads carry on dry. Does nothing without a master effect.
+    Freeze { on: bool },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -275,6 +289,7 @@ pub struct Engine {
     scratch_r: Vec<f32>,
     /// Frames rendered since the engine was made: the timeline synced grains use.
     frames: u64,
+    master: Option<GrainFx>,
 }
 
 impl Engine {
@@ -295,6 +310,35 @@ impl Engine {
             scratch_l: vec![0.0; GRAIN_CHUNK],
             scratch_r: vec![0.0; GRAIN_CHUNK],
             frames: 0,
+            master: None,
+        }
+    }
+
+    /// A master effect for an engine at `rate`, holding [`MASTER_MEMORY_S`]
+    /// seconds of stereo audio (2.8 MB at 44.1 kHz). Allocates: call it off
+    /// the audio thread. `None` if `rate` is zero.
+    pub fn make_master_fx(rate: u32) -> Option<GrainFx> { GrainFx::new(rate, MASTER_MEMORY_S, 0x6d61_7374_6572) }
+
+    /// Puts in a master effect (or takes it out, with `None`) and hands back
+    /// the old one, its grains silenced and returned to the budget, so the
+    /// caller drops it off the audio thread. The new one takes the view's
+    /// settings and glides up to its mix from dry, so it comes in without a
+    /// click; the old one's grains stop at once, so take it out while the
+    /// mix is 0 to avoid a click.
+    pub fn set_master_fx(&mut self, fx: Option<GrainFx>) -> Option<GrainFx> {
+        let mut old = std::mem::replace(&mut self.master, fx);
+        if let Some(o) = &mut old { o.kill(&mut self.budget); }
+        self.apply_master();
+        old
+    }
+
+    /// The master effect, for drawing its memory, grains and playhead.
+    pub fn master_fx(&self) -> Option<&GrainFx> { self.master.as_ref() }
+
+    fn apply_master(&mut self) {
+        if let Some(fx) = &mut self.master {
+            fx.set_params(self.view.master.grain);
+            fx.set_mix(self.view.master.mix);
         }
     }
 
@@ -306,8 +350,13 @@ impl Engine {
 
     /// Swaps in a new view at once and hands back the old one, so the caller
     /// frees it off the audio thread. Playing voices keep their own handle to
-    /// their audio and finish normally.
-    pub fn set_view(&mut self, view: EngineView) -> EngineView { std::mem::replace(&mut self.view, view) }
+    /// their audio and finish normally. The master effect takes the new
+    /// view's settings (a new mix glides there over 10 ms).
+    pub fn set_view(&mut self, view: EngineView) -> EngineView {
+        let old = std::mem::replace(&mut self.view, view);
+        self.apply_master();
+        old
+    }
     pub fn view_revision(&self) -> u64 { self.view.revision }
 
     /// Full Level (Some(127)), Half Level (Some(64)), or off (None).
@@ -351,6 +400,7 @@ impl Engine {
                     if v.granular { g.stop(); }
                 }
             },
+            Event::Freeze { on } => if let Some(fx) = &mut self.master { fx.set_frozen(on); },
         }
     }
 
@@ -543,6 +593,9 @@ impl Engine {
                 } else {
                     render_voice(v, self.rate, &mut left[a..b], &mut right[a..b]);
                 }
+            }
+            if let Some(fx) = &mut self.master {
+                fx.process(&mut self.budget, frame, &mut left[a..b], &mut right[a..b]);
             }
             at = next;
         }
