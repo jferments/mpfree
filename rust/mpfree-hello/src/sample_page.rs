@@ -71,7 +71,8 @@ use mpfree_ui::{Tone, Ui, UiEvent};
 
 use crate::app::bank_letter;
 use crate::gui::FromUi;
-use crate::sampler::{Cloud, Playheads, RecFeed, ViewSwap};
+use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
@@ -156,6 +157,25 @@ struct Take {
     pick: record::Pick,
 }
 
+/// What the Rec tab's Source row offers, by name: the line input, then the
+/// mix as heard (the master after Master safety), each track, the delay's
+/// return and the playing kit's 16 pad channels, each after its fader.
+pub fn rec_sources() -> Vec<(String, RecSource)> {
+    use crate::mixing::{self, DELAY_RETURN, DRUMS, LOOP, PADS, SYNTH};
+    let after = |s: StripId| (mixing::name(s), RecSource::Mix(s, CapturePoint::AfterFader));
+    let mut v = vec![
+        ("Line in".to_string(), RecSource::Line),
+        (
+            "Master".to_string(),
+            RecSource::Mix(StripId::Master, CapturePoint::AfterSafety),
+        ),
+    ];
+    v.extend([DRUMS, SYNTH, LOOP].map(|t| after(StripId::Track(t))));
+    v.push(after(StripId::Return(DELAY_RETURN)));
+    v.extend((0..PADS).map(|p| after(StripId::Pad(p))));
+    v
+}
+
 /// The sampler's input buffer's size: stereo `f32`.
 pub fn input_bytes(rate: u32) -> u64 {
     u64::from(INPUT_SECONDS) * u64::from(rate) * 2 * 4
@@ -225,8 +245,15 @@ pub struct SamplePage {
     rec_state: Option<RecState>,
     /// The line input is on (its row on the Looper tab's MENU).
     line_on: bool,
-    /// The sampler's input while the line input is on, and its writing end
-    /// until it goes to the audio thread.
+    /// What the Rec tab can record from (its Source row), by name: the
+    /// line input first, then points in the mix (resampling).
+    rec_sources: Vec<(String, RecSource)>,
+    /// The source picked, and the one the audio thread was last told of.
+    source: RecSource,
+    source_sent: Option<RecSource>,
+    /// The sampler's input while its source comes in (the line input while
+    /// it is on; a point in the mix always), and its writing end until it
+    /// goes to the audio thread.
     input: Option<Input>,
     feed: Option<Box<RecFeed>>,
     /// The audio thread has the writer, and should hand it back.
@@ -285,6 +312,10 @@ impl SamplePage {
             rec: None,
             rec_state: None,
             line_on: false,
+            rec_sources: rec_sources(),
+            source: RecSource::Line,
+            // The audio thread starts on the line input.
+            source_sent: Some(RecSource::Line),
             input: None,
             feed: None,
             feeding: false,
@@ -1317,8 +1348,12 @@ impl SamplePage {
                 }
             }
             Editor::Rec => {
+                let mut source = None;
                 if let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) {
-                    tab.wheel(ui, st, delta);
+                    source = tab.wheel(ui, st, delta);
+                }
+                if let Some(a) = source {
+                    self.act_rec(ui, a);
                 }
                 // The target pad follows the Onto row.
                 self.refresh_rec_state(ui);
@@ -1503,7 +1538,8 @@ impl SamplePage {
             pad: self.pad,
             pad_name: sound(self.pad).map(|pd| pd.name.clone()),
             target: project.and_then(|_| rec_tab::target(self.pad, onto, |p| sound(p).is_some())),
-            line_on: self.line_on,
+            sources: self.rec_sources.iter().map(|(n, _)| n.clone()).collect(),
+            live: self.input_wanted(),
             last: self.last_take.clone(),
         }
     }
@@ -1546,18 +1582,13 @@ impl SamplePage {
 
     /// The Rec tab's picture: what came in over the last `dt` seconds.
     fn feed_rec(&mut self, ui: &mut Ui, dt: f32) {
+        let live = self.input_wanted();
         let Some(tab) = self.rec.as_mut() else {
             return;
         };
         match self.input.as_ref() {
-            Some(input) => tab.feed(
-                ui,
-                input,
-                self.take.as_ref().map(|t| &t.rec),
-                self.line_on,
-                dt,
-            ),
-            None => tab.idle(ui, self.line_on),
+            Some(input) => tab.feed(ui, input, self.take.as_ref().map(|t| &t.rec), live, dt),
+            None => tab.idle(ui, live),
         }
     }
 
@@ -1573,7 +1604,44 @@ impl SamplePage {
                 self.tick(ui, 0.0, true);
             }
             RecAction::SkipBack => self.skip_back(ui),
+            RecAction::Source(i) => self.set_source(ui, i),
         }
+    }
+
+    /// The line input, or a point in the mix, is wanted in the buffer.
+    fn input_wanted(&self) -> bool {
+        self.source != RecSource::Line || self.line_on
+    }
+
+    /// The Source row picked source `i`: the audio thread is told (it
+    /// starts the buffer afresh), and the buffer is made or freed as the
+    /// new source needs it.
+    fn set_source(&mut self, ui: &mut Ui, i: usize) {
+        let Some((name, src)) = self.rec_sources.get(i).cloned() else {
+            return;
+        };
+        if src == self.source {
+            return;
+        }
+        self.source = src;
+        self.lines.push(match src {
+            RecSource::Line => "sample: the Rec tab records the line input".to_string(),
+            RecSource::Mix(..) => format!("sample: the Rec tab resamples {name}"),
+        });
+        self.sync_input(ui);
+    }
+
+    /// The source's name, as the Source row shows it.
+    fn source_name(&self) -> String {
+        self.rec_sources
+            .iter()
+            .find(|(_, s)| *s == self.source)
+            .map_or_else(|| "Line in".to_string(), |(n, _)| n.clone())
+    }
+
+    /// [`SamplePage::take_input`]'s source found no room: again later.
+    pub fn source_unsent(&mut self, _src: RecSource) {
+        self.source_sent = None;
     }
 
     /// A bar's length now: the transport's while it plays, else 4/4 at the
@@ -1605,13 +1673,19 @@ impl SamplePage {
         self.lines.push(format!(
             "sample: take armed for pad {}: start {}, end {}, {}",
             self.pad_text(self.kit, pad),
-            rec_tab::value_text(&settings, rec_tab::Row::Start).to_lowercase(),
+            rec_tab::value_text(&settings, rec_tab::Row::Start, &st.sources).to_lowercase(),
             match settings.end {
-                rec_tab::EndAt::Length => rec_tab::value_text(&settings, rec_tab::Row::Length),
-                _ => rec_tab::value_text(&settings, rec_tab::Row::End).to_lowercase(),
+                rec_tab::EndAt::Length => {
+                    rec_tab::value_text(&settings, rec_tab::Row::Length, &st.sources)
+                }
+                _ => rec_tab::value_text(&settings, rec_tab::Row::End, &st.sources).to_lowercase(),
             },
             settings.pick.label().to_lowercase(),
         ));
+        if self.source != RecSource::Line {
+            self.lines
+                .push(format!("sample: the take resamples {}", self.source_name()));
+        }
         self.take = Some(Take {
             rec,
             kit: self.kit,
@@ -1650,7 +1724,10 @@ impl SamplePage {
 
     fn take_name(&mut self) -> String {
         self.takes += 1;
-        format!("Take {}", self.takes)
+        match self.source {
+            RecSource::Line => format!("Take {}", self.takes),
+            RecSource::Mix(..) => format!("{} take {}", self.source_name(), self.takes),
+        }
     }
 
     /// Puts a recorded sound on pad `pad` of kit `kit` (one undo step) and
@@ -1724,24 +1801,35 @@ impl SamplePage {
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).
-    /// On, the sampler's input is made (once) for the audio thread; off, a
-    /// take still recording ends and is kept, and the input is freed.
+    /// While the Rec tab records the line input: on, the sampler's input is
+    /// made (once) for the audio thread; off, a take still recording ends
+    /// and is kept, and the input is freed.
     pub fn set_line_input(&mut self, ui: &mut Ui, on: bool) {
         if on == self.line_on {
             return;
         }
         self.line_on = on;
-        if on {
+        self.sync_input(ui);
+    }
+
+    /// Makes the sampler's input when its source wants it, or frees it
+    /// when not (a take still recording ends there and is kept).
+    fn sync_input(&mut self, ui: &mut Ui) {
+        if self.input_wanted() {
             if self.input.is_none() {
                 let (feed, input) = record::input(INPUT_SECONDS, self.rate);
                 self.input = Some(input);
                 self.feed = Some(Box::new(RecFeed(feed)));
+                let what = match self.source {
+                    RecSource::Line => "the line input feeds the sampler".to_string(),
+                    RecSource::Mix(..) => format!("the sampler resamples {}", self.source_name()),
+                };
                 self.lines.push(format!(
-                    "sample: the line input feeds the sampler ({INPUT_SECONDS} s kept, {:.1} MB)",
+                    "sample: {what} ({INPUT_SECONDS} s kept, {:.1} MB)",
                     input_bytes(self.rate) as f64 / 1e6
                 ));
             }
-        } else {
+        } else if self.input.is_some() || self.feed.is_some() {
             if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
                 t.rec.stop(input);
             }
@@ -1758,9 +1846,14 @@ impl SamplePage {
         self.feed_rec(ui, 0.0);
     }
 
-    /// The input's writing end, for the audio thread, once; or the ask to
-    /// hand it back, once the line input is off.
+    /// What the input records from, when the audio thread hasn't been told;
+    /// else the input's writing end, for the audio thread, once; or the ask
+    /// to hand it back, once its source is gone.
     pub fn take_input(&mut self) -> Option<FromUi> {
+        if self.source_sent != Some(self.source) {
+            self.source_sent = Some(self.source);
+            return Some(FromUi::SampleSource(self.source));
+        }
         if let Some(f) = self.feed.take() {
             self.feeding = true;
             return Some(FromUi::SampleInput(Some(f)));
@@ -1793,7 +1886,7 @@ impl SamplePage {
             self.feeding = false;
         }
         self.lines.push(format!(
-            "sample: the line input's buffer was freed ({:.1} s had come in)",
+            "sample: the sampler's input buffer was freed ({:.1} s had come in)",
             frames as f64 / f64::from(self.rate.max(1))
         ));
     }

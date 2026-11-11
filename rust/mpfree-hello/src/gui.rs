@@ -446,6 +446,10 @@ pub enum FromUi {
     /// fill each period (`sampler::RecFeed`); None asks for it back, to be
     /// freed here ([`ToUi::SampleInputBack`]).
     SampleInput(Option<Box<crate::sampler::RecFeed>>),
+    /// What the sampler's input records from: the line input or a point in
+    /// the mix (the Rec tab's Source). The audio thread points the mixer's
+    /// sampler capture point at it and starts the buffer afresh.
+    SampleSource(crate::sampler::RecSource),
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
@@ -1832,6 +1836,7 @@ impl Player {
             FromUi::SampleView(swap) => self.sample.unsent(swap.kit),
             FromUi::SampleGrains(c) => self.sample.cloud_unsent(c),
             FromUi::SampleInput(f) => self.sample.input_unsent(f),
+            FromUi::SampleSource(src) => self.sample.source_unsent(src),
             FromUi::SamplePhrase(clip) => {
                 println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
                 let _ = io::stdout().flush();
@@ -5704,7 +5709,108 @@ mod tests {
         p.apply(ToUi::SampleInputBack(feed));
         assert!(events_log(&p)
             .iter()
-            .any(|l| l.starts_with("sample: the line input's buffer was freed (")));
+            .any(|l| l.starts_with("sample: the sampler's input buffer was freed (")));
+        assert_eq!(
+            p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
+            rec_tab::OFF_NOTE
+        );
+    }
+
+    #[test]
+    fn the_rec_tab_resamples_the_master_and_lets_go_of_it_for_the_line_input() {
+        use crate::sampler::RecSource;
+        use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_sampler_ui::rec_tab::{self, Row};
+        use mpfree_sampler_ui::rec_widgets::InputView;
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::widgets::PadBar;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        assert!(take(&mut p).is_empty(), "the line input is off: no buffer");
+        // Source: Master. The audio thread is told, then gets the buffer's
+        // writer (the line input stays off).
+        let source = Row::ALL.iter().position(|r| *r == Row::Source).unwrap();
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Step {
+                index: source,
+                delta: 1,
+            },
+        );
+        let master = RecSource::Mix(StripId::Master, CapturePoint::AfterSafety);
+        let acts = take(&mut p);
+        assert!(matches!(acts.as_slice(), [FromUi::SampleSource(s)] if *s == master));
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        assert!(take(&mut p).is_empty(), "each sent once");
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: the Rec tab resamples Master")
+                && log
+                    .iter()
+                    .any(|l| l == "sample: the sampler resamples Master (75 s kept, 26.5 MB)"),
+            "{log:?}"
+        );
+        // The audio thread fills it from the master; Skip back keeps it.
+        feed_input(&mut feed.0, 12.0, 0.4, true);
+        p.tick(0.033);
+        let v = p.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+        assert_eq!(v.title, "Master");
+        assert!(v.note.is_empty(), "{}", v.note);
+        assert_eq!(
+            p.ui.get::<PadBar>(rec_tab::BAR).unwrap().subtitle,
+            "Left + right · resampling Master"
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+            "{:?}",
+            events_log(&p)
+        );
+        // Back to the line input, which is off: the source goes back and
+        // the writer is asked for, to be freed here.
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Step {
+                index: source,
+                delta: -1,
+            },
+        );
+        let acts = take(&mut p);
+        assert!(matches!(
+            acts.as_slice(),
+            [FromUi::SampleSource(RecSource::Line)]
+        ));
+        let mut acts = take(&mut p);
+        assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
+        p.apply(ToUi::SampleInputBack(feed));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("sample: the sampler's input buffer was freed (")));
         assert_eq!(
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE

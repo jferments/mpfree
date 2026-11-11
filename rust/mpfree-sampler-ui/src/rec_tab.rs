@@ -1,6 +1,12 @@
-//! The pad editor's Rec tab: the line input onto a pad.
+//! The pad editor's Rec tab: the line input, or any point in the mix,
+//! onto a pad.
 //!
-//! - The **input** picture shows the line input's level on two meters and
+//! - The **Source** row picks what it records: the line input, or a point
+//!   in the mix the app offers (the master as heard, a track, a pad's
+//!   channel, a return): resampling. The app keeps one buffer and starts
+//!   it afresh on a new source, so Skip back reaches back to the change at
+//!   most. A take being made keeps its source: the row waits for it.
+//! - The **input** picture shows the source's level on two meters and
 //!   the last half minute of it scrolling past, with the transport's bar
 //!   lines, the span **Skip back** would keep and the take being recorded.
 //! - **Record** starts a take with the Record list's settings: at once, when
@@ -51,8 +57,9 @@ pub const TAB: usize = 7;
 pub const HINT: &str = "Record, or keep what just came in with Skip back · tap a row, then the wheel changes it · UNDO \
                         takes a take off its pad again";
 
-/// What the picture says while the line input is off.
-pub const OFF_NOTE: &str = "The line input is off: Looper tab, MENU, Line input";
+/// What the picture says while the line input is off (and is the source).
+pub const OFF_NOTE: &str =
+    "The line input is off: Looper tab, MENU, Line input · or pick another Source";
 
 /// The input the strip shows, in seconds, and its columns a second.
 pub const STRIP_SECONDS: u32 = 30;
@@ -126,6 +133,9 @@ pub enum Onto {
 /// The Record list's settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecSettings {
+    /// What it records from: an index into [`RecState::sources`] (0, the
+    /// first, is the line input).
+    pub source: usize,
     pub pick: Pick,
     pub start: StartAt,
     pub threshold_db: f32,
@@ -140,6 +150,7 @@ pub struct RecSettings {
 impl Default for RecSettings {
     fn default() -> Self {
         RecSettings {
+            source: 0,
             pick: Pick::Stereo,
             start: StartAt::Now,
             threshold_db: -30.0,
@@ -205,6 +216,7 @@ impl RecSettings {
 /// The Record list's rows, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
+    Source,
     Input,
     Start,
     Threshold,
@@ -217,7 +229,8 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 9] = [
+    pub const ALL: [Row; 10] = [
+        Row::Source,
         Row::Input,
         Row::Start,
         Row::Threshold,
@@ -231,7 +244,8 @@ impl Row {
 
     pub fn label(self) -> &'static str {
         match self {
-            Row::Input => "Input",
+            Row::Source => "Source",
+            Row::Input => "Channels",
             Row::Start => "Start",
             Row::Threshold => "Threshold",
             Row::PreRoll => "Pre-roll",
@@ -248,9 +262,14 @@ impl Row {
     }
 }
 
-/// Row `row`'s value as text.
-pub fn value_text(s: &RecSettings, row: Row) -> String {
+/// Row `row`'s value as text; `sources` names the sources the app
+/// offers.
+pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
     match row {
+        Row::Source => sources
+            .get(s.source)
+            .cloned()
+            .unwrap_or_else(|| "Line in".to_string()),
         Row::Input => s.pick.label().to_string(),
         Row::Start => match s.start {
             StartAt::Now => "Now",
@@ -292,10 +311,12 @@ fn step_in<T: PartialEq + Copy>(list: &[T], now: T, delta: i32) -> T {
     list[shift(i, delta, list.len())]
 }
 
-/// `s` with row `row` stepped by `delta` steps.
-pub fn stepped(s: &RecSettings, row: Row, delta: i32) -> RecSettings {
+/// `s` with row `row` stepped by `delta` steps, among `sources` sources
+/// for the Source row.
+pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSettings {
     let mut s = *s;
     match row {
+        Row::Source => s.source = shift(s.source, delta, sources.max(1)),
         Row::Input => s.pick = step_in(&Pick::ALL, s.pick, delta),
         Row::Start => {
             s.start = step_in(
@@ -330,8 +351,12 @@ pub struct RecState {
     pub pad_name: Option<String>,
     /// The pad a take goes onto now (None: no empty pad left).
     pub target: Option<usize>,
-    /// The line input is on (Looper tab, MENU).
-    pub line_on: bool,
+    /// The sources it can record from, by name; the first is the line
+    /// input.
+    pub sources: Vec<String>,
+    /// The source picked comes in (for the line input: it is on, on the
+    /// Looper tab's MENU; a point in the mix always does).
+    pub live: bool,
     /// The last take, said in a line.
     pub last: String,
 }
@@ -345,6 +370,8 @@ pub enum RecAction {
     Stop,
     /// Keep what the settings' Skip back covers, now.
     SkipBack,
+    /// The Source row picked source `i` of [`RecState::sources`].
+    Source(usize),
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -359,6 +386,8 @@ pub struct RecTab {
     /// A take is being recorded (or waits for its start): the first button
     /// stops it.
     recording: bool,
+    /// The sources' names, as last shown.
+    sources: Vec<String>,
 }
 
 impl RecTab {
@@ -385,6 +414,7 @@ impl RecTab {
             bank: None,
             settings: RecSettings::default(),
             recording: false,
+            sources: st.sources.clone(),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -418,9 +448,14 @@ impl RecTab {
             bar.subtitle = if st.last.is_empty() {
                 match (&st.pad_name, self.settings.onto) {
                     (Some(n), Onto::ThisPad) => format!("replacing {n}"),
-                    _ => format!(
+                    _ if self.settings.source == 0 => format!(
                         "{} · from the line input",
-                        value_text(&self.settings, Row::Input)
+                        value_text(&self.settings, Row::Input, &st.sources)
+                    ),
+                    _ => format!(
+                        "{} · resampling {}",
+                        value_text(&self.settings, Row::Input, &st.sources),
+                        value_text(&self.settings, Row::Source, &st.sources)
                     ),
                 }
             } else {
@@ -431,14 +466,22 @@ impl RecTab {
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
-                value: value_text(&self.settings, *r),
+                value: value_text(&self.settings, *r, &st.sources),
             })
             .collect();
+        let title = if self.settings.source == 0 {
+            "Line input".to_string()
+        } else {
+            value_text(&self.settings, Row::Source, &st.sources)
+        };
+        if let Some(v) = ui.get_mut::<InputView>(VIEW) {
+            v.title = title;
+        }
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
             list.right = target.map(|p| format!("onto {p}")).unwrap_or_default();
         }
-        let can = st.line_on && st.target.is_some();
+        let can = st.live && st.target.is_some();
         let recording = self.recording;
         let skip = self.settings.skip.label();
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
@@ -448,12 +491,17 @@ impl RecTab {
             ];
             b.enabled = vec![recording || can, can && !recording];
         }
+        self.sources = st.sources.clone();
         self.show_wheel(ui);
     }
 
     fn show_wheel(&self, ui: &mut Ui) {
         let row = self.row(ui);
-        let text = format!("{}: {}", row.label(), value_text(&self.settings, row));
+        let text = format!(
+            "{}: {}",
+            row.label(),
+            value_text(&self.settings, row, &self.sources)
+        );
         if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
             card.text = text;
         }
@@ -461,14 +509,14 @@ impl RecTab {
 
     /// Reads what came into `input` since the last call (`dt` seconds ago)
     /// and marks the bar lines, what Skip back would keep, and `rec` (the
-    /// take, if one is being made) on the strip. `line_on`: the line
-    /// input is on.
+    /// take, if one is being made) on the strip. `live`: the source
+    /// comes in.
     pub fn feed(
         &mut self,
         ui: &mut Ui,
         input: &Input,
         rec: Option<&Recording>,
-        line_on: bool,
+        live: bool,
         dt: f32,
     ) {
         let was = self.recording;
@@ -486,7 +534,7 @@ impl RecTab {
         v.threshold = (settings.start == StartAt::Threshold || settings.end == EndAt::Silence)
             .then(|| settings.level());
         v.skip = match settings.skip {
-            _ if !line_on => None,
+            _ if !live => None,
             Skip::Seconds(s) => {
                 let start = now
                     .saturating_sub(u64::from(s) * u64::from(rate))
@@ -497,8 +545,8 @@ impl RecTab {
                     label: format!("Skip back {}", settings.skip.label()),
                 })
             }
-            Skip::Bars(n) => match (input.bars.back(n as usize), input.bars.back(0)) {
-                (Some(start), Some(end)) if start >= input.audio.oldest() => Some(Span {
+            Skip::Bars(n) => match input.bars_back(n as usize) {
+                Some((start, end)) if start >= input.audio.oldest() => Some(Span {
                     start,
                     end,
                     label: format!("Skip back {}", settings.skip.label()),
@@ -518,7 +566,7 @@ impl RecTab {
                 label: format!("● {}", duration_text(frames, rate)),
             })
         });
-        v.note = if !line_on {
+        v.note = if !live {
             OFF_NOTE.to_string()
         } else {
             match rec.map(Recording::progress) {
@@ -561,7 +609,7 @@ impl RecTab {
 
     /// No input to show (the line input is off, or just turned on): the
     /// picture says so and the strip starts again.
-    pub fn idle(&mut self, ui: &mut Ui, line_on: bool) {
+    pub fn idle(&mut self, ui: &mut Ui, live: bool) {
         self.recording = false;
         if let Some(v) = ui.get_mut::<InputView>(VIEW) {
             v.strip.reset();
@@ -570,12 +618,7 @@ impl RecTab {
             v.bars.clear();
             v.threshold = None;
             v.meter_db = [f32::NEG_INFINITY; 2];
-            v.note = if line_on {
-                "Starting the line input"
-            } else {
-                OFF_NOTE
-            }
-            .to_string();
+            v.note = if live { "Starting the input" } else { OFF_NOTE }.to_string();
             v.caption.clear();
             v.right.clear();
         }
@@ -598,9 +641,7 @@ impl RecTab {
             (BUTTONS, EventKind::Tab(1)) => Some(RecAction::SkipBack),
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *Row::ALL.get(*index)?;
-                self.settings = stepped(&self.settings, row, *delta);
-                self.update(ui, st);
-                None
+                self.step(ui, st, row, *delta)
             }
             (LIST, EventKind::Select(_)) => {
                 self.show_wheel(ui);
@@ -610,11 +651,25 @@ impl RecTab {
         }
     }
 
-    /// The data wheel: steps the row picked by `delta` detents.
-    pub fn wheel(&mut self, ui: &mut Ui, st: &RecState, delta: i32) {
+    /// The data wheel: steps the row picked by `delta` detents. A new
+    /// source is for the app to start.
+    pub fn wheel(&mut self, ui: &mut Ui, st: &RecState, delta: i32) -> Option<RecAction> {
         let row = self.row(ui);
-        self.settings = stepped(&self.settings, row, delta);
+        self.step(ui, st, row, delta)
+    }
+
+    fn step(&mut self, ui: &mut Ui, st: &RecState, row: Row, delta: i32) -> Option<RecAction> {
+        if row == Row::Source && self.recording {
+            // A take keeps its source until it ends.
+            if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
+                card.text = "Source: stop the take first".to_string();
+            }
+            return None;
+        }
+        let was = self.settings.source;
+        self.settings = stepped(&self.settings, row, delta, st.sources.len());
         self.update(ui, st);
+        (self.settings.source != was).then_some(RecAction::Source(self.settings.source))
     }
 
     /// A take is being made (the first button says Stop).
@@ -643,22 +698,31 @@ mod tests {
 
     #[test]
     fn settings_step_within_their_lists() {
+        let names = ["Line in".to_string(), "Master".to_string()];
         let s = RecSettings::default();
-        assert_eq!(value_text(&s, Row::Start), "Now");
-        let s = stepped(&s, Row::Start, 1);
+        assert_eq!(value_text(&s, Row::Start, &names), "Now");
+        assert_eq!(value_text(&s, Row::Source, &names), "Line in");
+        let s = stepped(&s, Row::Start, 1, 2);
         assert_eq!(s.start, StartAt::Threshold);
-        let s = stepped(&s, Row::Start, 5);
+        let s = stepped(&s, Row::Start, 5, 2);
         assert_eq!(s.start, StartAt::NextBar, "stops at the end");
-        let s = stepped(&s, Row::Threshold, 2);
+        let s = stepped(&s, Row::Threshold, 2, 2);
         assert_eq!(s.threshold_db, -24.0);
-        let s = stepped(&s, Row::SkipBack, 5);
+        let s = stepped(&s, Row::SkipBack, 5, 2);
         assert_eq!(s.skip, Skip::Bars(2));
-        assert_eq!(value_text(&s, Row::SkipBack), "2 bars");
+        assert_eq!(value_text(&s, Row::SkipBack, &names), "2 bars");
         assert_eq!(Skip::Seconds(60).label(), "1 min");
         assert_eq!(
-            value_text(&stepped(&s, Row::Silence, -1), Row::Silence),
+            value_text(&stepped(&s, Row::Silence, -1, 2), Row::Silence, &names),
             "500 ms"
         );
+        let s = stepped(&s, Row::Source, 3, 2);
+        assert_eq!(
+            value_text(&s, Row::Source, &names),
+            "Master",
+            "stops at the last"
+        );
+        assert_eq!(stepped(&s, Row::Source, -1, 2).source, 0);
     }
 
     #[test]

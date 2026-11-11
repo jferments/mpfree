@@ -60,6 +60,9 @@ struct Ring {
     /// Frames the writer has started to write (claimed), then finished.
     claimed: AtomicU64,
     written: AtomicU64,
+    /// The first frame of what the buffer holds now: frames before it came
+    /// from somewhere else ([`RollingWriter::restart`]) and are not read.
+    start: AtomicU64,
 }
 
 /// A rolling buffer of `frames` frames of `channels` (1 or 2) interleaved
@@ -76,6 +79,7 @@ pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
         data: (0..frames * ch).map(|_| AtomicU32::new(0)).collect(),
         claimed: AtomicU64::new(0),
         written: AtomicU64::new(0),
+        start: AtomicU64::new(0),
     });
     (
         RollingWriter {
@@ -143,6 +147,13 @@ impl RollingWriter {
     pub fn written(&self) -> u64 {
         self.pos
     }
+
+    /// What comes next is from another source: readers stop at it, as if
+    /// everything before it had been overwritten. Never allocates, locks
+    /// or waits.
+    pub fn restart(&mut self) {
+        self.ring.start.store(self.pos, Ordering::Release);
+    }
 }
 
 /// A reader of a rolling buffer, for any thread but the audio thread.
@@ -162,9 +173,11 @@ impl RollingReader {
     pub fn written(&self) -> u64 {
         self.ring.written.load(Ordering::Acquire)
     }
-    /// The oldest frame still in the buffer.
+    /// The oldest frame still in the buffer (and from the source it has
+    /// now).
     pub fn oldest(&self) -> u64 {
-        self.written().saturating_sub(self.ring.frames)
+        let start = self.ring.start.load(Ordering::Acquire);
+        self.written().saturating_sub(self.ring.frames).max(start)
     }
 
     /// Appends frames `start..end` (absolute) to `out`, interleaved. On an
@@ -177,7 +190,7 @@ impl RollingReader {
         if end > written {
             return Err(RecordError::NotYetWritten);
         }
-        if start + self.ring.frames < written {
+        if start + self.ring.frames < written || start < self.ring.start.load(Ordering::Acquire) {
             return Err(RecordError::Overwritten);
         }
         let ch = self.ring.channels;
@@ -193,7 +206,9 @@ impl RollingReader {
         }
         // Did the writer start to overwrite any of it while we copied?
         fence(Ordering::Acquire);
-        if start + self.ring.frames < self.ring.claimed.load(Ordering::Relaxed) {
+        if start + self.ring.frames < self.ring.claimed.load(Ordering::Relaxed)
+            || start < self.ring.start.load(Ordering::Relaxed)
+        {
             out.truncate(keep);
             return Err(RecordError::Overwritten);
         }
@@ -203,9 +218,7 @@ impl RollingReader {
     /// The last `frames` frames (or as many as the buffer holds).
     pub fn skip_back(&self, frames: u64) -> Result<Vec<f32>, RecordError> {
         let end = self.written();
-        let start = end
-            .saturating_sub(frames)
-            .max(end.saturating_sub(self.ring.frames));
+        let start = end.saturating_sub(frames).max(self.oldest());
         let mut out = Vec::new();
         self.copy(start, end, &mut out)?;
         Ok(out)
@@ -538,8 +551,17 @@ pub struct Feed {
     pub bars: BarWriter,
 }
 
-/// The line input as the sampler records it: the last `seconds` of stereo
-/// input and the bar lines in it. The screen thread keeps this end.
+impl Feed {
+    /// The input comes from another source from now on: Skip back and
+    /// takes stop at this frame ([`RollingWriter::restart`]).
+    pub fn restart(&mut self) {
+        self.audio.restart();
+    }
+}
+
+/// What the sampler records from (the line input, or a point in the mix
+/// when resampling): the last `seconds` of stereo input and the bar lines
+/// in it. The screen thread keeps this end.
 #[derive(Clone)]
 pub struct Input {
     pub audio: RollingReader,
@@ -578,17 +600,25 @@ impl Input {
     }
 
     /// The last `n` whole bars, from the bar line `n` bars before the
-    /// latest one to the latest one, stereo.
+    /// latest one that has come in to that one, stereo. (A bar line can be
+    /// marked ahead of the audio: an input heard through effects with
+    /// latency gets its lines that much later.)
     pub fn last_bars(&self, n: usize) -> Result<Vec<f32>, RecordError> {
-        let (Some(end), Some(start)) = (self.bars.back(0), self.bars.back(n)) else {
-            return Err(RecordError::NoBarLines);
-        };
         if n == 0 {
             return Err(RecordError::BadSpan);
         }
+        let (start, end) = self.bars_back(n).ok_or(RecordError::NoBarLines)?;
         let mut out = Vec::new();
         self.audio.copy(start, end, &mut out)?;
         Ok(out)
+    }
+
+    /// The span of the last `n` whole bars that have come in: from the bar
+    /// line `n` before the latest one at or before now, to that one.
+    pub fn bars_back(&self, n: usize) -> Option<(u64, u64)> {
+        let now = self.now();
+        let latest = (0..BAR_LINES).find(|k| self.bars.back(*k).is_some_and(|f| f <= now))?;
+        Some((self.bars.back(latest + n)?, self.bars.back(latest)?))
     }
 }
 
