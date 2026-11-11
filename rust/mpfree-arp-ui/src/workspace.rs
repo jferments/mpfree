@@ -11,16 +11,25 @@
 //!
 //! Drag a cell up or down, or turn the wheel, to change its value. Mutate
 //! and Rotate change a copy; Original puts back the pattern the workspace
-//! opened with. The pattern's lanes (their own lengths, for polymeter) are
-//! kept as they are; editing them here comes later.
+//! opened with.
+//!
+//! **Lanes** switches the grid to the pattern's lanes: octave, degree,
+//! velocity, gate and nudge, a row each. Every lane loops at its own length,
+//! so a 3-value velocity lane over 4 steps makes a polymeter. Drag a value
+//! or turn the wheel; drag the `+` cell at a lane's end to add a value;
+//! Length −/+ and Random −/+ work on the selected lane.
+//!
+//! **Record** writes the pattern on the pads. In Step time each press writes
+//! the next step. In Free time the pattern plays over the latched notes and
+//! each press lands on the nearest step as it goes by.
 //!
 //! [`Editor`] is the model and has no drawing, so it is tested on its own.
 //! [`PatternWorkspace`] adds the widgets and two layouts to the app's `Ui`:
 //! one for editing, and one with the pads for recording on them.
 
 use crate::view::pattern_cell;
-use crate::widgets::{ButtonRow, CellKind, LaneGrid, StepCell};
-use mpfree_arp::{Pattern, Pick, Step, MAX_STEPS};
+use crate::widgets::{Button, ButtonRow, CellKind, LaneGrid, StepCell};
+use mpfree_arp::{Lane, Pattern, Pick, RecordMode, Step, MAX_STEPS};
 use mpfree_ui::widgets::Label;
 use mpfree_ui::{Align, EventKind, Tone, Ui, UiEvent};
 
@@ -72,6 +81,91 @@ impl Row {
     }
 }
 
+/// The lanes view's rows, top to bottom: the pattern's lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneRow {
+    Octave,
+    Degree,
+    Velocity,
+    Gate,
+    Nudge,
+}
+
+impl LaneRow {
+    pub const ALL: [LaneRow; 5] = [LaneRow::Octave, LaneRow::Degree, LaneRow::Velocity, LaneRow::Gate, LaneRow::Nudge];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            LaneRow::Octave => "Octave",
+            LaneRow::Degree => "Degree",
+            LaneRow::Velocity => "Velocity",
+            LaneRow::Gate => "Gate",
+            LaneRow::Nudge => "Nudge",
+        }
+    }
+
+    /// (lowest value, highest value, one wheel click or drag step, the most
+    /// random), as the pattern text allows them.
+    pub const fn range(self) -> (i32, i32, i32, i32) {
+        match self {
+            LaneRow::Octave => (-3, 3, 1, 3),
+            LaneRow::Degree => (-24, 24, 1, 24),
+            LaneRow::Velocity => (0, 127, 8, 127),
+            LaneRow::Gate => (0, 100, 10, 100),
+            LaneRow::Nudge => (-50, 50, 5, 50),
+        }
+    }
+
+    fn index(self) -> usize {
+        LaneRow::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    }
+}
+
+/// A lane's values and its random amount.
+pub fn lane_values(p: &Pattern, lane: LaneRow) -> (Vec<i32>, u8) {
+    fn get<T: Copy + Default + Into<i32>>(l: &Lane<T>) -> (Vec<i32>, u8) {
+        (l.values().iter().map(|&v| v.into()).collect(), l.random())
+    }
+    let l = &p.lanes;
+    match lane {
+        LaneRow::Octave => get(&l.octave),
+        LaneRow::Degree => get(&l.degree),
+        LaneRow::Velocity => get(&l.velocity),
+        LaneRow::Gate => get(&l.gate),
+        LaneRow::Nudge => get(&l.nudge),
+    }
+}
+
+/// `p` with one lane replaced. Values are clamped to the lane's range.
+pub fn with_lane(p: &Pattern, lane: LaneRow, values: &[i32], random: u8) -> Option<Pattern> {
+    let (lo, hi, _, most) = lane.range();
+    let v: Vec<i32> = values.iter().map(|x| (*x).clamp(lo, hi)).collect();
+    let random = random.min(most as u8);
+    let mut q = *p;
+    let small = |v: &[i32]| -> Vec<i8> { v.iter().map(|&x| x as i8).collect() };
+    let byte = |v: &[i32]| -> Vec<u8> { v.iter().map(|&x| x as u8).collect() };
+    match lane {
+        LaneRow::Octave => q.lanes.octave = Lane::new(&small(&v))?.with_random(random),
+        LaneRow::Degree => q.lanes.degree = Lane::new(&small(&v))?.with_random(random),
+        LaneRow::Velocity => q.lanes.velocity = Lane::new(&byte(&v))?.with_random(random),
+        LaneRow::Gate => q.lanes.gate = Lane::new(&byte(&v))?.with_random(random),
+        LaneRow::Nudge => q.lanes.nudge = Lane::new(&small(&v))?.with_random(random),
+    }
+    Some(q)
+}
+
+/// How a lane value reads in its cell.
+pub fn lane_label(lane: LaneRow, v: i32) -> String {
+    let signed = |v: i32| if v > 0 { format!("+{v}") } else { format!("{v}") };
+    match lane {
+        LaneRow::Octave | LaneRow::Degree => signed(v),
+        LaneRow::Velocity | LaneRow::Gate if v == 0 => "auto".into(),
+        LaneRow::Velocity => format!("{v}"),
+        LaneRow::Gate => format!("{v}%"),
+        LaneRow::Nudge => format!("{}%", signed(v)),
+    }
+}
+
 /// The note picks in the order the wheel and drags move through them.
 const PICKS: [Pick; 14] = [
     Pick::Next,
@@ -97,12 +191,14 @@ pub struct Editor {
     pattern: Pattern,
     /// The selected row and step.
     pub cursor: (Row, usize),
+    /// The selected lane and value in the lanes view.
+    pub lane_cursor: (LaneRow, usize),
     mutations: u32,
 }
 
 impl Editor {
     pub fn new(pattern: Pattern) -> Editor {
-        Editor { original: pattern, pattern, cursor: (Row::Step, 0), mutations: 0 }
+        Editor { original: pattern, pattern, cursor: (Row::Step, 0), lane_cursor: (LaneRow::Velocity, 0), mutations: 0 }
     }
 
     pub fn pattern(&self) -> &Pattern {
@@ -217,6 +313,84 @@ impl Editor {
     pub fn revert(&mut self) {
         self.pattern = self.original;
         self.cursor.1 = self.cursor.1.min(self.pattern.len() - 1);
+        self.clamp_lane_cursor();
+    }
+
+    /// Selects a lane value, or the empty cell just past the lane's end.
+    pub fn select_lane(&mut self, lane: LaneRow, pos: usize) -> bool {
+        let len = lane_values(&self.pattern, lane).0.len();
+        if pos <= len && pos < MAX_STEPS {
+            self.lane_cursor = (lane, pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn set_lane(&mut self, lane: LaneRow, values: &[i32], random: u8) -> bool {
+        match with_lane(&self.pattern, lane, values, random) {
+            Some(p) if p != self.pattern => {
+                self.pattern = p;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn clamp_lane_cursor(&mut self) {
+        let (lane, pos) = self.lane_cursor;
+        let len = lane_values(&self.pattern, lane).0.len();
+        self.lane_cursor.1 = pos.min(len).min(MAX_STEPS - 1);
+    }
+
+    /// Moves a lane value by `delta` clicks of the lane's step, stopping at
+    /// its ends. Turning the empty cell just past the end adds a value
+    /// there, starting from the one before it.
+    pub fn turn_lane(&mut self, lane: LaneRow, pos: usize, delta: i32) -> bool {
+        let (mut v, random) = lane_values(&self.pattern, lane);
+        if pos > v.len() || pos >= MAX_STEPS {
+            return false;
+        }
+        if pos == v.len() {
+            v.push(v.last().copied().unwrap_or(0));
+        }
+        let (lo, hi, step, _) = lane.range();
+        v[pos] = (v[pos] + step * delta).clamp(lo, hi);
+        let changed = self.set_lane(lane, &v, random);
+        if changed {
+            self.lane_cursor = (lane, pos);
+        }
+        changed
+    }
+
+    /// Makes a lane `len` values long (0 turns it off). New values repeat
+    /// the last one.
+    pub fn set_lane_len(&mut self, lane: LaneRow, len: usize) -> bool {
+        if len > MAX_STEPS {
+            return false;
+        }
+        let (mut v, random) = lane_values(&self.pattern, lane);
+        let fill = v.last().copied().unwrap_or(0);
+        v.resize(len, fill);
+        let changed = self.set_lane(lane, &v, random);
+        self.clamp_lane_cursor();
+        changed
+    }
+
+    /// Moves a lane's random amount (how far each value wanders as it
+    /// plays) by `delta` clicks of the lane's step.
+    pub fn turn_random(&mut self, lane: LaneRow, delta: i32) -> bool {
+        let (v, random) = lane_values(&self.pattern, lane);
+        let (_, _, step, most) = lane.range();
+        let r = (i32::from(random) + step * delta).clamp(0, most);
+        self.set_lane(lane, &v, r as u8)
+    }
+
+    /// Turns a lane off: no values and no random amount.
+    pub fn clear_lane(&mut self, lane: LaneRow) -> bool {
+        let changed = self.set_lane(lane, &[], 0);
+        self.clamp_lane_cursor();
+        changed
     }
 }
 
@@ -263,19 +437,6 @@ pub fn record_pad_labels() -> [&'static str; 16] {
     ]
 }
 
-/// The toolbar, in [`Tool`] order.
-pub const TOOL_BUTTONS: [(&str, Tone); 9] = [
-    ("Back", Tone::Normal),
-    ("Rotate ←", Tone::Normal),
-    ("Rotate →", Tone::Normal),
-    ("Mutate", Tone::Normal),
-    ("Original", Tone::Normal),
-    ("Length −", Tone::Normal),
-    ("Length +", Tone::Normal),
-    ("Record", Tone::Bad),
-    ("Save", Tone::Accent),
-];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Back,
@@ -287,19 +448,66 @@ pub enum Tool {
     Longer,
     Record,
     Save,
+    /// The lanes view, and back to the steps.
+    Lanes,
+    Steps,
+    LaneShorter,
+    LaneLonger,
+    RandomLess,
+    RandomMore,
+    ClearLane,
+    /// While recording: Step time or Free time, Undo and Clear.
+    StepTime,
+    FreeTime,
+    Undo,
+    Clear,
 }
 
-const TOOLS_ALL: [Tool; 9] = [
-    Tool::Back,
-    Tool::RotateLeft,
-    Tool::RotateRight,
-    Tool::Mutate,
-    Tool::Original,
-    Tool::Shorter,
-    Tool::Longer,
-    Tool::Record,
-    Tool::Save,
+/// The toolbar while editing steps.
+pub const STEP_TOOLS: [(Tool, &str, Tone); 10] = [
+    (Tool::Back, "Back", Tone::Normal),
+    (Tool::RotateLeft, "Rotate ←", Tone::Normal),
+    (Tool::RotateRight, "Rotate →", Tone::Normal),
+    (Tool::Mutate, "Mutate", Tone::Normal),
+    (Tool::Original, "Original", Tone::Normal),
+    (Tool::Shorter, "Length −", Tone::Normal),
+    (Tool::Longer, "Length +", Tone::Normal),
+    (Tool::Record, "Record", Tone::Bad),
+    (Tool::Save, "Save", Tone::Accent),
+    (Tool::Lanes, "Lanes", Tone::Normal),
 ];
+
+/// The toolbar while editing lanes.
+pub const LANE_TOOLS: [(Tool, &str, Tone); 9] = [
+    (Tool::Back, "Back", Tone::Normal),
+    (Tool::Steps, "Steps", Tone::Normal),
+    (Tool::LaneShorter, "Length −", Tone::Normal),
+    (Tool::LaneLonger, "Length +", Tone::Normal),
+    (Tool::RandomLess, "Random −", Tone::Normal),
+    (Tool::RandomMore, "Random +", Tone::Normal),
+    (Tool::ClearLane, "Clear lane", Tone::Normal),
+    (Tool::Original, "Original", Tone::Normal),
+    (Tool::Save, "Save", Tone::Accent),
+];
+
+/// The toolbar while recording on the pads.
+pub const RECORD_TOOLS: [(Tool, &str, Tone); 7] = [
+    (Tool::Back, "Back", Tone::Normal),
+    (Tool::StepTime, "Step time", Tone::Normal),
+    (Tool::FreeTime, "Free time", Tone::Normal),
+    (Tool::Undo, "Undo", Tone::Normal),
+    (Tool::Clear, "Clear", Tone::Normal),
+    (Tool::Record, "Stop recording", Tone::Bad),
+    (Tool::Save, "Save", Tone::Accent),
+];
+
+/// Which grid the workspace shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WsView {
+    #[default]
+    Steps,
+    Lanes,
+}
 
 /// What the app does after a touch in the workspace.
 #[derive(Clone, Debug, PartialEq)]
@@ -314,6 +522,14 @@ pub enum WsAction {
     /// Recording on the pads turned on or off: the app feeds pad hits to
     /// `mpfree_arp::Recorder` and labels the pads with [`record_pad_labels`].
     Record(bool),
+    /// Record in Step time or Free time (from now on, and at once if
+    /// recording).
+    RecordMode(RecordMode),
+    /// While recording: take back the last step written (Step time).
+    Undo,
+    /// While recording: start again from an empty pattern (Step time) or
+    /// rest every step (Free time).
+    Clear,
 }
 
 /// The workspace's widgets and their meaning.
@@ -325,6 +541,14 @@ pub struct PatternWorkspace {
     pub name: String,
     pub editor: Editor,
     pub recording: bool,
+    /// Recording in Free time rather than Step time (the app says which).
+    pub free_time: bool,
+    /// Steps or lanes.
+    pub view: WsView,
+    /// The engine's step count for the step playing now (`Engine::step`
+    /// minus one) while the pattern plays, so each lane can mark its own
+    /// position.
+    pub played: Option<u64>,
 }
 
 impl PatternWorkspace {
@@ -335,7 +559,7 @@ impl PatternWorkspace {
         ui.add(TITLE, Label::new("", Tone::Normal, Align::Left));
         let rows: Vec<&str> = Row::ALL.iter().map(|r| r.label()).collect();
         ui.add(GRID, LaneGrid::new(&rows, COLUMNS));
-        ui.add(TOOLS, ButtonRow::one_line(&TOOL_BUTTONS));
+        ui.add(TOOLS, ButtonRow::one_line(&[]));
         ui.add_page(edit_page, EDIT_LAYOUT)?;
         ui.add_page(record_page, RECORD_LAYOUT)?;
         let ws = PatternWorkspace {
@@ -344,6 +568,9 @@ impl PatternWorkspace {
             name: name.to_string(),
             editor: Editor::new(pattern),
             recording: false,
+            free_time: false,
+            view: WsView::Steps,
+            played: None,
         };
         ws.update(ui, None);
         Ok(ws)
@@ -365,9 +592,46 @@ impl PatternWorkspace {
         self.editor.cursor.1 / self.columns() * self.columns()
     }
 
+    /// The lanes are on screen (never while recording).
+    pub fn showing_lanes(&self) -> bool {
+        self.view == WsView::Lanes && !self.recording
+    }
+
+    /// The first lane value the lanes grid shows.
+    fn lane_first(&self) -> usize {
+        self.editor.lane_cursor.1 / COLUMNS * COLUMNS
+    }
+
+    /// The toolbar showing now.
+    pub fn tools(&self) -> &'static [(Tool, &'static str, Tone)] {
+        if self.recording {
+            &RECORD_TOOLS
+        } else if self.showing_lanes() {
+            &LANE_TOOLS
+        } else {
+            &STEP_TOOLS
+        }
+    }
+
+    /// The hint line for what the workspace shows.
+    pub fn hint(&self) -> &'static str {
+        if self.recording && self.free_time {
+            "Free time: each press lands on the nearest step as the pattern plays · hold a pad for ties"
+        } else if self.showing_lanes() {
+            "Each lane loops at its own length · drag a value or turn the wheel · drag + to add one"
+        } else {
+            hint(self.recording)
+        }
+    }
+
     /// Shows the editor's pattern. `playing` is the pattern step the engine
     /// is on, if it is playing.
     pub fn update(&self, ui: &mut Ui, playing: Option<usize>) {
+        self.update_tools(ui);
+        if self.showing_lanes() {
+            self.update_lanes(ui);
+            return;
+        }
         let p = self.editor.pattern();
         let (first, columns) = (self.first(), self.columns());
         let last = p.len().min(first + columns);
@@ -380,6 +644,8 @@ impl PatternWorkspace {
             t.text = format!("{rec}Pattern: {}{star} · {} steps{page}{lanes}", self.name, p.len());
         }
         if let Some(g) = ui.get_mut::<LaneGrid>(GRID) {
+            g.rows = Row::ALL.iter().map(|r| r.label().to_string()).collect();
+            g.playing_rows.clear();
             g.first = first;
             g.columns = columns;
             g.cells = Row::ALL
@@ -390,11 +656,80 @@ impl PatternWorkspace {
             g.cursor = (step >= first && step < last).then(|| (row.index(), step - first));
             g.playing = playing.filter(|s| *s >= first && *s < last).map(|s| s - first);
         }
+    }
+
+    fn update_lanes(&self, ui: &mut Ui) {
+        let p = self.editor.pattern();
+        let first = self.lane_first();
+        let (lane, pos) = self.editor.lane_cursor;
+        if let Some(t) = ui.get_mut::<Label>(TITLE) {
+            let star = if self.editor.changed() { " (changed)" } else { "" };
+            let (v, random) = lane_values(p, lane);
+            let state = match (v.len(), random) {
+                (0, 0) => "off".to_string(),
+                (n, 0) => format!("{n} values"),
+                (n, r) => format!("{n} values, random ±{r}"),
+            };
+            t.text = format!("Pattern: {}{star} · {} steps · lanes loop at their own lengths · {}: {state}",
+                             self.name, p.len(), lane.label());
+        }
+        if let Some(g) = ui.get_mut::<LaneGrid>(GRID) {
+            g.first = first;
+            g.columns = COLUMNS;
+            g.rows.clear();
+            g.cells.clear();
+            g.playing_rows.clear();
+            g.playing = None;
+            for row in LaneRow::ALL {
+                let (v, random) = lane_values(p, row);
+                g.rows.push(if random > 0 { format!("{} ±{random}", row.label()) } else { row.label().to_string() });
+                let mut cells: Vec<StepCell> = v
+                    .iter()
+                    .skip(first)
+                    .take(COLUMNS)
+                    .map(|x| StepCell { kind: CellKind::Note, label: lane_label(row, *x), ..StepCell::default() })
+                    .collect();
+                if v.len() >= first && v.len() < first + COLUMNS && v.len() < MAX_STEPS {
+                    cells.push(StepCell { kind: CellKind::Rest, label: "+".into(), ..StepCell::default() });
+                }
+                g.cells.push(cells);
+                let at = self.played.filter(|_| !v.is_empty()).map(|n| (n % v.len() as u64) as usize);
+                g.playing_rows.push(at.filter(|a| *a >= first && *a < first + COLUMNS).map(|a| a - first));
+            }
+            g.cursor = (pos >= first && pos < first + COLUMNS).then(|| (lane.index(), pos - first));
+        }
+    }
+
+    fn update_tools(&self, ui: &mut Ui) {
+        let p = self.editor.pattern();
+        let (lane, _) = self.editor.lane_cursor;
+        let (v, random) = lane_values(p, lane);
+        let (_, _, _, most) = lane.range();
+        let buttons: Vec<Button> = self
+            .tools()
+            .iter()
+            .map(|(tool, label, tone)| {
+                let disabled = match tool {
+                    Tool::Original => !self.editor.changed(),
+                    Tool::Shorter => p.len() <= 1,
+                    Tool::Longer => p.len() >= MAX_STEPS,
+                    Tool::LaneShorter => v.is_empty(),
+                    Tool::LaneLonger => v.len() >= MAX_STEPS,
+                    Tool::RandomLess => random == 0,
+                    Tool::RandomMore => i32::from(random) >= most,
+                    Tool::ClearLane => v.is_empty() && random == 0,
+                    Tool::Undo => self.free_time,
+                    _ => false,
+                };
+                let chosen = matches!((tool, self.free_time), (Tool::StepTime, false) | (Tool::FreeTime, true));
+                Button { label: label.to_string(), tone: if chosen { Tone::Accent } else { *tone }, disabled }
+            })
+            .collect();
         if let Some(b) = ui.get_mut::<ButtonRow>(TOOLS) {
-            b.buttons[4].disabled = !self.editor.changed();
-            b.buttons[5].disabled = p.len() <= 1;
-            b.buttons[6].disabled = p.len() >= MAX_STEPS;
-            b.buttons[7].label = if self.recording { "Stop recording".into() } else { "Record".into() };
+            if b.buttons != buttons {
+                b.per_line = buttons.len();
+                b.buttons = buttons;
+            }
         }
     }
 
@@ -402,7 +737,18 @@ impl PatternWorkspace {
     /// that change nothing. Call [`PatternWorkspace::update`] after it.
     pub fn action(&mut self, ev: &UiEvent) -> Option<WsAction> {
         let changed = |e: &Editor| Some(WsAction::Changed(*e.pattern()));
+        let lane = self.editor.lane_cursor.0;
         match (ev.widget.as_str(), &ev.kind) {
+            (GRID, EventKind::Select(i)) if self.showing_lanes() => {
+                let row = LaneRow::ALL.get(i / COLUMNS).copied()?;
+                self.editor.select_lane(row, self.lane_first() + i % COLUMNS);
+                None
+            }
+            (GRID, EventKind::Step { index, delta }) if self.showing_lanes() => {
+                let row = LaneRow::ALL.get(index / COLUMNS).copied()?;
+                let pos = self.lane_first() + index % COLUMNS;
+                self.editor.turn_lane(row, pos, *delta).then(|| changed(&self.editor))?
+            }
             (GRID, EventKind::Select(i)) => {
                 let (row, step) = (Row::ALL.get(i / self.columns()).copied()?, self.first() + i % self.columns());
                 if !self.editor.select(row, step) {
@@ -415,7 +761,7 @@ impl PatternWorkspace {
                 // The Step row already changed on the tap; a drag there does nothing.
                 (row != Row::Step && self.editor.turn(row, step, *delta)).then(|| changed(&self.editor))?
             }
-            (TOOLS, EventKind::Tab(i)) => match TOOLS_ALL.get(*i)? {
+            (TOOLS, EventKind::Tab(i)) => match self.tools().get(*i)?.0 {
                 Tool::Back => Some(WsAction::Back),
                 Tool::RotateLeft => {
                     self.editor.rotate(-1);
@@ -446,6 +792,29 @@ impl PatternWorkspace {
                     Some(WsAction::Record(self.recording))
                 }
                 Tool::Save => Some(WsAction::Save(*self.editor.pattern())),
+                Tool::Lanes => {
+                    self.view = WsView::Lanes;
+                    None
+                }
+                Tool::Steps => {
+                    self.view = WsView::Steps;
+                    None
+                }
+                Tool::LaneShorter => {
+                    let n = lane_values(self.editor.pattern(), lane).0.len();
+                    self.editor.set_lane_len(lane, n.saturating_sub(1)).then(|| changed(&self.editor))?
+                }
+                Tool::LaneLonger => {
+                    let n = lane_values(self.editor.pattern(), lane).0.len();
+                    self.editor.set_lane_len(lane, n + 1).then(|| changed(&self.editor))?
+                }
+                Tool::RandomLess => self.editor.turn_random(lane, -1).then(|| changed(&self.editor))?,
+                Tool::RandomMore => self.editor.turn_random(lane, 1).then(|| changed(&self.editor))?,
+                Tool::ClearLane => self.editor.clear_lane(lane).then(|| changed(&self.editor))?,
+                Tool::StepTime => Some(WsAction::RecordMode(RecordMode::Step)),
+                Tool::FreeTime => Some(WsAction::RecordMode(RecordMode::FreeTime)),
+                Tool::Undo => Some(WsAction::Undo),
+                Tool::Clear => Some(WsAction::Clear),
             },
             _ => None,
         }
@@ -453,6 +822,10 @@ impl PatternWorkspace {
 
     /// The data wheel: turns the selected cell's value.
     pub fn wheel(&mut self, delta: i32) -> Option<WsAction> {
+        if self.showing_lanes() {
+            let (lane, pos) = self.editor.lane_cursor;
+            return self.editor.turn_lane(lane, pos, delta).then(|| WsAction::Changed(*self.editor.pattern()));
+        }
         let (row, step) = self.editor.cursor;
         self.editor.turn(row, step, delta).then(|| WsAction::Changed(*self.editor.pattern()))
     }
@@ -462,6 +835,7 @@ impl PatternWorkspace {
     pub fn recorded(&mut self, pattern: Pattern) {
         self.editor.pattern = pattern;
         self.editor.cursor.1 = self.editor.cursor.1.min(pattern.len() - 1);
+        self.editor.clamp_lane_cursor();
     }
 }
 
@@ -655,16 +1029,124 @@ mod tests {
         ui.show(ws.page()).unwrap();
         assert_eq!(ws.page(), "Pattern, recording");
         assert!(ui.rect_of("pads").is_some());
-        assert_eq!(ui.get::<ButtonRow>(TOOLS).unwrap().buttons[7].label, "Stop recording");
+        let labels: Vec<String> = ui.get::<ButtonRow>(TOOLS).unwrap().buttons.iter().map(|b| b.label.clone()).collect();
+        assert_eq!(labels, RECORD_TOOLS.map(|t| t.1.to_string()));
         // The pads take half the screen, so the grid shows 8 steps at a time.
         assert_eq!((ws.columns(), ui.get::<LaneGrid>(GRID).unwrap().columns), (RECORD_COLUMNS, RECORD_COLUMNS));
         let r = ui.rect_of(TOOLS).unwrap();
-        let save = ui.get::<ButtonRow>(TOOLS).unwrap().button_rect(r, 8);
+        // Free time, Undo and Clear go to the app, which owns the recorder.
+        let button = |ui: &Ui, i: usize| ui.get::<ButtonRow>(TOOLS).unwrap().button_rect(r, i);
+        let b = button(&ui, 2);
+        let ev = tap(&mut ui, b).unwrap();
+        assert_eq!(ws.action(&ev), Some(WsAction::RecordMode(RecordMode::FreeTime)));
+        ws.free_time = true;
+        ws.update(&mut ui, None);
+        let b = ui.get::<ButtonRow>(TOOLS).unwrap();
+        assert!(b.buttons[3].disabled, "Undo is for Step time");
+        assert_eq!((b.buttons[1].tone, b.buttons[2].tone), (Tone::Normal, Tone::Accent));
+        assert!(ws.hint().starts_with("Free time"));
+        let b = button(&ui, 4);
+        let ev = tap(&mut ui, b).unwrap();
+        assert_eq!(ws.action(&ev), Some(WsAction::Clear));
+        let save = button(&ui, 6);
         let ev = tap(&mut ui, save).unwrap();
         assert_eq!(ws.action(&ev), Some(WsAction::Save(Pattern::parse("1 2 3 . .").unwrap())));
         let back = ui.get::<ButtonRow>(TOOLS).unwrap().button_rect(r, 0);
         let ev = tap(&mut ui, back).unwrap();
         assert_eq!(ws.action(&ev), Some(WsAction::Back));
+    }
+
+    #[test]
+    fn lanes_take_values_lengths_and_random_amounts() {
+        let mut e = Editor::new(Pattern::parse("x x x x").unwrap());
+        // A drag on the + cell of an empty lane starts it.
+        assert!(e.turn_lane(LaneRow::Velocity, 0, 13));
+        assert_eq!(steps(e.pattern()), "x x x x | vel 104");
+        assert!(!e.turn_lane(LaneRow::Velocity, 2, 1), "only the cell just past the end adds one");
+        assert!(e.turn_lane(LaneRow::Velocity, 1, -3));
+        assert!(e.set_lane_len(LaneRow::Velocity, 3));
+        assert_eq!(steps(e.pattern()), "x x x x | vel 104 80 80");
+        // Values stop at the lane's ends.
+        assert!(e.turn_lane(LaneRow::Velocity, 0, 50));
+        assert!(!e.turn_lane(LaneRow::Velocity, 0, 1));
+        assert!(e.turn_lane(LaneRow::Octave, 0, -9));
+        assert!(e.turn_lane(LaneRow::Nudge, 0, 1));
+        assert!(e.turn_lane(LaneRow::Gate, 0, 4));
+        assert_eq!(steps(e.pattern()), "x x x x | oct -3 | vel 127 80 80 | gate 40 | nudge 5");
+        // Random amounts move by the lane's step and stop at its most.
+        assert!(e.turn_random(LaneRow::Velocity, 2));
+        assert!(e.turn_random(LaneRow::Octave, 9));
+        assert!(!e.turn_random(LaneRow::Octave, 1));
+        assert!(!e.turn_random(LaneRow::Degree, -1));
+        assert_eq!(lane_values(e.pattern(), LaneRow::Velocity), (vec![127, 80, 80], 16));
+        // A random amount alone is a lane too; Clear turns it off.
+        assert!(e.turn_random(LaneRow::Degree, 2));
+        assert_eq!(steps(e.pattern()), "x x x x | oct~3 -3 | deg~2 | vel~16 127 80 80 | gate 40 | nudge 5");
+        assert!(e.clear_lane(LaneRow::Degree) && e.clear_lane(LaneRow::Octave));
+        assert!(!e.clear_lane(LaneRow::Octave));
+        assert!(e.set_lane_len(LaneRow::Nudge, 0));
+        assert_eq!(steps(e.pattern()), "x x x x | vel~16 127 80 80 | gate 40");
+        // Every change reads back the same through the text form.
+        assert_eq!(Pattern::parse(&e.pattern().to_text()).unwrap(), *e.pattern());
+        e.revert();
+        assert_eq!(steps(e.pattern()), "x x x x");
+        assert_eq!(lane_label(LaneRow::Velocity, 0), "auto");
+        assert_eq!(lane_label(LaneRow::Nudge, -10), "-10%");
+        assert_eq!(lane_label(LaneRow::Degree, 3), "+3");
+    }
+
+    #[test]
+    fn the_lanes_view_edits_by_touch_and_marks_each_lane_playing() {
+        let (mut ui, mut ws) = workspace("x x x x | vel 100 60 30");
+        let r = ui.rect_of(TOOLS).unwrap();
+        let lanes = ui.get::<ButtonRow>(TOOLS).unwrap().button_rect(r, 9);
+        let ev = tap(&mut ui, lanes).unwrap();
+        assert_eq!(ws.action(&ev), None);
+        assert!(ws.showing_lanes());
+        ws.played = Some(4);
+        ws.update(&mut ui, Some(0));
+        let g = ui.get::<LaneGrid>(GRID).unwrap();
+        assert_eq!(g.rows, ["Octave", "Degree", "Velocity", "Gate", "Nudge"]);
+        let labels: Vec<&str> = g.cells[2].iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["100", "60", "30", "+"]);
+        assert_eq!(g.cells[0].len(), 1, "an empty lane shows only its + cell");
+        // Step 5 played: the 3-value velocity lane is on its 2nd value.
+        assert_eq!((g.playing_rows[2], g.playing_rows[0]), (Some(1), None));
+        assert!(ui.get::<Label>(TITLE).unwrap().text.ends_with("Velocity: 3 values"));
+        // Drag the + cell up: a 4th value, starting from the 3rd.
+        let r = ui.rect_of(GRID).unwrap();
+        let plus = ui.get::<LaneGrid>(GRID).unwrap().cell(r, 2, 3);
+        let (x, y) = (plus.x + 5, plus.y + 5);
+        let down = ui.touch(3, Touch::Down, x, y).unwrap();
+        assert_eq!(ws.action(&down), None);
+        let ev = ui.touch(3, Touch::Move, x, y - 30).unwrap();
+        ui.touch(3, Touch::Up, x, y - 30);
+        assert_eq!(ws.action(&ev), Some(WsAction::Changed(Pattern::parse("x x x x | vel 100 60 30 38").unwrap())));
+        // The wheel turns the selected value; Random + and Length − work on its lane.
+        assert_eq!(ws.wheel(1), Some(WsAction::Changed(Pattern::parse("x x x x | vel 100 60 30 46").unwrap())));
+        ws.update(&mut ui, None);
+        let tools = ui.rect_of(TOOLS).unwrap();
+        let button = |ui: &Ui, i: usize| ui.get::<ButtonRow>(TOOLS).unwrap().button_rect(tools, i);
+        let b = button(&ui, 5);
+        let ev = tap(&mut ui, b).unwrap();
+        assert_eq!(ws.action(&ev), Some(WsAction::Changed(Pattern::parse("x x x x | vel~8 100 60 30 46").unwrap())));
+        ws.update(&mut ui, None);
+        let b = button(&ui, 2);
+        let ev = tap(&mut ui, b).unwrap();
+        assert_eq!(ws.action(&ev), Some(WsAction::Changed(Pattern::parse("x x x x | vel~8 100 60 30").unwrap())));
+        assert_eq!(ws.editor.lane_cursor, (LaneRow::Velocity, 3), "the cursor stays on the lane's end");
+        ws.update(&mut ui, None);
+        assert!(ws.hint().starts_with("Each lane loops"));
+        // Steps goes back; recording always shows the steps.
+        let b = button(&ui, 1);
+        let ev = tap(&mut ui, b).unwrap();
+        assert_eq!(ws.action(&ev), None);
+        assert!(!ws.showing_lanes());
+        ws.view = WsView::Lanes;
+        ws.recording = true;
+        assert!(!ws.showing_lanes());
+        ws.update(&mut ui, None);
+        assert_eq!(ui.get::<LaneGrid>(GRID).unwrap().rows.len(), Row::ALL.len());
     }
 
     #[test]

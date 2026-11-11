@@ -14,8 +14,7 @@ use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 pub const WIDTH: i32 = 1280;
 pub const HEIGHT: i32 = 800;
-/// The time engine's tabs, as in its mockups. The panel's page is Synth.
-pub const TABS: [&str; 6] = ["Steps", "Clips", "Looper", "Arrange", "Synth", "Mix"];
+/// The panel's page, under the pad player's own bar (its Synth tab lit).
 pub const PAGE: &str = "Synth";
 
 pub struct Sample {
@@ -28,8 +27,7 @@ pub struct Sample {
 /// A Ui with the app's own widgets (`header`, `hint`) as the panel expects.
 pub fn app_ui(fonts: Fonts, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, WIDTH, HEIGHT);
-    let mut header = Header::new(&TABS);
-    header.active = 4;
+    let mut header = Header::app("Synth");
     header.chips = vec![Chip::new("92.0 BPM", Tone::Dim), Chip::new("DSP 18 %", Tone::Good)];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));

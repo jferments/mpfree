@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-midi-clock"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-first MIDI clock: 24 PPQN pulses, Start, Continue, Stop and Song Position out of a transport, and tempo, position and play state out of another device's clock; bytes only, no ports, no allocation while running"
+
+[lib]
+name = "mpfree_midi_clock"
+path = "src/lib.rs"
+
+[dependencies]
