@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-prof"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Real-time profiling for MPFree: per-block timing with percentiles, a profiled Node wrapper, an allocation counter, the MPC One's budgets and a desktop-to-MPC cost model"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+
+[features]
+# The counting global allocator (alloc::CountingAlloc), for programs that
+# install it, such as mpfree-bench. Off by default: it is the crate's only
+# unsafe code.
+counting-alloc = []

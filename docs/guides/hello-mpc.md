@@ -10,7 +10,7 @@ The program is [`mpfree-hello`](../../rust/mpfree-hello/src/main.rs), a static A
 
 1. checks the program on the workstation (a static ARM EABI5 hard-float executable);
 2. connects **only to the test build**: it uses the test build's own SSH host key, so stock 3.6.0 is refused before anything runs. On the test build it checks, read-only, the release, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
-3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only step is `app`, nothing is copied;
+3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only steps are `app` and `line`, nothing is copied;
 4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_HELLO_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table;
 5. after the lights, drums, setup and play steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
 
@@ -19,6 +19,7 @@ The first step that draws on the screen stops our own log display (`mpfree-test-
 | Step | What the program does | Writes to |
 |---|---|---|
 | app | nothing new runs: it reads the log of the pad player that started at power-on, phase by phase ([round 5](#round-5-straight-into-the-pad-player)). Without other steps nothing is copied | nothing |
+| line | **state-changing, never in the default steps.** Nothing new runs either: after a read-only look at the ACVA card's capture device in `/proc/asound`, and only once you type `LINE`, you turn Line input on in the pad player, which opens the capture device; phases for its meter, a loop and turning it off, each followed by the same read-only look ([round 6](#the-line-input-step-state-changing)) | the pad player opens the ACVA capture device (RAM state only) |
 | inventory | lists sound cards, PCM and MIDI devices, input devices, the framebuffer, panel rotation, real-time limits | nothing but its report |
 | screen | stops our own log display (`mpfree-test-screen`, started again at the end), draws the Hello MPC card | `/dev/fb0` and its sysfs `pan` file |
 | touch | shows your touches for 10 s; reads the ILI2117 device without grabbing it | the screen |
@@ -150,6 +151,7 @@ What round 4 runs (`MPFREE_HELLO_STEPS=screen,play`):
    - **Play page:** the 16 pads laid out as on the MPC, lit in the kit's colour with each sound's name, brighter while held; the kit list; the level slider; timing (pad-to-sound delay, underruns, voices, peak level).
    - **Debug page:** every MIDI message in and out with its meaning, the program's events, and the same timing.
    - The tabs at the top switch pages. The pads, the wheel and Q-Link 1 work on either page.
+   - Since the time engine (round 6), a Clips page sits between Play and Debug.
    - The kits file holds up to 8 factory kits ([below](#the-factory-drum-kits)).
 
 It sends the controller nothing new: the session, Akai's setup and pad colours, all as in round 3. Only the colours differ, since each kit's pads rest in one of the seven colours seen from Akai's app.
@@ -180,16 +182,33 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 |---|---|
 | Pads | Play, through the velocity curve (Prefs: soft, linear or hard) |
 | FULL LEVEL | Every hit at 127; lit while on. SHIFT + FULL LEVEL: Half Level, every hit at 64 |
-| NOTE REPEAT (held) | Held pads repeat on the grid (Play options: rate, tempo) |
-| SHIFT + NOTE REPEAT | Latch: pads keep repeating after you let go; new pads replace them. NOTE REPEAT again turns it off. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
-| MENU | The current page's options; again to close. SHIFT + MENU: Prefs |
+| NOTE REPEAT (held) | Held pads play through the arp: Repeat on the grid until the Arp panel picks Arp or Pattern. A slim strip at the top of the right-hand column shows the mode, the rate with − and +, and Latch (nothing else moves); the wheel, − / + and Q-Links 1-4 set the arp (see the [arpeggiator](../project/arpeggiator.md) for every control) |
+| NOTE REPEAT twice, or SHIFT + NOTE REPEAT | Latch: pads keep playing after you let go; new pads replace them. NOTE REPEAT once more turns it off. The two presses must come within 0.4 s. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
+| NOTE REPEAT + MENU, or the arp chip | The Arp panel beside the pads (mode, rate, order, pattern, Q-Links), and from it the pattern workspace |
+| MENU | The current page's options (on the Arp panel: accent level, scale, scale root, strum, new notes restart, swing from); again to close. SHIFT + MENU: Prefs |
 | In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it |
 | TAP TEMPO | Sets the tempo; its light blinks with it |
 | Wheel, − / + | The kit (outside menus) |
 | Q-Link 1, the slider | The level |
-| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back |
+| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back. While the transport plays, STOP stops it first and a second STOP silences everything |
 
-The button numbers for MENU, NOTE REPEAT, TAP TEMPO, − and + are not measured yet, so on the first start a **button guide** asks for each one. STOP skips one. The numbers go in the log for next time.
+MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built in. At power-on a **button guide** asks only for buttons not known yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. STOP skips one. The numbers go in the log for next time. Prefs > Find the buttons again asks for all nine.
+
+**The time engine** (for round 6, not yet tried on the MPC; see [playback](../project/playback.md#in-the-pad-player-timehost)). A transport bar sits under the header on the Play page and the new Clips page:
+
+| Control | What it does |
+|---|---|
+| PLAY, the bar's ▶ | Plays from where the transport is |
+| PLAY START | Plays from bar 1; while playing, jumps back to bar 1 |
+| REC, the bar's ● | Records into the armed track, from now or after the count-in; again to stop recording and play on |
+| OVERDUB, the bar's mode | Overdub (add notes) or Replace (notes played over erase the old ones) |
+| UNDO, the bar's Undo | Takes back the last take. SHIFT + UNDO: redo |
+| Clips page: a clip | Plays it from the next bar, or stops it |
+| Clips page: an empty slot (+) | Makes a 2-bar clip there (or one as long as the loop), arms its track and records |
+| Clips page: a track's name | Arms that track, or disarms it |
+| Clips page: the wheel | Steps the record setting last touched (the armed track to begin with); SHIFT + wheel scrolls the slots |
+
+Clips play the current kit's pads. A click plays while counting in and recording. The status line also gives the transport, the takes and any notes lost.
 
 Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow.
 
@@ -208,6 +227,54 @@ From the owner's results zip (clone at `38905af`). The owner's summary: "That wo
 - **Velocity:** 1 to 127 again, and 72 of the 409 hits (18 %) arrived as exactly 127 (28 % in round 4). 184 hits (45 %) were below 32.
 - **Menus and console:** MENU was pressed 8 times, SHIFT + MENU (Prefs) once, and SHIFT + STOP (console) twice. The app doesn't log page changes, so these rest on the owner's summary.
 - **Not tested this round:** FULL LEVEL (button 39) was never pressed, so Full and Half Level are untested. No screen pad hit or kit tap was recorded ("0 from the screen"), and the owner skipped the check's paced phases, so touch in the pad player is still unconfirmed.
+
+## Round 6: the looper, the synth and the sampler in one pad player
+
+The owner asked (2026-11-11) for the next round to bring together what the other threads built: the looper (the time engine's clips, record, overdub and undo), the synth and the sampler, all in the GUI. Then also for a debug mode in Prefs with tools for measuring performance and for mapping the remaining buttons at his own pace, and for pad banks A-H with all the transport buttons.
+
+**New in the pad player** (none of it tried on the MPC yet):
+
+- **The sampler engine** ([`mpfree-sampler`](../../rust/mpfree-sampler)) plays the kits, plus a Grains kit (the first kit as grain clouds; pressure changes them by row). STOP fades everything out.
+- **The synth** ([`mpfree-synth`](../project/synths.md)): the last entry in the kit list, "Synth: Poly", plays notes from the pads (pad 1 = C3), and the **Synth** tab edits it (Q-Links 1-4 on the marked knobs, the wheel on the selected knob, − / + for pages). SHIFT + wheel on Play moves the pads by octaves.
+- **The time engine** (the table under Round 5): the transport bar, the **Clips** tab, recording, overdub and undo. Clips recorded while the synth has the pads play the synth back.
+- **Debug mode** (Prefs, off by default) adds the **Debug** tab, with a strip for its three pages; SHIFT + wheel steps through them, and − / + on the first two:
+  - **MIDI**: the MIDI log, events and timing (the round 5 Debug page).
+  - **Performance**: CPU per thread and for the whole program, memory, load, temperature and clock (read-only from `/proc` and `/sys` by the screen thread every 2 s; [`perf.rs`](../../rust/mpfree-hello/src/perf.rs)), and the audio loop's render time for the sampler and the synth against the 2.9 ms period, the worst period, steals, dropped events and grains, with the last minute drawn. While debug mode is on, a `perf:` line goes to the system log every 30 s.
+  - **Map controls** ([`app/mapper.rs`](../../rust/mpfree-hello/src/app/mapper.rs)): every button of the MPC One in a list, found, skipped or still to find, with a count of each. Tap one (or pick it with the wheel and press +) and press it on the MPC: `map: REC = button 73` goes to the log. While MPFree listens, buttons do nothing else; STOP stops listening and − skips a control that isn't there. A channel 1 CC that isn't the wheel or a Q-Link is taken too, for knobs. Other 1-10 hold buttons the list doesn't name. Leaving the page logs a `map summary:` line. Prefs > Map controls opens it directly, so it works without touch. The names in the list come from the MPC One's panel as MPFree expects it, so they are assumptions until each is found.
+- **REC, OVERDUB, UNDO, PLAY START and the PAD BANK buttons** work as soon as the mapper finds them. The button guide no longer runs at power-on (Prefs > Find the buttons again still has it).
+- **The audio looper** ([`mpfree-looper`](../project/looper.md)) has its own **Looper** tab, after Synth: one stereo loop on the transport, with the loop's waveform and bar lines, Record, Overdub, Undo, Redo, Clear, Mute and Monitor, a level meter and the looper's state. By default it records what the pads and the synth play (after the master level, before the click), which opens nothing on the MPC. REC, OVERDUB and UNDO (SHIFT + UNDO: redo) work the looper while its tab shows. MENU there has its options: Record from (Pads and synth, or Line input), Line input, Monitor, the first pass's length (1, 2, 4 or 8 bars, or free), the latency to make up for and the loop's level. A `looper:` line goes to the log for each press and change, and every 30 s a `status: looper: ...` line with its render time.
+- **The line input** (Prefs, before System info and the Touch screen section, and the Looper options): **Off at every start, and never saved as On.** Turning it on opens the ACVA card's capture device (stereo S32_LE, 44.1 kHz, 128-frame periods, a 256-frame buffer, as Akai's app used it), read without waiting so the outputs never wait on it, and the looper then records it. If the card refuses, the log says why and it stays Off. Which jacks it reads is not checked yet (line in L and R is the likely reading). It is the `line` step below, after its own go.
+- **Pad banks A-H**: banks A-H are kits 1-8 (from kit 9 they start again at A). PAD BANK A/E to D/H pick A-D; SHIFT, or pressing the button of the bank playing again, picks E-H (an assumption from other MPCs). The kit chip shows the bank, the bank playing is lit (when Akai's app was seen lighting that button), and `bank: B (kit 2: …)` goes to the log. Clips play whichever bank is playing; a bank of its own per clip note is next, with 128-pad programs.
+
+**The check** (`MPFREE_HELLO_STEPS=app`, still **read-only**) has ten phases: debug mode and Map controls; Performance; kits, pad banks, Full and Half Level; Grains; the synth; Note Repeat and the arp; clips (record, overdub and undo); the audio looper on the pads; the Touch lab; menus, console and STOP. At the end it reads the whole session from power-on, so a skipped phase or free play still counts, and it shows the touch interrupt count, the latest three status lines and the latest `perf:` line.
+
+#### The line input step (state-changing)
+
+Last, and only with the owner's go: `MPFREE_HELLO_STEPS=line`. It is the first time MPFree opens the MPC's capture device. The tool itself still only reads: the pad player started at power-on opens the device when you turn Line input on.
+
+1. **Read-only first.** It shows whether the pad player runs and the ACVA card's capture device: the `/dev/snd` node and `/proc/asound/cardN/pcm0c/info`, `sub0/status` and `sub0/hw_params` (`closed` while nothing records), next to the playback side's settings. Without the pad player it stops there.
+2. **The change, the undo and what can go wrong,** then it waits until you type `LINE` (`s` skips the step, `q` stops):
+   - *Change*: the pad player opens the capture device and starts it. Nothing goes to the eMMC, the U-Boot environment or the mixer settings, and nothing is saved.
+   - *Undo*: Line input Off (Looper options or Prefs) closes it. Leaving the pad player, or switching the MPC off (the test build lives in RAM), closes it too.
+   - *If it fails*: if the card refuses to open or start the input, the log says why and the row stays Off; after more than 3 read errors in a row the pad player closes it itself and says so, and the looper goes back to recording the pads. Playback does not wait on the input. Not known yet: whether Akai's driver records on the test build, which jacks the two channels are, and the input's gain.
+3. **Three phases**, each started by Enter and ended by Enter, each followed by the same read-only look: Line input on and its meter (and which jack is L or R); a loop of the line input with an overdub, undo and Monitor; Line input off. At the end it shows every `line input:` and `looper:` line of the session.
+
+## Round 7: saved settings, the Dev tab and the Sample tab
+
+Round 7 puts the pad player on the layout the owner approved (2026-11-11, [layout-spec.md](../project/layout-spec.md)) and keeps its settings between starts ([storage-spec.md](../project/storage-spec.md), approved 09:30Z). None of it has been tried on the MPC yet.
+
+- **The top bar:** the tabs are Play, Clips, Synth, Looper and Sample, and Dev comes after them while Prefs > "Show developer tools" is on. The bar shows no MPFree name (the startup screen and Prefs > System info do), and Prefs is not a tab: SHIFT + MENU opens it. Every crate's preview draws the same bar (`mpfree_ui::widgets::APP_TABS`, `Header::app`).
+- **The Dev tab** (the old Debug tab) has six pages, stepped through with SHIFT + wheel: MIDI, Performance, **CPU by engine** (each audio stage, from period, sampler and synth to looper, time and mix, against its budget from `mpfree-prof`), **Processes** (every process on the MPC, CPU and memory, read from `/proc` only while the page shows), Map controls and Console.
+- **Saved settings.** The test stick gets a fourth partition, `MPFREE-DATA` (GPT name `mpfree-test-data`, 64 MiB, ext4 with a journal). The test build mounts it at `/run/mpfree-data` (`rw,nosuid,nodev,noexec,noatime`) and starts the pad player with `--data /run/mpfree-data`. If it does not mount, the pad player starts without saving and the kernel log says so.
+  - Kept: the Prefs rows pad velocity curve, screen pad velocity, Latch keeps pads, audio buffer and Show developer tools (`settings/app.conf`), and every control found with Map controls or the button guide (`settings/map.conf`). Line input is never kept.
+  - All writes go through `mpfree-store`'s one writer thread: a `.part` file, flushed, then renamed, then the folder flushed. It never follows a link, never writes outside the folder and refuses a folder that is not its own. At start the log says `saved settings: …`, `saved buttons: …` and `saving: …`.
+  - The eMMC and the SD card are never written. `write-test-stick.py` keeps partition 4 from the stick it rewrites, after saving a copy in the build folder. `--fresh-data` starts it empty, and `--data-from FILE` writes a saved copy back.
+- **The Sample tab** (#75, #78): the sampler's pad editor on the pad hit last, with the Wave and Chop tabs. Edits stay in memory.
+- **Capture** (#80): the Clips tab's Capture button keeps the phrase just played as a take, even when nothing was recording.
+- **The arp:** the Arp panel's MENU has its options, including scales, chords and the scale run. Its MIDI out and MIDI clock are built as bytes only; no MIDI port is opened yet. NOTE REPEAT pressed twice quickly latches, as SHIFT + NOTE REPEAT does.
+- **System info** (Prefs): the program's version, the system and the hardware.
+
+**The check** has twelve read-only phases now: developer tools and Map controls; the Dev pages; kits, banks and pad levels; Grains; the synth; Note Repeat and the arp; clips, overdub, undo and Capture; the audio looper; the Sample tab; Prefs, System info and saving; the Touch lab and Calibrate touch (both now in Prefs > Touch screen); menus, console and STOP. The line input step and the benchmark step each come after their own go, and a second boot shows whether the settings came back.
 
 ### The factory drum kits
 

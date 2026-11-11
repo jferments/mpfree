@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-store"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Where MPFree keeps settings and user files between starts: one folder, whole-file saves on one writer thread"
+
+[dependencies]

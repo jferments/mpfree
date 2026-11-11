@@ -2,7 +2,8 @@
 //! rate, the tail estimate covers the ring-out, Freeze holds the tail and
 //! ignores new input, Width 0 is mono and full width is decorrelated, Mix 0
 //! is the input exactly, a reset forgets everything, a Character change
-//! dips and recovers, and the presets are in range. The node rules (valid
+//! dips and recovers, Light quality keeps the decay and level and wakes
+//! its lines silent, and the presets are in range. The node rules (valid
 //! description, any block size, every extreme, no allocation) are checked
 //! with the other effects in `fx.rs` and `no_alloc.rs`.
 
@@ -215,6 +216,60 @@ fn a_character_change_dips_the_wet_signal_and_recovers() {
     println!("before {:.1} dB, at the swap {:.1} dB, 200 ms later {:.1} dB", db(before), db(dip), db(after));
     assert!(db(dip / before) < -20.0, "dipped at the swap: {:.1} dB", db(dip / before));
     assert!(db(after / before).abs() < 6.0, "back within 6 dB: {:.1} dB", db(after / before));
+}
+
+#[test]
+fn light_quality_keeps_the_decay_and_the_level() {
+    // Light: half the lines and stages. The decay and the loudness stay
+    // (within the same 20 % and 3 dB) for every character.
+    for character in 0..5 {
+        let decay_ms = 2000.0;
+        let mut v = OPEN.to_vec();
+        v.extend([(CHARACTER, character as f32), (DECAY, decay_ms)]);
+        let render = |light: f32| {
+            let mut v = v.clone();
+            v.push((QUALITY, light));
+            let mut c = cloud(RATE, &v);
+            let frames = (RATE as f32 * (decay_ms / 1000.0 * 1.5 + 0.5)) as usize;
+            let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+            l[..RATE as usize / 10].copy_from_slice(&noise(5, RATE as usize / 10, 0.3));
+            r[..RATE as usize / 10].copy_from_slice(&noise(6, RATE as usize / 10, 0.3));
+            run(&mut c, RATE, &mut l, &mut r);
+            (l, r)
+        };
+        let (fl, fr) = render(0.0);
+        let (ll, lr) = render(1.0);
+        let (tf, tl) = (t60(&fl, &fr, RATE), t60(&ll, &lr, RATE));
+        let w = RATE as usize / 5..RATE as usize;
+        let level = db(rms(&ll[w.clone()]) / rms(&fl[w]));
+        println!("character {character}: T60 full {tf:.2} s, light {tl:.2} s; light is {level:+.1} dB");
+        assert!((tl / tf - 1.0).abs() < 0.2, "character {character}: T60 full {tf:.2} s, light {tl:.2} s");
+        assert!(level.abs() < 3.0, "character {character}: light is {level:+.1} dB");
+    }
+}
+
+#[test]
+fn a_quality_change_dips_and_wakes_its_lines_silent() {
+    // Full, then Light for a second (the lines Light drops hold their
+    // tail), then Full again with no input: the dropped lines start from
+    // silence, so nothing from before comes back.
+    let mut c = cloud(RATE, &[(MIX, 100.0), (CHARACTER, 0.0), (DECAY, 60_000.0)]);
+    let s = RATE as usize;
+    let (mut l, mut r) = (noise(21, s, 0.3), noise(22, s, 0.3));
+    run(&mut c, RATE, &mut l, &mut r);
+    c.set_param(QUALITY, 1.0);
+    c.set_param(FREEZE, 1.0);
+    let (mut l, mut r) = (vec![0.0f32; s], vec![0.0f32; s]);
+    run(&mut c, RATE, &mut l, &mut r);
+    let light = rms(&l[s / 2..]);
+    assert!(light > 1e-3, "the frozen light tail plays: {light}");
+    c.set_param(QUALITY, 0.0);
+    let (mut l, mut r) = (vec![0.0f32; s], vec![0.0f32; s]);
+    run(&mut c, RATE, &mut l, &mut r);
+    let full = rms(&l[s / 2..]);
+    println!("frozen tail: light {:.1} dB, full again {:.1} dB", db(light), db(full));
+    assert!(db(full / light) < 1.0, "the woken lines add no old tail: {:.1} dB", db(full / light));
+    assert_eq!(c.param(QUALITY), 0.0);
 }
 
 #[test]

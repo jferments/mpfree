@@ -45,6 +45,8 @@ col(header:60, row(pads:*, col(kits:*, level:96, timing:206):460):*, hint:26)
 - **Card:** a heading, lines of text and buttons (the button guide).
 - **OptionList:** rows of a name and a value with ‹ and › arrows (Prefs and each page's options). A tap on a row selects it; an arrow steps its value.
 
+Feature crates add their own widgets on the same toolkit: [`mpfree-arp-ui`](arpeggiator.md) (the Arp panel, quick band and pattern workspace) and [`mpfree-time-ui`](playback.md#screens-mpfree-time-ui) (the transport bar, the Clips launch grid and the takes list).
+
 Most pages keep a gap at the screen's edges; `add_full_page` makes one with none (the loading page).
 
 ### Events and state

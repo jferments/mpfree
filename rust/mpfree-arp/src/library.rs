@@ -10,6 +10,19 @@
 //!
 //! Names are 1 to 32 characters, unique ignoring case, and may not contain
 //! `=` or start with `#`. Reading is not for the audio thread: it allocates.
+//!
+//! The owner's own scales go in the same file, after a `[scales]` line
+//! (and `[patterns]` goes back to patterns). Each is semitones from `0`, or
+//! degrees from `1`, with `/` and the notes coming down when they differ
+//! (see `mpfree_scale::parse_steps`):
+//!
+//! ```text
+//! [scales]
+//! Bright minor   = 1 2 b3 4 5 6 7
+//! Classical min  = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10
+//! ```
+//!
+//! A custom scale may not take a built-in scale's name.
 
 use crate::pattern::{ParseError, Pattern, BUILT_IN};
 
@@ -34,6 +47,8 @@ impl std::error::Error for LibraryError {}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Library {
     entries: Vec<(String, Pattern)>,
+    /// The owner's scales: name, the notes going up and coming down.
+    scales: Vec<(String, u16, u16)>,
 }
 
 impl Library {
@@ -51,19 +66,31 @@ impl Library {
     pub fn parse(text: &str) -> Result<Self, Vec<LibraryError>> {
         let mut lib = Self::default();
         let mut errors = Vec::new();
+        let mut in_scales = false;
         for (i, raw) in text.lines().enumerate() {
             let line = i + 1;
             let trimmed = raw.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            if trimmed.eq_ignore_ascii_case("[scales]") || trimmed.eq_ignore_ascii_case("[patterns]") {
+                in_scales = trimmed.eq_ignore_ascii_case("[scales]");
+                continue;
+            }
+            let what = if in_scales { "scale" } else { "pattern" };
             let Some((name, body)) = trimmed.split_once('=') else {
-                errors.push(LibraryError { line, reason: "expected: Name = pattern".into() });
+                errors.push(LibraryError { line, reason: format!("expected: Name = {what}") });
                 continue;
             };
             let name = name.trim();
             if let Err(reason) = check_name(name) {
                 errors.push(LibraryError { line, reason });
+                continue;
+            }
+            if in_scales {
+                if let Err(reason) = lib.put_scale(name, body) {
+                    errors.push(LibraryError { line, reason });
+                }
                 continue;
             }
             if lib.get(name).is_some() {
@@ -97,7 +124,39 @@ impl Library {
             s.push_str(&p.to_text());
             s.push('\n');
         }
+        if !self.scales.is_empty() {
+            let width = self.scales.iter().map(|(n, ..)| n.chars().count()).max().unwrap_or(0);
+            s.push_str("\n[scales]\n");
+            for (name, up, down) in &self.scales {
+                s.push_str(name);
+                s.extend(std::iter::repeat_n(' ', width - name.chars().count()));
+                s.push_str(" = ");
+                s.push_str(&mpfree_scale::scale_text(*up, *down));
+                s.push('\n');
+            }
+        }
         s
+    }
+
+    /// The owner's scales: name, the notes going up and coming down.
+    pub fn scales(&self) -> impl Iterator<Item = (&str, u16, u16)> {
+        self.scales.iter().map(|(n, u, d)| (n.as_str(), *u, *d))
+    }
+
+    /// Adds a scale from its text (`0 2 3 5 7 9 11`, or degrees, with `/`
+    /// and the notes coming down), or replaces the one with that name.
+    pub fn put_scale(&mut self, name: &str, steps: &str) -> Result<(), String> {
+        let name = name.trim();
+        check_name(name)?;
+        if mpfree_scale::by_name(name).is_some_and(|d| d.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("\"{name}\" is a built-in scale; give yours another name"));
+        }
+        let (up, down) = mpfree_scale::parse_steps(steps).map_err(|e| format!("scale \"{name}\": {e}"))?;
+        match self.scales.iter_mut().find(|(n, ..)| n.eq_ignore_ascii_case(name)) {
+            Some(entry) => *entry = (name.to_string(), up, down),
+            None => self.scales.push((name.to_string(), up, down)),
+        }
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -160,6 +219,26 @@ fn nth_token(text: &str, n: usize) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owners_scales_go_in_the_same_file() {
+        let text = "Skip = 1 . 3 2\n[scales]\nBright minor = 1 2 b3 4 5 6 7\nClassical = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n\
+                    [patterns]\nLift = 1 2 3 4\n";
+        let lib = Library::parse(text).unwrap();
+        assert_eq!(lib.len(), 2, "patterns before and after the scales");
+        let scales: Vec<_> = lib.scales().collect();
+        assert_eq!(scales, [("Bright minor", mpfree_scale::MELODIC_MINOR, mpfree_scale::MELODIC_MINOR),
+                            ("Classical", mpfree_scale::MELODIC_MINOR, mpfree_scale::MINOR)]);
+        let again = Library::parse(&lib.to_text()).unwrap();
+        assert_eq!(again, lib);
+        assert!(lib.to_text().contains("[scales]\nBright minor = 0 2 3 5 7 9 11\nClassical    = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
+        let errors = Library::parse("[scales]\nDorian = 0 2 3\nOdd = 0 2 13\nFine = 0 4 7\n").unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].line, 2);
+        assert!(errors[0].reason.contains("built-in scale"), "{}", errors[0].reason);
+        assert!(errors[1].reason.contains("\"13\" is not a semitone"), "{}", errors[1].reason);
+        assert!(Library::default().to_text().is_empty());
+    }
 
     #[test]
     fn reads_and_writes_a_file() {
