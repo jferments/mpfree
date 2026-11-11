@@ -68,7 +68,7 @@ pub const LAYOUT: &str = "col(header:60, smp-chop-bar:60, smp-chop-overview:56, 
                           row(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4, smp-chop-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 2;
+pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \

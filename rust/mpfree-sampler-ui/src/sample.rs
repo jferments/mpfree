@@ -8,7 +8,7 @@ use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView};
 use mpfree_sampler::model::{
     Ahdsr, ChopMode, ChopSet, Fade, FadeCurve, Filter, FilterKind, GrainParams, GrainWindow, Layer,
     LayerSelect, Loop, LoopMode, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region,
-    Source,
+    Source, Warp,
 };
 use mpfree_sampler::record::{self, Feed, Input, Recording};
 use mpfree_ui::widgets::{Chip, Header, Label};
@@ -20,6 +20,7 @@ use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::rec_tab::{self, EndAt, RecState, RecTab, Skip, StartAt};
 use crate::source::SourceView;
+use crate::warp_tab::{self, WarpTab};
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
 /// The MPC One's screen, turned.
@@ -35,6 +36,7 @@ pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Sample · Pads";
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
+pub const WARP_PAGE: &str = "Sample · Warp";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -80,6 +82,157 @@ pub fn drum_loop() -> Vec<f32> {
         }
     }
     out
+}
+
+/// The drum loop played loosely: the same two bars at [`BPM`], each hit
+/// up to 25 ms early or late, as a drummer might.
+pub fn loose_loop() -> Vec<f32> {
+    let rate = f64::from(RATE);
+    let beat = rate * 60.0 / BPM;
+    let frames = (beat * 8.0).round() as usize;
+    let tight = drum_loop();
+    let mut out = vec![0.0f32; frames * 2];
+    // Each eighth's slice of the tight loop, moved by its own amount.
+    let mut seed = 0x9E37_79B9u32;
+    let eighth = (beat / 2.0).round() as usize;
+    for k in 0..16 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let off_ms = if k == 0 {
+            0.0
+        } else {
+            (seed as f64 / f64::from(u32::MAX) * 2.0 - 1.0) * 25.0
+        };
+        let shift = (off_ms / 1000.0 * rate).round() as i64;
+        for i in 0..eighth {
+            let from = k * eighth + i;
+            let to = from as i64 + shift;
+            if from >= frames || to < 0 || to as usize >= frames {
+                continue;
+            }
+            for c in 0..2 {
+                out[to as usize * 2 + c] += tight[from * 2 + c];
+            }
+        }
+    }
+    out
+}
+
+/// A project with the loosely played loop on pad A5, whole and warped to
+/// stretch at its tempo.
+pub fn loose_project() -> (Project, Arc<SourceView>) {
+    let mut p = Project::new();
+    let source = Source::new("Loose break 92", RATE, 2, loose_loop()).expect("valid");
+    let view = Arc::new(SourceView::analyse(&source));
+    let mut region = Region::whole(&source);
+    region.warp = Some(Warp::new(BPM as f32));
+    p.add_source(source);
+    p.set_pad(PAD, Some(Pad::new("Loose break", Layer::new(region))), None)
+        .expect("the sample pad is valid");
+    (p, view)
+}
+
+/// One sample screen of the Warp tab.
+pub struct WarpSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: WarpTab,
+    pub project: Project,
+    pub state: WaveState,
+}
+
+impl WarpSample {
+    /// Applies what the tab asked for and shows the project after it.
+    pub fn apply(&mut self, a: Option<crate::wave_tab::WaveAction>) -> Result<(), String> {
+        if let Some(a) = a {
+            a.apply(&mut self.project).map_err(|e| format!("{e:?}"))?;
+            self.state = WaveState::from_project(&self.project, PAD, 0, self.state.source.clone())
+                .ok_or("no pad")?;
+        }
+        self.tab.update(&mut self.ui, &self.state);
+        Ok(())
+    }
+
+    /// A touch on one of the tab's widgets.
+    pub fn event(&mut self, widget: &str, kind: mpfree_ui::EventKind) -> Result<(), String> {
+        let ev = mpfree_ui::UiEvent {
+            widget: widget.into(),
+            kind,
+        };
+        let st = self.state.clone();
+        let a = self.tab.action(&mut self.ui, &ev, &st);
+        self.apply(a)
+    }
+}
+
+/// The Warp tab on `project`'s pad A5.
+pub fn warp_sample(
+    fonts: Fonts,
+    (project, view): (Project, Arc<SourceView>),
+) -> Result<WarpSample, String> {
+    let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, warp_tab::HINT);
+    let tab = WarpTab::add(&mut ui, WARP_PAGE, &state)?;
+    ui.show(WARP_PAGE)?;
+    Ok(WarpSample {
+        name: "warp",
+        about: "A loop played loosely, warped: its hits off the grid",
+        ui,
+        tab,
+        project,
+        state,
+    })
+}
+
+/// The Warp tab's sample screens.
+pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String> {
+    let mut out = vec![warp_sample(fonts(), loose_project())?];
+
+    // Pin hits on the eighths: every hit on its line, one pin picked.
+    let mut s = warp_sample(fonts(), loose_project())?;
+    s.name = "warp-pinned";
+    s.about = "Pin hits on a 1/8 grid: each hit pinned to its eighth, the fifth pin picked";
+    let grid_row = warp_tab::Row::Grid.index();
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Step {
+            index: grid_row,
+            delta: -1,
+        },
+    )?;
+    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    s.tab
+        .set_playheads(&mut s.ui, &[(f64::from(RATE) * 60.0 / BPM * 3.3) as u64]);
+    out.push(s);
+
+    // Zoomed in on that pin, nudged a little late by Q-Link 2.
+    let mut s = warp_sample(fonts(), loose_project())?;
+    s.name = "warp-zoomed";
+    s.about =
+        "Zoomed round the fifth pin (wheel), nudged 2/64 of a beat late by Q-Link 2, 1/16 grid";
+    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    let st = s.state.clone();
+    for _ in 0..6 {
+        s.tab.wheel(&mut s.ui, &st, 1);
+    }
+    let a = s.tab.qlink(&mut s.ui, &st, 1, 2, false);
+    s.apply(a)?;
+    out.push(s);
+
+    // Not warped: the tab says how to start.
+    let (mut project, view) = loose_project();
+    project
+        .edit_pad(PAD, None, |p| p.layers[0].region.warp = None)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut s = warp_sample(fonts(), (project, view))?;
+    s.name = "warp-off";
+    s.about = "A layer that isn't warped: the tab says to turn Warp to Stretch";
+    out.push(s);
+    Ok(out)
 }
 
 /// A project with the drum loop on pad A5: trimmed a little, looping over

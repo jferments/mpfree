@@ -45,7 +45,7 @@ pub const LAYOUT: &str = "col(header:60, smp-rec-bar:60, \
                           row(smp-rec-buttons:*, smp-rec-wheel:340):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 6;
+pub const TAB: usize = 7;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Record, or keep what just came in with Skip back · tap a row, then the wheel changes it · UNDO \

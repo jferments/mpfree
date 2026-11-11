@@ -770,7 +770,9 @@ impl Engine {
         self.voices.iter().filter(|v| v.active).count()
     }
     /// (pad, layer, source frame) of every playing voice, for playheads on screen.
-    /// A granular voice reports its reading position (before spray).
+    /// A granular voice reports its reading position (before spray); a
+    /// voice playing a stretched copy, the source frame that part of the
+    /// copy was made from.
     pub fn playheads(&self) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
         self.voices
             .iter()
@@ -780,10 +782,27 @@ impl Engine {
                 let at = if v.granular {
                     v.start + (f64::from(g.playhead()) * (v.end - v.start) as f64) as i64
                 } else {
-                    v.pos >> 32
+                    let pos = v.pos >> 32;
+                    match self.copy_map(v) {
+                        Some(map) => map.source(pos as f64).round() as i64,
+                        None => pos,
+                    }
                 };
                 (v.pad, v.layer, at.max(0) as u64)
             })
+    }
+
+    /// The map of the stretched copy voice `v` plays, if it plays one.
+    fn copy_map(&self, v: &Voice) -> Option<&CopyMap> {
+        let l = self
+            .view
+            .pads
+            .get(usize::from(v.pad))?
+            .as_ref()?
+            .layers
+            .get(usize::from(v.layer))?;
+        let same = v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+        l.source_at.as_ref().filter(|_| same)
     }
     pub fn pad_voices(&self, pad: u8) -> usize {
         self.voices

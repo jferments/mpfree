@@ -1116,6 +1116,10 @@ impl Player {
                     "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
                      UNDO: undo   ·   tap the wave: play".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
+                    "Tap a hit: pin it to the grid   ·   drag a pin along the beats   ·   Q-Links 1-4: pin, its beat, \
+                     warp tempo, scroll   ·   Wheel: zoom   ·   UNDO: undo".to_string()
+                }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
                     "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
                      Wheel: zoom   ·   UNDO: undo".to_string()
@@ -3812,6 +3816,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     chop.apply(ToUi::SampleQLink(0, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
+    // The Warp tab on the same pad: warped to stretch, its hits pinned to
+    // the sixteenths, the fourth pin picked.
+    let mut warp = sample_sampler(fonts());
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
+    });
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
+        kind: EventKind::Step {
+            index: mpfree_sampler_ui::warp_tab::Row::Warp.index(),
+            delta: 1,
+        },
+    });
+    warp.apply(ToUi::SampleLift);
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::warp_tab::BUTTONS.into(),
+        kind: EventKind::Tab(0),
+    });
+    warp.apply(ToUi::SampleQLink(0, 4));
+    warp.take_actions();
+    out.push(("sample-warp", warp));
     // The Play tab on the same pad: hit at 100, Decay turned (Q-Link 2),
     // the filter turned on from the list.
     let mut play = sample_sampler(fonts());
@@ -4859,6 +4885,76 @@ mod tests {
                 .stretched_frames(),
             None
         );
+    }
+
+    #[test]
+    fn the_warp_tab_pins_the_hits_and_the_copy_goes_through_them() {
+        use mpfree_sampler_ui::warp_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::PadBar;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        // The pad bar's Warp tab, after Wave.
+        let r = p.ui.rect_of(mpfree_sampler_ui::wave_tab::BAR).unwrap();
+        let t =
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .tab_rect(r, warp_tab::TAB);
+        assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+        p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::WARP_PAGE, sample_page::Editor::Warp)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Tap a hit: pin it to the grid"));
+        // Warp on (Stretch), then Pin hits.
+        p.on_event(UiEvent {
+            widget: warp_tab::LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Warp.index(),
+                delta: 1,
+            },
+        });
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.apply(ToUi::SampleLift);
+        p.on_event(UiEvent {
+            widget: warp_tab::BUTTONS.into(),
+            kind: EventKind::Tab(0),
+        });
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert!(w.pins.len() >= 4, "{:?}", w.pins);
+        // The copy made through the pins comes back and is played.
+        let t = Instant::now();
+        let sent = loop {
+            let (sent, _) = views(p.take_actions());
+            if sent.iter().any(|s| {
+                s.view
+                    .as_ref()
+                    .and_then(|v| v.layer(pad, 0))
+                    .is_some_and(|l| l.stretched_frames().is_some())
+            }) {
+                break sent;
+            }
+            for s in sent {
+                p.apply(ToUi::SampleViewBack(s));
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "no copy");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        for s in sent {
+            p.apply(ToUi::SampleViewBack(s));
+        }
+        // UNDO takes the pins off again.
+        p.apply(ToUi::SampleLift);
+        p.apply(ToUi::SampleUndo(false));
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert!(w.pins.is_empty());
+        assert_eq!(p.page(), sample_page::WARP_PAGE);
     }
 
     fn events_log(p: &Player) -> Vec<String> {
