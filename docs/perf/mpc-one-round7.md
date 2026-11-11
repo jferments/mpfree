@@ -148,7 +148,7 @@ only while their Dev page is open, or time one block in eight.
   governor is the cause, pinning the audio core's frequency is a later,
   state-changing step for Jay to decide.
 - **The verdict rule:** the pad player marked looper, time and mix OVER
-  because of a single worst period, while their p99s fit. That rule is a
-  question for Jay. The recommendation is per-engine verdicts on p99.9 and
-  the whole period's verdict on its worst block, because the worst block
-  is what underruns.
+  because of a single worst period, while their p99s fit. Jay chose
+  (2026-11-11): per-engine verdicts on p99.9, and the whole period's
+  verdict on its worst block, because the worst block is what underruns.
+  `mpfree_prof::budget::judge` applies it.

@@ -7,6 +7,13 @@
 //! is the **worst** block, not the mean: one slow block in ten thousand is
 //! an audible click.
 //!
+//! Which block a verdict judges (Jay's choice, 2026-11-11, after round 7):
+//! an engine is judged on its **p99.9** block, so one stray period (an
+//! interrupt, a page fault, another thread) does not mark it OVER; the whole
+//! period (`period`) is judged on its **worst** block, because that is what
+//! underruns. [`judge`] applies the rule; hosts and the bench use it rather
+//! than picking a statistic themselves.
+//!
 //! Jay agreed the table on 2026-11-11. The rule behind
 //! it: the whole audio thread stays under 60 % of a period in its worst
 //! block, which leaves 40 % for the kernel, interrupts, ALSA and a late
@@ -69,7 +76,33 @@ impl Budget {
     pub fn worst_ns(&self, p: Period) -> u64 { (p.ns() as f64 * self.worst_pct / 100.0) as u64 }
 }
 
-/// How a measured worst block compares with a budget.
+/// The probe name of the whole audio callback.
+pub const PERIOD: &str = "period";
+
+/// The budget share for a probe module: the whole thread's for
+/// [`PERIOD`], else the module's own, if it has one.
+pub fn pct_for(module: &str) -> Option<f64> {
+    if module == PERIOD { Some(AUDIO_THREAD_WORST_PCT) } else { for_module(module).map(|b| b.worst_pct) }
+}
+
+/// The block a verdict judges: the worst for [`PERIOD`], the p99.9 for an
+/// engine (see the module doc).
+pub fn judged_ns(module: &str, s: &crate::Summary) -> u64 { if module == PERIOD { s.max_ns } else { s.p999_ns } }
+
+/// What the judge says in its own words: "worst" or "p99.9".
+pub fn judged_word(module: &str) -> &'static str { if module == PERIOD { "worst" } else { "p99.9" } }
+
+/// A summary against its module's budget: (the judged block as a share of
+/// the period, the verdict), or `None` for a module with no budget or a
+/// summary with no blocks.
+pub fn judge(module: &str, s: &crate::Summary, p: Period) -> Option<(f64, Verdict)> {
+    let b = pct_for(module)?;
+    if s.blocks == 0 { return None; }
+    let pct = p.pct(judged_ns(module, s) as f64);
+    Some((pct, Verdict::of(pct, b)))
+}
+
+/// How a measured block compares with a budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Under 75 % of the budget.
@@ -109,6 +142,23 @@ mod tests {
         }
         assert_eq!(for_module("synth").unwrap().worst_ns(MPC), 580_498);
         assert!(for_module("nope").is_none());
+    }
+
+    #[test]
+    fn engines_are_judged_on_p999_and_the_period_on_its_worst() {
+        // Round 7's looper: p99 and p99.9 fit, one stray period did not.
+        let mut pr = crate::Probe::new(MPC.ns());
+        for _ in 0..9999 { pr.record(30_000, 128, 0); }
+        pr.record(200_000, 128, 0);
+        let s = pr.lifetime();
+        let (pct, v) = judge("looper", &s, MPC).unwrap();
+        assert!(pct < 3.0 && v != Verdict::Over, "{pct} {v:?}");
+        let (pct, v) = judge(PERIOD, &s, MPC).unwrap();
+        assert!((pct - 6.89).abs() < 0.01 && v == Verdict::Fits, "{pct}");
+        assert_eq!((judged_word("looper"), judged_word(PERIOD)), ("p99.9", "worst"));
+        assert!(judge("nope", &s, MPC).is_none());
+        assert!(judge("synth", &crate::Summary::default(), MPC).is_none());
+        assert_eq!(pct_for(PERIOD), Some(60.0));
     }
 
     #[test]
