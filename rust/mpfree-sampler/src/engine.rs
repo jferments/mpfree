@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
+pub use mpfree_grain::{GrainView, MAX_GRAINS};
 
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
@@ -789,6 +790,21 @@ impl Engine {
             .iter()
             .filter(|v| v.active && v.pad == pad && v.kill_left == 0)
             .count()
+    }
+
+    /// The grains layer `layer` of pad `pad` plays now, across every voice
+    /// playing it: each one's reading position (0 to 1 across the region),
+    /// window level and direction, for drawing the cloud. Fills `out` from
+    /// the start and returns how many it holds (grains past its end are
+    /// left out). Never allocates.
+    pub fn grains_of(&self, pad: u8, layer: u8, out: &mut [GrainView]) -> usize {
+        let mut n = 0;
+        for (v, g) in self.voices.iter().zip(&self.grains) {
+            if v.active && v.granular && v.pad == pad && v.layer == layer && n < out.len() {
+                n += g.grains(&mut out[n..]);
+            }
+        }
+        n
     }
 
     /// Queues an event `offset` frames into the next render (later renders if
