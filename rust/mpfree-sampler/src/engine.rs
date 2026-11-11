@@ -20,6 +20,14 @@
 //! ([`crate::model::MasterFx`]); the effect itself, which holds the memory,
 //! is made off the audio thread with [`Engine::make_master_fx`] and put in
 //! with [`Engine::set_master_fx`]. Its grains come out of the same budget.
+//!
+//! [`Engine::render`] mixes every pad into one stereo pair.
+//! [`Engine::render_routed`] keeps them apart instead: each voice adds its
+//! sound into its own pad's pair from a [`PadOut`] (a mixer's pad
+//! channels), so each pad gets its own fader, pan, mute, solo, sends and
+//! output. The master effect works on the mixed pair, so it only runs in
+//! [`Engine::render`]; on a mixer, a granular insert on the pads' track
+//! does its job.
 
 use std::sync::Arc;
 
@@ -49,6 +57,27 @@ const FILTER_STEP: u32 = 16;
 /// messages don't zipper.
 const PRESSURE_SMOOTH_S: f32 = 0.005;
 const ONE: i64 = 1 << 32;
+
+/// Where [`Engine::render_routed`] puts each pad's sound: one stereo pair
+/// per pad, such as a mixer's pad channels.
+pub trait PadOut {
+    /// Pad `pad`'s pair for this block, both sides at least the block
+    /// long. The engine adds the pad's voices into the start and never
+    /// clears it. It may ask for the same pad more than once in a block.
+    /// `None` leaves the pad unheard: its voices still play on (into a
+    /// scratch buffer) and end on time.
+    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])>;
+}
+
+/// Every pad into one pair: what [`Engine::render`] renders into.
+struct Mixed<'a> {
+    left: &'a mut [f32],
+    right: &'a mut [f32],
+}
+
+impl PadOut for Mixed<'_> {
+    fn pad(&mut self, _pad: usize) -> Option<(&mut [f32], &mut [f32])> { Some((&mut *self.left, &mut *self.right)) }
+}
 
 #[derive(Clone, Debug)]
 pub struct ViewLoop { start: i64, end: i64, crossfade: i64, ping_pong: bool }
@@ -290,6 +319,9 @@ pub struct Engine {
     budget: Budget,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
+    /// Where the voices of a pad with no output play, so they end on time.
+    unheard_l: Vec<f32>,
+    unheard_r: Vec<f32>,
     /// Frames rendered since the engine was made: the timeline synced grains use.
     frames: u64,
     master: Option<GrainFx>,
@@ -312,6 +344,8 @@ impl Engine {
             budget: Budget::new(GRAIN_BUDGET),
             scratch_l: vec![0.0; GRAIN_CHUNK],
             scratch_r: vec![0.0; GRAIN_CHUNK],
+            unheard_l: vec![0.0; GRAIN_CHUNK],
+            unheard_r: vec![0.0; GRAIN_CHUNK],
             frames: 0,
             master: None,
         }
@@ -574,9 +608,25 @@ impl Engine {
     /// Panics if the two buffers differ in length (a programming error).
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
         assert_eq!(left.len(), right.len(), "left and right must be the same length");
-        let n = left.len() as u32;
+        let n = left.len();
         left.fill(0.0);
         right.fill(0.0);
+        self.run(n, &mut Mixed { left, right }, true);
+    }
+
+    /// Renders the next `frames` frames with each pad apart: every voice
+    /// adds its sound into its pad's pair from `out` (see [`PadOut`]).
+    /// Events, voices and grains run exactly as in [`Engine::render`], and
+    /// the pads' pairs add up to what it renders. The master effect, which
+    /// works on the mixed pair, doesn't run. Panics if `out` hands back a
+    /// pair shorter than `frames` (a programming error).
+    pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) { self.run(frames, out, false); }
+
+    /// The render loop: events on their frames, then every voice into its
+    /// pad's pair, then (`master`) the master effect over pad 0's pair,
+    /// which is the mixed pair when `out` is [`Mixed`].
+    fn run(&mut self, frames: usize, out: &mut impl PadOut, master: bool) {
+        let n = frames as u32;
         let mut at = 0u32;
         while at < n {
             // Apply every event due now.
@@ -590,20 +640,42 @@ impl Engine {
             let frame = self.frames + at as u64;
             for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
                 if !v.active { continue; }
-                if v.granular {
-                    render_granular(v, g, &mut self.budget, frame, self.rate, &mut left[a..b], &mut right[a..b], &mut self.scratch_l, &mut self.scratch_r);
-                    if !v.active { g.kill(&mut self.budget); v.granular = false; }
-                } else {
-                    render_voice(v, self.rate, &mut left[a..b], &mut right[a..b]);
+                match out.pad(usize::from(v.pad)) {
+                    Some((l, r)) => play(v, g, &mut self.budget, frame, self.rate, &mut l[a..b], &mut r[a..b], &mut self.scratch_l, &mut self.scratch_r),
+                    None => {
+                        let mut k = a;
+                        while k < b && v.active {
+                            let m = (b - k).min(self.unheard_l.len());
+                            let (ul, ur) = (&mut self.unheard_l[..m], &mut self.unheard_r[..m]);
+                            ul.fill(0.0);
+                            ur.fill(0.0);
+                            play(v, g, &mut self.budget, frame + (k - a) as u64, self.rate, ul, ur, &mut self.scratch_l, &mut self.scratch_r);
+                            k += m;
+                        }
+                    }
                 }
             }
-            if let Some(fx) = &mut self.master {
-                fx.process(&mut self.budget, frame, &mut left[a..b], &mut right[a..b]);
+            if master {
+                if let (Some(fx), Some((l, r))) = (&mut self.master, out.pad(0)) {
+                    fx.process(&mut self.budget, frame, &mut l[a..b], &mut r[a..b]);
+                }
             }
             at = next;
         }
         self.frames += u64::from(n);
         for e in &mut self.events { e.0 = e.0.saturating_sub(n); }
+    }
+}
+
+/// One voice's next `left.len()` frames, added into `left` and `right`.
+/// A granular voice that ends gives its grains back to the budget.
+#[allow(clippy::too_many_arguments)]
+fn play(v: &mut Voice, g: &mut GrainVoice, budget: &mut Budget, frame: u64, rate: f32, left: &mut [f32], right: &mut [f32], sl: &mut [f32], sr: &mut [f32]) {
+    if v.granular {
+        render_granular(v, g, budget, frame, rate, left, right, sl, sr);
+        if !v.active { g.kill(budget); v.granular = false; }
+    } else {
+        render_voice(v, rate, left, right);
     }
 }
 
