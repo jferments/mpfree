@@ -38,6 +38,19 @@ pub const FM_TARGETS: &[&str] = &[
     "Feedback",
 ];
 
+/// The Wavetable synth's targets, by slot target index.
+pub const WT_TARGETS: &[&str] = &[
+    "Off",
+    "Position",
+    "Warp",
+    "Cutoff",
+    "Resonance",
+    "Level",
+    "Vibrato",
+    "LFO rate",
+    "Pitch",
+];
+
 /// What a depth of 100 % means for a target, in that target's unit.
 ///
 /// - Cutoff 4 octaves, Resonance 100 %, Width (pulse width) 45 %, Sub and
@@ -45,6 +58,8 @@ pub const FM_TARGETS: &[&str] = &[
 /// - Level: a 24 dB swell. Drive: 24 dB more drive.
 /// - Vibrato 1 semitone deep. Pitch 12 semitones. LFO rate 2 octaves (4 times
 ///   as fast); the LFO is shared, so it follows the highest pressure.
+/// - Position (Wavetable): the whole table. Warp (Wavetable): the whole
+///   warp amount.
 /// - Brightness (FM): 24 output-level steps (18 dB) on every modulator.
 ///   Tremolo (FM) 100 % amplitude dip. Feedback (FM) 7 steps.
 pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
@@ -57,7 +72,7 @@ pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
         "Pitch" => (12.0, Unit::Semitones),
         "Drive" => (24.0, Unit::Db),
         "Width" => (45.0, Unit::Percent),
-        "Sub" | "Noise" | "Tremolo" => (100.0, Unit::Percent),
+        "Sub" | "Noise" | "Tremolo" | "Position" | "Warp" => (100.0, Unit::Percent),
         "Brightness" => (24.0, Unit::None),
         "Feedback" => (7.0, Unit::None),
         _ => return None,
@@ -128,11 +143,12 @@ mod tests {
         for t in POLY_TARGETS
             .iter()
             .chain(FM_TARGETS)
+            .chain(WT_TARGETS)
             .filter(|t| **t != "Off")
         {
             assert!(full_scale(t).is_some(), "{t}");
         }
-        assert!(POLY_TARGETS.len() <= 12 && FM_TARGETS.len() <= 12);
+        assert!(POLY_TARGETS.len() <= 12 && FM_TARGETS.len() <= 12 && WT_TARGETS.len() <= 12);
         assert_eq!(amount("Cutoff", 37.5), Some((1.5, Unit::Octaves)));
         assert!((depth_for("Level", 9.0) - 37.5).abs() < 1e-4);
     }
