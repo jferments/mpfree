@@ -64,7 +64,11 @@ pub use drive::Drive;
 pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
-pub use mixer::{param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig, MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB};
+pub use mixer::{
+    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig,
+    MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS,
+    SILENT_DB,
+};
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
@@ -101,26 +105,48 @@ pub struct Preset {
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,
 /// so a mix of 0 or 100 % passes the dry or wet signal bit for bit.
 #[inline]
-pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 { a * (1.0 - t) + b * t }
+pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a * (1.0 - t) + b * t
+}
 
 /// Decibels to a linear gain.
 #[inline]
-pub fn db_to_gain(db: f32) -> f32 { 10f32.powf(db * 0.05) }
+pub fn db_to_gain(db: f32) -> f32 {
+    10f32.powf(db * 0.05)
+}
 
 /// A linear gain to decibels (-180 dB for silence).
 #[inline]
-pub fn gain_to_db(g: f32) -> f32 { if g <= 1e-9 { -180.0 } else { 20.0 * g.log10() } }
+pub fn gain_to_db(g: f32) -> f32 {
+    if g <= 1e-9 {
+        -180.0
+    } else {
+        20.0 * g.log10()
+    }
+}
 
 /// Flushes values too small to hear to zero, so feedback paths never sit in
 /// slow denormal arithmetic on ARM.
 #[inline]
-pub(crate) fn flush(x: f32) -> f32 { if x.abs() < 1e-20 { 0.0 } else { x } }
+pub(crate) fn flush(x: f32) -> f32 {
+    if x.abs() < 1e-20 {
+        0.0
+    } else {
+        x
+    }
+}
 
 /// A cheap, smooth saturator: about `x` for small `x`, exactly 1 in size
 /// from |x| = 3 up, with no corner.
 #[inline]
 pub(crate) fn soft(x: f32) -> f32 {
-    if x >= 3.0 { 1.0 } else if x <= -3.0 { -1.0 } else { x * (27.0 + x * x) / (27.0 + 9.0 * x * x) }
+    if x >= 3.0 {
+        1.0
+    } else if x <= -3.0 {
+        -1.0
+    } else {
+        x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
+    }
 }
 
 /// `tanh(x)` to within about 2e-7, without the library call: a rational
@@ -132,8 +158,14 @@ pub(crate) fn fast_tanh(x: f32) -> f32 {
     const CLAMP: f32 = 7.905_311;
     let x = x.clamp(-CLAMP, CLAMP);
     let x2 = x * x;
-    let p = (((((-2.760_768_5e-16 * x2 + 2.000_188e-13) * x2 - 8.604_672e-11) * x2 + 5.122_297e-8) * x2
-        + 1.485_722_4e-5) * x2 + 6.372_619_3e-4) * x2 + 4.893_524_6e-3;
+    let p = (((((-2.760_768_5e-16 * x2 + 2.000_188e-13) * x2 - 8.604_672e-11) * x2
+        + 5.122_297e-8)
+        * x2
+        + 1.485_722_4e-5)
+        * x2
+        + 6.372_619_3e-4)
+        * x2
+        + 4.893_524_6e-3;
     let q = ((1.198_258_4e-6 * x2 + 1.185_347_1e-4) * x2 + 2.268_434_6e-3) * x2 + 4.893_525e-3;
     (x * p / q).clamp(-1.0, 1.0)
 }
@@ -154,7 +186,9 @@ pub(crate) fn fast_log2(x: f32) -> f32 {
         e += 1;
     }
     let t = m - 1.0;
-    let q = 1.442_715_8 + t * (-0.721_122_6 + t * (0.479_324_37 + t * (-0.367_703_97 + t * (0.322_085_5 - t * 0.205_298_29))));
+    let q = 1.442_715_8
+        + t * (-0.721_122_6
+            + t * (0.479_324_37 + t * (-0.367_703_97 + t * (0.322_085_5 - t * 0.205_298_29))));
     e as f32 + t * q
 }
 
@@ -167,25 +201,47 @@ pub(crate) fn fast_exp2(x: f32) -> f32 {
     // Round to nearest with a truncating cast (no library call on ARMv7).
     let n = (x + 126.5) as i32 - 126;
     let f = x - n as f32;
-    let p = 1.0 + f * (6.931_472e-1 + f * (2.402_264_8e-1 + f * (5.550_332_5e-2 + f * (9.618_437e-3 + f * (1.339_887_4e-3 + f * 1.535_336_2e-4)))));
+    let p = 1.0
+        + f * (6.931_472e-1
+            + f * (2.402_264_8e-1
+                + f * (5.550_332_5e-2
+                    + f * (9.618_437e-3 + f * (1.339_887_4e-3 + f * 1.535_336_2e-4)))));
     p * f32::from_bits(((n + 127) as u32) << 23)
 }
 
 /// [`db_to_gain`] through [`fast_exp2`] (per-sample gains).
 #[inline]
-pub(crate) fn fast_db_to_gain(db: f32) -> f32 { fast_exp2(db * 0.166_096_4) }
+pub(crate) fn fast_db_to_gain(db: f32) -> f32 {
+    fast_exp2(db * 0.166_096_4)
+}
 
 /// A level in dB for a detector, through [`fast_log2`]: -120 dB at and
 /// below 1e-6 (and for NaN), 120 dB at and above 1e6.
 #[inline]
-pub(crate) fn fast_level_db(x: f32) -> f32 { if x > 1e-6 { 6.020_6 * fast_log2(x.min(1e6)) } else { -120.0 } }
+pub(crate) fn fast_level_db(x: f32) -> f32 {
+    if x > 1e-6 {
+        6.020_6 * fast_log2(x.min(1e6))
+    } else {
+        -120.0
+    }
+}
 
 /// A one-pole DC blocker for one channel.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct DcBlock { r: f32, x1: f32, y1: f32 }
+pub(crate) struct DcBlock {
+    r: f32,
+    x1: f32,
+    y1: f32,
+}
 
 impl DcBlock {
-    pub(crate) fn new() -> DcBlock { DcBlock { r: 0.9995, x1: 0.0, y1: 0.0 } }
+    pub(crate) fn new() -> DcBlock {
+        DcBlock {
+            r: 0.9995,
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
     /// Sets the corner frequency.
     pub(crate) fn set(&mut self, hz: f32, rate: u32) {
         self.r = (-2.0 * std::f32::consts::PI * hz / rate as f32).exp();
@@ -197,28 +253,48 @@ impl DcBlock {
         self.y1 = flush(y);
         y
     }
-    pub(crate) fn reset(&mut self) { self.x1 = 0.0; self.y1 = 0.0; }
+    pub(crate) fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
 }
 
 /// A fixed delay of whole frames for one channel (latency matching).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FixedDelay { buf: Vec<f32>, pos: usize }
+pub(crate) struct FixedDelay {
+    buf: Vec<f32>,
+    pos: usize,
+}
 
 impl FixedDelay {
     /// Allocates for `frames` of delay (control thread).
-    pub(crate) fn new(frames: usize) -> FixedDelay { FixedDelay { buf: vec![0.0; frames], pos: 0 } }
+    pub(crate) fn new(frames: usize) -> FixedDelay {
+        FixedDelay {
+            buf: vec![0.0; frames],
+            pos: 0,
+        }
+    }
     #[cfg(test)]
-    pub(crate) fn frames(&self) -> usize { self.buf.len() }
+    pub(crate) fn frames(&self) -> usize {
+        self.buf.len()
+    }
     #[inline]
     pub(crate) fn run(&mut self, x: f32) -> f32 {
-        if self.buf.is_empty() { return x; }
+        if self.buf.is_empty() {
+            return x;
+        }
         let y = self.buf[self.pos];
         self.buf[self.pos] = x;
         self.pos += 1;
-        if self.pos == self.buf.len() { self.pos = 0; }
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
         y
     }
-    pub(crate) fn reset(&mut self) { self.buf.fill(0.0); self.pos = 0; }
+    pub(crate) fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.pos = 0;
+    }
 }
 
 /// A small, fast, deterministic random source (dither, noise).
@@ -226,7 +302,9 @@ impl FixedDelay {
 pub(crate) struct Rng(u32);
 
 impl Rng {
-    pub(crate) fn new(seed: u32) -> Rng { Rng(if seed == 0 { 0x9E37_79B9 } else { seed }) }
+    pub(crate) fn new(seed: u32) -> Rng {
+        Rng(if seed == 0 { 0x9E37_79B9 } else { seed })
+    }
     /// Uniform in [-1, 1).
     #[inline]
     pub(crate) fn bipolar(&mut self) -> f32 {
@@ -309,7 +387,10 @@ mod tests {
         assert!(worst_exp < 4e-7, "exp2 {worst_exp}");
         assert_eq!(fast_exp2(0.0), 1.0);
         assert_eq!(fast_db_to_gain(0.0), 1.0);
-        assert_eq!((fast_exp2(1.0), fast_exp2(-1.0), fast_exp2(10.0)), (2.0, 0.5, 1024.0));
+        assert_eq!(
+            (fast_exp2(1.0), fast_exp2(-1.0), fast_exp2(10.0)),
+            (2.0, 0.5, 1024.0)
+        );
         assert!(fast_exp2(f32::NAN).is_nan());
         // Monotonic, so a detector or an envelope never steps backwards.
         let mut prev = f32::NEG_INFINITY;
@@ -324,7 +405,14 @@ mod tests {
             assert!((fast_level_db(g) - gain_to_db(g)).abs() < 1e-4, "{db}");
             assert!((fast_db_to_gain(db) / g - 1.0).abs() < 1e-6, "{db}");
         }
-        assert_eq!((fast_level_db(0.0), fast_level_db(1e-7), fast_level_db(f32::NAN)), (-120.0, -120.0, -120.0));
+        assert_eq!(
+            (
+                fast_level_db(0.0),
+                fast_level_db(1e-7),
+                fast_level_db(f32::NAN)
+            ),
+            (-120.0, -120.0, -120.0)
+        );
         assert!((fast_level_db(f32::INFINITY) - 120.0).abs() < 1e-3);
     }
 
@@ -338,7 +426,10 @@ mod tests {
     #[test]
     fn fixed_delay_delays() {
         let mut d = FixedDelay::new(3);
-        let out: Vec<f32> = [1.0, 2.0, 3.0, 4.0, 5.0].iter().map(|&x| d.run(x)).collect();
+        let out: Vec<f32> = [1.0, 2.0, 3.0, 4.0, 5.0]
+            .iter()
+            .map(|&x| d.run(x))
+            .collect();
         assert_eq!(out, [0.0, 0.0, 0.0, 1.0, 2.0]);
         let mut z = FixedDelay::new(0);
         assert_eq!(z.run(7.0), 7.0);

@@ -29,9 +29,15 @@ pub fn hold_stats(reports: &[PointerEvent]) -> Option<HoldStats> {
         return None;
     }
     let n = reports.len() as f64;
-    let mean = |f: fn(&PointerEvent) -> f32| reports.iter().map(|r| f64::from(f(r))).sum::<f64>() / n;
+    let mean =
+        |f: fn(&PointerEvent) -> f32| reports.iter().map(|r| f64::from(f(r))).sum::<f64>() / n;
     let std = |f: fn(&PointerEvent) -> f32, m: f64| {
-        (reports.iter().map(|r| (f64::from(f(r)) - m).powi(2)).sum::<f64>() / n).sqrt() as f32
+        (reports
+            .iter()
+            .map(|r| (f64::from(f(r)) - m).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt() as f32
     };
     let (mx, my) = (mean(|r| r.x), mean(|r| r.y));
     let median = |f: fn(&PointerEvent) -> f32| {
@@ -40,10 +46,24 @@ pub fn hold_stats(reports: &[PointerEvent]) -> Option<HoldStats> {
         v[v.len() / 2]
     };
     let (cx, cy) = (median(|r| r.x), median(|r| r.y));
-    let max_dev = reports.iter().map(|r| (r.x - cx).hypot(r.y - cy)).fold(0.0, f32::max);
+    let max_dev = reports
+        .iter()
+        .map(|r| (r.x - cx).hypot(r.y - cy))
+        .fold(0.0, f32::max);
     let first = reports.iter().map(|r| r.time_us).min().unwrap_or(0);
     let last = reports.iter().map(|r| r.time_us).max().unwrap_or(0);
     let duration_us = last - first;
-    let rate_hz = if duration_us > 0 { (reports.len() - 1) as f32 / (duration_us as f32 / 1e6) } else { 0.0 };
-    Some(HoldStats { samples: reports.len(), duration_us, rate_hz, std_x: std(|r| r.x, mx), std_y: std(|r| r.y, my), max_dev })
+    let rate_hz = if duration_us > 0 {
+        (reports.len() - 1) as f32 / (duration_us as f32 / 1e6)
+    } else {
+        0.0
+    };
+    Some(HoldStats {
+        samples: reports.len(),
+        duration_us,
+        rate_hz,
+        std_x: std(|r| r.x, mx),
+        std_y: std(|r| r.y, my),
+        max_dev,
+    })
 }

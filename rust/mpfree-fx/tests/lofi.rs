@@ -13,7 +13,9 @@ const RATE: u32 = 48_000;
 fn lofi(values: &[(u16, f32)]) -> LoFi {
     let mut f = LoFi::new();
     f.prepare(RATE, MAX_BLOCK);
-    for &(id, v) in values { f.set_param(id, v); }
+    for &(id, v) in values {
+        f.set_param(id, v);
+    }
     f.reset();
     f
 }
@@ -24,27 +26,51 @@ fn run(f: &mut LoFi, l: &mut [f32], r: &mut [f32]) {
     }
 }
 
-fn sine(hz: f32, amp: f32, frames: usize) -> Vec<f32> { (0..frames).map(|i| amp * (2.0 * PI * hz * i as f32 / RATE as f32).sin()).collect() }
+fn sine(hz: f32, amp: f32, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|i| amp * (2.0 * PI * hz * i as f32 / RATE as f32).sin())
+        .collect()
+}
 
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32 }
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32
+}
 
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
 
 #[test]
 fn mix_zero_is_the_input_delayed_by_the_latency() {
-    let mut f = lofi(&[(MIX, 0.0), (AMOUNT, 100.0), (CRACKLE, 100.0), (NOISE, 100.0)]);
+    let mut f = lofi(&[
+        (MIX, 0.0),
+        (AMOUNT, 100.0),
+        (CRACKLE, 100.0),
+        (NOISE, 100.0),
+    ]);
     let lat = f.latency() as usize;
     assert_eq!(lat, 96, "2 ms at 48 kHz");
     let x = sine(440.0, 0.5, 9600);
     let (mut l, mut r) = (x.clone(), x.clone());
     run(&mut f, &mut l, &mut r);
     assert!(l[..lat].iter().all(|&v| v == 0.0));
-    assert!(l[lat..] == x[..x.len() - lat], "the input, {lat} frames late");
+    assert!(
+        l[lat..] == x[..x.len() - lat],
+        "the input, {lat} frames late"
+    );
 }
 
 #[test]
 fn amount_zero_is_clean_and_on_time() {
-    let mut f = lofi(&[(AMOUNT, 0.0), (WOW, 100.0), (FLUTTER, 100.0), (SATURATION, 100.0), (CRACKLE, 100.0), (NOISE, 100.0), (WIDTH, 0.0)]);
+    let mut f = lofi(&[
+        (AMOUNT, 0.0),
+        (WOW, 100.0),
+        (FLUTTER, 100.0),
+        (SATURATION, 100.0),
+        (CRACKLE, 100.0),
+        (NOISE, 100.0),
+        (WIDTH, 0.0),
+    ]);
     let lat = f.latency() as usize;
     let x = sine(1000.0, 0.5, 24_000);
     let y: Vec<f32> = x.iter().map(|v| -v).collect();
@@ -54,15 +80,23 @@ fn amount_zero_is_clean_and_on_time() {
     // in time with the reported latency.
     let err: Vec<f32> = (12_000..24_000).map(|i| l[i] - x[i - lat]).collect();
     assert!(rms(&err) < 0.01 * rms(&x), "error {}", rms(&err));
-    assert!((rms(&r[12_000..]) / rms(&y[12_000..]) - 1.0).abs() < 0.01, "full width at Amount 0");
+    assert!(
+        (rms(&r[12_000..]) / rms(&y[12_000..]) - 1.0).abs() < 0.01,
+        "full width at Amount 0"
+    );
 }
 
 /// Mean frequency over windows from zero-crossing spacing.
 fn pitch_track(x: &[f32], window: usize) -> Vec<f32> {
     let mut out = Vec::new();
     for w in x.chunks(window) {
-        let ups: Vec<f32> = (1..w.len()).filter(|&i| w[i - 1] < 0.0 && w[i] >= 0.0).map(|i| (i - 1) as f32 + w[i - 1] / (w[i - 1] - w[i])).collect();
-        if ups.len() > 2 { out.push(RATE as f32 * (ups.len() - 1) as f32 / (ups[ups.len() - 1] - ups[0])); }
+        let ups: Vec<f32> = (1..w.len())
+            .filter(|&i| w[i - 1] < 0.0 && w[i] >= 0.0)
+            .map(|i| (i - 1) as f32 + w[i - 1] / (w[i - 1] - w[i]))
+            .collect();
+        if ups.len() > 2 {
+            out.push(RATE as f32 * (ups.len() - 1) as f32 / (ups[ups.len() - 1] - ups[0]));
+        }
     }
     out
 }
@@ -71,12 +105,27 @@ fn pitch_track(x: &[f32], window: usize) -> Vec<f32> {
 fn wow_bends_the_pitch_by_about_what_it_says() {
     let x = sine(1000.0, 0.3, RATE as usize * 4);
     for (wow, lo, hi) in [(0.0, 0.0, 0.0002), (100.0, 0.002, 0.006)] {
-        let mut f = lofi(&[(AMOUNT, 100.0), (WOW, wow), (FLUTTER, 0.0), (SATURATION, 0.0), (CRACKLE, 0.0), (NOISE, 0.0), (LOW_CUT, 20.0), (HIGH_CUT, 20_000.0)]);
+        let mut f = lofi(&[
+            (AMOUNT, 100.0),
+            (WOW, wow),
+            (FLUTTER, 0.0),
+            (SATURATION, 0.0),
+            (CRACKLE, 0.0),
+            (NOISE, 0.0),
+            (LOW_CUT, 20.0),
+            (HIGH_CUT, 20_000.0),
+        ]);
         let (mut l, mut r) = (x.clone(), x.clone());
         run(&mut f, &mut l, &mut r);
         let track = pitch_track(&l[4800..], 960);
-        let dev = track.iter().fold(0.0f32, |m, &p| m.max((p / 1000.0 - 1.0).abs()));
-        assert!(dev >= lo && dev <= hi, "wow {wow}: peak deviation {:.3} %", dev * 100.0);
+        let dev = track
+            .iter()
+            .fold(0.0f32, |m, &p| m.max((p / 1000.0 - 1.0).abs()));
+        assert!(
+            dev >= lo && dev <= hi,
+            "wow {wow}: peak deviation {:.3} %",
+            dev * 100.0
+        );
     }
 }
 
@@ -89,7 +138,13 @@ fn crackle_and_hiss_ride_the_music_and_rest_in_silence() {
     x[RATE as usize..RATE as usize * 3].copy_from_slice(&sine(220.0, 0.5, RATE as usize * 2));
     let (mut l, mut r) = (x.clone(), x.clone());
     run(&mut f, &mut l, &mut r);
-    assert!(l[..RATE as usize].iter().chain(&r[..RATE as usize]).all(|&v| v == 0.0), "silent before the music");
+    assert!(
+        l[..RATE as usize]
+            .iter()
+            .chain(&r[..RATE as usize])
+            .all(|&v| v == 0.0),
+        "silent before the music"
+    );
     // During the music there are clicks: frames far off the clean sine.
     let lat = f.latency() as usize;
     let mut quiet = lofi(&[(AMOUNT, 100.0), (CRACKLE, 0.0), (NOISE, 0.0)]);
@@ -112,7 +167,12 @@ fn presets_are_in_range_and_play() {
         let mut f = LoFi::new();
         for &(id, v) in p.values {
             let info = &f.params()[id as usize];
-            assert!(v >= info.min && v <= info.max, "{}: {} out of range", p.name, info.name);
+            assert!(
+                v >= info.min && v <= info.max,
+                "{}: {} out of range",
+                p.name,
+                info.name
+            );
             f.set_param(id, v);
         }
         f.reset();

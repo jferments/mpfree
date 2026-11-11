@@ -9,12 +9,26 @@ use mpfree_touch::pointer::PointerEvent;
 const DT: u64 = 8_800;
 
 fn ev(id: u64, phase: Phase, x: f32, y: f32, t: u64) -> PointerEvent {
-    PointerEvent { id: ContactId(id), phase, x, y, time_us: t }
+    PointerEvent {
+        id: ContactId(id),
+        phase,
+        x,
+        y,
+        time_us: t,
+    }
 }
 
 /// A one-finger stroke from (x0, y0) moving by (vx, vy) px per report for
 /// `steps` reports, then `pause_us` still, then lift. Returns all gestures.
-fn stroke(cfg: GestureConfig, x0: f32, y0: f32, vx: f32, vy: f32, steps: u64, pause_us: u64) -> Vec<Gesture> {
+fn stroke(
+    cfg: GestureConfig,
+    x0: f32,
+    y0: f32,
+    vx: f32,
+    vy: f32,
+    steps: u64,
+    pause_us: u64,
+) -> Vec<Gesture> {
     let mut g = GestureRecognizer::new(cfg);
     let mut out = Vec::new();
     g.frame(&[ev(1, Phase::Down, x0, y0, 0)], &mut out);
@@ -40,7 +54,9 @@ fn drag_end(out: &[Gesture]) -> (f32, f32) {
 
 fn swipe(out: &[Gesture]) -> Option<(SwipeDirection, f32)> {
     out.iter().find_map(|g| match *g {
-        Gesture::Swipe { direction, speed, .. } => Some((direction, speed)),
+        Gesture::Swipe {
+            direction, speed, ..
+        } => Some((direction, speed)),
         _ => None,
     })
 }
@@ -70,14 +86,28 @@ fn a_fast_straight_stroke_is_a_swipe_in_each_direction() {
         assert!(speed > 1000.0);
         // The swipe comes right after its DragEnd.
         let n = out.len();
-        assert!(matches!(out[n - 2], Gesture::DragEnd { cancelled: false, .. }));
+        assert!(matches!(
+            out[n - 2],
+            Gesture::DragEnd {
+                cancelled: false,
+                ..
+            }
+        ));
     }
 }
 
 #[test]
 fn a_finger_that_stops_before_lifting_is_not_a_swipe() {
     // Fast stroke, then 200 ms still: the panel sends nothing, velocity is 0.
-    let out = stroke(GestureConfig::default(), 100.0, 400.0, 10.0, 0.0, 30, 200_000);
+    let out = stroke(
+        GestureConfig::default(),
+        100.0,
+        400.0,
+        10.0,
+        0.0,
+        30,
+        200_000,
+    );
     assert_eq!(drag_end(&out), (0.0, 0.0));
     assert!(swipe(&out).is_none());
 }
@@ -99,10 +129,15 @@ fn a_cancelled_drag_has_no_velocity_and_no_swipe() {
     let mut out = Vec::new();
     g.frame(&[ev(1, Phase::Down, 0.0, 0.0, 0)], &mut out);
     for i in 1..=20 {
-        g.frame(&[ev(1, Phase::Move, i as f32 * 10.0, 0.0, i * DT)], &mut out);
+        g.frame(
+            &[ev(1, Phase::Move, i as f32 * 10.0, 0.0, i * DT)],
+            &mut out,
+        );
     }
     g.frame(&[ev(1, Phase::Cancel, 200.0, 0.0, 21 * DT)], &mut out);
-    assert!(matches!(out.last(), Some(Gesture::DragEnd { cancelled: true, vx, vy, .. }) if *vx == 0.0 && *vy == 0.0));
+    assert!(
+        matches!(out.last(), Some(Gesture::DragEnd { cancelled: true, vx, vy, .. }) if *vx == 0.0 && *vy == 0.0)
+    );
 }
 
 #[test]
@@ -124,7 +159,10 @@ fn fling_slows_down_and_stops_where_it_said() {
     }
     // Stopping below 20 px/s leaves out only the last few px.
     assert!(travelled > 0.0 && travelled <= promised);
-    assert!(promised - travelled < 20.0 / f32::ln(2.0) * 0.25 + 1.0, "{promised} vs {travelled}");
+    assert!(
+        promised - travelled < 20.0 / f32::ln(2.0) * 0.25 + 1.0,
+        "{promised} vs {travelled}"
+    );
     // About 1.5 s for 1200 px/s to fall below 20 px/s with a 0.25 s half-life.
     assert!((80..=100).contains(&frames), "{frames}");
     assert_eq!(f.step(1.0 / 60.0), 0.0);
@@ -145,7 +183,13 @@ fn hold_stats_summarise_a_wandering_finger() {
     let reports: Vec<_> = (0..40)
         .map(|i| {
             let d = if i % 2 == 0 { 1.0 } else { -1.0 };
-            ev(1, if i == 0 { Phase::Down } else { Phase::Move }, 500.0 + d, 300.0, i * 90_000)
+            ev(
+                1,
+                if i == 0 { Phase::Down } else { Phase::Move },
+                500.0 + d,
+                300.0,
+                i * 90_000,
+            )
         })
         .collect();
     let s = hold_stats(&reports).unwrap();
@@ -174,24 +218,65 @@ fn a_held_pad_and_a_swipe_elsewhere_stay_independent() {
     // Pages wants swipes; the pad isn't registered (raw touches only).
     r.register(W::Pages, GestureConfig::default());
     let mut out = Vec::new();
-    r.frame(&[(W::Pad, ev(1, Phase::Down, 100.0, 600.0, 0)), (W::Pages, ev(2, Phase::Down, 900.0, 300.0, 0))], &mut out);
+    r.frame(
+        &[
+            (W::Pad, ev(1, Phase::Down, 100.0, 600.0, 0)),
+            (W::Pages, ev(2, Phase::Down, 900.0, 300.0, 0)),
+        ],
+        &mut out,
+    );
     for i in 1..=20u64 {
-        r.frame(&[(W::Pages, ev(2, Phase::Move, 900.0 - 12.0 * i as f32, 300.0, i * DT))], &mut out);
+        r.frame(
+            &[(
+                W::Pages,
+                ev(2, Phase::Move, 900.0 - 12.0 * i as f32, 300.0, i * DT),
+            )],
+            &mut out,
+        );
     }
-    r.frame(&[(W::Pages, ev(2, Phase::Up, 660.0, 300.0, 21 * DT))], &mut out);
+    r.frame(
+        &[(W::Pages, ev(2, Phase::Up, 660.0, 300.0, 21 * DT))],
+        &mut out,
+    );
     // No two-finger gesture, nothing for the pad, and a left swipe for Pages.
     assert!(out.iter().all(|(k, _)| *k == W::Pages));
-    assert!(!out.iter().any(|(_, g)| matches!(g, Gesture::TwoFingerStart { .. })));
-    assert!(out.iter().any(|(_, g)| matches!(g, Gesture::Swipe { direction: SwipeDirection::Left, .. })));
+    assert!(!out
+        .iter()
+        .any(|(_, g)| matches!(g, Gesture::TwoFingerStart { .. })));
+    assert!(out.iter().any(|(_, g)| matches!(
+        g,
+        Gesture::Swipe {
+            direction: SwipeDirection::Left,
+            ..
+        }
+    )));
 }
 
 #[test]
 fn each_owner_has_its_own_config_and_long_press_comes_from_tick() {
     let mut r = GestureRouter::new();
-    r.register(W::List, GestureConfig { long_press_us: 300_000, ..GestureConfig::default() });
-    r.register(W::Pad, GestureConfig { long_press_us: 800_000, ..GestureConfig::default() });
+    r.register(
+        W::List,
+        GestureConfig {
+            long_press_us: 300_000,
+            ..GestureConfig::default()
+        },
+    );
+    r.register(
+        W::Pad,
+        GestureConfig {
+            long_press_us: 800_000,
+            ..GestureConfig::default()
+        },
+    );
     let mut out = Vec::new();
-    r.frame(&[(W::List, ev(1, Phase::Down, 10.0, 10.0, 0)), (W::Pad, ev(2, Phase::Down, 500.0, 500.0, 0))], &mut out);
+    r.frame(
+        &[
+            (W::List, ev(1, Phase::Down, 10.0, 10.0, 0)),
+            (W::Pad, ev(2, Phase::Down, 500.0, 500.0, 0)),
+        ],
+        &mut out,
+    );
     assert!(out.is_empty());
     r.tick(400_000, &mut out);
     assert_eq!(out.len(), 1);
@@ -207,7 +292,13 @@ fn unregistering_or_clearing_drops_an_owner() {
     assert!(r.is_registered(W::List));
     r.unregister(W::List);
     let mut out = Vec::new();
-    r.frame(&[(W::List, ev(1, Phase::Down, 0.0, 0.0, 0)), (W::List, ev(1, Phase::Up, 0.0, 0.0, 50_000))], &mut out);
+    r.frame(
+        &[
+            (W::List, ev(1, Phase::Down, 0.0, 0.0, 0)),
+            (W::List, ev(1, Phase::Up, 0.0, 0.0, 50_000)),
+        ],
+        &mut out,
+    );
     assert!(out.is_empty());
     r.register(W::Pages, GestureConfig::default());
     r.clear();

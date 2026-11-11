@@ -32,8 +32,15 @@ pub struct Image {
 
 impl Image {
     pub fn new(w: i32, h: i32) -> Image {
-        assert!(w > 0 && h > 0 && w <= 8192 && h <= 8192, "image size {w}x{h}");
-        Image { w, h, px: vec![0; (w * h) as usize] }
+        assert!(
+            w > 0 && h > 0 && w <= 8192 && h <= 8192,
+            "image size {w}x{h}"
+        );
+        Image {
+            w,
+            h,
+            px: vec![0; (w * h) as usize],
+        }
     }
 }
 
@@ -47,8 +54,16 @@ pub struct SoftCanvas {
 
 impl SoftCanvas {
     pub fn new(w: i32, h: i32) -> SoftCanvas {
-        assert!(w > 0 && h > 0 && w <= 8192 && h <= 8192, "canvas size {w}x{h}");
-        SoftCanvas { w, h, px: vec![0; (w * h) as usize], clip: Rect::new(0, 0, w, h) }
+        assert!(
+            w > 0 && h > 0 && w <= 8192 && h <= 8192,
+            "canvas size {w}x{h}"
+        );
+        SoftCanvas {
+            w,
+            h,
+            px: vec![0; (w * h) as usize],
+            clip: Rect::new(0, 0, w, h),
+        }
     }
 
     pub fn width(&self) -> i32 {
@@ -181,7 +196,11 @@ impl Canvas for SoftCanvas {
                 if outer <= 0.0 {
                     continue;
                 }
-                let cut = if inner.is_empty() { 0.0 } else { coverage(inner, irad as f32, x, y) };
+                let cut = if inner.is_empty() {
+                    0.0
+                } else {
+                    coverage(inner, irad as f32, x, y)
+                };
                 self.put(x, y, c, outer - cut);
             }
         }
@@ -210,7 +229,8 @@ impl Canvas for SoftCanvas {
         for py in area.y..area.bottom() {
             let src = ((py - y) * img.w + (area.x - x)) as usize;
             let dst = (py * self.w + area.x) as usize;
-            self.px[dst..dst + area.w as usize].copy_from_slice(&img.px[src..src + area.w as usize]);
+            self.px[dst..dst + area.w as usize]
+                .copy_from_slice(&img.px[src..src + area.w as usize]);
         }
     }
 }
