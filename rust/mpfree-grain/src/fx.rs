@@ -125,7 +125,9 @@ impl GrainFx {
         let n = self.ramp_frames as f32;
         self.dry_step = (self.dry_to - self.dry) / n;
         self.wet_step = (self.wet_to - self.wet) / n;
-        self.ramp_left = self.ramp_frames;
+        // Already there (a change undone before any frame ran): no glide.
+        let there = self.dry == self.dry_to && self.wet == self.wet_to;
+        self.ramp_left = if there { 0 } else { self.ramp_frames };
     }
 
     pub fn frozen(&self) -> bool { self.frozen }
@@ -149,6 +151,16 @@ impl GrainFx {
     pub fn kill(&mut self, budget: &mut Budget) {
         self.voice.kill(budget);
         self.running = false;
+    }
+
+    /// Silences the grains, forgets the audio it holds and finishes any mix
+    /// glide at once; the settings, the mix and freeze stay. Doesn't allocate.
+    pub fn reset(&mut self, budget: &mut Budget) {
+        self.kill(budget);
+        self.buffer.clear();
+        self.staged = 0;
+        (self.dry, self.wet) = (self.dry_to, self.wet_to);
+        self.ramp_left = 0;
     }
 
     /// The buffer the grains read, for drawing it.

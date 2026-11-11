@@ -145,6 +145,11 @@ impl LiveBuffer {
     /// Freeze on: writes are ignored and the span stops moving.
     pub fn set_frozen(&mut self, on: bool) { self.frozen = on; }
 
+    /// Forgets everything written (the span becomes empty) without touching
+    /// the memory, so it is cheap enough for the audio thread. Freeze stays
+    /// as it was.
+    pub fn clear(&mut self) { self.written = 0; }
+
     /// Appends interleaved frames (in this buffer's channel count). Ignored
     /// while frozen. A trailing partial frame is dropped.
     pub fn write(&mut self, interleaved: &[f32]) {
