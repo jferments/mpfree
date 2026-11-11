@@ -29,6 +29,6 @@ The only unsafe code is two `_IOR` ioctls in `rust/mpfree-touch-evdev/src/sys.rs
 - The ioctls have not run against the real ILI2117. The workstation has no evdev device, so only bad-fd error paths ran for real. The first device check should open the reader beside Akai's app (read-only, no grab) and log `ReaderStats` plus a few touches. That will be its own owner-paced step with full instructions.
 - The snapshot is four separate ioctls, not one atomic read. A contact that changes between them is corrected by the next events; at worst a finger that lifts and lands again in that instant shows as an extra Up and Down.
 
-## Next
+## In the pad player
 
-`mpfree-hello`'s `TouchIn` switches to `EvdevTouch` once PR #31 (Hello MPC round 5) has merged, so the round 5 build Jay is testing doesn't change under him.
+After PR #31 merged, `mpfree-hello`'s `TouchIn` became a thin wrapper over this reader with the `MPC_ONE` profile. Its hand-copied constants are gone. The screen thread opens the touchscreen itself: it tries at once and then every second until the touchscreen opens, and again after a read error, so touch comes back by itself. It logs a `touch-reader:` line when the touchscreen opens and every 30 s while raw events keep arriving. That line counts raw events and decoded contacts separately, so round 6 shows which layer touches stop at. (Round 5 recorded no screen touches, and its journal can't say why.)
