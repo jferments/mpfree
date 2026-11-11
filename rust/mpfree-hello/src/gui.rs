@@ -60,6 +60,8 @@ pub fn with_bar(layout: &str) -> String {
     time_view::with_transport(layout).unwrap_or_else(|| layout.to_string())
 }
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
+/// Prefs > System info: the software on the left, the hardware on the right.
+pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
 
@@ -367,6 +369,8 @@ impl Player {
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        ui.add("syssw", StatList::new("MPFree and the system"));
+        ui.add("syshw", StatList::new("Hardware"));
         let time_page = TimePage::add_to(&mut ui).expect("clips layout");
         ui.add_full_page("Loading", "loading").expect("loading layout");
         ui.add_page("Play", &with_bar(PLAY_LAYOUT)).expect("play layout");
@@ -376,6 +380,7 @@ impl Player {
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT).expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        ui.add_page("System info", SYSTEM_LAYOUT).expect("system info layout");
         let patterns = crate::app::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
         let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
@@ -532,13 +537,16 @@ impl Player {
                 View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
-                                        Debug page   ·   MENU: options   ·   {stop}"),
+                                        Dev page   ·   MENU: options   ·   {stop}"),
                 View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
-                                       the log every 30 s   ·   SHIFT + wheel: Debug page   ·   {stop}"),
+                                       the log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
-                              STOP: stop listening   ·   SHIFT + wheel: Debug page".to_string(),
+                              STOP: stop listening   ·   SHIFT + wheel: Dev page".to_string(),
+                View::Console if self.settings.debug_mode => "The system log, as it comes   ·   MENU: pause or clear   ·   \
+                                                              SHIFT + wheel: Dev page   ·   SHIFT + STOP: back".to_string(),
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + STOP: back"
                     .to_string(),
+                View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
@@ -596,13 +604,10 @@ impl Player {
         self.settings = s;
         if retab {
             let debug = self.settings.debug_mode;
-            let active = self.view.tab_index(debug);
             if let Some(h) = self.ui.get_mut::<Header>("header") {
                 h.tabs = tabs(debug).iter().map(|v| v.name().to_string()).collect();
-                if let Some(t) = active {
-                    h.active = t;
-                }
             }
+            self.mark_tab();
         }
         if resumed {
             let lines: Vec<String> = self.console_backlog.drain(..).collect();
@@ -988,11 +993,16 @@ impl Player {
             View::Clips => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
-            View::Debug | View::Perf | View::Map => {
+            // Without the developer tools the Console (SHIFT + STOP) has no strip.
+            View::Console if !self.settings.debug_mode => "Console".to_string(),
+            View::Debug | View::Perf | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);
                 DebugPages::page(v).unwrap_or("Debug").to_string()
             }
-            View::Console => "Console".to_string(),
+            View::System => {
+                self.set_system(crate::sysinfo::read(std::path::Path::new("/")));
+                "System info".to_string()
+            }
             View::Prefs => "Prefs".to_string(),
             View::Options => "Options".to_string(),
             View::Guide => "Guide".to_string(),
@@ -1018,11 +1028,25 @@ impl Player {
                 p.refresh(&mut self.ui);
             }
         }
-        let tab = v.tab_index(self.settings.debug_mode);
-        if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), tab) {
-            h.active = t;
-        }
+        self.mark_tab();
         self.refresh_hint();
+    }
+
+    /// The header highlights the page's tab, or none (Prefs, menus, the guide).
+    fn mark_tab(&mut self) {
+        let tab = self.view.tab_index(self.settings.debug_mode);
+        if let Some(h) = self.ui.get_mut::<Header>("header") {
+            h.active = tab.unwrap_or(usize::MAX);
+        }
+    }
+
+    /// Prefs > System info's rows.
+    pub fn set_system(&mut self, info: crate::sysinfo::SystemInfo) {
+        for (name, rows) in [("syssw", info.software), ("syshw", info.hardware)] {
+            if let Some(l) = self.ui.get_mut::<StatList>(name) {
+                l.set(rows.into_iter().map(|(k, v)| (k, v, Tone::Normal)).collect());
+            }
+        }
     }
 
     /// Debug mode is on (the screen thread then reads /proc for the
@@ -1080,10 +1104,7 @@ impl Player {
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
-                let tab = self.view.tab_index(self.settings.debug_mode);
-                if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), tab) {
-                    h.active = t;
-                }
+                self.mark_tab();
                 Some(FromUi::Tab(i))
             }
             (crate::debug_page::STRIP, EventKind::Tab(i)) => {
@@ -1737,6 +1758,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         load: Some("0.61 0.48 0.30".into()), temps: vec![("soc-thermal".into(), 47.8)], mhz: vec![1608, 1608, 1608, 1608],
     });
     out.push(("debug-perf", perf));
+    // Prefs > System info, with fixed rows (the host's own would differ).
+    let mut system = sample_player(fonts());
+    system.apply(ToUi::Show(View::System));
+    system.set_system(crate::sysinfo::sample());
+    out.push(("system-info", system));
     match sample_clips(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
@@ -1947,8 +1973,9 @@ mod tests {
         assert_eq!(p.touch(1, Touch::Down, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: true }));
         assert_eq!(p.touch(1, Touch::Up, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: false }));
         let header = p.ui.rect_of("header").unwrap();
-        // The Debug tab: the app decides; the page stays until it says.
-        assert_eq!(p.touch(2, Touch::Down, header.x + 170 + 118 + 20, header.y + 30), Some(FromUi::Tab(1)));
+        let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
+        // The second tab: the app decides; the page stays until it says.
+        assert_eq!(p.touch(2, Touch::Down, tab1.x + 20, tab1.y + 20), Some(FromUi::Tab(1)));
         assert_eq!(p.page(), "Play");
         p.apply(ToUi::Show(View::Debug));
         assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of("pads").is_none());
@@ -1986,9 +2013,10 @@ mod tests {
         p.apply(ToUi::Kit(synth_kit));
         assert!(chips(&p).contains(&"Poly · C3 to D#4".to_string()), "{:?}", chips(&p));
         assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[1].label, "C#3");
-        // The Synth tab is the second; the app decides, then the page shows.
+        // The Synth tab is the third; the app decides, then the page shows.
         let header = p.ui.rect_of("header").unwrap();
-        assert_eq!(p.touch(1, Touch::Down, header.x + 170 + 118 + 20, header.y + 30), Some(FromUi::Tab(1)));
+        let synth_tab = p.ui.get::<Header>("header").unwrap().tab_rect(header, 2);
+        assert_eq!(p.touch(1, Touch::Down, synth_tab.x + 20, synth_tab.y + 20), Some(FromUi::Tab(2)));
         p.apply(ToUi::Show(View::Synth));
         assert_eq!(p.page(), "Synth");
         assert!(p.ui.rect_of(synth_view::TILES).is_some_and(|r| r.h > 300));

@@ -23,8 +23,9 @@
 //! guide in Prefs). They become `Effect::Time`, which the audio loop hands to
 //! its `TimeHost`.
 //!
-//! Debug mode (Prefs) adds the Debug tab: the MIDI log, the Performance page
-//! and the control mapper (the `mapper` submodule). The PAD BANK buttons,
+//! "Show developer tools" (Prefs) adds the Dev tab: the MIDI log, the
+//! Performance page, the control mapper (the `mapper` submodule) and the
+//! Console. Prefs itself is not a tab: SHIFT + MENU opens it. The PAD BANK buttons,
 //! once found, pick banks A-H (`Effect::Bank`).
 
 mod arp;
@@ -74,15 +75,18 @@ pub enum View {
     Perf,
     /// Debug mode: the control mapper (on the Debug tab).
     Map,
+    /// Prefs > System info: the program's version, the system and the
+    /// hardware (on the Prefs tab).
+    System,
 }
 
-/// The header's tabs: the Debug tab only in debug mode.
-pub fn tabs(debug: bool) -> Vec<View> {
+/// The header's tabs: the music pages, and the Dev tab only with the
+/// developer tools on. Prefs is not a tab (SHIFT + MENU).
+pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![View::Play, View::Clips, View::Synth, View::Looper];
-    if debug {
+    if dev {
         t.push(View::Debug);
     }
-    t.extend([View::Console, View::Prefs]);
     t
 }
 
@@ -104,7 +108,7 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 3] = [View::Debug, View::Perf, View::Map];
+pub const DEBUG_PAGES: [View; 4] = [View::Debug, View::Perf, View::Map, View::Console];
 
 impl View {
     /// The tab a page belongs to (the Arp panel to Play, the debug pages to
@@ -112,8 +116,8 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Map => Some(View::Debug),
-            View::Options | View::Guide => None,
+            View::Perf | View::Map | View::Console => Some(View::Debug),
+            View::Options | View::Guide | View::Prefs | View::System => None,
             v => Some(v),
         }
     }
@@ -130,7 +134,7 @@ impl View {
             View::Clips => "Clips",
             View::Synth => "Synth",
             View::Looper => "Looper",
-            View::Debug => "Debug",
+            View::Debug => "Dev",
             View::Console => "Console",
             View::Prefs => "Prefs",
             View::Options => "Options",
@@ -139,6 +143,7 @@ impl View {
             View::Pattern => "Pattern",
             View::Perf => "Performance",
             View::Map => "Map controls",
+            View::System => "System info",
         }
     }
 }
@@ -357,8 +362,8 @@ pub struct Settings {
     pub show_pressure: bool,
     pub midi_paused: bool,
     pub console_paused: bool,
-    /// Debug mode: the Debug tab (MIDI log, Performance, Map controls) and
-    /// the `perf:` lines in the log.
+    /// "Show developer tools": the Dev tab (MIDI log, Performance, Map
+    /// controls, Console) and the `perf:` lines in the log.
     pub debug_mode: bool,
     /// The line input (the MPC's capture device) is open. Always off at
     /// start; nothing saves it.
@@ -408,6 +413,7 @@ pub enum Item {
     TouchLab,
     DebugMode,
     MapControls,
+    SystemInfo,
     Rate,
     Tempo,
     PadLevel,
@@ -807,6 +813,9 @@ impl App {
                 fx.extend(self.toggle_panel());
             } else if shift {
                 fx.extend(self.toggle(View::Prefs));
+            } else if self.view == View::System {
+                // System info opens from Prefs, and MENU goes back there.
+                fx.extend(self.show(View::Prefs));
             } else if self.view != View::Pattern {
                 fx.extend(self.toggle(View::Options));
             }
@@ -821,7 +830,7 @@ impl App {
             } else if self.view == View::Map && !shift {
                 // + listens for the selected control, - skips it.
                 fx.extend(if d > 0 { self.map_listen() } else { self.map_skip() });
-            } else if matches!(self.view, View::Debug | View::Perf | View::Map) {
+            } else if matches!(self.view, View::Debug | View::Perf | View::Map | View::Console) {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
@@ -898,7 +907,7 @@ impl App {
     /// The data wheel: values in a menu, kits elsewhere.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
-            View::Guide => Vec::new(),
+            View::Guide | View::System => Vec::new(),
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
@@ -910,7 +919,7 @@ impl App {
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
-            View::Debug | View::Perf | View::Map if self.shift => self.debug_step(delta.signum()),
+            View::Debug | View::Perf | View::Map | View::Console if self.shift => self.debug_step(delta.signum()),
             View::Map => {
                 self.mapper.move_by(delta);
                 vec![Effect::Map(self.mapper.view())]
@@ -1009,7 +1018,8 @@ impl App {
 
     // ------------------------------------------------------------ debug mode
 
-    /// A tap on the Debug tab's strip: MIDI, Performance or Map controls.
+    /// A tap on the Dev tab's strip: MIDI, Performance, Map controls or
+    /// Console (the Console alone also opens with SHIFT + STOP).
     pub fn debug_page(&mut self, i: usize) -> Vec<Effect> {
         match DEBUG_PAGES.get(i) {
             Some(&v) if self.settings.debug_mode => self.show(v),
@@ -1017,8 +1027,11 @@ impl App {
         }
     }
 
-    /// The next or previous page of the Debug tab.
+    /// The next or previous page of the Dev tab.
     fn debug_step(&mut self, d: i32) -> Vec<Effect> {
+        if !self.settings.debug_mode {
+            return Vec::new();
+        }
         let at = DEBUG_PAGES.iter().position(|&v| v == self.view).unwrap_or(0) as i32;
         let to = (at + d).rem_euclid(DEBUG_PAGES.len() as i32) as usize;
         self.show(DEBUG_PAGES[to])
@@ -1029,10 +1042,10 @@ impl App {
             return Vec::new();
         }
         self.settings.debug_mode = on;
-        if !on && matches!(self.back, View::Debug | View::Perf | View::Map) {
+        if !on && matches!(self.back, View::Debug | View::Perf | View::Map | View::Console) {
             self.back = View::Play;
         }
-        vec![Effect::Note(format!("debug mode: {}", if on { "on" } else { "off" }))]
+        vec![Effect::Note(format!("developer tools: {}", if on { "on" } else { "off" }))]
     }
 
     /// The mapper's list starts from what the app knows (measured buttons,
@@ -1195,7 +1208,7 @@ impl App {
             // Touch lab stays last.
             (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer,
                                Item::FindButtons, Item::DebugMode, Item::MapControls, Item::LineInput,
-                               Item::TouchLab],
+                               Item::SystemInfo, Item::TouchLab],
             (_, View::Looper) => &[Item::LoopSource, Item::LineInput, Item::LoopMonitor, Item::LoopBars, Item::LoopLatency,
                                    Item::LoopLevel],
             (_, View::Debug | View::Perf | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
@@ -1216,8 +1229,9 @@ impl App {
             Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
-            Item::DebugMode => ("Debug mode", if s.debug_mode { "On" } else { "Off" }.to_string()),
+            Item::DebugMode => ("Show developer tools", if s.debug_mode { "On" } else { "Off" }.to_string()),
             Item::MapControls => ("Map controls", "Open".to_string()),
+            Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
             Item::PadLevel => ("Pad level", match self.pad_level {
@@ -1268,15 +1282,19 @@ impl App {
                                    "drags, swipes, flings and held fingers. Each",
                                    "step's result goes to the system log. Exit,",
                                    "MENU or a page button leaves it."],
-            Item::DebugMode => vec!["Adds the Debug tab: the MIDI log, the",
+            Item::DebugMode => vec!["Adds the Dev tab: the MIDI log, the",
                                     "Performance page (CPU per thread, memory,",
-                                    "audio render time) and Map controls. The",
-                                    "numbers also go to the log every 30 s.",
-                                    "On the Debug tab, SHIFT + wheel picks the page."],
+                                    "audio render time), Map controls and the",
+                                    "Console. The numbers also go to the log",
+                                    "every 30 s. SHIFT + wheel picks the page."],
             Item::MapControls => vec!["Find the numbers of the MPC's buttons, one at",
                                       "a time, at your pace: pick a control, press it,",
                                       "and see which ones are left. Turns on debug",
                                       "mode. Wheel: pick, +: listen, -: skip."],
+            Item::SystemInfo => vec!["The pad player's version and commit, the",
+                                     "operating system, the kernel and the",
+                                     "hardware it runs on, read when it opens.",
+                                     "MENU goes back to Prefs."],
             Item::Rate => vec!["How often a held pad repeats with NOTE REPEAT",
                                "or Latch: from quarter notes to 32nd notes,",
                                "T for triplets."],
@@ -1325,6 +1343,8 @@ impl App {
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
             (View::Prefs, _) => "Prefs".to_string(),
+            (_, View::Debug) => "MIDI log options".to_string(),
+            (_, b @ (View::Perf | View::Map | View::Console)) => format!("{} options", b.name()),
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
         };
         let (name, _) = self.item_text(items[selected]);
@@ -1387,6 +1407,7 @@ impl App {
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::SystemInfo => return self.show(View::System),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
             Item::MapControls => {
                 let mut fx = self.set_debug_mode(true);
@@ -1745,7 +1766,7 @@ mod tests {
         // The Debug page's options.
         app.open_tab(View::Debug);
         press(&mut app, MENU);
-        assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Debug options"));
+        assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "MIDI log options"));
         // The wheel picks kits outside menus.
         press(&mut app, MENU);
         assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
@@ -1759,15 +1780,16 @@ mod tests {
         let fx = app.start();
         assert!(!fx.iter().any(|e| matches!(e, Effect::Guide(_))));
         assert_eq!(app.view(), View::Play);
-        // No Debug tab until debug mode: tab 4 (after Looper) is Console.
-        assert_eq!(tabs(false)[4], View::Console);
-        assert_eq!(app.tab(4), vec![Effect::Show(View::Console)]);
+        // Only the music tabs until the developer tools are on; Prefs and
+        // the Console are not tabs.
+        assert_eq!(tabs(false), vec![View::Play, View::Clips, View::Synth, View::Looper]);
+        assert_eq!(app.tab(4), vec![]);
         app.open_tab(View::Prefs);
         let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();
         let fx = app.step_item(row, 1);
         assert!(app.settings.debug_mode);
         assert_eq!(app.view(), View::Map);
-        assert!(fx.contains(&Effect::Note("debug mode: on".into())));
+        assert!(fx.contains(&Effect::Note("developer tools: on".into())));
         assert!(fx.iter().any(|e| matches!(e, Effect::Map(m) if m.rows[2].value == "button 81" && m.left > 20)));
         // Tap REC: MPFree listens; STOP stops listening without silencing.
         app.map_row(0);

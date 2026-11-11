@@ -7,7 +7,10 @@
 //! - Map controls: every MPC One control in a list, found, skipped or still
 //!   to find, and a card for the one picked (`app::mapper`).
 //!
-//! A strip under the header switches between the three pages.
+//! - Console: the system log (the same page SHIFT + STOP opens), here with
+//!   the strip.
+//!
+//! A strip under the header switches between the four pages.
 
 use crate::app::{MapView, Mark, View, DEBUG_PAGES};
 use crate::perf::ProcView;
@@ -19,10 +22,12 @@ use std::collections::VecDeque;
 pub const STRIP: &str = "dtabs";
 pub const PERF_PAGE: &str = "Performance";
 pub const MAP_PAGE: &str = "Map controls";
+pub const CONSOLE_PAGE: &str = "Dev console";
 pub const DEBUG_LAYOUT: &str = "col(header:60, dtabs:52, row(midi:*, col(events:*, timing:232):460):*, hint:26)";
 pub const PERF_LAYOUT: &str =
     "col(header:60, dtabs:52, row(col(threads:*, graph:210):*, col(audio:*, system:*):500):*, hint:26)";
 pub const MAP_LAYOUT: &str = "col(header:60, dtabs:52, row(controls:*, col(mapcard:*, mapinfo:236):660):*, hint:26)";
+pub const CONSOLE_LAYOUT: &str = "col(header:60, dtabs:52, syslog:*, hint:26)";
 
 /// How much render time the graph keeps: one value per screen update of
 /// the timing (every 250 ms), a minute's worth.
@@ -90,7 +95,7 @@ impl Widget for Graph {
     }
 }
 
-/// The Debug tab's widgets and what they show.
+/// The Dev tab's widgets and what they show.
 pub struct DebugPages {
     history: VecDeque<f32>,
     audio: AudioNumbers,
@@ -106,9 +111,10 @@ fn found_colour(m: Mark) -> Option<Color> {
 }
 
 impl DebugPages {
-    /// Adds the widgets and the three pages ("Debug" is the MIDI log).
+    /// Adds the widgets and the pages ("Debug" is the MIDI log; the Console
+    /// page uses the "syslog" widget, added with the plain Console page).
     pub fn add(ui: &mut Ui) -> Result<DebugPages, String> {
-        ui.add(STRIP, Segments::new(&["MIDI", "Performance", "Map controls"]));
+        ui.add(STRIP, Segments::new(&["MIDI", "Performance", "Map controls", "Console"]));
         ui.add("threads", StatList::new("Threads, CPU (100 % = one core)"));
         ui.add("graph", Graph::new("Audio render, % of a 2.9 ms period, last minute", 100.0, 70.0));
         ui.add("audio", StatList::new("Audio loop"));
@@ -121,6 +127,7 @@ impl DebugPages {
         ui.add_page("Debug", DEBUG_LAYOUT)?;
         ui.add_page(PERF_PAGE, PERF_LAYOUT)?;
         ui.add_page(MAP_PAGE, MAP_LAYOUT)?;
+        ui.add_page(CONSOLE_PAGE, CONSOLE_LAYOUT)?;
         let mut d = DebugPages { history: VecDeque::new(), audio: AudioNumbers::default(),
                                  proc_view: ProcView::default() };
         d.show_audio(ui);
@@ -134,6 +141,7 @@ impl DebugPages {
             View::Debug => Some("Debug"),
             View::Perf => Some(PERF_PAGE),
             View::Map => Some(MAP_PAGE),
+            View::Console => Some(CONSOLE_PAGE),
             _ => None,
         }
     }
@@ -246,7 +254,7 @@ mod tests {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", mpfree_ui::widgets::Header::new(&["Play"]));
         ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Center));
-        for w in ["midi", "events", "timing"] {
+        for w in ["midi", "events", "timing", "syslog"] {
             ui.add(w, StatList::new(w));
         }
         let mut d = DebugPages::add(&mut ui).unwrap();

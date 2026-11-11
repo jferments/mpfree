@@ -387,8 +387,8 @@ def check_controller(mpc, out):
 # ended by Enter; the app's log lines from that time are shown. A skipped phase loses nothing: the
 # summary at the end reads the whole session.
 APP_PHASES = (
-    ("Debug mode and Map controls",
-     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on debug mode",
+    ("Developer tools and Map controls",
+     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on the developer tools",
       "and opens the list of the MPC's buttons: found (green), skipped (grey) or still to find.",
       "Tap a control in the list (or pick it with the wheel and press +), then press that button on the MPC:",
       "its number appears. Start with REC, OVERDUB, PLAY START, UNDO and the four PAD BANK buttons (they",
@@ -454,7 +454,7 @@ APP_PHASES = (
 )
 # The session summary at the end of the app step: every line that starts with one of these, from
 # power-on to the end (the last three status lines only).
-SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "debug mode: ",
+SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "developer tools: ",
                     "looper: ", "line input: ",
                     "map: ", "map summary: ", "bank", "pad level: ", "kit ", "synth: ", "pads: ", "Latch ",
                     "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
@@ -683,8 +683,8 @@ def session_summary(mpc, out):
     for message in statuses[-3:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
         out.say(f"    {message}")
     perf = [m for _, m in lines if m.startswith("perf: ")]
-    out.say(f"  Debug mode's process numbers ({len(perf)} perf lines; the latest):")
-    out.say(f"    {perf[-1] if perf else '(none: debug mode was not on, or not for 30 s)'}")
+    out.say(f"  The developer tools' process numbers ({len(perf)} perf lines; the latest):")
+    out.say(f"    {perf[-1] if perf else '(none: the developer tools were not on, or not for 30 s)'}")
 
 
 def copy_program(mpc, out, total, program, digest, kit, kit_digest):

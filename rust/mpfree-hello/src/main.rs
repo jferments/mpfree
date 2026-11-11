@@ -71,6 +71,7 @@ mod perf;
 mod sampler;
 mod synth;
 mod sys;
+mod sysinfo;
 mod time;
 mod touchlab_page;
 
