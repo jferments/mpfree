@@ -65,6 +65,26 @@ It does *not* model Akai MPC One or Rockchip RK3288 devices. The real
 RK3288 has Cortex-A17 cores and board-specific clock, DDR, PMU, MMC,
 USB, GPIO, ADC, eFuse and boot-ROM logic.
 
+**Strong host-isolation requirement for potentially dangerous Akai binaries:**
+This workstation is x86-64. Therefore the ARM QEMU system guest runs
+under TCG software emulation, not native ARM KVM. QEMU's own security
+documentation (https://www.qemu.org/docs/master/system/security.html)
+explicitly states that its TCG/non-virtualization mode is NOT a
+guaranteed guest-isolation security boundary. For a test involving
+unknown vendor maintenance operations, first provision a separate
+**outer x86-64 KVM VM**, with its own unprivileged account and
+disposable disk, and run the ARM TCG QEMU emulator *inside* that VM.
+Do not give the outer VM writable physical host shares, USB passthrough,
+host eMMC/SSD devices, or unrestricted network access. Copy the
+verified extracted rootfs into the outer VM as a disposable file and
+keep the source owner backup outside both guest environments.
+
+This layering cannot guarantee absence of all VM escape bugs or
+human configuration errors, but it prevents the common mistake of
+treating TCG alone as a hardened host boundary. On the Threadripper
+workstation x86 KVM accelerates the OUTER VM, while ARM instruction
+emulation remains TCG in the INNER VM.
+
 A **generic ARM32 Linux kernel built for QEMU virt** with built-in
 PL011 console, virtio-mmio/virtio-blk, ext4, devtmpfs, and generic
 device-tree support can boot the *userspace* extracted from the
