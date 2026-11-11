@@ -103,6 +103,56 @@ def parse_uimage(data):
             "sectors_used": (64 + size + 511) // 512,
             "warning": "Valid CRC32 is not a cryptographic signature."}
 
+def embedded_uboot_environment_candidates(raw_image, saved_env):
+    """Locate likely compiled-in defaults in the verified U-Boot payload.
+
+    This is heuristic; the variables might be near command help text,
+    so a candidate is NEVER asserted to be the active runtime env.
+    Only a bounded NUL-separated region after the known default bootcmd
+    marker is considered, and sensitive values are redacted.
+    """
+    if raw_image[:4] != b"\x27\x05\x19\x56":
+        return {"status": "unrecognized image"}
+    size = struct.unpack(">I", raw_image[12:16])[0]
+    payload = raw_image[64:64+size]
+    marker = b"bootcmd=run az01_bootcmd"
+    at = payload.find(marker)
+    if at == -1:
+        return {"status": "no candidate default bootcmd in verified payload"}
+    after = payload[at:at+16384]
+    end = after.find(b"\0\0")
+    if end < 0:
+        return {"status": "candidate boundary absent", "offset": at}
+    values = {}
+    for item in after[:end].split(b"\0"):
+        if b"=" not in item: continue
+        kb, vb = item.split(b"=", 1)
+        key = kb.decode("ascii", "replace")
+        value = vb.decode("utf-8", "replace")
+        if not INTERESTING.search(key) or SENSITIVE.search(key) or SENSITIVE.search(value):
+            continue
+        values[key] = value[:2500]
+    comparison = {}
+    for key, candidate in values.items():
+        if key in saved_env:
+            comparison[key] = {
+                "same_as_saved": candidate == saved_env[key],
+                "compiled_candidate": candidate[:1000],
+                "saved": saved_env[key][:1000],
+            }
+    return {
+        "status": "candidate embedded U-Boot environment (not runtime proof)",
+        "payload_offset": at,
+        "variables": values,
+        "saved_comparison": comparison,
+        "limitations": [
+            "The match may be inside compiled default environment or diagnostic text.",
+            "Do not assume a change to the on-disk environment is safe or necessary.",
+            "Only runtime U-Boot console or validated boot behavior can resolve fallback.",
+        ],
+    }
+
+
 def debugfs_cat(partition_path, image_path):
     p = subprocess.run(["debugfs", "-R", "cat " + image_path, str(partition_path)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -260,6 +310,8 @@ def main():
         "p1": {"lba": P1[0], "bytes": len(p1), "sha256": EXPECTED_P1},
         "p2": valid_env(p2),
         "p3": parse_uimage(p3),
+        "compiled_uboot_environment": embedded_uboot_environment_candidates(
+            p3, valid_env(p2)["boot_related_variables"]),
         "limitations": [
             "Does not establish runtime environment/permission/boot choice.",
             "Does not read immutable silicon MaskROM or verify recovery availability.",
