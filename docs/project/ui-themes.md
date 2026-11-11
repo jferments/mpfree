@@ -99,6 +99,9 @@ Play = col(header:60,
 ```
 
 - `Ui::layout_of(page)` gives the current spec, so a future layout editor can show and save it.
+- A file's layout for a page stays in force when the app adds that page again (widgets such as the arp panel re-add their page when their mode changes).
+- Variants: a name with a dot (`Arp.pattern`) is a layout the app asks for by key with `Ui::layout_for(key, default)`, for pages whose layout changes with a mode.
+- Shared values: `@side = 460` defines text that later lines use as `@side`, so pages that must line up (Play's side column and the arp pages that replace it, which keep the pads from jumping) share one number.
 
 Next steps for composability, in order:
 

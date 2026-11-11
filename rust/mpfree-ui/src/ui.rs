@@ -122,13 +122,16 @@ pub struct Ui {
     current: usize,
     full: bool,
     fingers: Vec<(u64, usize)>,
+    /// Layouts from a layout file, by page name or variant key: they win
+    /// over the spec the app passes whenever that page is added again.
+    overrides: Vec<(String, String)>,
 }
 
 impl Ui {
     pub fn new(theme: Theme, mut fonts: Fonts, width: i32, height: i32) -> Ui {
         fonts.set_roles(theme.face_body, theme.face_title);
         Ui { theme, fonts, size: (width, height), widgets: Vec::new(), pages: Vec::new(), current: 0, full: true,
-             fingers: Vec::new() }
+             fingers: Vec::new(), overrides: Vec::new() }
     }
 
     pub fn size(&self) -> (i32, i32) {
@@ -144,14 +147,36 @@ impl Ui {
     }
 
     /// Add a page from a layout spec. Every slot must name a widget added already.
+    /// A layout file's spec for this page wins, if it has one that fits.
     pub fn add_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        self.add_page_with_margin(name, spec, true)
+        self.add_page_overridable(name, spec, true)
+    }
+
+    fn add_page_overridable(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
+        if let Some(o) = self.override_for(name).map(str::to_string) {
+            if self.add_page_with_margin(name, &o, margin).is_ok() {
+                return Ok(());
+            }
+        }
+        self.add_page_with_margin(name, spec, margin)
+    }
+
+    fn override_for(&self, key: &str) -> Option<&str> {
+        self.overrides.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// The layout for a page variant (a key with a dot, such as
+    /// `Arp.pattern`): the layout file's spec if it gave one, else `default`.
+    /// For widgets that re-add a page with different layouts as their mode
+    /// changes: `ui.add_page("Arp", &ui.layout_for("Arp.pattern", SPEC))`.
+    pub fn layout_for(&self, key: &str, default: &str) -> String {
+        self.override_for(key).unwrap_or(default).to_string()
     }
 
     /// Like `add_page`, but the page fills the screen to its edges (no outer
     /// margin), for a full-screen picture such as the loading page.
     pub fn add_full_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        self.add_page_with_margin(name, spec, false)
+        self.add_page_overridable(name, spec, false)
     }
 
     fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
@@ -187,18 +212,29 @@ impl Ui {
     }
 
     /// Rearrange pages from a layout file: one `Page name = spec` per line
-    /// (see [`layout::parse_file`]). Every line is checked before any page
-    /// changes, so a mistake leaves the screen as it was.
+    /// (see [`layout::parse_file`]). A plain name rearranges that page now
+    /// and stays in force when the app adds the page again. A name with a dot
+    /// (`Arp.pattern`) is a variant that the app asks for by key
+    /// ([`Ui::layout_for`]); its widget names are checked when it is used.
+    /// Every page is checked before any changes, so a mistake leaves the
+    /// screen as it was.
     pub fn apply_layouts(&mut self, text: &str) -> Result<(), String> {
         let entries = layout::parse_file(text)?;
         let before: Vec<(String, String)> = self.pages.iter().map(|p| (p.name.clone(), p.spec.clone())).collect();
         for (page, spec) in &entries {
+            if page.contains('.') {
+                continue;
+            }
             if let Err(e) = self.set_layout(page, spec) {
                 for (name, spec) in &before {
                     let _ = self.set_layout(name, spec);
                 }
                 return Err(e);
             }
+        }
+        for (key, spec) in entries {
+            self.overrides.retain(|(k, _)| *k != key);
+            self.overrides.push((key, spec));
         }
         Ok(())
     }
@@ -374,6 +410,25 @@ mod tests {
         ui.add_page("one", "row(a, b)").unwrap();
         ui.add_page("two", "col(b)").unwrap();
         ui
+    }
+
+    #[test]
+    fn layout_files_survive_pages_being_added_again() {
+        let mut ui = ui();
+        ui.apply_layouts("one = row(b, a)\none.wide = row(a:150, b)\n").unwrap();
+        assert_eq!(ui.layout_of("one"), Some("row(b, a)"));
+        // The app re-adds the page with its own spec: the file still wins.
+        ui.add_page("one", "row(a, b)").unwrap();
+        assert_eq!(ui.layout_of("one"), Some("row(b, a)"));
+        // Variants are asked for by key.
+        let spec = ui.layout_for("one.wide", "row(a, b)");
+        ui.add_page("one", &spec).unwrap();
+        assert_eq!(ui.layout_of("one"), Some("row(b, a)"), "a page's own override beats a variant");
+        assert_eq!(ui.layout_for("one.wide", "x"), "row(a:150, b)");
+        assert_eq!(ui.layout_for("one.narrow", "row(a, b)"), "row(a, b)");
+        // A bad file changes nothing.
+        assert!(ui.apply_layouts("two = col(nope)\n").is_err());
+        assert_eq!(ui.layout_of("two"), Some("col(b)"));
     }
 
     #[test]
