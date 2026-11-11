@@ -162,6 +162,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-startup"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-synth"
 version = "0.1.0"
 dependencies = [
