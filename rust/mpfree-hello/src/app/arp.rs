@@ -18,7 +18,8 @@
 //! The screens never touch the engine: touches come back as `ArpAction`s and
 //! `WsAction`s, and the screens hear what changed as [`Effect::Arp`].
 
-use super::{App, Effect, View};
+use super::{App, Effect, Item, View};
+use mpfree_arp::scale::{Scale, SCALES};
 use mpfree_arp::{Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
@@ -76,6 +77,29 @@ fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
     let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
     all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
 }
+
+/// The arp's rows in the Options menu, opened with MENU on the Arp panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArpItem {
+    Accent,
+    Scale,
+    Root,
+    Strum,
+    Retrigger,
+}
+
+/// The Options menu opened from the Arp panel: the tempo, then the arp's
+/// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
+pub(super) const ARP_OPTIONS: [Item; 6] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
+                                           Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Strum),
+                                           Item::Arp(ArpItem::Retrigger)];
+
+pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+/// Accent level steps by this much per press or wheel click.
+const ACCENT_STEP: i32 = 8;
+/// Strum steps by this many percent.
+const STRUM_STEP: i32 = 10;
 
 pub fn mode_label(m: Mode) -> &'static str {
     match m {
@@ -535,6 +559,87 @@ impl App {
         }
         format!("# MPFree arp patterns, saved by the pad player. One per line: Name = pattern.\n\
                  # The syntax is in docs/project/arpeggiator.md.\n{}", lib.to_text())
+    }
+
+    // ------------------------------------------------------------ options
+
+    /// The scale row: 0 is Off, otherwise the place in [`SCALES`]
+    /// (Chromatic, 0, is left out: it keeps every note, as Off does).
+    fn scale_choice(&self) -> usize {
+        self.arp.scale.and_then(|s| (1..SCALES.len()).find(|&i| Scale::new(s.root, SCALES[i].1) == s)).unwrap_or(0)
+    }
+
+    fn scale_text(&self) -> String {
+        match self.scale_choice() {
+            0 => "Off".to_string(),
+            i => format!("{} {}", NOTE_NAMES[usize::from(self.scale_root)], SCALES[i].0),
+        }
+    }
+
+    pub(super) fn arp_item_text(&self, item: ArpItem) -> (&'static str, String) {
+        let s = &self.arp;
+        match item {
+            ArpItem::Accent => ("Accent level", s.accent.to_string()),
+            ArpItem::Scale => ("Scale", match self.scale_choice() {
+                0 => "Off".to_string(),
+                i => SCALES[i].0.to_string(),
+            }),
+            ArpItem::Root => ("Scale root", NOTE_NAMES[usize::from(self.scale_root)].to_string()),
+            ArpItem::Strum => ("Strum", if s.strum == 0 { "Off".to_string() } else { format!("{} % of a step", s.strum) }),
+            ArpItem::Retrigger => ("New notes restart", if s.retrigger { "On" } else { "Off" }.to_string()),
+        }
+    }
+
+    pub(super) fn arp_item_help(item: ArpItem) -> Vec<&'static str> {
+        match item {
+            ArpItem::Accent => vec!["How loud accented steps play: pattern steps",
+                                    "marked with an accent, and steps recorded",
+                                    "from hits of 110 or more. FULL LEVEL and",
+                                    "Half Level override it."],
+            ArpItem::Scale => vec!["Keeps the arp's notes in key: a pad off the",
+                                   "scale plays the scale note below it, and the",
+                                   "octaves and Degree lanes move along the scale.",
+                                   "For a synth on the pads; leave it Off for drum",
+                                   "kits, whose pads are sounds, not notes."],
+            ArpItem::Root => vec!["The scale's first note. Pad 1 counts as C,",
+                                  "pad 2 as C# and so on up."],
+            ArpItem::Strum => vec!["Spreads the notes of a chord step across the",
+                                   "step, lowest first, like a strum. Off plays",
+                                   "them together."],
+            ArpItem::Retrigger => vec!["On: each new pad press starts the arp's order",
+                                       "and the pattern again from the first step.",
+                                       "Off: they carry on where they are."],
+        }
+    }
+
+    /// One of the arp's option rows stepped by `d` (-1 or +1).
+    pub(super) fn step_arp_item(&mut self, item: ArpItem, d: i32) -> Vec<Effect> {
+        let before = self.arp;
+        let root = self.scale_root;
+        match item {
+            ArpItem::Accent => self.arp.accent = (i32::from(self.arp.accent) + ACCENT_STEP * d).clamp(1, 127) as u8,
+            ArpItem::Scale => {
+                let i = (self.scale_choice() as i32 + d).clamp(0, SCALES.len() as i32 - 1) as usize;
+                self.arp.scale = (i > 0).then(|| Scale::new(self.scale_root, SCALES[i].1));
+            }
+            ArpItem::Root => {
+                self.scale_root = (i32::from(self.scale_root) + d).clamp(0, 11) as u8;
+                self.arp.scale = self.arp.scale.map(|s| Scale::new(self.scale_root, s.mask));
+            }
+            ArpItem::Strum => self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8,
+            ArpItem::Retrigger => self.arp.retrigger = d > 0,
+        }
+        if self.arp == before && self.scale_root == root {
+            return Vec::new();
+        }
+        self.update_engine();
+        let note = match item {
+            ArpItem::Accent => format!("arp accent level: {}", self.arp.accent),
+            ArpItem::Scale | ArpItem::Root => format!("arp scale: {}", self.scale_text()),
+            ArpItem::Strum => format!("arp strum: {} %", self.arp.strum),
+            ArpItem::Retrigger => format!("arp new notes restart: {}", if self.arp.retrigger { "on" } else { "off" }),
+        };
+        vec![Effect::Note(note)]
     }
 
     /// A touch in the workspace (its editor already changed the pattern).

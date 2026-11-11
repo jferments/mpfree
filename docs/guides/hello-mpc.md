@@ -183,7 +183,7 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 | NOTE REPEAT (held) | Held pads play through the arp: Repeat on the grid until the Arp panel picks Arp or Pattern. A slim strip at the top of the right-hand column shows the mode, the rate with − and +, and Latch (nothing else moves); the wheel, − / + and Q-Links 1-4 set the arp (see the [arpeggiator](../project/arpeggiator.md) for every control) |
 | NOTE REPEAT twice, or SHIFT + NOTE REPEAT | Latch: pads keep playing after you let go; new pads replace them. NOTE REPEAT once more turns it off. The two presses must come within 0.4 s. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
 | NOTE REPEAT + MENU, or the arp chip | The Arp panel beside the pads (mode, rate, order, pattern, Q-Links), and from it the pattern workspace |
-| MENU | The current page's options; again to close. SHIFT + MENU: Prefs |
+| MENU | The current page's options (on the Arp panel: accent level, scale, scale root, strum, new notes restart); again to close. SHIFT + MENU: Prefs |
 | In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it |
 | TAP TEMPO | Sets the tempo; its light blinks with it |
 | Wheel, − / + | The kit (outside menus) |
