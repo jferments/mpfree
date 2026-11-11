@@ -74,6 +74,10 @@ impl App {
         );
         out.set_i64("audio-buffer", s.periods as i64);
         out.set_bool("developer-tools", s.debug_mode);
+        // A theme file given with --theme is for that run only.
+        if super::THEMES.iter().any(|t| t.0 == s.theme) {
+            out.set_str("theme", &s.theme);
+        }
         out
     }
 
@@ -133,6 +137,11 @@ impl App {
                     })
                     .is_some(),
                 "developer-tools" => app.get_bool(k).map(|b| s.debug_mode = b).is_some(),
+                "theme" => super::THEMES
+                    .iter()
+                    .find(|t| t.0 == v)
+                    .map(|t| s.theme = t.0.to_string())
+                    .is_some(),
                 _ => false,
             };
             if !ok {
@@ -141,9 +150,10 @@ impl App {
         }
         if !app.is_empty() {
             notes.push(format!("saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
-                                developer tools {}", self.settings.curve.label(), self.settings.screen_velocity,
+                                developer tools {}, theme {}", self.settings.curve.label(), self.settings.screen_velocity,
                                if self.settings.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
-                               self.settings.periods, if self.settings.debug_mode { "on" } else { "off" }));
+                               self.settings.periods, if self.settings.debug_mode { "on" } else { "off" },
+                               self.settings.theme));
         }
         let (mut found, mut gone) = (0, 0);
         for (k, v) in map.iter() {
