@@ -32,7 +32,7 @@ The music tabs, in this order:
 | Play | Pads, kits, level, timing; Note Repeat / arp | Hello MPC (arp inside it) |
 | Arrange | The time engine's launch grid, record settings, takes (the Clips tab until Jay renamed it, 12:55Z) | Transport / time |
 | Synth | The synth's pages (Poly, later FM) | Synth |
-| Looper | The audio looper: loop waveform, Record / Overdub / Undo, line input meter | Transport / time |
+| Looper | The loops' editor and setup (mockup J): the loops, each layer's mix, recording and input, using a loop | Hello MPC (the looper engine: transport / time) |
 | Sample | The pad editor: Wave, Chop, Play, Grain, FX (Jay, 07:12Z) | Sampler |
 | Dev | Only when Prefs > "Show developer tools" is On | Hello MPC |
 
@@ -62,7 +62,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
   - Loop: the loop big with its buttons (Record, Overdub, Stop, Undo, Redo, Mute, Clear) and the input in its heading, then the mini pads, four throws and the XY pad.
   - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
 - **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
-- **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). Speaker mutes per layer come with the looper's per-layer mix (#110).
+- **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). A speaker beside each name mutes that layer.
 - **Throws and the XY pad** play performance effects on the master while held; Drop drums mutes the kick, snare and hat pads while held.
 - **The mini pads** have a heading: "Pads · Bank A" and the kit (the Drum view: how hits play, "velocity on"). While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
 - **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
@@ -70,7 +70,21 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **The hint line** starts where the panels do (left-aligned, as the mockups).
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
-- **Still to come:** speaker mutes per loop layer (#110); half length and double on the loop strip (looper edit tools); the FX thread's Perform engine in place of the stand-in (#116); Macros as a Q-Link bank (mod #102).
+- **Still to come:** half length and double on the loop strip (looper edit tools, #122); the FX thread's Perform engine in place of the stand-in (#116 merged; the swap is in round 9's queue); Macros as a Q-Link bank (mod #102).
+
+## 4a. The Looper tab
+
+Built in round 9 to mockup J (Jay's direction, 10:16Z), with real data; side-by-side sheet in /mnt/project-files/hello-mpc/round9-looper/compare/. The Play page's strip performs the loop; this tab edits and sets it up.
+
+- **The frame:** the loops (220 px) at the left; the editor over Recording and input and Use the loop (330 px) in the middle; the Q-Link column (168 px) at the right; the hint line under them.
+- **The loops:** Loop 1 to 4, and on as far as one is used or picked (eight in all), each with its length and layers and its state (PLAYING, MUTED, RECORDING); the picked one outlined. A tap picks a loop; + New loop picks the first empty one. Every loop plays at once; the controls act on the picked one. The loop memory gauge sits at the bottom.
+- **The editor:** the tools row (half length, double, reverse, nudge, seam fade, merge layers, undo history), the loop's wave with its bar lines and the playhead, and a row per layer: its speaker (mute), S (solo), level bar (drag: -24 to +6 dB), mini wave and × (delete). A tap on a row puts that layer on the Q-Links. Three rows show; more scroll to keep the picked one in view.
+- **Recording and input,** two columns: Record from, First pass, Start, After recording, At another tempo; Line input, Input peak, Monitor, Latency. A tap on a row's right half steps it up, the left half down; the source and on-off rows flip. The Play strip uses the same settings.
+- **Use the loop:** To a pad, To a clip, Save loop, Resample.
+- **Q-Links:** the picked layer's level and pan, the loop's level, the line input's level (mockup J's Fade old and Seam fade take Q3 and Q4 once the looper has them).
+- **Hardware:** REC records or overdubs, OVERDUB overdubs, UNDO undoes (SHIFT: redo); there are no on-screen record buttons here (the Play strip has them).
+- **Still to come (drawn faint until the looper has them, #122):** the tools, the trim handles on the wave, Start and After recording, Use the loop, Fade old and Seam fade.
+
 
 ## 5. Prefs (SHIFT + MENU)
 
@@ -147,6 +161,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 | Looper patch (round 7) | Play, Clips, Synth, Looper, (Debug), Console, Prefs |
 | #75 Sample tab (merged) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
 | Round 7 | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
-| Round 8 (this spec) | Play, Arrange, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
+| Round 8 (merged) | Play, Arrange, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
+| Round 9 (this spec) | No tab change (the Looper tab becomes mockup J's editor) |
 | #72 themes, arp b1aa92e | No tab change (#72 restyles the drawing only) |
 | Preview pictures (not the app) | synth-ui "Steps, Clips, Looper, Arrange, Synth, Mix"; time-ui "Play, Clips, Debug, Console, Prefs"; sampler-ui "Play, Sample, Debug, Prefs"; arp-ui "Play, Debug, Console, Prefs"; wave preview "Record, Sound, Perform, Browse" |
