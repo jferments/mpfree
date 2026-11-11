@@ -21,13 +21,15 @@ There is no forced project-wide key. Each part (the arp, the synth pads, later a
 |---|---|
 | Chromatic | Chromatic |
 | Major and its modes | Major, Dorian, Phrygian, Lydian, Mixolydian, Minor, Locrian |
-| Melodic minor and its modes | Melodic minor, Dorian b2, Lydian augmented, Lydian dominant, Mixolydian b6, Locrian natural 2, Altered; Melodic minor, classical (natural minor coming down) |
+| Melodic minor and its modes | Melodic minor, Dorian b2, Lydian augmented, Lydian dominant, Mixolydian b6, Locrian natural 2, Altered; Mel. minor classical (natural minor coming down) |
 | Harmonic minor and its modes | Harmonic minor, Locrian natural 6, Ionian #5, Dorian #4, Phrygian dominant, Lydian #2, Ultralocrian |
 | More seven-note scales | Harmonic major, Double harmonic, Hungarian minor, Hungarian major, Neapolitan major, Neapolitan minor, Persian, Enigmatic |
-| Symmetric | Whole tone, Diminished whole-half, Diminished half-whole, Augmented |
+| Symmetric | Whole tone, Diminished W-H (whole step, then half), Diminished H-W, Augmented |
 | Bebop | Bebop dominant, Bebop major, Bebop dorian |
 | Pentatonic, blues and six-note | Major pentatonic, Minor pentatonic, Blues, Major blues, Egyptian, Prometheus |
 | Japanese | Hirajoshi, In-sen, Iwato, Yo, Kumoi |
+
+Names stay within about 18 letters so they fit the menu's value box. `by_name` also takes other names (`ALIASES`: Ionian, Aeolian, Natural minor, Jazz minor, Super locrian, Spanish, and the long forms such as Diminished whole-half), ignoring case, spaces and punctuation.
 
 The tests check that every scale has its root, no two are the same, the families stay together, and each family's seven modes are rotations of their parent scale.
 

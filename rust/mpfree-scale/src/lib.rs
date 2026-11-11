@@ -181,9 +181,10 @@ pub const SCALES: [ScaleDef; 49] = [
         LOCRIAN_NATURAL_2,
     ),
     def("Altered", Family::MelodicMinorModes, ALTERED),
-    // Up as melodic minor, down as natural minor, as taught in classical theory.
+    // Up as melodic minor, down as natural minor, as taught in classical
+    // theory. Names stay short enough for a menu value box (about 18 letters).
     ScaleDef {
-        name: "Melodic minor, classical",
+        name: "Mel. minor classical",
         family: Family::MelodicMinorModes,
         mask: MELODIC_MINOR,
         down: MINOR,
@@ -212,16 +213,9 @@ pub const SCALES: [ScaleDef; 49] = [
     def("Persian", Family::MoreSevenNote, PERSIAN),
     def("Enigmatic", Family::MoreSevenNote, ENIGMATIC),
     def("Whole tone", Family::Symmetric, WHOLE_TONE),
-    def(
-        "Diminished, whole-half",
-        Family::Symmetric,
-        DIMINISHED_WHOLE_HALF,
-    ),
-    def(
-        "Diminished, half-whole",
-        Family::Symmetric,
-        DIMINISHED_HALF_WHOLE,
-    ),
+    // W-H: a whole step, then a half step, and so on; H-W the other way.
+    def("Diminished W-H", Family::Symmetric, DIMINISHED_WHOLE_HALF),
+    def("Diminished H-W", Family::Symmetric, DIMINISHED_HALF_WHOLE),
     def("Augmented", Family::Symmetric, AUGMENTED),
     def("Bebop dominant", Family::Bebop, BEBOP_DOMINANT),
     def("Bebop major", Family::Bebop, BEBOP_MAJOR),
@@ -247,10 +241,34 @@ pub const SCALES: [ScaleDef; 49] = [
     def("Kumoi", Family::Japanese, KUMOI),
 ];
 
-/// A built-in scale by name, ignoring case, spaces, `-`, `_` and `,`.
+/// Other names the built-in scales go by, and their long forms, as (other
+/// name, name in [`SCALES`]), for [`by_name`].
+pub const ALIASES: [(&str, &str); 11] = [
+    ("Ionian", "Major"),
+    ("Aeolian", "Minor"),
+    ("Natural minor", "Minor"),
+    ("Jazz minor", "Melodic minor"),
+    ("Super locrian", "Altered"),
+    ("Melodic minor classical", "Mel. minor classical"),
+    ("Diminished whole-half", "Diminished W-H"),
+    ("Whole-half diminished", "Diminished W-H"),
+    ("Diminished half-whole", "Diminished H-W"),
+    ("Half-whole diminished", "Diminished H-W"),
+    ("Spanish", "Phrygian dominant"),
+];
+
+/// A built-in scale by name or one of its [`ALIASES`], ignoring case,
+/// spaces, `-`, `_`, `,` and `.`.
 pub fn by_name(name: &str) -> Option<&'static ScaleDef> {
-    let key = |s: &str| s.to_ascii_lowercase().replace([' ', '-', '_', ','], "");
+    let key = |s: &str| {
+        s.to_ascii_lowercase()
+            .replace([' ', '-', '_', ',', '.'], "")
+    };
     let k = key(name);
+    let k = ALIASES
+        .iter()
+        .find(|(other, _)| key(other) == k)
+        .map_or(k, |(_, name)| key(name));
     SCALES.iter().find(|d| key(d.name) == k)
 }
 
@@ -663,6 +681,21 @@ mod tests {
             by_name("harmonic_minor").map(|d| d.mask),
             Some(HARMONIC_MINOR)
         );
+        assert_eq!(by_name("Aeolian").map(|d| d.mask), Some(MINOR));
+        assert_eq!(by_name("jazz minor").map(|d| d.mask), Some(MELODIC_MINOR));
+        for (other, name) in ALIASES {
+            assert!(
+                SCALES.iter().any(|d| d.name == name),
+                "{other} names a scale that is there"
+            );
+            assert!(
+                !SCALES.iter().any(|d| d.name.eq_ignore_ascii_case(other)),
+                "{other} is not a scale's own name"
+            );
+        }
+        for d in SCALES {
+            assert!(d.name.len() <= 20, "{} fits a menu value box", d.name);
+        }
         assert!(by_name("klingon").is_none());
     }
 
@@ -690,6 +723,10 @@ mod tests {
     #[test]
     fn going_down_uses_the_notes_coming_down() {
         let a = Scale::of(9, by_name("Melodic minor, classical").unwrap());
+        assert_eq!(
+            by_name("mel minor classical").map(|d| d.name),
+            Some("Mel. minor classical")
+        );
         // A melodic minor up: A B C D E F# G# A.
         let up: Vec<i16> = (0..8).map(|i| a.walk(57, i)).collect();
         assert_eq!(up, [57, 59, 60, 62, 64, 66, 68, 69]);
