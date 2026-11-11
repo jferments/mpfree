@@ -4,8 +4,10 @@
 //! - The **Arp panel** shows every setting of one track's arp beside the
 //!   pads: mode tabs, the list the wheel moves through, the Q-Link sliders or
 //!   the pattern buttons, and the step strip while the arp is generating.
-//! - The **quick band** comes up beside the pads while NOTE REPEAT is held,
-//!   or while notes are latched: big rate buttons, Latch, and the next steps.
+//! - The **quick band** is a slim strip at the top of the right-hand column
+//!   while NOTE REPEAT is held, or while notes are latched: what the arp
+//!   plays, the rate with − and +, and Latch. The rest of the column stays
+//!   the app's.
 //!
 //! The arp is a way of playing the pads, not a place, so neither is a
 //! top-level tab: the app shows the panel and the band in its Play page's
@@ -19,7 +21,10 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
-use crate::widgets::{Button, ButtonRow, CellKind, RateBar, Segments, SliderStack, StepCell, StepStrip};
+use crate::widgets::{
+    Button, ButtonRow, CellKind, MiniBar, Segments, SliderStack, StepCell, StepStrip, MINI_FASTER, MINI_LATCH,
+    MINI_OPEN, MINI_SLOWER,
+};
 use mpfree_arp::{Engine, Held, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES};
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -30,7 +35,7 @@ pub const LIST: &str = "arp-list";
 pub const QLINKS: &str = "arp-qlinks";
 pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
-pub const RATES: &str = "arp-rates";
+pub const MINI: &str = "arp-mini";
 
 /// Every layout keeps the pads where the Play page has them: the arp's
 /// widgets only ever take the right-hand column, [`SIDE`] pixels wide, so
@@ -47,9 +52,13 @@ pub const ARP_LAYOUT: &str =
 /// Pattern: the pattern list over the pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
-/// The quick band beside the pads: the rate buttons and Latch, then the
-/// next steps, in the column the Play page uses for its kit list.
-pub const QUICK_LAYOUT: &str = "col(header:60, row(pads:*, col(arp-rates:*, arp-steps:112):460):*, hint:26)";
+/// The quick band: a slim strip ([`MINI`], [`MINI_H`] pixels) at the top of
+/// the right-hand column. An app puts it over its own column with
+/// [`ArpPanel::set_quick_layout`] (the pad player keeps its kits, level and
+/// timing under it); this default puts the next steps under it.
+pub const QUICK_LAYOUT: &str = "col(header:60, row(pads:*, col(arp-mini:56, arp-steps:112):460):*, hint:26)";
+/// The strip's height in the layouts.
+pub const MINI_H: i32 = 56;
 /// The width of the right-hand column every layout here shares with the
 /// app's Play page.
 pub const SIDE: i32 = 460;
@@ -126,6 +135,8 @@ pub enum ArpAction {
     Step(usize),
     /// The band's Latch button: latch on, or off (clearing the notes).
     Latch,
+    /// The strip's name was tapped: open the Arp panel.
+    OpenPanel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -338,6 +349,8 @@ pub struct ArpPanel {
     /// The page name of the quick band.
     pub quick: String,
     layout: Option<&'static str>,
+    /// The quick band's layout ([`QUICK_LAYOUT`] unless the app gave one).
+    quick_layout: String,
     /// Changes every layout before it is added, for an app that puts a bar
     /// of its own on its pages (such as the time engine's transport bar).
     wrap: Option<fn(&str) -> String>,
@@ -353,10 +366,10 @@ impl ArpPanel {
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
         ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
         ui.add(STEPS, StepStrip::new(8));
-        let rates: Vec<&str> = Rate::ALL.iter().map(|r| r.label()).collect();
-        ui.add(RATES, RateBar::new(&rates));
+        ui.add(MINI, MiniBar::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
-        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None, wrap: None };
+        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None,
+                                   quick_layout: QUICK_LAYOUT.to_string(), wrap: None };
         panel.update(ui, st)?;
         Ok(panel)
     }
@@ -370,10 +383,19 @@ impl ArpPanel {
     /// be in `ui` already.
     pub fn set_layout_wrap(&mut self, ui: &mut Ui, wrap: fn(&str) -> String) -> Result<(), String> {
         self.wrap = Some(wrap);
-        ui.add_page(&self.quick, &self.spec(QUICK_LAYOUT))?;
+        ui.add_page(&self.quick, &self.spec(&self.quick_layout))?;
         if let Some(layout) = self.layout {
             ui.add_page(&self.name, &self.spec(layout))?;
         }
+        Ok(())
+    }
+
+    /// The quick band's own layout: an app puts [`MINI`] at the top of the
+    /// column its Play page already has, so only that column's first widget
+    /// gives up [`MINI_H`] pixels and nothing else moves.
+    pub fn set_quick_layout(&mut self, ui: &mut Ui, layout: &str) -> Result<(), String> {
+        ui.add_page(&self.quick, &self.spec(layout))?;
+        self.quick_layout = layout.to_string();
         Ok(())
     }
 
@@ -386,9 +408,21 @@ impl ArpPanel {
             ui.add_page(&self.name, &self.spec(layout))?;
             self.layout = Some(layout);
         }
-        if let Some(b) = ui.get_mut::<RateBar>(RATES) {
-            b.active = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
-            b.latched = st.latched;
+        if let Some(m) = ui.get_mut::<MiniBar>(MINI) {
+            let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
+            m.mode = match s.mode {
+                Mode::Direct => "Direct".to_string(),
+                Mode::Repeat => "Repeat".to_string(),
+                Mode::Arp => format!("Arp · {}", s.order.label()),
+                Mode::Pattern => {
+                    let name = st.patterns.get(st.pattern_index).map_or("", |(n, _)| n.as_str());
+                    format!("Pattern · {}{}", short(name, 14), if st.pattern_changed { "*" } else { "" })
+                }
+            };
+            m.rate = s.rate.label().to_string();
+            m.latched = st.latched;
+            m.can_slower = at > 0;
+            m.can_faster = at + 1 < Rate::ALL.len();
         }
         if let Some(m) = ui.get_mut::<Segments>(MODES) {
             m.active = MODES_ALL.iter().position(|x| *x == s.mode).unwrap_or(0);
@@ -462,8 +496,16 @@ impl ArpPanel {
                 .get(*i)
                 .map(|b| ArpAction::Button(*b)),
             (STEPS, EventKind::Select(i)) if s.mode == Mode::Pattern => Some(ArpAction::Step(*i)),
-            (RATES, EventKind::Tab(i)) if *i == Rate::ALL.len() => Some(ArpAction::Latch),
-            (RATES, EventKind::Tab(i)) => Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r)),
+            (MINI, EventKind::Tab(i)) => {
+                let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
+                match *i {
+                    MINI_SLOWER => at.checked_sub(1).and_then(|j| Rate::ALL.get(j)).map(|r| ArpAction::Rate(*r)),
+                    MINI_FASTER => Rate::ALL.get(at + 1).map(|r| ArpAction::Rate(*r)),
+                    MINI_LATCH => Some(ArpAction::Latch),
+                    MINI_OPEN => Some(ArpAction::OpenPanel),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -533,7 +575,7 @@ mod tests {
         s.page.update(&mut s.ui, &st).unwrap();
         assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(ACTIONS).is_some());
         s.ui.show(&s.page.quick.clone()).unwrap();
-        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(RATES).is_some());
+        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(MINI).is_some());
     }
 
     #[test]
@@ -545,14 +587,14 @@ mod tests {
             let mut want = vec!["header", "pads", "hint"];
             let mut gone = vec![];
             if s.quick {
-                want.extend([RATES, STEPS]);
+                want.extend([MINI, STEPS]);
                 gone.extend([MODES, LIST, QLINKS, ACTIONS]);
             } else {
                 want.extend([MODES, LIST]);
                 want.push(if mode == Mode::Pattern { ACTIONS } else { QLINKS });
                 // The strip shows only while the arp is generating.
                 if mode == Mode::Direct { gone.push(STEPS) } else { want.push(STEPS) }
-                gone.push(RATES);
+                gone.push(MINI);
             }
             for name in want {
                 let r = s.ui.rect_of(name).unwrap_or_else(|| panic!("{}: no {name}", s.name));
@@ -569,32 +611,41 @@ mod tests {
     }
 
     #[test]
-    fn the_quick_band_has_big_rate_buttons_and_latch() {
+    fn the_quick_band_is_a_slim_strip_with_the_rate_and_latch() {
         let mut s = sample("quick-hat-roll");
-        let r = s.ui.rect_of(RATES).unwrap();
-        let bar = s.ui.get::<RateBar>(RATES).unwrap();
-        assert_eq!(bar.rates, ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]);
-        assert_eq!((bar.active, bar.latched), (3, false));
-        let buttons: Vec<_> = (0..=bar.rates.len()).map(|i| bar.button(r, i)).collect();
-        for (i, b) in buttons.iter().enumerate() {
-            assert!(b.w >= crate::widgets::MIN_TOUCH && b.h >= crate::widgets::MIN_TOUCH, "button {i}: {b:?}");
-            assert!(b.x >= r.x && b.right() <= r.right() && b.y >= r.y && b.bottom() <= r.bottom(), "button {i}: {b:?}");
-            for (j, o) in buttons.iter().enumerate().skip(i + 1) {
-                assert!(b.intersect(*o).is_empty(), "buttons {i} and {j} overlap: {b:?} {o:?}");
+        let r = s.ui.rect_of(MINI).unwrap();
+        assert_eq!(r.h, MINI_H);
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap().clone();
+        assert_eq!((bar.mode.as_str(), bar.rate.as_str(), bar.latched), ("Repeat", "1/16", false));
+        assert!(bar.can_slower && bar.can_faster);
+        let parts = bar.parts(r);
+        for (i, p) in parts.iter().enumerate() {
+            assert!(p.w >= 44 && p.h >= 44, "part {i}: {p:?}");
+            assert!(p.x >= r.x && p.right() <= r.right() && p.y >= r.y && p.bottom() <= r.bottom(), "part {i}: {p:?}");
+            for (j, o) in parts.iter().enumerate().skip(i + 1) {
+                assert!(p.intersect(*o).is_empty(), "parts {i} and {j} overlap: {p:?} {o:?}");
             }
         }
-        // Beside the pads: straight rates on top, each triplet under its rate.
-        assert_eq!(buttons[1].x, buttons[2].x, "1/8T under 1/8");
-        assert!(buttons[2].y > buttons[1].y);
-        assert!(buttons[7].w > buttons[0].w * 3, "Latch spans the column");
-        let (rate32, latch) = (bar.button(r, 5), bar.button(r, 7));
-        let ev = s.ui.touch(1, Touch::Down, rate32.x + 10, rate32.y + 10).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Rate(Rate::ThirtySecond)));
-        s.ui.touch(1, Touch::Up, 0, 0);
-        let ev = s.ui.touch(1, Touch::Down, latch.x + 10, latch.y + 10).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Latch));
-        s.ui.touch(1, Touch::Up, 0, 0);
-        // A held hat repeats; the strip shows the pad.
+        let mut tap = |i: usize| {
+            let p = parts[i];
+            let ev = s.ui.touch(1, Touch::Down, p.x + 10, p.y + 10);
+            s.ui.touch(1, Touch::Up, 0, 0);
+            ev.and_then(|ev| s.page.action(&ev, &s.state, &mut None))
+        };
+        assert_eq!(tap(MINI_SLOWER), Some(ArpAction::Rate(Rate::EighthTriplet)));
+        assert_eq!(tap(MINI_FASTER), Some(ArpAction::Rate(Rate::SixteenthTriplet)));
+        assert_eq!(tap(MINI_LATCH), Some(ArpAction::Latch));
+        assert_eq!(tap(MINI_OPEN), Some(ArpAction::OpenPanel));
+        // At the ends, the arrow that would go past does nothing.
+        let mut st = s.state.clone();
+        st.settings.rate = Rate::ThirtySecondTriplet;
+        st.latched = true;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap();
+        assert!(bar.can_slower && !bar.can_faster && bar.latched);
+        assert_eq!(s.ui.touch(2, Touch::Down, parts[MINI_FASTER].x + 10, parts[MINI_FASTER].y + 10), None);
+        s.ui.touch(2, Touch::Up, 0, 0);
+        // A held hat repeats; the strip under it shows the pad.
         assert_eq!(s.ui.get::<StepStrip>(STEPS).unwrap().cells[0].label, "3");
     }
 
@@ -758,18 +809,19 @@ mod tests {
         ui.add("kits", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
         ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
         // The pad player's Play page: pads, and a column of its own beside them.
-        ui.add_page("Play", "col(header:60, row(pads:*, kits:460):*, hint:26)").unwrap();
+        ui.add_page("Play", "col(header:60, row(pads:*, col(kits:*):460):*, hint:26)").unwrap();
         let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
+        page.set_quick_layout(&mut ui, "col(header:60, row(pads:*, col(arp-mini:56, kits:*):460):*, hint:26)")
+            .unwrap();
         ui.show("Play").unwrap();
         let pads = ui.rect_of("pads").unwrap();
         let kits = ui.rect_of("kits").unwrap();
         assert_eq!(kits.w, SIDE);
         ui.show("Arp quick").unwrap();
         assert_eq!(ui.rect_of("pads").unwrap(), pads, "the quick band");
-        for name in [RATES, STEPS] {
-            let r = ui.rect_of(name).unwrap();
-            assert!(r.x >= kits.x && r.right() <= kits.right(), "{name} stays in the column: {r:?}");
-        }
+        let (mini, under) = (ui.rect_of(MINI).unwrap(), ui.rect_of("kits").unwrap());
+        assert_eq!((mini.x, mini.w, mini.y), (kits.x, kits.w, kits.y), "the strip sits at the top of the column");
+        assert_eq!(under.bottom(), kits.bottom(), "the app's column keeps all but the strip's height");
         ui.show("Arp").unwrap();
         for mode in MODES_ALL {
             page.update(&mut ui, &state(Settings { mode, ..Settings::default() }, &[0, 4, 7], 3)).unwrap();

@@ -33,7 +33,7 @@ pub mod mapper;
 pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 
-use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, Recorder};
+use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use crate::looping::{LoopAction, LoopSource};
 use mpfree_looper::Command as LoopCommand;
@@ -495,6 +495,8 @@ pub enum Effect {
     /// The data wheel on the Clips page: step the selected record setting,
     /// or (with SHIFT) scroll the grid.
     ClipsWheel { delta: i32, scroll: bool },
+    /// Write this library text to the patterns file (off the audio thread).
+    SavePatterns(String),
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
@@ -550,6 +552,11 @@ pub struct App {
     mutations: u32,
     /// Recording a pattern on the pads (Step mode) in the workspace.
     recorder: Option<Recorder>,
+    /// How the next recording on the pads goes: Step time or Free time.
+    record_mode: RecordMode,
+    /// Save also writes the patterns file (`--patterns` with
+    /// `--save-patterns`), through [`Effect::SavePatterns`].
+    pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
     /// What the arp screens were last sent: the step and the notes, and
@@ -581,7 +588,8 @@ impl App {
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
                             tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
-                            pattern_index: 0, pattern, mutations: 0, recorder: None, qlink_turns: [0; 4],
+                            pattern_index: 0, pattern, mutations: 0, recorder: None,
+                            record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
                             mapper: mapper::Mapper::default(), swallowed: [false; 128], loop_muted: false };
         app.engine.set_pattern(pattern);
@@ -628,15 +636,19 @@ impl App {
 
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
-        self.engine.press(slot as u8, velocity.max(1));
+        if !self.free_time_recording() {
+            // In Free time the pads only write steps; the pattern keeps
+            // playing the latched notes.
+            self.engine.press(slot as u8, velocity.max(1));
+        }
         self.record_press(slot as u8, velocity)
     }
 
-    pub fn pad_up(&mut self, slot: usize) {
-        self.engine.release(slot as u8);
-        if let Some(r) = self.recorder.as_mut() {
-            r.release(slot as u8, 0.0);
+    pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
+        if !self.free_time_recording() {
+            self.engine.release(slot as u8);
         }
+        self.record_release(slot as u8)
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
@@ -2043,6 +2055,100 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Patterns(l) if l[0].1 == p)));
         app.workspace_action(WsAction::Back);
         assert_eq!(app.view(), View::Arp);
+    }
+
+    #[test]
+    fn free_time_records_over_the_latched_notes_as_the_pattern_plays() {
+        use mpfree_arp::{Pick, RecordMode, Step};
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Pattern));
+        app.arp_action(ArpAction::Button(PatternButton::Edit));
+        app.workspace_action(WsAction::Changed(Pattern::parse("1 . . .").unwrap()));
+        // Free time with nothing latched: Step time, and it says why.
+        let fx = app.workspace_action(WsAction::RecordMode(RecordMode::FreeTime));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.free_time && !w.recording)));
+        let fx = app.workspace_action(WsAction::Record(true));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("Free time plays the pattern"))));
+        assert_eq!(app.recorder.unwrap().mode(), RecordMode::Step);
+        app.workspace_action(WsAction::Record(false));
+        app.workspace_action(WsAction::Changed(Pattern::parse("1 . . .").unwrap()));
+        // Latch a chord (NOTE REPEAT twice), then record: the pattern plays it.
+        app.button(REPEAT, true, 1.0);
+        app.button(REPEAT, false, 1.1);
+        app.button(REPEAT, true, 1.2);
+        app.button(REPEAT, false, 1.3);
+        app.pad_down(0, 100);
+        app.pad_down(4, 100);
+        app.pad_up(0);
+        app.pad_up(4);
+        let fx = app.workspace_action(WsAction::Record(true));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.free_time && w.recording)));
+        assert_eq!(app.recorder.unwrap().mode(), RecordMode::FreeTime);
+        assert_eq!(app.engine.settings().mode, Mode::Pattern, "the pattern keeps playing");
+        let _ = ons(&mut app, 3 * 5513 + 400);
+        // Pad 2 (the 2nd held note), hit hard, lands on the step nearest now.
+        let at = (app.engine.position().round() as usize) % 4;
+        let fx = app.pad_down(1, 127);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Recorded(_, i) if *i == at)), "{fx:?}");
+        assert!(matches!(app.pattern.steps()[at], Step::Play { pick: Pick::Index(2), accent: true, .. }));
+        assert_eq!(*app.engine.pattern(), app.pattern, "the engine plays it at once");
+        assert!(app.pad_up(1).is_empty(), "a short press ties nothing");
+        let active: Vec<u8> = (0..16).filter(|&s| app.active(s)).map(|s| s as u8).collect();
+        assert_eq!(active, [0, 4], "record pads don't change the latched chord");
+        // Held across two more steps: ties after it.
+        let at = (app.engine.position().round() as usize) % 4;
+        app.pad_down(12, 90);
+        let _ = ons(&mut app, 2 * 5513);
+        let fx = app.pad_up(12);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Recorded(..))));
+        assert_eq!(app.pattern.steps()[at], Step::play(Pick::Next));
+        assert_eq!(app.pattern.steps()[(at + 1) % 4], Step::Tie);
+        // Undo is for Step time; Clear rests every step.
+        assert!(app.workspace_action(WsAction::Undo).is_empty());
+        app.workspace_action(WsAction::Clear);
+        assert_eq!(app.pattern.to_text(), ". . . .");
+        // Back to Step time restarts the recording there.
+        app.workspace_action(WsAction::RecordMode(RecordMode::Step));
+        assert_eq!(app.recorder.unwrap().mode(), RecordMode::Step);
+        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        for pad in [0, 1] {
+            app.pad_down(pad, 100);
+            app.pad_up(pad);
+        }
+        assert_eq!(app.recorder.unwrap().written(), 2);
+        app.workspace_action(WsAction::Undo);
+        assert_eq!(app.recorder.unwrap().written(), 1);
+    }
+
+    #[test]
+    fn a_patterns_file_adds_and_replaces_and_save_writes_only_the_owners() {
+        let mut app = ready();
+        let fx = app.load_patterns("# mine\nSkip = 1 . 3 2\nstraight = x x .\n");
+        assert!(fx.contains(&Effect::Note("arp patterns file: 1 added, 1 built-in ones replaced".into())), "{fx:?}");
+        assert_eq!(app.patterns.last().unwrap().0, "Skip");
+        assert_eq!(app.patterns[0], ("Straight".to_string(), Pattern::parse("x x .").unwrap()), "keeps its place");
+        assert_eq!(*app.engine.pattern(), Pattern::parse("x x .").unwrap(), "the pattern in use is reloaded");
+        let text = app.library_text();
+        let lib = mpfree_arp::Library::parse(&text).unwrap();
+        let names: Vec<&str> = lib.iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Straight", "Skip"], "only patterns that differ from the built-ins");
+        // A bad file is not used at all.
+        let before = app.patterns.clone();
+        let fx = app.load_patterns("Fine = 1 2\nBad = 1 z\nNo equals sign\n");
+        assert_eq!(app.patterns, before);
+        assert!(fx.contains(&Effect::Note("arp patterns file not used (2 bad lines); the built-in patterns stay".into())));
+        // Save logs a library line; it writes the file only with --save-patterns.
+        app.toggle_panel();
+        app.arp_action(ArpAction::Button(PatternButton::Edit));
+        let p = Pattern::parse("1 2 . 3").unwrap();
+        let fx = app.workspace_action(WsAction::Save(p));
+        assert!(fx.contains(&Effect::Note("arp-pattern-saved: Straight = 1 2 . 3".into())));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::SavePatterns(_))));
+        app.pattern_file = true;
+        let fx = app.workspace_action(WsAction::Save(p));
+        let saved = fx.iter().find_map(|e| match e { Effect::SavePatterns(t) => Some(t.clone()), _ => None }).unwrap();
+        assert!(saved.contains("Straight = 1 2 . 3\n") && saved.contains("Skip     = 1 . 3 2\n"), "{saved}");
     }
 
     #[test]

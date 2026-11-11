@@ -718,14 +718,25 @@ class StaticTests(unittest.TestCase):
     def test_the_program_writes_only_where_reviewed(self):
         """Every place the program opens a file for writing, in its Rust source."""
         found = []
+        # The arp's patterns file (write_patterns in main.rs): written to a .part file, then renamed over the
+        # file given with --save-patterns, and the .part removed if that fails. Only with that option, which
+        # the test boot's start-app.sh never passes (checked below).
+        reviewed = {("mpfree-hello/main.rs", "fs::rename(&part, path)"),
+                    ("mpfree-hello/main.rs", "let _ = fs::remove_file(&part);")}
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
                     found.append((name, line.strip()))
+                if (name, line.strip()) in reviewed:
+                    continue
                 for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
                                "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir",
                                "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions"):
                     self.assertNotIn(needle, line, f"{name}: {line.strip()}")
+        with open(os.path.join(HERE, "..", "offline-kexec-stick.py")) as fh:
+            stick = fh.read()
+        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep}", stick)
+        self.assertNotIn("--save-patterns", stick)
         texts = [line for _, line in found]
         expected = (
             # the program's own report in /run/mpfree-hello (Out::new and the STOP line in main)
@@ -742,6 +753,8 @@ class StaticTests(unittest.TestCase):
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
+            # the arp's patterns file, only with --save-patterns FILE (never on the test boot, see above)
+            "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;",
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
