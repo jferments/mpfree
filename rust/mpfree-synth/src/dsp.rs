@@ -23,13 +23,27 @@ impl Rng {
     /// Uniform in [0, 1).
     #[inline]
     pub fn unit(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+        // The top 24 bits fit a u32, and a u32 below 2^24 converts to f32
+        // exactly, so this is the same value as going from the u64; the
+        // u64 conversion is a library call on ARMv7.
+        ((self.next_u64() >> 40) as u32) as f32 / (1u64 << 24) as f32
     }
     /// Uniform in [-1, 1).
     #[inline]
     pub fn bipolar(&mut self) -> f32 {
         self.unit() * 2.0 - 1.0
     }
+}
+
+/// Whether two cache keys hold the same words. Compared word by word in
+/// line: an array `==` becomes a `bcmp` library call on ARMv7.
+#[inline]
+pub(crate) fn same_key<const N: usize>(a: &[u32; N], b: &[u32; N]) -> bool {
+    let mut d = 0;
+    for i in 0..N {
+        d |= a[i] ^ b[i];
+    }
+    d == 0
 }
 
 /// The polynomial band-limited step correction at phase `t` for a phase
@@ -345,6 +359,16 @@ pub fn drive(x: f32, gain: f32, amount: f32) -> f32 {
         return x;
     }
     x + ((x * gain).tanh() / gain.sqrt() - x) * amount
+}
+
+/// [`drive`] with the gain's square root already worked out as `sq`: the
+/// same sample.
+#[inline]
+pub fn drive_sq(x: f32, gain: f32, sq: f32, amount: f32) -> f32 {
+    if amount <= 0.0 {
+        return x;
+    }
+    x + ((x * gain).tanh() / sq - x) * amount
 }
 
 /// [`drive`] over a buffer in place, with the gain's square root worked
