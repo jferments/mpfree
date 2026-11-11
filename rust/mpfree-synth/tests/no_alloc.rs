@@ -212,13 +212,19 @@ fn process_never_allocates() {
         (seed >> 33) as u32
     };
 
+    let just = mpfree_tuning::Builtin::Just.tuning(5, 432.0);
     watch(true);
     for block in 0..4000u64 {
         events.clear();
+        match block {
+            1000 => s.set_tuning(&just),
+            3000 => s.set_tuning(&Tuning::standard()),
+            _ => {}
+        }
         for _ in 0..rnd() % 6 {
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
-            let ev = match rnd() % 9 {
+            let ev = match rnd() % 10 {
                 0..=2 => NodeEvent::NoteOn {
                     note,
                     velocity: 1 + (rnd() % 127) as u8,
@@ -238,6 +244,11 @@ fn process_never_allocates() {
                         value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0,
                     }
                 }
+                8 => NodeEvent::Expression {
+                    note,
+                    kind: [Expr::Slide, Expr::Tone, Expr::Release][rnd() as usize % 3],
+                    value: (rnd() % 200) as f32 / 10.0 - 10.0,
+                },
                 _ => NodeEvent::AllOff,
             };
             events.push(Timed::new(off, ev));
