@@ -18,7 +18,9 @@ const RATE: u32 = 48_000;
 fn cloud(rate: u32, values: &[(u16, f32)]) -> Cloud {
     let mut c = Cloud::new();
     c.prepare(rate, MAX_BLOCK);
-    for &(id, v) in values { c.set_param(id, v); }
+    for &(id, v) in values {
+        c.set_param(id, v);
+    }
     c.reset();
     c
 }
@@ -41,17 +43,29 @@ fn noise(seed: u64, frames: usize, amp: f32) -> Vec<f32> {
         .collect()
 }
 
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32 }
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32
+}
 
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
 
-fn db(x: f32) -> f32 { 20.0 * x.max(1e-12).log10() }
+fn db(x: f32) -> f32 {
+    20.0 * x.max(1e-12).log10()
+}
 
 /// The 60 dB decay time from the Schroeder curve's fall from -5 to -35 dB.
 fn t60(l: &[f32], r: &[f32], rate: u32) -> f32 {
-    let e: Vec<f64> = l.iter().zip(r).map(|(a, b)| (*a as f64).powi(2) + (*b as f64).powi(2)).collect();
+    let e: Vec<f64> = l
+        .iter()
+        .zip(r)
+        .map(|(a, b)| (*a as f64).powi(2) + (*b as f64).powi(2))
+        .collect();
     let mut tail = vec![0.0; e.len() + 1];
-    for i in (0..e.len()).rev() { tail[i] = tail[i + 1] + e[i]; }
+    for i in (0..e.len()).rev() {
+        tail[i] = tail[i + 1] + e[i];
+    }
     let level = |i: usize| 10.0 * (tail[i] / tail[0]).log10();
     let a = (0..e.len()).find(|&i| level(i) < -5.0).unwrap();
     let b = (0..e.len()).find(|&i| level(i) < -35.0).unwrap();
@@ -59,7 +73,14 @@ fn t60(l: &[f32], r: &[f32], rate: u32) -> f32 {
 }
 
 /// The flat, wide-open settings for measuring decay.
-const OPEN: [(u16, f32); 6] = [(MIX, 100.0), (EARLY, 0.0), (PRE_DELAY, 0.0), (DAMPING, 20_000.0), (LOW_CUT, 20.0), (HIGH_CUT, 20_000.0)];
+const OPEN: [(u16, f32); 6] = [
+    (MIX, 100.0),
+    (EARLY, 0.0),
+    (PRE_DELAY, 0.0),
+    (DAMPING, 20_000.0),
+    (LOW_CUT, 20.0),
+    (HIGH_CUT, 20_000.0),
+];
 
 #[test]
 fn decay_is_the_time_to_fall_60_db_at_any_rate() {
@@ -88,8 +109,13 @@ fn decay_is_the_time_to_fall_60_db_at_any_rate() {
         run(&mut c, rate, &mut l, &mut r);
         let t = t60(&l, &r, rate);
         let want = decay_ms / 1000.0;
-        println!("character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s");
-        assert!((t / want - 1.0).abs() < 0.2, "character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s");
+        println!(
+            "character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s"
+        );
+        assert!(
+            (t / want - 1.0).abs() < 0.2,
+            "character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s"
+        );
     }
 }
 
@@ -97,7 +123,14 @@ fn decay_is_the_time_to_fall_60_db_at_any_rate() {
 fn the_tail_estimate_covers_the_ring_out() {
     for character in 0..5 {
         for decay_ms in [300.0, 2000.0] {
-            let mut c = cloud(RATE, &[(CHARACTER, character as f32), (DECAY, decay_ms), (MIX, 100.0)]);
+            let mut c = cloud(
+                RATE,
+                &[
+                    (CHARACTER, character as f32),
+                    (DECAY, decay_ms),
+                    (MIX, 100.0),
+                ],
+            );
             let tail = c.tail_frames() as usize;
             let frames = tail + RATE as usize / 2;
             let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
@@ -106,7 +139,11 @@ fn the_tail_estimate_covers_the_ring_out() {
             run(&mut c, RATE, &mut l, &mut r);
             let all = peak(&l).max(peak(&r));
             let after = peak(&l[tail..]).max(peak(&r[tail..]));
-            assert!(db(after / all) < -80.0, "character {character}, decay {decay_ms} ms: {:.1} dB after {tail} frames", db(after / all));
+            assert!(
+                db(after / all) < -80.0,
+                "character {character}, decay {decay_ms} ms: {:.1} dB after {tail} frames",
+                db(after / all)
+            );
         }
     }
 }
@@ -136,13 +173,25 @@ fn freeze_holds_the_tail_and_ignores_new_input() {
     assert!(ql == ll && qr == lr, "input ignored while frozen");
     let first = rms(&ql[s / 2..3 * s / 2]);
     let last = rms(&ql[3 * s..]);
-    println!("frozen tail: {:.1} dB after 1 s, {:.1} dB after 3.5 s", db(first), db(last));
-    assert!(first > 0.01 && db(last / first) > -3.0, "the tail holds: {:.1} dB over 2.5 s", db(last / first));
+    println!(
+        "frozen tail: {:.1} dB after 1 s, {:.1} dB after 3.5 s",
+        db(first),
+        db(last)
+    );
+    assert!(
+        first > 0.01 && db(last / first) > -3.0,
+        "the tail holds: {:.1} dB over 2.5 s",
+        db(last / first)
+    );
     // Unfrozen, it decays again: 4 s at a 1.5 s decay is over 100 dB.
     c.set_param(FREEZE, 0.0);
     let (mut l, mut r) = (vec![0.0f32; 4 * s], vec![0.0f32; 4 * s]);
     run(&mut c, RATE, &mut l, &mut r);
-    assert!(db(rms(&l[3 * s..]) / first) < -60.0, "decays once unfrozen: {:.1} dB", db(rms(&l[3 * s..]) / first));
+    assert!(
+        db(rms(&l[3 * s..]) / first) < -60.0,
+        "decays once unfrozen: {:.1} dB",
+        db(rms(&l[3 * s..]) / first)
+    );
     assert!(c.tail_frames() < u32::MAX);
 }
 
@@ -155,8 +204,16 @@ fn full_width_is_decorrelated_and_width_zero_is_mono() {
         run(&mut c, RATE, &mut l, &mut r);
         let (a, b) = (&l[RATE as usize..], &r[RATE as usize..]);
         if check {
-            let corr = a.iter().zip(b).map(|(p, q)| (*p as f64) * (*q as f64)).sum::<f64>() / (rms(a) as f64 * rms(b) as f64 * a.len() as f64);
-            assert!(corr.abs() < 0.2, "a mono input comes out wide: correlation {corr:.2}");
+            let corr = a
+                .iter()
+                .zip(b)
+                .map(|(p, q)| (*p as f64) * (*q as f64))
+                .sum::<f64>()
+                / (rms(a) as f64 * rms(b) as f64 * a.len() as f64);
+            assert!(
+                corr.abs() < 0.2,
+                "a mono input comes out wide: correlation {corr:.2}"
+            );
         } else {
             assert!(a == b, "width 0 is mono");
         }
@@ -175,7 +232,12 @@ fn mix_zero_is_the_input_exactly() {
 
 #[test]
 fn a_reset_forgets_everything() {
-    let settings = [(CHARACTER, 3.0), (DECAY, 20_000.0), (MIX, 100.0), (MODULATION, 80.0)];
+    let settings = [
+        (CHARACTER, 3.0),
+        (DECAY, 20_000.0),
+        (MIX, 100.0),
+        (MODULATION, 80.0),
+    ];
     let x = noise(11, RATE as usize, 0.5);
     let mut fresh = cloud(RATE, &settings);
     let (mut a, mut b) = (x.clone(), x.clone());
@@ -191,7 +253,10 @@ fn a_reset_forgets_everything() {
     used.reset();
     let (mut c, mut d) = (x.clone(), x.clone());
     run(&mut used, RATE, &mut c, &mut d);
-    assert!(a == c && b == d, "after a reset the output is a fresh node's");
+    assert!(
+        a == c && b == d,
+        "after a reset the output is a fresh node's"
+    );
 }
 
 #[test]
@@ -205,9 +270,24 @@ fn a_character_change_dips_the_wet_signal_and_recovers() {
     let mut done = 0;
     while done < l.len() {
         let len = 128.min(l.len() - done);
-        let ev = [Timed::new(at.wrapping_sub(done) as u32, NodeEvent::Param { id: CHARACTER, value: 3.0 })];
-        let events: &[Timed] = if (done..done + len).contains(&at) { &ev } else { &[] };
-        c.process(&Ctx::new(RATE, done as u64), events, &mut l[done..done + len], &mut r[done..done + len]);
+        let ev = [Timed::new(
+            at.wrapping_sub(done) as u32,
+            NodeEvent::Param {
+                id: CHARACTER,
+                value: 3.0,
+            },
+        )];
+        let events: &[Timed] = if (done..done + len).contains(&at) {
+            &ev
+        } else {
+            &[]
+        };
+        c.process(
+            &Ctx::new(RATE, done as u64),
+            events,
+            &mut l[done..done + len],
+            &mut r[done..done + len],
+        );
         done += len;
     }
     assert_eq!(c.param(CHARACTER), 3.0);
@@ -215,16 +295,33 @@ fn a_character_change_dips_the_wet_signal_and_recovers() {
     let swap = at + 720;
     let dip = peak(&l[swap - 8..swap + 8]);
     let after = rms(&l[s + 9600..s + 14_400]);
-    println!("before {:.1} dB, at the swap {:.1} dB, 200 ms later {:.1} dB", db(before), db(dip), db(after));
-    assert!(db(dip / before) < -20.0, "dipped at the swap: {:.1} dB", db(dip / before));
-    assert!(db(after / before).abs() < 6.0, "back within 6 dB: {:.1} dB", db(after / before));
+    println!(
+        "before {:.1} dB, at the swap {:.1} dB, 200 ms later {:.1} dB",
+        db(before),
+        db(dip),
+        db(after)
+    );
+    assert!(
+        db(dip / before) < -20.0,
+        "dipped at the swap: {:.1} dB",
+        db(dip / before)
+    );
+    assert!(
+        db(after / before).abs() < 6.0,
+        "back within 6 dB: {:.1} dB",
+        db(after / before)
+    );
 }
 
 /// The energy between `lo` and `hi` Hz: Hann-windowed Goertzel bins every
 /// 50 Hz, so the strong band below cannot leak in.
 fn band(x: &[f32], lo: f32, hi: f32) -> f32 {
     let n = x.len();
-    let w: Vec<f64> = (0..n).map(|i| x[i] as f64 * (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())).collect();
+    let w: Vec<f64> = (0..n)
+        .map(|i| {
+            x[i] as f64 * (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
+        })
+        .collect();
     let mut sum = 0.0;
     let mut f = lo;
     while f <= hi {
@@ -273,8 +370,14 @@ fn light_and_eco_keep_the_decay_the_level_and_the_band() {
             let tq = t60(&ql, &qr, RATE);
             let level = db(rms(&ql[w.clone()]) / rms(&fl[w.clone()]));
             println!("character {character}: T60 full {tf:.2} s, {name} {tq:.2} s; {name} is {level:+.1} dB");
-            assert!((tq / tf - 1.0).abs() < 0.2, "character {character}: T60 full {tf:.2} s, {name} {tq:.2} s");
-            assert!(level.abs() < 3.0, "character {character}: {name} is {level:+.1} dB");
+            assert!(
+                (tq / tf - 1.0).abs() < 0.2,
+                "character {character}: T60 full {tf:.2} s, {name} {tq:.2} s"
+            );
+            assert!(
+                level.abs() < 3.0,
+                "character {character}: {name} is {level:+.1} dB"
+            );
             if q == 1.0 {
                 light = ql;
                 continue;
@@ -282,11 +385,19 @@ fn light_and_eco_keep_the_decay_the_level_and_the_band() {
             for (lo, hi) in [(1000.0, 4000.0), (4000.0, 7000.0), (7000.0, 10_000.0)] {
                 let rel = db(band(&ql[w.clone()], lo, hi) / band(&light[w.clone()], lo, hi));
                 println!("character {character}: eco {lo}-{hi} Hz is {rel:+.1} dB against light");
-                assert!(rel.abs() < 3.0, "character {character}: eco {lo}-{hi} Hz is {rel:+.1} dB against light");
+                assert!(
+                    rel.abs() < 3.0,
+                    "character {character}: eco {lo}-{hi} Hz is {rel:+.1} dB against light"
+                );
             }
-            let top = db(band(&ql[w.clone()], 14_000.0, 20_000.0) / band(&fl[w.clone()], 14_000.0, 20_000.0));
+            let top =
+                db(band(&ql[w.clone()], 14_000.0, 20_000.0)
+                    / band(&fl[w.clone()], 14_000.0, 20_000.0));
             println!("character {character}: eco above 14 kHz is {top:+.1} dB against full");
-            assert!(top < -50.0, "character {character}: eco above 14 kHz is {top:+.1} dB against full");
+            assert!(
+                top < -50.0,
+                "character {character}: eco above 14 kHz is {top:+.1} dB against full"
+            );
         }
     }
 }
@@ -299,7 +410,15 @@ fn a_change_to_eco_and_back_dips_and_is_the_same_in_any_block_size() {
     let s = RATE as usize;
     let x = noise(31, 2 * s + s / 2, 0.3);
     let render = |block: usize| {
-        let mut c = cloud(RATE, &[(MIX, 100.0), (CHARACTER, 1.0), (QUALITY, 0.0), (DECAY, 800.0)]);
+        let mut c = cloud(
+            RATE,
+            &[
+                (MIX, 100.0),
+                (CHARACTER, 1.0),
+                (QUALITY, 0.0),
+                (DECAY, 800.0),
+            ],
+        );
         let (mut l, mut r) = (x.clone(), x.clone());
         let changes = [(s / 2, 2.0), (3 * s / 2, 0.0)];
         let mut done = 0;
@@ -308,9 +427,22 @@ fn a_change_to_eco_and_back_dips_and_is_the_same_in_any_block_size() {
             let ev: Vec<Timed> = changes
                 .iter()
                 .filter(|(at, _)| (done..done + len).contains(at))
-                .map(|&(at, q)| Timed::new((at - done) as u32, NodeEvent::Param { id: QUALITY, value: q }))
+                .map(|&(at, q)| {
+                    Timed::new(
+                        (at - done) as u32,
+                        NodeEvent::Param {
+                            id: QUALITY,
+                            value: q,
+                        },
+                    )
+                })
                 .collect();
-            c.process(&Ctx::new(RATE, done as u64), &ev, &mut l[done..done + len], &mut r[done..done + len]);
+            c.process(
+                &Ctx::new(RATE, done as u64),
+                &ev,
+                &mut l[done..done + len],
+                &mut r[done..done + len],
+            );
             done += len;
         }
         (l, r)
@@ -318,17 +450,38 @@ fn a_change_to_eco_and_back_dips_and_is_the_same_in_any_block_size() {
     let (l, r) = render(128);
     for block in [1, 37, 512] {
         let (bl, br) = render(block);
-        assert!(l.iter().zip(&bl).chain(r.iter().zip(&br)).all(|(a, b)| a.to_bits() == b.to_bits()), "block {block}");
+        assert!(
+            l.iter()
+                .zip(&bl)
+                .chain(r.iter().zip(&br))
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "block {block}"
+        );
     }
     let win = |at: usize| rms(&l[at..at + s / 10]);
     let steady = win(s / 2 - s / 10);
     for (at, name) in [(s / 2, "to eco"), (3 * s / 2, "back to full")] {
         // The quietest 2 ms within 60 ms of the change, and 400 ms later.
-        let quiet = (0..30).map(|k| rms(&l[at + k * s / 500..at + (k + 1) * s / 500])).fold(f32::MAX, f32::min);
+        let quiet = (0..30)
+            .map(|k| rms(&l[at + k * s / 500..at + (k + 1) * s / 500]))
+            .fold(f32::MAX, f32::min);
         let back = win(at + 2 * s / 5);
-        println!("{name}: steady {:.1} dB, quietest {:.1} dB, 400 ms on {:.1} dB", db(steady), db(quiet), db(back));
-        assert!(db(quiet / steady) < -30.0, "{name}: dips to {:.1} dB", db(quiet / steady));
-        assert!(db(back / steady).abs() < 6.0, "{name}: back within 6 dB: {:.1} dB", db(back / steady));
+        println!(
+            "{name}: steady {:.1} dB, quietest {:.1} dB, 400 ms on {:.1} dB",
+            db(steady),
+            db(quiet),
+            db(back)
+        );
+        assert!(
+            db(quiet / steady) < -30.0,
+            "{name}: dips to {:.1} dB",
+            db(quiet / steady)
+        );
+        assert!(
+            db(back / steady).abs() < 6.0,
+            "{name}: back within 6 dB: {:.1} dB",
+            db(back / steady)
+        );
     }
 }
 
@@ -337,7 +490,15 @@ fn a_quality_change_dips_and_wakes_its_lines_silent() {
     // Full, then Light for a second (the lines Light drops hold their
     // tail), then Full again with no input: the dropped lines start from
     // silence, so nothing from before comes back.
-    let mut c = cloud(RATE, &[(MIX, 100.0), (CHARACTER, 0.0), (DECAY, 60_000.0), (QUALITY, 0.0)]);
+    let mut c = cloud(
+        RATE,
+        &[
+            (MIX, 100.0),
+            (CHARACTER, 0.0),
+            (DECAY, 60_000.0),
+            (QUALITY, 0.0),
+        ],
+    );
     let s = RATE as usize;
     let (mut l, mut r) = (noise(21, s, 0.3), noise(22, s, 0.3));
     run(&mut c, RATE, &mut l, &mut r);
@@ -351,8 +512,16 @@ fn a_quality_change_dips_and_wakes_its_lines_silent() {
     let (mut l, mut r) = (vec![0.0f32; s], vec![0.0f32; s]);
     run(&mut c, RATE, &mut l, &mut r);
     let full = rms(&l[s / 2..]);
-    println!("frozen tail: light {:.1} dB, full again {:.1} dB", db(light), db(full));
-    assert!(db(full / light) < 1.0, "the woken lines add no old tail: {:.1} dB", db(full / light));
+    println!(
+        "frozen tail: light {:.1} dB, full again {:.1} dB",
+        db(light),
+        db(full)
+    );
+    assert!(
+        db(full / light) < 1.0,
+        "the woken lines add no old tail: {:.1} dB",
+        db(full / light)
+    );
     assert_eq!(c.param(QUALITY), 0.0);
 }
 
@@ -363,7 +532,13 @@ fn presets_are_in_range_and_play() {
     for p in CLOUD_PRESETS {
         for &(id, v) in p.values {
             let info = &params[id as usize];
-            assert_eq!(info.clamp(v), v, "{}: {} = {v} is in range", p.name, info.name);
+            assert_eq!(
+                info.clamp(v),
+                v,
+                "{}: {} = {v} is in range",
+                p.name,
+                info.name
+            );
         }
         let mut node = cloud(RATE, p.values);
         let x = noise(17, RATE as usize, 0.5);

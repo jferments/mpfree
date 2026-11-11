@@ -36,8 +36,8 @@ use std::f32::consts::{LN_10, PI};
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
-use crate::svf::Segs;
 use crate::oversample::{Down2, Up2};
+use crate::svf::Segs;
 use crate::{defaults, flush, lerp, Preset};
 
 /// [`Cloud`] parameter ids.
@@ -71,23 +71,177 @@ const ECO: usize = 2;
 const CHARACTERS: &[&str] = &["Plate", "Room", "Hall", "Cloud", "Echoes"];
 const QUALITIES: &[&str] = &["Full", "Light", "Eco"];
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.cloud", name: "Cloud reverb", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.cloud",
+    name: "Cloud reverb",
+    kind: Kind::Effect,
+};
 static PARAMS: [ParamInfo; 15] = [
-    ParamInfo { id: 0, name: "Character", group: "Reverb", min: 0.0, max: 4.0, default: 2.0, unit: Unit::None, curve: Curve::Choice(CHARACTERS), readonly: false },
-    ParamInfo { id: 1, name: "Size", group: "Reverb", min: 20.0, max: 1000.0, default: 120.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 2, name: "Decay", group: "Reverb", min: 50.0, max: 60_000.0, default: 2500.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 3, name: "Pre-delay", group: "Reverb", min: 0.0, max: 500.0, default: 10.0, unit: Unit::Ms, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 4, name: "Diffusion", group: "Texture", min: 0.0, max: 100.0, default: 70.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Modulation", group: "Texture", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Mod rate", group: "Texture", min: 0.05, max: 5.0, default: 0.3, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 7, name: "Damping", group: "Tone", min: 400.0, max: 20_000.0, default: 9000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 8, name: "Low cut", group: "Tone", min: 20.0, max: 1000.0, default: 80.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 9, name: "High cut", group: "Tone", min: 400.0, max: 20_000.0, default: 14_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 10, name: "Width", group: "Output", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 11, name: "Early", group: "Output", min: 0.0, max: 100.0, default: 40.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 12, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 13, name: "Freeze", group: "Output", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: 14, name: "Quality", group: "Reverb", min: 0.0, max: 2.0, default: 2.0, unit: Unit::None, curve: Curve::Choice(QUALITIES), readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Character",
+        group: "Reverb",
+        min: 0.0,
+        max: 4.0,
+        default: 2.0,
+        unit: Unit::None,
+        curve: Curve::Choice(CHARACTERS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Size",
+        group: "Reverb",
+        min: 20.0,
+        max: 1000.0,
+        default: 120.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Decay",
+        group: "Reverb",
+        min: 50.0,
+        max: 60_000.0,
+        default: 2500.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Pre-delay",
+        group: "Reverb",
+        min: 0.0,
+        max: 500.0,
+        default: 10.0,
+        unit: Unit::Ms,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Diffusion",
+        group: "Texture",
+        min: 0.0,
+        max: 100.0,
+        default: 70.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Modulation",
+        group: "Texture",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Mod rate",
+        group: "Texture",
+        min: 0.05,
+        max: 5.0,
+        default: 0.3,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Damping",
+        group: "Tone",
+        min: 400.0,
+        max: 20_000.0,
+        default: 9000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 8,
+        name: "Low cut",
+        group: "Tone",
+        min: 20.0,
+        max: 1000.0,
+        default: 80.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 9,
+        name: "High cut",
+        group: "Tone",
+        min: 400.0,
+        max: 20_000.0,
+        default: 14_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 10,
+        name: "Width",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 11,
+        name: "Early",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 40.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 12,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 13,
+        name: "Freeze",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 14,
+        name: "Quality",
+        group: "Reverb",
+        min: 0.0,
+        max: 2.0,
+        default: 2.0,
+        unit: Unit::None,
+        curve: Curve::Choice(QUALITIES),
+        readonly: false,
+    },
 ];
 
 /// Factory presets. Mix is left alone: it depends on whether the reverb
@@ -97,23 +251,83 @@ pub static PRESETS: &[Preset] = {
     &[
         Preset {
             name: "Dark plate",
-            values: &[(CHARACTER, 0.0), (SIZE, 96.0), (DECAY, 4800.0), (PRE_DELAY, 0.0), (DIFFUSION, 97.0), (MODULATION, 27.0), (MOD_RATE, 0.1), (DAMPING, 20_000.0), (LOW_CUT, 340.0), (HIGH_CUT, 20_000.0), (EARLY, 0.0)],
+            values: &[
+                (CHARACTER, 0.0),
+                (SIZE, 96.0),
+                (DECAY, 4800.0),
+                (PRE_DELAY, 0.0),
+                (DIFFUSION, 97.0),
+                (MODULATION, 27.0),
+                (MOD_RATE, 0.1),
+                (DAMPING, 20_000.0),
+                (LOW_CUT, 340.0),
+                (HIGH_CUT, 20_000.0),
+                (EARLY, 0.0),
+            ],
         },
         Preset {
             name: "Small room",
-            values: &[(CHARACTER, 1.0), (SIZE, 40.0), (DECAY, 700.0), (PRE_DELAY, 4.0), (DIFFUSION, 75.0), (MODULATION, 15.0), (MOD_RATE, 0.5), (DAMPING, 7000.0), (LOW_CUT, 120.0), (HIGH_CUT, 12_000.0), (EARLY, 60.0)],
+            values: &[
+                (CHARACTER, 1.0),
+                (SIZE, 40.0),
+                (DECAY, 700.0),
+                (PRE_DELAY, 4.0),
+                (DIFFUSION, 75.0),
+                (MODULATION, 15.0),
+                (MOD_RATE, 0.5),
+                (DAMPING, 7000.0),
+                (LOW_CUT, 120.0),
+                (HIGH_CUT, 12_000.0),
+                (EARLY, 60.0),
+            ],
         },
         Preset {
             name: "Big hall",
-            values: &[(CHARACTER, 2.0), (SIZE, 180.0), (DECAY, 3500.0), (PRE_DELAY, 25.0), (DIFFUSION, 80.0), (MODULATION, 35.0), (MOD_RATE, 0.3), (DAMPING, 6500.0), (LOW_CUT, 90.0), (HIGH_CUT, 11_000.0), (EARLY, 45.0)],
+            values: &[
+                (CHARACTER, 2.0),
+                (SIZE, 180.0),
+                (DECAY, 3500.0),
+                (PRE_DELAY, 25.0),
+                (DIFFUSION, 80.0),
+                (MODULATION, 35.0),
+                (MOD_RATE, 0.3),
+                (DAMPING, 6500.0),
+                (LOW_CUT, 90.0),
+                (HIGH_CUT, 11_000.0),
+                (EARLY, 45.0),
+            ],
         },
         Preset {
             name: "Endless cloud",
-            values: &[(CHARACTER, 3.0), (SIZE, 300.0), (DECAY, 20_000.0), (PRE_DELAY, 40.0), (DIFFUSION, 90.0), (MODULATION, 60.0), (MOD_RATE, 0.25), (DAMPING, 8000.0), (LOW_CUT, 150.0), (HIGH_CUT, 10_000.0), (EARLY, 30.0)],
+            values: &[
+                (CHARACTER, 3.0),
+                (SIZE, 300.0),
+                (DECAY, 20_000.0),
+                (PRE_DELAY, 40.0),
+                (DIFFUSION, 90.0),
+                (MODULATION, 60.0),
+                (MOD_RATE, 0.25),
+                (DAMPING, 8000.0),
+                (LOW_CUT, 150.0),
+                (HIGH_CUT, 10_000.0),
+                (EARLY, 30.0),
+            ],
         },
         Preset {
             name: "Echo chamber",
-            values: &[(CHARACTER, 4.0), (SIZE, 260.0), (DECAY, 3000.0), (PRE_DELAY, 0.0), (DIFFUSION, 50.0), (MODULATION, 25.0), (MOD_RATE, 0.4), (DAMPING, 5000.0), (LOW_CUT, 200.0), (HIGH_CUT, 8000.0), (EARLY, 70.0)],
+            values: &[
+                (CHARACTER, 4.0),
+                (SIZE, 260.0),
+                (DECAY, 3000.0),
+                (PRE_DELAY, 0.0),
+                (DIFFUSION, 50.0),
+                (MODULATION, 25.0),
+                (MOD_RATE, 0.4),
+                (DAMPING, 5000.0),
+                (LOW_CUT, 200.0),
+                (HIGH_CUT, 8000.0),
+                (EARLY, 70.0),
+            ],
         },
     ]
 };
@@ -199,7 +413,11 @@ impl Character {
     /// Character `c` at quality `q` (Light and Eco share a structure).
     fn get(c: usize, q: usize) -> Character {
         let ch = CHARS[c.min(CHARS.len() - 1)];
-        if q == FULL { ch } else { ch.light() }
+        if q == FULL {
+            ch
+        } else {
+            ch.light()
+        }
     }
 }
 
@@ -207,16 +425,91 @@ static CHARS: [Character; 5] = [
     // Plate: Cloud Seed's "Dark plate" structure (12 lines, the output
     // after a 4-stage diffuser, a high shelf darkening every pass), with a
     // short early smear added.
-    Character { lines: 12, post: true, late_stages: 4, late_ms: 36.0, early_stages: 4, early_ms: 8.0, taps: 0, tap_ms: 0.0, tap_decay: 0.0, input_mix: 0.235, low_shelf: (0.0, 0.0), high_shelf: (4520.0, -4.6), seeds: [333, 184, 218, 365], trim_db: 0.3 },
+    Character {
+        lines: 12,
+        post: true,
+        late_stages: 4,
+        late_ms: 36.0,
+        early_stages: 4,
+        early_ms: 8.0,
+        taps: 0,
+        tap_ms: 0.0,
+        tap_decay: 0.0,
+        input_mix: 0.235,
+        low_shelf: (0.0, 0.0),
+        high_shelf: (4520.0, -4.6),
+        seeds: [333, 184, 218, 365],
+        trim_db: 0.3,
+    },
     // Room: a dense, quick pattern of early reflections into 8 short lines.
-    Character { lines: 8, post: true, late_stages: 3, late_ms: 14.0, early_stages: 4, early_ms: 10.0, taps: 24, tap_ms: 40.0, tap_decay: 1.0, input_mix: 0.3, low_shelf: (200.0, -2.0), high_shelf: (6000.0, -3.0), seeds: [511, 96, 742, 258], trim_db: -4.2 },
+    Character {
+        lines: 8,
+        post: true,
+        late_stages: 3,
+        late_ms: 14.0,
+        early_stages: 4,
+        early_ms: 10.0,
+        taps: 24,
+        tap_ms: 40.0,
+        tap_decay: 1.0,
+        input_mix: 0.3,
+        low_shelf: (200.0, -2.0),
+        high_shelf: (6000.0, -3.0),
+        seeds: [511, 96, 742, 258],
+        trim_db: -4.2,
+    },
     // Hall: wider early reflections and a smooth, slowly built tail.
-    Character { lines: 10, post: true, late_stages: 4, late_ms: 30.0, early_stages: 6, early_ms: 24.0, taps: 40, tap_ms: 90.0, tap_decay: 0.8, input_mix: 0.25, low_shelf: (0.0, 0.0), high_shelf: (5000.0, -3.0), seeds: [127, 873, 405, 619], trim_db: -2.4 },
+    Character {
+        lines: 10,
+        post: true,
+        late_stages: 4,
+        late_ms: 30.0,
+        early_stages: 6,
+        early_ms: 24.0,
+        taps: 40,
+        tap_ms: 90.0,
+        tap_decay: 0.8,
+        input_mix: 0.25,
+        low_shelf: (0.0, 0.0),
+        high_shelf: (5000.0, -3.0),
+        seeds: [127, 873, 405, 619],
+        trim_db: -2.4,
+    },
     // Cloud: heavy diffusion everywhere, the endless ambient wash.
-    Character { lines: 12, post: true, late_stages: 6, late_ms: 55.0, early_stages: 10, early_ms: 60.0, taps: 0, tap_ms: 0.0, tap_decay: 0.0, input_mix: 0.5, low_shelf: (0.0, 0.0), high_shelf: (6500.0, -2.5), seeds: [942, 333, 777, 155], trim_db: 0.6 },
+    Character {
+        lines: 12,
+        post: true,
+        late_stages: 6,
+        late_ms: 55.0,
+        early_stages: 10,
+        early_ms: 60.0,
+        taps: 0,
+        tap_ms: 0.0,
+        tap_decay: 0.0,
+        input_mix: 0.5,
+        low_shelf: (0.0, 0.0),
+        high_shelf: (6500.0, -2.5),
+        seeds: [942, 333, 777, 155],
+        trim_db: 0.6,
+    },
     // Echoes: few lines heard before their diffusers, and long taps, so
     // repeats stay distinct and blur as they fade.
-    Character { lines: 4, post: false, late_stages: 2, late_ms: 20.0, early_stages: 0, early_ms: 0.0, taps: 12, tap_ms: 600.0, tap_decay: 0.5, input_mix: 0.15, low_shelf: (250.0, -3.0), high_shelf: (3500.0, -5.0), seeds: [64, 0, 909, 488], trim_db: -5.5 },
+    Character {
+        lines: 4,
+        post: false,
+        late_stages: 2,
+        late_ms: 20.0,
+        early_stages: 0,
+        early_ms: 0.0,
+        taps: 12,
+        tap_ms: 600.0,
+        tap_decay: 0.5,
+        input_mix: 0.15,
+        low_shelf: (250.0, -3.0),
+        high_shelf: (3500.0, -5.0),
+        seeds: [64, 0, 909, 488],
+        trim_db: -5.5,
+    },
 ];
 
 /// Cloud Seed's random series: a 32-bit linear congruential generator
@@ -258,11 +551,15 @@ fn one_pole(hz: f32, rate: u32) -> f32 {
 /// quarter of `rate`, and at the host rate, it is [`one_pole`] itself.
 fn one_pole_as(hz: f32, host: u32, rate: u32) -> f32 {
     let r = 0.25 * rate as f32;
-    if rate == host || hz <= r { return one_pole(hz, rate); }
+    if rate == host || hz <= r {
+        return one_pole(hz, rate);
+    }
     let a = one_pole(hz, host);
     let w = 2.0 * PI * r / host as f32;
     let g2 = (1.0 - a) * (1.0 - a) / (1.0 + a * a - 2.0 * a * w.cos());
-    if g2 >= 1.0 - 1e-6 { return 0.0; }
+    if g2 >= 1.0 - 1e-6 {
+        return 0.0;
+    }
     // At a quarter of `rate` the cosine is 0, so the corner equation of
     // [`one_pole`] becomes nn = 1 / (1 - g2).
     let nn = 1.0 / (1.0 - g2);
@@ -286,7 +583,12 @@ fn hermite(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
 #[inline]
 fn hermite_taps(t: f32) -> [f32; 4] {
     let (t2, t3) = (t * t, t * t * t);
-    [-0.5 * t + t2 - 0.5 * t3, 1.0 - 2.5 * t2 + 1.5 * t3, 0.5 * t + 2.0 * t2 - 1.5 * t3, -0.5 * t2 + 0.5 * t3]
+    [
+        -0.5 * t + t2 - 0.5 * t3,
+        1.0 - 2.5 * t2 + 1.5 * t3,
+        0.5 * t + 2.0 * t2 - 1.5 * t3,
+        -0.5 * t2 + 0.5 * t3,
+    ]
 }
 
 /// A delay buffer that forgets in O(1): [`Buf::forget`] sets `filled` to 0,
@@ -299,31 +601,57 @@ struct Buf {
 }
 
 impl Default for Buf {
-    fn default() -> Buf { Buf::new(4) }
+    fn default() -> Buf {
+        Buf::new(4)
+    }
 }
 
 impl Buf {
-    fn new(len: usize) -> Buf { Buf { data: vec![0.0; len.max(4)], w: 0, filled: 0 } }
-    fn len(&self) -> usize { self.data.len() }
+    fn new(len: usize) -> Buf {
+        Buf {
+            data: vec![0.0; len.max(4)],
+            w: 0,
+            filled: 0,
+        }
+    }
+    fn len(&self) -> usize {
+        self.data.len()
+    }
     #[inline]
     fn push(&mut self, x: f32) {
         self.data[self.w] = x;
-        self.w = if self.w + 1 == self.data.len() { 0 } else { self.w + 1 };
+        self.w = if self.w + 1 == self.data.len() {
+            0
+        } else {
+            self.w + 1
+        };
         self.filled = (self.filled + 1).min(self.data.len());
     }
     /// The sample written `d` pushes ago (1 is the last one).
     #[inline]
     fn at(&self, d: usize) -> f32 {
-        if d == 0 || d > self.filled { return 0.0; }
-        let i = if self.w >= d { self.w - d } else { self.w + self.data.len() - d };
+        if d == 0 || d > self.filled {
+            return 0.0;
+        }
+        let i = if self.w >= d {
+            self.w - d
+        } else {
+            self.w + self.data.len() - d
+        };
         self.data[i]
     }
     /// Linear interpolation from `d` (at least 1) toward `d + 1` pushes ago.
     #[inline]
     fn lin(&self, d: usize, t: f32) -> f32 {
-        if d >= self.filled { return lerp(self.at(d), self.at(d + 1), t); }
+        if d >= self.filled {
+            return lerp(self.at(d), self.at(d + 1), t);
+        }
         let n = self.data.len();
-        let i = if self.w > d { self.w - d - 1 } else { self.w + n - d - 1 };
+        let i = if self.w > d {
+            self.w - d - 1
+        } else {
+            self.w + n - d - 1
+        };
         let j = if i + 1 == n { 0 } else { i + 1 };
         lerp(self.data[j], self.data[i], t)
     }
@@ -334,11 +662,21 @@ impl Buf {
     #[inline]
     fn cubic(&self, d: usize, t: f32) -> f32 {
         if d + 2 > self.filled || d < 2 {
-            return hermite(self.at(d - 1), self.at(d), self.at(d + 1), self.at(d + 2), t);
+            return hermite(
+                self.at(d - 1),
+                self.at(d),
+                self.at(d + 1),
+                self.at(d + 2),
+                t,
+            );
         }
         let n = self.data.len();
         // The index of at(d + 2), the oldest point; the rest follow it.
-        let i = if self.w > d + 1 { self.w - d - 2 } else { self.w + n - d - 2 };
+        let i = if self.w > d + 1 {
+            self.w - d - 2
+        } else {
+            self.w + n - d - 2
+        };
         let at = |k: usize| self.data[if i + k >= n { i + k - n } else { i + k }];
         hermite(at(3), at(2), at(1), at(0), t)
     }
@@ -355,13 +693,21 @@ impl Buf {
         let n = out.len();
         let len = self.data.len();
         if d + 2 <= self.filled {
-            let s = if self.w > d + 1 { self.w - d - 2 } else { self.w + len - d - 2 };
+            let s = if self.w > d + 1 {
+                self.w - d - 2
+            } else {
+                self.w + len - d - 2
+            };
             if s + n + 2 < len {
-                for (o, w) in out.iter_mut().zip(self.data[s..s + n + 3].windows(4)) { *o = h[0] * w[3] + h[1] * w[2] + h[2] * w[1] + h[3] * w[0]; }
+                for (o, w) in out.iter_mut().zip(self.data[s..s + n + 3].windows(4)) {
+                    *o = h[0] * w[3] + h[1] * w[2] + h[2] * w[1] + h[3] * w[0];
+                }
                 return;
             }
         }
-        for (k, o) in out.iter_mut().enumerate() { *o = self.cubic_taps(d - k, h); }
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = self.cubic_taps(d - k, h);
+        }
     }
     /// A line's read across a chunk: `out[k] = cubic(d - k - 1, r - d)`
     /// with `r = from + glide * (at + k + 1)` and `d` its whole frames, as
@@ -418,19 +764,29 @@ impl Buf {
         let n = out.len();
         let len = self.data.len();
         if d < self.filled {
-            let s = if self.w > d { self.w - d - 1 } else { self.w + len - d - 1 };
+            let s = if self.w > d {
+                self.w - d - 1
+            } else {
+                self.w + len - d - 1
+            };
             if s + n < len {
                 let seg = &self.data[s..s + n + 1];
-                for (k, o) in out.iter_mut().enumerate() { *o += g * lerp(seg[k + 1], seg[k], t); }
+                for (k, o) in out.iter_mut().enumerate() {
+                    *o += g * lerp(seg[k + 1], seg[k], t);
+                }
                 return;
             }
         }
-        for (k, o) in out.iter_mut().enumerate() { *o += g * self.lin(d - k, t); }
+        for (k, o) in out.iter_mut().enumerate() {
+            *o += g * self.lin(d - k, t);
+        }
     }
     /// A first-order all-pass (Thiran) read from `d` toward `d + 1`:
     /// `y = at(d + 1) + eta * (at(d) - y')`, with `y'` the last output.
     #[inline]
-    fn thiran(&self, d: usize, eta: f32, last: f32) -> f32 { flush(self.at(d + 1) + eta * (self.at(d) - last)) }
+    fn thiran(&self, d: usize, eta: f32, last: f32) -> f32 {
+        flush(self.at(d + 1) + eta * (self.at(d) - last))
+    }
     /// `out[k] = y[k]`, `y[k] = thiran(d - k, eta, y[k - 1])`, with `last`
     /// carrying `y` from chunk to chunk: the stages' read in Eco, for a
     /// chunk read before any of its own writes. Needs `d >= out.len()`.
@@ -441,7 +797,11 @@ impl Buf {
         let mut y = *last;
         if d < self.filled {
             // at(d + 1 - k) is seg[k], at(d - k) is seg[k + 1].
-            let s = if self.w > d { self.w - d - 1 } else { self.w + len - d - 1 };
+            let s = if self.w > d {
+                self.w - d - 1
+            } else {
+                self.w + len - d - 1
+            };
             if s + n < len {
                 let seg = &self.data[s..s + n + 1];
                 for (k, o) in out.iter_mut().enumerate() {
@@ -467,7 +827,11 @@ impl Buf {
         let len = self.data.len();
         let mut y = *last;
         if d < self.filled {
-            let s = if self.w > d { self.w - d - 1 } else { self.w + len - d - 1 };
+            let s = if self.w > d {
+                self.w - d - 1
+            } else {
+                self.w + len - d - 1
+            };
             if s + n < len {
                 let seg = &self.data[s..s + n + 1];
                 for (k, o) in out.iter_mut().enumerate() {
@@ -492,15 +856,25 @@ impl Buf {
         let first = (len - self.w).min(n);
         self.data[self.w..self.w + first].copy_from_slice(&x[..first]);
         self.data[..n - first].copy_from_slice(&x[first..]);
-        self.w = if self.w + n >= len { self.w + n - len } else { self.w + n };
+        self.w = if self.w + n >= len {
+            self.w + n - len
+        } else {
+            self.w + n
+        };
         self.filled = (self.filled + n).min(len);
     }
-    fn forget(&mut self) { self.w = 0; self.filled = 0; }
+    fn forget(&mut self) {
+        self.w = 0;
+        self.filled = 0;
+    }
 }
 
 /// A read point: whole frames back and the fraction toward one more.
 #[derive(Clone, Copy, Default)]
-struct Read { d: usize, t: f32 }
+struct Read {
+    d: usize,
+    t: f32,
+}
 
 impl Read {
     /// `frames` back, kept between `lo` and the buffer's end.
@@ -517,14 +891,22 @@ impl Read {
     /// where the all-pass's delay is close to flat across the band (a
     /// read under 1.5 frames back takes 0.5 at least).
     fn thiran(self) -> (usize, f32) {
-        let (d, frac) = if self.t >= 0.5 || self.d < 2 { (self.d, self.t.max(0.5)) } else { (self.d - 1, 1.0 + self.t) };
+        let (d, frac) = if self.t >= 0.5 || self.d < 2 {
+            (self.d, self.t.max(0.5))
+        } else {
+            (self.d - 1, 1.0 + self.t)
+        };
         (d, (1.0 - frac) / (1.0 + frac))
     }
 }
 
 /// A sine modulator, advanced every [`UPDATE`] frames.
 #[derive(Clone, Copy, Default)]
-struct Lfo { phase: f32, depth_k: f32, rate_k: f32 }
+struct Lfo {
+    phase: f32,
+    depth_k: f32,
+    rate_k: f32,
+}
 
 impl Lfo {
     /// Advances by `step` cycles (times this modulator's rate factor) and
@@ -532,7 +914,9 @@ impl Lfo {
     #[inline]
     fn advance(&mut self, step: f32) -> f32 {
         self.phase += step * self.rate_k;
-        if self.phase >= 1.0 { self.phase -= self.phase.floor(); }
+        if self.phase >= 1.0 {
+            self.phase -= self.phase.floor();
+        }
         lfo(self.phase)
     }
 }
@@ -582,7 +966,15 @@ impl Allpass {
     /// band on every pass round the stage, and at half rate that top is
     /// the 5 to 10 kHz the ear still hears; the all-pass read loses none.
     #[inline]
-    fn update(&mut self, span: f32, depth: f32, step: f32, decay: Option<f32>, ring: f32, u: &Tick) {
+    fn update(
+        &mut self,
+        span: f32,
+        depth: f32,
+        step: f32,
+        decay: Option<f32>,
+        ring: f32,
+        u: &Tick,
+    ) {
         let (max, thiran) = (u.stage_max, u.thiran);
         // Whole frames, as in Cloud Seed: unmodulated, a stage is exactly
         // all-pass (a fractional read would dull every pass).
@@ -591,8 +983,14 @@ impl Allpass {
             // 60 dB down after decay * ring: feedback^(decay * ring / delay) = 1e-3.
             self.cap = (-3.0 * LN_10 * self.delay / (decay * ring)).exp();
         }
-        let amt = (depth * self.lfo.depth_k).min(self.delay - MIN_STAGE).max(0.0);
-        let m = if step > 0.0 { self.lfo.advance(step) } else { lfo(self.lfo.phase) };
+        let amt = (depth * self.lfo.depth_k)
+            .min(self.delay - MIN_STAGE)
+            .max(0.0);
+        let m = if step > 0.0 {
+            self.lfo.advance(step)
+        } else {
+            lfo(self.lfo.phase)
+        };
         let r = Read::new(self.delay + amt * m, MIN_STAGE, self.buf.len());
         self.thiran = thiran;
         if thiran {
@@ -611,7 +1009,8 @@ impl Allpass {
             // Longer than the chunk: read it all, then write it all.
             let (mut y, mut v) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
             if self.thiran {
-                self.buf.thiran_run(d, self.eta, &mut self.last, &mut y[..n]);
+                self.buf
+                    .thiran_run(d, self.eta, &mut self.last, &mut y[..n]);
             } else {
                 self.buf.cubic_run(d, &h, &mut y[..n]);
             }
@@ -672,7 +1071,9 @@ impl Line {
         self.damp = 0.0;
         self.low = 0.0;
         self.high = 0.0;
-        for s in &mut self.stages { s.restart(); }
+        for s in &mut self.stages {
+            s.restart();
+        }
     }
 
     /// Runs the loop over a chunk of `x.len()` frames starting `at` frames
@@ -690,7 +1091,9 @@ impl Line {
         // in the update interval, so any chunking rounds it the same way.
         self.buf.cubic_glide(self.from, glide, at, &mut y[..n]);
         let mut z = y;
-        for st in &mut self.stages[..c.late_stages] { st.run(&mut z[..n], &f.late_fb[..n]); }
+        for st in &mut self.stages[..c.late_stages] {
+            st.run(&mut z[..n], &f.late_fb[..n]);
+        }
         let mut prev = self.state;
         let mut v = [0.0f32; CHUNK];
         for k in 0..n {
@@ -806,10 +1209,14 @@ impl Side {
         let stage = frames(MAX_STAGE_S + 0.002);
         self.pre = Buf::new(frames(MAX_PRE_S));
         self.taps = Buf::new(frames(MAX_TAP_S));
-        for s in &mut self.early { s.buf = Buf::new(stage); }
+        for s in &mut self.early {
+            s.buf = Buf::new(stage);
+        }
         for line in &mut self.lines {
             line.buf = Buf::new(frames(MAX_LINE_S));
-            for s in &mut line.stages { s.buf = Buf::new(stage); }
+            for s in &mut line.stages {
+                s.buf = Buf::new(stage);
+            }
         }
     }
 
@@ -830,7 +1237,9 @@ impl Side {
         }
         let mut s = [0.0f32; 48];
         series(c.seeds[1], cross, &mut s);
-        for (i, st) in self.early.iter_mut().enumerate() { st.seed(s[i], s[12 + i], s[24 + i], s[36 + i]); }
+        for (i, st) in self.early.iter_mut().enumerate() {
+            st.seed(s[i], s[12 + i], s[24 + i], s[36 + i]);
+        }
         series(c.seeds[2], cross, &mut s);
         for (i, line) in self.lines.iter_mut().enumerate() {
             line.lfo.depth_k = 0.7 + 0.3 * s[i];
@@ -841,7 +1250,9 @@ impl Side {
         let mut d = [0.0f32; 48];
         for (i, line) in self.lines.iter_mut().enumerate() {
             series(c.seeds[3] * (i as u64 + 1), cross, &mut d);
-            for (k, st) in line.stages.iter_mut().enumerate() { st.seed(d[k], d[12 + k], d[24 + k], d[36 + k]); }
+            for (k, st) in line.stages.iter_mut().enumerate() {
+                st.seed(d[k], d[12 + k], d[24 + k], d[36 + k]);
+            }
         }
     }
 
@@ -852,13 +1263,29 @@ impl Side {
         if old.taps == 0 && new.taps > 0 {
             self.taps.forget();
         }
-        for last in self.tap_last.iter_mut().take(new.taps).skip(old.taps) { *last = 0.0; }
-        for st in self.early.iter_mut().take(new.early_stages).skip(old.early_stages) { st.restart(); }
+        for last in self.tap_last.iter_mut().take(new.taps).skip(old.taps) {
+            *last = 0.0;
+        }
+        for st in self
+            .early
+            .iter_mut()
+            .take(new.early_stages)
+            .skip(old.early_stages)
+        {
+            st.restart();
+        }
         for (i, line) in self.lines.iter_mut().enumerate().take(new.lines) {
             if i >= old.lines {
                 line.restart();
             } else {
-                for st in line.stages.iter_mut().take(new.late_stages).skip(old.late_stages) { st.restart(); }
+                for st in line
+                    .stages
+                    .iter_mut()
+                    .take(new.late_stages)
+                    .skip(old.late_stages)
+                {
+                    st.restart();
+                }
             }
         }
     }
@@ -869,8 +1296,12 @@ impl Side {
         self.pre.forget();
         self.taps.forget();
         self.tap_last = [0.0; MAX_TAPS];
-        for s in &mut self.early { s.restart(); }
-        for line in &mut self.lines { line.restart(); }
+        for s in &mut self.early {
+            s.restart();
+        }
+        for line in &mut self.lines {
+            line.restart();
+        }
     }
 
     /// Moves every read point and, when `gains`, recomputes the feedback
@@ -889,18 +1320,38 @@ impl Side {
             }
         }
         let decay = gains.then_some(u.decay);
-        for st in &mut self.early[..c.early_stages] { st.update(u.early_span, u.early_depth, step * u.early_rate, decay, EARLY_RING, u); }
+        for st in &mut self.early[..c.early_stages] {
+            st.update(
+                u.early_span,
+                u.early_depth,
+                step * u.early_rate,
+                decay,
+                EARLY_RING,
+                u,
+            );
+        }
         for line in &mut self.lines[..c.lines] {
             let mut lp = 0.0;
             for st in &mut line.stages[..c.late_stages] {
-                st.update(u.late_span, u.late_depth, step * u.late_rate, decay, LATE_RING, u);
+                st.update(
+                    u.late_span,
+                    u.late_depth,
+                    step * u.late_rate,
+                    decay,
+                    LATE_RING,
+                    u,
+                );
                 lp += st.delay;
             }
             let amt = u.line_depth * line.lfo.depth_k;
             // Whole frames, as in Cloud Seed, so an unmodulated loop is
             // lossless (Freeze then holds for good).
             line.delay = (u.size * line.size_k).round().max((amt + MIN_LINE).ceil());
-            let m = if step > 0.0 { line.lfo.advance(step) } else { lfo(line.lfo.phase) };
+            let m = if step > 0.0 {
+                line.lfo.advance(step)
+            } else {
+                lfo(line.lfo.phase)
+            };
             let to = (line.delay + amt * m).clamp(MIN_LINE, (line.buf.len() - 2) as f32);
             // A held update (a reset or a new character) jumps; a moving
             // one glides from the last point.
@@ -918,7 +1369,16 @@ impl Side {
     /// `early` and the late signal to `late`.
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    fn run(&mut self, x: &mut [f32], at: usize, c: &Character, f: &Frames, eq: &Eq, early: &mut [f32], late: &mut [f32]) {
+    fn run(
+        &mut self,
+        x: &mut [f32],
+        at: usize,
+        c: &Character,
+        f: &Frames,
+        eq: &Eq,
+        early: &mut [f32],
+        late: &mut [f32],
+    ) {
         let n = x.len();
         for v in x.iter_mut().zip(&f.low[..n]).zip(&f.high[..n]) {
             let ((x, &lo), &hi) = v;
@@ -942,19 +1402,33 @@ impl Side {
             let mut y = [0.0f32; CHUNK];
             if self.tap_thiran {
                 for j in 0..c.taps {
-                    self.taps.add_run_thiran(self.tap_read[j].d + n - 1, self.tap_eta[j], self.tap_gain[j], &mut self.tap_last[j], &mut y[..n]);
+                    self.taps.add_run_thiran(
+                        self.tap_read[j].d + n - 1,
+                        self.tap_eta[j],
+                        self.tap_gain[j],
+                        &mut self.tap_last[j],
+                        &mut y[..n],
+                    );
                 }
             } else {
-                for (r, &g) in self.tap_read[..c.taps].iter().zip(&self.tap_gain) { self.taps.add_run(r.d + n - 1, r.t, g, &mut y[..n]); }
+                for (r, &g) in self.tap_read[..c.taps].iter().zip(&self.tap_gain) {
+                    self.taps.add_run(r.d + n - 1, r.t, g, &mut y[..n]);
+                }
             }
             x.copy_from_slice(&y[..n]);
         }
-        for st in &mut self.early[..c.early_stages] { st.run(x, &f.early_fb[..n]); }
+        for st in &mut self.early[..c.early_stages] {
+            st.run(x, &f.early_fb[..n]);
+        }
         early[..n].copy_from_slice(x);
         let mut sum = [0.0f32; CHUNK];
-        for line in &mut self.lines[..c.lines] { line.run(x, at, c, f, eq, &mut sum[..n]); }
+        for line in &mut self.lines[..c.lines] {
+            line.run(x, at, c, f, eq, &mut sum[..n]);
+        }
         let norm = 1.0 / (c.lines as f32).sqrt();
-        for (l, s) in late.iter_mut().zip(&sum[..n]) { *l = s * norm; }
+        for (l, s) in late.iter_mut().zip(&sum[..n]) {
+            *l = s * norm;
+        }
     }
 }
 
@@ -1003,8 +1477,12 @@ impl EcoRate {
         e
     }
     fn reset(&mut self) {
-        for d in &mut self.down { d.reset(); }
-        for u in &mut self.up { u.reset(); }
+        for d in &mut self.down {
+            d.reset();
+        }
+        for u in &mut self.up {
+            u.reset();
+        }
         self.held = 0;
         self.queue = [[0.0; QUEUE]; 2];
         self.head = 0;
@@ -1022,7 +1500,10 @@ impl EcoRate {
             return None;
         }
         self.held = 0;
-        Some((self.down[0].run([self.first.0, l]), self.down[1].run([self.first.1, r])))
+        Some((
+            self.down[0].run([self.first.0, l]),
+            self.down[1].run([self.first.1, r]),
+        ))
     }
     /// One network frame of the wet signal in, two node frames queued.
     #[inline]
@@ -1041,7 +1522,11 @@ impl EcoRate {
     #[inline]
     fn pop(&mut self) -> (f32, f32) {
         let v = (self.queue[0][self.head], self.queue[1][self.head]);
-        self.head = if self.head + 1 == QUEUE { 0 } else { self.head + 1 };
+        self.head = if self.head + 1 == QUEUE {
+            0
+        } else {
+            self.head + 1
+        };
         self.len -= 1;
         v
     }
@@ -1117,7 +1602,9 @@ pub struct Cloud {
 }
 
 impl Default for Cloud {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cloud {
@@ -1167,7 +1654,9 @@ impl Cloud {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -1191,7 +1680,13 @@ impl Cloud {
     }
 
     /// The network's rate at quality `q`.
-    fn rate_for(&self, q: usize) -> u32 { if q == ECO { (self.host / 2).max(1) } else { self.host } }
+    fn rate_for(&self, q: usize) -> u32 {
+        if q == ECO {
+            (self.host / 2).max(1)
+        } else {
+            self.host
+        }
+    }
 
     /// Sets the network's rate for quality `q` and everything timed by it.
     /// The mix glides at the node's rate: at Eco it is applied outside the
@@ -1199,9 +1694,26 @@ impl Cloud {
     fn set_rate(&mut self, q: usize) {
         let rate = self.rate_for(q);
         self.rate = rate;
-        for s in [&mut self.size, &mut self.pre, &mut self.log_damp, &mut self.log_low, &mut self.log_high] { s.set_time(rate, 60.0); }
-        for s in [&mut self.log_decay, &mut self.diff, &mut self.modu, &mut self.log_rate] { s.set_time(rate, 100.0); }
-        for s in [&mut self.width, &mut self.early] { s.set_time(rate, 20.0); }
+        for s in [
+            &mut self.size,
+            &mut self.pre,
+            &mut self.log_damp,
+            &mut self.log_low,
+            &mut self.log_high,
+        ] {
+            s.set_time(rate, 60.0);
+        }
+        for s in [
+            &mut self.log_decay,
+            &mut self.diff,
+            &mut self.modu,
+            &mut self.log_rate,
+        ] {
+            s.set_time(rate, 100.0);
+        }
+        for s in [&mut self.width, &mut self.early] {
+            s.set_time(rate, 20.0);
+        }
         self.mix.set_time(self.host, 20.0);
         self.frozen.set_time(rate, 30.0);
         self.dip_step = 1.0 / (0.015 * rate as f32);
@@ -1217,7 +1729,9 @@ impl Cloud {
         self.q = q;
         if rerate {
             self.set_rate(q);
-            for side in self.sides.iter_mut() { side.restart(); }
+            for side in self.sides.iter_mut() {
+                side.restart();
+            }
             self.eco.reset();
         }
         self.quiet = 0;
@@ -1263,12 +1777,18 @@ impl Cloud {
     /// `advance` steps the modulators.
     fn update(&mut self, advance: bool) {
         let u = self.tick_values();
-        let step = if advance { self.log_rate.value.exp2() / self.rate as f32 * UPDATE as f32 } else { 0.0 };
+        let step = if advance {
+            self.log_rate.value.exp2() / self.rate as f32 * UPDATE as f32
+        } else {
+            0.0
+        };
         let now = (self.size.value, self.log_decay.value);
         let gains = now != self.gain_for;
         self.gain_for = now;
         let c = &self.c;
-        for side in self.sides.iter_mut() { side.update(c, &u, step, gains); }
+        for side in self.sides.iter_mut() {
+            side.update(c, &u, step, gains);
+        }
     }
 
     fn filters(&mut self) {
@@ -1282,7 +1802,9 @@ impl Cloud {
     /// how many frames it ran.
     /// Whether a change waiting on the dip moves the network to another
     /// rate (to or from Eco).
-    fn rerate_pending(&self) -> bool { self.rate_for(self.want_q) != self.rate }
+    fn rerate_pending(&self) -> bool {
+        self.rate_for(self.want_q) != self.rate
+    }
 
     /// Runs the network over up to one chunk (to the next modulator
     /// update), in place. With `wet_only` (Eco, at half rate) it writes
@@ -1299,7 +1821,12 @@ impl Cloud {
             high: [0.0; CHUNK],
             pre: [0.0; CHUNK],
         };
-        let (mut gain, mut early, mut width, mut mix) = ([0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK]);
+        let (mut gain, mut early, mut width, mut mix) = (
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+        );
         let ms = self.rate as f32 / 1000.0;
         let mut n = 0;
         while n < room.min(left.len()) {
@@ -1312,7 +1839,9 @@ impl Cloud {
                     self.quiet = self.quiet.saturating_add(1);
                 } else if next <= 0.0 {
                     // The swap starts a chunk of its own.
-                    if n > 0 { break; }
+                    if n > 0 {
+                        break;
+                    }
                     self.dip = 0.0;
                     self.configure(self.want, self.want_q);
                 } else {
@@ -1329,10 +1858,17 @@ impl Cloud {
             self.log_rate.next();
             let mut moved = false;
             for s in [&mut self.log_damp, &mut self.log_low, &mut self.log_high] {
-                if !s.settled() { s.next(); moved = true; }
+                if !s.settled() {
+                    s.next();
+                    moved = true;
+                }
             }
-            if moved { self.filters(); }
-            if n == 0 && self.tick == 0 { self.update(true); }
+            if moved {
+                self.filters();
+            }
+            if n == 0 && self.tick == 0 {
+                self.update(true);
+            }
             let diff = self.diff.next();
             f.late_fb[n] = LATE_FB * diff;
             f.early_fb[n] = EARLY_FB * diff;
@@ -1344,7 +1880,9 @@ impl Cloud {
             gain[n] = self.trim * self.dip;
             early[n] = self.early.next();
             width[n] = self.width.next();
-            if !wet_only { mix[n] = self.mix.next(); }
+            if !wet_only {
+                mix[n] = self.mix.next();
+            }
             n += 1;
         }
         self.tick = (self.tick + n as u32) % UPDATE;
@@ -1357,7 +1895,12 @@ impl Cloud {
             xl[k] = (left[k] * (1.0 - cm) + right[k] * cm) * inp;
             xr[k] = (right[k] * (1.0 - cm) + left[k] * cm) * inp;
         }
-        let (mut el, mut ll, mut er, mut lr) = ([0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK]);
+        let (mut el, mut ll, mut er, mut lr) = (
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+            [0.0f32; CHUNK],
+        );
         let eq = self.eq;
         let [a, b] = &mut *self.sides;
         a.run(&mut xl[..n], at, c, &f, &eq, &mut el, &mut ll);
@@ -1395,8 +1938,12 @@ impl Cloud {
             }
         }
         let mut k = 0;
-        while k < m { k += self.run_chunk(&mut hl[k..m], &mut hr[k..m], true); }
-        for j in 0..m { self.eco.up(hl[j], hr[j]); }
+        while k < m {
+            k += self.run_chunk(&mut hl[k..m], &mut hr[k..m], true);
+        }
+        for j in 0..m {
+            self.eco.up(hl[j], hr[j]);
+        }
         for i in 0..take {
             let (wl, wr) = self.eco.pop();
             let mix = self.mix.next();
@@ -1411,7 +1958,8 @@ impl Cloud {
         while at < left.len() {
             // A change to or from Eco happens at a modulator update, after
             // the dip, once the resamplers hold only silence.
-            if self.tick == 0 && self.dip == 0.0 && self.quiet >= ECO_DRAIN && self.rerate_pending() {
+            if self.tick == 0 && self.dip == 0.0 && self.quiet >= ECO_DRAIN && self.rerate_pending()
+            {
                 self.configure(self.want, self.want_q);
             }
             at += if self.q == ECO {
@@ -1424,34 +1972,59 @@ impl Cloud {
 }
 
 impl Node for Cloud {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.host {
             // Sized for the node's rate: Eco uses half of each buffer.
-            for side in self.sides.iter_mut() { side.allocate(rate); }
+            for side in self.sides.iter_mut() {
+                side.allocate(rate);
+            }
             self.host = rate;
             self.set_rate(self.q);
             self.configure(self.ch, self.q);
-            for side in self.sides.iter_mut() { side.restart(); }
+            for side in self.sides.iter_mut() {
+                side.restart();
+            }
             self.eco.reset();
         }
         self.set_rate(self.q);
     }
     fn reset(&mut self) {
         for s in [
-            &mut self.size, &mut self.log_decay, &mut self.pre, &mut self.diff, &mut self.modu, &mut self.log_rate, &mut self.log_damp, &mut self.log_low,
-            &mut self.log_high, &mut self.width, &mut self.early, &mut self.mix, &mut self.frozen,
+            &mut self.size,
+            &mut self.log_decay,
+            &mut self.pre,
+            &mut self.diff,
+            &mut self.modu,
+            &mut self.log_rate,
+            &mut self.log_damp,
+            &mut self.log_low,
+            &mut self.log_high,
+            &mut self.width,
+            &mut self.early,
+            &mut self.mix,
+            &mut self.frozen,
         ] {
             s.snap(s.target);
         }
         self.dip = 1.0;
         self.tick = 0;
         self.configure(self.want, self.want_q);
-        for side in self.sides.iter_mut() { side.restart(); }
+        for side in self.sides.iter_mut() {
+            side.restart();
+        }
         self.eco.reset();
         self.update(false);
         self.filters();
@@ -1459,18 +2032,26 @@ impl Node for Cloud {
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
     fn tail_frames(&self) -> u32 {
-        if self.v[13] >= 0.5 { return u32::MAX; }
+        if self.v[13] >= 0.5 {
+            return u32::MAX;
+        }
         let c = &Character::get(self.want, self.want_q);
         let scale = self.v[1] / REF_SIZE_MS;
         // How long a diffuser rings: passes to fall 90 dB, times its
         // longest stage.
         let ring = |fb: f32, ms: f32, stages: usize| {
-            if stages == 0 { return 0.0; }
+            if stages == 0 {
+                return 0.0;
+            }
             let fb = (fb * self.v[4] / 100.0).clamp(0.01, 0.99);
             (90.0 / (-20.0 * fb.log10())).min(200.0) * ms * scale / 1000.0
         };
@@ -1483,7 +2064,11 @@ impl Node for Cloud {
             + ring(EARLY_FB, c.early_ms, c.early_stages)
             + ring(LATE_FB, c.late_ms, c.late_stages)
             + 0.1;
-        let eco = if self.want_q == ECO { ECO_DELAY as f32 / self.host as f32 } else { 0.0 };
+        let eco = if self.want_q == ECO {
+            ECO_DELAY as f32 / self.host as f32
+        } else {
+            0.0
+        };
         ((secs + eco) * self.host as f32).min(u32::MAX as f32 - 1.0) as u32
     }
 }
@@ -1518,7 +2103,9 @@ mod tests {
     #[test]
     fn a_forgotten_buffer_reads_silence() {
         let mut b = Buf::new(8);
-        for x in 1..=20 { b.push(x as f32); }
+        for x in 1..=20 {
+            b.push(x as f32);
+        }
         assert_eq!(b.at(1), 20.0);
         assert_eq!(b.at(8), 13.0);
         b.forget();
@@ -1543,11 +2130,20 @@ mod tests {
                     for (k, &v) in run[..n].iter().enumerate() {
                         assert_eq!(v, b.cubic_taps(d - k, &h), "cubic w {w} d {d} k {k} t {t}");
                         // The FIR form is the polynomial's, to rounding.
-                        assert!((v - b.cubic(d - k, t)).abs() < 1e-6, "taps w {w} d {d} k {k} t {t}");
+                        assert!(
+                            (v - b.cubic(d - k, t)).abs() < 1e-6,
+                            "taps w {w} d {d} k {k} t {t}"
+                        );
                     }
                     let mut add = [1.0f32; 8];
                     b.add_run(d, t, 0.5, &mut add[..n]);
-                    for (k, &v) in add[..n].iter().enumerate() { assert_eq!(v, 1.0 + 0.5 * b.lin(d - k, t), "lin w {w} d {d} k {k} t {t}"); }
+                    for (k, &v) in add[..n].iter().enumerate() {
+                        assert_eq!(
+                            v,
+                            1.0 + 0.5 * b.lin(d - k, t),
+                            "lin w {w} d {d} k {k} t {t}"
+                        );
+                    }
                     let (m, eta) = Read { d, t }.thiran();
                     let (mut add, mut last) = ([1.0f32; 8], 0.25);
                     b.add_run_thiran(m, eta, 0.5, &mut last, &mut add[..n]);
@@ -1585,7 +2181,12 @@ mod tests {
                 ramp.add_run_thiran(m, eta, 1.0, &mut lr, &mut yr);
                 tone.add_run_thiran(m, eta, 1.0, &mut lt, &mut yt);
                 if i >= 100 {
-                    assert!((yr[0] - (i as f32 - pos)).abs() < 2e-3, "pos {pos} frame {i}: {} for {}", yr[0], i as f32 - pos);
+                    assert!(
+                        (yr[0] - (i as f32 - pos)).abs() < 2e-3,
+                        "pos {pos} frame {i}: {} for {}",
+                        yr[0],
+                        i as f32 - pos
+                    );
                     power += (yt[0] * yt[0]) as f64;
                 }
             }
@@ -1610,14 +2211,20 @@ mod tests {
                             let r = from + glide * (at + k + 1) as f32;
                             r < (k + 3) as f32
                         });
-                        if close { continue; }
+                        if close {
+                            continue;
+                        }
                         let mut got = [0.0f32; 8];
                         b.cubic_glide(from, glide, at, &mut got[..n]);
                         for (k, &v) in got[..n].iter().enumerate() {
                             let r = from + glide * (at + k + 1) as f32;
                             let d = r as usize;
                             let want = b.cubic(d - k - 1, r - d as f32);
-                            assert_eq!(v.to_bits(), want.to_bits(), "w {w} from {from} glide {glide} at {at} k {k}");
+                            assert_eq!(
+                                v.to_bits(),
+                                want.to_bits(),
+                                "w {w} from {from} glide {glide} at {at} k {k}"
+                            );
                         }
                     }
                 }

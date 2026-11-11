@@ -8,7 +8,13 @@ use mpfree_touch::touchlab::{parse_line, reader_line, step, StepRecorder, STEPS}
 const DT: u64 = 8_800;
 
 fn ev(id: u64, phase: Phase, x: f32, y: f32, t: u64) -> PointerEvent {
-    PointerEvent { id: ContactId(id), phase, x, y, time_us: t }
+    PointerEvent {
+        id: ContactId(id),
+        phase,
+        x,
+        y,
+        time_us: t,
+    }
 }
 
 /// Drive a recorder and a recognizer with pointer frames (one event each).
@@ -21,7 +27,11 @@ struct Rig {
 impl Rig {
     fn new(name: &str) -> Self {
         let cfg = GestureConfig::default();
-        Self { rec: StepRecorder::new(step(name).unwrap(), cfg.swipe_min_speed), g: GestureRecognizer::new(cfg), lines: Vec::new() }
+        Self {
+            rec: StepRecorder::new(step(name).unwrap(), cfg.swipe_min_speed),
+            g: GestureRecognizer::new(cfg),
+            lines: Vec::new(),
+        }
     }
     fn feed(&mut self, e: PointerEvent) {
         self.rec.pointer(&e);
@@ -40,10 +50,26 @@ impl Rig {
     }
     /// A stroke of `n` reports moving (dx, dy) each, starting at t0.
     #[allow(clippy::too_many_arguments)]
-    fn stroke(&mut self, id: u64, x: f32, y: f32, dx: f32, dy: f32, n: u64, t0: u64, pause: u64) -> u64 {
+    fn stroke(
+        &mut self,
+        id: u64,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        n: u64,
+        t0: u64,
+        pause: u64,
+    ) -> u64 {
         self.feed(ev(id, Phase::Down, x, y, t0));
         for i in 1..=n {
-            self.feed(ev(id, Phase::Move, x + dx * i as f32, y + dy * i as f32, t0 + i * DT));
+            self.feed(ev(
+                id,
+                Phase::Move,
+                x + dx * i as f32,
+                y + dy * i as f32,
+                t0 + i * DT,
+            ));
         }
         let end = t0 + n * DT + pause + DT;
         self.feed(ev(id, Phase::Up, x + dx * n as f32, y + dy * n as f32, end));
@@ -76,7 +102,16 @@ fn five_taps_pass() {
     let mut r = Rig::new("taps");
     let mut t = 0;
     for k in 0..5 {
-        t = r.stroke(k + 1, 100.0 + 200.0 * k as f32, 400.0, 0.3, 0.0, 3, t + 400_000, 0);
+        t = r.stroke(
+            k + 1,
+            100.0 + 200.0 * k as f32,
+            400.0,
+            0.3,
+            0.0,
+            3,
+            t + 400_000,
+            0,
+        );
     }
     let s = r.rec.finish();
     assert!(s.pass, "{s:?}");
@@ -145,7 +180,10 @@ fn a_hold_reports_jitter_in_its_line() {
     let h = s.hold.unwrap();
     assert_eq!(h.samples, 40);
     let line = s.journal_line();
-    assert!(line.contains(" hold_n=40 ") && line.contains(" hold_hz=4.0 "), "{line}");
+    assert!(
+        line.contains(" hold_n=40 ") && line.contains(" hold_hz=4.0 "),
+        "{line}"
+    );
     // A short hold fails.
     let mut r = Rig::new("hold_corner");
     r.stroke(1, 50.0, 50.0, 0.1, 0.0, 10, 0, 1_000_000);

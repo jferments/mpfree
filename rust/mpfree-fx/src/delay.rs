@@ -21,34 +21,145 @@ pub mod ids {
     pub const FREEZE: u16 = 7;
 }
 
-const SYNCS: &[&str] = &["Free", "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1 bar"];
+const SYNCS: &[&str] = &[
+    "Free", "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2",
+    "1 bar",
+];
 /// Beats per sync choice (index 0, Free, is unused).
-const SYNC_BEATS: [f64; 13] = [0.0, 0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0];
+const SYNC_BEATS: [f64; 13] = [
+    0.0,
+    0.125,
+    1.0 / 6.0,
+    0.25,
+    0.375,
+    1.0 / 3.0,
+    0.5,
+    0.75,
+    2.0 / 3.0,
+    1.0,
+    1.5,
+    2.0,
+    4.0,
+];
 /// The longest delay, seconds (1 bar at 60 BPM).
 const MAX_SECONDS: f32 = 4.0;
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.delay", name: "Delay", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.delay",
+    name: "Delay",
+    kind: Kind::Effect,
+};
 static PARAMS: [ParamInfo; 8] = [
-    ParamInfo { id: 0, name: "Sync", group: "Time", min: 0.0, max: 12.0, default: 7.0, unit: Unit::None, curve: Curve::Choice(SYNCS), readonly: false },
-    ParamInfo { id: 1, name: "Time", group: "Time", min: 1.0, max: 4000.0, default: 375.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 2, name: "Feedback", group: "Repeats", min: 0.0, max: 110.0, default: 35.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 3, name: "Ping-pong", group: "Repeats", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: 4, name: "Tone", group: "Repeats", min: 500.0, max: 20_000.0, default: 7_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 5, name: "Saturation", group: "Repeats", min: 0.0, max: 100.0, default: 20.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 7, name: "Freeze", group: "Output", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Sync",
+        group: "Time",
+        min: 0.0,
+        max: 12.0,
+        default: 7.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SYNCS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Time",
+        group: "Time",
+        min: 1.0,
+        max: 4000.0,
+        default: 375.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Feedback",
+        group: "Repeats",
+        min: 0.0,
+        max: 110.0,
+        default: 35.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Ping-pong",
+        group: "Repeats",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Tone",
+        group: "Repeats",
+        min: 500.0,
+        max: 20_000.0,
+        default: 7_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Saturation",
+        group: "Repeats",
+        min: 0.0,
+        max: 100.0,
+        default: 20.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Freeze",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
 ];
 
 /// One channel's delay line with a cubic (Hermite) fractional read.
-struct Line { buf: Vec<f32>, w: usize }
+struct Line {
+    buf: Vec<f32>,
+    w: usize,
+}
 
 impl Line {
-    fn new(len: usize) -> Line { Line { buf: vec![0.0; len.max(8)], w: 0 } }
+    fn new(len: usize) -> Line {
+        Line {
+            buf: vec![0.0; len.max(8)],
+            w: 0,
+        }
+    }
     #[inline]
     fn write(&mut self, x: f32) {
         self.buf[self.w] = x;
         self.w += 1;
-        if self.w == self.buf.len() { self.w = 0; }
+        if self.w == self.buf.len() {
+            self.w = 0;
+        }
     }
     /// The signal `d` frames ago (`d` = 1 is the last sample written),
     /// interpolated; `d` is kept at 2 or more so every point is in the past.
@@ -59,7 +170,8 @@ impl Line {
         // Truncation is floor here (d > 0), with no library call.
         let di = d as usize as f32;
         let t = d - di;
-        let at = |k: isize| -> f32 { self.buf[((self.w as isize - k).rem_euclid(n as isize)) as usize] };
+        let at =
+            |k: isize| -> f32 { self.buf[((self.w as isize - k).rem_euclid(n as isize)) as usize] };
         let k = di as isize;
         // Points at delays k-1, k, k+1, k+2; t moves from k toward k+1.
         let (x0, x1, x2, x3) = (at(k - 1), at(k), at(k + 1), at(k + 2));
@@ -68,7 +180,10 @@ impl Line {
         let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
         ((c3 * t + c2) * t + c1) * t + x1
     }
-    fn clear(&mut self) { self.buf.fill(0.0); self.w = 0; }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.w = 0;
+    }
 }
 
 /// Stereo delay with sync, ping-pong, filtered and saturated feedback, and
@@ -90,7 +205,9 @@ pub struct Delay {
 }
 
 impl Default for Delay {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Delay {
@@ -116,7 +233,9 @@ impl Delay {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -132,7 +251,11 @@ impl Delay {
     /// The delay in frames for the current settings and tempo.
     fn target_frames(&self, bpm: f64) -> f32 {
         let sync = self.v[0] as usize;
-        let secs = if sync == 0 || bpm <= 0.0 { self.v[1] as f64 / 1000.0 } else { SYNC_BEATS[sync.min(12)] * 60.0 / bpm };
+        let secs = if sync == 0 || bpm <= 0.0 {
+            self.v[1] as f64 / 1000.0
+        } else {
+            SYNC_BEATS[sync.min(12)] * 60.0 / bpm
+        };
         (secs as f32 * self.rate as f32).clamp(1.0, MAX_SECONDS * self.rate as f32)
     }
 
@@ -148,7 +271,13 @@ impl Delay {
             let fb = self.fb.next() + fz * (1.0 - self.fb.value);
             if !self.log_tone.settled() {
                 self.log_tone.next();
-                self.tone.set(SvfMode::LowPass, self.log_tone.value.exp2(), 0.707, 0.0, self.rate);
+                self.tone.set(
+                    SvfMode::LowPass,
+                    self.log_tone.value.exp2(),
+                    0.707,
+                    0.0,
+                    self.rate,
+                );
             }
             let sat = self.sat.next();
             if sat != sat_was {
@@ -182,10 +311,18 @@ impl Delay {
 }
 
 impl Node for Delay {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.rate {
@@ -194,35 +331,74 @@ impl Node for Delay {
         }
         self.rate = rate;
         self.frames.set_time(rate, 60.0);
-        for s in [&mut self.fb, &mut self.log_tone, &mut self.sat, &mut self.mix] { s.set_time(rate, 20.0); }
+        for s in [
+            &mut self.fb,
+            &mut self.log_tone,
+            &mut self.sat,
+            &mut self.mix,
+        ] {
+            s.set_time(rate, 20.0);
+        }
         self.frozen.set_time(rate, 30.0);
         self.frames.snap(self.target_frames(self.bpm));
         self.hp.set(SvfMode::HighPass, 60.0, 0.707, 0.0, rate);
-        self.tone.set(SvfMode::LowPass, self.log_tone.value.exp2(), 0.707, 0.0, rate);
+        self.tone.set(
+            SvfMode::LowPass,
+            self.log_tone.value.exp2(),
+            0.707,
+            0.0,
+            rate,
+        );
     }
     fn reset(&mut self) {
-        for s in [&mut self.fb, &mut self.log_tone, &mut self.sat, &mut self.mix, &mut self.frozen] { s.snap(s.target); }
+        for s in [
+            &mut self.fb,
+            &mut self.log_tone,
+            &mut self.sat,
+            &mut self.mix,
+            &mut self.frozen,
+        ] {
+            s.snap(s.target);
+        }
         self.frames.snap(self.target_frames(self.bpm));
-        for line in &mut self.lines { line.clear(); }
+        for line in &mut self.lines {
+            line.clear();
+        }
         self.tone.reset();
         self.hp.reset();
-        self.tone.set(SvfMode::LowPass, self.log_tone.value.exp2(), 0.707, 0.0, self.rate);
+        self.tone.set(
+            SvfMode::LowPass,
+            self.log_tone.value.exp2(),
+            0.707,
+            0.0,
+            self.rate,
+        );
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.bpm = ctx.bpm;
             self.frames.target = self.target_frames(ctx.bpm);
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
     fn tail_frames(&self) -> u32 {
-        if self.v[7] >= 0.5 { return u32::MAX; }
+        if self.v[7] >= 0.5 {
+            return u32::MAX;
+        }
         let fb = (self.v[2] / 100.0).clamp(0.0, 0.999);
         let d = self.frames.target.max(1.0);
         // Repeats until 60 dB down, capped at 30 s.
-        let repeats = if fb <= 0.001 { 1.0 } else { (-60.0 / (20.0 * fb.log10())).ceil() + 1.0 };
+        let repeats = if fb <= 0.001 {
+            1.0
+        } else {
+            (-60.0 / (20.0 * fb.log10())).ceil() + 1.0
+        };
         (d * repeats).min(30.0 * self.rate as f32) as u32
     }
 }

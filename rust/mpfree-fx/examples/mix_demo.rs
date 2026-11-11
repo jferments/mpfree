@@ -35,7 +35,10 @@ use std::f32::consts::TAU;
 
 use mpfree_fx::ids::{self, mixer as mx};
 use mpfree_fx::mpfree_node::{Ctx, NodeEvent, Timed};
-use mpfree_fx::{gain_to_db, CapturePoint, Cloud, Compressor, Delay, Drive, Mixer, MixerConfig, StripId, CLOUD_PRESETS};
+use mpfree_fx::{
+    gain_to_db, CapturePoint, Cloud, Compressor, Delay, Drive, Mixer, MixerConfig, StripId,
+    CLOUD_PRESETS,
+};
 
 const RATE: u32 = 48_000;
 const BPM: f64 = 96.0;
@@ -53,18 +56,33 @@ const DRIVE_BUS: StripId = StripId::Bus(1);
 const REVERB: StripId = StripId::Return(0);
 const DELAY: StripId = StripId::Return(1);
 
-fn step(s: f64) -> usize { (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize }
-fn bar(b: usize) -> usize { step((b as f64 - 1.0) * 16.0) }
-fn db(x: f32) -> f32 { gain_to_db(x) }
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32 }
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
-fn hz(midi: i32) -> f32 { 440.0 * 2f32.powf((midi - 69) as f32 / 12.0) }
+fn step(s: f64) -> usize {
+    (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize
+}
+fn bar(b: usize) -> usize {
+    step((b as f64 - 1.0) * 16.0)
+}
+fn db(x: f32) -> f32 {
+    gain_to_db(x)
+}
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32
+}
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+fn hz(midi: i32) -> f32 {
+    440.0 * 2f32.powf((midi - 69) as f32 / 12.0)
+}
 
 struct Noise(u64);
 
 impl Noise {
     fn next(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         ((self.0 >> 40) as f32 / (1u64 << 23) as f32) - 1.0
     }
 }
@@ -72,7 +90,10 @@ impl Noise {
 /// A saw from its harmonics below 10 kHz.
 fn saw(ph: f32, hz: f32) -> f32 {
     let n = ((10_000.0 / hz) as usize).clamp(1, 32);
-    (1..=n).map(|k| (TAU * ph * k as f32).sin() / k as f32).sum::<f32>() * 0.55
+    (1..=n)
+        .map(|k| (TAU * ph * k as f32).sin() / k as f32)
+        .sum::<f32>()
+        * 0.55
 }
 
 type Stem = (Vec<f32>, Vec<f32>);
@@ -82,7 +103,9 @@ fn add(s: &mut Stem, at: usize, len: usize, pan: f32, f: &mut dyn FnMut(usize) -
     let fade = (0.003 * RATE as f32) as usize;
     for k in 0..len {
         let i = at + k;
-        if i >= s.0.len() { break; }
+        if i >= s.0.len() {
+            break;
+        }
         let x = f(k) * ((len - k) as f32 / fade as f32).min(1.0);
         s.0[i] += x * (1.0 - pan);
         s.1[i] += x * (1.0 + pan);
@@ -103,7 +126,13 @@ const ROOTS: [i32; 4] = [33, 29, 36, 31];
 
 fn stems(total: usize) -> Stems {
     let z = || (vec![0.0f32; total], vec![0.0f32; total]);
-    let mut s = Stems { kick: z(), bass: z(), snare: z(), hats: z(), chords: z() };
+    let mut s = Stems {
+        kick: z(),
+        bass: z(),
+        snare: z(),
+        hats: z(),
+        chords: z(),
+    };
     let mut noise = Noise(5);
     let rate = RATE as f32;
     // Bars 1 to 12 play; bar 13 is one last hit.
@@ -113,32 +142,51 @@ fn stems(total: usize) -> Stems {
         let kicks: &[f64] = if last { &[0.0] } else { &[0.0, 4.0, 8.0, 12.0] };
         for &k in kicks {
             let mut ph = 0.0f32;
-            add(&mut s.kick, step(s0 + k), (0.35 * rate) as usize, 0.0, &mut |i| {
-                let t = i as f32 / rate;
-                ph += (48.0 + 120.0 * (-t * 32.0).exp()) / rate;
-                ((ph * TAU).sin() * 2.5).tanh() * (-t * 7.0).exp() * 0.55
-            });
+            add(
+                &mut s.kick,
+                step(s0 + k),
+                (0.35 * rate) as usize,
+                0.0,
+                &mut |i| {
+                    let t = i as f32 / rate;
+                    ph += (48.0 + 120.0 * (-t * 32.0).exp()) / rate;
+                    ((ph * TAU).sin() * 2.5).tanh() * (-t * 7.0).exp() * 0.55
+                },
+            );
         }
         let snares: &[f64] = if last { &[0.0] } else { &[4.0, 12.0] };
         for &k in snares {
             let mut ph = 0.0f32;
-            add(&mut s.snare, step(s0 + k), (0.25 * rate) as usize, 0.05, &mut |i| {
-                let t = i as f32 / rate;
-                ph += 190.0 / rate;
-                noise.next() * (-t * 16.0).exp() * 0.38 + (ph * TAU).sin() * (-t * 28.0).exp() * 0.28
-            });
+            add(
+                &mut s.snare,
+                step(s0 + k),
+                (0.25 * rate) as usize,
+                0.05,
+                &mut |i| {
+                    let t = i as f32 / rate;
+                    ph += 190.0 / rate;
+                    noise.next() * (-t * 16.0).exp() * 0.38
+                        + (ph * TAU).sin() * (-t * 28.0).exp() * 0.28
+                },
+            );
         }
         if !last {
             for h in 0..8 {
                 let vel = if h % 2 == 1 { 0.16 } else { 0.09 };
                 let mut prev = 0.0f32;
-                add(&mut s.hats, step(s0 + h as f64 * 2.0), (0.05 * rate) as usize, -0.3, &mut |i| {
-                    let t = i as f32 / rate;
-                    let n = noise.next();
-                    let hp = n - prev;
-                    prev = n;
-                    hp * (-t * 70.0).exp() * vel
-                });
+                add(
+                    &mut s.hats,
+                    step(s0 + h as f64 * 2.0),
+                    (0.05 * rate) as usize,
+                    -0.3,
+                    &mut |i| {
+                        let t = i as f32 / rate;
+                        let n = noise.next();
+                        let hp = n - prev;
+                        prev = n;
+                        hp * (-t * 70.0).exp() * vel
+                    },
+                );
             }
         }
         let chord = (b - 1) % 4;
@@ -147,7 +195,11 @@ fn stems(total: usize) -> Stems {
         for e in 0..notes {
             let f = hz(ROOTS[chord] + if e == 7 { 12 } else { 0 });
             let (mut ph, mut lp) = (0.0f32, 0.0f32);
-            let len = if last { (1.5 * rate) as usize } else { step(1.9) };
+            let len = if last {
+                (1.5 * rate) as usize
+            } else {
+                step(1.9)
+            };
             add(&mut s.bass, step(s0 + e as f64 * 2.0), len, 0.0, &mut |i| {
                 ph = (ph + f / rate).fract();
                 let t = i as f32 / rate;
@@ -159,7 +211,11 @@ fn stems(total: usize) -> Stems {
         // Chords: stabs on the "and" of 2 and of 4 (the delay answers them).
         let stabs: &[f64] = if last { &[0.0] } else { &[6.0, 14.0] };
         for &k in stabs {
-            let len = if last { (2.0 * rate) as usize } else { step(1.5) };
+            let len = if last {
+                (2.0 * rate) as usize
+            } else {
+                step(1.5)
+            };
             for (v, &n) in PROGRESSION[chord].iter().enumerate() {
                 let f = hz(n);
                 let mut ph = v as f32 * 0.21;
@@ -167,7 +223,10 @@ fn stems(total: usize) -> Stems {
                 add(&mut s.chords, step(s0 + k), len, pan, &mut |i| {
                     ph = (ph + f / rate).fract();
                     let t = i as f32 / rate;
-                    (saw(ph, f) * 0.5 + (TAU * ph).sin() * 0.5) * (t / 0.005).min(1.0) * (-t * 3.0).exp() * 0.16
+                    (saw(ph, f) * 0.5 + (TAU * ph).sin() * 0.5)
+                        * (t / 0.005).min(1.0)
+                        * (-t * 3.0).exp()
+                        * 0.16
                 });
             }
         }
@@ -184,8 +243,24 @@ struct Cue {
     value: f32,
 }
 
-fn cue(at: usize, strip: StripId, id: u16, value: f32) -> Cue { Cue { at, strip, insert: None, id, value } }
-fn cue_insert(at: usize, strip: StripId, slot: usize, id: u16, value: f32) -> Cue { Cue { at, strip, insert: Some(slot), id, value } }
+fn cue(at: usize, strip: StripId, id: u16, value: f32) -> Cue {
+    Cue {
+        at,
+        strip,
+        insert: None,
+        id,
+        value,
+    }
+}
+fn cue_insert(at: usize, strip: StripId, slot: usize, id: u16, value: f32) -> Cue {
+    Cue {
+        at,
+        strip,
+        insert: Some(slot),
+        id,
+        value,
+    }
+}
 
 fn set_up(m: &mut Mixer) {
     use mx::output;
@@ -226,8 +301,13 @@ fn set_up(m: &mut Mixer) {
     m.set_now(CHORDS, mx::send(1), -8.0);
     let verb = m.chain_mut(REVERB).unwrap();
     verb.push(Box::new(Cloud::new()));
-    let hall = CLOUD_PRESETS.iter().find(|p| p.name.contains("Hall")).unwrap_or(&CLOUD_PRESETS[0]);
-    for &(id, v) in hall.values { verb.set_param(0, id, v); }
+    let hall = CLOUD_PRESETS
+        .iter()
+        .find(|p| p.name.contains("Hall"))
+        .unwrap_or(&CLOUD_PRESETS[0]);
+    for &(id, v) in hall.values {
+        verb.set_param(0, id, v);
+    }
     verb.set_param(0, ids::cloud::MIX, 100.0);
     let echo = m.chain_mut(DELAY).unwrap();
     echo.push(Box::new(Delay::new()));
@@ -309,11 +389,21 @@ fn wav(left: &[f32], right: &[f32]) -> Vec<u8> {
 }
 
 fn main() {
-    let out = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        std::path::Path::new(&home).join("mpfree-work").join("mix-demo.wav")
-    });
-    let bus_out = out.with_file_name(format!("{}-drum-bus.wav", out.file_stem().and_then(|s| s.to_str()).unwrap_or("mix-demo")));
+    let out = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::Path::new(&home)
+                .join("mpfree-work")
+                .join("mix-demo.wav")
+        });
+    let bus_out = out.with_file_name(format!(
+        "{}-drum-bus.wav",
+        out.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mix-demo")
+    ));
     let total = bar(BARS + 1);
     let st = stems(total);
     let mut m = Mixer::new(MixerConfig::default(), RATE, BLOCK);
@@ -321,7 +411,13 @@ fn main() {
     m.set_profiling(true);
     let cues = cues();
     let mut next = 0;
-    let feeds: [(StripId, &Stem); 5] = [(KICK, &st.kick), (BASS, &st.bass), (CHORDS, &st.chords), (SNARE, &st.snare), (HATS, &st.hats)];
+    let feeds: [(StripId, &Stem); 5] = [
+        (KICK, &st.kick),
+        (BASS, &st.bass),
+        (CHORDS, &st.chords),
+        (SNARE, &st.snare),
+        (HATS, &st.hats),
+    ];
     let z = || (vec![0.0f32; total], vec![0.0f32; total]);
     let (mut mix, mut bus, mut bass) = (z(), z(), z());
     let mut at = 0;
@@ -329,7 +425,13 @@ fn main() {
         let len = BLOCK.min(total - at);
         while next < cues.len() && cues[next].at < at + len {
             let c = &cues[next];
-            let t = Timed::new((c.at - at) as u32, NodeEvent::Param { id: c.id, value: c.value });
+            let t = Timed::new(
+                (c.at - at) as u32,
+                NodeEvent::Param {
+                    id: c.id,
+                    value: c.value,
+                },
+            );
             let ok = match c.insert {
                 Some(slot) => m.queue_insert(c.strip, slot, t),
                 None => m.queue(c.strip, t),
@@ -343,7 +445,12 @@ fn main() {
             r[..len].copy_from_slice(&stem.1[at..at + len]);
         }
         let beats = at as f64 / f64::from(RATE) * BPM / 60.0;
-        let ctx = Ctx { bpm: BPM, beats, playing: true, ..Ctx::new(RATE, at as u64) };
+        let ctx = Ctx {
+            bpm: BPM,
+            beats,
+            playing: true,
+            ..Ctx::new(RATE, at as u64)
+        };
         m.process(&ctx, &mut mix.0[at..at + len], &mut mix.1[at..at + len]);
         for (slot, dst) in [(0, &mut bus), (1, &mut bass)] {
             let (l, r) = m.capture(slot).unwrap();
@@ -353,32 +460,68 @@ fn main() {
         at += len;
     }
 
-    println!("Mixer demo: {BARS} bars at {BPM} BPM, {RATE} Hz, {BLOCK}-frame blocks, latency {} frames", m.latency());
+    println!(
+        "Mixer demo: {BARS} bars at {BPM} BPM, {RATE} Hz, {BLOCK}-frame blocks, latency {} frames",
+        m.latency()
+    );
     let what = [
-        "drums alone", "drums alone", "bass in, compressor at 0 %", "bass in, compressor at 0 %",
-        "bass pumps under the kick", "bass pumps under the kick", "chords in, reverb and delay sends", "chords in, reverb and delay sends",
-        "drum bus soloed (reverb stays)", "chords move to Sub 2 (drive) on beat 3", "kick muted, bass still pumps", "kick back, chords to master",
-        "last hit", "tail",
+        "drums alone",
+        "drums alone",
+        "bass in, compressor at 0 %",
+        "bass in, compressor at 0 %",
+        "bass pumps under the kick",
+        "bass pumps under the kick",
+        "chords in, reverb and delay sends",
+        "chords in, reverb and delay sends",
+        "drum bus soloed (reverb stays)",
+        "chords move to Sub 2 (drive) on beat 3",
+        "kick muted, bass still pumps",
+        "kick back, chords to master",
+        "last hit",
+        "tail",
     ];
     for b in 1..=BARS {
         let (a, e) = (bar(b), bar(b + 1).min(total));
         let level = rms(&mix.0[a..e]).max(rms(&mix.1[a..e]));
         let pk = peak(&mix.0[a..e]).max(peak(&mix.1[a..e]));
-        println!("  bar {b:>2}: rms {:>6.1} dB, peak {:>6.1} dB  {}", db(level), db(pk), what[b - 1]);
+        println!(
+            "  bar {b:>2}: rms {:>6.1} dB, peak {:>6.1} dB  {}",
+            db(level),
+            db(pk),
+            what[b - 1]
+        );
     }
-    let pumps: Vec<(usize, f32)> = [3usize, 5, 11].iter().map(|&b| (b, pump_db(&bass, b))).collect();
+    let pumps: Vec<(usize, f32)> = [3usize, 5, 11]
+        .iter()
+        .map(|&b| (b, pump_db(&bass, b)))
+        .collect();
     for (b, p) in &pumps {
         println!("  bass after each kick vs before the next, bar {b}: {p:+.1} dB");
     }
     let solo_bass = rms(&bass.0[bar(9) + step(1.0)..bar(10)]);
-    println!("  bass during the drum bus solo: {:.1} dB", db(solo_bass.max(1e-9)));
+    println!(
+        "  bass during the drum bus solo: {:.1} dB",
+        db(solo_bass.max(1e-9))
+    );
     let s = m.safety().stats();
     println!("  Master safety: {} frames over the ceiling caught, peak out {:.1} dB, most reduction {:.1} dB", s.overs, s.peak_out_db, s.max_reduction_db);
     let whole = m.probe().lifetime();
-    println!("  mixer cost on this machine: mean {:.1} us, p99 {:.1} us per block ({:.2} % of a period)", whole.mean_ns / 1e3, whole.p99_ns as f64 / 1e3, 100.0 * whole.mean_ns / (BLOCK as f64 * 1e9 / f64::from(RATE)));
-    let mut rows: Vec<(StripId, f64)> = m.strips().map(|s| (s, m.strip_probe(s).unwrap().lifetime().mean_ns / 1e3)).collect();
+    println!(
+        "  mixer cost on this machine: mean {:.1} us, p99 {:.1} us per block ({:.2} % of a period)",
+        whole.mean_ns / 1e3,
+        whole.p99_ns as f64 / 1e3,
+        100.0 * whole.mean_ns / (BLOCK as f64 * 1e9 / f64::from(RATE))
+    );
+    let mut rows: Vec<(StripId, f64)> = m
+        .strips()
+        .map(|s| (s, m.strip_probe(s).unwrap().lifetime().mean_ns / 1e3))
+        .collect();
     rows.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let top: Vec<String> = rows.iter().take(5).map(|(s, us)| format!("{s:?} {us:.1} us")).collect();
+    let top: Vec<String> = rows
+        .iter()
+        .take(5)
+        .map(|(s, us)| format!("{s:?} {us:.1} us"))
+        .collect();
     println!("  slowest strips (with their inserts): {}", top.join(", "));
 
     let finite = mix.0.iter().chain(&mix.1).all(|v| v.is_finite());
@@ -387,7 +530,9 @@ fn main() {
     let soloed = solo_bass < 1e-4;
     println!("Self-check: finite {finite}, under full scale {}, bass pumps with the kick muted {ghost}, solo silences the bass {soloed}", !clip);
 
-    if let Some(dir) = out.parent() { std::fs::create_dir_all(dir).expect("output folder"); }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).expect("output folder");
+    }
     std::fs::write(&out, wav(&mix.0, &mix.1)).expect("write the mix");
     std::fs::write(&bus_out, wav(&bus.0, &bus.1)).expect("write the drum bus");
     println!("Wrote {} and {}", out.display(), bus_out.display());

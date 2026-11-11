@@ -5,7 +5,9 @@
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::{FilterKind, LayerSelect, PressureTarget};
 use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row};
-use mpfree_sampler_ui::play_widgets::{env_level, filter_db, EnvPoint, EnvelopeView, FilterCurve, LayerMap};
+use mpfree_sampler_ui::play_widgets::{
+    env_level, filter_db, EnvPoint, EnvelopeView, FilterCurve, LayerMap,
+};
 use mpfree_sampler_ui::sample::{self, layered_project, play_samples, PlaySample, PAD, RATE};
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -14,7 +16,10 @@ use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 /// widget has its place.
 fn play(layered: bool) -> PlaySample {
     let samples = play_samples(Fonts::embedded).unwrap();
-    let mut s = samples.into_iter().nth(if layered { 0 } else { 1 }).unwrap();
+    let mut s = samples
+        .into_iter()
+        .nth(if layered { 0 } else { 1 })
+        .unwrap();
     if !layered {
         // Back to the pad as the sample project has it.
         let (project, view) = sample::project();
@@ -30,12 +35,17 @@ fn play(layered: bool) -> PlaySample {
 
 fn row_value(s: &PlaySample, row: Row) -> String {
     let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
-    list.rows[Row::ALL.iter().position(|r| *r == row).unwrap()].value.clone()
+    list.rows[Row::ALL.iter().position(|r| *r == row).unwrap()]
+        .value
+        .clone()
 }
 
 fn step(s: &mut PlaySample, row: Row, delta: i32) -> Option<PlayAction> {
     let index = Row::ALL.iter().position(|r| *r == row).unwrap();
-    let ev = UiEvent { widget: play_tab::LIST.into(), kind: EventKind::Step { index, delta } };
+    let ev = UiEvent {
+        widget: play_tab::LIST.into(),
+        kind: EventKind::Step { index, delta },
+    };
     let st = s.state.clone();
     s.tab.action(&mut s.ui, &ev, &st)
 }
@@ -85,27 +95,51 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     let s = play(true);
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert_eq!(bar.title, "Pad A5 · Break 92");
-    assert_eq!(bar.subtitle, "3 layers · Loop · stacked · 4 voices · 4.73 s long");
+    assert_eq!(
+        bar.subtitle,
+        "3 layers · Loop · stacked · 4 voices · 4.73 s long"
+    );
     assert_eq!(bar.active, play_tab::TAB);
-    assert_eq!(bar.enabled, vec![true, true, true, true, false, false], "Pads, Wave, Chop and Play are built");
+    assert_eq!(
+        bar.enabled,
+        vec![true, true, true, true, false, false],
+        "Pads, Wave, Chop and Play are built"
+    );
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
     assert_eq!(map.layers[1].name, "Layer 2 · Break 92");
     assert_eq!(map.last_velocity, Some(108));
     let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
-    assert_eq!(env.caption, "A 2 ms · H 0 ms · D 310 ms · S 60 % · R 900 ms · over layer 1");
+    assert_eq!(
+        env.caption,
+        "A 2 ms · H 0 ms · D 310 ms · S 60 % · R 900 ms · over layer 1"
+    );
     // S sits where the sound ends: the region is 7.25 beats at 92 BPM.
-    assert!((env.length_ms() - 7.25 * 60_000.0 / 92.0).abs() < 1.0, "{}", env.length_ms());
+    assert!(
+        (env.length_ms() - 7.25 * 60_000.0 / 92.0).abs() < 1.0,
+        "{}",
+        env.length_ms()
+    );
     let filter = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
     assert_eq!(filter.title, "Filter · LP 2-pole");
     assert_eq!(filter.caption, "cutoff 2.40 kHz · res 35 % · env +0.50 oct");
-    for (row, value) in [(Row::Polyphony, "4 voices"), (Row::MuteGroup, "Group 1"), (Row::Layers, "Stacked"),
-                         (Row::Level, "+0.0 dB"), (Row::Pan, "Center"), (Row::Tune, "+0 st"), (Row::VelToLevel, "100 %"),
-                         (Row::VelToStart, "20 %"), (Row::Pressure, "Filter cutoff"), (Row::Depth, "+60 %"),
-                         (Row::Release, "900 ms"), (Row::Filter, "LP 2-pole"), (Row::Cutoff, "2.40 kHz"),
-                         (Row::FilterEnv, "+0.50 oct")]
-    {
+    for (row, value) in [
+        (Row::Polyphony, "4 voices"),
+        (Row::MuteGroup, "Group 1"),
+        (Row::Layers, "Stacked"),
+        (Row::Level, "+0.0 dB"),
+        (Row::Pan, "Center"),
+        (Row::Tune, "+0 st"),
+        (Row::VelToLevel, "100 %"),
+        (Row::VelToStart, "20 %"),
+        (Row::Pressure, "Filter cutoff"),
+        (Row::Depth, "+60 %"),
+        (Row::Release, "900 ms"),
+        (Row::Filter, "LP 2-pole"),
+        (Row::Cutoff, "2.40 kHz"),
+        (Row::FilterEnv, "+0.50 oct"),
+    ] {
         assert_eq!(row_value(&s, row), value, "{row:?}");
     }
     let cards: Vec<(String, String, bool)> = play_tab::QLINKS
@@ -115,8 +149,15 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
             (c.value.clone(), c.sub.clone(), c.enabled)
         })
         .collect();
-    assert_eq!(cards, vec![("2".into(), "ms".into(), true), ("310".into(), "ms".into(), true),
-                           ("2.40".into(), "kHz".into(), true), ("35".into(), "%".into(), true)]);
+    assert_eq!(
+        cards,
+        vec![
+            ("2".into(), "ms".into(), true),
+            ("310".into(), "ms".into(), true),
+            ("2.40".into(), "kHz".into(), true),
+            ("35".into(), "%".into(), true)
+        ]
+    );
 }
 
 #[test]
@@ -138,19 +179,35 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let a = step(&mut s, Row::Cutoff, -3).unwrap();
     assert_ne!(gesture(&a), g);
     apply(&mut s, &a);
-    assert_eq!(s.state.settings.filter.cutoff_hz, 1000.0, "three thirds of an octave down");
+    assert_eq!(
+        s.state.settings.filter.cutoff_hz, 1000.0,
+        "three thirds of an octave down"
+    );
     assert!(s.project.undo());
     assert_eq!(s.project.pad(PAD).unwrap().filter.cutoff_hz, 2000.0);
     assert!(s.project.undo());
-    assert_eq!(s.project.pad(PAD).unwrap().filter.kind, FilterKind::Off, "both taps on Filter undo together");
+    assert_eq!(
+        s.project.pad(PAD).unwrap().filter.kind,
+        FilterKind::Off,
+        "both taps on Filter undo together"
+    );
 
     // Polyphony, mute group, layers, tune and pressure.
     let mut s = play(false);
-    for (row, delta, value) in [(Row::Polyphony, 1, "12 voices"), (Row::Polyphony, -5, "2 voices"), (Row::Polyphony, -9, "Mono"),
-                                (Row::MuteGroup, 2, "Group 2"), (Row::MuteGroup, -5, "Off"), (Row::Layers, -1, "Random"),
-                                (Row::Level, -3, "-1.5 dB"), (Row::Pan, -5, "L 25"), (Row::Tune, 7, "+7 st"),
-                                (Row::Sustain, -8, "60 %"), (Row::Release, 2, "20 ms"), (Row::FilterEnv, 3, "+0.75 oct")]
-    {
+    for (row, delta, value) in [
+        (Row::Polyphony, 1, "12 voices"),
+        (Row::Polyphony, -5, "2 voices"),
+        (Row::Polyphony, -9, "Mono"),
+        (Row::MuteGroup, 2, "Group 2"),
+        (Row::MuteGroup, -5, "Off"),
+        (Row::Layers, -1, "Random"),
+        (Row::Level, -3, "-1.5 dB"),
+        (Row::Pan, -5, "L 25"),
+        (Row::Tune, 7, "+7 st"),
+        (Row::Sustain, -8, "60 %"),
+        (Row::Release, 2, "20 ms"),
+        (Row::FilterEnv, 3, "+0.75 oct"),
+    ] {
         step_apply(&mut s, row, delta);
         assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
     }
@@ -164,7 +221,10 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         .collect();
     assert_eq!(targets, vec!["Level", "Pitch", "Filter cutoff", "Off"]);
     step_apply(&mut s, Row::Pressure, 1);
-    assert_eq!((s.state.settings.pressure.target, row_value(&s, Row::Depth)), (PressureTarget::Level, "+50 %".into()));
+    assert_eq!(
+        (s.state.settings.pressure.target, row_value(&s, Row::Depth)),
+        (PressureTarget::Level, "+50 %".into())
+    );
     // Stepping past the ends stays there: nothing to undo.
     assert_eq!(step(&mut s, Row::MuteGroup, -1), None);
 }
@@ -187,12 +247,36 @@ fn tune_and_times_between_steps_go_to_the_next_step() {
         Some(PlayAction::Pad { after, .. }) => *after,
         a => panic!("{a:?}"),
     };
-    let ev = |index, delta| UiEvent { widget: play_tab::LIST.into(), kind: EventKind::Step { index, delta } };
-    assert_eq!(after(tab.action(&mut ui, &ev(tune, 1), &state)).tune_cents, 200);
-    assert_eq!(after(tab.action(&mut ui, &ev(tune, -1), &state)).tune_cents, 100);
-    assert_eq!(after(tab.action(&mut ui, &ev(attack, 1), &state)).amp.attack_ms, 10.0);
-    assert_eq!(after(tab.action(&mut ui, &ev(attack, -1), &state)).amp.attack_ms, 5.0);
-    assert_eq!(after(tab.action(&mut ui, &ev(attack, -2), &state)).amp.attack_ms, 2.0);
+    let ev = |index, delta| UiEvent {
+        widget: play_tab::LIST.into(),
+        kind: EventKind::Step { index, delta },
+    };
+    assert_eq!(
+        after(tab.action(&mut ui, &ev(tune, 1), &state)).tune_cents,
+        200
+    );
+    assert_eq!(
+        after(tab.action(&mut ui, &ev(tune, -1), &state)).tune_cents,
+        100
+    );
+    assert_eq!(
+        after(tab.action(&mut ui, &ev(attack, 1), &state))
+            .amp
+            .attack_ms,
+        10.0
+    );
+    assert_eq!(
+        after(tab.action(&mut ui, &ev(attack, -1), &state))
+            .amp
+            .attack_ms,
+        5.0
+    );
+    assert_eq!(
+        after(tab.action(&mut ui, &ev(attack, -2), &state))
+            .amp
+            .attack_ms,
+        2.0
+    );
 }
 
 #[test]
@@ -200,7 +284,9 @@ fn the_wheel_steps_the_row_picked_and_qlinks_turn_their_four() {
     let mut s = play(false);
     // A tap on Q-Link 2's card picks Decay for the wheel.
     let card = s.ui.rect_of(play_tab::QLINKS[1]).unwrap();
-    let ev = s.ui.touch(1, Touch::Down, card.x + 10, card.y + 10).unwrap();
+    let ev =
+        s.ui.touch(1, Touch::Down, card.x + 10, card.y + 10)
+            .unwrap();
     let st = s.state.clone();
     assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
     assert_eq!(s.tab.row(&s.ui), Row::Decay);
@@ -222,24 +308,43 @@ fn the_wheel_steps_the_row_picked_and_qlinks_turn_their_four() {
     for _ in 0..3 {
         turn(&mut s, 0, 1, false);
     }
-    assert_eq!(s.state.settings.amp.attack_ms, 4.0, "short times move a millisecond a detent");
+    assert_eq!(
+        s.state.settings.amp.attack_ms, 4.0,
+        "short times move a millisecond a detent"
+    );
     turn(&mut s, 0, 8, false);
     assert_eq!(s.state.settings.amp.attack_ms, 8.0);
     turn(&mut s, 0, 3, true);
-    assert_eq!(s.state.settings.amp.attack_ms, 11.0, "SHIFT: a millisecond a detent");
+    assert_eq!(
+        s.state.settings.amp.attack_ms, 11.0,
+        "SHIFT: a millisecond a detent"
+    );
     assert_eq!(s.tab.row(&s.ui), Row::Attack, "a turn picks its row");
     // Cutoff and resonance wait for a filter.
     assert_eq!(turn(&mut s, 2, 1, false), None);
     assert!(!s.ui.get::<KnobCard>(play_tab::QLINKS[2]).unwrap().enabled);
     step_apply(&mut s, Row::Filter, 1);
     turn(&mut s, 2, 12, false);
-    assert_eq!(s.state.settings.filter.cutoff_hz, 4000.0, "an octave up from 2 kHz");
+    assert_eq!(
+        s.state.settings.filter.cutoff_hz, 4000.0,
+        "an octave up from 2 kHz"
+    );
     turn(&mut s, 2, -10, true);
-    assert_eq!(s.state.settings.filter.cutoff_hz, 3775.0, "SHIFT: a tenth of a semitone a detent");
+    assert_eq!(
+        s.state.settings.filter.cutoff_hz, 3775.0,
+        "SHIFT: a tenth of a semitone a detent"
+    );
     turn(&mut s, 3, 30, false);
     turn(&mut s, 3, 5, true);
-    assert!((s.state.settings.filter.resonance - 0.31).abs() < 1e-4, "{}", s.state.settings.filter.resonance);
-    assert_eq!(s.ui.get::<KnobCard>(play_tab::QLINKS[3]).unwrap().value, "31");
+    assert!(
+        (s.state.settings.filter.resonance - 0.31).abs() < 1e-4,
+        "{}",
+        s.state.settings.filter.resonance
+    );
+    assert_eq!(
+        s.ui.get::<KnobCard>(play_tab::QLINKS[3]).unwrap().value,
+        "31"
+    );
 }
 
 #[test]
@@ -252,20 +357,45 @@ fn dragging_a_layers_edge_sets_its_velocities() {
     // Layer 2's left edge from 64 to about 48: it overlaps layer 1 (both
     // play there); layer 1 is untouched.
     let to_x = low.x + (mid.x - low.x) * 47 / 63;
-    let a = drag(&mut s, (mid.x + 2, mid.y + mid.h / 2), (to_x, mid.y + mid.h / 2)).unwrap();
+    let a = drag(
+        &mut s,
+        (mid.x + 2, mid.y + mid.h / 2),
+        (to_x, mid.y + mid.h / 2),
+    )
+    .unwrap();
     assert_eq!(s.tab.layer(), 1, "the touch picked layer 2");
     apply(&mut s, &a);
     let l = &s.state.settings.layers;
     assert!((46..=50).contains(&l[1].vel_lo), "{}", l[1].vel_lo);
     assert_eq!((l[0].vel_lo, l[0].vel_hi, l[1].vel_hi), (1, 63, 109));
-    assert!(s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().caption.ends_with("over layer 2"));
+    assert!(s
+        .ui
+        .get::<EnvelopeView>(play_tab::ENV)
+        .unwrap()
+        .caption
+        .ends_with("over layer 2"));
     // The high edge can't cross the low one.
     lift(&mut s);
     let r = s.ui.rect_of(play_tab::LAYERS).unwrap();
-    let hard = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().bar_rect(r, 2).unwrap();
-    let a = drag(&mut s, (hard.right() - 2, hard.y + hard.h / 2), (r.x, hard.y + hard.h / 2)).unwrap();
+    let hard =
+        s.ui.get::<LayerMap>(play_tab::LAYERS)
+            .unwrap()
+            .bar_rect(r, 2)
+            .unwrap();
+    let a = drag(
+        &mut s,
+        (hard.right() - 2, hard.y + hard.h / 2),
+        (r.x, hard.y + hard.h / 2),
+    )
+    .unwrap();
     apply(&mut s, &a);
-    assert_eq!((s.state.settings.layers[2].vel_lo, s.state.settings.layers[2].vel_hi), (110, 110));
+    assert_eq!(
+        (
+            s.state.settings.layers[2].vel_lo,
+            s.state.settings.layers[2].vel_hi
+        ),
+        (110, 110)
+    );
     lift(&mut s);
 }
 
@@ -278,20 +408,32 @@ fn dragging_the_envelopes_points_and_the_filters_dot() {
     let (dx, dy) = env.point_xy(r, EnvPoint::Decay);
     let (sx, sy) = env.point_xy(r, EnvPoint::Sustain);
     // Decay out by about half a second.
-    let px_per_ms = (sx - dx) as f32 / (env.point(EnvPoint::Sustain).0 - env.point(EnvPoint::Decay).0);
+    let px_per_ms =
+        (sx - dx) as f32 / (env.point(EnvPoint::Sustain).0 - env.point(EnvPoint::Decay).0);
     let a = drag(&mut s, (dx, dy), (dx + (500.0 * px_per_ms) as i32, dy)).unwrap();
     apply(&mut s, &a);
     let decay = s.state.settings.amp.decay_ms;
     assert!((decay - 810.0).abs() < 20.0, "{decay}");
-    assert_eq!(s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().axis_ms(), axis, "the axis holds still while dragged");
+    assert_eq!(
+        s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().axis_ms(),
+        axis,
+        "the axis holds still while dragged"
+    );
     lift(&mut s);
     // Sustain down to about a quarter.
     let r = s.ui.rect_of(play_tab::ENV).unwrap();
-    let (_, top) = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().point_xy(r, EnvPoint::Attack);
+    let (_, top) =
+        s.ui.get::<EnvelopeView>(play_tab::ENV)
+            .unwrap()
+            .point_xy(r, EnvPoint::Attack);
     let floor = sy + (sy - top) * 60 / 40;
     let a = drag(&mut s, (sx, sy), (sx, floor - (floor - top) / 4)).unwrap();
     apply(&mut s, &a);
-    assert!((s.state.settings.amp.sustain - 0.25).abs() < 0.03, "{}", s.state.settings.amp.sustain);
+    assert!(
+        (s.state.settings.amp.sustain - 0.25).abs() < 0.03,
+        "{}",
+        s.state.settings.amp.sustain
+    );
     lift(&mut s);
     // The cutoff dot a decade down.
     let r = s.ui.rect_of(play_tab::FILTER).unwrap();
@@ -321,17 +463,35 @@ fn applying_keeps_the_projects_regions_and_the_engine_plays_the_layers() {
     after.layers[0].region.start += 100;
     after.layers[0].vel_hi = 40;
     after.polyphony = 2;
-    PlayAction::Pad { pad: PAD, after: Box::new(after), gesture: 1 }.apply(&mut project).unwrap();
+    PlayAction::Pad {
+        pad: PAD,
+        after: Box::new(after),
+        gesture: 1,
+    }
+    .apply(&mut project)
+    .unwrap();
     let p = project.pad(PAD).unwrap();
-    assert_eq!(p.layers[0].region, state.settings.layers[0].region, "the Wave tab's region stays");
+    assert_eq!(
+        p.layers[0].region, state.settings.layers[0].region,
+        "the Wave tab's region stays"
+    );
     assert_eq!((p.layers[0].vel_hi, p.polyphony), (40, 2));
-    assert_eq!(describe(&state.settings, p), "polyphony 4 voices -> 2 voices, layer 1 velocities 1-63 -> 1-40");
+    assert_eq!(
+        describe(&state.settings, p),
+        "polyphony 4 voices -> 2 voices, layer 1 velocities 1-63 -> 1-40"
+    );
 
     // A soft hit plays layer 1 only, a hard one layer 3 only.
     for (velocity, layer) in [(30u8, 0u8), (120, 2)] {
         let mut e = Engine::new(RATE, 32);
         e.set_view(EngineView::build(&project, RATE));
-        assert!(e.schedule(0, Event::NoteOn { pad: PAD as u8, velocity }));
+        assert!(e.schedule(
+            0,
+            Event::NoteOn {
+                pad: PAD as u8,
+                velocity
+            }
+        ));
         let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
         e.render(&mut l, &mut r);
         let playing: Vec<u8> = e.playheads().map(|(_, layer, _)| layer).collect();
@@ -342,17 +502,39 @@ fn applying_keeps_the_projects_regions_and_the_engine_plays_the_layers() {
 #[test]
 fn the_envelope_and_filter_pictures_follow_the_engine() {
     use mpfree_sampler::model::{Ahdsr, Filter};
-    let e = Ahdsr { attack_ms: 10.0, hold_ms: 5.0, decay_ms: 100.0, sustain: 0.5, release_ms: 200.0 };
+    let e = Ahdsr {
+        attack_ms: 10.0,
+        hold_ms: 5.0,
+        decay_ms: 100.0,
+        sustain: 0.5,
+        release_ms: 200.0,
+    };
     assert_eq!(env_level(&e, 5.0, 1000.0), 0.5);
     assert_eq!(env_level(&e, 12.0, 1000.0), 1.0);
-    assert!((env_level(&e, 115.0, 1000.0) - 0.5).abs() < 0.001, "decayed to sustain");
+    assert!(
+        (env_level(&e, 115.0, 1000.0) - 0.5).abs() < 0.001,
+        "decayed to sustain"
+    );
     assert!(env_level(&e, 1200.0, 1000.0) < 0.5 * 0.001, "released");
-    let f = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 1000.0, resonance: 0.0, env_octaves: 0.0 };
-    assert!((filter_db(&f, 1000.0) - (-6.02)).abs() < 0.1, "{}", filter_db(&f, 1000.0));
+    let f = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 1000.0,
+        resonance: 0.0,
+        env_octaves: 0.0,
+    };
+    assert!(
+        (filter_db(&f, 1000.0) - (-6.02)).abs() < 0.1,
+        "{}",
+        filter_db(&f, 1000.0)
+    );
     assert!(filter_db(&f, 10_000.0) < -39.0);
     let f4 = Filter { poles: 4, ..f };
     assert!((filter_db(&f4, 10_000.0) - 2.0 * filter_db(&f, 10_000.0)).abs() < 0.01);
-    let hp = Filter { kind: FilterKind::HighPass, ..f };
+    let hp = Filter {
+        kind: FilterKind::HighPass,
+        ..f
+    };
     assert!(filter_db(&hp, 100.0) < -39.0 && filter_db(&hp, 10_000.0) > -0.1);
 }
 

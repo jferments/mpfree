@@ -62,9 +62,16 @@ fn capturing_never_allocates() {
         let periods = (44_100 * 30 / period as usize).max(MAX_HITS * 20 / period as usize + 1);
         let total = periods as u64 * u64::from(period);
         assert!(total / 32 > MAX_HITS as u64, "the history must wrap");
-        let cmds = [(0.05, Command::Play), (0.1, Command::SetLoop(Some((0, 3840 * 2)))), (0.2, Command::SetTempo(97.0)),
-                    (0.3, Command::Locate(3840 * 5)), (0.4, Command::SetLoop(None)), (0.5, Command::Stop),
-                    (0.7, Command::Record), (0.9, Command::Stop)];
+        let cmds = [
+            (0.05, Command::Play),
+            (0.1, Command::SetLoop(Some((0, 3840 * 2)))),
+            (0.2, Command::SetTempo(97.0)),
+            (0.3, Command::Locate(3840 * 5)),
+            (0.4, Command::SetLoop(None)),
+            (0.5, Command::Stop),
+            (0.7, Command::Record),
+            (0.9, Command::Stop),
+        ];
         let mut next_cmd = 0;
         watch(true);
         for p in 0..periods as u64 {
@@ -77,7 +84,14 @@ fn capturing_never_allocates() {
                 let f = start + u64::from(off);
                 if f % 32 == 0 {
                     let note = (f / 32 % 16) as u8;
-                    let ev = if f / 32 % 2 == 0 { Event::NoteOn { note, velocity: 100 } } else { Event::NoteOff { note: note - 1 } };
+                    let ev = if f / 32 % 2 == 0 {
+                        Event::NoteOn {
+                            note,
+                            velocity: 100,
+                        }
+                    } else {
+                        Event::NoteOff { note: note - 1 }
+                    };
                     c.input(off, ev);
                 }
             }
@@ -88,7 +102,11 @@ fn capturing_never_allocates() {
             }
         }
         watch(false);
-        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "period {period}: allocated or freed");
+        assert_eq!(
+            CALLS.load(Ordering::Relaxed),
+            0,
+            "period {period}: allocated or freed"
+        );
         assert_eq!(c.len(), MAX_HITS);
         assert_eq!(c.dropped(), 0);
         assert!(kept > 0);
