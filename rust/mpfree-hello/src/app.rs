@@ -1785,6 +1785,11 @@ mod tests {
         // Only the music tabs until the developer tools are on; Prefs and
         // the Console are not tabs.
         assert_eq!(tabs(false), vec![View::Play, View::Clips, View::Synth, View::Looper]);
+        // The same names, in the same order, as the bar every preview draws
+        // (Sample joins when the sampler's tab lands).
+        let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
+        assert_eq!(names[..4], mpfree_ui::widgets::APP_TABS[..4]);
+        assert_eq!(names[4], mpfree_ui::widgets::DEV_TAB);
         assert_eq!(app.tab(4), vec![]);
         app.open_tab(View::Prefs);
         let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();

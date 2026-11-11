@@ -26,6 +26,13 @@ impl Chip {
     }
 }
 
+/// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
+/// Every crate's preview draws this bar ([`Header::app`]), never a list of its
+/// own; adding, removing, renaming or reordering a tab needs Jay's approval.
+pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+/// The tab after them while Prefs > "Show developer tools" is on.
+pub const DEV_TAB: &str = "Dev";
+
 /// The top bar: page tabs and status chips (the MPFree name is on the
 /// startup and loading screens only, so the tabs get its room). A tap on a
 /// tab gives `Tab(i)`; a tap on a chip gives `Select(i)`, `i` its place in
@@ -50,6 +57,14 @@ impl Header {
     pub fn new(tabs: &[&str]) -> Header {
         Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new(),
                  drawn_chips: RefCell::new(Vec::new()) }
+    }
+
+    /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
+    /// (none if it is not one of them, as on Prefs).
+    pub fn app(active: &str) -> Header {
+        let mut h = Header::new(&APP_TABS);
+        h.active = APP_TABS.iter().position(|t| *t == active).unwrap_or(usize::MAX);
+        h
     }
 
     /// Where chip `i` was last drawn, if it fitted.
@@ -871,6 +886,13 @@ mod tests {
         assert_eq!(f.touch(1, Touch::Down, tr.x, 50, r), Some(EventKind::Value(0.0)));
         assert_eq!(f.touch(1, Touch::Move, tr.right() + 50, 50, r), Some(EventKind::Value(1.0)));
         assert_eq!(f.touch(1, Touch::Up, 0, 50, r), None);
+    }
+
+    #[test]
+    fn the_app_bar_is_the_approved_one() {
+        assert_eq!(APP_TABS, ["Play", "Clips", "Synth", "Looper", "Sample"]);
+        assert_eq!(Header::app("Synth").active, 2);
+        assert_eq!(Header::app("Prefs").active, usize::MAX);
     }
 
     #[test]

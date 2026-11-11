@@ -42,7 +42,7 @@ The music tabs, in this order:
   - **The Arp panel.** NOTE REPEAT + MENU opens it; it belongs to Play.
   - **The pattern workspace.**
   - **The button guide.**
-  - **System info, Touch lab and Calibrate touch.** These are Prefs rows.
+  - **System info, Touch lab and Calibrate touch.** These open from Prefs.
 - **Adding, removing, renaming or reordering a tab** is a layout change, so it needs Jay's approval. Reserved for later, not built yet: Mix (the FX thread's mixer). The "Steps, Clips, Looper, Arrange, Synth, Mix" bar in the synth previews is a design mock, not this list.
 - **The order is Play, Clips, Synth, Looper, Sample, then Dev.** Jay chose it at 08:15Z.
 
@@ -59,25 +59,29 @@ The music tabs, in this order:
 
 ## 5. Prefs (SHIFT + MENU)
 
-- **Rows, in order:**
+- **Main rows, in order:**
   1. Pad velocity curve
+  2. Latch keeps pads
+  3. Audio buffer
+  4. Find the buttons again
+  5. Show developer tools
+  6. Map controls
+  7. Line input
+  8. System info
+  9. Touch screen (opens its own rows)
+- **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
+  1. Back
   2. Screen pad velocity
-  3. Latch keeps pads
-  4. Audio buffer
-  5. Find the buttons again
-  6. Show developer tools
-  7. Map controls
-  8. Line input
-  9. System info
-  10. Calibrate touch (#69, proposed)
-  11. Touch lab
-- **Touch lab stays last,** because the runbook names it by place.
-- **System info** shows the program's version and commit, the OS, the kernel and the hardware. MENU goes back to Prefs.
+  3. Calibrate touch
+  4. Touch lab
+- **Touch screen stays the last main row, and Touch lab its last row,** because the runbook names them by place.
+- **Prefs always opens on its main rows.** On System info or the Touch screen rows, MENU (or Back) goes back to them.
+- **System info** shows the program's version and commit, the OS, the kernel and the hardware.
 - **Line input** is Off at every start.
 
 ## 6. The buttons everywhere
 
-- **MENU:** the page's options. On System info, back to Prefs.
+- **MENU:** the page's options. On System info or the Touch screen rows, back to Prefs.
 - **SHIFT + MENU:** Prefs.
 - **STOP:** the transport, then silence.
 - **SHIFT + STOP:** the Console. It works without developer tools too, but has no strip then.
