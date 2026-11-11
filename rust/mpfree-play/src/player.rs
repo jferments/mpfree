@@ -461,6 +461,7 @@ impl Player {
             take: 0,
             switches: Switches::new(),
             started: [Started {
+                mute: None,
                 track: 0,
                 slot: None,
                 at: 0,
@@ -646,6 +647,8 @@ impl Player {
         self.n_lock_starts = 0;
         let bar = span.meter.bar_ticks();
         for (i, track) in view.tracks.iter().enumerate() {
+            // A scene's mute switches with its cue, before the view shows it.
+            let muted = self.switches.muted(view, i);
             let replace = if view.armed == Some(i) {
                 self.replacing
             } else {
@@ -665,7 +668,7 @@ impl Player {
                 }
             }
             // A track gone quiet lets its locks and ratchets go at once.
-            if track.mute || playing.is_none() {
+            if muted || playing.is_none() {
                 if self.held[..self.n_held]
                     .iter()
                     .any(|h| usize::from(h.track) == i)
@@ -676,24 +679,16 @@ impl Player {
                 self.forget_moves(i);
             }
             if let Some((clip, origin, start)) = playing {
-                if !(track.mute && replace.is_none()) {
+                if !(muted && replace.is_none()) {
                     self.collect(
-                        clip,
-                        origin,
-                        start,
-                        i as u16,
-                        track.dest,
-                        span.swing,
-                        &before,
-                        replace,
-                        !track.mute,
-                        switch,
+                        clip, origin, start, i as u16, track.dest, span.swing, &before, replace,
+                        !muted, switch,
                     );
                 }
                 // The clip's moves after its locks: a step's lock on the
                 // same tick takes the parameter first, and the move's value
                 // waits under it.
-                if track.mute || clip.moves.is_empty() {
+                if muted || clip.moves.is_empty() {
                     self.forget_moves(i);
                 } else {
                     self.collect_moves(clip, origin, i, track.dest, &before);
@@ -732,7 +727,7 @@ impl Player {
             if view.armed == Some(i) {
                 self.replacing = None;
             }
-            if let (Some((clip, origin, start)), false) = (playing, track.mute) {
+            if let (Some((clip, origin, start)), false) = (playing, self.switches.muted(view, i)) {
                 self.collect(
                     clip,
                     origin,

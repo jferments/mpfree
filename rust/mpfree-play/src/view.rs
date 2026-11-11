@@ -59,6 +59,9 @@ pub struct Started {
     pub slot: Option<usize>,
     pub at: Tick,
     pub origin: Tick,
+    /// The track's mute from `at` on, when the cue switched it (a
+    /// scene's mutes): the control thread sets `Track::mute` to it.
+    pub mute: Option<bool>,
 }
 
 impl Started {
@@ -284,6 +287,8 @@ impl ClipView {
 pub(crate) struct CueView {
     pub slot: Option<usize>,
     pub clip: Option<ClipView>,
+    /// The track's mute from the cue's bar line on (a scene's mutes).
+    pub mute: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -347,7 +352,11 @@ impl PlayView {
                 .slot
                 .map(|slot| clip_view(project, c.track, slot, 0, 0))
                 .transpose()?;
-            tracks[c.track].cue = Some(CueView { slot: c.slot, clip });
+            tracks[c.track].cue = Some(CueView {
+                slot: c.slot,
+                clip,
+                mute: None,
+            });
         }
         Ok(PlayView {
             tracks,
@@ -495,6 +504,19 @@ impl PlayView {
             .all(|c| c.remove_lock(l))
     }
 
+    /// Track `track`'s cue switches its mute to `mute` when it starts (a
+    /// scene's mutes), or leaves it (`None`). False when the track has no
+    /// cue. Call it on the control thread, after compiling.
+    pub fn set_cue_mute(&mut self, track: usize, mute: Option<bool>) -> bool {
+        match self.tracks.get_mut(track).and_then(|t| t.cue.as_mut()) {
+            Some(c) => {
+                c.mute = mute;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {
@@ -547,6 +569,8 @@ struct Switch {
     origin: Tick,
     /// The tick it started on.
     start: Tick,
+    /// The track's mute from then on, when the cue switches it.
+    mute: Option<bool>,
 }
 
 /// The cues carried out on each track until the view shows them. The
@@ -606,13 +630,24 @@ impl Switches {
             slot: cue.slot,
             origin,
             start: at,
+            mute: cue.mute,
         });
         Some(Started {
             track,
             slot: cue.slot,
             at,
             origin,
+            mute: cue.mute,
         })
+    }
+
+    /// Whether `track` is muted now: as its cue set it when that started,
+    /// else as the view has it.
+    pub fn muted(&self, view: &PlayView, track: usize) -> bool {
+        match self.0.get(track).copied().flatten().and_then(|s| s.mute) {
+            Some(m) => m,
+            None => view.tracks.get(track).is_some_and(|t| t.mute),
+        }
     }
 
     /// The clip `track` plays now, and its origin.
@@ -813,6 +848,7 @@ mod tests {
             slot: Some(2),
             at: 7680,
             origin: -100,
+            mute: None,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(
@@ -837,6 +873,7 @@ mod tests {
             slot: None,
             at: 7680,
             origin: 7680,
+            mute: None,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(
