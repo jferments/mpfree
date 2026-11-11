@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MIT"
-description = "The sampler's screens for the MPC One: the pad editor's Wave tab (waveform, markers, region settings, Q-Links) and Chop tab (slices put on pads), built on mpfree-ui"
+description = "The sampler's screens for the MPC One: the pad editor's Wave tab (waveform, markers, region settings, Q-Links), Chop tab (slices put on pads) and Play tab (velocity layers, envelope, filter, pad settings), built on mpfree-ui"
 
 [dependencies]
 mpfree-analysis = { path = "../mpfree-analysis" }

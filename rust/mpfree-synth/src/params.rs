@@ -1,6 +1,8 @@
 //! The Poly synth's parameters and factory presets.
 
-use mpfree_node::{Curve, ParamInfo, Unit};
+use mpfree_node::{pressure as np, Curve, ParamInfo, Unit};
+
+use crate::pressure::POLY_TARGETS;
 
 macro_rules! ids {
     ($($name:ident = $v:expr),* $(,)?) => { $(pub const $name: u16 = $v;)* };
@@ -15,13 +17,45 @@ ids! {
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_PW = 65, LFO_AMP = 66, LFO_RETRIG = 67,
-    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESSURE_CUTOFF = 74,
+    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESS_VIB_RATE = 75,
     LEVEL = 80, PAN = 81,
     METER_VOICES = 90,
+    PRESS_BASE = 100,
+}
+
+/// Pressure settings and slots: [`mpfree_node::pressure::field`] offsets
+/// from [`PRESS_BASE`]. Id 74 (the old fixed pressure-to-cutoff amount) is
+/// retired: slot 1 on Cutoff does its job.
+pub const fn press(field: u16) -> u16 { PRESS_BASE + field }
+pub const PRESS_MODE: u16 = press(np::field::MODE);
+pub const PRESS_HOLDOFF: u16 = press(np::field::HOLDOFF);
+pub const PRESS_THRESHOLD: u16 = press(np::field::THRESHOLD);
+pub const PRESS_FULL_AT: u16 = press(np::field::FULL_AT);
+pub const PRESS_CURVE: u16 = press(np::field::CURVE);
+pub const PRESS_RISE: u16 = press(np::field::RISE);
+pub const PRESS_FALL: u16 = press(np::field::FALL);
+pub const PRESS_RELEASE: u16 = press(np::field::RELEASE);
+/// Slot `n` (0 to 3): its target ([`POLY_TARGETS`]) and depth.
+pub const fn press_target(n: usize) -> u16 { press(np::field::target(n)) }
+pub const fn press_depth(n: usize) -> u16 { press(np::field::depth(n)) }
+
+/// Poly's pressure targets, by index into [`POLY_TARGETS`].
+pub mod target {
+    pub const OFF: u8 = 0;
+    pub const CUTOFF: u8 = 1;
+    pub const RESONANCE: u8 = 2;
+    pub const LEVEL: u8 = 3;
+    pub const VIBRATO: u8 = 4;
+    pub const LFO_RATE: u8 = 5;
+    pub const PITCH: u8 = 6;
+    pub const DRIVE: u8 = 7;
+    pub const WIDTH: u8 = 8;
+    pub const SUB: u8 = 9;
+    pub const NOISE: u8 = 10;
 }
 
 /// The highest id plus one: values live in an array indexed by id.
-pub const ID_SPACE: usize = 96;
+pub const ID_SPACE: usize = PRESS_BASE as usize + np::FIELDS;
 
 pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine"];
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
@@ -42,7 +76,7 @@ const fn choice(id: u16, name: &'static str, group: &'static str, names: &'stati
 
 use Curve::{Linear, Log, Stepped, Toggle};
 
-pub static PARAMS: &[ParamInfo] = &[
+const BASE: &[ParamInfo] = &[
     choice(OSC1_WAVE, "Wave", "Osc 1", WAVES, 0.0),
     p(OSC1_OCT, "Octave", "Osc 1", -3.0, 3.0, 0.0, Unit::None, Stepped),
     p(OSC1_PW, "Width", "Osc 1", 5.0, 95.0, 50.0, Unit::Percent, Linear),
@@ -86,11 +120,34 @@ pub static PARAMS: &[ParamInfo] = &[
     p(POLYPHONY, "Voices", "Voice", 1.0, 16.0, 8.0, Unit::None, Stepped),
     p(GLIDE, "Glide", "Voice", 0.0, 2_000.0, 0.0, Unit::Ms, Linear),
     p(BEND_RANGE, "Bend range", "Voice", 0.0, 24.0, 2.0, Unit::Semitones, Stepped),
-    p(PRESSURE_CUTOFF, "Pressure", "Voice", 0.0, 4.0, 1.0, Unit::Octaves, Linear),
+    p(PRESS_VIB_RATE, "Vib rate", "Voice", 1.0, 12.0, 5.5, Unit::Hz, Linear),
     p(LEVEL, "Level", "Output", -60.0, 6.0, 0.0, Unit::Db, Linear),
     p(PAN, "Pan", "Output", -100.0, 100.0, 0.0, Unit::Percent, Linear),
     ParamInfo { id: METER_VOICES, name: "Voices on", group: "Output", min: 0.0, max: 32.0, default: 0.0, unit: Unit::None, curve: Stepped, readonly: true },
 ];
+
+/// Pressure: the shaper's settings, then four slots. Slot 1 opens the filter
+/// by an octave by default, as the old fixed setting did.
+const PRESS: [ParamInfo; np::FIELDS] = np::params(PRESS_BASE, "Pressure", POLY_TARGETS, [(target::CUTOFF as f32, 25.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
+
+const N_PARAMS: usize = BASE.len() + np::FIELDS;
+
+const fn all() -> [ParamInfo; N_PARAMS] {
+    let mut out = [BASE[0]; N_PARAMS];
+    let mut i = 0;
+    while i < BASE.len() {
+        out[i] = BASE[i];
+        i += 1;
+    }
+    while i < N_PARAMS {
+        out[i] = PRESS[i - BASE.len()];
+        i += 1;
+    }
+    out
+}
+
+static ALL: [ParamInfo; N_PARAMS] = all();
+pub static PARAMS: &[ParamInfo] = &ALL;
 
 /// A factory preset: a name and the values that differ from the defaults.
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +164,8 @@ pub static PRESETS: &[Preset] = &[
             (OSC1_OCT, -1.0), (OSC2_WAVE, 1.0), (OSC2_OCT, -1.0), (OSC2_FINE, -9.0), (OSC2_LEVEL, 70.0), (SUB_LEVEL, 70.0),
             (CUTOFF, 260.0), (RESONANCE, 35.0), (DRIVE, 18.0), (FENV_AMOUNT, 3.2), (FENV_D, 220.0), (FENV_S, 10.0),
             (AMP_D, 400.0), (AMP_S, 70.0), (AMP_R, 90.0), (VOICE_MODE, 2.0), (GLIDE, 40.0), (KEY_TRACK, 30.0), (LEVEL, 6.0),
+            // Pressure adds grit: 6 dB more drive.
+            (press_target(0), target::DRIVE as f32), (press_depth(0), 25.0),
         ],
     },
     Preset {
@@ -114,6 +173,8 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC2_LEVEL, 0.0), (OSC1_OCT, -1.0), (CUTOFF, 380.0), (RESONANCE, 82.0), (DRIVE, 12.0), (FENV_AMOUNT, 3.8),
             (FENV_D, 180.0), (FENV_S, 0.0), (AMP_S, 90.0), (AMP_R, 40.0), (VOICE_MODE, 2.0), (GLIDE, 70.0), (VEL_CUTOFF, 2.0), (LEVEL, 5.0),
+            // Pressure opens the filter 2 octaves and adds 20 % resonance.
+            (press_depth(0), 50.0), (press_target(1), target::RESONANCE as f32), (press_depth(1), 20.0),
         ],
     },
     Preset {
@@ -129,6 +190,8 @@ pub static PRESETS: &[Preset] = &[
             (OSC1_WAVE, 1.0), (OSC1_PW, 35.0), (OSC2_FINE, 11.0), (OSC2_LEVEL, 80.0), (NOISE_LEVEL, 8.0), (UNISON, 2.0), (UNISON_DETUNE, 12.0),
             (CUTOFF, 900.0), (RESONANCE, 25.0), (FENV_AMOUNT, 1.2), (FENV_A, 900.0), (FENV_D, 2_000.0), (FENV_S, 50.0), (FENV_R, 1_500.0),
             (AMP_A, 700.0), (AMP_D, 1_500.0), (AMP_S, 85.0), (AMP_R, 1_800.0), (LFO_SHAPE, 1.0), (LFO_RATE, 0.3), (LFO_PW, 20.0), (LFO_CUTOFF, 0.6), (LEVEL, -6.0),
+            // Pressure swells it 6 dB and adds 0.3 semitones of vibrato.
+            (press_target(0), target::LEVEL as f32), (press_depth(0), 25.0), (press_target(1), target::VIBRATO as f32), (press_depth(1), 30.0),
         ],
     },
     Preset {
@@ -136,6 +199,8 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC2_WAVE, 1.0), (OSC2_OCT, 1.0), (OSC2_LEVEL, 35.0), (CUTOFF, 400.0), (RESONANCE, 30.0), (FENV_AMOUNT, 4.0),
             (FENV_D, 160.0), (FENV_S, 0.0), (FENV_R, 160.0), (AMP_D, 450.0), (AMP_S, 0.0), (AMP_R, 300.0), (VEL_CUTOFF, 1.5),
+            // No pressure: the sound decays, and pressure would fight the hit.
+            (press_target(0), target::OFF as f32),
         ],
     },
     Preset {
@@ -143,6 +208,8 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC2_FINE, 5.0), (OSC2_LEVEL, 90.0), (CUTOFF, 700.0), (RESONANCE, 10.0), (FENV_AMOUNT, 2.5), (FENV_A, 60.0),
             (FENV_D, 500.0), (FENV_S, 50.0), (AMP_A, 30.0), (AMP_S, 90.0), (LFO_PITCH, 0.15), (LFO_RATE, 5.5),
+            // Pressure swells it 9 dB and opens the filter 1.5 octaves.
+            (press_target(0), target::LEVEL as f32), (press_depth(0), 37.5), (press_target(1), target::CUTOFF as f32), (press_depth(1), 37.5),
         ],
     },
     Preset {
@@ -150,6 +217,7 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC1_WAVE, 3.0), (OSC1_OCT, -1.0), (OSC2_WAVE, 2.0), (OSC2_OCT, -1.0), (OSC2_FINE, 0.0), (OSC2_LEVEL, 40.0),
             (CUTOFF, 1_200.0), (RESONANCE, 0.0), (FENV_AMOUNT, 0.0), (AMP_S, 100.0), (AMP_R, 120.0), (VOICE_MODE, 1.0), (GLIDE, 25.0),
+            (press_target(0), target::DRIVE as f32), (press_depth(0), 25.0),
         ],
     },
     Preset {
@@ -157,6 +225,8 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC1_WAVE, 1.0), (OSC1_PW, 40.0), (OSC2_FINE, 12.0), (OSC2_LEVEL, 80.0), (CUTOFF, 1_800.0), (RESONANCE, 40.0), (DRIVE, 9.0),
             (FENV_AMOUNT, 1.8), (FENV_D, 300.0), (FENV_S, 40.0), (VOICE_MODE, 2.0), (GLIDE, 90.0), (LFO_PITCH, 0.3), (LFO_RATE, 5.8), (BEND_RANGE, 12.0), (LEVEL, 3.0),
+            // Pressure adds 0.5 semitones of vibrato and opens the filter an octave.
+            (press_target(0), target::VIBRATO as f32), (press_depth(0), 50.0), (press_target(1), target::CUTOFF as f32), (press_depth(1), 25.0),
         ],
     },
 ];

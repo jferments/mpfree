@@ -8,6 +8,9 @@
 //!   DX7-style envelopes, keyboard scaling, pitch envelope, LFO), its own
 //!   presets, and [`dx7`] to load a player's DX7 banks (.syx).
 //!
+//! - [`pressure`]: what pad pressure drives in each engine. Both run it
+//!   through the shared shaper in [`mpfree_node::pressure`].
+//!
 //! The design and roadmap are in `docs/project/synths.md`. Every synth keeps
 //! the node rules: no allocation, lock or panic in `process`, and the same
 //! output for any block size (`tests/` checks both).
@@ -19,6 +22,7 @@ pub mod fm;
 pub mod fm_params;
 pub mod params;
 pub mod poly;
+pub mod pressure;
 
 pub use params::{Preset, PARAMS, PRESETS};
 pub use fm::Fm;
