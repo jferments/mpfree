@@ -74,6 +74,8 @@ fn short(log: &[Out]) -> Vec<(u64, u16, u8, u8)> {
             Event::NoteOn { note, .. } => (o.frame, o.track, 1, note),
             Event::NoteOff { note } => (o.frame, o.track, 0, note),
             Event::AllOff => (o.frame, o.track, 2, 0),
+            Event::Lock { .. } => (o.frame, o.track, 3, 0),
+            Event::Unlock { .. } => (o.frame, o.track, 4, 0),
         })
         .collect()
 }

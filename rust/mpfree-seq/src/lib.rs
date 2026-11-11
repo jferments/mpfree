@@ -11,12 +11,25 @@
 //! A note has a chance to play on each pass. [`steps`] is the step
 //! sequencer's view of a clip: 16 steps to a page, each step the notes of
 //! one sound nearest its grid line, with velocity, length, nudge and
-//! chance. Trig conditions, ratchets, parameter locks, audio clips, scenes
-//! and the arrangement come in later roadmap steps.
+//! chance.
+//!
+//! A clip also holds **parameter locks** ([`Lock`]): a sound parameter set
+//! on one step, the Elektron way. A lock sits on a step like a note (it
+//! shares its note's tick, so it moves with the step's nudge) and lasts
+//! until the track's next note without a lock on that parameter; the
+//! player (`mpfree-play`) sends it on its frame, before the note-on. A lock
+//! can also sit on a step with no note (a trigless lock). Locks name their
+//! parameter without the track ([`mpfree_param::RelAddr`]), so a clip
+//! copied to another track locks that track's sound.
+//!
+//! Trig conditions, ratchets, audio clips, scenes and the arrangement come
+//! in later roadmap steps.
 #![forbid(unsafe_code)]
 
 pub mod steps;
 
+pub use mpfree_param;
+use mpfree_param::{OnTrack, RelAddr};
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
 /// Clip slots per track, one per pad.
@@ -29,6 +42,8 @@ pub const MIN_CLIP_TICKS: Tick = (PPQ / 8) as Tick;
 pub const MAX_CLIP_TICKS: Tick = 256 * 4 * PPQ as Tick;
 /// Notes in one clip.
 pub const MAX_NOTES: usize = 8192;
+/// Parameter locks in one clip.
+pub const MAX_LOCKS: usize = 8192;
 
 /// One note in a clip, in the clip's own ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +132,50 @@ impl Quantise {
     }
 }
 
+/// A parameter lock: `addr` set to `value` on a step, from `tick` until
+/// the track's next note without a lock on it (see the crate docs).
+///
+/// `value` is in the parameter's own units, as its `ParamInfo` gives them
+/// (the resolver in `mpfree-mod` clamps it). It is always finite: a clip
+/// refuses a lock that is not, so locks compare as equal or not like notes
+/// do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lock {
+    /// From the clip's start, `0 <= tick < clip length`: the tick of the
+    /// step's note, so the lock moves with its nudge (the step's line for
+    /// a step with no note).
+    pub tick: Tick,
+    /// The step row it sits on: a pad or note number, or None for the
+    /// whole step (a chord on a melodic track). Where it shows and what
+    /// step edits carry it with; how long it lasts depends on `addr`.
+    pub sound: Option<u8>,
+    /// The parameter, on the clip's track.
+    pub addr: RelAddr,
+    pub value: f32,
+}
+
+impl Eq for Lock {}
+
+impl Lock {
+    pub fn new(tick: Tick, sound: Option<u8>, addr: RelAddr, value: f32) -> Lock {
+        Lock {
+            tick,
+            sound,
+            addr,
+            value,
+        }
+    }
+
+    /// The pad whose notes end this lock, for a sampler pad's parameter
+    /// (`OnTrack::Pad`); None when any note of the track ends it.
+    pub fn scope(addr: RelAddr) -> Option<u8> {
+        match addr.on {
+            OnTrack::Pad(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
     pub name: String,
@@ -128,6 +187,8 @@ pub struct Clip {
     pub quantise: Option<Quantise>,
     /// Kept in the order they were written; the play view sorts them.
     pub notes: Vec<Note>,
+    /// Parameter locks, in the order they were written.
+    pub locks: Vec<Lock>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +204,11 @@ pub enum ModelError {
     BadSlot,
     /// A note to take out is not in the clip (see [`steps::Edit`]).
     MissingNote,
+    TooManyLocks,
+    /// A lock's tick, sound or value is out of range.
+    BadLock(usize),
+    /// A lock to take out is not in the clip.
+    MissingLock,
 }
 
 impl Clip {
@@ -155,6 +221,7 @@ impl Clip {
             swing: None,
             quantise: None,
             notes: Vec::new(),
+            locks: Vec::new(),
         }
     }
 
@@ -181,6 +248,37 @@ impl Clip {
             }
             None => false,
         }
+    }
+
+    /// Add one lock. A lock out of range (its tick, its sound, a value
+    /// that is not finite), or one more than [`MAX_LOCKS`], is refused and
+    /// the clip is unchanged.
+    pub fn add_lock(&mut self, lock: Lock) -> Result<(), ModelError> {
+        if self.locks.len() >= MAX_LOCKS {
+            return Err(ModelError::TooManyLocks);
+        }
+        if !self.lock_ok(&lock) {
+            return Err(ModelError::BadLock(self.locks.len()));
+        }
+        self.locks.push(lock);
+        Ok(())
+    }
+
+    /// Remove one lock equal to `lock`. False if the clip has none.
+    pub fn remove_lock(&mut self, lock: &Lock) -> bool {
+        match self.locks.iter().position(|l| l == lock) {
+            Some(i) => {
+                self.locks.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn lock_ok(&self, l: &Lock) -> bool {
+        (0..self.length).contains(&l.tick)
+            && l.sound.is_none_or(|s| s <= 127)
+            && l.value.is_finite()
     }
 
     fn note_ok(&self, n: &Note) -> bool {
@@ -217,6 +315,14 @@ impl Clip {
         for (i, n) in self.notes.iter().enumerate() {
             if !self.note_ok(n) {
                 return Err(ModelError::BadNote(i));
+            }
+        }
+        if self.locks.len() > MAX_LOCKS {
+            return Err(ModelError::TooManyLocks);
+        }
+        for (i, l) in self.locks.iter().enumerate() {
+            if !self.lock_ok(l) {
+                return Err(ModelError::BadLock(i));
             }
         }
         Ok(())
