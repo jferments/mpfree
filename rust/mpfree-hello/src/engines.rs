@@ -179,9 +179,11 @@ mod tests {
         let rows = now_rows(&read(&shared));
         assert_eq!(rows[1].1, "waiting for the audio loop");
         assert!(rows.iter().any(|r| r.0 == "FX" && r.1 == "not in the pad player yet"));
+        // Fixed times, so the verdicts don't depend on the machine (CI runs
+        // this under qemu, where even an empty span can take milliseconds).
         for _ in 0..10 {
             for i in 0..STAGES.len() {
-                p.stop(i, Span::start());
+                p.add(i, std::time::Duration::from_micros(20));
             }
         }
         p.publish();
