@@ -81,7 +81,9 @@ How it plays:
 
 Every part of a voice runs every frame (no control rate), so the output is the same for any block size. 32 hit slots; nothing allocates after `prepare`.
 
-**On the Synth tab** Drums has a page per pad (the tab strip shows 1 to 16) and a Kit page. The Q-Links turn the pad's Tune, Decay, Tone and Snap. `pages::drum_page(pad)` gives the page of a pad, so the app can follow the last pad hit. The preview draws `synth-drums-kick`, `synth-drums-boom` and `synth-drums-hat`. `Drums::pad_name(pad)` gives the model name for pad labels.
+**On the Synth tab** Drums has a page per pad (the tab strip shows 1 to 16) and a Kit page. The Q-Links turn the pad's Tune, Decay, Tone and Snap. `pages::drum_page(pad)` gives the page of a pad, so the app can follow the last pad hit. The preview draws `synth-drums-kick`, `synth-drums-boom`, `synth-drums-hat` and `synth-drums-kit`. `Drums::pad_name(pad)` gives the model name for pad labels.
+
+Its visual strip has four cards. **Kit**: a box per pad, laid out as the pads are (pad 1 bottom left), tagged with its sound (BD, SD, CP, CH, OH, TM, RS, CB, CY, ZP, FM) and coloured by what it is made of (green a tuned body, amber noise over a body, blue metal); the pad shown is ringed, a silent pad faded, and a tap on a box opens that pad's page. **Hit**: the pad's body, noise (a clap's four bursts over its tail) and click over time, each at its level in the mix, until the longest is 60 dB down. **Sweep**: the body's pitch sweep over 250 ms, against the knob's 48 semitones ("no body to sweep" for the hats, clap, cowbell and cymbal). **Levels**: every pad's level, the pad shown in white. On the Kit page Hit and Sweep show pad 1. `drum::hit_shape` works the shapes out with the same code that builds the hits the engine plays (`build`), and a test renders a kick and finds the body's fall and the sweep's pitch as drawn.
 
 ## Pluck (`mpfree-synth`, `Pluck`)
 
@@ -97,6 +99,8 @@ Plucked strings and struck bars: two physical models behind one set of pages, pi
 Timing: the strings and resonators run every frame; pitch (transpose, fine, bend) runs at a control step of 16 frames aligned to the absolute frame. The delay lines (one per voice, 4096 frames at 48 kHz) are allocated in `prepare`.
 
 **On the Synth tab** Pluck has three pages: String (with the model, decay and release; Q-Links Decay, Brightness, Pick, Position), Mallet (Q-Links Hardness, Strike, Stretch, High damp) and Voice. The preview draws `synth-pluck-string` and `synth-pluck-mallet`.
+
+Its visual strip has three cards for the model it plays, all for middle C. A string: **Pick** (the string pulled up where it is picked), **Harmonics** (the first 16, in dB, at their average level over many plucks, since each pluck's noise burst gives them random levels around it) and **Decay** (harmonics 1, 2, 4 and 8 falling in dB, higher ones sooner, more so when darker). A mallet: **Mallet** (the pulse, as long as the mallet stays on the bar), **Modes** (the material's modes on a log scale of the note, as struck: placed by Strike, weighed by the pulse's spectrum) and **Decay** (the first four modes). `pluck::partials` works them out with the engine's own formulas (shared helpers, the output unchanged to the bit), and tests render notes and find each harmonic's and mode's decay, and the harmonics' average levels, as drawn. One finding: Position's comb works within the burst's one period (the first frames are not subtracted), so its notches are partial; plucked at the middle, the even harmonics come out about 7 dB under the odd ones on average rather than gone.
 
 ## Wavetable (`mpfree-synth`, `Wavetable`)
 
@@ -213,7 +217,7 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
 
 - **Pages.** A native engine names its pages and what its Q-Links turn (Poly: Osc, Filter, Env, LFO, Voice, Pressure; FM: see above). Any other node gets pages from its `ParamInfo` groups: consecutive groups share a page up to 12 tiles, and a group bigger than 16 is split. Every parameter is on exactly one page.
 - **Tiles.** Continuous and whole-number parameters are knobs; a bipolar one fills from the top. Choices of up to four show as buttons when they fit, otherwise as the chosen name with arrows. Toggles are switches. Read-only parameters are live meters. A tile's label carries its group when the group isn't the page's ("Env · Attack" on the Filter page).
-- **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. FM gets the algorithm diagram and a card for each page (see above). On the Pressure page (Poly and FM) the strip shows the pressure curve and the live bars instead. Other nodes get the plain layout without cards.
+- **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. FM gets the algorithm diagram and a card for each page (see above). Drums gets the kit, the hit, the sweep and the levels; Pluck the pick or mallet, the harmonics or modes, and their decays (see their sections; `kit_visual`). On the Pressure page (Poly and FM) the strip shows the pressure curve and the live bars instead. Other nodes get the plain layout without cards.
 - **Control.**
   - A finger dragged up or down a knob turns it; 320 px is the whole range.
   - A tap selects a tile, and the wheel then turns it.
@@ -242,5 +246,4 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 - FM on the pads: an FM choice next to Poly in the pad player.
 - Wavetable on the pads (a third Engine choice) and the Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
-- Synth tab visuals for Drums and Pluck (a pad grid with the models, the string or the mode bank).
 - Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).
