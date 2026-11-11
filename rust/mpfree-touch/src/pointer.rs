@@ -91,6 +91,26 @@ impl AxisMap {
         )
     }
 
+    /// The inverse of [`AxisMap::map`]: the raw reading that lands on logical
+    /// pixel (`x`, `y`), to within one raw unit. A page that only sees mapped
+    /// positions uses it to get the raw ones back (the corner calibrator needs
+    /// raw readings). Positions off the screen are clamped to its edge.
+    pub fn unmap(&self, x: f32, y: f32) -> (i32, i32) {
+        let mut u = (f64::from(x) / f64::from(self.width - 1)).clamp(0.0, 1.0);
+        let mut v = (f64::from(y) / f64::from(self.height - 1)).clamp(0.0, 1.0);
+        if self.orientation.flip_y {
+            v = 1.0 - v;
+        }
+        if self.orientation.flip_x {
+            u = 1.0 - u;
+        }
+        if self.orientation.swap_xy {
+            std::mem::swap(&mut u, &mut v);
+        }
+        let raw = |t: f64, r: RawRange| (f64::from(r.min) + t * (f64::from(r.max) - f64::from(r.min))).round() as i32;
+        (raw(u, self.raw_x), raw(v, self.raw_y))
+    }
+
     pub fn pointer(&self, ev: &ContactEvent) -> PointerEvent {
         let (x, y) = self.map(ev.contact.raw_x, ev.contact.raw_y);
         PointerEvent { id: ev.contact.id, phase: ev.phase, x, y, time_us: ev.time_us }
@@ -148,6 +168,19 @@ mod tests {
         }
         for (i, a) in Orientation::ALL.iter().enumerate() {
             assert!(Orientation::ALL[i + 1..].iter().all(|b| b != a));
+        }
+    }
+
+    #[test]
+    fn unmap_undoes_map_in_every_orientation() {
+        let r = RawRange { min: 0, max: 2048 };
+        for o in Orientation::ALL {
+            let m = AxisMap::new(r, r, o, 1280, 800).unwrap();
+            for (rx, ry) in [(0, 0), (2048, 0), (0, 2048), (2048, 2048), (1024, 512), (37, 1999)] {
+                let (x, y) = m.map(rx, ry);
+                let (bx, by) = m.unmap(x, y);
+                assert!((bx - rx).abs() <= 2 && (by - ry).abs() <= 2, "{o:?} {rx},{ry} -> {x},{y} -> {bx},{by}");
+            }
         }
     }
 
