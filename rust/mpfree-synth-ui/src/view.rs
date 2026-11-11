@@ -11,16 +11,24 @@
 //!
 //! The header and the hint line belong to the app, as on its other pages.
 //!
+//! FM draws its algorithm as six boxes (carriers green along the bottom,
+//! modulators blue above what they modulate, the feedback loop on the
+//! right). The Algo page shows it with the operators' output levels; each
+//! operator page rings its box beside its envelope; the keyboard pages ring
+//! their two beside their scaling curves. A tap on a box opens that
+//! operator's page.
+//!
 //! An engine with pad pressure (Poly, FM) has a Pressure page: the shaper's
 //! settings and four slots, with a drawing of the curve and a live bar for
 //! each sounding voice's pressure (the app passes those in with
 //! [`SynthPanel::set_pressures`]). A slot's depth reads in its target's
 //! unit (+1.5 oct, 9 dB swell).
 
+use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
 use crate::pages::{plan, qlink_targets, tile_label, Page};
 use crate::visual;
-use crate::widgets::{Card, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, QLINK_COLORS};
+use crate::widgets::{Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, QLINK_COLORS};
 use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
 use mpfree_synth::params as pp;
@@ -120,15 +128,35 @@ pub struct SynthPanel {
     /// The selected tile, as an index into the node's parameters.
     focus: Option<usize>,
     visuals: bool,
-    /// The visual cards' titles, for a tap on one.
-    cards: Vec<String>,
+    /// The page a tap on each visual card opens, and on each box.
+    card_pages: Vec<String>,
+    node_pages: Vec<String>,
     pub state: SynthState,
 }
 
-/// Whether the panel draws visuals for this node on this page: Poly on
-/// every page, any engine with pressure on its Pressure page.
+/// The visual strip's cards, with the page a tap on each card (and on each
+/// box, counted across the cards) opens.
+struct Strip {
+    cards: Vec<Card>,
+    pages: Vec<String>,
+    node_pages: Vec<String>,
+}
+
+impl Strip {
+    fn new() -> Strip {
+        Strip { cards: Vec::new(), pages: Vec::new(), node_pages: Vec::new() }
+    }
+
+    fn push(&mut self, card: Card, page: &str) {
+        self.cards.push(card);
+        self.pages.push(page.to_string());
+    }
+}
+
+/// Whether the panel draws visuals for this node on this page: Poly and FM
+/// on every page, any other engine with pressure on its Pressure page.
 fn has_visuals(info: &NodeInfo, page: &str) -> bool {
-    info.id == "mpfree.poly" || (page == "Pressure" && press_base(info).is_some())
+    matches!(info.id, "mpfree.poly" | "mpfree.fm") || (page == "Pressure" && press_base(info).is_some())
 }
 
 /// The first pressure parameter of an engine that has them, and what its
@@ -184,7 +212,16 @@ impl SynthPanel {
         ui.add(TILES, TileGrid::new(""));
         ui.add(PRESETS, ListView::new("Presets"));
         ui.add(QLINKS, QLinkStrip::new());
-        let mut panel = SynthPanel { name: name.to_string(), pages: Vec::new(), page: 0, focus: None, visuals: false, cards: Vec::new(), state };
+        let mut panel = SynthPanel {
+            name: name.to_string(),
+            pages: Vec::new(),
+            page: 0,
+            focus: None,
+            visuals: false,
+            card_pages: Vec::new(),
+            node_pages: Vec::new(),
+            state,
+        };
         panel.load(ui, panel.state.clone())?;
         Ok(panel)
     }
@@ -248,7 +285,7 @@ impl SynthPanel {
             self.page = i;
             self.focus = None;
         }
-        // FM shows the visual strip on its Pressure page only.
+        // A node may show the visual strip on some pages only.
         let visuals = self.wants_visuals();
         if visuals != self.visuals {
             self.visuals = visuals;
@@ -312,9 +349,14 @@ impl SynthPanel {
                 None
             }
             (VISUALS, EventKind::Tab(i)) => {
-                let title = self.cards.get(*i)?;
-                let want = if ["Osc", "Filter", "Env", "LFO"].contains(&title.as_str()) { title.as_str() } else { "Pressure" };
-                let page = self.pages.iter().position(|p| p.name == want)?;
+                let want = self.card_pages.get(*i)?;
+                let page = self.pages.iter().position(|p| &p.name == want)?;
+                self.show_page(ui, page);
+                None
+            }
+            (VISUALS, EventKind::Select(k)) => {
+                let want = self.node_pages.get(*k)?;
+                let page = self.pages.iter().position(|p| &p.name == want)?;
                 self.show_page(ui, page);
                 None
             }
@@ -367,13 +409,15 @@ impl SynthPanel {
             w.active = self.page;
         }
         if self.visuals {
-            let cards = match press_base(st.info) {
+            let strip = match press_base(st.info) {
                 Some(base) if page.name == "Pressure" => pressure_cards(st, base),
+                _ if st.info.id == "mpfree.fm" => fm_cards(st, &page.name),
                 _ => poly_cards(st, &page.name),
             };
-            self.cards = cards.iter().map(|c| c.title.clone()).collect();
+            self.card_pages = strip.pages;
+            self.node_pages = strip.node_pages;
             if let Some(w) = ui.get_mut::<Visuals>(VISUALS) {
-                w.cards = cards;
+                w.cards = strip.cards;
             }
         }
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
@@ -467,7 +511,7 @@ fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
 
 /// The Pressure page's two cards: the curve (shaped against raw, with the
 /// threshold and full-at points marked) and a live bar per sounding voice.
-fn pressure_cards(st: &SynthState, base: u16) -> Vec<Card> {
+fn pressure_cards(st: &SynthState, base: u16) -> Strip {
     let v = |id: u16| st.value(id);
     let (blue, green) = (QLINK_COLORS[0], QLINK_COLORS[1]);
     let thr = v(base + field::THRESHOLD) / 100.0;
@@ -484,7 +528,8 @@ fn pressure_cards(st: &SynthState, base: u16) -> Vec<Card> {
     bars.truncate(16);
     let slots = bars.len().clamp(8, 16);
     bars.resize(slots, 0.0);
-    vec![
+    let mut s = Strip::new();
+    s.push(
         Card {
             title: "Pressure".into(),
             caption: visual::pressure_caption(&v, base),
@@ -493,12 +538,14 @@ fn pressure_cards(st: &SynthState, base: u16) -> Vec<Card> {
             active: true,
             ..Card::default()
         },
-        Card { title: "Voices".into(), caption: voices, bars, bar_color: Some(green), active: true, ..Card::default() },
-    ]
+        "Pressure",
+    );
+    s.push(Card { title: "Voices".into(), caption: voices, bars, bar_color: Some(green), active: true, ..Card::default() }, "Pressure");
+    s
 }
 
 /// Poly's four cards, from its values. The card for the page shown is marked.
-fn poly_cards(st: &SynthState, page: &str) -> Vec<Card> {
+fn poly_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);
     let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
     let white = Color::rgb(0xE9ECF2);
@@ -518,7 +565,7 @@ fn poly_cards(st: &SynthState, page: &str) -> Vec<Card> {
         .iter()
         .map(|&(hz, s)| (visual::freq_x(hz), s.to_string()))
         .collect();
-    vec![
+    let cards = vec![
         Card {
             title: "Osc".into(),
             caption: visual::osc_caption(&v),
@@ -551,5 +598,168 @@ fn poly_cards(st: &SynthState, page: &str) -> Vec<Card> {
             active: page == "LFO",
             ..Card::default()
         },
-    ]
+    ];
+    let mut s = Strip::new();
+    for c in cards {
+        let title = c.title.clone();
+        s.push(c, &title);
+    }
+    s
+}
+
+/// Carriers' colour, modulators' colour, and the text on both.
+const CARRIER: Color = QLINK_COLORS[1];
+const MODULATOR: Color = QLINK_COLORS[0];
+const ON_BOX: Color = Color::rgb(0x0B0E14);
+const LINE: Color = Color::rgb(0x98A1B3);
+const WHITE: Color = Color::rgb(0xE9ECF2);
+
+fn line(pts: Vec<(f32, f32)>, color: Color) -> Trace {
+    Trace { pts, color, width: 2.5, fill: false, dashed: false }
+}
+
+/// FM's cards for a page: the algorithm with the operators' levels (Algo),
+/// with an operator's envelope (Op n) or with two operators' scaling
+/// (Kbd), or the pitch envelope and the LFO (Mod).
+fn fm_cards(st: &SynthState, page: &str) -> Strip {
+    let v = |id: u16| st.value(id);
+    let mut s = Strip::new();
+    let op_page = page.strip_prefix("Op ").and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=6).contains(n));
+    let kbd = page.strip_prefix("Kbd ").and_then(|r| {
+        let (a, b) = r.split_once('-')?;
+        Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+    });
+    match (page, op_page, kbd) {
+        ("Mod", _, _) => {
+            s.push(
+                Card {
+                    title: "Pitch env".into(),
+                    caption: fv::pitch_env_caption(&v),
+                    traces: vec![line(fv::pitch_env(&v), QLINK_COLORS[2])],
+                    midline: true,
+                    active: true,
+                    ..Card::default()
+                },
+                "Mod",
+            );
+            s.push(
+                Card {
+                    title: "LFO".into(),
+                    caption: fv::lfo_caption(&v),
+                    traces: vec![line(fv::lfo(&v), QLINK_COLORS[1])],
+                    midline: true,
+                    active: true,
+                    ..Card::default()
+                },
+                "Mod",
+            );
+        }
+        (_, Some(n), _) => {
+            algorithm_card(&mut s, st, &[(n, WHITE)], false);
+            let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
+            let carrier = l.carriers & (1 << (n - 1)) != 0;
+            let caption = if fv::op_sounds(&v, n) {
+                format!("{} · output {}", fv::op_role(&l, n), v(fp::op_id(n, fp::op::LEVEL)).round())
+            } else {
+                format!("{} · off", fv::op_role(&l, n))
+            };
+            let color = if carrier { CARRIER } else { MODULATOR };
+            s.push(
+                Card {
+                    title: format!("Op {n} env"),
+                    caption,
+                    traces: vec![Trace { pts: fv::op_env(&v, n), color, width: 2.5, fill: true, dashed: false }],
+                    active: true,
+                    ..Card::default()
+                },
+                page,
+            );
+        }
+        (_, _, Some((a, b))) => {
+            // Each operator's ring is the colour of its curve.
+            let (ca, cb) = (WHITE, QLINK_COLORS[2]);
+            algorithm_card(&mut s, st, &[(a, ca), (b, cb)], false);
+            let grid = [36u8, 60, 84].iter().map(|&k| (fv::key_x(k), fv::note_name(k))).collect();
+            let range = fv::kbd_range_db(&v, &[a, b]);
+            let caption = format!(
+                "breaks {}, {} · ±{range} dB",
+                fv::note_name(fv::break_note(&v, a)),
+                fv::note_name(fv::break_note(&v, b))
+            );
+            s.push(
+                Card {
+                    title: "Scaling".into(),
+                    caption,
+                    traces: vec![line(fv::kbd_curve(&v, a, range), ca), line(fv::kbd_curve(&v, b, range), cb)],
+                    grid,
+                    midline: true,
+                    active: true,
+                    ..Card::default()
+                },
+                page,
+            );
+        }
+        _ => {
+            algorithm_card(&mut s, st, &[], true);
+            let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
+            let carriers = l.carriers.count_ones();
+            let off = (1..=6).filter(|&n| !fv::op_sounds(&v, n)).count();
+            let mut caption = format!("{carriers} carrier{}", if carriers == 1 { "" } else { "s" });
+            if off > 0 {
+                caption += &format!(" · {off} off");
+            }
+            s.push(
+                Card {
+                    title: "Levels".into(),
+                    caption,
+                    bars: (1..=6)
+                        .map(|n| if fv::op_sounds(&v, n) { v(fp::op_id(n, fp::op::LEVEL)) / 99.0 } else { 0.0 })
+                        .collect(),
+                    bar_colors: (0..6).map(|j| if l.carriers & (1 << j) != 0 { CARRIER } else { MODULATOR }).collect(),
+                    bar_labels: (1..=6).map(|n| n.to_string()).collect(),
+                    active: page == "Algo",
+                    ..Card::default()
+                },
+                "Algo",
+            );
+        }
+    }
+    s
+}
+
+/// The algorithm card: the operators as boxes, those in `ring` ringed in
+/// their colour, a tap on a box opening its page. A tap elsewhere on the
+/// card opens the Algo page.
+fn algorithm_card(s: &mut Strip, st: &SynthState, ring: &[(usize, Color)], active: bool) {
+    let v = |id: u16| st.value(id);
+    let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
+    let fb = v(fp::FEEDBACK) > 0.0;
+    let nodes = (0..6)
+        .map(|j| {
+            let carrier = l.carriers & (1 << j) != 0;
+            CardNode {
+                x: l.ops[j].0,
+                y: l.ops[j].1,
+                label: (j + 1).to_string(),
+                fill: if carrier { CARRIER } else { MODULATOR },
+                text: ON_BOX,
+                ring: ring.iter().find(|r| r.0 == j + 1).map(|r| r.1),
+                dim: !fv::op_sounds(&v, j + 1),
+                feedback: (fb && j == l.route.fb_from).then_some(l.route.fb_to),
+            }
+        })
+        .collect();
+    let traces = fv::algorithm_lines(&l).into_iter().map(|pts| Trace { pts, color: LINE, width: 1.5, fill: false, dashed: false }).collect();
+    s.node_pages.extend((1..=6).map(|n| format!("Op {n}")));
+    s.push(
+        Card {
+            title: "Algorithm".into(),
+            caption: fv::algorithm_caption(&v),
+            traces,
+            nodes,
+            active,
+            ..Card::default()
+        },
+        "Algo",
+    );
 }
