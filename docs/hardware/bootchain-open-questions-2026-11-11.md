@@ -540,3 +540,74 @@ or attempting an unsigned SPL. A verified user-area mmcblk0.img
 backup is not proof of recoverability from a destroyed SPL. Testing
 must preserve a separately verified restore mechanism and explicitly
 exclude electrical failures, degraded flash and irreversible OTP.
+
+
+## V7 owner's ZIP and safe-runtime/ARM-VM readiness (Q181–Q200)
+
+Input: bootchain-wide-20261111T231303Z-v7-3609390.zip. ZIP CRC and
+all **61** private index entries' sizes+SHA256 validated. All V7
+stages exited 0. This archive contains NO hardware runtime data.
+
+### Concrete V7 findings
+
+- The command-table scanner found two distinct *candidate* ELF32 ARM
+  table clusters in az01config: at 0x3df0, \`help\` -> 0x0cc8,
+  \`show\` -> 0x1aac, \`set\` -> 0x1874,
+  \`clear-flag\` -> 0x1470, \`set-flag\` -> 0x1454; at 0x3e34,
+  keys \`flags\`, \`compatible\`, \`serial\`, \`panel-compatible\`,
+  \`ethaddr\`. Six reported tables include four overlapping subranges;
+  they do NOT represent six independent command dispatchers.
+- No table mapping for \`program-fuses\` was recovered. The literal
+  occurs in **az01config and libaz01-prog.so.1.3**. This may involve
+  another code path. Never invoke it in any real hardware context.
+- ARM EHABI unwind metadata only identified one new start candidate
+  per small ELF. No userland startup caller for \`az01-bootloader-sig\`
+  was established by the bounded 473-file scan.
+- Static source coverage remains 213/213 P1 and 1044/1050 P3
+  recognized functions successfully decompiled. Every silicon
+  MaskROM/independent restore proof gate remains NOT VERIFIED.
+
+### Questions required before safe runtime tests
+
+| ID | Question | How to answer, without changing early boot |
+| --- | --- | --- |
+| Q181 | Does the full user-area backup include every eMMC LBA, and are boot0/boot1/RPMB separate? | Offline backup geometry and read-only runtime MMC inventory |
+| Q182 | What are the physical eMMC EXT_CSD PARTITION_CONFIG and BOOT_BUS_WIDTH states? | Read-only owner-approved MMC inventory, no writes |
+| Q183 | Which USB port is wired to RK3288 OTG used by silicon ROM? | Passive USB enumeration and board pin/topology evidence |
+| Q184 | Does any user-accessible recovery button reach true MaskROM, or only U-Boot Fastboot? | Passive VID/PID timing, UART boot logs; no forced erase |
+| Q185 | Is a UART RX-only observation electrically safe, at what voltage/pinout? | Measured physical pinout, voltage-rated RX-only connection |
+| Q186 | What restores P1/P3 independently when those installed stages cannot execute? | Non-destructive silicon ROM proof and sacrificial restore rehearsal |
+| Q187 | What is current live relocated U-Boot stack/heap/FDT/RAM map? | UART read-only U-Boot info only after input/exit conditions verified |
+| Q188 | Is a transient SD-first boot mechanism accessible without saveenv? | Static console/button/bootflow + gated runtime observation |
+| Q189 | Which informational Fastboot commands are genuinely read-only and non-stateful? | Code trace, then separate owner-approved isolated experiment |
+| Q190 | Does firmware 3.10 Linux call az01-bootloader-sig from code not in prior scan? | xref from additional ELFs and optional isolated ARM VM syscall tracing |
+| Q191 | Which five az01config handler pointers are actual commands, and which are configuration properties? | Relocation-backed table/dispatch code inspection, not CLI execution |
+| Q192 | Which control flow reaches program-fuses in libaz01-prog? | Offline static library xrefs and linked caller graph; never run |
+| Q193 | Can the 3.6 factory P6 rootfs and 3.10 rootfs independently reach an init shell under QEMU? | QEMU ARM virt + generic ARM32 kernel + disposable qcow2 |
+| Q194 | Which ARM hard-float ABI, dynamic linker and syscalls are needed for exact Akai userspace? | Readelf/ldd-like offline symbols; generic ARM guest test |
+| Q195 | Which 3.10 services require real RK3288 drivers/GPIO/eMMC? | QEMU virt service-by-service boot with mocked peripherals |
+| Q196 | How can update logic be unit-tested with zero access to real eMMC/OTP? | Nested x86 KVM outer VM + ARM QEMU TCG + fake guest device files |
+| Q197 | Can we test MPFree boot script policy and rollback in generic QEMU U-Boot? | Synthetic virtual U-Boot/boot-media fixtures, not proprietary U-Boot binary |
+| Q198 | Does the MPC's original RK3288 SPL/UBoot boot in generic QEMU virt? | No expectation: it uses different MMIO/DDR/ROM; full SoC model would be needed |
+| Q199 | How do we protect the original owner rootfs/eMMC backup from sandbox writes or QEMU commit? | Separate account/outer VM, read-only base and COW overlay, hash assertions |
+| Q200 | Which runtime proof gates distinguish reversible VM tests from bootloader-independent hardware recovery? | Evidence matrix: no writes, physical ROM, independent readback and sacrificial restore |
+
+### Recommended next MPFree development lane
+
+Prioritize booting a copied **3.10 raw ext4 userspace filesystem** in
+\`qemu-system-arm -M virt -cpu cortex-a15\`, using a generic ARM32
+kernel with PL011/virtio/ext4 and a disposable qcow2 overlay. Do NOT
+assume Akai's RK3288 zImage or P1/P3 bootloader works in generic QEMU.
+The repository's \`tools/mpc-one/qemu_arm_lab_preflight.py\` performs
+read-only checks, optionally creates only a new COW overlay, and
+prints rather than executes a virtual boot command.
+
+QEMU ARM on this x86-64 workstation uses **TCG**, and official QEMU
+security docs explicitly disclaim TCG as a hardened guest isolation
+boundary. For unknown vendor maintenance programs use **outer x86-64
+KVM guest → inner QEMU ARM guest**, with original backups outside
+the outer guest and no physical device passthrough or writable host
+shares. This is a layered risk reduction, never 100% guarantee.
+
+Full research plan and limits:
+\`docs/hardware/qemu-arm-virtual-test-lab.md\`.
