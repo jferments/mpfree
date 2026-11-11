@@ -30,9 +30,9 @@ A "fail" isn't a device problem. It says the gesture settings and Jay's hand dis
 
 ## In the pad player
 
-**Opening it.** Prefs (SHIFT + MENU), then the last row, **Touch lab**: turn the wheel to it and press +, or tap its arrows. Both work without touch, so the lab opens even when the touchscreen seems dead, and its top line then shows why (the reader line, or `touchscreen: not available yet (...)`).
+**Opening it.** Prefs (SHIFT + MENU), then its last row, **Touch screen**, which opens the touch screen section; there, the last row, **Touch lab**. Turn the wheel to each and press +, or tap its arrows. Both work without touch, so the lab opens even when the touchscreen seems dead, and its top line then shows why (the reader line, or `touchscreen: not available yet (...)`).
 
-**Leaving it.** The **Exit** button at the top right, or any hardware button that changes the page (MENU closes Prefs, which closes the lab too). A step in progress is closed and logged first. Opening the lab again starts over at the first step.
+**Leaving it.** The **Exit** button at the top right, or any hardware button that changes the page (MENU goes back to Prefs' main rows, which closes the lab too). A step in progress is closed and logged first. Opening the lab again starts over at the first step.
 
 **The page.** A top bar with the step and the latest reader line (refreshed every 30 s), an instruction bar that turns into the countdown and then `GO (N s)`, and a work area with the step's targets (5 tap circles, the long-press target, the hold dots, the pad in `pad_and_swipe`, list rows in `fling`). Fingers show as green dots, and the last gesture is written at the bottom of the area. After the last step a list shows each step's result.
 

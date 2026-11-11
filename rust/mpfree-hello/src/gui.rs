@@ -24,13 +24,14 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView};
+use crate::calibrate_page::CalibrateView;
 use crate::debug_page::{AudioNumbers, DebugPages};
 use crate::looper_page::{LooperPage, LOOPER_PAGE};
 use crate::looping::{LoopWave, LooperView};
 use crate::perf::ProcView;
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Playheads, ViewSwap};
-use crate::touchlab_page::TouchLabView;
+use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
@@ -261,6 +262,8 @@ pub enum ToUi {
     KitPads { kit: usize, pads: Vec<Option<String>> },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// Open the Calibrate touch page; any `Show` closes it again.
+    CalibrateTouch,
     /// What the arp screens show. (Patterns are large, so they travel
     /// boxed: the channel keeps a slot of the largest message per place.)
     Arp(Box<ArpView>),
@@ -351,8 +354,9 @@ pub struct Player {
     synth: Option<SynthPanel>,
     /// The Sample page and the kits' projects it edits.
     pub sample: SamplePage,
-    /// The Touch lab page is on screen (over `view`, which it returns to).
-    lab_open: bool,
+    /// The widget of the touch page on screen (Touch lab, Calibrate touch),
+    /// over `view`, which it returns to.
+    touch_page: Option<&'static str>,
     arp_panel: ArpPanel,
     pub workspace: PatternWorkspace,
     /// What the arp screens show, from the app.
@@ -427,6 +431,8 @@ impl Player {
             .expect("workspace layouts");
         ui.add("touchlab", TouchLabView::new());
         ui.add_full_page("Touch lab", "touchlab").expect("touch lab layout");
+        ui.add("calibrate", CalibrateView::new());
+        ui.add_full_page("Calibrate touch", "calibrate").expect("calibrate layout");
         let sample = SamplePage::add(&mut ui).expect("sample layout");
         let _ = ui.show("Loading");
         let status = Status { shift: false, pad_level: PadLevel::Off, repeat: false, latched: false, rate: "1/16",
@@ -435,7 +441,7 @@ impl Player {
                              timing: Timing { last_ms: f32::NAN, ..Timing::default() }, screen_row: "-".to_string(),
                              timed, ready: false, view: View::Play, status, settings: Settings::default(),
                              session: ("Starting".to_string(), Tone::Dim),
-                             console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
+                             console_from_lines: timed, console_backlog: VecDeque::new(), touch_page: None,
                              synth: None, sample, arp_panel, workspace, arp, qlink_focus: None, arp_chip: None,
                              fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default(), debug,
                              engines: None, looper_page, looper: LooperView::default() };
@@ -580,6 +586,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
                     "Hit a pad to chop it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   Wheel: zoom   ·   \
                      - / +: pad   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
+                    "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
+                     Wheel: the row picked   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
@@ -739,6 +749,7 @@ impl Player {
                 if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
                     g.release(pad);
                 }
+                self.sample.pad_up(&mut self.ui, pad);
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
@@ -910,14 +921,8 @@ impl Player {
                     }
                 }
             }
-            ToUi::TouchLab => {
-                self.ready = true;
-                if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                    lab.reset();
-                }
-                self.switch_page("Touch lab");
-                self.lab_open = true;
-            }
+            ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
+            ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
             ToUi::Arp(v) => {
                 let v = *v;
                 let a = &mut self.arp;
@@ -989,7 +994,7 @@ impl Player {
     /// The Sample page's kit, pad or project changed: show it again if it
     /// is on screen (it may be the page for a pad without a sound now).
     fn sample_changed(&mut self) {
-        if self.ready && self.view == View::Sample && !self.lab_open {
+        if self.ready && self.view == View::Sample && self.touch_page.is_none() {
             self.show_view(View::Sample);
         }
     }
@@ -1034,23 +1039,48 @@ impl Player {
         }
     }
 
-    /// Close the Touch lab if it is open (a step in progress is logged).
-    fn close_lab(&mut self) {
-        if !self.lab_open {
-            return;
-        }
-        self.lab_open = false;
-        if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-            lab.leave();
-        }
-        self.print_lab_lines();
+    fn open_touch_page(&mut self, widget: &'static str, page: &str) {
+        self.ready = true;
+        self.close_touch_page();
+        self.touch_page = Some(widget);
+        self.with_touch_page(|p| p.open());
+        self.switch_page(page);
+        self.print_touch_page_lines();
     }
 
-    fn print_lab_lines(&mut self) {
-        if !self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.has_lines()) {
+    /// The open touch page, to read (nothing is redrawn).
+    fn touch_page_ref(&self) -> Option<&dyn TouchPage> {
+        match self.touch_page? {
+            "touchlab" => self.ui.get::<TouchLabView>("touchlab").map(|p| p as &dyn TouchPage),
+            "calibrate" => self.ui.get::<CalibrateView>("calibrate").map(|p| p as &dyn TouchPage),
+            _ => None,
+        }
+    }
+
+    /// Change the open touch page (it is redrawn).
+    fn with_touch_page<R>(&mut self, f: impl FnOnce(&mut dyn TouchPage) -> R) -> Option<R> {
+        match self.touch_page? {
+            "touchlab" => self.ui.get_mut::<TouchLabView>("touchlab").map(|p| f(p)),
+            "calibrate" => self.ui.get_mut::<CalibrateView>("calibrate").map(|p| f(p)),
+            _ => None,
+        }
+    }
+
+    /// Close the touch page if one is open (a step in progress is logged).
+    fn close_touch_page(&mut self) {
+        if self.touch_page.is_none() {
             return;
         }
-        let lines = self.ui.get_mut::<TouchLabView>("touchlab").map(|l| l.take_lines()).unwrap_or_default();
+        self.with_touch_page(|p| p.leave());
+        self.print_touch_page_lines();
+        self.touch_page = None;
+    }
+
+    fn print_touch_page_lines(&mut self) {
+        if !self.touch_page_ref().is_some_and(|p| p.has_lines()) {
+            return;
+        }
+        let lines = self.with_touch_page(|p| p.take_lines()).unwrap_or_default();
         for l in lines {
             println!("{l}");
             if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -1060,10 +1090,10 @@ impl Player {
         let _ = io::stdout().flush();
     }
 
-    /// True while the Touch lab page is on screen.
+    /// The widget of the touch page on screen, if any.
     #[cfg(test)]
-    pub fn lab_open(&self) -> bool {
-        self.lab_open
+    pub fn touch_page(&self) -> Option<&'static str> {
+        self.touch_page
     }
 
     /// The touchscreen reader's latest state line, for the Touch lab's top bar.
@@ -1076,11 +1106,7 @@ impl Player {
     /// The kernel's timestamp of the finger event about to be passed to
     /// `touch` (the Touch lab measures speeds and jitter with it).
     pub fn set_touch_time(&mut self, time_us: u64) {
-        if self.lab_open {
-            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                lab.set_event_time(time_us);
-            }
-        }
+        self.with_touch_page(|p| p.set_event_time(time_us));
     }
 
     /// The quick band shows over the Play page while NOTE REPEAT is held or
@@ -1131,7 +1157,7 @@ impl Player {
     }
 
     fn show_view(&mut self, v: View) {
-        self.close_lab();
+        self.close_touch_page();
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play => "Play".to_string(),
@@ -1251,11 +1277,11 @@ impl Player {
             }
             return None;
         }
-        if self.lab_open {
-            // The lab page takes every finger and means nothing to the app.
+        if self.touch_page.is_some() {
+            // A touch page takes every finger and means nothing to the app.
             let _ = self.ui.touch(finger, phase, x, y);
-            self.print_lab_lines();
-            if self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.wants_exit()) {
+            self.print_touch_page_lines();
+            if self.touch_page_ref().is_some_and(|p| p.wants_exit()) {
                 self.show_view(self.view);
             }
             return None;
@@ -1327,11 +1353,9 @@ impl Player {
                 g.fade(dt);
             }
         }
-        if self.lab_open && self.ui.get::<TouchLabView>("touchlab").is_some_and(mpfree_ui::Widget::animating) {
-            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                lab.tick();
-            }
-            self.print_lab_lines();
+        if self.touch_page_ref().is_some_and(|p| p.animating()) {
+            self.with_touch_page(|p| p.tick());
+            self.print_touch_page_lines();
         }
     }
 
@@ -1719,6 +1743,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearLogs => p.apply(ToUi::ClearLogs),
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
+            Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::SynthWheel(d) => p.apply(ToUi::SynthWheel(d)),
@@ -1961,13 +1986,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
+    // Prefs' touch screen section.
+    let mut touch = sample_player(fonts());
+    let mut t = crate::app::App::new(44_100, false);
+    t.map.menu = Some(MENU);
+    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+    let mut fx = t.button(MENU, true, 0.0);
+    t.button(MENU, false, 0.0);
+    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+    fx.extend(t.step_item(usize::MAX, 1));
+    for e in fx {
+        match e {
+            crate::app::Effect::Menu(m) => touch.apply(ToUi::Menu(m)),
+            crate::app::Effect::Show(v) => touch.apply(ToUi::Show(v)),
+            _ => {}
+        }
+    }
+    out.push(("prefs-touch", touch));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
     fx.extend(g.open_tab(View::Prefs));
-    fx.extend(g.step_item(4, 1));
+    fx.extend(g.step_item(g.row_of(crate::app::Item::FindButtons).unwrap_or(0), 1));
     fx.extend(g.button(button_play(), true, 0.0));
     apply_effects(&mut guide, fx);
     out.push(("guide", guide));
@@ -1976,7 +2018,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut m = sample_app();
     (m.map.rec, m.map.overdub) = (None, None);
     let mut fx = m.open_tab(View::Prefs);
-    fx.extend(m.step_item(6, 1));
+    fx.extend(m.step_item(m.row_of(crate::app::Item::MapControls).unwrap_or(0), 1));
     fx.extend(m.map_row(0));
     fx.extend(m.button(73, true, 0.0));
     fx.extend(m.button(73, false, 0.0));
@@ -2088,6 +2130,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     empty.apply(ToUi::PadDown { pad: 1, velocity: 90 });
     empty.apply(ToUi::PadUp(1));
     out.push(("sample-no-sound", empty));
+    // The Pads tab: A5 copied onto A2, A5 picked again.
+    let mut pads = sample_sampler(fonts());
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                            kind: EventKind::Tab(mpfree_sampler_ui::pads_tab::TAB) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(), kind: EventKind::Tab(0) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::MAP.into(), kind: EventKind::Select(1) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(), kind: EventKind::Tab(1) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::MAP.into(),
+                            kind: EventKind::Select(mpfree_sampler_ui::sample::PAD) });
+    pads.take_actions();
+    out.push(("sample-pads", pads));
     // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
     let mut chop = sample_sampler(fonts());
     chop.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -2114,6 +2167,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     lab.apply(ToUi::TouchLab);
     lab.set_touch_status("touch-reader: seeded=1 slot=0 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=4 events=212");
     out.push(("touchlab", lab));
+    let mut cal = sample_player(fonts());
+    cal.apply(ToUi::Show(View::Prefs));
+    cal.apply(ToUi::CalibrateTouch);
+    // The top-left corner done; top-right asked for next.
+    cal.touch(1, Touch::Down, 70, 70);
+    cal.touch(1, Touch::Up, 70, 70);
+    out.push(("calibrate", cal));
     // NOTE REPEAT held with the closed hat: the quick band.
     let mut quick = quiet_player(fonts());
     let mut app = sample_app();
@@ -2242,7 +2302,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // The Touch lab is the last Prefs row; + on it opens the lab.
+        // Prefs' last row opens the touch screen section; its last row, + on it, opens the lab.
+        fx.extend(app.step_item(usize::MAX, 1));
         fx.extend(app.step_item(usize::MAX, 1));
         assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
         for e in fx {
@@ -2254,22 +2315,64 @@ mod tests {
             }
         }
         assert_eq!(p.page(), "Touch lab");
-        assert!(p.lab_open());
+        assert_eq!(p.touch_page(), Some("touchlab"));
         // Touches go to the lab, not the app. Exit (top right) goes back to Prefs.
         assert_eq!(p.touch(1, Touch::Down, 1280 - 80, 38), None);
         assert_eq!(p.touch(1, Touch::Up, 1280 - 80, 38), None);
         assert_eq!(p.page(), "Prefs");
-        assert!(!p.lab_open());
+        assert_eq!(p.touch_page(), None);
         // Open again; a page change from the app (a hardware button) closes it.
         p.apply(ToUi::TouchLab);
         assert_eq!(p.page(), "Touch lab");
         p.apply(ToUi::Show(View::Play));
         assert_eq!(p.page(), "Play");
-        assert!(!p.lab_open());
+        assert_eq!(p.touch_page(), None);
         // Kernel times reach the lab without upsetting ordinary touches.
         p.set_touch_time(123);
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(p.touch(2, Touch::Down, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: true }));
+    }
+
+    #[test]
+    fn calibrate_touch_opens_from_prefs_and_takes_every_finger() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = crate::app::App::new(44_100, false);
+        app.map.menu = Some(1);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let mut fx = app.button(1, true, 0.0);
+        app.button(1, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        // In the touch screen section, Calibrate touch is the row before the Touch lab.
+        fx.extend(app.step_item(usize::MAX, 1));
+        fx.extend(app.step_item(app_rows(&app) - 2, 1));
+        assert_eq!(fx.last(), Some(&crate::app::Effect::CalibrateTouch), "{fx:?}");
+        for e in fx {
+            match e {
+                crate::app::Effect::Menu(m) => p.apply(ToUi::Menu(m)),
+                crate::app::Effect::Show(v) => p.apply(ToUi::Show(v)),
+                crate::app::Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
+                _ => {}
+            }
+        }
+        assert_eq!((p.page(), p.touch_page()), ("Calibrate touch", Some("calibrate")));
+        // A corner tap goes to the page, not the app; the lab can't be open at the same time.
+        assert_eq!(p.touch(1, Touch::Down, 70, 70), None);
+        assert_eq!(p.touch(1, Touch::Up, 70, 70), None);
+        p.apply(ToUi::TouchLab);
+        assert_eq!(p.touch_page(), Some("touchlab"));
+        p.apply(ToUi::CalibrateTouch);
+        assert_eq!(p.touch_page(), Some("calibrate"));
+        // Exit sits right of the middle.
+        assert_eq!(p.touch(2, Touch::Down, 640 + 60, 400 + 70), None);
+        assert_eq!(p.touch(2, Touch::Up, 640 + 60, 400 + 70), None);
+        assert_eq!((p.page(), p.touch_page()), ("Prefs", None));
+    }
+
+    fn app_rows(app: &crate::app::App) -> usize {
+        match app.menu_view() {
+            crate::app::Effect::Menu(m) => m.rows.len(),
+            _ => 0,
+        }
     }
 
     #[test]
@@ -2389,10 +2492,11 @@ mod tests {
         assert_eq!(p.sample.state().unwrap().region.start, start);
         assert!(events_log(&p).iter().any(|l| l.starts_with("sample: nothing to undo in kit 1")));
         assert_eq!(views(p.take_actions()).0.len(), 1);
-        // A pad without a sound shows its own page; - / + find the next sound.
+        // A pad without a sound shows the Pads tab; - / + find the next sound.
         p.apply(ToUi::PadDown { pad: 1, velocity: 90 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
-        assert!(p.ui.get::<Card>(sample_page::EMPTY).unwrap().heading.starts_with("Pad A2 has no sound in kit 1"));
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        assert_eq!(p.ui.get::<mpfree_sampler_ui::widgets::PadBar>(mpfree_sampler_ui::pads_tab::BAR).unwrap().title,
+                   "Pad A2 · no sound");
         p.apply(ToUi::SamplePad(1));
         assert_eq!((p.page(), p.sample.state().map(|s| s.pad)), (sample_page::PAGE, Some(pad)));
         // Q-Link 3 is the loop start; another kit names its bank.
@@ -2490,11 +2594,11 @@ mod tests {
         assert!(!sent[0].view.as_ref().unwrap().has_pad(0));
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
         // The Wave tab goes back to Wave; another pad stays on the tab open.
-        tap(&mut p, chop_tab::BAR, 0);
+        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
         tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
         p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
+        assert_eq!(p.page(), sample_page::PADS_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
     }
@@ -2544,12 +2648,76 @@ mod tests {
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
         // A pad without a sound shows the empty page; back on A5, Play again.
         p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
         assert_eq!(p.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().last_velocity, Some(100));
-        tap_tab(&mut p, play_tab::BAR, 0);
+        tap_tab(&mut p, play_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
+    }
+
+    #[test]
+    fn the_pads_tab_picks_copies_and_clears_pads_and_undo_takes_it_back() {
+        use mpfree_sampler_ui::pads_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{PadBar, PadMap};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| p.on_event(UiEvent { widget: widget.into(), kind });
+        // The pad bar's first tab opens Pads on the same pad.
+        ev(&mut p, mpfree_sampler_ui::wave_tab::BAR, EventKind::Tab(pads_tab::TAB));
+        assert_eq!((p.page(), p.sample.editor()), (sample_page::PADS_PAGE, sample_page::Editor::Pads));
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("Q-Links 1-4: level, pan, tune, voices"));
+        assert_eq!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().title, "Kit 1 · Breaks");
+        assert_eq!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().selected, pad);
+        // A hit lights its pad on the map until it lifts.
+        p.apply(ToUi::PadDown { pad, velocity: 90 });
+        assert!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[pad]);
+        p.apply(ToUi::PadUp(pad));
+        assert!(!p.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[pad]);
+        p.take_actions();
+        // A tap on the map's A5 (picked) plays it while held.
+        let r = p.ui.rect_of(pads_tab::MAP).unwrap();
+        let a5 = p.ui.get::<PadMap>(pads_tab::MAP).unwrap().cell_rect(r, pad);
+        p.touch(4, Touch::Down, a5.x + 10, a5.y + 10);
+        p.touch(4, Touch::Up, a5.x + 10, a5.y + 10);
+        let pads: Vec<(usize, bool)> = p.take_actions().into_iter()
+            .filter_map(|a| match a { FromUi::Pad { pad, down } => Some((pad, down)), _ => None }).collect();
+        assert_eq!(pads, vec![(pad, true), (pad, false)]);
+        // Copy A5, pick A2 on the map, paste: A2 plays the loop, the Play
+        // page names it, the view goes out, and the log says so.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(0));
+        ev(&mut p, pads_tab::MAP, EventKind::Select(1));
+        assert_eq!(p.ui.get::<PadBar>(pads_tab::BAR).unwrap().title, "Pad A2 · no sound");
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().name, "Break 92");
+        assert_eq!(p.kits[0].pads[1].as_deref(), Some("Break 92"));
+        assert!(events_log(&p).iter().any(|l| l == "sample: kit 1 (Breaks) pad A2: now plays Break 92"),
+                "{:?}", events_log(&p));
+        let (sent, _) = views(p.take_actions());
+        assert!(sent[0].view.as_ref().unwrap().has_pad(1));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Q-Link 1 turns A2's level: one undo step, one log line.
+        p.apply(ToUi::SampleQLink(0, -4));
+        p.apply(ToUi::SampleLift);
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().level_db, -2.0);
+        assert_eq!(p.sample.pads().unwrap().0.row(&p.ui), Row::Level);
+        assert!(events_log(&p).iter().any(|l| l == "sample: kit 1 (Breaks) pad A2: level +0.0 dB -> -2.0 dB"),
+                "{:?}", events_log(&p));
+        // Clear it, then UNDO twice: the level back, then the copy back.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(2));
+        assert!(p.sample.project(0).unwrap().pad(1).is_none());
+        assert_eq!(p.kits[0].pads[1], None);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().level_db, -2.0);
+        p.apply(ToUi::SampleUndo(false));
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(1).is_none(), "the paste is undone too");
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        // With a sound picked, the bar opens the other tabs on it.
+        ev(&mut p, pads_tab::MAP, EventKind::Select(pad));
+        ev(&mut p, pads_tab::BAR, EventKind::Tab(mpfree_sampler_ui::play_tab::TAB));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
     }
 
     #[test]
