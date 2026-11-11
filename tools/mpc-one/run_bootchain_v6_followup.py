@@ -216,11 +216,17 @@ def create_run(v5zip,repo,skip_ghidra=False,skip_rootfs_scan=False,rootfs_overri
     finally:
         packager=repo/'tools/mpc-one/package-private-boot-audit.py'
         if packager.is_file():
-            ret=safe_run([sys.executable,str(packager),str(report)],
-                         report/'v6-packaging-console.txt',timeout=240)
-            # The packager archives its own log as present at time of call;
-            # any later writes to that log are not part of the index.
-            if ret!=0:print('WARNING: ZIP packaging failed; private reports:',report)
+            log=report/'v6-packaging-console.txt'
+            log.write_text('MPFree V6 single-ZIP packaging invoked. All stages run offline.\\n')
+            try:
+                spec=importlib.util.spec_from_file_location('mpfree_v6_zip_pack',packager)
+                module=importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                output,index=module.package(report)
+                print('V6 private ZIP verified:',output,'indexed reports:',len(index['files']))
+            except Exception as exc:
+                log.write_text('ZIP packaging failed: '+type(exc).__name__+': '+str(exc)[:700]+'\\n')
+                print('WARNING: ZIP packaging failed; private reports:',report)
     print('V6 single ZIP:',report.with_suffix('.zip'))
     return report.with_suffix('.zip')
 
