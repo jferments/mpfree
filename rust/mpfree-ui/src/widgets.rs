@@ -26,7 +26,15 @@ impl Chip {
     }
 }
 
-/// The top bar: the MPFree name, page tabs, and status chips. A tap on a
+/// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
+/// Every crate's preview draws this bar ([`Header::app`]), never a list of its
+/// own; adding, removing, renaming or reordering a tab needs Jay's approval.
+pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+/// The tab after them while Prefs > "Show developer tools" is on.
+pub const DEV_TAB: &str = "Dev";
+
+/// The top bar: page tabs and status chips (the MPFree name is on the
+/// startup and loading screens only, so the tabs get its room). A tap on a
 /// tab gives `Tab(i)`; a tap on a chip gives `Select(i)`, `i` its place in
 /// `chips` (chips are laid out from the right edge, so 0 is rightmost).
 pub struct Header {
@@ -38,13 +46,12 @@ pub struct Header {
     drawn_chips: RefCell<Vec<(usize, Rect)>>,
 }
 
-const BRAND_W: i32 = 170;
+/// The room left of the first tab.
+const LEFT_W: i32 = 8;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
-/// Up to this many tabs are TAB_W wide; more share the same room, so the
-/// chips keep theirs, down to MIN_TAB_W.
-const FULL_TABS: i32 = 5;
-const MIN_TAB_W: i32 = 84;
+/// Room for six full-width tabs.
+const TABS_W: i32 = 6 * (TAB_W + TAB_GAP);
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
@@ -52,26 +59,31 @@ impl Header {
                  drawn_chips: RefCell::new(Vec::new()) }
     }
 
+    /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
+    /// (none if it is not one of them, as on Prefs).
+    pub fn app(active: &str) -> Header {
+        let mut h = Header::new(&APP_TABS);
+        h.active = APP_TABS.iter().position(|t| *t == active).unwrap_or(usize::MAX);
+        h
+    }
+
     /// Where chip `i` was last drawn, if it fitted.
     pub fn chip_rect(&self, i: usize) -> Option<Rect> {
         self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
     }
 
-    fn tab_rect(&self, r: Rect, i: usize) -> Rect {
+    /// Up to six tabs are TAB_W wide. More tabs share the same width, so the
+    /// chips on the right keep their room.
+    pub fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        let n = self.tabs.len() as i32;
-        let w = if n <= FULL_TABS { TAB_W } else { (FULL_TABS * (TAB_W + TAB_GAP) / n - TAB_GAP).max(MIN_TAB_W) };
-        Rect::new(r.x + BRAND_W + i as i32 * (w + TAB_GAP), r.y + (r.h - h) / 2, w, h)
+        let pitch = TABS_W / self.tabs.len().max(6) as i32;
+        Rect::new(r.x + LEFT_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
     }
 }
 
 impl Widget for Header {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let (brand, _) = r.take_left(BRAND_W);
-        let mp = cx.measure(FontId::Bold, t.size_brand, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0), Align::Left, t.text, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0).take_left(mp).1, Align::Left, t.accent, "Free");
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
             let on = i == self.active;
@@ -579,7 +591,7 @@ impl Loading {
         if !title.is_empty() {
             let mid = Rect::new(r.x, r.y + r.h / 2 - 150, r.w, 120);
             let tw = cx.measure(FontId::Bold, 96.0, title);
-            // "MP" in the text colour and the rest in the accent, as in the header.
+            // "MP" in the text colour and the rest in the accent.
             let split = title.char_indices().nth(2).map(|(i, _)| i).unwrap_or(title.len());
             let (a, b) = title.split_at(split);
             let aw = cx.measure(FontId::Bold, 96.0, a);
@@ -877,6 +889,13 @@ mod tests {
     }
 
     #[test]
+    fn the_app_bar_is_the_approved_one() {
+        assert_eq!(APP_TABS, ["Play", "Clips", "Synth", "Looper", "Sample"]);
+        assert_eq!(Header::app("Synth").active, 2);
+        assert_eq!(Header::app("Prefs").active, usize::MAX);
+    }
+
+    #[test]
     fn tabs_switch() {
         let mut h = Header::new(&["Play", "Debug"]);
         let r = Rect::new(0, 0, 1280, 60);
@@ -999,8 +1018,9 @@ mod tests {
         let first = ui.get::<Header>("header").unwrap().chip_rect(1).unwrap();
         assert_eq!(ev(&mut ui, first.x + 5), Some(EventKind::Select(1)));
         ui.touch(1, Touch::Up, first.x + 5, 30);
-        assert_eq!(ev(&mut ui, 170 + 20), Some(EventKind::Tab(0)));
-        ui.touch(1, Touch::Up, 190, 30);
+        // The first tab starts at the left edge: there is no name before it.
+        assert_eq!(ev(&mut ui, LEFT_W + 20), Some(EventKind::Tab(0)));
+        ui.touch(1, Touch::Up, LEFT_W + 20, 30);
         assert_eq!(ev(&mut ui, first.x - 20), None, "between the chips and the tabs");
     }
 }

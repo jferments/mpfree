@@ -266,7 +266,47 @@ impl Eq {
         for b in &mut self.bands { b.update(self.rate); }
     }
 
+    /// Nothing glides: every smoother has reached its target and no band
+    /// is changing type, so a frame needs no per-sample upkeep.
+    fn still(&self) -> bool {
+        let cut = |c: &Cut| c.log_hz.settled() && c.w12.settled() && c.w24.settled();
+        cut(&self.low) && cut(&self.high) && self.out.settled() && self.bands.iter().all(|b| !b.moving())
+    }
+
+    /// [`Eq::run`] while [`Eq::still`]: the same output, sample for sample,
+    /// without stepping settled smoothers (which would return their targets)
+    /// or clearing filters that rest (which are already clear). With the
+    /// cuts off, every band flat and the output at 0 dB, the EQ is exactly
+    /// the input and the block is left as it is.
+    fn run_still(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let (lo12, lo24) = (self.low.w12.value, self.low.w24.value);
+        let (hi12, hi24) = (self.high.w12.value, self.high.w24.value);
+        let g = self.out.value;
+        if lo12 == 0.0 && lo24 == 0.0 && hi12 == 0.0 && hi24 == 0.0 && g == 1.0 && self.bands.iter().all(|b| b.flat) {
+            return;
+        }
+        for i in 0..l.len() {
+            let mut y = [l[i], r[i]];
+            for (ch, x) in y.iter_mut().enumerate() {
+                let mut s = self.low.run(ch, *x, lo12, lo24);
+                s = self.high.run(ch, s, hi12, hi24);
+                for b in &mut self.bands {
+                    if !b.flat { s = b.svf.run(ch, s); }
+                }
+                *x = g * s;
+            }
+            l[i] = y[0];
+            r[i] = y[1];
+        }
+    }
+
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if self.still() { self.run_still(l, r) } else { self.run_gliding(l, r) }
+    }
+
+    /// The general frame loop: smoothers, type swaps and filter updates
+    /// per sample, then the filters.
+    fn run_gliding(&mut self, l: &mut [f32], r: &mut [f32]) {
         let rate = self.rate;
         for i in 0..l.len() {
             for cut in [&mut self.low, &mut self.high] {
@@ -382,5 +422,48 @@ impl Node for Eq {
             }
         }
         (secs * self.rate as f32).ceil() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noise(n: usize, seed: u32) -> Vec<f32> {
+        let mut rng = crate::Rng::new(seed);
+        (0..n).map(|_| 0.5 * rng.bipolar()).collect()
+    }
+
+    /// Once nothing glides, the lean loop gives the general loop's output
+    /// bit for bit, and an EQ that does nothing leaves the block as it is.
+    #[test]
+    fn the_still_loop_matches_the_general_one() {
+        let settings: [&[(u16, f32)]; 4] = [
+            &[],
+            &[(1, 1.0), (3, 2.0)],
+            &[(1, 2.0), (ids::gain(0), 6.0), (ids::gain(2), -4.5), (ids::q(2), 3.0), (ids::OUTPUT, -2.0)],
+            &[(ids::band_type(3), 1.0), (ids::gain(3), 3.0), (ids::freq(1), 700.0), (ids::gain(1), 9.0)],
+        ];
+        for (n, set) in settings.iter().enumerate() {
+            let mut a = Eq::new();
+            let mut b = Eq::new();
+            for e in [&mut a, &mut b] {
+                e.prepare(48_000, 512);
+                for &(id, v) in *set { e.set_param(id, v); }
+                // Settle every glide and type swap.
+                let (mut l, mut r) = (noise(48_000, 3), noise(48_000, 4));
+                e.run(&mut l, &mut r);
+                assert!(e.still(), "setting {n} settles");
+            }
+            let (mut la, mut ra) = (noise(4096, 5), noise(4096, 6));
+            let (mut lb, mut rb) = (la.clone(), ra.clone());
+            let (l0, r0) = (la.clone(), ra.clone());
+            a.run_still(&mut la, &mut ra);
+            b.run_gliding(&mut lb, &mut rb);
+            assert!(la.iter().zip(&lb).chain(ra.iter().zip(&rb)).all(|(x, y)| x.to_bits() == y.to_bits()), "setting {n}");
+            if n == 0 {
+                assert_eq!((la, ra), (l0, r0), "the default EQ passes the input untouched");
+            }
+        }
     }
 }

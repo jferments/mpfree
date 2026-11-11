@@ -534,7 +534,7 @@ fn arp_out(block: &Block, offset: u32, kind: EventKind) -> Out {
 }
 
 fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
-    list.iter().map(|&(tick, len, note, velocity)| Note { tick, len, note, velocity }).collect()
+    list.iter().map(|&(tick, len, note, velocity)| Note { tick, len, note, velocity, chance: 100 }).collect()
 }
 
 /// The demo beat: five tracks on the sampler's pads, one on the arp, an
@@ -603,7 +603,7 @@ fn song() -> (Project, Vec<Launch>) {
     // Pads 13 to 19, through the arp: D minor, B flat, G minor, A minor 7, a bar each.
     let mut chords = Clip::new("arp", 4 * BAR);
     let held = [[13u8, 14, 16], [14, 17, 19], [15, 17, 19], [16, 18, 19]];
-    chords.notes = held.iter().enumerate().flat_map(|(bar, c)| c.iter().map(move |&n| Note { tick: bar as i64 * BAR, len: BAR, note: n, velocity: 85 })).collect();
+    chords.notes = held.iter().enumerate().flat_map(|(bar, c)| c.iter().map(move |&n| Note { tick: bar as i64 * BAR, len: BAR, note: n, velocity: 85, chance: 100 })).collect();
     add("arp", chords);
 
     // The takes, recorded live into this empty bar.

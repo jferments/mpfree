@@ -6,14 +6,13 @@ use crate::view::{SynthPanel, SynthState};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 use mpfree_synth::fm_params::{self as fp, op};
 use mpfree_synth::params as pp;
-use mpfree_synth::{Fm, Poly};
+use mpfree_synth::{Drums, Fm, Pluck, Poly};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 pub const WIDTH: i32 = 1280;
 pub const HEIGHT: i32 = 800;
-/// The time engine's tabs, as in its mockups. The panel's page is Synth.
-pub const TABS: [&str; 6] = ["Steps", "Clips", "Looper", "Arrange", "Synth", "Mix"];
+/// The panel's page, under the pad player's own bar (its Synth tab lit).
 pub const PAGE: &str = "Synth";
 
 pub struct Sample {
@@ -26,8 +25,7 @@ pub struct Sample {
 /// A Ui with the app's own widgets (`header`, `hint`) as the panel expects.
 pub fn app_ui(fonts: Fonts, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, WIDTH, HEIGHT);
-    let mut header = Header::new(&TABS);
-    header.active = 4;
+    let mut header = Header::app("Synth");
     header.chips = vec![Chip::new("92.0 BPM", Tone::Dim), Chip::new("DSP 18 %", Tone::Good)];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
@@ -154,6 +152,12 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     ] {
         out.push(fm_scene(name, about, preset, page, edits, fonts())?);
     }
+    out.push(drum_scene("synth-drums-kick", "Drums · Init Kit, Pad 1: the kick (Q-Links: tune, decay, tone, snap)", "Init Kit", 0, &[], fonts())?);
+    out.push(drum_scene("synth-drums-boom", "Drums · Boom Kit, Pad 14 edited: a long, driven 808-style boom", "Boom Kit", 13,
+                        &[(mpfree_synth::drum_params::pad_id(13, mpfree_synth::drum_params::field::DRIVE), 60.0)], fonts())?);
+    out.push(drum_scene("synth-drums-hat", "Drums · Init Kit, Pad 5: the open hat in choke group 1 with the closed hat", "Init Kit", 4, &[], fonts())?);
+    out.push(pluck_scene("synth-pluck-string", "Pluck · Steel String, String page: Karplus-Strong decay, brightness, pick and position", "Steel String", "String", fonts())?);
+    out.push(pluck_scene("synth-pluck-mallet", "Pluck · Bell, Mallet page: the modal bank's hardness, strike, stretch and high damp", "Bell", "Mallet", fonts())?);
     out.push(generic_scene(fonts())?);
     Ok(out)
 }
@@ -180,6 +184,43 @@ fn fm_scene(name: &'static str, about: &'static str, preset: &str, page: &str, e
         st.pressures = out[..n].to_vec();
     }
     let mut ui = app_ui(fonts, FM_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel.pages().iter().position(|p| p.name == page).ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample { name, about, ui, panel })
+}
+
+const DRUM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: pad page · pads play the kit";
+
+/// The drum synth with a factory kit, on pad `pad`'s page.
+fn drum_scene(name: &'static str, about: &'static str, kit: &str, pad: usize, edits: &[(u16, f32)], fonts: Fonts) -> Result<Sample, String> {
+    let kits = Drums::presets();
+    let i = kits.iter().position(|k| k.name == kit).ok_or_else(|| format!("no kit {kit}"))?;
+    let mut node = Drums::new(48_000);
+    node.load_preset(&kits[i]);
+    for &(id, v) in edits {
+        node.set_param(id, v);
+    }
+    let names = kits.iter().map(|k| k.name.to_string()).collect();
+    let mut st = SynthState::from_node(&node, "Drums", Color::rgb(0xF5A524), names, Some(i));
+    st.edited = !edits.is_empty();
+    let mut ui = app_ui(fonts, DRUM_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    panel.show_page(&mut ui, crate::pages::drum_page(pad));
+    ui.show(PAGE)?;
+    Ok(Sample { name, about, ui, panel })
+}
+
+/// The pluck synth with a factory preset, on one of its pages.
+fn pluck_scene(name: &'static str, about: &'static str, preset: &str, page: &str, fonts: Fonts) -> Result<Sample, String> {
+    let presets = Pluck::presets();
+    let i = presets.iter().position(|p| p.name == preset).ok_or_else(|| format!("no pluck preset {preset}"))?;
+    let mut node = Pluck::new(48_000);
+    node.load_preset(&presets[i]);
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
+    let st = SynthState::from_node(&node, "Keys", Color::rgb(0x3DDC97), names, Some(i));
+    let mut ui = app_ui(fonts, POLY_HINT);
     let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
     let k = panel.pages().iter().position(|p| p.name == page).ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
