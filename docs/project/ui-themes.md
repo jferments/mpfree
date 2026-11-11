@@ -65,10 +65,10 @@ Today `mpfree-hello --theme NAME|FILE` picks the theme (for `--preview` and on t
 
 | Theme | Look | Effects | Startup screen |
 | --- | --- | --- | --- |
-| Default | The current dark studio look, blue accent. | none | The spiral galaxy (`mpfree-splash`, its own thread) |
+| Default | The current dark studio look, blue accent. | none | Synthwave's startup screen (Jay, 2026-11-11, from round 8). The app keeps the default look. The spiral galaxy (`mpfree-splash`) stays available. |
 | Console | Phosphor green on near-black, in the normal UI font. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | A chaotic swirl of characters in many shades of green settles, arm by arm, into "MPFree" and "OS v0.1" drawn in characters with a terminal font (VT323), shaded by character density and colour; then a prompt types out. Scanlines and bloom. |
-| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree" in a slashed brush-marker face (Permanent Marker) with speed streaks is slashed on over the sun, then "OS v0.1" flickers on. No palm trees. |
-| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | The view from a ship's bridge: a purple spiral galaxy fades up through the windshield, the dashboard boots (rim light, LED rows, sliders, a radar, a boot log, a spectrum), the windshield HUD locks onto the galaxy and "MPFree" is wiped onto the glass. |
+| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree OS" in a brush-marker face (Permanent Marker), stretched, leaning hard and wavering, its strokes torn into sharp points, is slashed on over the sun with speed streaks beside it; then "v0.1" flickers on below. No palm trees, no stripes in the letters. |
+| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | A purple spiral galaxy in open space with a sci-fi computer overlay analysing it (no ship in view): heading tape, corner brackets, translucent panels (radar scanner, spectrum, navigation, target), a scan line that tags stars with callouts, a reticle that locks on the core; then "MPFree OS" in the same brush face, white to violet, and "v0.1". |
 
 ## Startup screens and the CPU
 
@@ -78,13 +78,15 @@ Each scene draws everything that never moves once (sky, mountains, palm trees, t
 
 | Scene | Set-up | Frame (average) |
 | --- | --- | --- |
-| Console | 8 ms | 8.2 ms |
-| Synthwave | 22 ms | 5.1 ms |
-| Spaceship | 46 ms | 2.4 ms |
+| Console | 7 ms | 8.0 ms |
+| Synthwave | 20 ms | 4.4 ms |
+| Spaceship | 34 ms | 4.8 ms |
 
 The RK3288 is several times slower per core; the estimate is 10 to 50 ms a frame, inside a 20 fps budget. `mpfree-startup --bench` measures it on the device (it only computes, no screen or storage access); that run is still to do. Scenes are deterministic (same time, same pixels), so previews and tests are exact.
 
-The galaxy for the default theme stays in `mpfree-splash`. The Spaceship galaxy is a different, cheaper particle galaxy seen through a HUD, so the two do not duplicate each other; if the splash thread wants one galaxy engine with a palette, Spaceship can switch to it.
+The galaxy splash stays in `mpfree-splash`. The Spaceship galaxy is a different, cheaper particle galaxy under a HUD, so the two do not duplicate each other; if the splash thread wants one galaxy engine with a palette, Spaceship can switch to it.
+
+`mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave).
 
 ## Layouts: rearranging pages
 
@@ -129,6 +131,6 @@ What each crate should change (small, mechanical):
 ## Later
 
 - Theme picker in Prefs (live switch with `Ui::set_theme`), themes folder on the stick.
-- Startup screens in the boot path: a `--framebuffer` mode like `mpfree-splash`, after the device bench.
+- Startup screens in the boot path: `--framebuffer` is ready; the test stick runs `mpfree-splash` today, and the Hello thread switches it to `mpfree-startup` for round 8.
 - With the GLES canvas, the same effects become shaders (bloom, scanlines, real blur) with no theme or widget changes.
 - Optional per-theme sounds (UI clicks) and pad-light palettes.

@@ -8,4 +8,5 @@ description = "MPFree's themed startup screens (console, synthwave, spaceship), 
 
 [dependencies]
 fontdue = { version = "0.9.5", default-features = false, features = ["std"] }
+mpfree-screen-log = { path = "../mpfree-screen-log" }
 mpfree-ui = { path = "../mpfree-ui" }
