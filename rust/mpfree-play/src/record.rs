@@ -18,13 +18,19 @@
 //! player never plays it again straight after it was heard live. Every
 //! tick comes from the span the note fell in, so the notes are the same,
 //! in the same order, for any period size. No allocation: fixed tables.
+//!
+//! A cue that switches the armed track's clip (see [`crate::view`]) ends
+//! the held notes on its bar line, into the clip that was playing; notes
+//! played from that tick on go into the new clip. The recorder follows
+//! cues the same way the player does, so the two agree on which clip
+//! plays even before the control thread's new view arrives.
 
 use mpfree_seq::Note;
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, State};
 
 use crate::player::Event;
-use crate::view::{ClipView, PlayView};
+use crate::view::{ClipView, PlayView, Switches};
 
 /// Notes one period can bring to the recorder.
 pub const MAX_INPUT: usize = 256;
@@ -75,6 +81,8 @@ pub struct Recorder {
     swing: Swing,
     take: u32,
     dropped: u64,
+    /// Cues started that the view does not show yet.
+    switches: Switches,
 }
 
 impl Default for Recorder {
@@ -97,6 +105,7 @@ impl Recorder {
             swing: Swing::default(),
             take: 0,
             dropped: 0,
+            switches: Switches::new(),
         }
     }
 
@@ -150,6 +159,7 @@ impl Recorder {
             self.held = [NOT_HELD; 128];
             self.armed = view.armed;
         }
+        self.switches.follow(view);
         let markers = block.markers();
         let mut m = 0;
         let mut next = 0;
@@ -160,6 +170,22 @@ impl Recorder {
                 m += 1;
             }
             self.swing = span.swing;
+            // Cues starting in this span, as the player starts them. The
+            // armed track's waits for the notes played before it.
+            let mut switch = None;
+            if matches!(span.state, State::Playing | State::Recording) {
+                let ticks = span.ticks();
+                let bar = span.meter.bar_ticks();
+                for i in 0..view.tracks.len() {
+                    match self.switches.due(view, i, &ticks, bar) {
+                        Some(at) if Some(i) == self.armed => switch = Some(at),
+                        Some(at) => {
+                            self.switches.start(view, i, at);
+                        }
+                        None => {}
+                    }
+                }
+            }
             let end = span.offset + span.len;
             while next < self.n_input && self.input[next].0 < end {
                 let (offset, event) = self.input[next];
@@ -171,6 +197,10 @@ impl Recorder {
                 }
                 let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
                 let tick = span.tick_at(frame).round() as Tick;
+                if let Some(at) = switch.filter(|&at| tick >= at) {
+                    self.switch(view, at);
+                    switch = None;
+                }
                 self.release(tick);
                 match event {
                     // A MIDI-style note-on at velocity 0 is a release.
@@ -189,6 +219,9 @@ impl Recorder {
                     }
                     Event::AllOff => self.finish_all(view, span.swing, tick),
                 }
+            }
+            if let Some(at) = switch {
+                self.switch(view, at);
             }
             // The last tick the next span can start a note on is
             // `end - 1`, so this releases nothing an input there would not.
@@ -219,6 +252,15 @@ impl Recorder {
         }
     }
 
+    /// The armed track's cue starts on song tick `at`: the held notes end
+    /// there, in the clip that was playing.
+    fn switch(&mut self, view: &PlayView, at: Tick) {
+        self.finish_all(view, self.swing, at);
+        if let Some(track) = self.armed {
+            self.switches.start(view, track, at);
+        }
+    }
+
     fn finish_all(&mut self, view: &PlayView, swing: Swing, tick: Tick) {
         for n in 0..128 {
             if self.held[n].on {
@@ -232,12 +274,12 @@ impl Recorder {
         let h = self.held[n];
         self.held[n].on = false;
         let Some(track) = self.armed else { return };
-        let Some(clip) = view.tracks.get(track).and_then(|t| t.clip.as_ref()) else { return };
-        let Some((tick, pass)) = clip_tick(clip, h.tick) else { return };
+        let Some((clip, origin)) = self.switches.playing(view, track) else { return };
+        let Some((tick, pass)) = clip_tick(clip, origin, h.tick) else { return };
         let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick).clamp(1, clip.length);
         // Where the player will play it in this pass.
         let at = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
-        let straight = clip.origin as f64 + pass as f64 * clip.song_len + clip.speed.to_song(at);
+        let straight = origin as f64 + pass as f64 * clip.song_len + clip.speed.to_song(at);
         let plays = clip.swing.unwrap_or(transport_swing).apply(straight).round() as Tick;
         if self.n_pending == MAX_PENDING {
             self.dropped += 1;
@@ -272,13 +314,13 @@ impl Recorder {
     }
 }
 
-/// The clip tick of song tick `song`, and the pass it falls in. None before
-/// the clip's origin.
-fn clip_tick(clip: &ClipView, song: Tick) -> Option<(Tick, i64)> {
-    if song < clip.origin || clip.song_len <= 0.0 {
+/// The clip tick of song tick `song`, and the pass it falls in, for the
+/// clip playing from `origin`. None before the origin.
+fn clip_tick(clip: &ClipView, origin: Tick, song: Tick) -> Option<(Tick, i64)> {
+    if song < origin || clip.song_len <= 0.0 {
         return None;
     }
-    let from = (song - clip.origin) as f64;
+    let from = (song - origin) as f64;
     let mut pass = (from / clip.song_len).floor() as i64;
     let mut tick = clip.speed.to_clip(from - pass as f64 * clip.song_len).round() as Tick;
     if tick >= clip.length {
