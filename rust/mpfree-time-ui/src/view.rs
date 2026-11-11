@@ -5,7 +5,8 @@
 //!   Clips page: stop, play, record, replace or overdub, bar.beat.tick,
 //!   tempo, meter, swing, loop, Undo, and the arp's chip on the right.
 //! - The **Clips page** is the launch grid (tracks across, their 16 clip
-//!   slots down), the record settings, and the takes with Undo and Redo.
+//!   slots down), the record settings, and the takes with Capture, Undo
+//!   and Redo. Capture keeps what was just played (`mpfree-capture`).
 //!
 //! The screens do not own the engine. The audio thread copies a
 //! [`TransportInfo`] after each period; the control thread builds a
@@ -117,6 +118,10 @@ pub struct TrackInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TakeRow {
     pub number: u32,
+    /// Made by CAPTURE.
+    pub captured: bool,
+    /// It made a new clip.
+    pub made: bool,
     /// The track and slot it recorded into (of its first note).
     pub at: Option<(usize, usize)>,
     pub added: usize,
@@ -125,8 +130,15 @@ pub struct TakeRow {
 
 impl TakeRow {
     pub fn of(t: &Take) -> TakeRow {
-        let at = t.added.first().or(t.erased.first()).map(|&(track, slot, _)| (track, slot));
-        TakeRow { number: t.number, at, added: t.added.len(), erased: t.erased.len() }
+        let made = t.made.first().map(|(track, slot, _)| (*track, *slot));
+        let at = made.or_else(|| t.added.first().or(t.erased.first()).map(|&(track, slot, _)| (track, slot)));
+        let added = t.added.len() + t.made.iter().map(|(_, _, c)| c.notes.len()).sum::<usize>();
+        TakeRow { number: t.number, captured: t.captured, made: made.is_some(), at, added, erased: t.erased.len() }
+    }
+
+    /// What Undo and Redo name it: "take 3", "capture 2".
+    pub fn short(&self) -> String {
+        format!("{} {}", if self.captured { "capture" } else { "take" }, self.number)
     }
 }
 
@@ -143,6 +155,9 @@ pub struct TimeState {
     pub undone: Vec<TakeRow>,
     /// Status chips on the right of the bar (the arp's).
     pub chips: Vec<Chip>,
+    /// What Capture would keep now, such as "2 bars"; None when nothing
+    /// was played since the last capture. The app sets it.
+    pub capture: Option<String>,
 }
 
 impl TimeState {
@@ -166,7 +181,7 @@ impl TimeState {
             .collect();
         TimeState { transport, tracks, launches: launches.to_vec(), armed,
                     done: takes.done().iter().map(TakeRow::of).collect(),
-                    undone: takes.undone().iter().map(TakeRow::of).collect(), chips: Vec::new() }
+                    undone: takes.undone().iter().map(TakeRow::of).collect(), chips: Vec::new(), capture: None }
     }
 
     pub fn clip(&self, track: usize, slot: usize) -> Option<&ClipInfo> {
@@ -202,6 +217,9 @@ pub enum TimeAction {
     NewClip { track: usize, slot: usize },
     /// Chip `i` on the bar was tapped.
     Chip(usize),
+    /// Keep what was just played (CAPTURE): into the armed track's playing
+    /// clip, or as a new clip (see `mpfree_capture::keep`).
+    Capture,
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -297,6 +315,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }
         (TAKES, EventKind::Tab(0)) => Some(TimeAction::Undo),
         (TAKES, EventKind::Tab(1)) => Some(TimeAction::Redo),
+        (TAKES, EventKind::Tab(2)) => Some(TimeAction::Capture),
         _ => None,
     }
 }
@@ -338,15 +357,22 @@ fn bar_beat(tick: Tick, meter: Meter) -> String {
     format!("{}.{}", p.bar, p.beat)
 }
 
+/// The pending capture as Capture's button shows it: "1 bar", "4 bars".
+pub fn bars_label(bars: i64) -> String {
+    if bars == 1 { "1 bar".to_string() } else { format!("{bars} bars") }
+}
+
 fn take_title(st: &TimeState, row: &TakeRow) -> String {
+    let word = if row.captured { "Capture" } else { "Take" };
     match row.at {
-        Some((track, slot)) => format!("Take {} · {} / {}", row.number, st.track_name(track), slot + 1),
-        None => format!("Take {}", row.number),
+        Some((track, slot)) => format!("{word} {} · {} / {}", row.number, st.track_name(track), slot + 1),
+        None => format!("{word} {}", row.number),
     }
 }
 
 fn take_detail(row: &TakeRow) -> String {
-    if row.erased > 0 { format!("+{} −{}", row.added, row.erased) } else { format!("+{}", row.added) }
+    let new = if row.made { "new " } else { "" };
+    if row.erased > 0 { format!("{new}+{} −{}", row.added, row.erased) } else { format!("{new}+{}", row.added) }
 }
 
 // ---------------------------------------------------------------- what the widgets show
@@ -373,7 +399,7 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
         bar.items.insert(0, BarItem::new("Count-in", bars, Tone::Warn));
     }
     bar.overdub = t.overdub;
-    bar.undo = st.done.last().map(|r| format!("take {}", r.number));
+    bar.undo = st.done.last().map(TakeRow::short);
     bar.chips = st.chips.clone();
     bar
 }
@@ -537,10 +563,10 @@ impl TimePage {
             }
         }
         let (items, current) = take_items(st);
-        let undo = st.done.last().map(|r| format!("take {}", r.number));
-        let redo = st.undone.last().map(|r| format!("take {}", r.number));
+        let undo = st.done.last().map(TakeRow::short);
+        let redo = st.undone.last().map(TakeRow::short);
         let same_takes = ui.get::<TakeList>(TAKES).is_some_and(|l| {
-            l.items == items && l.current == current && l.undo == undo && l.redo == redo
+            l.items == items && l.current == current && l.undo == undo && l.redo == redo && l.capture == st.capture
         });
         if !same_takes {
             if let Some(l) = ui.get_mut::<TakeList>(TAKES) {
@@ -548,6 +574,7 @@ impl TimePage {
                 l.current = current;
                 l.undo = undo;
                 l.redo = redo;
+                l.capture = st.capture.clone();
                 l.right = "SHIFT + UNDO: redo".to_string();
             }
         }
@@ -652,6 +679,7 @@ mod tests {
         assert_eq!(action(&ev(TRANSPORT, EventKind::Select(0)), &st), Some(TimeAction::Chip(0)));
         assert_eq!(action(&ev(TAKES, EventKind::Tab(0)), &st), Some(TimeAction::Undo));
         assert_eq!(action(&ev(TAKES, EventKind::Tab(1)), &st), Some(TimeAction::Redo));
+        assert_eq!(action(&ev(TAKES, EventKind::Tab(2)), &st), Some(TimeAction::Capture));
     }
 
     #[test]
@@ -702,7 +730,8 @@ mod tests {
     #[test]
     fn takes_list_newest_first_with_the_undone_dimmed() {
         let mut st = state();
-        let row = |n: u32| TakeRow { number: n, at: Some((2, 0)), added: n as usize, erased: 0 };
+        let row = |n: u32| TakeRow { number: n, captured: false, made: false, at: Some((2, 0)), added: n as usize,
+                                     erased: 0 };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
         let (items, current) = take_items(&st);
@@ -713,6 +742,12 @@ mod tests {
         assert_eq!(items[2].detail, "+2");
         st.done[1].erased = 5;
         assert_eq!(take_items(&st).0[2].detail, "+2 −5");
+        // A capture that made a clip.
+        st.done[1] = TakeRow { number: 1, captured: true, made: true, at: Some((0, 3)), added: 9, erased: 0 };
+        let (items, _) = take_items(&st);
+        assert_eq!((items[2].title.as_str(), items[2].detail.as_str()), ("Capture 1 · Drums / 4", "new +9"));
+        assert_eq!((st.done[1].short(), st.done[0].short()), ("capture 1".to_string(), "take 1".to_string()));
+        assert_eq!((bars_label(1), bars_label(4)), ("1 bar".to_string(), "4 bars".to_string()));
         st.done.clear();
         assert_eq!(take_items(&st).1, None);
     }
