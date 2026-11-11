@@ -612,8 +612,10 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-node",
  "mpfree-prof",
  "mpfree-stretch",
+ "mpfree-synth",
 ]
 
 [[package]]

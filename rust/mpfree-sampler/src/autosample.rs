@@ -18,6 +18,9 @@
 //!   reaching halfway to its neighbours.
 //! - [`Instrument::put`]: lands it on the kit as one undo step, with the
 //!   pads playing notes.
+//! - [`render`] and [`Job`]: auto-sample one of MPFree's own instruments
+//!   (any [`Node`]) offline, as fast as it renders, on a worker thread
+//!   that shares nothing with the audio thread.
 //!
 //! Nothing here runs on the audio thread. Compared with the MPC's Auto
 //! Sampler, Elektron's Tonverk and Logic's Auto Sampler in the sampler's
@@ -28,6 +31,10 @@ use crate::model::{
     Region, Source, KEYGROUP_POLYPHONY, MAX_LAYERS,
 };
 use mpfree_analysis::note_name;
+use mpfree_node::{Ctx, Node, NodeEvent};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// Velocity layers a plan may have (the MPC's limit).
 pub const MAX_VELOCITY_LAYERS: usize = 8;
@@ -980,4 +987,181 @@ fn find_loop(
         crossfade: crossfade as u32,
         mode,
     })
+}
+
+/// Frames [`render`] asks a node for at a time.
+pub const OFFLINE_BLOCK: usize = 1024;
+
+/// Plays `session` on `node` offline, as fast as the node renders, until
+/// the session ends or `keep_going` (asked before every block) says to
+/// stop, which cancels it. The node is prepared for the plan's rate and
+/// reset, and reset again before each new note, so no note glides from
+/// or rings into the one before (the takes of one note follow each other
+/// as played, so its round robins still differ). A block with a
+/// non-finite sample is recorded as silence and the node reset, as the
+/// node interface asks of a host.
+pub fn render(
+    session: &mut Session,
+    node: &mut dyn Node,
+    mut keep_going: impl FnMut(&Session) -> bool,
+) {
+    let rate = session.plan().rate;
+    let mono = session.plan().channels == 1;
+    node.prepare(rate, OFFLINE_BLOCK);
+    node.reset();
+    let mut left = vec![0.0f32; OFFLINE_BLOCK];
+    let mut right = vec![0.0f32; OFFLINE_BLOCK];
+    let mut audio = Vec::with_capacity(OFFLINE_BLOCK * 2);
+    let mut events = Vec::with_capacity(4);
+    let mut frame = 0u64;
+    let mut last_note: Option<u8> = None;
+    while matches!(session.state(), State::Testing | State::Recording) {
+        if !keep_going(session) {
+            session.cancel();
+            break;
+        }
+        events.clear();
+        let mut fresh = false;
+        for t in session.cues(OFFLINE_BLOCK) {
+            let ev = match t.cue {
+                Cue::NoteOn { note, velocity } => {
+                    fresh |= last_note.is_some_and(|n| n != note);
+                    last_note = Some(note);
+                    NodeEvent::NoteOn { note, velocity }
+                }
+                Cue::NoteOff { note } => NodeEvent::NoteOff { note },
+                Cue::AllOff => NodeEvent::AllOff,
+            };
+            events.push(mpfree_node::Timed::new(t.at as u32, ev));
+        }
+        if fresh {
+            node.reset();
+        }
+        left.fill(0.0);
+        right.fill(0.0);
+        node.process(&Ctx::new(rate, frame), &events, &mut left, &mut right);
+        if left.iter().chain(right.iter()).any(|x| !x.is_finite()) {
+            node.reset();
+            left.fill(0.0);
+            right.fill(0.0);
+        }
+        audio.clear();
+        if mono {
+            audio.extend(left.iter().zip(&right).map(|(l, r)| 0.5 * (l + r)));
+        } else {
+            audio.extend(left.iter().zip(&right).flat_map(|(l, r)| [*l, *r]));
+        }
+        session.feed(&audio);
+        frame += OFFLINE_BLOCK as u64;
+    }
+}
+
+/// What a [`Job`] made, and how long it took.
+#[derive(Debug)]
+pub struct Finished {
+    /// The instrument, from every note finished (all of them unless the
+    /// job was cancelled or heard nothing).
+    pub instrument: Result<Instrument, BuildError>,
+    /// How the session ended.
+    pub state: State,
+    pub latency: Option<u64>,
+    pub clipped: bool,
+    /// Seconds of audio rendered, gaps included.
+    pub audio_seconds: f64,
+    /// Seconds spent rendering and recording.
+    pub render_seconds: f64,
+    /// Seconds spent trimming, looping and building.
+    pub build_seconds: f64,
+}
+
+/// An offline auto-sample on its own worker thread: [`render`], then
+/// [`build`]. The thread runs at normal priority, below the audio
+/// thread's real-time one, and touches nothing the audio thread uses: the
+/// node is a copy made for it (a fresh instrument with the patch's
+/// values). Poll [`Job::progress`], then [`Job::finish`] once
+/// [`Job::is_finished`].
+pub struct Job {
+    handle: Option<std::thread::JoinHandle<Finished>>,
+    cancel: Arc<AtomicBool>,
+    done: Arc<AtomicUsize>,
+    total: usize,
+}
+
+impl Job {
+    /// Checks the plan (on this thread, so a refused plan says why at
+    /// once) and starts auto-sampling `node` with one level test.
+    pub fn start(plan: Plan, mut node: Box<dyn Node>) -> Result<Job, PlanError> {
+        let mut session = Session::new(plan, 1)?;
+        let total = session.progress().total;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicUsize::new(0));
+        let (c, d) = (cancel.clone(), done.clone());
+        let handle = std::thread::Builder::new()
+            .name("autosample".into())
+            .spawn(move || {
+                let t = Instant::now();
+                let mut frames = 0u64;
+                render(&mut session, node.as_mut(), |s| {
+                    d.store(s.progress().done, Ordering::Relaxed);
+                    let go = !c.load(Ordering::Relaxed);
+                    if go {
+                        frames += OFFLINE_BLOCK as u64;
+                    }
+                    go
+                });
+                let render_seconds = t.elapsed().as_secs_f64();
+                d.store(session.progress().done, Ordering::Relaxed);
+                let state = session.state();
+                let rate = session.plan().rate;
+                let rec = session.finish();
+                let t = Instant::now();
+                let instrument = build(&rec);
+                Finished {
+                    instrument,
+                    state,
+                    latency: rec.latency,
+                    clipped: rec.clipped,
+                    audio_seconds: frames as f64 / f64::from(rate),
+                    render_seconds,
+                    build_seconds: t.elapsed().as_secs_f64(),
+                }
+            })
+            .expect("the auto-sample thread starts");
+        Ok(Job {
+            handle: Some(handle),
+            cancel,
+            done,
+            total,
+        })
+    }
+
+    /// Takes done and takes in all.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.done.load(Ordering::Relaxed), self.total)
+    }
+
+    /// Stops after the block it is on; the notes done are kept.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
+    }
+
+    /// Waits for the job and returns what it made.
+    pub fn finish(mut self) -> Finished {
+        self.handle
+            .take()
+            .expect("finished once")
+            .join()
+            .expect("the auto-sample thread doesn't panic")
+    }
+}
+
+impl Drop for Job {
+    /// A job dropped unfinished is cancelled; its thread ends on its own.
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
