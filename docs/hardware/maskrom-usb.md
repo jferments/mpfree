@@ -1,6 +1,6 @@
 # RK3288 MaskROM over USB: what we know for MPFree installers
 
-Research note, 2026-11-10. **Nothing in this file has been run on the MPC One.**
+Research note originally written 2026-11-10, revised after owner-run **read-only** Linux USB and secure eFuse surveys (2026-11-11). Genuine ROM entry and owner-built first-stage execution remain untested on this MPC. See [owner ROM recovery plan](owner-rom-recovery-plan.md).
 It collects what is public about the RK3288 boot ROM's USB recovery mode
 ("MaskROM"), what our own read-only surveys already show about this unit, and
 what that means for future MPFree installers and for the Tier 3 recovery gate
@@ -30,8 +30,7 @@ recovery has been proven on this unit.
    to make the ROM skip it. Three kinds exist, in order of risk: a software flag
    left by a reboot (needs Akai's loader to cooperate; unknown here), a
    recovery/MaskROM button or pads (none known on the MPC One), or
-   temporarily shorting the eMMC clock to ground at power-on (works on every
-   RK3288 board, but needs the case open and the right pad).
+   a board-qualified physical boot-source isolation mechanism. Clock-short methods from other RK3288 boards are **not automatically safe or effective** on an MPC One; never short a live eMMC signal without a board-specific electrical review.
 3. **The port is almost certainly the USB-B socket on the back** (Inference, now
    strong): it is wired to the RK3288's OTG controller `ff580000`, which is
    the controller the ROM uses, and Akai's Update Mode (fastboot) uses it too.
@@ -44,7 +43,7 @@ recovery has been proven on this unit.
 5. **The one thing that could take MaskROM away is RK3288 secure boot.** Once a
    key hash is burned into the SoC's one-time eFuses, the ROM (including over
    USB) only runs loaders signed with that key (Public, 3mdeb on a Firefly
-   RK3288). We don't know whether this unit is fused. Akai's 3.10.0 adds a
+   RK3288). On this unit, the live secure eFuse's enable word, key-hash region and lock word **all read as zero** through NVMEM; silicon mapping and ROM behavior still need independent confirmation. The P19 eFuse programming-voltage circuit remains unknown. Akai's 3.10.0 adds a
    tool, `az01-bootloader-sig`, that prints a bootloader signing-key hash
    (Measured from strings), so Akai is at least signing bootloaders on some
    product. This is the main open risk for the "guaranteed bootloader access"
@@ -77,10 +76,12 @@ Live notes). We have not checked the MPC One's U-Boot, but it is the same
 ## How MaskROM is entered on the RK3288
 
 **The ROM's boot order.** At power-on the boot ROM looks for a Rockchip
-ID block (the RC4-scrambled header we found at eMMC sector 64, Measured) on its
-boot media in a fixed order: SPI flash, NAND, eMMC, then the SD card. If none
-is valid it starts USB download on the OTG port (Public, RK3288 TRM as
-summarised in U-Boot and community docs). Two consequences:
+ID block (the RC4-scrambled header found at eMMC sector 64, Measured) on its
+boot media in a fixed order. PHYTEC's RK3288 hardware manual documents **NAND,
+eMMC, SPI NOR, SD/MMC, then USB OTG**; unsupported media can be physically
+absent. The MPC One's populated boot sources still need board verification.
+The silicon boot order is distinct from Akai's U-Boot environment
+`boot_targets=mmc0 mmc1`. See [PHYTEC RK3288 manual](https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf). Two consequences:
 
 - With a valid eMMC loader the ROM never reaches the SD card or USB. This is
   why our U-Boot-level "SD is only tried if eMMC fails" finding has a ROM-level
@@ -119,9 +120,9 @@ summarised in U-Boot and community docs). Two consequences:
    be identified from the board, ideally with a datasheet-backed trace from
    the eMMC package; shorting the wrong pad (for example a supply rail) can
    damage the board; holding the short too long can corrupt a transfer.
-   Grounding a clock line through a small resistor (for example 100 Ω) rather
-   than a bare tweezer is gentler (Inference, common practice). **Not to be
-   attempted without board photos, an identified pad and Jay's explicit go.**
+   Even a resistor-limited short can disrupt storage or harm circuitry. **No
+   clock/data-line short is approved** without the exact motherboard wiring,
+   electrical review, explicit owner authorization, and a recovery plan.
 4. **Erasing the eMMC loader** (what the Rockchip and U-Boot docs suggest for
    dev boards: zero the first megabytes). **Never on this unit.** It is exactly
    the brick we are protecting against, and it is only "recoverable" if

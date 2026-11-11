@@ -12,7 +12,7 @@
 //! | Silence | [`SourceAnalysis::silence`]: one slice per sound |
 //! | Manual / live | [`ChopSet::add_marker`], snapped with [`SourceAnalysis::snap`] |
 
-use mpfree_analysis::{estimate_tempo, loop_tempo, nearest_zero_crossing, sound_spans, OnsetAnalysis, SilenceSettings, Tempo};
+use mpfree_analysis::{estimate_tempo, loop_tempo, nearest_zero_crossing, root_pitch, sound_spans, OnsetAnalysis, Pitch, PitchSettings, SilenceSettings, Tempo};
 
 use crate::model::{ChopMode, ChopSet, ModelError, Source, SourceId};
 
@@ -26,6 +26,7 @@ pub struct SourceAnalysis {
     mono: Vec<f32>,
     onsets: OnsetAnalysis,
     tempo: Option<Tempo>,
+    pitch: Option<Pitch>,
 }
 
 impl SourceAnalysis {
@@ -35,7 +36,8 @@ impl SourceAnalysis {
         let mono = mpfree_analysis::mono(source.data(), ch).expect("source layout is checked on creation");
         let onsets = OnsetAnalysis::analyse(source.data(), ch, source.rate()).expect("source layout is checked on creation");
         let tempo = estimate_tempo(&onsets);
-        SourceAnalysis { source: source.id(), mono, onsets, tempo }
+        let pitch = root_pitch(&mono, 1, source.rate(), PitchSettings::default()).expect("mono input");
+        SourceAnalysis { source: source.id(), mono, onsets, tempo, pitch }
     }
 
     pub fn source(&self) -> SourceId { self.source }
@@ -43,6 +45,23 @@ impl SourceAnalysis {
 
     /// The detected tempo, offered to the user, with confidence.
     pub fn tempo(&self) -> Option<Tempo> { self.tempo }
+
+    /// The root pitch of the whole source, if it is pitched.
+    pub fn pitch(&self) -> Option<Pitch> { self.pitch }
+
+    /// The root pitch of frames `start..end` (a slice), with `frame`
+    /// counted from the start of the source. For a melodic chop, this is
+    /// what each slice's keygroup zone or tuning comes from.
+    pub fn pitch_of(&self, start: u64, end: u64) -> Option<Pitch> {
+        let len = self.mono.len() as u64;
+        let (a, b) = (start.min(len), end.min(len));
+        if b <= a {
+            return None;
+        }
+        let mut p = root_pitch(&self.mono[a as usize..b as usize], 1, self.onsets.rate(), PitchSettings::default()).ok()??;
+        p.frame += a;
+        Some(p)
+    }
 
     /// The tempo if the source is a loop cut to a whole number of beats:
     /// exact, from its length, with the beat count chosen by the estimate.

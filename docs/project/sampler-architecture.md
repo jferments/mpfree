@@ -156,6 +156,7 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 - **Envelopes:** AHDSR as a per-sample multiply with a per-block recomputed segment rate (exponential segments as one multiply per sample).
 - **Filter:** a topology-preserving state-variable filter (LP/HP/BP, 2-pole; 4-pole as two in series), coefficients updated per 16-frame sub-block when modulated.
 - **Declick:** 64-frame release on stop and 32-frame fade on steal or choke, as in today's `mpfree-sampler`.
+- **Pressure:** each pad has one pressure route (`Pad.pressure`: a `PressureTarget` and a depth from −1 to 1). `Event::Pressure { pad, value }` (0-127, from the pad's polyphonic aftertouch) moves that pad's playing voices; a voice that starts later begins unpressed. Pressure is smoothed with a 5 ms one-pole. Full pressure at depth 1 gives +12 dB level (the gain glides over each 16-frame sub-block, so it never clicks), +12 semitones pitch (sample voices change their step; granular voices change the grain pitch), +4 octaves of filter cutoff (needs the pad's filter on), ×16 grain density, ×8 grain length, the grain position moved by the whole region (wrapping), or +100 % spray. A negative depth moves the other way. Built and tested (`tests/pressure.rs`); it also runs in `tests/no_alloc.rs`.
 - **Voice allocation:** a fixed pool (start at 64, set by measurement). Stealing order: same pad's oldest voice if the pad's polyphony is exceeded, then the quietest releasing voice, then the oldest.
 
 ### Warp and stretch
@@ -187,6 +188,7 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 - `GrainVoice` has a fixed array of 64 grains. `Budget` counts the grains alive across all voices and refuses new ones past its limit.
 - Grain sources are `Clip` (a region of a sample) and `LiveBuffer` (a circular buffer with freeze). Grains are placed so the whole read stays inside the readable span, so a grain is never cut short or reads outside its region.
 - Windows are Hann, Tukey, trapezoid and exponential, as 1025-entry tables. Pitch can be quantised to a 12-note mask. Density and size can lock to the transport's frame timeline (`TempoSync`), and synced grains start on exact frames whatever the period size.
+- Pads play it through `PlayMode::Granular` in `mpfree-sampler`. Each voice slot has its own `GrainVoice`, and one `Budget` (`GRAIN_BUDGET`, 256) is shared by all of them. A region keeps its grain settings in every play mode. Tune adds to the grain pitch, reverse makes every grain play backwards, and the pad's envelope, filter, pan, chokes and polyphony apply as for any other voice. Lifting the pad stops new grains and releases.
 - Output doesn't depend on the period size, and the same seed gives bit-identical output. `tests/no_alloc.rs` covers render, start, stop, kill, parameter changes and live-buffer writes.
 - Cost measured on the workstation (x86, one core, `cargo run --release -p mpfree-grain --example bench`): about 67 million grain-frames a second on a stereo clip and 59 million on a live buffer, which is 4-5 % of a core for 64 grains at 44.1 kHz. The RK3288 figure is still to be measured, and it sets the budget.
 
@@ -197,7 +199,7 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 | Peak pyramid | Per channel min, max, RMS as `i16` at block sizes 64, 256, 1024, 4096 frames | `PeakPyramid`, saved as `<source>.peaks` |
 | Onsets | 1024-point FFT, hop 256 (5.8 ms); spectral flux on log-magnitude; adaptive threshold = median over ±8 hops × (1 + sensitivity); peak-picking with a 30 ms minimum gap; refine each onset to the nearest preceding low-energy frame | sorted frame positions with strength (so sensitivity can change without recomputing) |
 | Tempo | Autocorrelation of the onset strength curve over 60-200 BPM, with a preference curve around 90-120 and octave checks; offered, not forced | BPM and confidence |
-| Pitch | YIN on the steadiest 100 ms | root note and cents, with confidence |
+| Pitch | YIN on up to 24 windows of 100 ms within 24 dB of the loudest; voiced windows grouped by note, weighted by loudness × periodicity × steadiness (built: `mpfree_analysis::root_pitch`, also per slice via `SourceAnalysis::pitch_of`) | root note and cents, with confidence |
 | Zero crossings | On demand within ±N frames of a marker | nearest crossing with matching slope |
 | Loudness | Peak, RMS; integrated LUFS later | numbers for normalise |
 

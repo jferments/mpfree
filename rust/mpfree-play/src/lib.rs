@@ -8,6 +8,8 @@
 //!   the host maps to the sampler, the arp or MIDI out.
 //! - [`arp`]: a track through the arpeggiator: the player's notes hold and
 //!   release notes on an `mpfree-arp` engine that follows the transport.
+//! - [`record`]: the clip recorder: notes played while the transport
+//!   records go into the armed track's clip at their exact ticks.
 //!
 //! The same session gives the same events for any period size, and the
 //! audio-thread call never allocates; `tests/` proves both. Host-only for
@@ -16,8 +18,10 @@
 
 pub mod arp;
 pub mod player;
+pub mod record;
 pub mod view;
 
 pub use arp::ArpHost;
-pub use player::{Event, Out, Player, Sink, Stats, ALL};
+pub use player::{Erased, Event, Out, Player, Sink, Stats, ALL};
+pub use record::{Recorder, Taken};
 pub use view::{CompileError, Launch, PlayView};
