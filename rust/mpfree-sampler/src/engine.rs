@@ -234,6 +234,9 @@ struct Voice {
     filter: Option<Filter>,
     svf: [Svf; 2],
     filter_count: u32,
+    /// The envelope level and pressure factor (as bits) the filter was
+    /// last set for.
+    filter_key: Option<(u32, u32)>,
     kill_left: u16,
     tail_left: u16,
     tail_l: f32,
@@ -266,11 +269,13 @@ impl Voice {
         if self.stereo { data[2 * i + usize::from(ch)] } else { data[i] }
     }
 
-    /// One channel at a fixed-point position, Hermite-interpolated.
-    #[inline]
+    /// One channel at a fixed-point position, Hermite-interpolated, with
+    /// every neighbour clamped to the region: the edge case of [`Voice::read2`].
+    #[cold]
+    #[inline(never)]
     fn read(&self, data: &[f32], pos: i64, pick: u8) -> f32 {
         let i = pos >> 32;
-        let t = (pos & (ONE - 1)) as f32 / ONE as f32;
+        let t = frac(pos);
         let ch = |k: i64| -> f32 {
             match pick {
                 0 => self.at(data, k, 0),
@@ -281,7 +286,44 @@ impl Voice {
         if t == 0.0 { return ch(i); }
         hermite(ch(i - 1), ch(i), ch(i + 1), ch(i + 2), t)
     }
+
+    /// Both output channels at a fixed-point position, Hermite-interpolated:
+    /// what [`Voice::read`] gives for `pick_l` and `pick_r`, bit for bit.
+    /// Away from the region's edges (nearly always) the four neighbours are
+    /// read straight from the data, once for both channels, with no clamps.
+    #[inline(always)]
+    fn read2(&self, data: &[f32], pos: i64) -> (f32, f32) {
+        let i = pos >> 32;
+        if i - 1 < self.start || i + 2 >= self.end {
+            return (self.read(data, pos, self.pick_l), self.read(data, pos, self.pick_r));
+        }
+        let t = frac(pos);
+        let k = (i - 1) as usize;
+        if !self.stereo {
+            // Mono plays the same on both sides.
+            let w: &[f32; 4] = data[k..k + 4].try_into().expect("four frames");
+            let x = if t == 0.0 { w[1] } else { hermite(w[0], w[1], w[2], w[3], t) };
+            return (x, x);
+        }
+        let w: &[f32; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let side = |pick: u8| -> [f32; 4] {
+            match pick {
+                0 => [w[0], w[2], w[4], w[6]],
+                1 => [w[1], w[3], w[5], w[7]],
+                _ => [0.5 * (w[0] + w[1]), 0.5 * (w[2] + w[3]), 0.5 * (w[4] + w[5]), 0.5 * (w[6] + w[7])],
+            }
+        };
+        let (a, b) = (side(self.pick_l), side(self.pick_r));
+        if t == 0.0 { return (a[1], b[1]); }
+        (hermite(a[0], a[1], a[2], a[3], t), hermite(b[0], b[1], b[2], b[3], t))
+    }
 }
+
+/// The fraction of a 32.32 fixed-point position, 0 to 1. Converted from
+/// its low 32 bits as a `u32`, which ARMv7 does in one instruction (a
+/// 64-bit integer needs a library call); exact either way.
+#[inline(always)]
+fn frac(pos: i64) -> f32 { (pos as u32) as f32 * (1.0 / ONE as f32) }
 
 fn picks(stereo: bool, pick: ChannelPick) -> (u8, u8) {
     if !stereo { return (0, 0); }
@@ -576,6 +618,7 @@ impl Engine {
             filter: (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
             svf: [Svf::default(); 2],
             filter_count: 0,
+            filter_key: None,
             kill_left: 0,
             tail_left: if stolen { STEAL_FRAMES } else { 0 },
             tail_l, tail_r,
@@ -726,24 +769,43 @@ fn pressed_grain(mut g: GrainParams, route: PressureRoute, p: f32) -> GrainParam
 #[inline]
 fn follow_pressure(v: &mut Voice) {
     v.press += (v.press_target - v.press) * v.press_coef;
-    if v.press_count == 0 {
-        let d = v.route.depth * v.press;
-        match v.route.target {
-            PressureTarget::Level => v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32,
-            PressureTarget::Pitch if !v.granular => v.step = ((v.base_step as f64) * f64::from(d).exp2()).round().max(1.0) as i64,
-            PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
-            _ => {}
-        }
-    }
+    if v.press_count == 0 { pressure_step(v); }
     v.press_gain += v.press_gain_inc;
     v.press_count = (v.press_count + 1) % FILTER_STEP;
+}
+
+/// [`follow_pressure`]'s update every [`FILTER_STEP`] frames, kept out of
+/// the per-frame loop.
+#[inline(never)]
+fn pressure_step(v: &mut Voice) {
+    let d = v.route.depth * v.press;
+    match v.route.target {
+        PressureTarget::Level => v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32,
+        PressureTarget::Pitch if !v.granular => v.step = ((v.base_step as f64) * f64::from(d).exp2()).round().max(1.0) as i64,
+        PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
+        _ => {}
+    }
+}
+
+/// Sets the voice's filter for envelope level `e`. The coefficients only
+/// depend on `e` and pressure's cutoff factor, so while neither moves (a
+/// held sustain, no pressure) this skips the `exp2` and `tan`; the second
+/// stage is only set for a 4-pole filter, the only one that uses it.
+#[inline(never)]
+fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
+    let key = (e.to_bits(), v.press_fc.to_bits());
+    if v.filter_key == Some(key) { return; }
+    v.filter_key = Some(key);
+    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
+    v.svf[0].set(fc, f.resonance, rate);
+    if f.poles >= 4 { v.svf[1].set(fc, f.resonance * 0.5, rate); }
 }
 
 /// Everything after the source read, for one frame: amp envelope, kill
 /// fade, gain and pan, filter, the stolen voice's tail. `g` is the gain
 /// from the region's fades. Marks the voice done when its kill fade or
 /// envelope ends.
-#[inline]
+#[inline(always)]
 fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32, f32) {
     if v.route.target != PressureTarget::Off {
         follow_pressure(v);
@@ -757,11 +819,7 @@ fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32,
 
     if let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) {
         let e = fe.next();
-        if v.filter_count == 0 {
-            let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
-            v.svf[0].set(fc, f.resonance, rate);
-            v.svf[1].set(fc, f.resonance * 0.5, rate);
-        }
+        if v.filter_count == 0 { retune(v, f, e, rate); }
         v.filter_count = (v.filter_count + 1) % FILTER_STEP;
         l = v.svf[0].process(0, l, f.kind);
         r = v.svf[0].process(1, r, f.kind);
@@ -791,16 +849,16 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
         let i = v.pos >> 32;
         if i < v.start || i >= v.end { v.active = false; break; }
 
-        let mut l = v.read(&data, v.pos, v.pick_l);
-        let mut r = v.read(&data, v.pos, v.pick_r);
+        let (mut l, mut r) = v.read2(&data, v.pos);
 
         // Forward-loop crossfade: blend in the audio before the loop start.
         if v.looping && !v.ping_pong && v.crossfade > 0 && i >= v.loop_end - v.crossfade {
             let x = (i - (v.loop_end - v.crossfade)) as f32 / v.crossfade as f32;
             let (out, inn) = equal_power(x);
             let back = v.pos - ((v.loop_end - v.loop_start) << 32);
-            l = l * out + v.read(&data, back, v.pick_l) * inn;
-            r = r * out + v.read(&data, back, v.pick_r) * inn;
+            let (bl, br) = v.read2(&data, back);
+            l = l * out + bl * inn;
+            r = r * out + br * inn;
         }
 
         let mut g = 1.0f32;
@@ -831,4 +889,42 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
         if !v.active { break; }
     }
     if !v.active { v.data = None; }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The direct read gives what the clamped one does, bit for bit, at
+    /// every kind of position: whole and fractional frames, the region's
+    /// first and last frames and just outside them, for mono and stereo
+    /// and every channel pick.
+    #[test]
+    fn the_direct_read_matches_the_clamped_one() {
+        let frames = 64usize;
+        let stereo: Vec<f32> = (0..frames * 2).map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0).collect();
+        let mono: Vec<f32> = (0..frames).map(|i| ((i * 104_729) % 977) as f32 / 488.5 - 1.0).collect();
+        let fracs = [0u64, 1, 1 << 31, 0x1234_5678, u64::from(u32::MAX)];
+        for (data, is_stereo) in [(&stereo, true), (&mono, false)] {
+            for pick in [ChannelPick::Stereo, ChannelPick::MonoSum, ChannelPick::Left, ChannelPick::Right] {
+                let (pick_l, pick_r) = picks(is_stereo, pick);
+                let v = Voice { stereo: is_stereo, pick_l, pick_r, start: 5, end: 40, ..Voice::default() };
+                for i in 0..frames as i64 {
+                    for &t in &fracs {
+                        let pos = (i << 32) | t as i64;
+                        let (l, r) = v.read2(data, pos);
+                        let (wl, wr) = (v.read(data, pos, pick_l), v.read(data, pos, pick_r));
+                        assert_eq!((l.to_bits(), r.to_bits()), (wl.to_bits(), wr.to_bits()), "{pick:?} stereo {is_stereo} at {i} + {t:#x}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_fraction_is_the_low_half_over_two_to_the_32() {
+        for pos in [0i64, 1, (7 << 32) | 0x8000_0000, -1, (3 << 32) | 0xFFFF_FFFF, i64::MIN + 12345] {
+            assert_eq!(frac(pos), (pos & (ONE - 1)) as f32 / ONE as f32, "{pos:#x}");
+        }
+    }
 }

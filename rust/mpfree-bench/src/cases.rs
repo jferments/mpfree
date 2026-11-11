@@ -117,16 +117,28 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
     }
 }
 
+/// Which of the sampler case's pads are set. The hits are the same in
+/// every case (a hit on an unset pad does nothing), so the two parts add
+/// up to the whole.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SamplerPads {
+    All,
+    /// Pads 1 to 16: sample voices (Hermite read, envelope, filter).
+    Samples,
+    /// Pads 17 to 20: granular voices.
+    Grains,
+}
+
 /// The sampler as the pad player uses it: 16 one-shot, gated and looping
 /// pads with filters and two layers, four granular pads, 24 voices, a hit
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
-fn sampler(name: &str, rate: u32, master: bool) -> Case {
+fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
     let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
         .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
-    for i in 0..16usize {
+    for i in (0..16usize).filter(|_| which != SamplerPads::Grains) {
         let mut r = Region::whole(&s);
         r.mode = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Loop, PlayMode::OneShot][i % 4];
         r.sustain_loop = Some(Loop { start: 5000, end: 9000, crossfade: 200, mode: LoopMode::Forward });
@@ -137,7 +149,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
         pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 2000.0, resonance: 0.3, env_octaves: 1.0 };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
-    for i in 16..20usize {
+    for i in (16..20usize).filter(|_| which != SamplerPads::Samples) {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
         r.grain = GrainParams { spray: 0.6, size_ms: 300.0, density: 200.0, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
@@ -259,8 +271,10 @@ pub fn all(rate: u32) -> Vec<Case> {
         v.push(measured(|| synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8)));
     }
     v.push(measured(|| synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16)));
-    v.push(measured(|| sampler("Sampler, 20 pads", rate, false)));
-    v.push(measured(|| sampler("Sampler, 20 pads + master grains", rate, true)));
+    v.push(measured(|| sampler("Sampler, 20 pads", rate, false, SamplerPads::All)));
+    v.push(measured(|| sampler("Sampler, 20 pads + master grains", rate, true, SamplerPads::All)));
+    v.push(measured(|| sampler("Sampler, the 16 sample pads alone", rate, false, SamplerPads::Samples)));
+    v.push(measured(|| sampler("Sampler, the 4 granular pads alone", rate, false, SamplerPads::Grains)));
     v.push(measured(|| effect("Multi filter (LP 12)", rate, Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)])));
     v.push(measured(|| effect("Multi filter (LP 24, drive)", rate, Box::new(MultiFilter::new()),
                   &[(ids::filter::CUTOFF, 800.0), (ids::filter::SLOPE, 1.0), (ids::filter::DRIVE, 12.0)])));
@@ -388,7 +402,7 @@ pub fn fit(points: &[(usize, f64)]) -> (f64, f64) {
 fn song(rate: u32) -> Case {
     let preset = |name: &str| PRESETS.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("preset {name}")).values;
     let mut parts = [
-        sampler("sampler", rate, true),
+        sampler("sampler", rate, true, SamplerPads::All),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
         mixer("mixer", rate, 12, 8, Inserts::Song),
