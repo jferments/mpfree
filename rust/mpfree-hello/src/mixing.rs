@@ -21,6 +21,12 @@
 //!   the mixer's capture points comes with the recorder, which makes up
 //!   the period they arrive late.
 //!
+//! The Play page's effects are inserts from the start ([`PlayFx`]): a DJ
+//! filter on the Drums and Loop tracks (the Filter Q-Links), a 1/8 dotted
+//! delay on Return A (the Delay send Q-Links send to it), and the throws
+//! and XY pad (`perform.rs`) on the master, before Master safety. Each
+//! rests (costs next to nothing) until it is used.
+//!
 //! The screen: while the mixer panel shows ([`MixHost::show`]), the audio
 //! loop sends a [`MixState`] every [`STATE_EVERY`] (it takes the meters),
 //! and applies what the panel sends ([`MixHost::action`]).
@@ -33,11 +39,13 @@ use std::time::{Duration, Instant};
 
 use mpfree_fx::ids::mixer::output;
 use mpfree_fx::ids::mixer::{self as mx, monitor, source};
-use mpfree_fx::{Mixer, MixerConfig, StripId};
+use mpfree_fx::ids::{delay, dj_filter};
+use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId};
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
-use mpfree_node::Ctx;
+use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_sampler::engine::PadOut;
 
+use crate::perform::ids as perf;
 use crate::PERIOD;
 
 /// The tracks: what each engine plays into.
@@ -53,6 +61,73 @@ pub const LINE: StripId = StripId::Input(0);
 pub const SLOTS: usize = 4;
 /// How often the panel gets a new state (meters) while it shows.
 pub const STATE_EVERY: Duration = Duration::from_millis(40);
+/// The Play page's inserts: the DJ filters' slot on the Drums and Loop
+/// tracks, the delay's return, and the throws' slot on the master.
+const FILTER_SLOT: usize = 0;
+pub const DELAY_RETURN: usize = 0;
+const PERFORM_SLOT: usize = 0;
+/// A send this low is off.
+pub const SEND_OFF_DB: f32 = -60.0;
+
+/// What the Play page's Q-Links and speakers show, read from the mixer (so
+/// the mixer panel's changes show there too).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayLevels {
+    /// The Drums and Loop tracks' sends to the delay, dB.
+    pub drums_send_db: f32,
+    pub loop_send_db: f32,
+    /// The Loop track's and the line input's faders, dB.
+    pub loop_db: f32,
+    pub line_db: f32,
+    /// The DJ filters, -100 (low-pass) to 100 (high-pass); 0 is off.
+    pub drums_filter: f32,
+    pub loop_filter: f32,
+    /// The XY pad's FX mix, 0 to 1.
+    pub fx_mix: f32,
+    /// Pads muted (a bit each), as the speakers show them.
+    pub pad_mutes: u16,
+}
+
+/// A change from the Play page for the mixer. The page says what it wants
+/// (a filter's place, a throw held, where the XY pad is); which engine and
+/// which parameter make it is the mixer's business ([`MixHost::play`]), so
+/// another performance engine swaps in here without the page changing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlayFx {
+    /// A strip's parameter (a fader, a send).
+    Strip { strip: StripId, id: u16, value: f32 },
+    /// A track's DJ filter: -100 (low-pass) to 100 (high-pass), 0 off.
+    Filter { strip: StripId, position: f32 },
+    /// A speaker: mute or unmute a pad.
+    PadMute { pad: usize, mute: bool },
+    /// Drop drums: these pads (a bit each) muted while held, as well.
+    Drop(u16),
+    /// A throw held or let go.
+    Throw { fx: ThrowFx, down: bool },
+    /// The XY pad: where the finger is (0 to 1 each way), and whether it
+    /// is down.
+    Xy { x: f32, y: f32, down: bool },
+    /// The XY pad's effects' mix, 0 to 1.
+    FxMix(f32),
+}
+
+/// What the XY pad at (x, y) does, for its label: the sweep filter's
+/// cutoff, Hz, and the delay's feedback, 0 to 1.
+pub fn xy_meaning(x: f32, y: f32) -> (f32, f32) {
+    (crate::perform::xy_cutoff(x), crate::perform::xy_feedback(y))
+}
+
+/// The performance effects a throw holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThrowFx {
+    Delay,
+    Reverb,
+    Stutter,
+    TapeStop,
+    FilterDip,
+    BeatRepeat,
+    VinylBrake,
+}
 
 /// A period of stereo sound.
 pub type Stereo<'a> = (&'a [f32; PERIOD], &'a [f32; PERIOD]);
@@ -80,6 +155,9 @@ pub struct MixHost {
     shown: Option<MixView>,
     selected: Option<StripId>,
     state_at: Option<Instant>,
+    /// Pads muted by their speakers or the panel, and by Drop drums.
+    pad_mutes: u16,
+    dropped: u16,
 }
 
 impl MixHost {
@@ -101,6 +179,28 @@ impl MixHost {
         mixer.set_now(StripId::Master, mx::VOLUME, level_db.min(max_db));
         mixer.set_now(LINE, mx::SOURCE, source::OFF);
         mixer.set_now(LINE, mx::MONITOR, monitor::OFF);
+        // The Play page's effects.
+        let ret = StripId::Return(DELAY_RETURN);
+        let mut echo = Delay::new();
+        echo.set_param(delay::MIX, 100.0);
+        let inserts: [(StripId, Box<dyn Node>); 4] = [
+            (StripId::Track(DRUMS), Box::new(DjFilter::new())),
+            (StripId::Track(LOOP), Box::new(DjFilter::new())),
+            (ret, Box::new(echo)),
+            (StripId::Master, Box::new(crate::perform::PerformFx::new())),
+        ];
+        for (strip, node) in inserts {
+            let insert = Insert::new(node, rate, PERIOD);
+            // Room for these is made above (SLOTS), so this never fails.
+            let _ = mixer.edit(Edit::Insert {
+                strip,
+                at: 0,
+                insert,
+            });
+        }
+        for t in [DRUMS, LOOP] {
+            mixer.set_now(StripId::Track(t), mx::send(DELAY_RETURN), SEND_OFF_DB);
+        }
         MixHost {
             mixer,
             max_db,
@@ -110,6 +210,109 @@ impl MixHost {
             shown: None,
             selected: None,
             state_at: None,
+            pad_mutes: 0,
+            dropped: 0,
+        }
+    }
+
+    /// A change from the Play page.
+    pub fn play(&mut self, fx: PlayFx) {
+        match fx {
+            PlayFx::Strip { strip, id, value } => {
+                self.mixer.set(strip, id, value);
+            }
+            PlayFx::Filter { strip, position } => {
+                self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
+            }
+            PlayFx::Throw { fx, down } => {
+                let id = match fx {
+                    ThrowFx::Delay => perf::DELAY_THROW,
+                    ThrowFx::Reverb => perf::REVERB_WASH,
+                    ThrowFx::Stutter => perf::STUTTER,
+                    ThrowFx::TapeStop => perf::TAPE_STOP,
+                    ThrowFx::FilterDip => perf::FILTER_DIP,
+                    ThrowFx::BeatRepeat => perf::BEAT_REPEAT,
+                    ThrowFx::VinylBrake => perf::VINYL_BRAKE,
+                };
+                self.insert(
+                    StripId::Master,
+                    PERFORM_SLOT,
+                    id,
+                    if down { 1.0 } else { 0.0 },
+                );
+            }
+            PlayFx::Xy { x, y, down } => {
+                self.insert(StripId::Master, PERFORM_SLOT, perf::XY_X, x);
+                self.insert(StripId::Master, PERFORM_SLOT, perf::XY_Y, y);
+                self.insert(
+                    StripId::Master,
+                    PERFORM_SLOT,
+                    perf::XY_ON,
+                    if down { 1.0 } else { 0.0 },
+                );
+            }
+            PlayFx::FxMix(mix) => {
+                self.insert(StripId::Master, PERFORM_SLOT, perf::FX_MIX, mix);
+            }
+            PlayFx::PadMute { pad, mute } if pad < PADS => {
+                if mute {
+                    self.pad_mutes |= 1 << pad;
+                } else {
+                    self.pad_mutes &= !(1 << pad);
+                }
+                self.apply_mutes();
+            }
+            PlayFx::PadMute { .. } => {}
+            PlayFx::Drop(pads) => {
+                self.dropped = pads;
+                self.apply_mutes();
+            }
+        }
+    }
+
+    fn insert(&mut self, strip: StripId, slot: usize, id: u16, value: f32) {
+        self.mixer
+            .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    fn apply_mutes(&mut self) {
+        for p in 0..PADS {
+            let on = (self.pad_mutes | self.dropped) & (1 << p) != 0;
+            let want = if on { 1.0 } else { 0.0 };
+            if self.mixer.param(StripId::Pad(p), mx::MUTE) != want {
+                self.mixer.set(StripId::Pad(p), mx::MUTE, want);
+            }
+        }
+    }
+
+    /// Master safety's limiting now, dB (0, or a positive number of dB
+    /// taken off), for the master meter.
+    pub fn gain_reduction_db(&self) -> f32 {
+        use mpfree_node::Node as _;
+        -self
+            .mixer
+            .safety()
+            .param(mpfree_fx::ids::master::REDUCTION)
+            .min(0.0)
+    }
+
+    /// What the Play page shows. Cheap: a few reads.
+    pub fn play_levels(&self) -> PlayLevels {
+        let m = &self.mixer;
+        let insert = |s: StripId, slot: usize, id: u16| {
+            m.chain(s)
+                .and_then(|c| c.node(slot))
+                .map_or(0.0, |n| n.param(id))
+        };
+        PlayLevels {
+            drums_send_db: m.param(StripId::Track(DRUMS), mx::send(DELAY_RETURN)),
+            loop_send_db: m.param(StripId::Track(LOOP), mx::send(DELAY_RETURN)),
+            loop_db: m.param(StripId::Track(LOOP), mx::VOLUME),
+            line_db: m.param(LINE, mx::VOLUME),
+            drums_filter: insert(StripId::Track(DRUMS), FILTER_SLOT, dj_filter::POSITION),
+            loop_filter: insert(StripId::Track(LOOP), FILTER_SLOT, dj_filter::POSITION),
+            fx_mix: insert(StripId::Master, PERFORM_SLOT, perf::FX_MIX),
+            pad_mutes: self.pad_mutes,
         }
     }
 
@@ -232,6 +435,18 @@ impl MixHost {
                 self.mixer.set(StripId::Master, mx::VOLUME, db);
                 self.state_at = None;
                 Some(db)
+            }
+            MixAction::Set {
+                strip: StripId::Pad(p),
+                id: mx::MUTE,
+                value,
+            } if p < PADS => {
+                // The speakers on the Play page follow.
+                self.play(PlayFx::PadMute {
+                    pad: p,
+                    mute: value >= 0.5,
+                });
+                None
             }
             MixAction::Set { strip, id, value } => {
                 self.mixer.set(strip, id, value);

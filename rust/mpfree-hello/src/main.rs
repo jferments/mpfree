@@ -78,7 +78,9 @@ mod looper_page;
 mod looping;
 mod mixing;
 mod perf;
+mod perform;
 mod play_page;
+mod play_widgets;
 mod sample_page;
 mod sampler;
 mod synth;
@@ -1616,10 +1618,6 @@ fn qlink_level(level: f32, max: f32, port: &str, bytes: &[u8], delta: i8) -> f32
     next.clamp(LEVEL_MIN_DB, max)
 }
 
-fn level_value(db: f32, max: f32) -> f32 {
-    ((db - LEVEL_MIN_DB) / (max - LEVEL_MIN_DB)).clamp(0.0, 1.0)
-}
-
 /// What the pad player's screen shows about each kit, then the synth.
 fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
     let mut views: Vec<gui::KitView> = kits
@@ -1918,6 +1916,8 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+/// How often the Play page's master meter and Q-Link values are sent.
+const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
 const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
 /// Seconds of stereo audio the looper keeps for all its layers (about
@@ -2265,12 +2265,12 @@ fn player_session(
     progress(out, 6, "Ready", "Have fun", 1.0);
     let max_db = o.gain_db;
     let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
-    out.show(gui::ToUi::Level {
-        db: level_db,
-        value: level_value(level_db, max_db),
-    });
+    out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    let mut shown_levels = mix.play_levels();
+    out.show(gui::ToUi::PlayLevels(shown_levels));
+    let mut meter_at = Instant::now();
     out.say(&format!("mixer: the kit's 16 pads on pad channels into track 1 (drums), synth and loop on tracks 2-3, the \
                       line input on input 1 (heard with the looper's Monitor), Master safety {} at {:.1} dBFS",
                      "safe limiter", -0.3));
@@ -2382,13 +2382,10 @@ fn player_session(
                 }
                 gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
-                gui::FromUi::Level(v) => {
-                    level_db = LEVEL_MIN_DB + v.clamp(0.0, 1.0) * (max_db - LEVEL_MIN_DB);
+                gui::FromUi::LevelDb(db) => {
+                    level_db = db.clamp(LEVEL_MIN_DB, max_db);
                     mix.set_level(level_db);
-                    out.show(gui::ToUi::Level {
-                        db: level_db,
-                        value: level_value(level_db, max_db),
-                    });
+                    out.show(gui::ToUi::Level { db: level_db });
                 }
                 // A drag on a Q-Link card on the Play page: as the knob turned.
                 gui::FromUi::QLink { knob, delta } => {
@@ -2398,10 +2395,7 @@ fn player_session(
                         level_db =
                             (level_db + LEVEL_STEP_DB * delta as f32).clamp(LEVEL_MIN_DB, max_db);
                         mix.set_level(level_db);
-                        out.show(gui::ToUi::Level {
-                            db: level_db,
-                            value: level_value(level_db, max_db),
-                        });
+                        out.show(gui::ToUi::Level { db: level_db });
                     }
                 }
                 gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
@@ -2409,13 +2403,17 @@ fn player_session(
                 gui::FromUi::Mixer(a) => {
                     if let Some(db) = mix.action(&a) {
                         level_db = db;
-                        out.show(gui::ToUi::Level {
-                            db: level_db,
-                            value: level_value(level_db, max_db),
-                        });
+                        out.show(gui::ToUi::Level { db: level_db });
                     }
                 }
                 gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
+                // The Play page: filters, sends, faders, speakers, throws, XY.
+                gui::FromUi::PlayFx(p) => mix.play(p),
+                gui::FromUi::Steps(a) => match time.step_action(a) {
+                    Ok(line) if !line.is_empty() => out.note(&line),
+                    Ok(_) => {}
+                    Err(e) => out.note(&format!("steps: {e}")),
+                },
                 gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
@@ -2541,6 +2539,18 @@ fn player_session(
                         app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2]))
                     {
                         fx.extend(e);
+                    } else if page == app::View::Play && knob < 4 {
+                        // The Play page decides what each knob turns there (its view, the step picked).
+                        let k = knob as usize;
+                        let ticks = if public {
+                            let was = qlink_at[k].replace(m.bytes[2]);
+                            was.map_or(0, |w| m.bytes[2] as i32 - w as i32)
+                        } else {
+                            delta as i32
+                        };
+                        if ticks != 0 {
+                            out.show(gui::ToUi::PlayQLink(k, ticks));
+                        }
                     } else if knob == 0 {
                         level_db =
                             qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
@@ -2548,10 +2558,7 @@ fn player_session(
                         if public {
                             qlink_at[0] = Some(m.bytes[2]);
                         }
-                        out.show(gui::ToUi::Level {
-                            db: level_db,
-                            value: level_value(level_db, max_db),
-                        });
+                        out.show(gui::ToUi::Level { db: level_db });
                     }
                 }
                 Some(ControlEvent::Button { note, pressed }) => {
@@ -2941,6 +2948,14 @@ fn player_session(
         };
         time.period(PERIOD as u32, &mut seq);
         hits += seq.hits;
+        // The Play page: where the hits fell (Drum view), and the pattern.
+        for h in time.hits() {
+            out.show(gui::ToUi::Hit(*h));
+        }
+        time.clear_hits();
+        if time.take_steps_changed() {
+            out.show(gui::ToUi::Steps(Box::new(time.steps())));
+        }
         for (pad, &v) in seq.flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
             out.show(gui::ToUi::PadFlash { pad, velocity: v });
         }
@@ -3067,6 +3082,21 @@ fn player_session(
         engines.stop(engines::MIX, t_mix);
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
+        }
+        // The Play page's master meter and what its Q-Links show.
+        if meter_at.elapsed() >= METER_EVERY {
+            meter_at = Instant::now();
+            let pk = mix.mixer.take_peaks(mpfree_fx::StripId::Master);
+            let db = |v: f32| if v > 1e-6 { 20.0 * v.log10() } else { -90.0 };
+            out.show(gui::ToUi::Meter {
+                peak_db: [db(pk[0]), db(pk[1])],
+                limit_db: mix.gain_reduction_db(),
+            });
+            let levels = mix.play_levels();
+            if levels != shown_levels {
+                shown_levels = levels;
+                out.show(gui::ToUi::PlayLevels(levels));
+            }
         }
         if let Some(note) = line_note {
             out.note(&note);

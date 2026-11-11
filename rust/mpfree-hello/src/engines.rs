@@ -73,6 +73,14 @@ impl EngineProbes {
         }
     }
 
+    /// Probes publishing into `shared` (for the screens' samples).
+    pub fn with_shared(shared: Arc<EngineShared>) -> EngineProbes {
+        EngineProbes {
+            prof: Profiler::new(&STAGES, MPC.ns()),
+            shared,
+        }
+    }
+
     /// The handle the screen thread reads (sent to it once, at start).
     pub fn shared(&self) -> Arc<EngineShared> {
         Arc::clone(&self.shared)
@@ -126,6 +134,17 @@ pub fn read(shared: &EngineShared) -> Snapshot {
         *slot = (get(&shared.window[i]), get(&shared.life[i]));
     }
     s
+}
+
+/// The top bar's CPU chip: the audio thread's mean share of the period
+/// over the last window ("CPU 21 %"), coloured by its worst block against
+/// the audio thread's budget. None until the loop has published.
+pub fn cpu_chip(shared: &EngineShared) -> Option<(String, Tone)> {
+    let (w, _) = read(shared)[PERIOD];
+    let w = w.filter(|w| w.blocks > 0)?;
+    let mean = MPC.pct(w.mean_ns);
+    let t = judged(PERIOD, &w).1.map_or(Tone::Dim, tone);
+    Some((format!("CPU {mean:.0} %"), t))
 }
 
 fn tone(v: Verdict) -> Tone {
