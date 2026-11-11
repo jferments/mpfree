@@ -4805,7 +4805,7 @@ mod tests {
             },
         });
         let region = p.sample.state().unwrap().region.clone();
-        let w = region.warp.expect("warped");
+        let w = region.warp.clone().expect("warped");
         assert_eq!(w.method, mpfree_sampler::model::WarpMethod::Stretch);
         // The first view repitches (no copy yet) and asks for the copy.
         let (sent, _) = views(p.take_actions());

@@ -113,6 +113,7 @@ fn render_and_events_never_allocate() {
             1 => Some(Warp {
                 bpm: 100.0,
                 method: WarpMethod::Repitch,
+                pins: Vec::new(),
             }),
             3 => Some(Warp::new(140.0)),
             _ => None,

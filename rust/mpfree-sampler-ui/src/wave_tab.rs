@@ -398,8 +398,10 @@ fn fit_fades(r: &mut Region) {
     r.fade_out.frames = fo as u32;
 }
 
-/// `r` with marker `m` moved as near `to` as the other markers allow.
-pub fn moved(r: &Region, m: Mark, to: u64, frames: u64) -> Region {
+/// `r` with marker `m` moved as near `to` as the other markers allow. Warp
+/// pins stay on their hits (from a source at `rate`).
+pub fn moved(r: &Region, m: Mark, to: u64, frames: u64, rate: u32) -> Region {
+    let old = (r.start, r.end);
     let mut r = r.clone();
     match (m, r.sustain_loop) {
         (Mark::Start, Some(l)) => r.start = within(to, 0, l.start - u64::from(l.crossfade)),
@@ -423,6 +425,9 @@ pub fn moved(r: &Region, m: Mark, to: u64, frames: u64) -> Region {
         (_, None) => {}
     }
     fit_fades(&mut r);
+    if let Some(w) = &r.warp {
+        r.warp = Some(w.moved(old, (r.start, r.end), rate));
+    }
     r
 }
 
@@ -653,8 +658,8 @@ impl WaveTab {
                     },
                     Row::Gain => format!("{:+.1} dB", r.gain_db).replace("+0.0", "0.0"),
                     Row::Tune => tune_text(r.tune_cents),
-                    Row::Warp => warp_label(r.warp).into(),
-                    Row::WarpTempo => match r.warp {
+                    Row::Warp => warp_label(r.warp.as_ref()).into(),
+                    Row::WarpTempo => match &r.warp {
                         Some(w) => format!("{:.1} BPM", w.bpm),
                         None => "—".into(),
                     },
@@ -707,7 +712,7 @@ impl WaveTab {
                 let m = *markers_order(&st.region).get(*index)?;
                 self.focus = m;
                 let to = self.snapped(st, *frame, 0, ui);
-                let r = moved(&st.region, m, to, st.frames);
+                let r = moved(&st.region, m, to, st.frames, st.rate);
                 // The widget moved its tab with the finger; put it where
                 // the marker really is.
                 if let (Some(w), Some(f)) = (ui.get_mut::<Waveform>(WAVE), m.frame(&r)) {
@@ -772,7 +777,7 @@ impl WaveTab {
             let raw = (now as f64 + f64::from(delta) * px).round().max(0.0) as u64;
             self.snapped(st, raw, delta.signum(), ui)
         };
-        let r = moved(&st.region, m, to, st.frames);
+        let r = moved(&st.region, m, to, st.frames, st.rate);
         self.update_wheel(ui, st);
         self.edit(st, Key::Marker(m), r)
     }
@@ -925,18 +930,21 @@ impl WaveTab {
                 let states = [None, Some(WarpMethod::Stretch), Some(WarpMethod::Repitch)];
                 let now = states
                     .iter()
-                    .position(|m| *m == r.warp.map(|w| w.method))
+                    .position(|m| *m == r.warp.as_ref().map(|w| w.method))
                     .unwrap_or(0) as i32;
                 let next = states[(now + d).rem_euclid(3) as usize];
-                r.warp = next.map(|method| Warp {
-                    method,
-                    ..r.warp.unwrap_or_else(|| Warp::new(region_tempo(st, &r)))
-                });
+                let was = r
+                    .warp
+                    .clone()
+                    .unwrap_or_else(|| Warp::new(region_tempo(st, &r)));
+                r.warp = next.map(|method| Warp { method, ..was });
             }
             Row::WarpTempo => {
-                let mut w = r.warp?;
-                // A BPM at a time, keeping the tenths a detected tempo has.
+                let mut w = r.warp.clone()?;
+                // A BPM at a time, keeping the tenths a detected tempo has;
+                // pins the new tempo leaves no room for go.
                 w.bpm = (w.bpm + d as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end());
+                w.fit(r.start, r.end, st.rate);
                 r.warp = Some(w);
             }
             Row::Reverse => r.reverse = !r.reverse,
@@ -982,7 +990,7 @@ impl WaveTab {
     }
 }
 
-fn warp_label(w: Option<Warp>) -> &'static str {
+fn warp_label(w: Option<&Warp>) -> &'static str {
     match w.map(|w| w.method) {
         None => "Off",
         Some(WarpMethod::Stretch) => "Stretch",
