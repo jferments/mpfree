@@ -216,7 +216,7 @@ impl MasterSafety {
                     (x.clamp(-ceil, ceil), y.clamp(-ceil, ceil))
                 }
                 1 => {
-                    let sc = |x: f32| if x.abs() <= knee { x } else { x.signum() * (knee + (ceil - knee) * ((x.abs() - knee) / (ceil - knee)).tanh()) };
+                    let sc = |x: f32| if x.abs() <= knee { x } else { x.signum() * (knee + (ceil - knee) * crate::fast_tanh((x.abs() - knee) / (ceil - knee))) };
                     (sc(da), sc(db))
                 }
                 _ => (da, db),
