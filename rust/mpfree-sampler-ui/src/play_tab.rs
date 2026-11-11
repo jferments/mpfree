@@ -10,9 +10,9 @@
 //! - The **filter** shows its response on a log frequency axis, with a dot
 //!   at the cutoff to drag sideways.
 //! - The **Pad** list holds the rest: voices, mute group, how layers are
-//!   picked, level, pan, tune, the keys it plays, what velocity does, what
-//!   pressure does, the envelope's times and the filter's type, cutoff,
-//!   resonance and envelope amount. A tap on a row picks it and its arrows
+//!   picked, level, pan, tune, wow and flutter, the keys it plays, what
+//!   velocity does, what pressure does, the envelope's times and the
+//!   filter's type, cutoff, resonance and envelope amount. A tap on a row picks it and its arrows
 //!   step it; the **wheel** steps the row picked.
 //! - **Keys** make the pad a keygroup: it plays the notes from Low key to
 //!   High key, a semitone higher for each note above Root key (the sound's
@@ -104,6 +104,8 @@ pub enum Row {
     Level,
     Pan,
     Tune,
+    /// How much the pitch wanders, as on worn tape.
+    Wow,
     /// Whether the pad is a keygroup.
     Keys,
     LowKey,
@@ -132,13 +134,14 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 26] = [
+    pub const ALL: [Row; 27] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Layers,
         Row::Level,
         Row::Pan,
         Row::Tune,
+        Row::Wow,
         Row::Keys,
         Row::LowKey,
         Row::HighKey,
@@ -169,6 +172,7 @@ impl Row {
             Row::Level => "Level",
             Row::Pan => "Pan",
             Row::Tune => "Tune",
+            Row::Wow => "Wow & flutter",
             Row::Keys => "Keys",
             Row::LowKey => "Low key",
             Row::HighKey => "High key",
@@ -851,6 +855,7 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             };
             p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
         }
+        Row::Wow => p.wow = round_to(p.wow + d * 0.1, 0.1).clamp(0.0, 1.0),
         Row::Keys => {
             // On over the whole keyboard, at middle C until the app knows
             // better; a keygroup plays chords, so it gets the voices for them.
@@ -1023,6 +1028,10 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Level => format!("{:+.1} dB", p.level_db),
         Row::Pan => pan_text(p.pan),
         Row::Tune => tune_text(p.tune_cents),
+        Row::Wow => match percent(p.wow) {
+            0 => "Off".into(),
+            x => format!("{x} %"),
+        },
         Row::Keys => if p.keys.is_some() { "On" } else { "Off" }.into(),
         Row::LowKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.lo)),
         Row::HighKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.hi)),
@@ -1172,6 +1181,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Level,
         Row::Pan,
         Row::Tune,
+        Row::Wow,
         Row::Keys,
         Row::LowKey,
         Row::HighKey,
