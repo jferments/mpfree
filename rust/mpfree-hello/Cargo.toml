@@ -26,3 +26,4 @@ mpfree-capture = { path = "../mpfree-capture" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
+mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
