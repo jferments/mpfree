@@ -1,8 +1,8 @@
 //! `Player::process`, `ArpHost::process` and `Recorder::process` must not
 //! allocate or free. A counting global allocator watches a busy session
 //! (five tracks, one of them through the arp, one recording, with loops,
-//! tempo changes, locates, punch in and out, stop and panic) at period
-//! sizes from 1 to 4096 frames.
+//! tempo changes, locates, punch in and out, stop and panic, and parameter
+//! locks on every track) at period sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -15,7 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
-use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
+use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -58,12 +59,14 @@ struct Counter {
     events: u64,
     last: u64,
     arp: ArpHost,
+    locks: u64,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
         assert!(o.frame >= self.last);
         self.last = o.frame;
         self.events += 1;
+        self.locks += u64::from(matches!(o.event, Event::Lock { .. }));
         if o.dest == 0 || o.dest == ALL {
             self.arp.input(o.offset, o.event);
         }
@@ -84,6 +87,19 @@ fn playing_never_allocates() {
                 note: (k % 16) as u8,
                 velocity: 100,
                 chance: if k % 5 == 0 { 50 } else { 100 },
+            })
+            .collect();
+        // Locks on notes, trigless ones, and pad locks.
+        c.locks = (0..(4 * (i as i64 + 2)))
+            .map(|k| {
+                let on =
+                    [OnTrack::Inst, OnTrack::Pad((k % 16) as u8), OnTrack::Strip][k as usize % 3];
+                Lock::new(
+                    k * 240 + (k % 2) * 60,
+                    None,
+                    RelAddr::new(on, (k % 4) as u16),
+                    k as f32,
+                )
             })
             .collect();
         if i == 1 {
@@ -132,10 +148,12 @@ fn playing_never_allocates() {
         events: 0,
         last: 0,
         arp: ArpHost::new(engine),
+        locks: 0,
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
     let mut recorded = 0usize;
+    let mut recorded_locks = 0usize;
     let mut started = 0usize;
 
     watch(true);
@@ -191,8 +209,19 @@ fn playing_never_allocates() {
                 note: ((i + 4) % 7) as u8,
             },
         );
+        // Knob moves on the recording track become locks: the
+        // instrument's, a pad's own, and a strip's.
+        let on = [OnTrack::Inst, OnTrack::Pad(note), OnTrack::Strip][(i % 3) as usize];
+        rec.input(
+            (i as u32 * 13) % n,
+            Event::Lock {
+                addr: RelAddr::new(on, (i % 4) as u16).on(3),
+                value: (i % 100) as f32 / 100.0,
+            },
+        );
         rec.process(&view, &block);
         recorded += rec.taken().len();
+        recorded_locks += rec.taken_locks().len();
     }
     watch(false);
     assert_eq!(
@@ -206,6 +235,9 @@ fn playing_never_allocates() {
     assert!(arp_notes > 500, "{arp_notes}");
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");
+    assert!(recorded_locks > 500, "{recorded_locks}");
+    assert_eq!(rec.stray_locks(), 0);
     assert_eq!(rec.dropped(), 0);
     assert_eq!(started, 2, "both cues started, once");
+    assert!(sink.locks > 500, "{} locks", sink.locks);
 }
