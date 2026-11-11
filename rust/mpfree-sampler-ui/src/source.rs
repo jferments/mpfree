@@ -56,13 +56,16 @@ pub struct SourceView {
     pub tempo: Option<f64>,
     /// Its root note, such as "C#3", if it has a clear pitch.
     pub root: Option<String>,
+    /// Where its hits start, for chopping by transients (None if it
+    /// couldn't be analysed).
+    pub onsets: Option<Arc<OnsetAnalysis>>,
 }
 
 /// Root notes less certain than this aren't shown.
 const ROOT_CONFIDENCE: f32 = 0.5;
 
 impl SourceView {
-    /// Analyses a source: peaks, mono mix, tempo and root note. Takes a
+    /// Analyses a source: peaks, mono mix, onsets, tempo and root note. Takes a
     /// moment for a long source, so run it on a worker or the UI thread
     /// when the source arrives, never on the audio thread.
     pub fn analyse(s: &Source) -> SourceView {
@@ -73,8 +76,9 @@ impl SourceView {
             None => Arc::new(Silent),
         };
         let mono: Arc<[f32]> = mpfree_analysis::mono(data, ch).unwrap_or_default().into();
-        let tempo = OnsetAnalysis::analyse(data, ch, s.rate()).ok().and_then(|o| {
-            let est = estimate_tempo(&o)?.bpm;
+        let onsets = OnsetAnalysis::analyse(data, ch, s.rate()).ok().map(Arc::new);
+        let tempo = onsets.as_deref().and_then(|o| {
+            let est = estimate_tempo(o)?.bpm;
             // A loop cut to whole beats has an exact tempo; use it when it
             // agrees with the estimate.
             let exact = loop_tempo(s.frames(), s.rate(), Some(est)).filter(|l| (l / est - 1.0).abs() < 0.03);
@@ -85,7 +89,7 @@ impl SourceView {
             .flatten()
             .filter(|p| p.confidence >= ROOT_CONFIDENCE)
             .map(|p| note_name(p.note));
-        SourceView { id: s.id(), peaks, mono, tempo, root }
+        SourceView { id: s.id(), peaks, mono, tempo, root, onsets }
     }
 }
 
