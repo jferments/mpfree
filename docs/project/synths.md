@@ -62,5 +62,5 @@ Timing: oscillators, drive, filters, the amp envelope and the steal fade run eve
 
 - A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
 - FM (6 operators, DX7 banks), then a drum synth for the pads.
-- The Sound page (`mpfree-sound-ui`) once PR #31 merges.
+- The Synth tab (`mpfree-synth-ui`) on mpfree-ui, now that PR #31 has merged.
 - Plugin hosting: CLAP first, in a sandbox process.
