@@ -28,6 +28,9 @@ use mpfree_controller::mpc_one::button;
 /// cable. Akai's app sends 1 and 3 (dim and bright, inferred); so do we.
 pub const LIGHT_OFF: u8 = 1;
 pub const LIGHT_ON: u8 = 3;
+/// Two NOTE REPEAT presses this close together (in seconds) latch, as
+/// SHIFT + NOTE REPEAT does.
+pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 
 /// The pages, in the order of the header's tabs, then the ones without a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +337,9 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// When NOTE REPEAT was last pressed to hold, for the double press
+    /// that latches.
+    repeat_pressed_at: Option<f64>,
     latched: bool,
     pad_level: PadLevel,
     view: View,
@@ -380,6 +386,7 @@ impl App {
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
         let sent_notes = engine.active().clone();
         let mut app = App { settings, map: ButtonMap::measured(), engine, timed, shift: false, repeat_held: false,
+                            repeat_pressed_at: None,
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
@@ -538,11 +545,15 @@ impl App {
                 fx.extend(self.stop());
             }
         } else if Some(note) == self.map.note_repeat {
-            if shift || self.latched {
-                // SHIFT + NOTE REPEAT toggles Latch; NOTE REPEAT alone lets it go.
+            let double = self.repeat_pressed_at.is_some_and(|at| t - at <= DOUBLE_PRESS_SECONDS);
+            self.repeat_pressed_at = None;
+            if shift || self.latched || double {
+                // SHIFT + NOTE REPEAT, or NOTE REPEAT pressed twice, toggles
+                // Latch; NOTE REPEAT alone lets it go.
                 fx.extend(self.toggle_latch());
             } else {
                 self.repeat_held = true;
+                self.repeat_pressed_at = Some(t);
                 self.qlink_turns = [0; 4];
                 fx.extend(self.arp_changed());
             }
@@ -747,8 +758,9 @@ impl App {
                                 "FULL LEVEL and Half Level override it."],
             Item::ScreenVelocity => vec!["The velocity of pads played on the screen.",
                                          "The touchscreen cannot sense how hard you tap."],
-            Item::LatchMode => vec!["With Latch on (SHIFT + NOTE REPEAT), pads keep",
-                                    "repeating after you let go.",
+            Item::LatchMode => vec!["With Latch on (NOTE REPEAT twice, or SHIFT +",
+                                    "NOTE REPEAT), pads keep repeating after you",
+                                    "let go.",
                                     "Replace: a fresh press starts a new set.",
                                     "Toggle: each press adds or removes that pad."],
             Item::Buffer => vec!["How much sound is queued ahead of the speakers.",
@@ -770,8 +782,9 @@ impl App {
                                 "sets it too: tap it three or four times."],
             Item::PadLevel => vec!["FULL LEVEL plays every hit at 127,",
                                    "SHIFT + FULL LEVEL (Half Level) at 64."],
-            Item::Latch => vec!["SHIFT + NOTE REPEAT. Pads you play keep",
-                                "repeating until Latch goes off or STOP."],
+            Item::Latch => vec!["NOTE REPEAT twice, or SHIFT + NOTE REPEAT.",
+                                "Pads you play keep repeating until Latch goes",
+                                "off (NOTE REPEAT once) or STOP."],
             Item::ShowPressure => vec!["Pad pressure (aftertouch) sends many messages",
                                        "while a pad is held. Hidden, they are counted",
                                        "but not listed."],
@@ -1209,15 +1222,51 @@ mod tests {
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
         assert_eq!(app.engine.settings().mode, Mode::Direct);
         assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel is the kit again");
-        // Held again: the arp, not Repeat.
+        // Held again, a while later: the arp, not Repeat.
         app.pad_down(0, 100);
         app.pad_down(4, 100);
-        let fx = app.button(REPEAT, true, 0.0);
+        let fx = app.button(REPEAT, true, 10.0);
+        assert!(!fx.contains(&Effect::Note("Latch on".into())), "too slow for a double press");
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_ON)));
         let _ = ons(&mut app, 128);
         let got = notes(&mut app, 4 * 5513);
         assert!(got.contains(&0) && got.contains(&4), "{got:?}");
         assert!(got.len() >= 3, "{got:?}");
+    }
+
+    #[test]
+    fn note_repeat_pressed_twice_latches_like_shift_and_note_repeat() {
+        let mut app = ready();
+        // One press: held, and let go with the button.
+        app.button(REPEAT, true, 1.0);
+        app.button(REPEAT, false, 1.1);
+        assert!(!app.repeating());
+        // Pressed twice within DOUBLE_PRESS_SECONDS: latched, and it stays.
+        app.button(REPEAT, true, 5.0);
+        app.button(REPEAT, false, 5.1);
+        let fx = app.button(REPEAT, true, 5.0 + DOUBLE_PRESS_SECONDS - 0.05);
+        assert!(fx.contains(&Effect::Note("Latch on".into())), "{fx:?}");
+        app.button(REPEAT, false, 5.4);
+        assert!(app.repeating());
+        app.pad_down(4, 90);
+        app.pad_up(4);
+        assert_eq!(ons(&mut app, 11_100).len(), 3, "keeps repeating after release");
+        // One press lets go, and a press soon after is a plain hold again.
+        let fx = app.button(REPEAT, true, 8.0);
+        assert!(fx.contains(&Effect::Note("Latch off".into())));
+        app.button(REPEAT, false, 8.1);
+        assert!(!app.repeating());
+        let fx = app.button(REPEAT, true, 8.2);
+        assert!(!fx.contains(&Effect::Note("Latch on".into())));
+        assert!(app.repeating());
+        app.button(REPEAT, false, 8.3);
+        assert!(!app.repeating());
+        // Two presses too far apart: two holds, no latch.
+        app.button(REPEAT, true, 20.0);
+        app.button(REPEAT, false, 20.1);
+        app.button(REPEAT, true, 20.0 + DOUBLE_PRESS_SECONDS + 0.1);
+        app.button(REPEAT, false, 20.6);
+        assert!(!app.repeating());
     }
 
     #[test]

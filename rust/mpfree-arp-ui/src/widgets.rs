@@ -70,18 +70,63 @@ const RATE_GAP: i32 = 8;
 /// The extra space between the last rate and Latch.
 const LATCH_GAP: i32 = 24;
 
+/// The tallest a rate button grows in a tall column.
+const MAX_RATE_H: i32 = 120;
+
 impl RateBar {
     pub fn new(rates: &[&str]) -> RateBar {
         RateBar { rates: rates.iter().map(|s| s.to_string()).collect(), active: 0, latched: false }
     }
 
-    /// Button `i`: the rates, then Latch at `i == rates.len()`.
+    /// Where rate `i` sits in the grid a narrow column uses: straight rates
+    /// along the top row, each triplet ("…T") under the rate before it.
+    fn grid_cell(&self, i: usize) -> (i32, i32) {
+        let mut col = -1;
+        let mut at = (0, 0);
+        for (j, name) in self.rates.iter().enumerate().take(i + 1) {
+            if name.ends_with('T') && col >= 0 {
+                at = (col, 1);
+            } else {
+                col += 1;
+                at = (col, 0);
+            }
+            if j == i {
+                break;
+            }
+        }
+        at
+    }
+
+    /// The grid's columns and rate rows.
+    fn grid(&self) -> (i32, i32) {
+        let cells: Vec<(i32, i32)> = (0..self.rates.len()).map(|i| self.grid_cell(i)).collect();
+        let cols = cells.iter().map(|c| c.0 + 1).max().unwrap_or(1);
+        let rows = cells.iter().map(|c| c.1 + 1).max().unwrap_or(1);
+        (cols, rows)
+    }
+
+    /// Button `i`: the rates, then Latch at `i == rates.len()`. In a wide,
+    /// short rect they make one row with Latch at the end; in a narrower
+    /// one (the column beside the pads) a grid, with Latch across the
+    /// bottom.
     pub fn button(&self, r: Rect, i: usize) -> Rect {
         let inner = r.inset_xy(12, 8);
         let n = self.rates.len() as i32 + 1;
         let w = (inner.w - RATE_GAP * (n - 1) - LATCH_GAP) / n;
-        let extra = if i == self.rates.len() { LATCH_GAP } else { 0 };
-        Rect::new(inner.x + i as i32 * (w + RATE_GAP) + extra, inner.y, w, inner.h)
+        if w >= MIN_TOUCH || inner.h < 2 * MIN_TOUCH {
+            let extra = if i == self.rates.len() { LATCH_GAP } else { 0 };
+            return Rect::new(inner.x + i as i32 * (w + RATE_GAP) + extra, inner.y, w, inner.h);
+        }
+        let (cols, rows) = self.grid();
+        let h = ((inner.h - RATE_GAP * (rows - 1) - LATCH_GAP) / (rows + 1)).min(MAX_RATE_H);
+        let block = h * (rows + 1) + RATE_GAP * (rows - 1) + LATCH_GAP;
+        let top = inner.y + (inner.h - block) / 2;
+        if i == self.rates.len() {
+            return Rect::new(inner.x, top + rows * (h + RATE_GAP) - RATE_GAP + LATCH_GAP, inner.w, h);
+        }
+        let cw = (inner.w - RATE_GAP * (cols - 1)) / cols;
+        let (c, row) = self.grid_cell(i);
+        Rect::new(inner.x + c * (cw + RATE_GAP), top + row * (h + RATE_GAP), cw, h)
     }
 }
 
@@ -242,8 +287,9 @@ pub struct StepCell {
     pub accent: bool,
 }
 
-/// The steps of the arp's order or of the pattern, in one row, with the
-/// step that is playing marked. A tap on cell `i` gives `Select(first + i)`.
+/// The steps of the arp's order or of the pattern, with the step that is
+/// playing marked: one row, or two or more in a narrow column so cells keep
+/// [`MIN_CELL_W`]. A tap on cell `i` gives `Select(first + i)`.
 pub struct StepStrip {
     pub cells: Vec<StepCell>,
     /// The step number of the first cell, when the pattern is longer than
@@ -257,6 +303,9 @@ pub struct StepStrip {
     pub min_cells: usize,
 }
 
+/// The narrowest a step cell gets before the strip wraps onto a second row.
+pub const MIN_CELL_W: i32 = 44;
+
 impl StepStrip {
     pub fn new(min_cells: usize) -> StepStrip {
         StepStrip { cells: Vec::new(), first: 0, playing: None, cursor: None, min_cells }
@@ -265,8 +314,13 @@ impl StepStrip {
     pub fn cell(&self, r: Rect, i: usize) -> Rect {
         let n = self.cells.len().max(self.min_cells).max(1) as i32;
         let gap = 6;
-        let w = (r.w - gap * (n - 1)) / n;
-        Rect::new(r.x + i as i32 * (w + gap), r.y, w, r.h)
+        let fit = ((r.w + gap) / (MIN_CELL_W + gap)).max(1);
+        let rows = (n + fit - 1) / fit;
+        let per_row = (n + rows - 1) / rows;
+        let w = (r.w - gap * (per_row - 1)) / per_row;
+        let h = (r.h - gap * (rows - 1)) / rows;
+        let (row, col) = (i as i32 / per_row, i as i32 % per_row);
+        Rect::new(r.x + col * (w + gap), r.y + row * (h + gap), w, h)
     }
 }
 
