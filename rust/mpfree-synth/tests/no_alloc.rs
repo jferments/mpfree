@@ -11,7 +11,10 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
-use mpfree_synth::{Drums, Fm, Pluck, Poly, PARAMS};
+use std::sync::Arc;
+
+use mpfree_synth::wavetable::table::{Table, FRAME};
+use mpfree_synth::{Drums, Fm, Pluck, Poly, Wavetable, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -116,6 +119,39 @@ fn fm_process_never_allocates() {
     let mut s = Fm::new(44_100);
     let params = s.params();
     assert_eq!(exercise(&mut s, params, 44_100), 0, "Fm::process allocated");
+}
+
+#[test]
+fn wavetable_process_never_allocates() {
+    let mut s = Wavetable::new(44_100);
+    let params = s.params();
+    assert_eq!(
+        exercise(&mut s, params, 44_100),
+        0,
+        "Wavetable::process allocated"
+    );
+    // Swapping a user table in on the audio thread neither allocates nor
+    // frees: the old one comes back to the caller.
+    let saw: Vec<f32> = (0..FRAME)
+        .map(|i| 1.0 - 2.0 * i as f32 / FRAME as f32)
+        .collect();
+    let a = Arc::new(Table::from_frames("a", &saw, FRAME).unwrap());
+    let b = Arc::new(Table::from_frames("b", &saw, FRAME).unwrap());
+    s.set_user_table(0, a.clone());
+    let before = CALLS.load(Ordering::Relaxed);
+    watch(true);
+    s.set_param(
+        mpfree_synth::wavetable::params::TABLE,
+        mpfree_synth::wavetable::params::USER_TABLE,
+    );
+    let old = s.set_user_table(0, b.clone());
+    watch(false);
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed) - before,
+        0,
+        "set_user_table allocated or freed"
+    );
+    drop(old);
 }
 
 #[test]
