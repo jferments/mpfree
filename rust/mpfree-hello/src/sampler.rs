@@ -527,6 +527,110 @@ pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
     peak
 }
 
+/// What the sampler records from (steps CAP and RESAMP): the line input,
+/// or a point in the mix taken by the mixer's capture point
+/// ([`crate::mixing::SAMPLER_CAPTURE`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecSource {
+    /// The line input, as it comes in (before the mixer).
+    #[default]
+    Line,
+    /// A strip of the mixer at a capture point.
+    Mix(StripId, CapturePoint),
+}
+
+/// The audio thread's end of the sampler's input (steps CAP and RESAMP):
+/// the rolling buffer's writer and the bar lines. It travels boxed, so the
+/// channels move a pointer and the audio thread never frees the buffer.
+pub struct RecFeed(pub Feed);
+
+impl RecFeed {
+    /// One period: marks the bar lines the transport's `block` crosses
+    /// (from bar 1 on, not the count-in) at their frames in the buffer,
+    /// `latency` frames later (a point in the mix hears the block that
+    /// much late), then appends the period's input. Never allocates, locks
+    /// or waits.
+    pub fn period(&mut self, block: &Block, left: &[f32], right: &[f32], latency: u32) {
+        let base = self.0.audio.written() + u64::from(latency);
+        let mut bar = None;
+        for span in block.spans() {
+            if !span.state.rolling() {
+                continue;
+            }
+            let ticks = span.meter.bar_ticks();
+            for (tick, offset) in span.lines(ticks) {
+                if tick >= 0 {
+                    self.0.bars.mark(base + u64::from(offset));
+                }
+            }
+            bar = Some(frames_between(0, ticks, span.bpm, span.rate));
+        }
+        self.0.bars.set_bar(bar);
+        let n = left.len().min(right.len()).min(PERIOD);
+        self.0.audio.push_planar(&left[..n], &right[..n]);
+    }
+
+    /// The input comes from another source from now on: Skip back and
+    /// takes stop here.
+    pub fn restart(&mut self) {
+        self.0.restart();
+    }
+
+    /// Frames appended since it started.
+    pub fn written(&self) -> u64 {
+        self.0.audio.written()
+    }
+}
+
+impl PartialEq for RecFeed {
+    /// A feed is only ever itself: there is one writer per buffer.
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl std::fmt::Debug for RecFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecFeed({} frames)", self.written())
+    }
+}
+
+#[cfg(test)]
+mod rec_tests {
+    use super::*;
+    use mpfree_sampler::record::input;
+    use mpfree_transport::{Command, Transport};
+
+    #[test]
+    fn the_feed_marks_each_bar_line_at_its_frame_and_appends_the_input() {
+        let rate = 44_100;
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        let (feed, inp) = input(10, rate);
+        let mut feed = RecFeed(feed);
+        let mut block = Block::new();
+        // Play from frame 1 000; a 4/4 bar at 120 BPM is 88 200 frames.
+        t.command(1_000, Command::Play);
+        let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
+        for _ in 0..1_500 {
+            assert!(t.process(PERIOD as u32, &mut block));
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(feed.written(), 1_500 * PERIOD as u64);
+        let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
+        assert_eq!(lines, [1_000 + 2 * 88_200, 1_000 + 88_200, 1_000]);
+        assert_eq!(inp.bars.bar_frames(), Some(88_200.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [0.25, -0.25]);
+        // Stopped: no bar length, and no more lines.
+        t.command(t.frame(), Command::Stop);
+        for _ in 0..800 {
+            t.process(PERIOD as u32, &mut block);
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(inp.bars.bar_frames(), None);
+        assert_eq!(inp.bars.count(), 3);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,109 +1022,5 @@ mod tests {
                 "velocity {v}: {level} vs {want}"
             );
         }
-    }
-}
-
-/// What the sampler records from (steps CAP and RESAMP): the line input,
-/// or a point in the mix taken by the mixer's capture point
-/// ([`crate::mixing::SAMPLER_CAPTURE`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RecSource {
-    /// The line input, as it comes in (before the mixer).
-    #[default]
-    Line,
-    /// A strip of the mixer at a capture point.
-    Mix(StripId, CapturePoint),
-}
-
-/// The audio thread's end of the sampler's input (steps CAP and RESAMP):
-/// the rolling buffer's writer and the bar lines. It travels boxed, so the
-/// channels move a pointer and the audio thread never frees the buffer.
-pub struct RecFeed(pub Feed);
-
-impl RecFeed {
-    /// One period: marks the bar lines the transport's `block` crosses
-    /// (from bar 1 on, not the count-in) at their frames in the buffer,
-    /// `latency` frames later (a point in the mix hears the block that
-    /// much late), then appends the period's input. Never allocates, locks
-    /// or waits.
-    pub fn period(&mut self, block: &Block, left: &[f32], right: &[f32], latency: u32) {
-        let base = self.0.audio.written() + u64::from(latency);
-        let mut bar = None;
-        for span in block.spans() {
-            if !span.state.rolling() {
-                continue;
-            }
-            let ticks = span.meter.bar_ticks();
-            for (tick, offset) in span.lines(ticks) {
-                if tick >= 0 {
-                    self.0.bars.mark(base + u64::from(offset));
-                }
-            }
-            bar = Some(frames_between(0, ticks, span.bpm, span.rate));
-        }
-        self.0.bars.set_bar(bar);
-        let n = left.len().min(right.len()).min(PERIOD);
-        self.0.audio.push_planar(&left[..n], &right[..n]);
-    }
-
-    /// The input comes from another source from now on: Skip back and
-    /// takes stop here.
-    pub fn restart(&mut self) {
-        self.0.restart();
-    }
-
-    /// Frames appended since it started.
-    pub fn written(&self) -> u64 {
-        self.0.audio.written()
-    }
-}
-
-impl PartialEq for RecFeed {
-    /// A feed is only ever itself: there is one writer per buffer.
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
-    }
-}
-
-impl std::fmt::Debug for RecFeed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RecFeed({} frames)", self.written())
-    }
-}
-
-#[cfg(test)]
-mod rec_tests {
-    use super::*;
-    use mpfree_sampler::record::input;
-    use mpfree_transport::{Command, Transport};
-
-    #[test]
-    fn the_feed_marks_each_bar_line_at_its_frame_and_appends_the_input() {
-        let rate = 44_100;
-        let mut t = Transport::new(rate, 120.0).unwrap();
-        let (feed, inp) = input(10, rate);
-        let mut feed = RecFeed(feed);
-        let mut block = Block::new();
-        // Play from frame 1 000; a 4/4 bar at 120 BPM is 88 200 frames.
-        t.command(1_000, Command::Play);
-        let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
-        for _ in 0..1_500 {
-            assert!(t.process(PERIOD as u32, &mut block));
-            feed.period(&block, &l, &r, 0);
-        }
-        assert_eq!(feed.written(), 1_500 * PERIOD as u64);
-        let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
-        assert_eq!(lines, [1_000 + 2 * 88_200, 1_000 + 88_200, 1_000]);
-        assert_eq!(inp.bars.bar_frames(), Some(88_200.0));
-        assert_eq!(inp.last_frames(1).unwrap(), [0.25, -0.25]);
-        // Stopped: no bar length, and no more lines.
-        t.command(t.frame(), Command::Stop);
-        for _ in 0..800 {
-            t.process(PERIOD as u32, &mut block);
-            feed.period(&block, &l, &r, 0);
-        }
-        assert_eq!(inp.bars.bar_frames(), None);
-        assert_eq!(inp.bars.count(), 3);
     }
 }
