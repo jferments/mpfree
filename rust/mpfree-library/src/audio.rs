@@ -269,6 +269,109 @@ fn flac<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
     })
 }
 
+/// A quick picture of a PCM or float WAV for the browser: `columns`
+/// (min, max) pairs from -1 to 1, each from at most 512 frames read at
+/// that column's place in the file, so a long file costs the same as a
+/// short one. None for anything else (the sampler draws the full
+/// waveform once a sound is loaded).
+pub fn wav_overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f32)>> {
+    let columns = columns.clamp(1, 2048);
+    let mut h = [0u8; 12];
+    r.read_exact(&mut h).ok()?;
+    if &h[..4] != b"RIFF" || &h[8..] != b"WAVE" {
+        return None;
+    }
+    let mut fmt: Option<(u16, usize, usize, usize)> = None;
+    let mut data: Option<(u64, u64)> = None;
+    for _ in 0..MAX_CHUNKS {
+        let mut c = [0u8; 8];
+        r.read_exact(&mut c).ok()?;
+        let size = u64::from(u32le(&c[4..]));
+        let here = r.stream_position().ok()?;
+        match &c[..4] {
+            b"fmt " if size >= 16 => {
+                let mut b = vec![0u8; size.min(40) as usize];
+                r.read_exact(&mut b).ok()?;
+                let mut tag = u16le(&b[0..]);
+                if tag == 0xFFFE && b.len() >= 26 {
+                    tag = u16le(&b[24..]);
+                }
+                fmt = Some((
+                    tag,
+                    usize::from(u16le(&b[2..])),
+                    usize::from(u16le(&b[12..])),
+                    usize::from(u16le(&b[14..])),
+                ));
+            }
+            b"data" => data = Some((here, size)),
+            _ => {}
+        }
+        if fmt.is_some() && data.is_some() {
+            break;
+        }
+        r.seek(SeekFrom::Start(here + size + (size & 1))).ok()?;
+    }
+    let (tag, channels, align, bits) = fmt?;
+    let (start, size) = data?;
+    let bytes = usize::from(bits as u16 / 8);
+    let ok = match tag {
+        1 => matches!(bits, 8 | 16 | 24 | 32),
+        3 => bits == 32,
+        _ => false,
+    };
+    if !ok || channels == 0 || align != channels * bytes {
+        return None;
+    }
+    let frames = size / align as u64;
+    if frames == 0 {
+        return Some(vec![(0.0, 0.0); columns]);
+    }
+    let per = frames.div_ceil(columns as u64);
+    let take = per.min(512) as usize;
+    let mut buf = vec![0u8; take * align];
+    let mut out = Vec::with_capacity(columns);
+    for col in 0..columns as u64 {
+        let first = col * per;
+        if first >= frames {
+            out.push((0.0, 0.0));
+            continue;
+        }
+        let n = take.min((frames - first) as usize);
+        r.seek(SeekFrom::Start(start + first * align as u64)).ok()?;
+        r.read_exact(&mut buf[..n * align]).ok()?;
+        let (mut lo, mut hi) = (0f32, 0f32);
+        for s in buf[..n * align].chunks_exact(bytes) {
+            let v = match (tag, bits) {
+                (1, 8) => (f32::from(s[0]) - 128.0) / 128.0,
+                (1, 16) => f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0,
+                (1, 24) => (i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8) as f32 / 8_388_608.0,
+                (1, _) => i32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f32 / 2_147_483_648.0,
+                _ => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+            };
+            if v.is_finite() {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        out.push((lo.max(-1.0), hi.min(1.0)));
+    }
+    Some(out)
+}
+
+/// Test files: a WAV of a decaying 16-bit stereo tone.
+pub fn tone_wav(rate: u32, frames: u32, hz: f32, decay: f32) -> Vec<u8> {
+    let mut v = wav_bytes(rate, 2, 16, frames);
+    for i in 0..frames as usize {
+        let t = i as f32 / rate as f32;
+        let s = (t * hz * std::f32::consts::TAU).sin() * (-t * decay).exp() * 0.9;
+        let b = ((s * 32767.0) as i16).to_le_bytes();
+        let o = 44 + i * 4;
+        v[o..o + 2].copy_from_slice(&b);
+        v[o + 2..o + 4].copy_from_slice(&b);
+    }
+    v
+}
+
 /// Test files: a minimal WAV header and data of `frames` silent frames.
 pub fn wav_bytes(rate: u32, channels: u16, bits: u16, frames: u32) -> Vec<u8> {
     let align = u32::from(channels) * u32::from(bits / 8);
@@ -368,6 +471,18 @@ mod tests {
         ] {
             assert!(read_info(&mut Cursor::new(v)).is_err());
         }
+    }
+
+    #[test]
+    fn an_overview_follows_the_sound() {
+        let w = tone_wav(44_100, 44_100, 220.0, 6.0);
+        let o = wav_overview(&mut Cursor::new(w), 50).unwrap();
+        assert_eq!(o.len(), 50);
+        assert!(o[0].1 > 0.5 && o[0].0 < -0.5);
+        assert!(o[49].1 < 0.05);
+        let silent = wav_overview(&mut Cursor::new(wav_bytes(44_100, 1, 24, 100)), 10).unwrap();
+        assert!(silent.iter().all(|&(a, b)| a == 0.0 && b == 0.0));
+        assert!(wav_overview(&mut Cursor::new(b"junk".to_vec()), 10).is_none());
     }
 
     #[test]

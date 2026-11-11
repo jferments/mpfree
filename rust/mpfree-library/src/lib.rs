@@ -178,14 +178,14 @@ impl Loc {
 
     /// One line for the Trash's origin file: the place's label, then the
     /// names, separated by `/` (names never hold `/`).
-    fn to_line(&self) -> String {
+    pub fn to_line(&self) -> String {
         std::iter::once(self.place.label())
             .chain(self.names.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join("/")
     }
 
-    fn from_line(s: &str) -> Option<Loc> {
+    pub fn from_line(s: &str) -> Option<Loc> {
         let mut it = s.trim().split('/');
         let place = Place::from_label(it.next()?)?;
         let names: Vec<&str> = it.collect();
@@ -447,6 +447,18 @@ impl Library {
             ));
         }
         read_info(&mut io::BufReader::new(File::open(p)?))
+    }
+
+    /// A quick picture of a WAV ([`audio::wav_overview`]).
+    pub fn overview(&self, loc: &Loc, columns: usize) -> io::Result<Option<Vec<(f32, f32)>>> {
+        let (p, m) = self.existing(loc)?;
+        if !m.is_file() {
+            return Ok(None);
+        }
+        Ok(audio::wav_overview(
+            &mut io::BufReader::new(File::open(p)?),
+            columns,
+        ))
     }
 
     /// A whole file, if it is at most `max` bytes (a project file, a

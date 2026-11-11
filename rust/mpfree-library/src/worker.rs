@@ -2,7 +2,7 @@
 //! operation runs here, never on the UI or audio thread. The UI sends a
 //! [`Job`] with a number and polls [`Worker::take`] each frame.
 
-use crate::{AudioInfo, Entry, Library, Loc, TrashItem};
+use crate::{AudioInfo, Entry, Library, Loc, Snapshot, TrashItem};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -11,6 +11,8 @@ use std::thread;
 pub enum Job {
     List(Loc),
     Info(Loc),
+    /// A quick (min, max) picture of a WAV, this many columns wide.
+    Overview(Loc, usize),
     NewFolder {
         parent: Loc,
         name: String,
@@ -31,6 +33,14 @@ pub enum Job {
     Trash,
     Restore(String),
     EmptyTrash,
+    /// A whole file of at most this many bytes.
+    Read(Loc, u64),
+    SaveProject {
+        project: Loc,
+        snap: Snapshot,
+        keep: usize,
+    },
+    OpenProject(Loc),
     /// A whole new file (a recording, a kit), off the UI thread.
     WriteNew {
         folder: Loc,
@@ -44,10 +54,15 @@ pub enum Job {
 pub enum Outcome {
     Listed(Loc, Vec<Entry>),
     Info(Loc, AudioInfo),
+    /// None when the file is not a WAV the picture can be read from.
+    Overview(Loc, Option<Vec<(f32, f32)>>),
     /// A file or folder made, renamed, copied, moved or restored: where it is now.
     At(Loc),
     Deleted(TrashItem),
     Trash(Vec<TrashItem>),
+    Read(Loc, Vec<u8>),
+    Saved(Loc),
+    Project(Loc, Snapshot),
     /// The Trash emptied: bytes freed.
     Emptied(u64),
 }
@@ -114,12 +129,23 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
     Ok(match job {
         Job::List(l) => Outcome::Listed(l.clone(), lib.list(&l)?),
         Job::Info(l) => Outcome::Info(l.clone(), lib.audio_info(&l)?),
+        Job::Overview(l, cols) => Outcome::Overview(l.clone(), lib.overview(&l, cols)?),
         Job::NewFolder { parent, name } => Outcome::At(lib.new_folder(&parent, &name)?),
         Job::Rename { loc, name } => Outcome::At(lib.rename(&loc, &name)?),
         Job::Copy { from, to } => Outcome::At(lib.copy(&from, &to)?),
         Job::Move { from, to } => Outcome::At(lib.move_to(&from, &to)?),
         Job::Delete(l) => Outcome::Deleted(lib.delete(&l)?),
         Job::Trash => Outcome::Trash(lib.trash()?),
+        Job::Read(l, max) => Outcome::Read(l.clone(), lib.read(&l, max)?),
+        Job::SaveProject {
+            project,
+            snap,
+            keep,
+        } => {
+            lib.save_project(&project, &snap, keep)?;
+            Outcome::Saved(project)
+        }
+        Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
         Job::Restore(id) => Outcome::At(lib.restore(&id)?),
         Job::EmptyTrash => Outcome::Emptied(lib.empty_trash()?),
         Job::WriteNew {

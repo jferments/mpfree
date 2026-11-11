@@ -397,6 +397,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-browser-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-library",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-capture"
 version = "0.1.0"
 dependencies = [
