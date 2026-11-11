@@ -502,6 +502,10 @@ name = "mpfree-node"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-param"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
