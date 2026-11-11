@@ -1244,3 +1244,21 @@ If Ghidra is installed at an unusual location, use `GHIDRA_HOME=/absolute/ghidra
 ### 27.1 Headless Thumb pre-analysis ordering fix
 
 The launcher now runs `-preScript MPFreeFinishBootChain.py pre` **before** Ghidra's default auto-analysis and `-postScript MPFreeFinishBootChain.py post` **after** it. This avoids auto-disassembling the raw ARM/Thumb mixed binary in the wrong instruction state before seed instructions establish Thumb context. Running the same script from GUI Script Manager without arguments performs rebase + seed + explicit auto-analysis + report in one operation. Runtime compatibility is still unverified until the owner's Ghidra executes it.
+
+### 27.2 Headless launcher failure on Snap-based ML-tower — fixed (2026-11-10)
+
+Owner ran `bash tools/ghidra/run_full_p3_analysis.sh` and it exited immediately with `Could not locate analyzeHeadless`. The existing installed Ghidra was installed as the unofficial **Snap** (`sudo snap install ghidra`), not a conventional archive under `/opt` or `~/Downloads`. This failure occurred **before firmware extraction, import, rebasing, auto-analysis or Ghidra report generation**. The original Ghidra project and MPC were unchanged.
+
+Examined the upstream Snap's actual `snap/snapcraft.yaml` in `dclane-code/ghidra-snap`. It declares a separate Snap application:
+
+```yaml
+apps:
+  analyzeHeadless:
+    command: ghidra/support/analyzeHeadless
+```
+
+Correct launcher invocation on a Snap install is **`snap run ghidra.analyzeHeadless`** (or its wrapper `/snap/bin/ghidra.analyzeHeadless` if available). The Snap wrapper is important because it sets the required Java runtime and Snap-specific user home. See `https://github.com/dclane-code/ghidra-snap/blob/master/snap/snapcraft.yaml`.
+
+The repository launcher now discovers the Snap command, supports the traditional `GHIDRA_HOME/support/analyzeHeadless` and an explicit `MPFREE_ANALYZE_HEADLESS=/path`, and exports **`MPFREE_REPORT_DIR="$HOME/mpfree-work"`** for a stable destination. `MPFreeFinishBootChain.py` now reads that report-dir variable instead of always relying on `os.path.expanduser('~')`, which the confined Snap can redirect to `~/snap/ghidra/current`.
+
+User retry after `git pull --ff-only origin main`: `bash tools/ghidra/run_full_p3_analysis.sh`. If Snap's wrappers are missing, diagnose directly with `snap list ghidra`, `snap run ghidra.analyzeHeadless`, and `ls -l /snap/bin/ghidra.analyzeHeadless`. **Do not reinstall or clear the old Ghidra project** merely because the launcher could not locate the executable. These changes have not yet been run on the user's machine; successful Ghidra analysis still requires user-host execution and report verification.
