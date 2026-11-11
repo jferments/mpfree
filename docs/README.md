@@ -49,7 +49,8 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 | M12 | [Live touch capture and orientation calibration](milestones/m12-touch-capture.md) | MPC One |
 | M13 | [Live touch reader: seeded at open, resync after overflow](milestones/m13-live-touch-reader.md) | Workstation, CI (device check pending) |
 | M14 | [Swipes, release velocity, fling and hold jitter](milestones/m14-gestures.md) | Workstation, CI (device tuning pending) |
-| M15 | [Touch lab: owner-paced touch steps and journal lines](milestones/m15-touch-lab.md) | Workstation, CI (GUI page after PR #31) |
+| M15 | [Touch lab: owner-paced touch steps and journal lines](milestones/m15-touch-lab.md) | Workstation, CI; page in the pad player (Prefs, Touch lab) |
+| M16 | ["Calibrate touch": orientation from four corner taps](milestones/m16-calibrate-touch.md) | Workstation, CI (setup page after PR #31) |
 | GPU | [Panfrost offscreen GLES qualification](milestones/gpu-panfrost-offscreen.md), [kit](../tools/mpc-one/gpu-qualification/README.md) | MPC One |
 
 M4 was host-only safety tooling and the [handoff state-machine simulator](../rust/mpfree-handoff-model/src/lib.rs); it has no separate report. See the [roadmap](project/roadmap.md).
