@@ -77,6 +77,7 @@ mod engines;
 mod gui;
 mod kit;
 mod looper_page;
+mod looper_tab;
 mod looping;
 mod mixing;
 mod perf;
@@ -2042,6 +2043,10 @@ fn looper_action(
             out.note(&looper.layer_command(id, c));
             Vec::new()
         }
+        looping::LoopAction::Select(n) => {
+            out.note(&looper.select(n));
+            Vec::new()
+        }
     }
 }
 
@@ -2462,6 +2467,13 @@ fn player_session(
                 gui::FromUi::LoopLayer { id, command } => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
                 }
+                gui::FromUi::LoopPick(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
+                }
+                gui::FromUi::LoopLevel(v) => fx.push(app::Effect::Looper(
+                    looping::LoopAction::Command(mpfree_looper::Command::SetLevel(v)),
+                )),
+                gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -2570,7 +2582,7 @@ fn player_session(
                     // While the mixer is open they move the selected strip.
                     if matches!(
                         page,
-                        app::View::Synth | app::View::Sample | app::View::Mixer
+                        app::View::Synth | app::View::Sample | app::View::Mixer | app::View::Looper
                     ) && knob < 4
                     {
                         let k = knob as usize;
@@ -2584,6 +2596,8 @@ fn player_session(
                             out.show(gui::ToUi::SynthQLink(k, ticks));
                         } else if ticks != 0 && page == app::View::Mixer {
                             out.show(gui::ToUi::MixerQLink(k, ticks));
+                        } else if ticks != 0 && page == app::View::Looper {
+                            out.show(gui::ToUi::LooperQLink(k, ticks));
                         } else if ticks != 0 {
                             out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
