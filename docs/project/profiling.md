@@ -29,6 +29,14 @@ thousand is an audible click. The whole audio thread stays under **60 %** of
 a period in its worst block (1.74 ms), which leaves 40 % for the kernel,
 interrupts, ALSA and a late wake-up.
 
+**Which block is judged** (Jay, 2026-11-11, after round 7): an engine's
+verdict uses its **p99.9** block, and the whole period's verdict uses its
+**worst** block. In round 7 a single stray period marked looper, time and
+mix OVER although their p99s fit; the period's worst block is still judged
+strictly because it is what underruns. `budget::judge(module, &summary,
+MPC)` applies the rule, and the report, the bench (on the device) and the
+Dev page should all use it.
+
 | Module | Worst block | µs | Covers |
 | --- | --- | --- | --- |
 | sampler | 25 % | 726 | Every pad voice, granular pads, the master grain effect. Round 6: worst 24.1 %. |
@@ -102,7 +110,7 @@ with `--quick`) at 128 frames and 44.1 kHz:
   engine" page.
 - **period (the whole audio thread, 60 %):** "Song" runs a busy song's
   engines one after another in every block: the sampler with the master
-  grains, an 8-voice Supersaw and a 4-voice Sub Bass, the mixer with a
+  grains, an 8-voice Supersaw and the Sub Bass (a mono preset), the mixer with a
   song's inserts, the time engine and the looper. It answers "does a whole
   song fit", including what the engines cost each other in the caches.
 
@@ -123,6 +131,27 @@ be costly to have many of.
 B's p99 and worst as a share of A's, and any change in memory. Use it for
 the default against the cortex-a17 build from the same MPC run (is NEON
 worth it?), or for a change against main on the same machine.
+
+### What can we afford? (`--afford`)
+
+```text
+cargo run --release -p mpfree-bench -- --afford [--calibration FILE]
+```
+
+It plays each Poly preset at 1, 2, 4, 8 and 16 voices, the sampler with
+1, 4, 8, 16 and 32 looping pads held, and four granular pads held with 16,
+32, 64, 128 and 256 grains alive in all. It fits `p99 = fixed + voices x per
+voice`, and prints how many voices fit in the module's budget (synth 20 %,
+sampler 25 %). That is for one engine alone; several synth tracks share the
+synth budget, so two Supersaw tracks get half each. "16+ (75)" means every
+count measured fits and the line runs out at 75. Mono and legato presets
+play one voice, so they show one cost. In the grains row a "voice" is one
+live grain, so its per-voice cost is the cost of a grain; 256 is the
+sampler's whole grain budget. With `--calibration` the times and
+counts are MPC estimates (the kernel range in brackets); on the MPC they are
+its own. `host_bench_mpc.py` runs it on the device after the other two
+runs; round 7's step was frozen before that, so it first runs in a later
+round.
 
 On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
@@ -156,10 +185,16 @@ faster" as unproven.
 
 ## Measuring on the device
 
+**First results (round 7):** [docs/perf/mpc-one-round7.md](../perf/mpc-one-round7.md).
+The MPC is about 6.6× slower than the build workstation on average, but 4×
+for synth-like work and 9 to 13× for memory-heavy engines (reverb, sampler,
+grains), so one desktop factor is not a safe estimate. The device's
+calibration file is [docs/perf/mpc-one-calibration.txt](../perf/mpc-one-calibration.txt).
+
 `tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
 (the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
 it copies the two builds to `/run/mpfree-bench`, runs each with fixed
-arguments (`--calibrate`, then `--json <build>.json`), and prints the output
+arguments (`--calibrate`, `--json <build>.json`, then `--afford`), and prints the output
 and the JSON into the results log. It starts, stops and changes no service,
 and the benchmark opens no device. It runs as an ordinary process, so the pad
 player's real-time audio thread always comes first. Like host_hello_mpc.py it
@@ -196,7 +231,8 @@ data side is here:
 - **CPU by engine**: the audio loop's `Profiler` windows through
   `report::engine_rows`: one row per engine and per slot (`synth/Poly
   (track 1)`, `fx/Cloud reverb (master)`), mean, p99 and worst as shares of
-  the period, real CPU used, the budget and a fits / tight / OVER verdict,
+  the period, real CPU used, the budget and a fits / tight / OVER verdict
+  (`budget::judge`: p99.9 for an engine, worst for the period),
   and any allocation on the audio thread in red. The same rows go to the log
   every 30 s with the existing `perf:` line, so test-round results carry
   them.

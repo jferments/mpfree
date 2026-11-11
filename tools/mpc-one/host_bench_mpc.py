@@ -22,12 +22,15 @@ the first waits for you to press Enter:
   4. For each build: `mpfree-bench --calibrate` (the reference kernels, a few
      seconds), then `mpfree-bench --json <build>.json` (every engine for 20 s
      of audio each, about 2 to 5 minutes; nobody knows exactly until it has
-     run once). Their output, and the JSON, go into this report.
+     run once), then `mpfree-bench --afford` (each synth preset and the sampler
+     at several voice counts: what a voice costs and how many fit in each
+     budget; writes nothing). Their output, and the JSON, go into this report.
 
 The benchmark only computes. It opens no device and writes only its JSON
-file, into /run/mpfree-bench (RAM). It runs as an ordinary process (no
-real-time priority), so the pad player's audio thread (SCHED_FIFO), if it is
-running, always comes first: the benchmark cannot make it underrun. It
+file (the --afford run writes nothing), into /run/mpfree-bench (RAM). It
+runs as an ordinary process (no real-time priority), so the pad player's
+audio thread (SCHED_FIFO), if it is running, always comes first: the
+benchmark cannot make it underrun. It
 starts, stops and changes no service.
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
@@ -61,6 +64,7 @@ REMOTE_DIR = "/run/mpfree-bench"
 RUNS = (
     ("--calibrate", 120),
     ("--json @@BUILD@@.json", 1200),
+    ("--afford", 600),
 )
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),

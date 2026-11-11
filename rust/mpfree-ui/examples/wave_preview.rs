@@ -59,8 +59,7 @@ fn main() -> Result<(), String> {
 
     let (w, h) = (1280, 800);
     let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), w, h);
-    let mut header = Header::new(&["Record", "Sound", "Perform", "Browse"]);
-    header.active = 1;
+    let mut header = Header::app("Sample");
     // Chips are laid out from the right.
     header.chips = vec![Chip::new("Undo: 14 steps", Tone::Good), Chip::new("92.0 BPM", Tone::Normal), Chip::new("Pad A5", Tone::Accent)];
     ui.add("header", header);
