@@ -36,7 +36,9 @@ pub enum RecordError {
 }
 
 impl std::fmt::Display for RecordError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for RecordError {}
 
@@ -52,7 +54,10 @@ struct Ring {
 /// A rolling buffer of `frames` frames of `channels` (1 or 2) interleaved
 /// channels. Allocates once, here; the writer goes to the audio thread.
 pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
-    assert!((1..=2).contains(&channels) && frames > 0, "1 or 2 channels and a non-empty buffer");
+    assert!(
+        (1..=2).contains(&channels) && frames > 0,
+        "1 or 2 channels and a non-empty buffer"
+    );
     let ch = usize::from(channels);
     let ring = Arc::new(Ring {
         channels: ch,
@@ -61,7 +66,13 @@ pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
         claimed: AtomicU64::new(0),
         written: AtomicU64::new(0),
     });
-    (RollingWriter { ring: ring.clone(), pos: 0 }, RollingReader { ring })
+    (
+        RollingWriter {
+            ring: ring.clone(),
+            pos: 0,
+        },
+        RollingReader { ring },
+    )
 }
 
 /// The audio thread's end of a rolling buffer.
@@ -79,7 +90,9 @@ impl RollingWriter {
         self.begin(n);
         for (i, frame) in interleaved.chunks_exact(ch).enumerate() {
             let base = ((self.pos + i as u64) % self.ring.frames) as usize * ch;
-            for (c, x) in frame.iter().enumerate() { self.ring.data[base + c].store(x.to_bits(), Ordering::Relaxed); }
+            for (c, x) in frame.iter().enumerate() {
+                self.ring.data[base + c].store(x.to_bits(), Ordering::Relaxed);
+            }
         }
         self.end(n);
     }
@@ -96,7 +109,8 @@ impl RollingWriter {
                 self.ring.data[base].store(left[i].to_bits(), Ordering::Relaxed);
                 self.ring.data[base + 1].store(right[i].to_bits(), Ordering::Relaxed);
             } else {
-                self.ring.data[base].store((0.5 * (left[i] + right[i])).to_bits(), Ordering::Relaxed);
+                self.ring.data[base]
+                    .store((0.5 * (left[i] + right[i])).to_bits(), Ordering::Relaxed);
             }
         }
         self.end(n);
@@ -115,7 +129,9 @@ impl RollingWriter {
     }
 
     /// Frames written since the start (the absolute frame number of the next one).
-    pub fn written(&self) -> u64 { self.pos }
+    pub fn written(&self) -> u64 {
+        self.pos
+    }
 }
 
 /// A reader of a rolling buffer, for any thread but the audio thread.
@@ -125,26 +141,44 @@ pub struct RollingReader {
 }
 
 impl RollingReader {
-    pub fn channels(&self) -> usize { self.ring.channels }
-    pub fn capacity(&self) -> u64 { self.ring.frames }
+    pub fn channels(&self) -> usize {
+        self.ring.channels
+    }
+    pub fn capacity(&self) -> u64 {
+        self.ring.frames
+    }
     /// The absolute frame number the writer will write next.
-    pub fn written(&self) -> u64 { self.ring.written.load(Ordering::Acquire) }
+    pub fn written(&self) -> u64 {
+        self.ring.written.load(Ordering::Acquire)
+    }
     /// The oldest frame still in the buffer.
-    pub fn oldest(&self) -> u64 { self.written().saturating_sub(self.ring.frames) }
+    pub fn oldest(&self) -> u64 {
+        self.written().saturating_sub(self.ring.frames)
+    }
 
     /// Appends frames `start..end` (absolute) to `out`, interleaved. On an
     /// error `out` is left as it was.
     pub fn copy(&self, start: u64, end: u64, out: &mut Vec<f32>) -> Result<(), RecordError> {
-        if start > end { return Err(RecordError::BadSpan); }
+        if start > end {
+            return Err(RecordError::BadSpan);
+        }
         let written = self.written();
-        if end > written { return Err(RecordError::NotYetWritten); }
-        if start + self.ring.frames < written { return Err(RecordError::Overwritten); }
+        if end > written {
+            return Err(RecordError::NotYetWritten);
+        }
+        if start + self.ring.frames < written {
+            return Err(RecordError::Overwritten);
+        }
         let ch = self.ring.channels;
         let keep = out.len();
         out.reserve(((end - start) as usize) * ch);
         for f in start..end {
             let base = (f % self.ring.frames) as usize * ch;
-            for c in 0..ch { out.push(f32::from_bits(self.ring.data[base + c].load(Ordering::Relaxed))); }
+            for c in 0..ch {
+                out.push(f32::from_bits(
+                    self.ring.data[base + c].load(Ordering::Relaxed),
+                ));
+            }
         }
         // Did the writer start to overwrite any of it while we copied?
         fence(Ordering::Acquire);
@@ -158,7 +192,9 @@ impl RollingReader {
     /// The last `frames` frames (or as many as the buffer holds).
     pub fn skip_back(&self, frames: u64) -> Result<Vec<f32>, RecordError> {
         let end = self.written();
-        let start = end.saturating_sub(frames).max(end.saturating_sub(self.ring.frames));
+        let start = end
+            .saturating_sub(frames)
+            .max(end.saturating_sub(self.ring.frames));
         let mut out = Vec::new();
         self.copy(start, end, &mut out)?;
         Ok(out)
@@ -172,7 +208,11 @@ pub enum Arm {
     At(u64),
     /// When any channel goes above `level` (linear peak), starting `pre_roll`
     /// frames earlier, after the frame it was armed at.
-    Threshold { level: f32, pre_roll: u64, armed_at: u64 },
+    Threshold {
+        level: f32,
+        pre_roll: u64,
+        armed_at: u64,
+    },
 }
 
 /// How a take stops, besides [`Take::stop_at`].
@@ -190,8 +230,14 @@ pub enum Stop {
 pub enum TakeState {
     /// Armed, not started (threshold not crossed, or the start frame not reached).
     Waiting,
-    Recording { start: u64, frames: u64 },
-    Done { start: u64, end: u64 },
+    Recording {
+        start: u64,
+        frames: u64,
+    },
+    Done {
+        start: u64,
+        end: u64,
+    },
 }
 
 /// A recording in progress. Lives on a worker, which calls [`Take::poll`]
@@ -214,8 +260,22 @@ pub struct Take {
 
 impl Take {
     pub fn new(reader: &RollingReader, arm: Arm, stop: Stop, max_frames: u64) -> Take {
-        let read_to = match arm { Arm::At(f) => f, Arm::Threshold { armed_at, .. } => armed_at };
-        Take { arm, stop, max_frames: max_frames.max(1), channels: reader.channels(), start: None, end: None, read_to, last_loud: None, data: Vec::new(), scratch: Vec::new() }
+        let read_to = match arm {
+            Arm::At(f) => f,
+            Arm::Threshold { armed_at, .. } => armed_at,
+        };
+        Take {
+            arm,
+            stop,
+            max_frames: max_frames.max(1),
+            channels: reader.channels(),
+            start: None,
+            end: None,
+            read_to,
+            last_loud: None,
+            data: Vec::new(),
+            scratch: Vec::new(),
+        }
     }
 
     /// Stops a manual take at `frame` (for example the frame of the button press).
@@ -223,14 +283,19 @@ impl Take {
         if self.end.is_none() {
             let start = self.start.unwrap_or(frame);
             self.end = Some(frame.max(start));
-            if self.start.is_none() { self.start = Some(start); }
+            if self.start.is_none() {
+                self.start = Some(start);
+            }
         }
     }
 
     pub fn state(&self) -> TakeState {
         match (self.start, self.end) {
             (Some(start), Some(end)) if self.read_to >= end => TakeState::Done { start, end },
-            (Some(start), _) => TakeState::Recording { start, frames: self.data.len() as u64 / self.channels as u64 },
+            (Some(start), _) => TakeState::Recording {
+                start,
+                frames: self.data.len() as u64 / self.channels as u64,
+            },
             _ => TakeState::Waiting,
         }
     }
@@ -240,13 +305,25 @@ impl Take {
         let written = r.written();
         if self.start.is_none() {
             match self.arm {
-                Arm::At(f) => if written > f { self.start = Some(f); },
-                Arm::Threshold { level, pre_roll, .. } => {
+                Arm::At(f) => {
+                    if written > f {
+                        self.start = Some(f);
+                    }
+                }
+                Arm::Threshold {
+                    level, pre_roll, ..
+                } => {
                     let from = self.read_to.max(r.oldest());
-                    if from >= written { return Ok(TakeState::Waiting); }
+                    if from >= written {
+                        return Ok(TakeState::Waiting);
+                    }
                     self.scratch.clear();
                     r.copy(from, written, &mut self.scratch)?;
-                    if let Some(i) = self.scratch.chunks_exact(self.channels).position(|f| f.iter().any(|x| x.abs() > level)) {
+                    if let Some(i) = self
+                        .scratch
+                        .chunks_exact(self.channels)
+                        .position(|f| f.iter().any(|x| x.abs() > level))
+                    {
                         let onset = from + i as u64;
                         // The pre-roll may reach back before arming, but not
                         // before what the buffer still holds.
@@ -256,9 +333,13 @@ impl Take {
                     }
                 }
             }
-            if let Some(s) = self.start { self.read_to = s; }
+            if let Some(s) = self.start {
+                self.read_to = s;
+            }
         }
-        let Some(start) = self.start else { return Ok(TakeState::Waiting) };
+        let Some(start) = self.start else {
+            return Ok(TakeState::Waiting);
+        };
         if self.end.is_none() {
             match self.stop {
                 Stop::Length(n) => self.end = Some(start + n),
@@ -271,8 +352,13 @@ impl Take {
             let from_len = self.data.len();
             r.copy(self.read_to, until, &mut self.data)?;
             if let Stop::Silence { level, frames } = self.stop {
-                for (i, f) in self.data[from_len..].chunks_exact(self.channels).enumerate() {
-                    if f.iter().any(|x| x.abs() > level) { self.last_loud = Some(self.read_to + i as u64); }
+                for (i, f) in self.data[from_len..]
+                    .chunks_exact(self.channels)
+                    .enumerate()
+                {
+                    if f.iter().any(|x| x.abs() > level) {
+                        self.last_loud = Some(self.read_to + i as u64);
+                    }
                 }
                 let quiet_from = self.last_loud.map_or(start, |l| l + 1);
                 if self.end.is_none() && until >= quiet_from + frames {
@@ -281,7 +367,9 @@ impl Take {
             }
             self.read_to = until;
         }
-        if self.end.is_none() && self.read_to >= limit { self.end = Some(limit); }
+        if self.end.is_none() && self.read_to >= limit {
+            self.end = Some(limit);
+        }
         // A silence stop ends earlier than what was copied: drop the rest.
         if let Some(end) = self.end {
             let keep = ((end.saturating_sub(start)) as usize) * self.channels;
@@ -293,11 +381,15 @@ impl Take {
     /// The finished take as a source. None until it is done.
     pub fn into_source(self, name: &str, rate: u32) -> Option<Result<Source, RecordError>> {
         match self.state() {
-            TakeState::Done { .. } => Some(Source::new(name, rate, self.channels as u8, self.data).map_err(RecordError::Model)),
+            TakeState::Done { .. } => Some(
+                Source::new(name, rate, self.channels as u8, self.data).map_err(RecordError::Model),
+            ),
             _ => None,
         }
     }
 
     /// The audio copied so far, interleaved.
-    pub fn data(&self) -> &[f32] { &self.data }
+    pub fn data(&self) -> &[f32] {
+        &self.data
+    }
 }

@@ -22,7 +22,9 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 fn read_trimmed(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The framebuffer's size, stride and depth from its sysfs folder (the first
@@ -31,11 +33,18 @@ pub fn geometry_from_sysfs(dir: &Path) -> Result<Geometry, String> {
     let modes = read_trimmed(&dir.join("modes"))?;
     let first = modes.lines().next().unwrap_or("");
     let size = first.split(':').nth(1).unwrap_or("");
-    let digits: String = size.chars().take_while(|c| c.is_ascii_digit() || *c == 'x').collect();
-    let (w, h) = digits.split_once('x').ok_or_else(|| format!("cannot read a size from modes {first:?}"))?;
+    let digits: String = size
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == 'x')
+        .collect();
+    let (w, h) = digits
+        .split_once('x')
+        .ok_or_else(|| format!("cannot read a size from modes {first:?}"))?;
     let num = |s: &str, what: &str| s.parse::<usize>().map_err(|_| format!("bad {what} {s:?}"));
     let stride = num(&read_trimmed(&dir.join("stride"))?, "stride")?;
-    let bpp = read_trimmed(&dir.join("bits_per_pixel"))?.parse::<u32>().map_err(|e| format!("bits_per_pixel: {e}"))?;
+    let bpp = read_trimmed(&dir.join("bits_per_pixel"))?
+        .parse::<u32>()
+        .map_err(|e| format!("bits_per_pixel: {e}"))?;
     Geometry::new(num(w, "width")?, num(h, "height")?, stride, bpp)
 }
 
@@ -60,7 +69,11 @@ impl FbLayout {
         }
         let g = &self.geometry;
         let a = g.native(self.rotation, r.x as usize, r.y as usize);
-        let b = g.native(self.rotation, (r.right() - 1) as usize, (r.bottom() - 1) as usize);
+        let b = g.native(
+            self.rotation,
+            (r.right() - 1) as usize,
+            (r.bottom() - 1) as usize,
+        );
         Some((a.1.min(b.1), a.1.max(b.1) + 1))
     }
 
@@ -69,7 +82,8 @@ impl FbLayout {
     /// this file), unless the screen has only one row.
     pub fn row_spans(&self, damage: &[Rect]) -> Vec<(usize, usize)> {
         let height = self.geometry.height;
-        let mut spans: Vec<(usize, usize)> = damage.iter().filter_map(|r| self.native_rows(*r)).collect();
+        let mut spans: Vec<(usize, usize)> =
+            damage.iter().filter_map(|r| self.native_rows(*r)).collect();
         spans.sort_unstable();
         let mut out: Vec<(usize, usize)> = Vec::new();
         for (mut a, mut b) in spans {
@@ -92,7 +106,11 @@ impl FbLayout {
     /// the visible pixels from `canvas` and zeros in any padding after them.
     pub fn rows(&self, canvas: &SoftCanvas, first: usize, end: usize, out: &mut Vec<u8>) {
         let (lw, lh) = self.logical_size();
-        assert_eq!((canvas.width(), canvas.height()), (lw, lh), "canvas does not match the screen");
+        assert_eq!(
+            (canvas.width(), canvas.height()),
+            (lw, lh),
+            "canvas does not match the screen"
+        );
         let g = &self.geometry;
         let bpp = g.bytes_per_pixel();
         let lw = lw as usize;
@@ -104,7 +122,9 @@ impl FbLayout {
                 let (lx, ly) = logical(g, self.rotation, nx, ny);
                 let p = canvas.px[ly * lw + lx];
                 match g.format {
-                    PixelFormat::Xrgb8888 => row[nx * 4..nx * 4 + 4].copy_from_slice(&p.to_le_bytes()),
+                    PixelFormat::Xrgb8888 => {
+                        row[nx * 4..nx * 4 + 4].copy_from_slice(&p.to_le_bytes())
+                    }
                     PixelFormat::Rgb565 => {
                         let (r, gg, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
                         let v = ((r >> 3) << 11 | (gg >> 2) << 5 | (b >> 3)) as u16;
@@ -122,7 +142,11 @@ impl FbLayout {
     pub fn picture(&self, frame: &[u8]) -> Result<Image, String> {
         let g = &self.geometry;
         if frame.len() < g.frame_len() {
-            return Err(format!("the frame is {} bytes; the screen needs {}", frame.len(), g.frame_len()));
+            return Err(format!(
+                "the frame is {} bytes; the screen needs {}",
+                frame.len(),
+                g.frame_len()
+            ));
         }
         let (lw, lh) = self.logical_size();
         let mut img = Image::new(lw, lh);
@@ -132,7 +156,8 @@ impl FbLayout {
                 let at = ny * g.stride + nx * g.bytes_per_pixel();
                 img.px[ly * lw as usize + lx] = match g.format {
                     PixelFormat::Xrgb8888 => {
-                        u32::from_le_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]) & 0x00FF_FFFF
+                        u32::from_le_bytes([frame[at], frame[at + 1], frame[at + 2], frame[at + 3]])
+                            & 0x00FF_FFFF
                     }
                     PixelFormat::Rgb565 => {
                         let v = u16::from_le_bytes([frame[at], frame[at + 1]]) as u32;
@@ -150,9 +175,13 @@ impl FbLayout {
 /// The startup screen leaves its last frame there, so the app's loading page
 /// can carry on from it.
 pub fn capture(fb: &Path, layout: &FbLayout) -> Result<Image, String> {
-    let file = OpenOptions::new().read(true).open(fb).map_err(|e| format!("{}: {e}", fb.display()))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .open(fb)
+        .map_err(|e| format!("{}: {e}", fb.display()))?;
     let mut frame = vec![0u8; layout.geometry.frame_len()];
-    file.read_exact_at(&mut frame, 0).map_err(|e| format!("reading the screen: {e}"))?;
+    file.read_exact_at(&mut frame, 0)
+        .map_err(|e| format!("reading the screen: {e}"))?;
     layout.picture(&frame)
 }
 
@@ -179,9 +208,19 @@ impl FbTarget {
     /// `sysfs`, a mode set; nothing is stored).
     pub fn open(fb: &Path, sysfs: &Path, rotation: Rotation) -> Result<FbTarget, String> {
         let geometry = geometry_from_sysfs(sysfs)?;
-        let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!("{}: {e}", fb.display()))?;
-        let _ = OpenOptions::new().write(true).open(sysfs.join("pan")).and_then(|mut f| f.write_all(b"0,0\n"));
-        Ok(FbTarget { file, layout: FbLayout { geometry, rotation }, buf: Vec::new() })
+        let file = OpenOptions::new()
+            .write(true)
+            .open(fb)
+            .map_err(|e| format!("{}: {e}", fb.display()))?;
+        let _ = OpenOptions::new()
+            .write(true)
+            .open(sysfs.join("pan"))
+            .and_then(|mut f| f.write_all(b"0,0\n"));
+        Ok(FbTarget {
+            file,
+            layout: FbLayout { geometry, rotation },
+            buf: Vec::new(),
+        })
     }
 
     pub fn logical_size(&self) -> (i32, i32) {
@@ -194,7 +233,9 @@ impl FbTarget {
         let stride = self.layout.geometry.stride;
         for (first, end) in self.layout.row_spans(damage) {
             self.layout.rows(canvas, first, end, &mut self.buf);
-            self.file.write_all_at(&self.buf, (first * stride) as u64).map_err(|e| format!("writing the screen: {e}"))?;
+            self.file
+                .write_all_at(&self.buf, (first * stride) as u64)
+                .map_err(|e| format!("writing the screen: {e}"))?;
         }
         Ok(())
     }
@@ -225,7 +266,12 @@ mod tests {
     fn kernel_clip(g: &Geometry, off: usize, len: usize) -> (usize, usize, usize, usize) {
         let line = g.stride;
         let end = off + len;
-        let (mut x1, y1, mut x2, y2) = (0, (off / line).min(g.height), g.width, end.div_ceil(line).min(g.height));
+        let (mut x1, y1, mut x2, y2) = (
+            0,
+            (off / line).min(g.height),
+            g.width,
+            end.div_ceil(line).min(g.height),
+        );
         if y2 - y1 == 1 {
             let bits = g.bytes_per_pixel() * 8;
             x1 = (off % line) * 8 / bits;
@@ -236,15 +282,27 @@ mod tests {
 
     #[test]
     fn a_frame_read_back_is_the_picture_that_was_written() {
-        for rot in [Rotation::Deg0, Rotation::Deg90, Rotation::Deg180, Rotation::Deg270] {
+        for rot in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
             for bpp in [32, 16] {
                 let g = Geometry::new(6, 10, 6 * bpp as usize / 8 + 8, bpp).unwrap();
-                let layout = FbLayout { geometry: g, rotation: rot };
+                let layout = FbLayout {
+                    geometry: g,
+                    rotation: rot,
+                };
                 let (w, h) = layout.logical_size();
                 let mut c = SoftCanvas::new(w, h);
                 for (i, p) in c.px.iter_mut().enumerate() {
                     // Values that survive RGB565 exactly: 5 or 6 bits, repeated into the low bits.
-                    let (r, gg, b) = ((i * 7 % 32) as u32, (i * 13 % 64) as u32, (i * 3 % 32) as u32);
+                    let (r, gg, b) = (
+                        (i * 7 % 32) as u32,
+                        (i * 13 % 64) as u32,
+                        (i * 3 % 32) as u32,
+                    );
                     *p = ((r << 3 | r >> 2) << 16) | ((gg << 2 | gg >> 4) << 8) | (b << 3 | b >> 2);
                 }
                 let f = frame(&layout, &c, Rect::new(0, 0, w, h));
@@ -253,20 +311,34 @@ mod tests {
                 assert_eq!(img.px, c.px, "{rot:?} {bpp} bpp");
             }
         }
-        let layout = FbLayout { geometry: Geometry::new(4, 4, 16, 32).unwrap(), rotation: Rotation::Deg0 };
+        let layout = FbLayout {
+            geometry: Geometry::new(4, 4, 16, 32).unwrap(),
+            rotation: Rotation::Deg0,
+        };
         assert!(layout.picture(&[0u8; 10]).is_err());
     }
 
     #[test]
     fn matches_the_screen_log_mapping_for_every_rotation() {
-        for rot in [Rotation::Deg0, Rotation::Deg90, Rotation::Deg180, Rotation::Deg270] {
+        for rot in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
             let g = Geometry::new(8, 12, 8 * 4 + 16, 32).unwrap();
-            let layout = FbLayout { geometry: g, rotation: rot };
+            let layout = FbLayout {
+                geometry: g,
+                rotation: rot,
+            };
             let (lw, lh) = layout.logical_size();
             let mut c = SoftCanvas::new(lw, lh);
             for y in 0..lh {
                 for x in 0..lw {
-                    c.fill_rect(Rect::new(x, y, 1, 1), Color::rgb((x as u32) << 8 | y as u32));
+                    c.fill_rect(
+                        Rect::new(x, y, 1, 1),
+                        Color::rgb((x as u32) << 8 | y as u32),
+                    );
                 }
             }
             let f = frame(&layout, &c, Rect::new(0, 0, lw, lh));
@@ -274,7 +346,11 @@ mod tests {
                 for lx in 0..lw as usize {
                     let (nx, ny) = g.native(rot, lx, ly);
                     let at = ny * g.stride + nx * 4;
-                    assert_eq!(&f[at..at + 4], &[ly as u8, lx as u8, 0, 0], "{rot:?} ({lx},{ly})");
+                    assert_eq!(
+                        &f[at..at + 4],
+                        &[ly as u8, lx as u8, 0, 0],
+                        "{rot:?} ({lx},{ly})"
+                    );
                 }
             }
         }
@@ -283,12 +359,18 @@ mod tests {
     #[test]
     fn writes_whole_rows_of_the_damaged_part_only() {
         let g = Geometry::new(800, 1280, 3200, 32).unwrap();
-        let layout = FbLayout { geometry: g, rotation: Rotation::Deg270 };
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg270,
+        };
         assert_eq!(layout.logical_size(), (1280, 800));
         let mut c = SoftCanvas::new(1280, 800);
         c.fill_rect(Rect::new(0, 0, 1280, 800), Color::rgb(0xFFFFFF));
         // Logical columns 100..130 are native rows 1150..1180.
-        assert_eq!(layout.row_spans(&[Rect::new(100, 50, 30, 20)]), vec![(1150, 1180)]);
+        assert_eq!(
+            layout.row_spans(&[Rect::new(100, 50, 30, 20)]),
+            vec![(1150, 1180)]
+        );
         let f = frame(&layout, &c, Rect::new(100, 50, 30, 20));
         assert_eq!(f.iter().filter(|&&b| b == 0xFF).count(), 30 * 800 * 3);
     }
@@ -296,14 +378,27 @@ mod tests {
     #[test]
     fn spans_merge_and_are_never_one_row() {
         let g = Geometry::new(800, 1280, 3200, 32).unwrap();
-        let layout = FbLayout { geometry: g, rotation: Rotation::Deg270 };
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg270,
+        };
         // One logical column: one native row, made two.
-        assert_eq!(layout.row_spans(&[Rect::new(10, 0, 1, 5)]), vec![(1269, 1271)]);
+        assert_eq!(
+            layout.row_spans(&[Rect::new(10, 0, 1, 5)]),
+            vec![(1269, 1271)]
+        );
         // The last native row grows upwards.
-        assert_eq!(layout.row_spans(&[Rect::new(0, 0, 1, 5)]), vec![(1278, 1280)]);
+        assert_eq!(
+            layout.row_spans(&[Rect::new(0, 0, 1, 5)]),
+            vec![(1278, 1280)]
+        );
         // Overlapping and touching spans merge; separate ones stay apart.
-        let spans = layout.row_spans(&[Rect::new(100, 0, 30, 5), Rect::new(120, 0, 30, 5), Rect::new(500, 0, 10, 5),
-                                       Rect::new(2000, 0, 10, 5)]);
+        let spans = layout.row_spans(&[
+            Rect::new(100, 0, 30, 5),
+            Rect::new(120, 0, 30, 5),
+            Rect::new(500, 0, 10, 5),
+            Rect::new(2000, 0, 10, 5),
+        ]);
         assert_eq!(spans, vec![(770, 780), (1130, 1180)]);
     }
 
@@ -312,9 +407,17 @@ mod tests {
         // Whatever the damage, each write must mark all of its rows as changed
         // across the whole width, or the panel keeps the old picture there.
         let g = Geometry::new(800, 1280, 3200, 32).unwrap();
-        let layout = FbLayout { geometry: g, rotation: Rotation::Deg270 };
-        for r in [Rect::new(0, 0, 1280, 800), Rect::new(10, 0, 1, 800), Rect::new(0, 0, 1, 1), Rect::new(1279, 799, 1, 1),
-                  Rect::new(300, 200, 170, 150)] {
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg270,
+        };
+        for r in [
+            Rect::new(0, 0, 1280, 800),
+            Rect::new(10, 0, 1, 800),
+            Rect::new(0, 0, 1, 1),
+            Rect::new(1279, 799, 1, 1),
+            Rect::new(300, 200, 170, 150),
+        ] {
             for (first, end) in layout.row_spans(&[r]) {
                 let (x1, y1, x2, y2) = kernel_clip(&g, first * g.stride, (end - first) * g.stride);
                 assert_eq!((x1, y1, x2, y2), (0, first, 800, end), "{r:?}");
@@ -327,7 +430,10 @@ mod tests {
     #[test]
     fn rgb565_frames() {
         let g = Geometry::new(4, 2, 8, 16).unwrap();
-        let layout = FbLayout { geometry: g, rotation: Rotation::Deg0 };
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg0,
+        };
         let mut c = SoftCanvas::new(4, 2);
         c.fill_rect(Rect::new(0, 0, 4, 2), Color::rgb(0xFF0000));
         let f = frame(&layout, &c, Rect::new(0, 0, 4, 2));

@@ -78,8 +78,11 @@ impl<'a> AudioPacket<'a> {
         if !(HEADER_BYTES..=MAX_DATAGRAM).contains(&blob.len()) {
             return Err(PacketError::DatagramSize);
         }
-        if &blob[0..4] != MAGIC || blob[4] != VERSION || blob[5] != FORMAT_S32_LE
-            || blob[6] != 0 || blob[7] != 0
+        if &blob[0..4] != MAGIC
+            || blob[4] != VERSION
+            || blob[5] != FORMAT_S32_LE
+            || blob[6] != 0
+            || blob[7] != 0
         {
             return Err(PacketError::InvalidHeader);
         }
@@ -114,7 +117,11 @@ struct Slot {
 }
 impl Default for Slot {
     fn default() -> Self {
-        Self { frame: None, len: 0, payload: [0; MAX_PCM_DATA] }
+        Self {
+            frame: None,
+            len: 0,
+            payload: [0; MAX_PCM_DATA],
+        }
     }
 }
 
@@ -131,12 +138,22 @@ pub struct BoundedPlayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IngestResult { Accepted, Duplicate, Late, TooEarly, Rejected }
+pub enum IngestResult {
+    Accepted,
+    Duplicate,
+    Late,
+    TooEarly,
+    Rejected,
+}
 
 impl BoundedPlayout {
-    pub fn new(stream_id: u32, channels: u16, block_frames: u16,
-        capacity_blocks: usize, start_frame: u64) -> Result<Self, PacketError>
-    {
+    pub fn new(
+        stream_id: u32,
+        channels: u16,
+        block_frames: u16,
+        capacity_blocks: usize,
+        start_frame: u64,
+    ) -> Result<Self, PacketError> {
         if !(1..=MAX_CHANNELS as u16).contains(&channels)
             || !(1..=MAX_FRAMES as u16).contains(&block_frames)
             || !(1..=MAX_WINDOW_BLOCKS).contains(&capacity_blocks)
@@ -146,14 +163,23 @@ impl BoundedPlayout {
             return Err(PacketError::InvalidGeometry);
         }
         Ok(Self {
-            stream_id, channels, block_frames, next_frame: start_frame,
+            stream_id,
+            channels,
+            block_frames,
+            next_frame: start_frame,
             slots: vec![Slot::default(); capacity_blocks],
             counters: Counters::default(),
         })
     }
-    pub fn next_frame(&self) -> u64 { self.next_frame }
-    pub fn counters(&self) -> Counters { self.counters }
-    pub fn capacity_blocks(&self) -> usize { self.slots.len() }
+    pub fn next_frame(&self) -> u64 {
+        self.next_frame
+    }
+    pub fn counters(&self) -> Counters {
+        self.counters
+    }
+    pub fn capacity_blocks(&self) -> usize {
+        self.slots.len()
+    }
     pub fn block_bytes(&self) -> usize {
         usize::from(self.block_frames) * usize::from(self.channels) * 4
     }
@@ -161,7 +187,9 @@ impl BoundedPlayout {
         if packet.stream_id != self.stream_id
             || packet.frames != self.block_frames
             || packet.channels != self.channels
-            || !packet.start_frame.is_multiple_of(u64::from(self.block_frames))
+            || !packet
+                .start_frame
+                .is_multiple_of(u64::from(self.block_frames))
             || packet.validate().is_err()
         {
             self.counters.rejected += 1;
@@ -171,16 +199,17 @@ impl BoundedPlayout {
             self.counters.late += 1;
             return IngestResult::Late;
         }
-        let end = self.next_frame.saturating_add(
-            self.slots.len() as u64 * u64::from(self.block_frames));
+        let end = self
+            .next_frame
+            .saturating_add(self.slots.len() as u64 * u64::from(self.block_frames));
         if packet.start_frame >= end {
             self.counters.too_early += 1;
             return IngestResult::TooEarly;
         }
         // Absolute-frame-slot index is collision-free within the bounded
         // playout window. Incoming packets from previous rotations are late.
-        let index = (packet.start_frame / u64::from(self.block_frames)
-            % self.slots.len() as u64) as usize;
+        let index =
+            (packet.start_frame / u64::from(self.block_frames) % self.slots.len() as u64) as usize;
         let slot = &mut self.slots[index];
         if slot.frame == Some(packet.start_frame) {
             self.counters.duplicate += 1;
@@ -198,8 +227,8 @@ impl BoundedPlayout {
         if output.len() != self.block_bytes() {
             return Err(PacketError::BufferTooSmall);
         }
-        let index = (self.next_frame / u64::from(self.block_frames)
-            % self.slots.len() as u64) as usize;
+        let index =
+            (self.next_frame / u64::from(self.block_frames) % self.slots.len() as u64) as usize;
         let slot = &mut self.slots[index];
         let played = slot.frame == Some(self.next_frame) && slot.len == output.len();
         if played {
@@ -220,81 +249,126 @@ mod tests {
     use super::*;
     fn test_payload(seed: u8) -> [u8; 1024] {
         let mut b = [0; 1024];
-        for (i, x) in b.iter_mut().enumerate() { *x = seed.wrapping_add(i as u8); }
+        for (i, x) in b.iter_mut().enumerate() {
+            *x = seed.wrapping_add(i as u8);
+        }
         b
     }
     #[test]
     fn python_wire_header_and_roundtrip() {
         let payload = test_payload(4);
         let p = AudioPacket {
-            stream_id: 0x1020_3040, sequence: 0x5060_7080,
-            start_frame: 0x0102_0304_0506_0708, frames: 128, channels: 2,
+            stream_id: 0x1020_3040,
+            sequence: 0x5060_7080,
+            start_frame: 0x0102_0304_0506_0708,
+            frames: 128,
+            channels: 2,
             payload: &payload,
         };
         let mut bytes = [0; MAX_DATAGRAM];
         let n = p.encode_into(&mut bytes).unwrap();
         assert_eq!(n, 28 + 1024);
-        assert_eq!(&bytes[..28], &[
-            0x4d,0x50,0x46,0x31, 0x01,0x01,0x00,0x00,
-            0x10,0x20,0x30,0x40, 0x50,0x60,0x70,0x80,
-            0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
-            0x00,0x80,0x00,0x02
-        ]);
+        assert_eq!(
+            &bytes[..28],
+            &[
+                0x4d, 0x50, 0x46, 0x31, 0x01, 0x01, 0x00, 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60,
+                0x70, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x80, 0x00, 0x02
+            ]
+        );
         assert_eq!(AudioPacket::parse(&bytes[..n]).unwrap(), p);
-        assert_eq!(AudioPacket::parse(&bytes[..n-1]), Err(PacketError::PayloadLength));
+        assert_eq!(
+            AudioPacket::parse(&bytes[..n - 1]),
+            Err(PacketError::PayloadLength)
+        );
     }
     #[test]
     fn bad_packets_never_panic_and_are_rejected() {
         let data = test_payload(3);
-        let p = AudioPacket {stream_id: 1, sequence: 2, start_frame: 0,
-            frames: 128, channels: 2, payload: &data };
+        let p = AudioPacket {
+            stream_id: 1,
+            sequence: 2,
+            start_frame: 0,
+            frames: 128,
+            channels: 2,
+            payload: &data,
+        };
         let mut bytes = [0; MAX_DATAGRAM];
         let n = p.encode_into(&mut bytes).unwrap();
-        for len in 0..n { if len != n { assert!(AudioPacket::parse(&bytes[..len]).is_err()); } }
+        for len in 0..n {
+            if len != n {
+                assert!(AudioPacket::parse(&bytes[..len]).is_err());
+            }
+        }
         for index in [0, 4, 5, 6, 7, 24, 25, 26, 27] {
             let mut corrupt = bytes[..n].to_vec();
             corrupt[index] ^= 0x40;
             // A change to a valid frame count would still fail payload length.
             assert!(AudioPacket::parse(&corrupt).is_err(), "index {index}");
         }
-        let oversized = AudioPacket {stream_id: 1, sequence: 0, start_frame: 0,
-            frames: 128, channels: 8, payload: &[0; 4096]};
-        assert_eq!(oversized.encode_into(&mut bytes), Err(PacketError::MtuExceeded));
+        let oversized = AudioPacket {
+            stream_id: 1,
+            sequence: 0,
+            start_frame: 0,
+            frames: 128,
+            channels: 8,
+            payload: &[0; 4096],
+        };
+        assert_eq!(
+            oversized.encode_into(&mut bytes),
+            Err(PacketError::MtuExceeded)
+        );
     }
     #[test]
     fn bounded_reordering_loss_and_duplicates() {
-        let mut recv = BoundedPlayout::new(19,2,128,8,0).unwrap();
-        let a = test_payload(0); let b = test_payload(1); let c = test_payload(2);
+        let mut recv = BoundedPlayout::new(19, 2, 128, 8, 0).unwrap();
+        let a = test_payload(0);
+        let b = test_payload(1);
+        let c = test_payload(2);
         fn mk(seq: u32, frame: u64, payload: &[u8]) -> AudioPacket<'_> {
-            AudioPacket {stream_id: 19, sequence: seq, start_frame: frame,
-                frames: 128, channels: 2, payload}
+            AudioPacket {
+                stream_id: 19,
+                sequence: seq,
+                start_frame: frame,
+                frames: 128,
+                channels: 2,
+                payload,
+            }
         }
         assert_eq!(recv.ingest(&mk(2, 256, &c)), IngestResult::Accepted);
         assert_eq!(recv.ingest(&mk(0, 0, &a)), IngestResult::Accepted);
         assert_eq!(recv.ingest(&mk(0, 0, &a)), IngestResult::Duplicate);
-        let mut out = [0u8;1024];
+        let mut out = [0u8; 1024];
         assert_eq!(recv.playout_into(&mut out), Ok(true));
         assert_eq!(out, a);
         assert_eq!(recv.playout_into(&mut out), Ok(false));
-        assert_eq!(out, [0u8;1024]);
+        assert_eq!(out, [0u8; 1024]);
         assert_eq!(recv.ingest(&mk(1, 128, &b)), IngestResult::Late);
         assert_eq!(recv.playout_into(&mut out), Ok(true));
         assert_eq!(out, c);
         assert_eq!(recv.counters().underflows, 1);
         assert_eq!(recv.counters().late, 1);
         assert_eq!(recv.counters().duplicate, 1);
-        let far = mk(100, recv.next_frame() + 8*128, &a);
+        let far = mk(100, recv.next_frame() + 8 * 128, &a);
         assert_eq!(recv.ingest(&far), IngestResult::TooEarly);
     }
     #[test]
     fn reject_wrong_stream_and_buffer_without_advancing() {
-        let mut recv = BoundedPlayout::new(19,2,128,8,0).unwrap();
-        let data=test_payload(0);
-        let wrong=AudioPacket{stream_id:20,sequence:0,start_frame:0,
-            frames:128,channels:2,payload:&data};
-        assert_eq!(recv.ingest(&wrong),IngestResult::Rejected);
-        assert_eq!(recv.playout_into(&mut [0u8;2]),Err(PacketError::BufferTooSmall));
-        assert_eq!(recv.next_frame(),0);
-        assert!(BoundedPlayout::new(19,8,128,8,0).is_err());
+        let mut recv = BoundedPlayout::new(19, 2, 128, 8, 0).unwrap();
+        let data = test_payload(0);
+        let wrong = AudioPacket {
+            stream_id: 20,
+            sequence: 0,
+            start_frame: 0,
+            frames: 128,
+            channels: 2,
+            payload: &data,
+        };
+        assert_eq!(recv.ingest(&wrong), IngestResult::Rejected);
+        assert_eq!(
+            recv.playout_into(&mut [0u8; 2]),
+            Err(PacketError::BufferTooSmall)
+        );
+        assert_eq!(recv.next_frame(), 0);
+        assert!(BoundedPlayout::new(19, 8, 128, 8, 0).is_err());
     }
 }

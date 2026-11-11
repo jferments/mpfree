@@ -9,16 +9,22 @@ use mpfree_sampler::model::*;
 const RATE: u32 = 44_100;
 const C: f32 = std::f32::consts::FRAC_1_SQRT_2; // centre pan gain
 
-fn beat(bpm: f64, bars: usize, tail: usize) -> (Vec<f32>, Vec<usize>) { demo_beat(bpm, bars, tail, RATE) }
+fn beat(bpm: f64, bars: usize, tail: usize) -> (Vec<f32>, Vec<usize>) {
+    demo_beat(bpm, bars, tail, RATE)
+}
 
 /// Schedules a note-on for every pad at its frame, renders `frames`, returns the left channel.
 fn play(p: &Project, hits: &[(u8, u32)], frames: usize) -> Vec<f32> {
     let mut e = Engine::new(RATE, 32);
     e.set_view(EngineView::build(p, RATE));
-    for &(pad, at) in hits { assert!(e.schedule(at, Event::NoteOn { pad, velocity: 127 })); }
+    for &(pad, at) in hits {
+        assert!(e.schedule(at, Event::NoteOn { pad, velocity: 127 }));
+    }
     let mut l = vec![0.0; frames];
     let mut r = vec![0.0; frames];
-    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) { e.render(a, b); }
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
     l
 }
 
@@ -30,16 +36,27 @@ fn transient_chop_to_pads_plays_the_loop_back_sample_for_sample() {
     let c = a.transient("break", &s, 0.6).unwrap();
     // One slice per hit (the first starts at 0).
     assert_eq!(c.slices(), hits.len(), "{:?}", c.markers());
-    for (m, h) in c.markers().iter().zip(&hits[1..]) { assert!((*h as i64 - *m as i64).abs() <= 64, "marker {m} for hit {h}"); }
+    for (m, h) in c.markers().iter().zip(&hits[1..]) {
+        assert!(
+            (*h as i64 - *m as i64).abs() <= 64,
+            "marker {m} for hit {h}"
+        );
+    }
 
     let mut p = Project::new();
     p.add_source(s.clone());
     let chop = p.add_chop_set(c.clone()).unwrap();
     p.slices_to_pads(chop, 0, c.slices(), 0).unwrap();
     // Hitting the pads in order at the slice starts rebuilds the loop exactly.
-    let events: Vec<(u8, u32)> = (0..c.slices()).map(|i| (i as u8, c.bounds(i).unwrap().0 as u32)).collect();
+    let events: Vec<(u8, u32)> = (0..c.slices())
+        .map(|i| (i as u8, c.bounds(i).unwrap().0 as u32))
+        .collect();
     let out = play(&p, &events, audio.len());
-    let worst = out.iter().zip(&audio).map(|(o, x)| (o - C * x).abs()).fold(0.0f32, f32::max);
+    let worst = out
+        .iter()
+        .zip(&audio)
+        .map(|(o, x)| (o - C * x).abs())
+        .fold(0.0f32, f32::max);
     assert!(worst < 1e-6, "largest difference {worst}");
 }
 
@@ -67,10 +84,16 @@ fn beat_chop_uses_the_exact_loop_tempo() {
     assert_eq!(c.slices(), 8);
     let beat = 60.0 / 96.0 * f64::from(RATE);
     for (k, m) in c.markers().iter().enumerate() {
-        assert!((*m as f64 - beat * (k + 1) as f64).abs() <= 1.0, "marker {k} at {m}");
+        assert!(
+            (*m as f64 - beat * (k + 1) as f64).abs() <= 1.0,
+            "marker {k} at {m}"
+        );
     }
     // Half-beat slices at a typed tempo.
-    assert_eq!(a.beats("eighths", &s, Some(96.0), 0.5).unwrap().slices(), 16);
+    assert_eq!(
+        a.beats("eighths", &s, Some(96.0), 0.5).unwrap().slices(),
+        16
+    );
     assert!(a.beats("bad", &s, Some(0.0), 1.0).is_err());
 }
 
@@ -78,21 +101,30 @@ fn beat_chop_uses_the_exact_loop_tempo() {
 fn silence_chop_and_trim() {
     let mut x = vec![0.0f32; RATE as usize * 2];
     for (at, len) in [(5_000usize, 6_000usize), (30_000, 9_000), (60_000, 3_000)] {
-        for i in 0..len { x[at + i] = 0.5 * (i as f32 * 0.2).sin() * (1.0 - i as f32 / len as f32); }
+        for i in 0..len {
+            x[at + i] = 0.5 * (i as f32 * 0.2).sin() * (1.0 - i as f32 / len as f32);
+        }
     }
     let s = Source::new("chain", RATE, 1, x).unwrap();
     let a = SourceAnalysis::analyse(&s);
     let c = a.silence("chain", &s, SilenceSettings::default()).unwrap();
     // Three sounds: markers before each (the first slice is the lead-in).
     assert_eq!(c.markers().len(), 3, "{:?}", c.markers());
-    for (m, at) in c.markers().iter().zip([5_000u64, 30_000, 60_000]) { assert!(*m <= at && at - m < 100); }
+    for (m, at) in c.markers().iter().zip([5_000u64, 30_000, 60_000]) {
+        assert!(*m <= at && at - m < 100);
+    }
     let (t0, t1) = a.trim(SilenceSettings::default()).unwrap();
-    assert!(t0 <= 5_000 && t0 > 4_900 && t1 > 62_000 && t1 <= 63_000, "{t0} {t1}");
+    assert!(
+        t0 <= 5_000 && t0 > 4_900 && t1 > 62_000 && t1 <= 63_000,
+        "{t0} {t1}"
+    );
 }
 
 #[test]
 fn snap_moves_a_marker_to_a_zero_crossing() {
-    let x: Vec<f32> = (0..4_000).map(|i| (std::f32::consts::TAU * (i as f32 + 0.25) / 200.0).sin()).collect();
+    let x: Vec<f32> = (0..4_000)
+        .map(|i| (std::f32::consts::TAU * (i as f32 + 0.25) / 200.0).sin())
+        .collect();
     let s = Source::new("sine", RATE, 1, x).unwrap();
     let a = SourceAnalysis::analyse(&s);
     assert_eq!(a.snap(1_090), 1_100);
@@ -105,7 +137,12 @@ fn chopping_and_assigning_undo_in_one_step_each() {
     let s = Source::new("b", RATE, 1, audio).unwrap();
     let mut p = Project::new();
     p.add_source(s.clone());
-    p.set_pad(2, Some(Pad::new("keep", Layer::new(Region::whole(&s)))), None).unwrap();
+    p.set_pad(
+        2,
+        Some(Pad::new("keep", Layer::new(Region::whole(&s)))),
+        None,
+    )
+    .unwrap();
     let c = ChopSet::grid("g", &s, 8).unwrap();
     let chop = p.add_chop_set(c).unwrap();
     p.slices_to_pads(chop, 0, 8, 0).unwrap();
@@ -129,13 +166,28 @@ fn chopping_and_assigning_undo_in_one_step_each() {
 #[test]
 fn markers_from_any_list_are_cleaned() {
     let s = Source::new("s", RATE, 1, vec![0.1; 1_000]).unwrap();
-    let c = ChopSet::from_markers("m", &s, ChopMode::Manual, [500, 0, 200, 500, 1_000, 5_000, 800]).unwrap();
+    let c = ChopSet::from_markers(
+        "m",
+        &s,
+        ChopMode::Manual,
+        [500, 0, 200, 500, 1_000, 5_000, 800],
+    )
+    .unwrap();
     assert_eq!(c.markers(), &[200, 500, 800]);
-    assert!(ChopSet::from_markers("m", &s, ChopMode::Manual, 1..200).is_err(), "too many slices");
+    assert!(
+        ChopSet::from_markers("m", &s, ChopMode::Manual, 1..200).is_err(),
+        "too many slices"
+    );
     let other = Source::new("o", RATE, 1, vec![0.2; 1_000]).unwrap();
     let a = SourceAnalysis::analyse(&other);
-    assert!(a.transient("x", &s, 0.5).is_err(), "analysis of another source");
-    assert!(Project::new().add_chop_set(c).is_err(), "source not in the project");
+    assert!(
+        a.transient("x", &s, 0.5).is_err(),
+        "analysis of another source"
+    );
+    assert!(
+        Project::new().add_chop_set(c).is_err(),
+        "source not in the project"
+    );
 }
 
 #[test]
@@ -143,28 +195,59 @@ fn the_chop_tool_runs_its_demo_and_passes_the_rebuild_check() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("mpfree-chop-demo");
     let _ = std::fs::remove_dir_all(&out);
     let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpfree-chop"))
-        .arg("--demo").arg(&out).args(["--mode", "beat", "--beats", "0.5"])
-        .output().unwrap();
+        .arg("--demo")
+        .arg(&out)
+        .args(["--mode", "beat", "--beats", "0.5"])
+        .output()
+        .unwrap();
     let text = String::from_utf8_lossy(&run.stdout);
-    assert!(run.status.success(), "{text}\n{}", String::from_utf8_lossy(&run.stderr));
-    assert!(text.contains("loop_tempo=96.000") && text.contains("slices=16") && text.contains("rebuild=PASS"), "{text}");
-    for f in ["chop-report.txt", "demo-input.wav", "rebuild.wav", "one-by-one.wav", "reversed.wav", "slices/slice-16.wav"] {
+    assert!(
+        run.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        text.contains("loop_tempo=96.000")
+            && text.contains("slices=16")
+            && text.contains("rebuild=PASS"),
+        "{text}"
+    );
+    for f in [
+        "chop-report.txt",
+        "demo-input.wav",
+        "rebuild.wav",
+        "one-by-one.wav",
+        "reversed.wav",
+        "slices/slice-16.wav",
+    ] {
         assert!(out.join(f).is_file(), "{f} missing");
     }
     // Every slice file decodes and has the slice's length.
     let s = mpfree_sampler::PreparedSample::read_wav(&out.join("slices/slice-01.wav")).unwrap();
-    assert_eq!(s.frames(), (60.0 / 96.0 / 2.0 * f64::from(RATE)).round() as usize);
-    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_mpfree-chop")).arg("--demo").output().unwrap();
-    assert!(!bad.status.success(), "usage error without an output folder");
+    assert_eq!(
+        s.frames(),
+        (60.0 / 96.0 / 2.0 * f64::from(RATE)).round() as usize
+    );
+    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_mpfree-chop"))
+        .arg("--demo")
+        .output()
+        .unwrap();
+    assert!(
+        !bad.status.success(),
+        "usage error without an output folder"
+    );
 }
 
 #[test]
 fn root_pitch_of_the_source_and_of_each_slice() {
     // Half a second each of A3 then E4, with a few harmonics.
-    let note = |hz: f32| (0..RATE as usize / 2).map(move |i| {
-        let t = i as f32 / RATE as f32;
-        0.3 * ((std::f32::consts::TAU * hz * t).sin() + 0.4 * (std::f32::consts::TAU * 2.0 * hz * t).sin())
-    });
+    let note = |hz: f32| {
+        (0..RATE as usize / 2).map(move |i| {
+            let t = i as f32 / RATE as f32;
+            0.3 * ((std::f32::consts::TAU * hz * t).sin()
+                + 0.4 * (std::f32::consts::TAU * 2.0 * hz * t).sin())
+        })
+    };
     let data: Vec<f32> = note(220.0).chain(note(329.63)).collect();
     let s = Source::new("two notes", RATE, 1, data).unwrap();
     let a = SourceAnalysis::analyse(&s);
@@ -187,22 +270,47 @@ fn chop_to_pads_adds_the_set_and_the_pads_in_one_undo_step_from_a_template() {
     let mut p = Project::new();
     p.add_source(s.clone());
     let mut region = Region::whole(&s);
-    (region.gain_db, region.tune_cents, region.channels, region.start) = (-3.0, 120, ChannelPick::Left, 4_000);
+    (
+        region.gain_db,
+        region.tune_cents,
+        region.channels,
+        region.start,
+    ) = (-3.0, 120, ChannelPick::Left, 4_000);
     let mut template = Pad::new("Break", Layer::new(region));
     (template.level_db, template.mute_group, template.polyphony) = (-6.0, Some(2), 1);
     p.set_pad(0, Some(template.clone()), None).unwrap();
-    p.set_pad(9, Some(Pad::new("keep", Layer::new(Region::whole(&s)))), None).unwrap();
+    p.set_pad(
+        9,
+        Some(Pad::new("keep", Layer::new(Region::whole(&s)))),
+        None,
+    )
+    .unwrap();
     p.clear_history();
     let c = ChopSet::grid("Break", &s, 8).unwrap();
     // Slices 2..6 (the third to the sixth) on pads 8..12.
     let set = p.chop_to_pads(c.clone(), 2, 4, 8, Some(&template)).unwrap();
     assert_eq!((set, p.chop_sets.len()), (0, 1));
     let pad = p.pad(9).unwrap();
-    assert_eq!(pad.name, "Break 2", "numbered from 1 within what was chopped");
-    assert_eq!((pad.level_db, pad.mute_group, pad.polyphony), (-6.0, Some(2), 1), "the template's pad settings");
+    assert_eq!(
+        pad.name, "Break 2",
+        "numbered from 1 within what was chopped"
+    );
+    assert_eq!(
+        (pad.level_db, pad.mute_group, pad.polyphony),
+        (-6.0, Some(2), 1),
+        "the template's pad settings"
+    );
     let r = &pad.layers[0].region;
-    assert_eq!((r.start, r.end), c.bounds(3).unwrap(), "the slice, not the template's start");
-    assert_eq!((r.gain_db, r.tune_cents, r.channels), (-3.0, 120, ChannelPick::Left), "the template's region settings");
+    assert_eq!(
+        (r.start, r.end),
+        c.bounds(3).unwrap(),
+        "the slice, not the template's start"
+    );
+    assert_eq!(
+        (r.gain_db, r.tune_cents, r.channels),
+        (-3.0, 120, ChannelPick::Left),
+        "the template's region settings"
+    );
     assert_eq!(pad.layers.len(), 1);
     assert_eq!(p.pad(11).unwrap().name, "Break 4");
     assert!(p.pad(12).is_none());
@@ -211,12 +319,24 @@ fn chop_to_pads_adds_the_set_and_the_pads_in_one_undo_step_from_a_template() {
     assert_eq!(p.pad(9).unwrap().name, "keep");
     assert!(!p.can_undo());
     assert!(p.redo());
-    assert_eq!((p.chop_sets.len(), p.pad(10).unwrap().name.as_str()), (1, "Break 3"));
+    assert_eq!(
+        (p.chop_sets.len(), p.pad(10).unwrap().name.as_str()),
+        (1, "Break 3")
+    );
     // Without a template the pads are plain; a bad request changes nothing.
     let before = p.revision();
-    assert!(p.chop_to_pads(c.clone(), 6, 4, 0, None).is_err(), "only 8 slices");
-    assert!(p.chop_to_pads(c.clone(), 0, 8, 124, None).is_err(), "past the last pad");
+    assert!(
+        p.chop_to_pads(c.clone(), 6, 4, 0, None).is_err(),
+        "only 8 slices"
+    );
+    assert!(
+        p.chop_to_pads(c.clone(), 0, 8, 124, None).is_err(),
+        "past the last pad"
+    );
     assert_eq!((p.revision(), p.chop_sets.len()), (before, 1));
     p.chop_to_pads(c, 0, 1, 20, None).unwrap();
-    assert_eq!(p.pad(20).unwrap().level_db, Pad::new("x", Layer::new(Region::whole(&s))).level_db);
+    assert_eq!(
+        p.pad(20).unwrap().level_db,
+        Pad::new("x", Layer::new(Region::whole(&s))).level_db
+    );
 }
