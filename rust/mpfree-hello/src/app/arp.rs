@@ -86,13 +86,14 @@ pub enum ArpItem {
     Root,
     Strum,
     Retrigger,
+    SwingFrom,
 }
 
 /// The Options menu opened from the Arp panel: the tempo, then the arp's
 /// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
-pub(super) const ARP_OPTIONS: [Item; 6] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
+pub(super) const ARP_OPTIONS: [Item; 7] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
                                            Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Strum),
-                                           Item::Arp(ArpItem::Retrigger)];
+                                           Item::Arp(ArpItem::Retrigger), Item::Arp(ArpItem::SwingFrom)];
 
 pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -561,6 +562,35 @@ impl App {
                  # The syntax is in docs/project/arpeggiator.md.\n{}", lib.to_text())
     }
 
+    // ------------------------------------------------------------ transport
+
+    /// The transport's clock for the next [`App::process`]: called once a
+    /// period, before it, while the transport plays (the time engine gives
+    /// the first span of the period). None, or no call, and the arp
+    /// free-runs at the app's tempo.
+    #[allow(dead_code)] // the time engine calls it from round 7 (the transport thread wires main.rs)
+    pub fn set_clock(&mut self, clock: Option<mpfree_arp::Clock>) {
+        self.clock = clock;
+    }
+
+    /// Before each period: the engine follows this period's clock, with
+    /// the transport's swing or the arp's own ("Swing from").
+    pub(super) fn sync_arp(&mut self) {
+        match self.clock.take() {
+            Some(mut c) => {
+                if !self.swing_from_transport {
+                    c.swing = None;
+                }
+                self.engine.sync(&c);
+            }
+            None if self.engine.synced() => {
+                self.engine.sync(&mpfree_arp::Clock { playing: false, ..mpfree_arp::Clock::playing(0, 0, self.settings.bpm) });
+                self.engine.set_tempo(self.settings.bpm);
+            }
+            None => {}
+        }
+    }
+
     // ------------------------------------------------------------ options
 
     /// The scale row: 0 is Off, otherwise the place in [`SCALES`]
@@ -587,6 +617,7 @@ impl App {
             ArpItem::Root => ("Scale root", NOTE_NAMES[usize::from(self.scale_root)].to_string()),
             ArpItem::Strum => ("Strum", if s.strum == 0 { "Off".to_string() } else { format!("{} % of a step", s.strum) }),
             ArpItem::Retrigger => ("New notes restart", if s.retrigger { "On" } else { "Off" }.to_string()),
+            ArpItem::SwingFrom => ("Swing from", if self.swing_from_transport { "Transport" } else { "Arp" }.to_string()),
         }
     }
 
@@ -609,6 +640,11 @@ impl App {
             ArpItem::Retrigger => vec!["On: each new pad press starts the arp's order",
                                        "and the pattern again from the first step.",
                                        "Off: they carry on where they are."],
+            ArpItem::SwingFrom => vec!["Transport: while the sequencer plays with",
+                                       "swing on, the arp swings with it, on the",
+                                       "sequencer's grid. Arp: always the arp's own",
+                                       "swing (Q-Link 3). Stopped, or with the",
+                                       "sequencer's swing off, it is the arp's own."],
         }
     }
 
@@ -628,6 +664,14 @@ impl App {
             }
             ArpItem::Strum => self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8,
             ArpItem::Retrigger => self.arp.retrigger = d > 0,
+            ArpItem::SwingFrom => {
+                let t = d > 0;
+                if t == self.swing_from_transport {
+                    return Vec::new();
+                }
+                self.swing_from_transport = t;
+                return vec![Effect::Note(format!("arp swing from: {}", if t { "transport" } else { "arp" }))];
+            }
         }
         if self.arp == before && self.scale_root == root {
             return Vec::new();
@@ -638,6 +682,7 @@ impl App {
             ArpItem::Scale | ArpItem::Root => format!("arp scale: {}", self.scale_text()),
             ArpItem::Strum => format!("arp strum: {} %", self.arp.strum),
             ArpItem::Retrigger => format!("arp new notes restart: {}", if self.arp.retrigger { "on" } else { "off" }),
+            ArpItem::SwingFrom => unreachable!("returned above"),
         };
         vec![Effect::Note(note)]
     }
