@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 pub const MAGIC: u32 = 0x4D50_4C48; // "MPLH"
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Events one block carries to the plugin process.
 pub const MAX_EVENTS: usize = 512;
 /// Parameter values the plugin process reports back each block.
@@ -27,6 +27,9 @@ pub const EV_ALL_OFF: u32 = 5;
 pub const EV_PARAM: u32 = 6;
 /// The node was reset (between blocks): the plugin resets before the block.
 pub const EV_RESET: u32 = 7;
+/// A per-note expression: `a` the note, `b` the kind (0 slide, 1 tone, 2
+/// release velocity), `value` its value.
+pub const EV_EXPRESSION: u32 = 8;
 
 /// One event, flattened.
 #[repr(C)]
