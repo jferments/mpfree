@@ -1,6 +1,7 @@
 //! The grain engine's real-time calls must not allocate or free. A counting
 //! global allocator checks that across busy clouds on a region and on a
-//! live buffer: every window, sync, freeze, budget overflow, stop and kill.
+//! live buffer: every window, sync, freeze, budget overflow, stop and kill,
+//! and the effect as an FX-chain node (parameter events, reset).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -11,7 +12,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use mpfree_grain::node::param;
 use mpfree_grain::*;
+use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 
 struct Counting;
 thread_local! {
@@ -57,6 +60,11 @@ fn grains_never_allocate() {
     let mut views = [GrainView::default(); MAX_GRAINS];
     let mut fx = GrainFx::new(rate, 2.0, 9).unwrap();
     fx.set_params(Params { position: 0.9, spray: 0.2, size_ms: 70.0, density: 60.0, spread: 0.8, ..Params::default() });
+    // The node prepares (allocates) before the watch.
+    let mut node = GrainNode::new(5);
+    node.prepare(rate, 128);
+    node.set_param(param::DENSITY, 120.0);
+    let (mut nl, mut nr) = (vec![0.0f32; 128], vec![0.0f32; 128]);
 
     watch(true);
     let mut t = 0u64;
@@ -103,6 +111,17 @@ fn grains_never_allocate() {
         fx.process(&mut budget, t, &mut l[..50], &mut r[..50]);
         fx.process(&mut budget, t + 50, &mut l[50..], &mut r[50..]);
         fx.grains(&mut views);
+        // The node, with parameter events on odd frames and now and then a reset.
+        nl.copy_from_slice(&input[..128]);
+        nr.copy_from_slice(&input[128..]);
+        let events = [
+            Timed::new(period % 128, NodeEvent::Param { id: param::MIX, value: (period % 5) as f32 * 25.0 }),
+            Timed::new(127, NodeEvent::Param { id: param::FREEZE, value: (period % 400 > 200) as u8 as f32 }),
+        ];
+        let events = if events[0].offset <= events[1].offset { &events[..] } else { &events[1..] };
+        node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
+        node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
+        if period % 700 == 699 { node.reset(); }
         t += 128;
     }
     watch(false);
@@ -110,4 +129,5 @@ fn grains_never_allocate() {
     assert!(budget.skipped > 0, "the budget was never full; the test is not busy enough");
     assert!(voices.iter().map(|v| v.stats().spawned).sum::<u64>() > 1000);
     assert!(fx.stats().spawned > 100, "the effect made grains: {:?}", fx.stats());
+    assert!(node.fx().unwrap().stats().spawned > 100, "the node made grains: {:?}", node.fx().unwrap().stats());
 }
