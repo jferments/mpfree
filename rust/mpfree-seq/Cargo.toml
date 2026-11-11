@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-seq"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The time engine's model: tracks, clips of any length and their notes. Plain data, edited on the control thread, compiled by mpfree-play"
+
+[lib]
+name = "mpfree_seq"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }

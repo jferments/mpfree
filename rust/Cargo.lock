@@ -54,6 +54,15 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-play"
+version = "0.1.0"
+dependencies = [
+ "mpfree-sampler",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-render"
 version = "0.1.0"
 dependencies = [
@@ -71,6 +80,13 @@ dependencies = [
 [[package]]
 name = "mpfree-screen-log"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-seq"
+version = "0.1.0"
+dependencies = [
+ "mpfree-transport",
+]
 
 [[package]]
 name = "mpfree-session"
