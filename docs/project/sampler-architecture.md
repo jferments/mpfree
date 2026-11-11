@@ -197,7 +197,7 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 | Peak pyramid | Per channel min, max, RMS as `i16` at block sizes 64, 256, 1024, 4096 frames | `PeakPyramid`, saved as `<source>.peaks` |
 | Onsets | 1024-point FFT, hop 256 (5.8 ms); spectral flux on log-magnitude; adaptive threshold = median over ±8 hops × (1 + sensitivity); peak-picking with a 30 ms minimum gap; refine each onset to the nearest preceding low-energy frame | sorted frame positions with strength (so sensitivity can change without recomputing) |
 | Tempo | Autocorrelation of the onset strength curve over 60-200 BPM, with a preference curve around 90-120 and octave checks; offered, not forced | BPM and confidence |
-| Pitch | YIN on the steadiest 100 ms | root note and cents, with confidence |
+| Pitch | YIN on up to 24 windows of 100 ms within 24 dB of the loudest; voiced windows grouped by note, weighted by loudness × periodicity × steadiness (built: `mpfree_analysis::root_pitch`, also per slice via `SourceAnalysis::pitch_of`) | root note and cents, with confidence |
 | Zero crossings | On demand within ±N frames of a marker | nearest crossing with matching slope |
 | Loudness | Peak, RMS; integrated LUFS later | numbers for normalise |
 
