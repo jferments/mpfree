@@ -12,7 +12,7 @@
 //! a macro card opens the macros panel over the page under the top bar,
 //! with Back in its corner. While the chain editor is open, the Q-Links
 //! default to the selected effect's first four knobs: pass
-//! [`ChainState::qlinks`] to `Bindings::set_page`. This crate is the panel
+//! [`QLINK_PAGE`] and [`ChainState::qlinks`] to `Bindings::set_page`. This crate is the panel
 //! inside whatever area it gets.
 //!
 //! - [`state`]: what the panels show ([`ChainState`], [`MacrosState`]),
@@ -55,6 +55,9 @@ pub const MACROS_PAGE: &str = "macros";
 pub const QLINKS_W: i32 = 168;
 pub const CHAIN_LAYOUT: &str = "col(header:60, row(chain:*, qlinks:168):*, hint:26)";
 pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hint:26)";
+/// The chain editor's page key for `Bindings::set_page`: a Q-Link learned
+/// here stays on the chain editor.
+pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
 pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
 pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to set its range  ·  Back closes";
