@@ -449,6 +449,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-looper"
+version = "0.1.0"
+dependencies = [
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
