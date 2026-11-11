@@ -21,7 +21,11 @@ pub enum TitleFont {
     /// A TrueType/OpenType font. `cap` is its cap height as a fraction of
     /// the font size (the size fontdue is asked for); `tracking` is extra
     /// space between letters, in cap heights (see [`TitleFont::with_tracking`]).
-    File { font: Box<fontdue::Font>, cap: f32, tracking: f32 },
+    File {
+        font: Box<fontdue::Font>,
+        cap: f32,
+        tracking: f32,
+    },
 }
 
 impl TitleFont {
@@ -33,9 +37,16 @@ impl TitleFont {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<TitleFont, String> {
-        let settings = fontdue::FontSettings { scale: 200.0, ..Default::default() };
-        let font = fontdue::Font::from_bytes(bytes, settings).map_err(|e| format!("not a usable font: {e}"))?;
-        if let Some(c) = TITLE.chars().find(|&c| c != ' ' && font.lookup_glyph_index(c) == 0) {
+        let settings = fontdue::FontSettings {
+            scale: 200.0,
+            ..Default::default()
+        };
+        let font = fontdue::Font::from_bytes(bytes, settings)
+            .map_err(|e| format!("not a usable font: {e}"))?;
+        if let Some(c) = TITLE
+            .chars()
+            .find(|&c| c != ' ' && font.lookup_glyph_index(c) == 0)
+        {
             return Err(format!("the font has no {c:?}"));
         }
         // Cap height: the tallest of a few flat-topped capitals, measured
@@ -49,7 +60,11 @@ impl TitleFont {
         if !(0.05..=2.0).contains(&cap) {
             return Err(format!("odd cap height ({cap})"));
         }
-        Ok(TitleFont::File { font: Box::new(font), cap, tracking: 0.0 })
+        Ok(TitleFont::File {
+            font: Box::new(font),
+            cap,
+            tracking: 0.0,
+        })
     }
 
     /// Extra space between letters, in cap heights (negative tightens).
@@ -108,7 +123,13 @@ struct Placed {
 /// Lays out `lines` for a font file at `cap` pixels: each line centred on
 /// its own ink, lines `PITCH * cap` apart. Returns the glyphs and the ink's
 /// bounds (left, top, right, bottom).
-fn place(font: &fontdue::Font, font_cap: f32, tracking: f32, lines: &[&str], cap: f32) -> (Vec<Placed>, (i32, i32, i32, i32)) {
+fn place(
+    font: &fontdue::Font,
+    font_cap: f32,
+    tracking: f32,
+    lines: &[&str],
+    cap: f32,
+) -> (Vec<Placed>, (i32, i32, i32, i32)) {
     let px = cap / font_cap;
     let mut out = Vec::new();
     let mut bounds = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
@@ -128,7 +149,13 @@ fn place(font: &fontdue::Font, font_cap: f32, tracking: f32, lines: &[&str], cap
                 let y = (baseline - (m.ymin + m.height as i32) as f32).round() as i32;
                 lo = lo.min(x);
                 hi = hi.max(x + m.width as i32);
-                out.push(Placed { c, x, y, w: m.width, h: m.height });
+                out.push(Placed {
+                    c,
+                    x,
+                    y,
+                    w: m.width,
+                    h: m.height,
+                });
             }
             pen += m.advance_width;
             prev = Some(c);
@@ -159,9 +186,16 @@ pub fn size(font: &TitleFont, lines: &[&str], cap: f32) -> (usize, usize) {
         TitleFont::Block => {
             let ppu = cap / blockfont::CAP;
             let (w, h) = blockfont::block_size(lines);
-            ((w * ppu).ceil() as usize + 2 * pad, (h * ppu).ceil() as usize + 2 * pad)
+            (
+                (w * ppu).ceil() as usize + 2 * pad,
+                (h * ppu).ceil() as usize + 2 * pad,
+            )
         }
-        TitleFont::File { font, cap: fc, tracking } => {
+        TitleFont::File {
+            font,
+            cap: fc,
+            tracking,
+        } => {
             let (_, (l, t, r, b)) = place(font, *fc, *tracking, lines, cap);
             ((r - l) as usize + 2 * pad, (b - t) as usize + 2 * pad)
         }
@@ -177,7 +211,11 @@ pub fn rasterise(font: &TitleFont, lines: &[&str], cap: f32) -> TitleMask {
             let m = blockfont::rasterise(lines, cap / blockfont::CAP, pad);
             (m.width, m.height, m.coverage, pad as f32)
         }
-        TitleFont::File { font, cap: fc, tracking } => {
+        TitleFont::File {
+            font,
+            cap: fc,
+            tracking,
+        } => {
             let (glyphs, (l, t, rr, b)) = place(font, *fc, *tracking, lines, cap);
             let (w, h) = ((rr - l) as usize + 2 * pad, (b - t) as usize + 2 * pad);
             let mut ink = vec![0.0f32; w * h];
@@ -207,7 +245,12 @@ pub fn rasterise(font: &TitleFont, lines: &[&str], cap: f32) -> TitleMask {
             for dy in -ri..=ri {
                 for dx in -ri..=ri {
                     let (sx, sy) = (x + dx, y + dy);
-                    if dx * dx + dy * dy <= ri * ri + ri && sx >= 0 && sy >= 0 && (sx as usize) < w && (sy as usize) < h {
+                    if dx * dx + dy * dy <= ri * ri + ri
+                        && sx >= 0
+                        && sy >= 0
+                        && (sx as usize) < w
+                        && (sy as usize) < h
+                    {
                         best = best.max(ink[sy as usize * w + sx as usize]);
                     }
                 }
@@ -215,7 +258,15 @@ pub fn rasterise(font: &TitleFont, lines: &[&str], cap: f32) -> TitleMask {
             halo[y as usize * w + x as usize] = best;
         }
     }
-    TitleMask { width: w, height: h, ink, halo, cap_top, cap, pitch: PITCH * cap }
+    TitleMask {
+        width: w,
+        height: h,
+        ink,
+        halo,
+        cap_top,
+        cap,
+        pitch: PITCH * cap,
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +276,11 @@ mod tests {
     fn check(font: &TitleFont) {
         for cap in [6.0, 12.0, 21.5, 40.0] {
             let m = rasterise(font, &["MPCFree", "OS v0.1"], cap);
-            assert_eq!((m.width, m.height), size(font, &["MPCFree", "OS v0.1"], cap), "{cap}");
+            assert_eq!(
+                (m.width, m.height),
+                size(font, &["MPCFree", "OS v0.1"], cap),
+                "{cap}"
+            );
             assert!(m.halo.iter().zip(&m.ink).all(|(h, i)| h >= i));
             assert!(m.halo.iter().sum::<f32>() > m.ink.iter().sum::<f32>() * 1.1);
             assert!(m.cap_top >= 1.0 && m.cap_top < m.height as f32);
@@ -251,12 +306,20 @@ mod tests {
             return;
         };
         let font = TitleFont::load(path).unwrap();
-        let TitleFont::File { cap, .. } = &font else { unreachable!() };
-        assert!((0.6..0.8).contains(cap), "DejaVu's cap height is about 0.73 em, got {cap}");
+        let TitleFont::File { cap, .. } = &font else {
+            unreachable!()
+        };
+        assert!(
+            (0.6..0.8).contains(cap),
+            "DejaVu's cap height is about 0.73 em, got {cap}"
+        );
         check(&font);
         check(&font.clone().with_tracking(0.3));
         let wide = size(&font.clone().with_tracking(0.3), &["MPCFree"], 30.0).0;
-        assert!(wide > size(&font, &["MPCFree"], 30.0).0 + 6 * 8, "tracking adds 0.3 cap between 7 letters");
+        assert!(
+            wide > size(&font, &["MPCFree"], 30.0).0 + 6 * 8,
+            "tracking adds 0.3 cap between 7 letters"
+        );
         // The first line's capitals start at cap_top: the row above is blank.
         let m = rasterise(&font, &["MPCFree"], 30.0);
         let row = |y: usize| m.ink[y * m.width..(y + 1) * m.width].iter().sum::<f32>();

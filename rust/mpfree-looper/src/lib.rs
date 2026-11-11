@@ -241,13 +241,19 @@ impl Index<usize> for LayerView<'_> {
     type Output = f32;
 
     fn index(&self, i: usize) -> &f32 {
-        assert!(i < 2 * self.len, "sample {i} of a layer of {} frames", self.len);
+        assert!(
+            i < 2 * self.len,
+            "sample {i} of a layer of {} frames",
+            self.len
+        );
         let q = i / 2;
         let (start, count) = self.valid;
         if (q + self.len - start) % self.len >= count {
             return &SILENCE;
         }
-        self.store.sample(self.lp, self.slot, q, i % 2).unwrap_or(&SILENCE)
+        self.store
+            .sample(self.lp, self.slot, q, i % 2)
+            .unwrap_or(&SILENCE)
     }
 }
 
@@ -280,7 +286,11 @@ struct Act {
     index: u8,
 }
 
-const NO_ACT: Act = Act { deleted: false, slot: 0, index: 0 };
+const NO_ACT: Act = Act {
+    deleted: false,
+    slot: 0,
+    index: 0,
+};
 
 /// A layer's place in its loop and its mix. Its audio is in the store.
 #[derive(Clone, Copy, Debug)]
@@ -301,15 +311,27 @@ struct Slot {
 }
 
 impl Slot {
-    const NEW: Slot =
-        Slot { valid: (0, 0), level: 1.0, pan: 0.0, mute: false, solo: false, gl: 1.0, gr: 1.0, presence: 1.0, leaving: false };
+    const NEW: Slot = Slot {
+        valid: (0, 0),
+        level: 1.0,
+        pan: 0.0,
+        mute: false,
+        solo: false,
+        gl: 1.0,
+        gr: 1.0,
+        presence: 1.0,
+        leaving: false,
+    };
 
     /// The gains the settings ask for.
     fn target(&self, any_solo: bool) -> (f32, f32) {
         if self.mute || (any_solo && !self.solo) {
             return (0.0, 0.0);
         }
-        (self.level * (1.0 - self.pan).min(1.0), self.level * (1.0 + self.pan).min(1.0))
+        (
+            self.level * (1.0 - self.pan).min(1.0),
+            self.level * (1.0 + self.pan).min(1.0),
+        )
     }
 }
 
@@ -379,7 +401,8 @@ impl Store {
     }
 
     fn get(&self, lp: usize, slot: usize, q: usize) -> [f32; 2] {
-        self.at(lp, slot, q).map_or([0.0; 2], |i| [self.pool[i], self.pool[i + 1]])
+        self.at(lp, slot, q)
+            .map_or([0.0; 2], |i| [self.pool[i], self.pool[i + 1]])
     }
 
     fn set(&mut self, lp: usize, slot: usize, q: usize, x: [f32; 2]) {
@@ -646,7 +669,8 @@ impl Looper {
 
     /// The selected loop.
     pub fn status(&self) -> Status {
-        self.loop_status(self.selected).expect("the selected loop is there")
+        self.loop_status(self.selected)
+            .expect("the selected loop is there")
     }
 
     /// Loop `n`, or None past [`MAX_LOOPS`].
@@ -660,7 +684,11 @@ impl Looper {
             frames: l.len,
             ticks: l.len_ticks,
             origin: l.origin,
-            position: if l.len > 0 { (l.pos / l.len as f64) as f32 } else { 0.0 },
+            position: if l.len > 0 {
+                (l.pos / l.len as f64) as f32
+            } else {
+                0.0
+            },
             ending: l.ending,
             overdub_next: l.then_overdub,
             latency: l.latency,
@@ -673,7 +701,10 @@ impl Looper {
 
     /// The memory gauge.
     pub fn memory(&self) -> Memory {
-        Memory { used: (self.store.n_blocks - self.store.n_free) * BLOCK, capacity: self.capacity }
+        Memory {
+            used: (self.store.n_blocks - self.store.n_free) * BLOCK,
+            capacity: self.capacity,
+        }
     }
 
     /// Layer `k` of the selected loop, counting in play order: its audio,
@@ -687,7 +718,13 @@ impl Looper {
         let l = self.loops.get(n)?;
         let slot = l.listed(k)?;
         let valid = l.slots[slot].valid;
-        (l.len > 0).then_some(LayerView { store: &self.store, lp: n, slot, len: l.len, valid })
+        (l.len > 0).then_some(LayerView {
+            store: &self.store,
+            lp: n,
+            slot,
+            len: l.len,
+            valid,
+        })
     }
 
     /// Layer `k` of the selected loop's id and mix, counting in play order.
@@ -717,14 +754,23 @@ impl Looper {
     /// interleaved stereo with `block.frames` frames. The loops are added
     /// to `out`; nothing else is changed.
     pub fn process(&mut self, block: &Block, input: &[f32], out: &mut [f32]) {
-        let n = (block.frames as usize).min(input.len() / 2).min(out.len() / 2);
+        let n = (block.frames as usize)
+            .min(input.len() / 2)
+            .min(out.len() / 2);
         self.apply_commands();
-        let Looper { store, loops, stats, .. } = self;
+        let Looper {
+            store,
+            loops,
+            stats,
+            ..
+        } = self;
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
             let bar = span.meter.bar_ticks();
-            let watch_bars = loops.iter().any(|l| matches!(l.phase, Phase::Armed | Phase::Recording));
+            let watch_bars = loops
+                .iter()
+                .any(|l| matches!(l.phase, Phase::Armed | Phase::Recording));
             let mut lines = span.lines(bar);
             let mut next = if watch_bars { lines.next() } else { None };
             // Playing or recording: the loops sound. Counting in: the clock
@@ -770,7 +816,13 @@ impl Looper {
                     *t = span.tick_at(f + j as u64);
                 }
                 let mut ys = [[0.0f32; 2]; RUN];
-                let run = Run { from: i, ticks: &ticks[..frames], input: &input[2 * off..2 * (off + frames)], f, playing };
+                let run = Run {
+                    from: i,
+                    ticks: &ticks[..frames],
+                    input: &input[2 * off..2 * (off + frames)],
+                    f,
+                    playing,
+                };
                 for (k, l) in loops.iter_mut().enumerate() {
                     l.run(store, stats, k, &run, &mut ys[..frames]);
                 }
@@ -872,27 +924,43 @@ impl Looper {
 impl Loop {
     /// Layers in play order, not counting ones fading away.
     fn layers(&self) -> usize {
-        self.order[..self.in_order].iter().filter(|&&k| !self.slots[k as usize].leaving).count()
+        self.order[..self.in_order]
+            .iter()
+            .filter(|&&k| !self.slots[k as usize].leaving)
+            .count()
     }
 
     /// The slot of the `k`th layer not fading away.
     fn listed(&self, k: usize) -> Option<usize> {
-        self.order[..self.in_order].iter().map(|&s| s as usize).filter(|&s| !self.slots[s].leaving).nth(k)
+        self.order[..self.in_order]
+            .iter()
+            .map(|&s| s as usize)
+            .filter(|&s| !self.slots[s].leaving)
+            .nth(k)
     }
 
     fn any_solo(&self) -> bool {
-        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].solo && !self.slots[k as usize].leaving)
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| self.slots[k as usize].solo && !self.slots[k as usize].leaving)
     }
 
     /// Whether `slot` is playing, or Undo or Redo can bring it back.
     fn holds(&self, slot: usize) -> bool {
-        self.live(slot) || self.undone[..self.n_undone].iter().any(|a| a.slot as usize == slot)
+        self.live(slot)
+            || self.undone[..self.n_undone]
+                .iter()
+                .any(|a| a.slot as usize == slot)
     }
 
     /// Whether `slot` is playing, or Undo can bring it back.
     fn live(&self, slot: usize) -> bool {
-        self.order[..self.in_order].iter().any(|&k| k as usize == slot)
-            || self.done[..self.n_done].iter().any(|a| a.slot as usize == slot)
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| k as usize == slot)
+            || self.done[..self.n_done]
+                .iter()
+                .any(|a| a.slot as usize == slot)
     }
 
     /// The first pass is being recorded into slot 0.
@@ -903,7 +971,9 @@ impl Loop {
     /// Give back the memory of every slot that can no longer come back.
     fn reclaim(&self, store: &mut Store, me: usize) {
         for k in 0..MAX_LAYERS {
-            let in_use = self.holds(k) || (k == 0 && self.first_in_progress()) || (self.od_open && self.od_layer == k);
+            let in_use = self.holds(k)
+                || (k == 0 && self.first_in_progress())
+                || (self.od_open && self.od_layer == k);
             if !in_use && store.held[me][k] > 0 {
                 store.release(me, k);
             }
@@ -915,19 +985,27 @@ impl Loop {
             Queued::Loop(Command::Undo) => self.leaving() || self.clearing,
             // A new overdub waits while the last one's tail is written, so
             // that tail still fades out.
-            Queued::Loop(Command::Record | Command::Overdub) if self.od_open && self.phase == Phase::Playing => true,
+            Queued::Loop(Command::Record | Command::Overdub)
+                if self.od_open && self.phase == Phase::Playing =>
+            {
+                true
+            }
             _ => self.fading() || self.clearing,
         }
     }
 
     /// A layer is fading out of the play order.
     fn leaving(&self) -> bool {
-        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].leaving)
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| self.slots[k as usize].leaving)
     }
 
     /// A layer is fading in or out.
     fn fading(&self) -> bool {
-        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].leaving || self.slots[k as usize].presence < 1.0)
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| self.slots[k as usize].leaving || self.slots[k as usize].presence < 1.0)
     }
 
     /// Move the loop's position on a frame; `tick` is that frame's song
@@ -964,7 +1042,14 @@ impl Loop {
         }
     }
 
-    fn apply_layer(&mut self, store: &mut Store, stats: &mut Stats, me: usize, id: u8, c: LayerCommand) {
+    fn apply_layer(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        id: u8,
+        c: LayerCommand,
+    ) {
         self.mixing = true;
         let slot = id as usize;
         let at = self.order[..self.in_order].iter().position(|&k| k == id);
@@ -980,10 +1065,16 @@ impl Loop {
             LayerCommand::Mute(m) => s.mute = m,
             LayerCommand::Solo(o) => s.solo = o,
             // The overdub being recorded is thrown away, as Undo does.
-            LayerCommand::Delete if self.od_open && self.od_layer == slot => self.apply(store, stats, me, Command::Undo),
+            LayerCommand::Delete if self.od_open && self.od_layer == slot => {
+                self.apply(store, stats, me, Command::Undo)
+            }
             LayerCommand::Delete if self.layers() > 1 => {
                 self.n_undone = 0;
-                self.push_done(Act { deleted: true, slot: id, index: at as u8 });
+                self.push_done(Act {
+                    deleted: true,
+                    slot: id,
+                    index: at as u8,
+                });
                 self.slots[slot].leaving = true;
             }
             LayerCommand::Delete => {}
@@ -1000,7 +1091,9 @@ impl Loop {
                 }
                 Phase::Armed => self.phase = Phase::Empty,
                 Phase::Recording => self.ending = true,
-                Phase::Playing | Phase::Overdubbing => self.apply(store, stats, me, Command::Overdub),
+                Phase::Playing | Phase::Overdubbing => {
+                    self.apply(store, stats, me, Command::Overdub)
+                }
             },
             Command::Overdub => match self.phase {
                 Phase::Playing => self.open_overdub(store, stats, me, FADE),
@@ -1018,7 +1111,10 @@ impl Loop {
                     self.phase = Phase::Playing;
                     let slot = self.od_layer;
                     if !self.drop_empty_overdub() {
-                        if let Some(i) = self.done[..self.n_done].iter().rposition(|a| !a.deleted && a.slot as usize == slot) {
+                        if let Some(i) = self.done[..self.n_done]
+                            .iter()
+                            .rposition(|a| !a.deleted && a.slot as usize == slot)
+                        {
                             let a = self.take_done(i);
                             self.push_undone(a);
                         }
@@ -1044,7 +1140,13 @@ impl Loop {
             Command::Mute(m) => self.muted = m,
             Command::SetBars(b) => self.bars = b.filter(|&b| b > 0),
             Command::SetLatency(l) => self.latency = l,
-            Command::SetLevel(v) => self.level = if v.is_finite() { v.clamp(0.0, 2.0) } else { self.level },
+            Command::SetLevel(v) => {
+                self.level = if v.is_finite() {
+                    v.clamp(0.0, 2.0)
+                } else {
+                    self.level
+                }
+            }
         }
     }
 
@@ -1154,7 +1256,9 @@ impl Loop {
         match mark {
             // The transport looped back at `end`: if that is where the pass
             // ends (or Record asked for the next bar), it ends here.
-            Mark::Looped { end, .. } if self.end_tick == Some(end) || (self.ending && self.end_tick.is_none()) => {
+            Mark::Looped { end, .. }
+                if self.end_tick == Some(end) || (self.ending && self.end_tick.is_none()) =>
+            {
                 self.end_tick = Some(end);
                 self.finish_first(store, stats, me, end, frame);
             }
@@ -1167,7 +1271,15 @@ impl Loop {
         }
     }
 
-    fn bar_line(&mut self, store: &mut Store, stats: &mut Stats, me: usize, span: &Span, t: Tick, f: u64) {
+    fn bar_line(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        span: &Span,
+        t: Tick,
+        f: u64,
+    ) {
         match self.phase {
             Phase::Recording if t > self.origin && (self.end_tick == Some(t) || self.ending) => {
                 self.finish_first(store, stats, me, t, f);
@@ -1200,7 +1312,10 @@ impl Loop {
         self.len_ticks = t - self.origin;
         self.order[0] = 0;
         self.in_order = 1;
-        self.slots[0] = Slot { valid: (0, len), ..Slot::NEW };
+        self.slots[0] = Slot {
+            valid: (0, len),
+            ..Slot::NEW
+        };
         self.n_done = 0;
         self.n_undone = 0;
         self.ending = false;
@@ -1215,7 +1330,14 @@ impl Loop {
 
     /// The first pass's writer: frame `f`'s input belongs `latency` frames
     /// earlier, so the loop's frame `j` is written at `start + latency + j`.
-    fn write_first(&mut self, store: &mut Store, stats: &mut Stats, me: usize, f: u64, x: [f32; 2]) {
+    fn write_first(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        f: u64,
+        x: [f32; 2],
+    ) {
         let before = match self.phase {
             Phase::Armed => true,
             _ if self.first_open => f < self.start_frame + u64::from(self.rec_latency),
@@ -1258,7 +1380,10 @@ impl Loop {
             let p = FADE - fade + k;
             let idx = self.len - fade + k;
             let a = store.get(me, 0, idx);
-            let y = [a[0] * (1.0 - w) + self.pre[2 * p] * w, a[1] * (1.0 - w) + self.pre[2 * p + 1] * w];
+            let y = [
+                a[0] * (1.0 - w) + self.pre[2 * p] * w,
+                a[1] * (1.0 - w) + self.pre[2 * p + 1] * w,
+            ];
             store.set(me, 0, idx, y);
         }
     }
@@ -1272,8 +1397,10 @@ impl Loop {
         let need = blocks_for(self.len);
         loop {
             // Blocks free now, plus what dropping redo would give back.
-            let redo_blocks: usize =
-                (0..MAX_LAYERS).filter(|&k| !self.live(k)).map(|k| store.held[me][k] as usize).sum();
+            let redo_blocks: usize = (0..MAX_LAYERS)
+                .filter(|&k| !self.live(k))
+                .map(|k| store.held[me][k] as usize)
+                .sum();
             let slot = (0..MAX_LAYERS).find(|&k| !self.live(k));
             if let Some(k) = slot.filter(|_| store.n_free + redo_blocks >= need) {
                 self.n_undone = 0;
@@ -1296,7 +1423,11 @@ impl Loop {
         };
         self.slots[k] = Slot::NEW;
         self.order[self.in_order] = k as u8;
-        self.push_done(Act { deleted: false, slot: k as u8, index: self.in_order as u8 });
+        self.push_done(Act {
+            deleted: false,
+            slot: k as u8,
+            index: self.in_order as u8,
+        });
         self.in_order += 1;
         self.od_open = true;
         self.od_layer = k;
@@ -1323,10 +1454,16 @@ impl Loop {
         if self.slots[k].valid.1 != 0 {
             return false;
         }
-        if let Some(at) = self.order[..self.in_order].iter().position(|&s| s as usize == k) {
+        if let Some(at) = self.order[..self.in_order]
+            .iter()
+            .position(|&s| s as usize == k)
+        {
             self.remove_at(at);
         }
-        if let Some(i) = self.done[..self.n_done].iter().rposition(|a| !a.deleted && a.slot as usize == k) {
+        if let Some(i) = self.done[..self.n_done]
+            .iter()
+            .rposition(|a| !a.deleted && a.slot as usize == k)
+        {
             self.take_done(i);
         }
         true
@@ -1365,7 +1502,11 @@ impl Loop {
 
     fn write_overdub(&mut self, store: &mut Store, me: usize, x: [f32; 2]) {
         let len = self.len;
-        let mut g = if self.od_in < self.od_fade { (self.od_in as f32 + 0.5) / self.od_fade as f32 } else { 1.0 };
+        let mut g = if self.od_in < self.od_fade {
+            (self.od_in as f32 + 0.5) / self.od_fade as f32
+        } else {
+            1.0
+        };
         self.od_in += 1;
         let mut last = false;
         match self.od_stop_in {
@@ -1377,7 +1518,10 @@ impl Loop {
             Some(left) => self.od_stop_in = Some(left - 1),
             None => {}
         }
-        let q = ((self.pos - f64::from(self.latency)).rem_euclid(len as f64).round() as usize) % len;
+        let q = ((self.pos - f64::from(self.latency))
+            .rem_euclid(len as f64)
+            .round() as usize)
+            % len;
         let k = self.od_layer;
         let (start, count) = self.slots[k].valid;
         let y = [x[0] * g, x[1] * g];
@@ -1398,7 +1542,14 @@ impl Loop {
     /// The loop's part of a run: each frame's output is added to `ys`.
     /// Frame by frame while anything moves (writers, fades, a jump); once
     /// the loop is still, the rest of the run in one go.
-    fn run(&mut self, store: &mut Store, stats: &mut Stats, me: usize, r: &Run, ys: &mut [[f32; 2]]) {
+    fn run(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        r: &Run,
+        ys: &mut [[f32; 2]],
+    ) {
         for j in 0..ys.len() {
             if self.phase == Phase::Empty {
                 return;
@@ -1470,8 +1621,16 @@ impl Loop {
                 if !in0 && !in1 {
                     continue;
                 }
-                let a = if in0 { store.frame(blocks, i0 / BLOCK, i0 % BLOCK) } else { [0.0; 2] };
-                let b = if in1 { store.frame(blocks, i1 / BLOCK, i1 % BLOCK) } else { [0.0; 2] };
+                let a = if in0 {
+                    store.frame(blocks, i0 / BLOCK, i0 % BLOCK)
+                } else {
+                    [0.0; 2]
+                };
+                let b = if in1 {
+                    store.frame(blocks, i1 / BLOCK, i1 % BLOCK)
+                } else {
+                    [0.0; 2]
+                };
                 for c in 0..2 {
                     acc[j][c] += g[c] * (a[c] + (b[c] - a[c]) * fracs[j]);
                 }
@@ -1572,8 +1731,16 @@ impl Loop {
                 continue;
             }
             let blocks = store.blocks_of(me, k);
-            let a = if in0 { store.frame(blocks, b0, o0) } else { [0.0; 2] };
-            let b = if in1 { store.frame(blocks, b1, o1) } else { [0.0; 2] };
+            let a = if in0 {
+                store.frame(blocks, b0, o0)
+            } else {
+                [0.0; 2]
+            };
+            let b = if in1 {
+                store.frame(blocks, b1, o1)
+            } else {
+                [0.0; 2]
+            };
             for (c, v) in y.iter_mut().enumerate() {
                 *v += g[c] * (a[c] + (b[c] - a[c]) * frac);
             }
@@ -1605,14 +1772,31 @@ mod tests {
             let sign = if next() % 2 == 0 { 1.0 } else { -1.0 };
             let x = sign * unit * scale;
             let k = (next() % 1000) as f64 * sign;
-            for x in [x, k * y, f64::from_bits((k * y).to_bits() + 1), f64::from_bits((k * y).to_bits().saturating_sub(1)), x / 7.0] {
+            for x in [
+                x,
+                k * y,
+                f64::from_bits((k * y).to_bits() + 1),
+                f64::from_bits((k * y).to_bits().saturating_sub(1)),
+                x / 7.0,
+            ] {
                 let (a, b) = (rem_ticks(x, y), x.rem_euclid(y));
                 assert_eq!(a.to_bits(), b.to_bits(), "{x} rem {y}: {a} against {b}");
                 checked += 1;
             }
         }
-        for (x, y) in [(0.0, 3840.0), (-0.0, 3840.0), (-1e-300, 7680.0), (f64::from_bits(3840.0f64.to_bits() - 1), 3840.0), (2.5e9, 3840.0), (-2.5e9, 3.0)] {
-            assert_eq!(rem_ticks(x, y).to_bits(), x.rem_euclid(y).to_bits(), "{x} rem {y}");
+        for (x, y) in [
+            (0.0, 3840.0),
+            (-0.0, 3840.0),
+            (-1e-300, 7680.0),
+            (f64::from_bits(3840.0f64.to_bits() - 1), 3840.0),
+            (2.5e9, 3840.0),
+            (-2.5e9, 3.0),
+        ] {
+            assert_eq!(
+                rem_ticks(x, y).to_bits(),
+                x.rem_euclid(y).to_bits(),
+                "{x} rem {y}"
+            );
         }
         assert_eq!(checked, 1_000_000);
     }

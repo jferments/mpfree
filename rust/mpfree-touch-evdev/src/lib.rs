@@ -38,7 +38,11 @@ use mpfree_touch::profile::TouchProfile;
 use mpfree_touch::{ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID};
 
 /// `struct input_event`: 16 bytes on the MPC's 32-bit ARM, 24 on a 64-bit host.
-pub const EVENT_SIZE: usize = if cfg!(target_pointer_width = "32") { 16 } else { 24 };
+pub const EVENT_SIZE: usize = if cfg!(target_pointer_width = "32") {
+    16
+} else {
+    24
+};
 
 /// The MPC One's touchscreen node (M10).
 pub const MPC_ONE_TOUCH: &str = "/dev/input/event0";
@@ -93,7 +97,10 @@ pub struct EvdevFile {
 
 impl EvdevFile {
     pub fn open(path: &str) -> io::Result<EvdevFile> {
-        let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(sys::O_NONBLOCK)
+            .open(path)?;
         Ok(EvdevFile { file })
     }
 
@@ -114,7 +121,9 @@ impl EvdevFile {
     /// touches to the wrong place.
     pub fn check_profile(&self, profile: &TouchProfile) -> Result<(), String> {
         let range = |code: u8| -> Result<(i32, i32), String> {
-            let a = self.abs(code).map_err(|e| format!("EVIOCGABS({code}): {e}"))?;
+            let a = self
+                .abs(code)
+                .map_err(|e| format!("EVIOCGABS({code}): {e}"))?;
             Ok((a.minimum, a.maximum))
         };
         let x = range(ABS_MT_POSITION_X)?;
@@ -147,7 +156,11 @@ impl TouchSource for EvdevFile {
         Ok(MtSnapshot {
             current_slot,
             slots: (0..slots)
-                .map(|i| SlotSnapshot { tracking_id: ids[i], raw_x: xs[i], raw_y: ys[i] })
+                .map(|i| SlotSnapshot {
+                    tracking_id: ids[i],
+                    raw_x: xs[i],
+                    raw_y: ys[i],
+                })
                 .collect(),
         })
     }
@@ -191,9 +204,15 @@ pub type EvdevTouch = TouchReader<EvdevFile>;
 impl EvdevTouch {
     /// Open the touchscreen at `path`, check it against `profile`, and seed
     /// the decoder. `width`×`height` is the logical screen.
-    pub fn open(path: &str, profile: &TouchProfile, width: u32, height: u32) -> Result<EvdevTouch, String> {
+    pub fn open(
+        path: &str,
+        profile: &TouchProfile,
+        width: u32,
+        height: u32,
+    ) -> Result<EvdevTouch, String> {
         let dev = EvdevFile::open(path).map_err(|e| format!("{path}: {e}"))?;
-        dev.check_profile(profile).map_err(|e| format!("{path}: {e}"))?;
+        dev.check_profile(profile)
+            .map_err(|e| format!("{path}: {e}"))?;
         TouchReader::new(dev, profile, width, height).map_err(|e| format!("{path}: {e}"))
     }
 }
@@ -220,12 +239,22 @@ impl<S: TouchSource> TouchReader<S> {
                 decoder.seed(&snap, 0);
                 stats.seeded = true;
                 stats.slot_at_open = snap.current_slot;
-                stats.fingers_at_open = snap.slots.iter().filter(|s| s.tracking_id >= 0).count() as u32;
+                stats.fingers_at_open =
+                    snap.slots.iter().filter(|s| s.tracking_id >= 0).count() as u32;
                 None
             }
-            Err(e) => Some(format!("touch snapshot at open failed, running unseeded: {e}")),
+            Err(e) => Some(format!(
+                "touch snapshot at open failed, running unseeded: {e}"
+            )),
         };
-        Ok(Self { source, decoder, map, buf, stats, seed_error })
+        Ok(Self {
+            source,
+            decoder,
+            map,
+            buf,
+            stats,
+            seed_error,
+        })
     }
 
     pub fn stats(&self) -> ReaderStats {

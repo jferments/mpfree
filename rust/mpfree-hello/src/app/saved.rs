@@ -23,8 +23,12 @@ pub fn control_key(name: &str) -> String {
     match name {
         "-" => "minus".to_string(),
         "+" => "plus".to_string(),
-        _ => name.to_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty())
-            .collect::<Vec<_>>().join("-"),
+        _ => name
+            .to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-"),
     }
 }
 
@@ -60,7 +64,14 @@ impl App {
         let mut out = Settings::default();
         out.set_str("pad-curve", curve_key(s.curve));
         out.set_i64("screen-velocity", s.screen_velocity as i64);
-        out.set_str("latch-keeps-pads", if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" });
+        out.set_str(
+            "latch-keeps-pads",
+            if s.latch_mode == LatchMode::Toggle {
+                "toggle"
+            } else {
+                "replace"
+            },
+        );
         out.set_i64("audio-buffer", s.periods as i64);
         out.set_bool("developer-tools", s.debug_mode);
         out
@@ -94,20 +105,33 @@ impl App {
         let s = &mut self.settings;
         for (k, v) in app.iter() {
             let ok = match k {
-                "pad-curve" => Curve::ALL.iter().find(|&&c| curve_key(c) == v).map(|&c| s.curve = c).is_some(),
-                "screen-velocity" => app.get_i64(k).filter(|n| (10..=127).contains(n))
-                    .map(|n| s.screen_velocity = n as u8).is_some(),
+                "pad-curve" => Curve::ALL
+                    .iter()
+                    .find(|&&c| curve_key(c) == v)
+                    .map(|&c| s.curve = c)
+                    .is_some(),
+                "screen-velocity" => app
+                    .get_i64(k)
+                    .filter(|n| (10..=127).contains(n))
+                    .map(|n| s.screen_velocity = n as u8)
+                    .is_some(),
                 "latch-keeps-pads" => match v {
                     "replace" => Some(LatchMode::Replace),
                     "toggle" => Some(LatchMode::Toggle),
                     _ => None,
-                }.map(|m| s.latch_mode = m).is_some(),
-                "audio-buffer" => app.get_i64(k).filter(|n| (2..=3).contains(n)).map(|n| {
-                    s.periods = n as u32;
-                    if !s.loop_latency_set {
-                        s.loop_latency = crate::looping::estimated_latency(s.periods);
-                    }
-                }).is_some(),
+                }
+                .map(|m| s.latch_mode = m)
+                .is_some(),
+                "audio-buffer" => app
+                    .get_i64(k)
+                    .filter(|n| (2..=3).contains(n))
+                    .map(|n| {
+                        s.periods = n as u32;
+                        if !s.loop_latency_set {
+                            s.loop_latency = crate::looping::estimated_latency(s.periods);
+                        }
+                    })
+                    .is_some(),
                 "developer-tools" => app.get_bool(k).map(|b| s.debug_mode = b).is_some(),
                 _ => false,
             };
@@ -123,7 +147,9 @@ impl App {
         }
         let (mut found, mut gone) = (0, 0);
         for (k, v) in map.iter() {
-            let Some(i) = CONTROLS.iter().position(|c| control_key(c.name) == k && !matches!(c.job, Job::Fixed(_)))
+            let Some(i) = CONTROLS
+                .iter()
+                .position(|c| control_key(c.name) == k && !matches!(c.job, Job::Fixed(_)))
             else {
                 skipped.push(format!("{k} = {v}"));
                 continue;
@@ -147,10 +173,16 @@ impl App {
             }
         }
         if !map.is_empty() {
-            notes.push(format!("saved buttons: {found} found, {gone} skipped ({})", self.map.describe()));
+            notes.push(format!(
+                "saved buttons: {found} found, {gone} skipped ({})",
+                self.map.describe()
+            ));
         }
         if !skipped.is_empty() {
-            notes.push(format!("saved settings left out (not understood): {}", skipped.join(", ")));
+            notes.push(format!(
+                "saved settings left out (not understood): {}",
+                skipped.join(", ")
+            ));
         }
         // What was just read is what the store holds: nothing to save yet.
         self.saved = [self.app_settings().to_text(), self.map_settings().to_text()];
@@ -166,7 +198,10 @@ impl App {
         }
         self.save_dirty = false;
         let mut out = Vec::new();
-        for (slot, (owner, settings)) in [(APP, self.app_settings()), (MAP, self.map_settings())].into_iter().enumerate() {
+        for (slot, (owner, settings)) in [(APP, self.app_settings()), (MAP, self.map_settings())]
+            .into_iter()
+            .enumerate()
+        {
             let text = settings.to_text();
             if text != self.saved[slot] {
                 self.saved[slot] = text;
@@ -192,7 +227,8 @@ mod tests {
         for c in CONTROLS.iter() {
             assert!(mpfree_store::valid_key(&control_key(c.name)), "{}", c.name);
         }
-        let keys: std::collections::HashSet<String> = CONTROLS.iter().map(|c| control_key(c.name)).collect();
+        let keys: std::collections::HashSet<String> =
+            CONTROLS.iter().map(|c| control_key(c.name)).collect();
         assert_eq!(keys.len(), CONTROLS.len());
     }
 
@@ -200,7 +236,10 @@ mod tests {
     fn prefs_and_buttons_come_back_as_they_were() {
         let mut a = App::new(44_100, false);
         a.restore(&Settings::default(), &Settings::default());
-        assert!(a.take_saves().is_empty(), "nothing changed, nothing to save");
+        assert!(
+            a.take_saves().is_empty(),
+            "nothing changed, nothing to save"
+        );
         a.open_tab(crate::app::View::Prefs);
         let row = |a: &App, item: Item| a.items().iter().position(|&i| i == item).unwrap();
         let r = row(&a, Item::Curve);
@@ -210,11 +249,15 @@ mod tests {
         let r = row(&a, Item::DebugMode);
         a.step_item(r, 1);
         a.map.learn(Job::Rec, Some(73));
-        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "ERASE").unwrap()] = Mark::Found(Code::Button(52));
+        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "ERASE").unwrap()] =
+            Mark::Found(Code::Button(52));
         a.mapper.marks[CONTROLS.iter().position(|c| c.name == "TC").unwrap()] = Mark::Skipped;
         a.save_dirty = true;
         let saves = a.take_saves();
-        assert_eq!(saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(), vec![APP, MAP]);
+        assert_eq!(
+            saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+            vec![APP, MAP]
+        );
         assert!(a.take_saves().is_empty());
         let (app, map) = (saves[0].1.clone(), saves[1].1.clone());
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
@@ -222,15 +265,27 @@ mod tests {
         assert_eq!(map.get_str("rec"), Some("button 73"));
         assert_eq!(map.get_str("erase"), Some("button 52"));
         assert_eq!(map.get_str("tc"), Some("skipped"));
-        assert_eq!(map.get_str("menu"), Some(&*format!("button {}", button::MENU)));
+        assert_eq!(
+            map.get_str("menu"),
+            Some(&*format!("button {}", button::MENU))
+        );
         assert_eq!(map.get_str("stop"), None, "measured constants are not kept");
 
         let mut b = App::new(44_100, false);
-        let notes = b.restore(&Settings::parse(&app.to_text()), &Settings::parse(&map.to_text()));
-        assert_eq!((b.settings.curve, b.settings.periods, b.settings.debug_mode), (a.settings.curve, 2, true));
+        let notes = b.restore(
+            &Settings::parse(&app.to_text()),
+            &Settings::parse(&map.to_text()),
+        );
+        assert_eq!(
+            (b.settings.curve, b.settings.periods, b.settings.debug_mode),
+            (a.settings.curve, 2, true)
+        );
         assert_eq!(b.map.rec, Some(73));
         assert_eq!(b.map_settings(), map);
-        assert!(notes[0].starts_with("saved settings: pad curve "), "{notes:?}");
+        assert!(
+            notes[0].starts_with("saved settings: pad curve "),
+            "{notes:?}"
+        );
         assert!(notes[1].starts_with("saved buttons: "), "{notes:?}");
         assert!(!b.settings.line_input, "line input is never kept");
         assert!(b.take_saves().is_empty());
@@ -239,14 +294,22 @@ mod tests {
     #[test]
     fn what_is_not_understood_is_left_out() {
         let mut a = App::new(44_100, false);
-        let notes = a.restore(&Settings::parse("audio-buffer = 9\npad-curve = loud\nline-input = true\n"),
-                              &Settings::parse("rec = cc 300\nstop = button 1\nnowhere = button 3\n"));
+        let notes = a.restore(
+            &Settings::parse("audio-buffer = 9\npad-curve = loud\nline-input = true\n"),
+            &Settings::parse("rec = cc 300\nstop = button 1\nnowhere = button 3\n"),
+        );
         assert_eq!(a.settings.periods, 3);
         assert!(!a.settings.line_input);
         assert_eq!(a.map.rec, None);
         let last = notes.last().unwrap();
-        for bad in ["audio-buffer = 9", "pad-curve = loud", "line-input = true", "rec = cc 300", "stop = button 1",
-                    "nowhere = button 3"] {
+        for bad in [
+            "audio-buffer = 9",
+            "pad-curve = loud",
+            "line-input = true",
+            "rec = cc 300",
+            "stop = button 1",
+            "nowhere = button 3",
+        ] {
             assert!(last.contains(bad), "{last}");
         }
     }

@@ -103,11 +103,29 @@ fn commands_and_periods_never_allocate() {
         // The first pass (2 bars, about 250 periods) and the first
         // overdubs run undisturbed; then the transport moves around.
         match if i < 600 { 0 } else { i % 500 } {
-            100 => { let _ = t.command(f + 3, T::Locate((i as i64 * 37) % 9000)); }
-            200 => { let _ = t.command(f + 1, T::SetLoop(if i % 1000 == 200 { Some((0, 7680)) } else { None })); }
-            300 => { let _ = t.command(f + 2, T::SetTempo(100.0 + (i % 7) as f64 * 5.0)); }
-            400 => { let _ = t.command(f + 2, T::Stop); }
-            420 => { let _ = t.command(f + 2, T::SetCountIn(1)); let _ = t.command(f + 2, T::Record); }
+            100 => {
+                let _ = t.command(f + 3, T::Locate((i as i64 * 37) % 9000));
+            }
+            200 => {
+                let _ = t.command(
+                    f + 1,
+                    T::SetLoop(if i % 1000 == 200 {
+                        Some((0, 7680))
+                    } else {
+                        None
+                    }),
+                );
+            }
+            300 => {
+                let _ = t.command(f + 2, T::SetTempo(100.0 + (i % 7) as f64 * 5.0));
+            }
+            400 => {
+                let _ = t.command(f + 2, T::Stop);
+            }
+            420 => {
+                let _ = t.command(f + 2, T::SetCountIn(1));
+                let _ = t.command(f + 2, T::Record);
+            }
             _ => {}
         }
         if i >= 290 && i % 37 == 0 {
@@ -121,8 +139,16 @@ fn commands_and_periods_never_allocate() {
         // first half fills the memory and overdubs are refused.
         if i >= 290 && i % 53 == 0 {
             let k = (i / 53) as usize % if i < 3000 { 4 } else { 5 };
-            let id = l.layer_info(k % l.status().layers.max(1)).map_or(9, |x| x.id);
-            let c = [Lc::Mute(i % 2 == 0), Lc::Solo(i % 3 == 0), Lc::Pan(0.3), Lc::Level(1.4), Lc::Delete][k];
+            let id = l
+                .layer_info(k % l.status().layers.max(1))
+                .map_or(9, |x| x.id);
+            let c = [
+                Lc::Mute(i % 2 == 0),
+                Lc::Solo(i % 3 == 0),
+                Lc::Pan(0.3),
+                Lc::Level(1.4),
+                Lc::Delete,
+            ][k];
             let _ = l.layer_command(id, c);
         }
         let n = sizes[(i % sizes.len() as u64) as usize];
@@ -156,8 +182,15 @@ fn commands_and_periods_never_allocate() {
         }
     }
     watch(false);
-    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees in the looper's real-time calls");
-    assert!(seen_playing && layers >= 3 && sum > 1000.0, "{seen_playing} {layers} {sum}");
+    assert_eq!(
+        CALLS.load(Ordering::SeqCst),
+        0,
+        "allocations or frees in the looper's real-time calls"
+    );
+    assert!(
+        seen_playing && layers >= 3 && sum > 1000.0,
+        "{seen_playing} {layers} {sum}"
+    );
     assert!(l.stats().refused > 0, "{:?}", l.stats());
     assert!(loops_used.count_ones() >= 3, "loops used: {loops_used:b}");
 }

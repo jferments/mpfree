@@ -22,7 +22,11 @@ pub const MPC_ONE: TouchProfile = TouchProfile {
     raw_x: RawRange { min: 0, max: 2048 },
     raw_y: RawRange { min: 0, max: 2048 },
     slots: 10,
-    orientation: Orientation { swap_xy: true, flip_x: true, flip_y: false },
+    orientation: Orientation {
+        swap_xy: true,
+        flip_x: true,
+        flip_y: false,
+    },
     logical: (1280, 800),
 };
 
@@ -42,7 +46,9 @@ mod tests {
     /// The text right after `"key":` (first occurrence), trimmed.
     fn after(key: &str) -> &'static str {
         let pat = format!("\"{key}\":");
-        let at = JSON.find(&pat).unwrap_or_else(|| panic!("{key} missing from the profile JSON"));
+        let at = JSON
+            .find(&pat)
+            .unwrap_or_else(|| panic!("{key} missing from the profile JSON"));
         JSON[at + pat.len()..].trim_start()
     }
 
@@ -74,10 +80,19 @@ mod tests {
     fn constants_match_the_measured_profile_json() {
         assert_eq!(int("schema_version"), 1);
         let p = MPC_ONE;
-        assert_eq!(pair("raw_x"), (i64::from(p.raw_x.min), i64::from(p.raw_x.max)));
-        assert_eq!(pair("raw_y"), (i64::from(p.raw_y.min), i64::from(p.raw_y.max)));
+        assert_eq!(
+            pair("raw_x"),
+            (i64::from(p.raw_x.min), i64::from(p.raw_x.max))
+        );
+        assert_eq!(
+            pair("raw_y"),
+            (i64::from(p.raw_y.min), i64::from(p.raw_y.max))
+        );
         assert_eq!(int("slots"), p.slots as i64);
-        assert_eq!(pair("logical"), (i64::from(p.logical.0), i64::from(p.logical.1)));
+        assert_eq!(
+            pair("logical"),
+            (i64::from(p.logical.0), i64::from(p.logical.1))
+        );
         assert_eq!(flag("swap_xy"), p.orientation.swap_xy);
         assert_eq!(flag("flip_x"), p.orientation.flip_x);
         assert_eq!(flag("flip_y"), p.orientation.flip_y);

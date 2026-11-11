@@ -6,7 +6,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -23,7 +27,11 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 
 /// Encode `rgb` (width x height x 3 bytes, rows top to bottom) as a PNG file.
 pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
-    assert_eq!(rgb.len(), width as usize * height as usize * 3, "pixel data does not match the size");
+    assert_eq!(
+        rgb.len(),
+        width as usize * height as usize * 3,
+        "pixel data does not match the size"
+    );
     let mut raw = Vec::with_capacity(rgb.len() + height as usize);
     for row in rgb.chunks(width as usize * 3) {
         raw.push(0); // filter: none
@@ -65,6 +73,9 @@ mod tests {
         assert_eq!(crc32(b"IEND"), 0xAE42_6082);
         let png = encode_rgb(2, 1, &[255, 0, 0, 0, 0, 255]);
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(&png[png.len() - 12..], &[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82]);
+        assert_eq!(
+            &png[png.len() - 12..],
+            &[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82]
+        );
     }
 }

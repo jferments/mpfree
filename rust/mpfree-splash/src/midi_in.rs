@@ -47,16 +47,31 @@ fn c_text(bytes: &[u8]) -> String {
 /// Opens subdevice `subdevice` of RawMIDI device `device` on `card` for reading.
 pub fn open_rawmidi(card: u32, device: u32, subdevice: u32) -> Result<File, String> {
     let control_path = format!("/dev/snd/controlC{card}");
-    let control = OpenOptions::new().read(true).open(&control_path).map_err(|e| format!("{control_path}: {e}"))?;
+    let control = OpenOptions::new()
+        .read(true)
+        .open(&control_path)
+        .map_err(|e| format!("{control_path}: {e}"))?;
     let prefer: libc::c_int = subdevice as libc::c_int;
     // SAFETY: the request takes a pointer to one int, which outlives the call.
-    let rc = unsafe { libc::ioctl(control.as_raw_fd(), SNDRV_CTL_IOCTL_RAWMIDI_PREFER_SUBDEVICE as _, &prefer) };
+    let rc = unsafe {
+        libc::ioctl(
+            control.as_raw_fd(),
+            SNDRV_CTL_IOCTL_RAWMIDI_PREFER_SUBDEVICE as _,
+            &prefer,
+        )
+    };
     if rc != 0 {
-        return Err(format!("{control_path}: prefer subdevice {subdevice}: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "{control_path}: prefer subdevice {subdevice}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     // The preference applies to opens by this thread while `control` is open.
     let midi_path = format!("/dev/snd/midiC{card}D{device}");
-    let midi = OpenOptions::new().read(true).open(&midi_path).map_err(|e| format!("{midi_path}: {e}"))?;
+    let midi = OpenOptions::new()
+        .read(true)
+        .open(&midi_path)
+        .map_err(|e| format!("{midi_path}: {e}"))?;
     drop(control);
 
     // SAFETY: an all-zero RawmidiInfo is valid (plain integers and byte arrays).
@@ -65,7 +80,10 @@ pub fn open_rawmidi(card: u32, device: u32, subdevice: u32) -> Result<File, Stri
     // SAFETY: the kernel fills at most size_of::<RawmidiInfo>() bytes of `info`.
     let rc = unsafe { libc::ioctl(midi.as_raw_fd(), SNDRV_RAWMIDI_IOCTL_INFO as _, &mut info) };
     if rc != 0 {
-        return Err(format!("{midi_path}: info: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "{midi_path}: info: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     eprintln!(
         "mpfree-splash: reading {midi_path} subdevice {} of {} ({:?} / {:?})",
@@ -75,7 +93,10 @@ pub fn open_rawmidi(card: u32, device: u32, subdevice: u32) -> Result<File, Stri
         c_text(&info.subname)
     );
     if info.subdevice != subdevice {
-        return Err(format!("{midi_path}: asked for subdevice {subdevice} but got {}", info.subdevice));
+        return Err(format!(
+            "{midi_path}: asked for subdevice {subdevice} but got {}",
+            info.subdevice
+        ));
     }
     Ok(midi)
 }

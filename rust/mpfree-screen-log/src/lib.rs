@@ -62,7 +62,12 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub fn new(width: usize, height: usize, stride: usize, bits_per_pixel: u32) -> Result<Geometry, String> {
+    pub fn new(
+        width: usize,
+        height: usize,
+        stride: usize,
+        bits_per_pixel: u32,
+    ) -> Result<Geometry, String> {
         let format = match bits_per_pixel {
             32 => PixelFormat::Xrgb8888,
             16 => PixelFormat::Rgb565,
@@ -71,15 +76,30 @@ impl Geometry {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(format!("implausible screen size {width}x{height}"));
         }
-        let bytes = if format == PixelFormat::Xrgb8888 { 4 } else { 2 };
+        let bytes = if format == PixelFormat::Xrgb8888 {
+            4
+        } else {
+            2
+        };
         if stride < width * bytes || stride > MAX_SIDE * 4 {
-            return Err(format!("stride {stride} does not fit {width} pixels of {bytes} bytes"));
+            return Err(format!(
+                "stride {stride} does not fit {width} pixels of {bytes} bytes"
+            ));
         }
-        Ok(Geometry { width, height, stride, format })
+        Ok(Geometry {
+            width,
+            height,
+            stride,
+            format,
+        })
     }
 
     pub fn bytes_per_pixel(&self) -> usize {
-        if self.format == PixelFormat::Xrgb8888 { 4 } else { 2 }
+        if self.format == PixelFormat::Xrgb8888 {
+            4
+        } else {
+            2
+        }
     }
 
     /// Bytes of one visible screen: what one frame writes, from offset 0.
@@ -89,7 +109,11 @@ impl Geometry {
 
     /// The size as the viewer sees it, after the panel's rotation.
     pub fn logical_size(&self, rotation: Rotation) -> (usize, usize) {
-        if rotation.quarter() { (self.height, self.width) } else { (self.width, self.height) }
+        if rotation.quarter() {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
     }
 
     /// Native (x, y) of the logical pixel (lx, ly), where (0, 0) is the
@@ -138,7 +162,11 @@ pub struct LogView {
 
 impl LogView {
     pub fn new(cols: usize, rows: usize) -> LogView {
-        LogView { cols: cols.max(8), rows: rows.max(1), lines: VecDeque::new() }
+        LogView {
+            cols: cols.max(8),
+            rows: rows.max(1),
+            lines: VecDeque::new(),
+        }
     }
 
     pub fn cols(&self) -> usize {
@@ -154,7 +182,8 @@ impl LogView {
             let room = if first { self.cols } else { self.cols - 2 };
             let end = (start + room).min(text.len());
             let piece: String = text[start..end].iter().collect();
-            self.lines.push_back(if first { piece } else { format!("  {piece}") });
+            self.lines
+                .push_back(if first { piece } else { format!("  {piece}") });
             while self.lines.len() > self.rows {
                 self.lines.pop_front();
             }
@@ -188,9 +217,13 @@ impl Painter<'_> {
         let (x, y) = self.geometry.native(self.rotation, lx, ly);
         let at = y * self.geometry.stride + x * self.geometry.bytes_per_pixel();
         match self.geometry.format {
-            PixelFormat::Xrgb8888 => self.buf[at..at + 4].copy_from_slice(&[color.2, color.1, color.0, 0]),
+            PixelFormat::Xrgb8888 => {
+                self.buf[at..at + 4].copy_from_slice(&[color.2, color.1, color.0, 0])
+            }
             PixelFormat::Rgb565 => {
-                let v = ((color.0 as u16 >> 3) << 11) | ((color.1 as u16 >> 2) << 5) | (color.2 as u16 >> 3);
+                let v = ((color.0 as u16 >> 3) << 11)
+                    | ((color.1 as u16 >> 2) << 5)
+                    | (color.2 as u16 >> 3);
                 self.buf[at..at + 2].copy_from_slice(&v.to_le_bytes());
             }
         }
@@ -208,7 +241,11 @@ impl Painter<'_> {
                 let bits = if py < 8 * SCALE { glyph[py / SCALE] } else { 0 };
                 for px in 0..CELL_W {
                     let on = bits & (1 << (px / SCALE)) != 0;
-                    self.pixel(col * CELL_W + px, row * CELL_H + py, if on { fg } else { bg });
+                    self.pixel(
+                        col * CELL_W + px,
+                        row * CELL_H + py,
+                        if on { fg } else { bg },
+                    );
                 }
             }
         }
@@ -217,17 +254,31 @@ impl Painter<'_> {
 
 /// Renders one frame into `buf` (`geometry.frame_len()` bytes): a title row,
 /// a status row, then the log rows, oldest at the top.
-pub fn render(geometry: &Geometry, rotation: Rotation, title: &str, status: &str, view: &LogView,
-              buf: &mut [u8]) -> Result<(), String> {
+pub fn render(
+    geometry: &Geometry,
+    rotation: Rotation,
+    title: &str,
+    status: &str,
+    view: &LogView,
+    buf: &mut [u8],
+) -> Result<(), String> {
     if buf.len() != geometry.frame_len() {
-        return Err(format!("frame buffer is {} bytes, expected {}", buf.len(), geometry.frame_len()));
+        return Err(format!(
+            "frame buffer is {} bytes, expected {}",
+            buf.len(),
+            geometry.frame_len()
+        ));
     }
     let (cols, rows) = grid(geometry, rotation);
     if cols < 8 || rows < 3 {
         return Err("the screen is too small for the log".to_string());
     }
     buf.fill(0);
-    let mut painter = Painter { geometry: *geometry, rotation, buf };
+    let mut painter = Painter {
+        geometry: *geometry,
+        rotation,
+        buf,
+    };
     painter.row(0, &sanitize(title), TITLE_FG, TITLE_BG, cols);
     painter.row(1, &sanitize(status), STATUS_FG, STATUS_BG, cols);
     for (i, line) in view.rows().take(rows - 2).enumerate() {
@@ -251,7 +302,10 @@ mod tests {
         assert!(Geometry::new(800, 1280, 3200, 24).is_err());
         assert!(Geometry::new(0, 1280, 3200, 32).is_err());
         let g = Geometry::new(800, 1280, 1600, 16).unwrap();
-        assert_eq!((g.format, g.frame_len()), (PixelFormat::Rgb565, 1600 * 1280));
+        assert_eq!(
+            (g.format, g.frame_len()),
+            (PixelFormat::Rgb565, 1600 * 1280)
+        );
     }
 
     #[test]
@@ -291,9 +345,15 @@ mod tests {
     fn wraps_and_keeps_the_newest_rows() {
         let mut v = LogView::new(10, 3);
         v.push("0123456789abcdefghij\n");
-        assert_eq!(v.rows().collect::<Vec<_>>(), ["0123456789", "  abcdefgh", "  ij"]);
+        assert_eq!(
+            v.rows().collect::<Vec<_>>(),
+            ["0123456789", "  abcdefgh", "  ij"]
+        );
         v.push("tab\there\u{e9}");
-        assert_eq!(v.rows().collect::<Vec<_>>(), ["  abcdefgh", "  ij", "tab here?"]);
+        assert_eq!(
+            v.rows().collect::<Vec<_>>(),
+            ["  abcdefgh", "  ij", "tab here?"]
+        );
         v.push("");
         assert_eq!(v.rows().last(), Some(""));
     }
@@ -330,10 +390,21 @@ mod tests {
     fn rgb565_pixels() {
         let g = Geometry::new(800, 1280, 1600, 16).unwrap();
         let mut buf = vec![0u8; g.frame_len()];
-        render(&g, Rotation::Deg270, "T", "S", &LogView::new(80, 42), &mut buf).unwrap();
+        render(
+            &g,
+            Rotation::Deg270,
+            "T",
+            "S",
+            &LogView::new(80, 42),
+            &mut buf,
+        )
+        .unwrap();
         let (x, y) = g.native(Rotation::Deg270, CELL_W * 50, 1);
         let o = y * g.stride + x * 2;
         let v = u16::from_le_bytes([buf[o], buf[o + 1]]);
-        assert_eq!(v, ((20u16 >> 3) << 11) | ((60u16 >> 2) << 5) | (160u16 >> 3));
+        assert_eq!(
+            v,
+            ((20u16 >> 3) << 11) | ((60u16 >> 2) << 5) | (160u16 >> 3)
+        );
     }
 }
