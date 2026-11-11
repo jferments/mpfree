@@ -3,6 +3,6 @@ name = "mpfree-analysis"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Offline audio analysis for the MPFree sampler: waveform peaks, onsets, tempo, silence split, zero crossings"
+description = "Offline audio analysis for the MPFree sampler: waveform peaks, onsets, tempo, silence split, zero crossings, root pitch"
 
 [dependencies]
