@@ -120,7 +120,9 @@ fn main() {
         let s = looper.status();
         if s.phase != last_phase {
             // Seen at the end of the period it happened in.
-            println!("looper: {:?} by {} ({} layers)", s.phase, bar_beat(tick_at(f + n as u64)), s.layers);
+            let tick = tick_at(f + n as u64);
+            let when = if tick < -BAR_TICKS { "before Play".to_string() } else { format!("by {}", bar_beat(tick)) };
+            println!("looper: {:?} {when} ({} layers)", s.phase, s.layers);
             last_phase = s.phase;
         }
         if first_pass_checked.is_none() && s.layers >= 1 && f > frame_at(2.0 * BAR_TICKS) + LATENCY + 2 * FADE as u64 {
