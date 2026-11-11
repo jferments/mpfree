@@ -65,6 +65,21 @@ REPORT_P1="$REPORT_DIR/p1-sram-ghidra.json"
 REPORT_P3="$REPORT_DIR/p3-uboot-ghidra.json"
 REPORT_ART="$REPORT_DIR/storage-env-boot-dtb.json"
 
+# Even if a later optional pass fails, provide one ZIP with what succeeded.
+package_reports_on_exit() {
+    local exit_code=$?
+    trap - EXIT
+    if [[ -d "$REPORT_DIR" ]] && find "$REPORT_DIR" -type f -print -quit | grep -q .; then
+        echo
+        echo "Packaging ALL available private reports and logs into ONE ZIP..."
+        python3 "$ROOT/tools/mpc-one/package-private-boot-audit.py" "$REPORT_DIR" ||
+            echo "WARNING: private ZIP packaging failed; reports remain in $REPORT_DIR" >&2
+    fi
+    exit "$exit_code"
+}
+trap package_reports_on_exit EXIT
+
+
 echo "================================================================="
 echo "MPFree wide boot-chain investigation — OFFLINE and READ-ONLY"
 echo "Backup: $BACKUP"
@@ -115,6 +130,54 @@ run_ghidra p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" "$REPORT_P1"
 echo "[3/3] P3 U-Boot"
 run_ghidra p3 "$P3_PROJECT" "p3-uimage-payload.bin" "$REPORT_P3"
 
+
+# Wide second pass: all major unresolved questions in both projects.
+# Optional by design; errors are logged, not allowed to discard successful
+# primary reports. Each pass remains read-only, hash-verified, and offline.
+run_forensics() {
+    local kind="$1" project="$2" filename="$3" output="$4"
+    local log="$REPORT_DIR/$kind-forensics-pass2-ghidra.log"
+    echo
+    echo "Forensics pass 2: $kind (reboot/ROM, recovery, boot, security, RAM...)"
+    if ! "${GHIDRA[@]}" "$PROJECTS" "$project" \
+        -process "$filename" \
+        -readOnly -noanalysis \
+        -scriptPath "$ROOT/tools/ghidra" \
+        -postScript MPFreeBootChainForensicsPass2.py "$kind" "$output" \
+        -log "$log" \
+        >"$REPORT_DIR/$kind-forensics-pass2-console.txt" 2>&1; then
+        echo "WARNING: $kind follow-up failed; details are in the ZIP." >&2
+        return 1
+    fi
+    if [[ ! -s "$output" ]] || ! python3 -m json.tool "$output" >/dev/null; then
+        echo "WARNING: $kind follow-up missing/invalid; details are in the ZIP." >&2
+        return 1
+    fi
+    echo "$kind forensics complete: $output"
+}
+run_forensics p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" \
+    "$REPORT_DIR/p1-forensics-pass2.json" || true
+run_forensics p3 "$P3_PROJECT" "p3-uimage-payload.bin" \
+    "$REPORT_DIR/p3-forensics-pass2.json" || true
+
+# Cross-check newer Akai userspace, boot scripts, and DTBs if the existing
+# extracted 3.10 rootfs image is on the workstation. Do not extract/run update.
+ROOTFS_310="${MPFREE_310_ROOTFS:-$HOME/mpfree-work/firmware-analysis/MPC-3.10.0-Gen1-update/rootfs.ext4}"
+if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
+    echo
+    echo "Comparing 3.10 rootfs boot, updater and reboot-mode metadata..."
+    python3 "$ROOT/tools/mpc-one/offline-boot-version-compare.py" \
+        --rootfs-310 "$ROOTFS_310" \
+        --baseline-report "$REPORT_ART" \
+        --report "$REPORT_DIR/firmware-3.10-boot-compare.json" \
+        >"$REPORT_DIR/firmware-3.10-boot-compare-console.txt" 2>&1 ||
+        echo "WARNING: optional 3.10 rootfs comparison failed; see ZIP logs." >&2
+else
+    printf 'Optional 3.10 rootfs not found at %s; skipped comparison.\n' "$ROOTFS_310" |
+        tee "$REPORT_DIR/firmware-3.10-boot-compare-skipped.txt"
+fi
+
+
 python3 - "$REPORT_DIR" "$REPORT_P1" "$REPORT_P3" "$REPORT_ART" <<'PY'
 import json
 from pathlib import Path
@@ -143,5 +206,5 @@ print("\nFinished: ", folder)
 print(json.dumps(manifest, indent=2))
 PY
 echo
-echo "NEXT: share manifest.json and the three JSON reports privately here."
-echo "DO NOT commit the reports to public GitHub."
+echo "NEXT: upload the single ZIP generated at exit, not individual reports."
+echo "DO NOT commit the ZIP or proprietary reports to public GitHub."
