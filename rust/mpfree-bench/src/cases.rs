@@ -5,7 +5,7 @@
 use mpfree_fx::ids;
 use mpfree_fx::{
     Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId,
+    MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, StripId,
 };
 use mpfree_grain::GrainNode;
 use mpfree_looper::{Command as LooperCommand, Looper};
@@ -129,6 +129,72 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
             let f0 = b * l.len() as u64;
             prog.play(f0, l, r);
             n.process(&Ctx::new(rate, f0), &[], l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Perform FX on a song: `pads` held from the start, or (with `cycle`) one
+/// pad after another, a new one every half second, so entries, releases
+/// and seams are all in the numbers.
+fn perform(name: &str, rate: u32, pads: &'static [u8], cycle: bool) -> Case {
+    let mut p = Perform::new();
+    p.prepare(rate, MAX_BLOCK);
+    p.reset();
+    let prog = program(rate);
+    let mut events: Vec<Timed> = Vec::with_capacity(2 * pads.len());
+    let mut k = 0usize;
+    Case {
+        name: name.to_string(),
+        module: "fx",
+        what: if cycle {
+            "tone and noise bursts every 0.5 s, a new pad every 0.5 s"
+        } else {
+            "tone and noise bursts every 0.5 s, pads held"
+        },
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            events.clear();
+            if cycle {
+                let half = u64::from(rate / 2);
+                if f0 % half + len > half || f0 == 0 {
+                    let at = if f0 == 0 {
+                        0
+                    } else {
+                        (half - f0 % half) as u32 % len as u32
+                    };
+                    let note = pads[k % pads.len()];
+                    events.push(Timed::new(at, NodeEvent::NoteOff { note }));
+                    k += 1;
+                    let note = pads[k % pads.len()];
+                    events.push(Timed::new(
+                        at,
+                        NodeEvent::NoteOn {
+                            note,
+                            velocity: 100,
+                        },
+                    ));
+                }
+            } else if b == 0 {
+                for &note in pads {
+                    events.push(Timed::new(
+                        0,
+                        NodeEvent::NoteOn {
+                            note,
+                            velocity: 100,
+                        },
+                    ));
+                }
+            }
+            prog.play(f0, l, r);
+            let ctx = Ctx {
+                bpm: 120.0,
+                beats: f0 as f64 * 2.0 / f64::from(rate),
+                playing: true,
+                ..Ctx::new(rate, f0)
+            };
+            p.process(&ctx, &events, l, r);
         }),
         mem_bytes: 0,
     }
@@ -656,6 +722,26 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect("Master safety", rate, Box::new(MasterSafety::new()), &[])
+    }));
+    // Perform FX: idle (no pad held), the default bank one pad at a time,
+    // and the heaviest stack: pitch drop with a gate, both sweeps, crush,
+    // the riser and an echo throw.
+    v.push(measured(|| perform("Perform FX, idle", rate, &[], false)));
+    v.push(measured(|| {
+        perform(
+            "Perform FX, the 16 pads in turn",
+            rate,
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            true,
+        )
+    }));
+    v.push(measured(|| {
+        perform(
+            "Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)",
+            rate,
+            &[6, 7, 8, 9, 10, 11, 12],
+            false,
+        )
     }));
     // The reverb at Full (its cost before Eco, the worst case) and at
     // Eco, its default.
