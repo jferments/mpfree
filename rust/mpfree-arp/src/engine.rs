@@ -913,6 +913,25 @@ impl Engine {
         }
     }
 
+    /// Nothing to do: no step running, nothing held or latched, nothing
+    /// queued to start or stop. An idle engine may be passed over with
+    /// [`Engine::skip`] instead of [`Engine::sync`] and [`Engine::process`].
+    pub fn idle(&self) -> bool {
+        !self.running && self.queued == 0 && self.notes.active().is_empty()
+    }
+
+    /// Lets `frames` frames pass on an [`Engine::idle`] engine without
+    /// processing them (a host with many idle arps saves their periods).
+    /// It forgets the transport's clock, so the next [`Engine::sync`] lines
+    /// it up again as on a transport start; the next press waits for the
+    /// grid as usual. Does nothing to an engine that is not idle.
+    pub fn skip(&mut self, frames: u32) {
+        if self.idle() {
+            self.now += u64::from(frames);
+            self.sync = None;
+        }
+    }
+
     /// Silenced by [`Engine::hush`] and not resumed yet.
     pub fn hushed(&self) -> bool {
         self.hushed
