@@ -52,65 +52,71 @@ impl Widget for Segments {
     }
 }
 
-// ---------------------------------------------------------------- rate bar
+// ---------------------------------------------------------------- mini bar
 
-/// The quick band's buttons: one per rate, big enough to hit mid-roll
-/// without looking hard, then Latch, set apart. A tap on rate `i` gives
-/// `Tab(i)`; a tap on Latch gives `Tab(rates.len())`.
-pub struct RateBar {
-    pub rates: Vec<String>,
-    /// The rate playing now.
-    pub active: usize,
+/// The slim strip NOTE REPEAT and Latch show at the top of the app's own
+/// column, so nothing else moves: what the arp plays, the rate with a step
+/// slower and a step faster, and Latch. A tap gives `Tab(MINI_SLOWER)`,
+/// `Tab(MINI_FASTER)`, `Tab(MINI_LATCH)` or, on the name, `Tab(MINI_OPEN)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MiniBar {
+    /// What the arp plays: "Repeat", "Arp · Up", "Pattern · Gallop".
+    pub mode: String,
+    pub rate: String,
     pub latched: bool,
+    pub can_slower: bool,
+    pub can_faster: bool,
 }
 
-/// The time engine's smallest touch target, in pixels.
-pub const MIN_TOUCH: i32 = 76;
-const RATE_GAP: i32 = 8;
-/// The extra space between the last rate and Latch.
-const LATCH_GAP: i32 = 24;
+pub const MINI_SLOWER: usize = 0;
+pub const MINI_FASTER: usize = 1;
+pub const MINI_LATCH: usize = 2;
+pub const MINI_OPEN: usize = 3;
 
-impl RateBar {
-    pub fn new(rates: &[&str]) -> RateBar {
-        RateBar { rates: rates.iter().map(|s| s.to_string()).collect(), active: 0, latched: false }
-    }
-
-    /// Button `i`: the rates, then Latch at `i == rates.len()`.
-    pub fn button(&self, r: Rect, i: usize) -> Rect {
-        let inner = r.inset_xy(12, 8);
-        let n = self.rates.len() as i32 + 1;
-        let w = (inner.w - RATE_GAP * (n - 1) - LATCH_GAP) / n;
-        let extra = if i == self.rates.len() { LATCH_GAP } else { 0 };
-        Rect::new(inner.x + i as i32 * (w + RATE_GAP) + extra, inner.y, w, inner.h)
+impl MiniBar {
+    /// The touch areas, by `Tab` number: slower, faster, Latch, the name.
+    pub fn parts(&self, r: Rect) -> [Rect; 4] {
+        let inner = r.inset_xy(8, 6);
+        let (latch_w, arrow_w, rate_w, gap) = (112, 56, 72, 8);
+        let latch = Rect::new(inner.right() - latch_w, inner.y, latch_w, inner.h);
+        let faster = Rect::new(latch.x - gap - arrow_w, inner.y, arrow_w, inner.h);
+        let slower = Rect::new(faster.x - rate_w - arrow_w, inner.y, arrow_w, inner.h);
+        let name = Rect::new(inner.x, inner.y, (slower.x - gap - inner.x).max(1), inner.h);
+        [slower, faster, latch, name]
     }
 }
 
-impl Widget for RateBar {
+impl Widget for MiniBar {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_rect(r, t.bg);
-        for (i, name) in self.rates.iter().enumerate() {
-            let b = self.button(r, i);
-            let on = i == self.active;
-            cx.canvas.fill_round_rect(b, 10, if on { t.bg.mix(t.accent, 0.25) } else { t.raised });
-            if on {
-                cx.canvas.stroke_round_rect(b, 10, 2, t.accent);
-            }
-            let font = if on { FontId::Bold } else { FontId::Sans };
-            cx.text(font, t.size_title, b, Align::Center, if on { t.text } else { t.text_dim }, name);
+        cx.panel(r);
+        let [slower, faster, latch, name] = self.parts(r);
+        let dot = Rect::new(name.x + 6, name.y + name.h / 2 - 4, 8, 8);
+        cx.canvas.fill_round_rect(dot, 4, if self.latched { t.warn } else { t.accent });
+        let label = Rect::new(name.x + 22, name.y, name.w - 22, name.h);
+        cx.text(FontId::Bold, t.size_body, label, Align::Left, t.text, &self.mode);
+        for (b, text, on) in [(slower, "−", self.can_slower), (faster, "+", self.can_faster)] {
+            cx.canvas.fill_round_rect(b, 10, if on { t.raised } else { t.surface });
+            cx.text(FontId::Bold, t.size_title, b, Align::Center, if on { t.text } else { t.text_faint }, text);
         }
-        let b = self.button(r, self.rates.len());
+        let rate = Rect::new(slower.right(), r.y, faster.x - slower.right(), r.h);
+        cx.text(FontId::Bold, t.size_title, rate, Align::Center, t.accent, &self.rate);
         let ink = if self.latched { t.warn } else { t.text_dim };
-        cx.canvas.fill_round_rect(b, 10, if self.latched { t.bg.mix(t.warn, 0.22) } else { t.surface });
-        cx.canvas.stroke_round_rect(b, 10, if self.latched { 2 } else { 1 }, if self.latched { t.warn } else { t.outline });
-        cx.text(FontId::Bold, t.size_body, b, Align::Center, ink, if self.latched { "LATCHED" } else { "LATCH" });
+        cx.canvas.fill_round_rect(latch, 10, if self.latched { t.bg.mix(t.warn, 0.22) } else { t.raised });
+        if self.latched {
+            cx.canvas.stroke_round_rect(latch, 10, 2, t.warn);
+        }
+        cx.text(FontId::Bold, t.size_small, latch, Align::Center, ink, if self.latched { "LATCHED" } else { "LATCH" });
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
         }
-        (0..=self.rates.len()).find(|&i| self.button(r, i).contains(x, y)).map(EventKind::Tab)
+        let parts = self.parts(r);
+        let i = parts.iter().position(|p| p.contains(x, y))?;
+        let off = (i == MINI_SLOWER && !self.can_slower) || (i == MINI_FASTER && !self.can_faster);
+        (!off).then_some(EventKind::Tab(i))
     }
 }
 
@@ -242,8 +248,9 @@ pub struct StepCell {
     pub accent: bool,
 }
 
-/// The steps of the arp's order or of the pattern, in one row, with the
-/// step that is playing marked. A tap on cell `i` gives `Select(first + i)`.
+/// The steps of the arp's order or of the pattern, with the step that is
+/// playing marked: one row, or two or more in a narrow column so cells keep
+/// [`MIN_CELL_W`]. A tap on cell `i` gives `Select(first + i)`.
 pub struct StepStrip {
     pub cells: Vec<StepCell>,
     /// The step number of the first cell, when the pattern is longer than
@@ -257,6 +264,9 @@ pub struct StepStrip {
     pub min_cells: usize,
 }
 
+/// The narrowest a step cell gets before the strip wraps onto a second row.
+pub const MIN_CELL_W: i32 = 44;
+
 impl StepStrip {
     pub fn new(min_cells: usize) -> StepStrip {
         StepStrip { cells: Vec::new(), first: 0, playing: None, cursor: None, min_cells }
@@ -265,8 +275,13 @@ impl StepStrip {
     pub fn cell(&self, r: Rect, i: usize) -> Rect {
         let n = self.cells.len().max(self.min_cells).max(1) as i32;
         let gap = 6;
-        let w = (r.w - gap * (n - 1)) / n;
-        Rect::new(r.x + i as i32 * (w + gap), r.y, w, r.h)
+        let fit = ((r.w + gap) / (MIN_CELL_W + gap)).max(1);
+        let rows = (n + fit - 1) / fit;
+        let per_row = (n + rows - 1) / rows;
+        let w = (r.w - gap * (per_row - 1)) / per_row;
+        let h = (r.h - gap * (rows - 1)) / rows;
+        let (row, col) = (i as i32 / per_row, i as i32 % per_row);
+        Rect::new(r.x + col * (w + gap), r.y + row * (h + gap), w, h)
     }
 }
 
@@ -412,6 +427,9 @@ pub struct LaneGrid {
     pub cursor: Option<(usize, usize)>,
     /// The column playing, if any.
     pub playing: Option<usize>,
+    /// When rows loop at lengths of their own (the pattern's lanes): the
+    /// column playing in each row. Empty when `playing` says it for all.
+    pub playing_rows: Vec<Option<usize>>,
     drag: Option<(u64, usize, i32)>,
 }
 
@@ -430,6 +448,7 @@ impl LaneGrid {
             columns,
             cursor: None,
             playing: None,
+            playing_rows: Vec::new(),
             drag: None,
         }
     }
@@ -482,7 +501,11 @@ impl Widget for LaneGrid {
                 };
                 let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
                 cx.canvas.fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
-                if self.playing == Some(col) {
+                let playing = match self.playing_rows.get(row) {
+                    Some(p) => *p == Some(col),
+                    None => self.playing == Some(col),
+                };
+                if playing {
                     cx.canvas.stroke_round_rect(cell, 6, 2, t.good);
                 }
                 if self.cursor == Some((row, col)) {
