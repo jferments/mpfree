@@ -34,6 +34,7 @@ pub mod mapper;
 pub mod saved;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
+use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use mapper::{Code, MapView, Mark};
 pub use synth_pads::SynthItem;
 
@@ -633,6 +634,15 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// The synth's pad layout while the synth is on the pads
+    /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
+    /// notes, and its events carry notes rather than pad slots.
+    pad_layout: Option<[PadNotes; 16]>,
+    /// What each held pad pressed into the arp (kept so a layout change
+    /// while a pad is down still lets go of the right notes).
+    pad_pressed: [PadNotes; 16],
+    /// How many held pads press each note (two chord pads can share one).
+    note_holds: [u8; 128],
     /// The control mapper (Debug mode).
     mapper: mapper::Mapper,
     /// Buttons pressed while the mapper listened: their release is kept
@@ -669,6 +679,7 @@ impl App {
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
+                            pad_layout: None, pad_pressed: [PadNotes::default(); 16], note_holds: [0; 128],
                             mapper: mapper::Mapper::default(), swallowed: [false; 128], prefs_touch: false,
                             loop_muted: false, save_dirty: false, saved: Default::default() };
         app.engine.set_pattern(pattern);
@@ -718,20 +729,29 @@ impl App {
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
-            self.engine.press(slot as u8, velocity.max(1));
+            self.press_pad(slot, velocity.max(1));
         }
         self.record_press(slot as u8, velocity)
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
         if !self.free_time_recording() {
-            self.engine.release(slot as u8);
+            self.release_pad(slot);
         }
         self.record_release(slot as u8)
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
-        self.engine.pressure(slot as u8, value);
+        if self.pad_layout.is_none() {
+            self.engine.pressure(slot as u8, value);
+            return;
+        }
+        // Every note of a chord pad gets the pad's pressure.
+        if let Some(p) = self.pad_pressed.get(slot).copied() {
+            for &n in p.notes() {
+                self.engine.pressure(n, value);
+            }
+        }
     }
 
     /// One audio period: the notes that start (or stop) in it. The arp
@@ -742,9 +762,13 @@ impl App {
         self.engine.process(frames, out);
     }
 
-    /// Pads the engine keeps playing (held, or latched).
+    /// Pads the engine keeps playing (held, or latched). With a pad layout:
+    /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
-        self.engine.active().contains(slot as u8)
+        match &self.pad_layout {
+            None => self.engine.active().contains(slot as u8),
+            Some(l) => l.get(slot).is_some_and(|p| p.notes().iter().any(|&n| self.engine.active().contains(n))),
+        }
     }
 
     /// NOTE REPEAT is held or Latch is on.
@@ -1737,6 +1761,48 @@ mod tests {
         let fx = app.button(note, true, 0.0);
         app.button(note, false, 0.0);
         fx
+    }
+
+    #[test]
+    fn a_pad_layout_feeds_the_arp_its_notes_and_chord_pads_share_notes() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        use mpfree_arp::scale::{Scale, MAJOR};
+        let mut app = ready();
+        assert!(!app.arp_plays_notes());
+        // Slots without a layout, as before.
+        app.pad_down(3, 100);
+        assert_eq!(notes(&mut app, 64), [3]);
+        app.pad_up(3);
+        let setup = PadSetup { layout: PadLayout::Chords, scale: Some(Scale::new(0, MAJOR)), ..PadSetup::default() };
+        let pads = layout(&setup);
+        app.set_pad_layout(Some(pads));
+        assert!(app.arp_plays_notes());
+        // Pad 1 is C major (root last), pad 3 is E minor: E and G are on both.
+        let (one, three) = (pads[0].notes().to_vec(), pads[2].notes().to_vec());
+        assert_eq!(one.last(), Some(&48));
+        app.pad_down(0, 100);
+        let mut heard = notes(&mut app, 64);
+        heard.sort_unstable();
+        let mut want = one.clone();
+        want.sort_unstable();
+        assert_eq!(heard, want, "a chord pad presses every note of its chord");
+        app.pad_down(2, 100);
+        app.pad_up(0);
+        for &n in &three {
+            assert!(app.engine.active().contains(n), "{n} is still held by pad 3");
+        }
+        assert!(!app.engine.active().contains(48), "C was only pad 1's");
+        assert!(app.active(2) && !app.active(1));
+        assert_eq!(app.pad_of_note(48), Some(0));
+        // A layout change while pad 3 is down still lets go of what it pressed.
+        app.set_pad_layout(Some(layout(&PadSetup { layout: PadLayout::Chromatic, ..setup })));
+        app.pad_up(2);
+        assert!(app.engine.active().is_empty(), "nothing left held");
+        // Back to slots: held pads are let go.
+        app.pad_down(5, 100);
+        app.set_pad_layout(None);
+        assert!(app.engine.active().is_empty());
+        assert!(!app.arp_plays_notes());
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {

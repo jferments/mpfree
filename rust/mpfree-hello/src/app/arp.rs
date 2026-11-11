@@ -18,7 +18,7 @@
 //! The screens never touch the engine: touches come back as `ArpAction`s and
 //! `WsAction`s, and the screens hear what changed as [`Effect::Arp`].
 
-use super::{App, Effect, Item, View};
+use super::{App, Effect, Item, PadNotes, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
 use mpfree_arp::{Chord, Held, Turns, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
@@ -800,6 +800,78 @@ impl App {
             WsAction::RecordMode(m) => self.set_record_mode(m),
             WsAction::Undo => self.record_edit(false),
             WsAction::Clear => self.record_edit(true),
+        }
+    }
+}
+
+// ------------------------------------------------------------ pad layouts
+
+/// The synth's pad layout feeding the arp (agreed hook with the Hello and
+/// synth threads, docs/project/scales.md "The arp on a pad layout"). Without
+/// a layout the arp is fed pad slots 0..15 as before (a kit, or the synth's
+/// plain chromatic pads: slot 0 counts as C). With one, each pad presses its
+/// layout notes (a chord pad presses every note of its chord, root last),
+/// and the arp's events carry MIDI notes for the synth to play as they are.
+/// The audio loop's side (calling these when the synth is on the pads, and
+/// the synth playing a note rather than a pad) is the Hello thread's wiring.
+#[cfg_attr(not(test), allow(dead_code))]
+impl App {
+    /// The synth's pads now play `layout` (from `mpfree_scale::pads::layout`;
+    /// the Hello thread calls it when the synth goes on the pads, and again on
+    /// PAD BANK or a layout change), or `None` for slots (a kit). Allocates
+    /// nothing. Pads held across a change between slots and notes are let go,
+    /// since their old values mean something else now; a change from one
+    /// layout to another keeps them, and each lets go of what it pressed.
+    pub fn set_pad_layout(&mut self, layout: Option<[PadNotes; 16]>) {
+        if self.pad_layout.is_some() != layout.is_some() {
+            for slot in 0..16 {
+                self.release_pad(slot);
+            }
+        }
+        self.pad_layout = layout;
+        self.arp_dirty = true;
+    }
+
+    /// The arp's events carry MIDI notes (a pad layout is set) rather than
+    /// pad slots.
+    pub fn arp_plays_notes(&self) -> bool {
+        self.pad_layout.is_some()
+    }
+
+    /// The first pad whose layout plays `note`, to flash on the screen.
+    pub fn pad_of_note(&self, note: u8) -> Option<usize> {
+        self.pad_layout.as_ref()?.iter().position(|p| p.notes().contains(&note))
+    }
+
+    pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
+        let Some(layout) = &self.pad_layout else {
+            self.engine.press(slot as u8, velocity);
+            return;
+        };
+        let Some(&pad) = layout.get(slot) else { return };
+        self.release_pad(slot);
+        for &n in pad.notes() {
+            let holds = &mut self.note_holds[usize::from(n)];
+            if *holds == 0 {
+                self.engine.press(n, velocity);
+            }
+            *holds = holds.saturating_add(1);
+        }
+        self.pad_pressed[slot] = pad;
+    }
+
+    pub(crate) fn release_pad(&mut self, slot: usize) {
+        if self.pad_layout.is_none() {
+            self.engine.release(slot as u8);
+            return;
+        }
+        let Some(pad) = self.pad_pressed.get_mut(slot).map(std::mem::take) else { return };
+        for &n in pad.notes() {
+            let holds = &mut self.note_holds[usize::from(n)];
+            *holds = holds.saturating_sub(1);
+            if *holds == 0 {
+                self.engine.release(n);
+            }
         }
     }
 }
