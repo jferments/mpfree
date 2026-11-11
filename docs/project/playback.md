@@ -11,7 +11,7 @@ A project holds up to 16 tracks. A track has a destination, an optional swing, a
 - a length in its own ticks (from a 1/32 note to 256 bars)
 - a speed (1/8 to 4 times)
 - an optional swing and an optional quantise
-- its notes, each with a tick, a length, a note or pad number, a velocity and a chance (1 to 100 %, 100 for a recorded note)
+- its notes, each with a tick, a length, a note or pad number, a velocity, a chance (1 to 100 %, 100 for a recorded note), a trig condition (`Always` for a recorded note) and a ratchet (1 to 8 hits, 1 for a recorded note)
 
 These are plain values, edited on the control thread and checked with `check()`.
 
@@ -20,11 +20,11 @@ These are plain values, edited on the control thread and checked with `check()`.
 - **Quantise is non-destructive.** Notes keep their recorded ticks, and quantise (grid and strength) applies on playback, so it can be changed or undone later.
 - **Swing:** the clip's own swing wins, then the track's, then the transport's.
 
-Parameter locks are in the model too (`Clip.locks`, see [steps.md](steps.md#parameter-locks-lock)). Trig conditions, ratchets, audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
+Parameter locks, trig conditions and ratchets are in the model too (see [steps.md](steps.md)). Audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
 
 ## Compiling (`PlayView`)
 
-The control thread compiles the project and the playing clips (`Launch { track, slot, origin }`) into a read-only `PlayView`. For each clip it:
+The control thread compiles the project and the playing clips (`Launch { track, slot, origin, start }`) into a read-only `PlayView`. `start` is the tick the clip started on, which trig conditions count passes from: the origin, unless the origin was anchored back from a later bar line. For each clip it:
 
 - sorts the notes
 - applies quantise and speed
@@ -47,7 +47,7 @@ A clip launched while the music plays does not cut in at once. It waits for the 
 - **The next bar line the playhead plays.** That is usually the next bar. In a loop whose end comes first, it is the loop start's bar line, right after the jump back. A cue made while stopped waits for the first bar line played after PLAY.
 - **The switch.** On that tick the track's clip stops and the cued clip starts from its first tick. Notes of the old clip still sounding end on the same tick, before the new clip's notes start. A stop does the same with no new clip.
 - **Then it keeps its place against the song.** A started clip's origin is `anchored`: the bar line, moved back by whole passes to before any position the song can reach (`EARLIEST`, about 12 days at 120 BPM). So after a loop jump back or a locate it plays on in phase, and doesn't go silent until it reaches the bar line again.
-- **The control thread catches up.** `Player::started()` names each switch (track, slot, the tick, the new origin). The app applies it with `Started::apply`, which makes the clip the track's launch and removes the cue, and compiles again. Until that view arrives, the player and the recorder carry the switch themselves, so when the view arrives changes nothing that plays.
+- **The control thread catches up.** `Player::started()` names each switch (track, slot, the tick, the new origin). The app applies it with `Started::apply`, which makes the clip the track's launch (starting on that tick) and removes the cue, and compiles again. Until that view arrives, the player and the recorder carry the switch themselves, so when the view arrives changes nothing that plays.
 - **Recording.** On the armed track, notes held at the switch end on its bar line, in the clip that was playing. Notes played from that tick on go into the new clip. A switch ends a replace pass, and the take goes on as overdub.
 
 ## Playing (`Player::process`)
@@ -62,6 +62,9 @@ Each period the player walks the transport's spans and sends events in frame ord
   - If a note starts while the same note is still sounding on the same track, the old one ends first, on the same frame.
 - **Count-in and mute.** Nothing plays during a count-in, or on a muted track.
 - **Chance.** A note below 100 % rolls each time it comes round, on a hash of the note and the frame it would play on: the same for any period size, different on every pass. Notes left out are counted in `Stats::skipped`.
+- **Trig conditions.** A note's condition is decided before its chance; `Stats::unmet` counts the notes it leaves out. A:B and 1ST count passes from the clip's `start` by song position, so they are right after a locate or a loop jump. `Player::set_fill(on, offset)` turns FILL on or off on an exact frame of the coming period. Each track keeps its last result for PRE, and NEI reads the track to its left. The player decides a span's notes in the order they play (tick, then track, then the clip's order), so the results are the same for any period size. A track's result starts again when its clip starts, and on a stop or a locate, but not on a loop jump. See [steps.md](steps.md#trig-conditions-cond).
+- **Ratchets.** A ratchet's first hit is decided like any note; if it plays, its later hits wait in a table (256 for all tracks) and play on their ticks, after the note-offs and locks there and before the new notes. A stop, a locate or a loop jump drops them, a switch drops those from its bar line on, and a muted track drops its own.
+- **What conditions cost.** Counted in instructions with callgrind on the bench's Time case (8 clips of 16ths with 3-note chords and 2 locks a step, through the arp): 7,380 instructions a period before conditions existed, 8,060 with them built in and none used (+9 %), and 7,580 with a condition on every note, a ratchet of 3 on every fourth step and FILL switching (fewer notes play). A note with no condition and full chance skips the deciding.
 - **Real-time safe.** There is no allocation, lock or panic in `process`. A full table is counted in `Stats::dropped`, never dropped silently: 256 sounding notes, 256 note starts per span.
 
 ## Parameter locks
@@ -69,7 +72,8 @@ Each period the player walks the transport's spans and sends events in frame ord
 The player sends a clip's locks as `Event::Lock { addr, value }`, with `addr` the full `ParamAddr` on the clip's track, and ends them with `Event::Unlock { addr }`. The mod thread's resolver (`mpfree-mod`) applies them: a lock sets the parameter, and an unlock lets it go back to its knob, automation and modulation.
 
 - **Before the note.** A lock is sent on its tick's frame, after the note-offs there and before the note-ons, so the step's note starts with the locked value.
-- **Until the next note without one.** The lock holds until the track plays a note with no lock on that parameter on its own tick; the `Unlock` comes on that note's frame, before it. A sampler pad's parameter is only ended by that pad's notes. A trigless lock (no note on its tick) holds the same way. A note its chance leaves out ends nothing.
+- **Until the next note without one.** The lock holds until the track plays a note with no lock on that parameter on its own tick; the `Unlock` comes on that note's frame, before it. A sampler pad's parameter is only ended by that pad's notes. A trigless lock (no note on its tick) holds the same way. A note its condition or chance leaves out ends nothing.
+- **A left-out note leaves out its locks.** The locks on its tick and row are not sent, and a whole-step lock is not sent when every note on its tick is left out. Trigless locks always play. The player decides the span's notes before it sends anything, so it knows this when it reaches the lock.
 - **Jumps and switches.** A stop, a locate, a transport loop jump or a panic unlock everything, after the notes end. When a cue switches a track's clip, the old clip's locks end on the switch, before the new clip's start. A muted track, or one with nothing playing, lets its locks go at once and sends none.
 - **Every Unlock follows a Lock.** The player keeps what it has locked (up to 256 held locks, 256 lock starts a span; more is counted in `Stats::dropped`). `Stats::locks` counts locks sent. A pass being replaced sends none of its locks: it erases them (see "Replace and overdub").
 
@@ -144,6 +148,16 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - it follows the transport's swing
   - a busy session (a loop, swing, a tempo change, a locate, stop, panic and a restart) gives the same arp notes at periods of 1 to 8192 frames and two random sequences. With the span not split at the player's notes, period 8192 differs and the test fails.
 - `tests/arp.rs` also checks that live pad notes fed after the player's notes give the same arp output as notes fed in order, and that a note held by a pad and a clip waits for both.
+- `tests/trigs.rs` has 17 tests of trig conditions and ratchets, through the host's own steps (cues applied with `Started::apply` and compiled again):
+  - A:B and 1ST count passes from the clip's start; passes before the start count backwards; a pass is one pass at the clip's own speed
+  - a locate lands on the pass of the song position, and a locate back to the start plays 1ST again; a transport loop plays the same passes each time; a relaunch counts again from its new start
+  - FILL turns on exactly on a step's frame and off one frame after another, at periods of 64, 128 and 1000 frames, and a held FILL stays on
+  - PRE and NEI follow the last conditional note, PRE and NEI notes do not change it, NEI on the same tick reads the track to the left decided first, and the first track has no neighbour; chance sets the last result too; a locate resets it and a loop jump keeps it
+  - a ratchet gives the same events as the plain notes it stands for, also with swing, quantise and double speed; it plays whole or not at all at 50 % with its hits spread over many periods; a switch and a locate drop its later hits
+  - a note left out leaves out its own lock, and a whole-step lock on a chord goes only with every note
+  - a busy session (four tracks, every condition, chance, ratchets, locks, swing, quantise, 3/2 speed, FILL switched four times, a loop, a locate and a cue) gives the same events and stats at periods of 1 to 1024 frames
+
+  Making a loop jump reset PRE, sending every lock, or keeping a ratchet's hits past a switch each make a test fail.
 - `tests/locks.rs` has 9 tests of how locks play: a lock comes before its note-on and ends at the track's next note without one; a trigless lock holds until the next note; a pad's lock ends only at that pad's next note; a chord keeps its lock for every note; a note its chance leaves out ends nothing; a stop and a locate unlock everything after the note-offs; a switch ends the old clip's locks before the new one's; a muted track lets its locks go and sends none; a clip locks the track it plays on.
 - `tests/record.rs` has 20 tests:
   - notes land on the ticks they were played on, with their lengths
@@ -169,7 +183,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a switch on the armed track ends the replace pass
 
   With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, and every track has locks (the instrument's, a pad's, the strip's). It sees no allocation and no free.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, some have trig conditions and ratchets, FILL turns on and off, and every track has locks (the instrument's, a pad's, the strip's). It sees no allocation and no free.
 - `tests/in_place.rs` (3): thousands of random recorded and erased notes and locks, with and without quantise and speed, into the playing clip, a cued one, and the playing clip cued again, put in place leave the view equal to a fresh compile; a view with little room asks for a compile and the result is the same; with room set aside, recording in place allocates nothing once the take has begun.
 - `mpfree-hello`'s `recording_neither_compiles_nor_allocates_on_every_note`: the pad player records sixteen notes a second over a replace pass for 5.5 bars without an allocation or a free, its view equals a fresh compile, and the screens are told at most four times a second.
 
@@ -214,7 +228,7 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets.
 2. `TimeHost::period` runs the transport and the player. The clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15.
-3. The armed track records, and the taken and erased notes, and the recorded locks, go into the clips and the take history. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet.
+3. The armed track records, and the taken and erased notes, and the recorded locks, go into the clips and the take history. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet. `TimeHost::set_fill(on, offset)` turns FILL on or off for the trig conditions; no button calls it yet (the pad player picks the FILL button).
 4. While counting in and recording, a click plays on each beat: 1760 Hz on the bar and 1320 Hz on the other beats, at about −12 dBFS.
 
 The player's `Lock` and `Unlock` events are ignored for now: they need the mod resolver, which the pad player does not run yet.
@@ -229,5 +243,5 @@ Cues that start become launches right after the period they started in (`Started
 - Move the other edits (launches, arming, undo, capture) out of the audio loop, and the screen's state with them.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - Launching on the bar line (cues) is built. Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), scenes (a row of clips launched together), and a new clip that waits for its bar line without stopping the track's clip first.
-- The step sequencer's model is built (steps with velocity, length, nudge and chance, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.
+- The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.
 - The looper (T4).

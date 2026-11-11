@@ -435,6 +435,22 @@ impl TimeHost {
         self.recorder.input(offset, Event::Lock { addr, value });
     }
 
+    /// FILL on or off from `offset` in the coming period: notes with the
+    /// FILL and !FILL trig conditions follow it from that frame on. For
+    /// the FILL button (hold for a fill, double-press to latch).
+    // No button is mapped to FILL yet: the pad player picks one under the
+    // layout rules.
+    #[allow(dead_code)]
+    pub fn set_fill(&mut self, on: bool, offset: u32) {
+        self.player.set_fill(on, offset);
+    }
+
+    /// FILL, as of the last period, for the button's light.
+    #[allow(dead_code)]
+    pub fn fill(&self) -> bool {
+        self.player.fill()
+    }
+
     /// Run the transport for the coming period, before the app's process,
     /// so the arp can follow it ([`TimeHost::arp_clock`]).
     /// [`TimeHost::period`] then plays and records on the same block.
@@ -873,6 +889,8 @@ mod tests {
                     note,
                     velocity: 100,
                     chance: 100,
+                    cond: mpfree_seq::Cond::Always,
+                    ratchet: 1,
                 })
                 .collect();
             c

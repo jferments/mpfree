@@ -545,6 +545,8 @@ mod tests {
                 note: 1,
                 velocity: 100,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
             take,
         }
@@ -601,6 +603,8 @@ mod tests {
             note: 4,
             velocity: 90,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
@@ -625,6 +629,8 @@ mod tests {
                 note: 1,
                 velocity: 1,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
             .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
@@ -658,6 +664,8 @@ mod tests {
             note: 2,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         };
         assert_eq!(
             t.capture_notes(&mut p, 0, 0, &[n(0), n(5000)]),

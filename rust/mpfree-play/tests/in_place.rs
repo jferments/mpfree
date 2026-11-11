@@ -110,11 +110,13 @@ impl World {
                 track: 0,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
             Launch {
                 track: 1,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
         ];
         let cues = cue
