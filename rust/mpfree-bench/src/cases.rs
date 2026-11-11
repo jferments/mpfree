@@ -11,7 +11,7 @@ use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::{Poly, Wavetable, PRESETS};
+use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
@@ -109,6 +109,72 @@ fn chords(name: String, rate: u32, mut s: Box<dyn Node>, values: &[(u16, f32)], 
                 for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
                 held.clear();
                 let root = 36 + (seed.next() >> 28) as u8;
+                for k in 0..voices {
+                    let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
+                    held.push(note);
+                    events.push(Timed::new(at, NodeEvent::NoteOn { note, velocity: 64 + (seed.next() >> 26) as u8 }));
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            s.process(&Ctx::new(rate, f0), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The drum synth with a kit, hit on a random pad every `every` blocks
+/// with random velocities, so long hits overlap and choke groups work.
+fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
+    let mut d = Drums::new(rate);
+    d.prepare(rate, MAX_BLOCK);
+    let k = Drums::presets().iter().find(|k| k.name == kit).unwrap_or_else(|| panic!("kit {kit}"));
+    d.load_preset(k);
+    let mut seed = Lcg(17);
+    let mut events: Vec<Timed> = Vec::with_capacity(1);
+    Case {
+        name: name.to_string(),
+        module: "synth",
+        what: "random pads and velocities",
+        block: Box::new(move |b, l, r| {
+            events.clear();
+            if b % every == 0 {
+                let pad = (seed.next() >> 28) as u8 % 16;
+                events.push(Timed::new(0, NodeEvent::NoteOn { note: 36 + pad, velocity: 40 + (seed.next() >> 25) as u8 % 88 }));
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The pluck synth with a preset, `voices`-note chords changing every half
+/// second (re-plucks, releases and steals all in the numbers).
+fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
+    let mut s = Pluck::new(rate);
+    s.prepare(rate, MAX_BLOCK);
+    let p = Pluck::presets().iter().find(|p| p.name == preset).unwrap_or_else(|| panic!("pluck preset {preset}"));
+    s.load_preset(p);
+    s.set_param(mpfree_synth::pluck_params::POLYPHONY, voices as f32);
+    let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
+    let mut held: Vec<u8> = Vec::with_capacity(voices);
+    let mut seed = Lcg(5);
+    Case {
+        name: format!("Pluck {preset}, {voices} voices"),
+        module: "synth",
+        what: "chords changing every 0.5 s",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            let half = u64::from(rate / 2);
+            events.clear();
+            if f0 % half + len > half || f0 == 0 {
+                let at = if f0 == 0 { 0 } else { (half - f0 % half) as u32 % len as u32 };
+                for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
+                held.clear();
+                let root = 40 + (seed.next() >> 28) as u8;
                 for k in 0..voices {
                     let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
                     held.push(note);
@@ -265,6 +331,11 @@ pub fn all(rate: u32) -> Vec<Case> {
         v.push(measured(|| synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8)));
     }
     v.push(measured(|| synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16)));
+    v.push(measured(|| drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)));
+    v.push(measured(|| drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)));
+    for (name, voices) in [("Steel String", 8), ("Harp", 16), ("Marimba", 8), ("Bell", 16)] {
+        v.push(measured(|| pluck(name, rate, voices)));
+    }
     // Wavetable: the first case also holds the factory tables (built once
     // per process, shared by every instance).
     for preset in WT_PRESETS {
