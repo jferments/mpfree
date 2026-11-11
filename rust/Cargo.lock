@@ -383,6 +383,7 @@ dependencies = [
  "mpfree-arp",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
  "mpfree-node",
@@ -528,6 +529,14 @@ dependencies = [
  "mpfree-touch-evdev",
  "mpfree-transport",
  "mpfree-ui",
+]
+
+[[package]]
+name = "mpfree-lanes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-prof",
 ]
 
 [[package]]
