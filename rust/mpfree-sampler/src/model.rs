@@ -538,23 +538,61 @@ impl Project {
     /// from `to_pad`, as one undo step.
     pub fn slices_to_pads(&mut self, chop: usize, first: usize, count: usize, to_pad: usize) -> Result<(), ModelError> {
         let c = self.chop_sets.get(chop).ok_or(ModelError::BadSlice)?.clone();
-        let s = self.source(c.source).ok_or(ModelError::UnknownSource)?.clone();
+        let pads = self.slice_pads(&c, first, count, to_pad, None, first + 1)?;
+        let steps = self.place_pads(pads, to_pad);
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
+    /// Adds chop set `c` and puts its slices `first..first+count` on
+    /// consecutive pads from `to_pad`, all as one undo step. Each slice pad
+    /// is `template` (a pad's level, envelopes, filter and so on) with one
+    /// layer playing the slice once, keeping the template's first region's
+    /// gain, tune and channels; pads are named after the chop and numbered
+    /// from 1. Returns the chop set's index.
+    pub fn chop_to_pads(&mut self, c: ChopSet, first: usize, count: usize, to_pad: usize, template: Option<&Pad>)
+        -> Result<usize, ModelError> {
+        if self.source(c.source).is_none() { return Err(ModelError::UnknownSource); }
+        let pads = self.slice_pads(&c, first, count, to_pad, template, 1)?;
+        self.chop_sets.push(c);
+        let mut steps = vec![Undo::AddChop { set: None }];
+        steps.extend(self.place_pads(pads, to_pad));
+        self.push_undo(Undo::Group(steps));
+        Ok(self.chop_sets.len() - 1)
+    }
+
+    /// The pads for slices `first..first+count`, each checked, so a failure
+    /// changes nothing.
+    fn slice_pads(&self, c: &ChopSet, first: usize, count: usize, to_pad: usize, template: Option<&Pad>, number: usize)
+        -> Result<Vec<Pad>, ModelError> {
+        let s = self.source(c.source).ok_or(ModelError::UnknownSource)?;
         if count == 0 || first + count > c.slices() || to_pad + count > PADS { return Err(ModelError::BadSlice); }
-        // Build and check every pad first, so a failure changes nothing.
         let mut pads = Vec::with_capacity(count);
         for k in 0..count {
-            let name = format!("{} {}", c.name, first + k + 1);
-            let pad = Pad::new(&name, Layer::new(c.region(&s, first + k)?));
+            let name = format!("{} {}", c.name, number + k);
+            let mut region = c.region(s, first + k)?;
+            let pad = match template {
+                Some(t) => {
+                    if let Some(r) = t.layers.first().map(|l| &l.region) {
+                        (region.gain_db, region.tune_cents, region.channels) = (r.gain_db, r.tune_cents, r.channels);
+                    }
+                    Pad { name, layers: vec![Layer::new(region)], ..t.clone() }
+                }
+                None => Pad::new(&name, Layer::new(region)),
+            };
             self.check_pad(&pad)?;
             pads.push(pad);
         }
-        let mut steps = Vec::with_capacity(count);
+        Ok(pads)
+    }
+
+    fn place_pads(&mut self, pads: Vec<Pad>, to_pad: usize) -> Vec<Undo> {
+        let mut steps = Vec::with_capacity(pads.len());
         for (k, pad) in pads.into_iter().enumerate() {
             let before = self.pads[to_pad + k].replace(pad);
             steps.push(Undo::Pad { index: to_pad + k, before: before.map(Box::new), gesture: None });
         }
-        self.push_undo(Undo::Group(steps));
-        Ok(())
+        steps
     }
 
     fn push_undo(&mut self, u: Undo) {
@@ -589,6 +627,15 @@ impl Project {
             }
             Undo::Group(steps) => Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect()),
         }
+    }
+
+    /// Forgets every undo and redo step (and the sources only a redo could
+    /// bring back), so undo can't take apart what is there now, such as a
+    /// project just built from a kit. Nothing else changes.
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.removed.clear();
     }
 
     pub fn can_undo(&self) -> bool { !self.undo.is_empty() }

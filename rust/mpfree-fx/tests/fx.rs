@@ -23,7 +23,7 @@ impl Lcg {
     fn range(&mut self, lo: usize, hi: usize) -> usize { lo + (self.next() as usize) % (hi - lo + 1) }
 }
 
-const NAMES: [&str; 8] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety", "cloud reverb"];
+const NAMES: [&str; 13] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety", "cloud reverb", "eq", "chorus", "flanger", "phaser", "lo-fi"];
 
 fn make(i: usize) -> Box<dyn Node> {
     match i {
@@ -34,7 +34,12 @@ fn make(i: usize) -> Box<dyn Node> {
         4 => Box::new(Delay::new()),
         5 => Box::new(Compressor::new()),
         6 => Box::new(MasterSafety::new()),
-        _ => Box::new(Cloud::new()),
+        7 => Box::new(Cloud::new()),
+        8 => Box::new(Eq::new()),
+        9 => Box::new(Chorus::new()),
+        10 => Box::new(Flanger::new()),
+        11 => Box::new(Phaser::new()),
+        _ => Box::new(LoFi::new()),
     }
 }
 
@@ -115,6 +120,16 @@ fn set_up(mut node: Box<dyn Node>, values: &[(u16, f32)]) -> Box<dyn Node> {
     node
 }
 
+/// Ten times an 8.0 impulse at the EQ's loudest point for these settings.
+fn eq_bound(values: &[(u16, f32)]) -> f32 {
+    let mut eq = Eq::new();
+    for &(id, v) in values { eq.set_param(id, v); }
+    let hz: Vec<f32> = (0..2000).map(|i| 10.0 * 2300f32.powf(i as f32 / 1999.0)).collect();
+    let mut db = vec![0.0; hz.len()];
+    eq.response_db(&hz, &mut db);
+    80.0 * db_to_gain(db.iter().fold(0.0f32, |m, &d| m.max(d))).max(12.5)
+}
+
 fn run_once(node: &mut dyn Node, l: &mut [f32], r: &mut [f32]) {
     for (i, (a, b)) in l.chunks_mut(256).zip(r.chunks_mut(256)).enumerate() {
         node.process(&Ctx::new(RATE, (i * 256) as u64), &[], a, b);
@@ -184,8 +199,11 @@ fn every_extreme_stays_finite_and_bounded() {
             let p = peak(&l).max(peak(&r));
             assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{name} {case:?}: non-finite output");
             // Generous: the loudest legitimate case is +24 dB of drive output
-            // gain or filter gain on an 8.0 impulse.
-            assert!(p < 1000.0, "{name} {case:?}: peak {p}");
+            // gain or filter gain on an 8.0 impulse. The EQ can stack four
+            // bands and its output gain on one frequency, so its bound
+            // follows its own curve.
+            let bound = if *name == "eq" { eq_bound(&case) } else { 1000.0 };
+            assert!(p < bound, "{name} {case:?}: peak {p}, bound {bound}");
         }
     }
 }
@@ -498,6 +516,11 @@ fn full_chain() -> Chain {
     c.push(Box::new(Compressor::new()));
     c.push(Box::new(DjFilter::new()));
     c.push(Box::new(Cloud::new()));
+    c.push(Box::new(Eq::new()));
+    c.push(Box::new(Chorus::new()));
+    c.push(Box::new(Flanger::new()));
+    c.push(Box::new(Phaser::new()));
+    c.push(Box::new(LoFi::new()));
     c.push(Box::new(MasterSafety::new()));
     c
 }

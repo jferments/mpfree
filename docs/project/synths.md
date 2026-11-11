@@ -76,9 +76,19 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
   - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum).
   - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
 
+## In the pad player (`rust/mpfree-hello`, round 6)
+
+The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on the audio thread; the Synth tab shows it.
+
+- **Picking it.** The kit list ends with "Synth: Poly". Picking it with the wheel or a tap, or opening the Synth tab, hands the pads to Poly. Picking a drum kit hands them back, and Poly's notes end with their release. The sampler keeps its kit underneath, and its sounds finish.
+- **Notes.** Pad 1 plays C3 and each pad after it a semitone higher, so the pads play C3 to D#4. SHIFT + wheel on the Play page moves them by an octave, from C0 to C6 at pad 1 (with a drum kit it still moves the kit). The pads light C in purple, the other white keys in light blue and the black keys in dark blue, all colours Akai's app was seen sending. The screen labels each pad with its note.
+- **Playing.** Note Repeat, Latch, Full and Half Level and the velocity curve work as for drums: the note engine hands Poly each note-on and note-off on its exact frame. Pad pressure goes to the note its pad plays; Voice · Pressure opens its filter (1 octave at full pressure by default).
+- **The Synth tab.** It sits between Play and Debug. Q-Links 1 to 4 turn the page's marked knobs while it shows; elsewhere Q-Link 1 is still the level. The wheel turns the selected knob. SHIFT + wheel, - and + step the pages. MENU opens the pad options, as on Play. A touch, Q-Link or wheel change goes to the audio thread and applies from the next period. After a preset load the audio thread sends the node's values back, and every 250 ms it sends the meters when they change.
+- **Sound.** Each period the sampler renders, Poly adds to it, and the master level and the clip to full scale come last. Poly's render uses fixed buffers and never allocates (a test watches it with a counting allocator). A block with a non-finite sample is dropped, the node reset and the reset counted. STOP fades Poly out over 10 ms and resets it, so no release rings on.
+- **The log.** At the start, `synth: Poly, preset Pluck, as kit list entry N (C3 to D#4)`. Then a line when the pads move to Poly or by an octave (`pads: Poly synth, C3 to D#4 …`), one per preset (`synth: preset 4 of 9, Supersaw`) and one per knob once it rests for a second (`synth: Filter Cutoff 2.5 kHz`). Every 30 s a second status line gives Poly's render time per period (mean and largest, also as a share of a period), notes, the most voices at once, notes dropped and resets. The sampler's line now times the sampler alone.
+
 ## Next
 
-- Wiring the Synth tab into `mpfree-hello`, with a Poly track the pads play. This follows the hello queue on the merge desk.
 - A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
 - FM (6 operators, DX7 banks), then a drum synth for the pads.
 - Plugin hosting: CLAP first, in a sandbox process.

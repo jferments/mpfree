@@ -330,6 +330,9 @@ pub struct ArpPanel {
     /// The page name of the quick band.
     pub quick: String,
     layout: Option<&'static str>,
+    /// Changes every layout before it is added, for an app that puts a bar
+    /// of its own on its pages (such as the time engine's transport bar).
+    wrap: Option<fn(&str) -> String>,
 }
 
 impl ArpPanel {
@@ -345,9 +348,25 @@ impl ArpPanel {
         let rates: Vec<&str> = Rate::ALL.iter().map(|r| r.label()).collect();
         ui.add(RATES, RateBar::new(&rates));
         ui.add_page(quick, QUICK_LAYOUT)?;
-        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None };
+        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None, wrap: None };
         panel.update(ui, st)?;
         Ok(panel)
+    }
+
+    fn spec(&self, layout: &str) -> String {
+        self.wrap.map_or_else(|| layout.to_string(), |f| f(layout))
+    }
+
+    /// Lays both pages out again with `wrap` applied to every layout, now
+    /// and whenever the panel's layout changes. The widgets `wrap` adds must
+    /// be in `ui` already.
+    pub fn set_layout_wrap(&mut self, ui: &mut Ui, wrap: fn(&str) -> String) -> Result<(), String> {
+        self.wrap = Some(wrap);
+        ui.add_page(&self.quick, &self.spec(QUICK_LAYOUT))?;
+        if let Some(layout) = self.layout {
+            ui.add_page(&self.name, &self.spec(layout))?;
+        }
+        Ok(())
     }
 
     /// Shows `st` on both. The panel's layout follows the mode
@@ -356,7 +375,7 @@ impl ArpPanel {
         let s = &st.settings;
         let layout = layout_for(s.mode);
         if self.layout != Some(layout) {
-            ui.add_page(&self.name, layout)?;
+            ui.add_page(&self.name, &self.spec(layout))?;
             self.layout = Some(layout);
         }
         if let Some(b) = ui.get_mut::<RateBar>(RATES) {
@@ -487,6 +506,26 @@ mod tests {
 
     fn sample(name: &str) -> crate::sample::Sample {
         samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == name).unwrap()
+    }
+
+    #[test]
+    fn an_app_can_wrap_the_layouts_with_a_bar_of_its_own() {
+        fn with_bar(layout: &str) -> String {
+            layout.replacen("col(header:60, ", "col(header:60, bar:44, ", 1)
+        }
+        let mut s = sample("arp-up-2-oct");
+        s.ui.add("bar", mpfree_ui::widgets::Label::new("bar", Tone::Dim, mpfree_ui::Align::Left));
+        let before = s.ui.rect_of(LIST).unwrap();
+        s.page.set_layout_wrap(&mut s.ui, with_bar).unwrap();
+        assert!(s.ui.rect_of("bar").is_some());
+        assert!(s.ui.rect_of(LIST).unwrap().h < before.h);
+        // A new mode's layout is wrapped too, and so is the quick band.
+        let mut st = s.state.clone();
+        st.settings.mode = Mode::Pattern;
+        s.page.update(&mut s.ui, &st).unwrap();
+        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(ACTIONS).is_some());
+        s.ui.show(&s.page.quick.clone()).unwrap();
+        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(RATES).is_some());
     }
 
     #[test]
