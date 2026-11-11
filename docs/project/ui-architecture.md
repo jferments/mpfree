@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** first version, 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../rust/mpfree-hello/src/gui.rs)). Nothing in it has run on the MPC yet: [round 4](../guides/hello-mpc.md#round-4-the-pad-player-and-mpfrees-first-gui) is its first run.
+**Status:** 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../rust/mpfree-hello/src/gui.rs) draws it, [`app.rs`](../../rust/mpfree-hello/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/hello-mpc.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -15,7 +15,7 @@ From the bottom up:
 | Layer | What it is | Where |
 |---|---|---|
 | Canvas | The only code that touches pixels: rectangles, rounded rectangles (anti-aliased), outlines, glyph masks, a clip rectangle. `SoftCanvas` draws into a plain XRGB8888 buffer. | [`canvas.rs`](../../rust/mpfree-ui/src/canvas.rs) |
-| Screen output | `FbTarget` copies only the changed rectangles to `/dev/fb0`, turned to the panel's mounting (the MPC One's panel is 800×1280, mounted turned, so the UI sees 1280×800). It also handles 16-bit framebuffers. | [`fb.rs`](../../rust/mpfree-ui/src/fb.rs) |
+| Screen output | `FbTarget` copies only the changed rectangles to `/dev/fb0`, turned to the panel's mounting (the MPC One's panel is 800×1280, mounted turned, so the UI sees 1280×800). It also handles 16-bit framebuffers. It writes at least two whole native rows at a time: a write of exactly one row gives the kernel's framebuffer emulation a zero-width damage rectangle, and that row is never shown (found in round 4). `capture` reads the framebuffer back as a picture, which the loading page uses as its backdrop. | [`fb.rs`](../../rust/mpfree-ui/src/fb.rs) |
 | Theme | Every colour, size, radius and gap in one place, plus tones (normal, dim, accent, good, warning, bad) that widgets use instead of colours. | [`theme.rs`](../../rust/mpfree-ui/src/theme.rs) |
 | Fonts | Three faces (sans, bold, mono), rasterised by `fontdue` and cached per size. Built in: Inter and JetBrains Mono (SIL OFL 1.1), cut down to Latin, about 1 MB in RAM. Any TTF or OTF file can replace them (`--font`, `--bold-font`, `--mono-font`). | [`text.rs`](../../rust/mpfree-ui/src/text.rs), [`fonts/`](../../rust/mpfree-ui/fonts/README.md) |
 | Widgets | Draw themselves into the rectangle they are given and turn touches into events. They never talk to hardware or the audio engine. | [`widgets.rs`](../../rust/mpfree-ui/src/widgets.rs) |
@@ -41,10 +41,15 @@ col(header:60, row(pads:*, col(kits:*, level:96, timing:206):460):*, hint:26)
 - **StatList:** label and value rows (timing).
 - **LogPanel:** a scrolling log, each line with a tone (MIDI, events, the console).
 - **Label:** one line of text (the hint at the bottom).
+- **Loading:** a whole-screen start page: a backdrop (a captured picture, or its own stars and title), a card with what is happening, a detail line and a progress bar, or what failed. Only the card is redrawn as it changes.
+- **Card:** a heading, lines of text and buttons (the button guide).
+- **OptionList:** rows of a name and a value with ‹ and › arrows (Prefs and each page's options). A tap on a row selects it; an arrow steps its value.
+
+Most pages keep a gap at the screen's edges; `add_full_page` makes one with none (the loading page).
 
 ### Events and state
 
-Widgets show state and report what was touched; the app decides what that means. A touch becomes an `EventKind` (`Tab`, `Pad { index, down }`, `Select`, `Value`) tagged with the widget's name. The pad player turns those into the same actions the hardware produces: a tap on a screen pad and a hit on a real pad both become "play pad N"; a tap on the kit list and a turn of the wheel both become "select kit K". So any control can later come from the pads, the screen, an encoder or MIDI without the widgets knowing.
+Widgets show state and report what was touched; the app decides what that means. A touch becomes an `EventKind` (`Tab`, `Pad { index, down }`, `Select`, `Value`, `Step { index, delta }`) tagged with the widget's name. In the pad player, `app.rs` holds that meaning for buttons and touches alike (pages, menus, Note Repeat, Latch, Full Level, the button guide) and returns effects (show a page, light a button, change the sound); it never draws, so it is tested without a screen. The pad player turns those into the same actions the hardware produces: a tap on a screen pad and a hit on a real pad both become "play pad N"; a tap on the kit list and a turn of the wheel both become "select kit K". So any control can later come from the pads, the screen, an encoder or MIDI without the widgets knowing.
 
 Each finger belongs to the widget it first touched until it lifts, so a finger that slides off the level slider keeps moving the slider rather than hitting a pad.
 

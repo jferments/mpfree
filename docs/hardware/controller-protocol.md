@@ -14,7 +14,7 @@
 
 | Control | Message | Values |
 | --- | --- | --- |
-| Pads | Note on `0x99` / note off `0x89` (**channel 10**) | Velocity 1–127 on press; note off velocity 0 |
+| Pads | Note on `0x99` / note off `0x89` (**channel 10**) | Velocity 1–127 on press; note off velocity 0. In 323 hits (Hello MPC round 4, after Akai's setup) every value from 1 to 127 occurred, but 28 % were exactly 127: firm hits saturate in the controller (inferred) |
 | Pad pressure | Poly aftertouch `0xA9` (channel 10), same note as the pad | 0–127, streamed while held |
 | Pad note numbers, pads 1–16 (bottom-left → top-right, row by row) | `0x25 0x24 0x2A 0x52 0x28 0x26 0x2E 0x2C 0x30 0x2F 0x2D 0x2B 0x31 0x37 0x33 0x35` | Non-sequential: the engine needs a lookup table |
 | Q-Link 1–4 turn | CC 16, 17, 18, 19 (channel 1) | **Relative**: 1, 2 = clockwise steps; 127, 126 = counter-clockwise steps |
@@ -27,7 +27,7 @@
 
 | Purpose | Message | Notes |
 | --- | --- | --- |
-| Button LEDs | CC on cable 1, channel 1, **CC number = button note number** | Values 0–4 seen. 0 = off; 1 and 3 dominate (dim/bright, inferred). TAP TEMPO (CC 53) blinks 1/3 at the tempo; CC 67 (UNDO, per prior art) toggled 1/3 during Q-Link edits |
+| Button LEDs | CC on cable 1, channel 1, **CC number = button note number** | Values 0–4 seen. 0 = off; 1 and 3 dominate (dim/bright, inferred). TAP TEMPO (CC 53) blinks 1/3 at the tempo; CC 67 (UNDO, per prior art) toggled 1/3 during Q-Link edits. The pad player uses 1 for off and 3 for on, as the app does |
 | Pad RGB | SysEx on cable 0: `F0 47 7F 46 65 00 04 <pad 0–15> <R> <G> <B> F7` | 7-bit color components; pad index is 0-based in display order |
 | `5A` setup message | SysEx on cable 0: `F0 47 7F 46 5A 00 20 …` (32-byte payload) | Sent twice at the app's startup; full bytes [below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10). Meaning unknown (the earlier guess, bulk pad colours, is not supported by the bytes) |
 | Session ping | Host → cable 0: `F0 47 00 46 52 00 04 <token> F7` every 4–5 s | Controller answers on cable 1: `F0 47 7F 46 53 00 05 <token> <status> F7`. The app picks a new 4-byte token at each start and keeps it for the whole run ([below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10)) |
