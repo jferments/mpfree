@@ -95,8 +95,11 @@ dependencies = [
  "mpfree-arp",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-node",
  "mpfree-sampler",
  "mpfree-screen-log",
+ "mpfree-synth",
+ "mpfree-synth-ui",
  "mpfree-touch",
  "mpfree-ui",
 ]

@@ -27,6 +27,8 @@ pub const LIGHT_ON: u8 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// The synth's page (mpfree-synth-ui): Poly's controls.
+    Synth,
     Debug,
     Console,
     Prefs,
@@ -36,19 +38,20 @@ pub enum View {
     Guide,
 }
 
-pub const TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
+pub const TABS: [&str; 5] = ["Play", "Synth", "Debug", "Console", "Prefs"];
 
 impl View {
     pub fn from_tab(i: usize) -> View {
-        [View::Play, View::Debug, View::Console, View::Prefs].get(i).copied().unwrap_or(View::Play)
+        [View::Play, View::Synth, View::Debug, View::Console, View::Prefs].get(i).copied().unwrap_or(View::Play)
     }
 
     pub fn tab(self) -> Option<usize> {
         match self {
             View::Play => Some(0),
-            View::Debug => Some(1),
-            View::Console => Some(2),
-            View::Prefs => Some(3),
+            View::Synth => Some(1),
+            View::Debug => Some(2),
+            View::Console => Some(3),
+            View::Prefs => Some(4),
             View::Options | View::Guide => None,
         }
     }
@@ -267,6 +270,13 @@ pub enum Effect {
     StopSounds,
     /// Move the kit by this many places.
     Kit(i32),
+    /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
+    /// before, when a drum kit is playing).
+    Octave(i32),
+    /// The wheel on the Synth page: turn the selected knob.
+    SynthWheel(i32),
+    /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
+    SynthPage(i32),
     /// Start the audio again with this many periods.
     Audio(u32),
     ClearLogs,
@@ -311,7 +321,6 @@ impl App {
         app
     }
 
-    #[cfg(test)]
     pub fn view(&self) -> View {
         self.view
     }
@@ -457,6 +466,8 @@ impl App {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
+            } else if self.view == View::Synth {
+                fx.push(Effect::SynthPage(d));
             } else {
                 fx.push(Effect::Kit(d));
             }
@@ -525,6 +536,9 @@ impl App {
                 let last = self.items().len() as i32 - 1;
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
+            View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
+            View::Synth => vec![Effect::SynthWheel(delta)],
+            View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
     }
@@ -536,7 +550,7 @@ impl App {
     }
 
     fn show(&mut self, v: View) -> Vec<Effect> {
-        if matches!(self.view, View::Play | View::Debug | View::Console) {
+        if matches!(self.view, View::Play | View::Synth | View::Debug | View::Console) {
             self.back = self.view;
         }
         self.view = v;
@@ -945,6 +959,33 @@ mod tests {
     }
 
     #[test]
+    fn the_synth_tab_takes_the_wheel_and_shift_wheel_moves_octaves_on_play() {
+        let mut app = ready();
+        // SHIFT + wheel on Play: octaves (main.rs moves the kit when drums play).
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(3), vec![Effect::Octave(1)]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.tab(View::Synth.tab().unwrap()), vec![Effect::Show(View::Synth)]);
+        assert_eq!(app.view(), View::Synth);
+        assert_eq!(app.wheel(2), vec![Effect::SynthWheel(2)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-4), vec![Effect::SynthPage(-1)]);
+        app.button(button::SHIFT, false, 0.0);
+        // - and + step pages once the guide knows them.
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(press(&mut app, 41), vec![Effect::SynthPage(1)]);
+        assert_eq!(press(&mut app, 40), vec![Effect::SynthPage(-1)]);
+        // MENU on the Synth page opens its options and goes back to it.
+        let fx = press(&mut app, MENU);
+        assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Synth options"));
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Synth);
+        assert_eq!(app.tab(0), vec![Effect::Show(View::Play)]);
+    }
+
+    #[test]
     fn menu_and_shift_menu_open_options_and_prefs() {
         let mut app = ready();
         let fx = press(&mut app, MENU);
@@ -973,7 +1014,7 @@ mod tests {
         assert_eq!(app.step_item(3, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
         assert!(app.step_item(3, -1).contains(&Effect::Audio(2)));
         // The Debug page's options.
-        app.tab(1);
+        app.tab(View::Debug.tab().unwrap());
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Debug options"));
         // The wheel picks kits outside menus.
@@ -1022,7 +1063,7 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.contains("MENU = button 123")
                                              && n.contains("- = not found"))));
         // The guide again from Prefs.
-        app.tab(3);
+        app.tab(View::Prefs.tab().unwrap());
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
