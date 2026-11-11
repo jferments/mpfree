@@ -34,6 +34,10 @@
 //!   host resets it ([`Node::reset`]) and counts it.
 #![forbid(unsafe_code)]
 
+pub mod pressure;
+
+pub use pressure::{Pressure, PressureChord, PressureCoefs, PressureCurve, PressureMode, PressureRelease, PressureShape};
+
 /// The most frames a host passes in one call.
 pub const MAX_BLOCK: usize = 8192;
 

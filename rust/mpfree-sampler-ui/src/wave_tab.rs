@@ -52,7 +52,7 @@ pub const LAYOUT: &str = "col(header:60, smp-bar:60, smp-overview:56, row(smp-wa
 /// The pad editor's tabs.
 pub const TABS: [&str; 5] = ["Wave", "Chop", "Play", "Grain", "FX"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 2] = ["Wave", "Chop"];
+pub const BUILT: [&str; 3] = ["Wave", "Chop", "Play"];
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or turn the wheel to zoom · tap the wave to \

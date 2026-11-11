@@ -11,6 +11,7 @@ mpfree-play = { path = "../mpfree-play" }
 mpfree-seq = { path = "../mpfree-seq" }
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-ui = { path = "../mpfree-ui" }
+mpfree-capture = { path = "../mpfree-capture" }
 
 [[bin]]
 name = "mpfree-time-preview"
