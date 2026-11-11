@@ -541,6 +541,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-plughost"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-clap",
+ "mpfree-clap-testplug",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-track",
+]
+
+[[package]]
 name = "mpfree-prof"
 version = "0.1.0"
 dependencies = [

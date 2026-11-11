@@ -238,4 +238,4 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 - FM on the pads: an FM choice next to Poly in the pad player.
 - Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
 - Synth tab visuals for Drums and Pluck (a pad grid with the models, the string or the mode bank).
-- Plugin hosting: the CLAP host is built ([Plugins](plugins.md)); next, the sandbox process.
+- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).

@@ -290,7 +290,7 @@ impl Library {
             };
             let (params, map) = inst.scan_params(&desc.id);
             inst.values = map.iter().map(|_| AtomicU32::new(0)).collect();
-            let info = intern_info(&desc, kind);
+            let info = intern_info(&desc.id, &desc.name, kind);
             let mut by_clap: Vec<(clap_id, u16)> = map
                 .iter()
                 .enumerate()
@@ -704,7 +704,7 @@ impl Instance {
             } else {
                 default
             };
-            owned.push(OwnedParam {
+            owned.push(ParamSpec {
                 name,
                 group,
                 min,
@@ -774,23 +774,49 @@ fn fixed_str(b: &[c_char]) -> String {
 
 // ------------------------------------------------------------------ 'static descriptions
 
+/// A parameter curve with owned names (see [`ParamSpec`]).
 #[derive(Clone, PartialEq, Debug)]
-enum CurveSpec {
+pub enum CurveSpec {
     Linear,
     Stepped,
     Toggle,
     Choice(Vec<String>),
 }
 
+/// A parameter description with owned strings: what a plugin says about a
+/// parameter, before [`intern_params`] makes it a `'static` [`ParamInfo`].
+/// The sandbox sends these between processes.
 #[derive(Clone, PartialEq, Debug)]
-struct OwnedParam {
-    name: String,
-    group: String,
-    min: f32,
-    max: f32,
-    default: f32,
-    curve: CurveSpec,
-    readonly: bool,
+pub struct ParamSpec {
+    pub name: String,
+    pub group: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    pub curve: CurveSpec,
+    pub readonly: bool,
+}
+
+impl ParamSpec {
+    /// The owned form of a description.
+    pub fn from_info(p: &ParamInfo) -> ParamSpec {
+        ParamSpec {
+            name: p.name.to_string(),
+            group: p.group.to_string(),
+            min: p.min,
+            max: p.max,
+            default: p.default,
+            curve: match p.curve {
+                Curve::Stepped => CurveSpec::Stepped,
+                Curve::Toggle => CurveSpec::Toggle,
+                Curve::Choice(names) => {
+                    CurveSpec::Choice(names.iter().map(|n| n.to_string()).collect())
+                }
+                Curve::Linear | Curve::Log => CurveSpec::Linear,
+            },
+            readonly: p.readonly,
+        }
+    }
 }
 
 fn leak(s: &str) -> &'static str {
@@ -801,7 +827,7 @@ type ParamKey = (String, Vec<OwnedParamKey>);
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct OwnedParamKey(String, String, u32, u32, u32, String, bool);
 
-fn key_of(p: &OwnedParam) -> OwnedParamKey {
+fn key_of(p: &ParamSpec) -> OwnedParamKey {
     let curve = match &p.curve {
         CurveSpec::Linear => "l".to_string(),
         CurveSpec::Stepped => "s".to_string(),
@@ -819,8 +845,10 @@ fn key_of(p: &OwnedParam) -> OwnedParamKey {
     )
 }
 
-/// Each distinct (plugin, parameter list) is leaked once.
-fn intern_params(plugin_id: &str, list: Vec<OwnedParam>) -> &'static [ParamInfo] {
+/// The `'static` descriptions for a plugin's parameter list; their ids are
+/// their positions. Each distinct (plugin, list) is leaked once, for the
+/// life of the program.
+pub fn intern_params(plugin_id: &str, list: Vec<ParamSpec>) -> &'static [ParamInfo] {
     static TABLE: OnceLock<Mutex<HashMap<ParamKey, &'static [ParamInfo]>>> = OnceLock::new();
     let key = (
         plugin_id.to_string(),
@@ -861,17 +889,19 @@ fn intern_params(plugin_id: &str, list: Vec<OwnedParam>) -> &'static [ParamInfo]
 
 type InfoTable = HashMap<(String, String, bool), &'static NodeInfo>;
 
-fn intern_info(d: &PluginDesc, kind: Kind) -> &'static NodeInfo {
+/// The `'static` [`NodeInfo`] for plugin `id` (shown as `name`): its node
+/// id is `clap:` and the plugin id. Leaked once per distinct plugin.
+pub fn intern_info(id: &str, name: &str, kind: Kind) -> &'static NodeInfo {
     static TABLE: OnceLock<Mutex<InfoTable>> = OnceLock::new();
-    let key = (d.id.clone(), d.name.clone(), kind == Kind::Instrument);
+    let key = (id.to_string(), name.to_string(), kind == Kind::Instrument);
     let table = TABLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(i) = t.get(&key) {
         return i;
     }
     let info: &'static NodeInfo = Box::leak(Box::new(NodeInfo {
-        id: leak(&format!("clap:{}", d.id)),
-        name: leak(&d.name),
+        id: leak(&format!("clap:{id}")),
+        name: leak(name),
         kind,
     }));
     t.insert(key, info);
