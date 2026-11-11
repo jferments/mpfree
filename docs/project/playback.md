@@ -109,17 +109,20 @@ With the transport's overdub on, a take only adds notes. With overdub off (the d
 
 ## Listening
 
-`cargo run --release -p mpfree-play --example render` plays a demo song through the transport, the player, the arp and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The song is 92 BPM with 1/16 swing, a four-bar loop played twice:
+`cargo run --release -p mpfree-play --example render` plays a demo beat through the transport, the player, the arp and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The beat is 84 BPM with heavy 1/16 swing: a four-bar loop played three times, then a final hit that rings out. The sounds are saturated and bit-crushed:
 
-- drums
-- hats at double speed with their own swing
-- a bass line on gated pads, so note lengths matter
-- a 7/16 pluck clip that drifts against the bar
-- a chord held for each bar, played through the arp in swung 1/16s on gated pads
-- a live take: the transport records the first pass. A clave played a little off the grid on pad 20 goes into an empty one-bar clip that quantises to 1/16. From the next bar on, each hit plays on the grid, so the bar builds up. The transport punches out at the loop's end.
-- a second take replaces it: in the second pass the transport punches in for bar 3 with overdub off. The old clave notes are erased as the playhead reaches them while a new pattern is played, and bar 4 plays the new pattern alone.
+- drums, with ghost snares at low velocity
+- hats at double speed with their own swing, and a 1/32 roll
+- a distorted bass line on gated pads, so note lengths matter
+- a 7/16 glitch clip that drifts against the bar
+- dark chords held for a bar each, played through the arp in swung 1/16s on gated pads
+- vinyl dust
+- two live takes on an empty one-bar clip that quantises to 1/16:
+  - **Take 1.** The transport records the first pass. A distorted chord stab is played on the pads a little off the grid, one or two hits a bar. From the next bar on, each hit plays from the clip on the grid, so the stab riff builds up. The transport punches out at the loop's end.
+  - **Take 2.** In the second pass, bars 5 and 6 play the riff. Bar 7 punches in with overdub off. The stabs are erased as the playhead reaches them, so they stop, while a metal clank is played on the off-beats. Bar 8 and the third pass play the clanks alone.
+- the end: the transport stops on the last bar line, and a kick, stab and crash ring out.
 
-All the sounds are synthesised in the tool. It prints an events hash for the player's and the arp's notes, the recorded notes and the erased notes, which is the same on every computer, and checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames.
+All the sounds are synthesised in the tool. It prints the take track bar by bar from the notes the player and the pads actually sent (which steps played from the clip, which were played live, which were erased). It checks that the stabs play from the clip only in bars 2 to 6, the clanks only from bar 8, and every erased note falls in bar 7. It prints an events hash for the player's and the arp's notes, the recorded notes and the erased notes. That hash is the same on every computer, and the tool checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames. The master soft-clips, so it never clips.
 
 ## Next
 
