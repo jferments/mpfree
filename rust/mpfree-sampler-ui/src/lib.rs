@@ -13,6 +13,10 @@
 //! - [`chop_tab`]: the pad editor's Chop tab: slices of the pad's sound by
 //!   transients, beats, a grid, silence or by hand, split, merged and put on
 //!   pads as one undo step ([`ChopAction`]).
+//! - [`play_tab`]: the pad editor's Play tab: the layers' velocities, the
+//!   amp envelope drawn over the sound, the filter's curve and the pad's
+//!   other settings, each change a [`PlayAction`]. Its pictures are in
+//!   [`play_widgets`].
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -21,11 +25,14 @@
 #![forbid(unsafe_code)]
 
 pub mod chop_tab;
+pub mod play_tab;
+pub mod play_widgets;
 pub mod sample;
 pub mod source;
 pub mod wave_tab;
 pub mod widgets;
 
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
+pub use play_tab::{PlayAction, PlayState, PlayTab};
 pub use source::{PyramidPeaks, SourceView};
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

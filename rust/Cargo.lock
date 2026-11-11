@@ -386,6 +386,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-capture"
+version = "0.1.0"
+dependencies = [
+ "mpfree-play",
+ "mpfree-sampler",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-controller"
 version = "0.1.0"
 
@@ -445,6 +455,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
+ "mpfree-capture",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-node",
@@ -576,6 +587,7 @@ dependencies = [
 name = "mpfree-time-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-capture",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",
