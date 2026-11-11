@@ -9,13 +9,20 @@
 //! notes go into the clips and the take history. After the sampler renders,
 //! [`TimeHost::mix_click`] adds the click while counting in and recording.
 //!
-//! Edits (launches, takes, arming) compile a new play view in the loop.
-//! That allocates, but only on an edit, not every period; moving it to a
-//! control thread is a later step. Every track plays the current kit.
+//! Every pad note also goes into the capture history, so CAPTURE
+//! ([`TimeAction::Capture`]: the Clips page's Capture button) keeps the
+//! last phrase in the armed track even when nothing was recording, as an
+//! undoable take (`mpfree-capture`).
+//!
+//! Edits (launches, takes, arming, a capture) compile a new play view in
+//! the loop. That allocates, but only on an edit, not every period; moving
+//! it to a control thread is a later step. Every track plays the current
+//! kit.
 
+use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::{Clip, Project, Track};
-use mpfree_time_ui::view::{launches_after, TimeAction, TimeState, TransportInfo};
+use mpfree_time_ui::view::{bars_label, launches_after, TimeAction, TimeState, TransportInfo};
 use mpfree_transport::{Block, Command, State, Transport};
 use std::f32::consts::TAU;
 
@@ -124,6 +131,9 @@ pub struct TimeHost {
     transport: Box<Transport>,
     player: Box<Player>,
     recorder: Box<Recorder>,
+    capture: Box<Capture>,
+    /// What CAPTURE would keep, as the screen last showed it.
+    pending: Option<Pending>,
     block: Box<Block>,
     sink: Box<Collect>,
     view: PlayView,
@@ -149,7 +159,7 @@ impl TimeHost {
         }
         let blank = Out { offset: 0, frame: 0, track: 0, dest: 0, event: Event::AllOff };
         let mut host = TimeHost { transport, player: Box::new(Player::new()), recorder: Box::new(Recorder::new()),
-                                  block: Box::new(Block::new()),
+                                  capture: Box::new(Capture::new()), pending: None, block: Box::new(Block::new()),
                                   sink: Box::new(Collect { out: [blank; MAX_OUT], n: 0, dropped: 0 }),
                                   view: PlayView::empty(), project, launches: Vec::new(), armed: Some(0),
                                   takes: Takes::default(), click: Click::new(rate), metronome: true, changed: true };
@@ -158,6 +168,9 @@ impl TimeHost {
     }
 
     fn compile(&mut self) -> Result<(), String> {
+        // An undone capture takes its clip, and so its launch, away.
+        let project = &self.project;
+        self.launches.retain(|l| project.clip(l.track, l.slot).is_some());
         let mut v = PlayView::compile(&self.project, &self.launches).map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
         self.view = v;
@@ -190,13 +203,25 @@ impl TimeHost {
                 Ok(format!("transport: {cmd:?}"))
             }
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
-                Some(n) => self.compile().map(|_| format!("undo: take {n}")),
+                Some(_) => {
+                    let row = self.takes.undone().last().map(|t| (t.captured, t.number));
+                    if row.is_some_and(|(captured, _)| captured) {
+                        // It can be kept again.
+                        self.capture.forget_kept();
+                        self.pending = self.capture.pending();
+                    }
+                    self.compile().map(|_| format!("undo: {}", take_name(row)))
+                }
                 None => Ok("undo: nothing to undo".into()),
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
-                Some(n) => self.compile().map(|_| format!("redo: take {n}")),
+                Some(_) => {
+                    let row = self.takes.done().last().map(|t| (t.captured, t.number));
+                    self.compile().map(|_| format!("redo: {}", take_name(row)))
+                }
                 None => Ok("redo: nothing to redo".into()),
             },
+            TimeAction::Capture => self.keep(),
             TimeAction::Arm(track) => {
                 self.armed = track.filter(|&t| t < self.project.tracks.len());
                 self.compile()?;
@@ -236,16 +261,54 @@ impl TimeHost {
         }
     }
 
+    /// CAPTURE: keep the last phrase in the armed track (track 1 if none
+    /// is armed): into its playing clip when it was played in time over
+    /// it, else as a new clip in its first empty slot that plays on in its
+    /// place. A line for the log.
+    fn keep(&mut self) -> Result<String, String> {
+        if self.capture.pending().is_none() {
+            return Ok("capture: nothing new to keep".into());
+        }
+        let phrase = self.capture.phrase().ok_or("capture: nothing played")?;
+        let t = &self.transport;
+        let now = Now { position: t.position(), rolling: t.state().rolling(), meter: t.meter(),
+                        loop_range: t.loop_range() };
+        let track = self.armed.unwrap_or(0);
+        let name = format!("Capture {}", self.takes.captures() + 1);
+        let k = keep(&phrase, &mut self.project, &self.launches, &mut self.takes, track, now, &name)
+            .map_err(|e| format!("capture: {e:?}"))?;
+        if let Some(l) = k.launch {
+            self.launches.retain(|x| x.track != l.track);
+            self.launches.push(l);
+        }
+        self.capture.mark_kept(phrase.id);
+        self.pending = self.capture.pending();
+        self.compile()?;
+        let into = if k.launch.is_some() { "new clip in" } else { "into the clip in" };
+        Ok(format!("capture {}: {} notes, {}, {into} slot {} of {}", k.take, k.notes, bars_label(k.bars),
+                   k.slot + 1, self.project.tracks[track].name))
+    }
+
     /// A pad note played in the coming period, at `offset`: recorded into
-    /// the armed track while the transport records.
+    /// the armed track while the transport records, and kept in the
+    /// capture history always.
     pub fn pad(&mut self, offset: u32, event: Event) {
         self.recorder.input(offset, event);
+        self.capture.input(offset, event);
     }
 
     /// Run one period: the clips play into `pads`, the armed track records.
     pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
         if !self.transport.process(frames, &mut self.block) {
             return;
+        }
+        self.capture.process(&self.block);
+        // The Capture button shows what it would keep: a new phrase, or one
+        // more bar of it, is a change for the screen (once a bar at most).
+        let pending = self.capture.pending();
+        if pending != self.pending {
+            self.pending = pending;
+            self.changed = true;
         }
         self.sink.n = 0;
         self.player.process(&self.view, &self.block, &mut *self.sink);
@@ -300,12 +363,14 @@ impl TimeHost {
 
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
-        TimeState::from_engine(self.info(), &self.project, &self.launches, self.armed, &self.takes)
+        let mut st = TimeState::from_engine(self.info(), &self.project, &self.launches, self.armed, &self.takes);
+        st.capture = self.pending.map(|p| bars_label(p.bars));
+        st
     }
 
     /// Notes lost because a table was full (should stay 0).
     pub fn dropped(&self) -> u64 {
-        self.sink.dropped + self.recorder.dropped() + self.player.stats().dropped
+        self.sink.dropped + self.recorder.dropped() + self.player.stats().dropped + self.capture.dropped()
     }
 
     /// The time engine's part of the status line.
@@ -313,6 +378,15 @@ impl TimeHost {
         let t = &self.transport;
         format!("time: {:?} at {}, {:.1} BPM, {} takes, {} notes lost to full tables",
                 t.state(), t.meter().position(t.position()), t.bpm(), self.takes.done().len(), self.dropped())
+    }
+}
+
+/// "take 3" or "capture 2", for log lines.
+fn take_name(row: Option<(bool, u32)>) -> String {
+    match row {
+        Some((true, n)) => format!("capture {n}"),
+        Some((false, n)) => format!("take {n}"),
+        None => "take".into(),
     }
 }
 
@@ -394,6 +468,44 @@ mod tests {
         h.act(TimeAction::Transport(Command::Record)).unwrap();
         run(&mut h, &mut pads, 8 * BAR, &[]);
         assert_eq!(pads.hits.len(), 2, "redo brings both back");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Pads played over bars 2 and 3 without recording; Capture keeps them
+    /// as a new clip in the armed track that plays on in its place, and
+    /// Undo takes it back.
+    #[test]
+    fn capture_keeps_what_was_played_without_recording() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert_eq!(h.act(TimeAction::Capture).unwrap(), "capture: nothing new to keep");
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.take_changed();
+        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[(BAR + 1000, 4, 100, 2000), (2 * BAR + 500, 9, 80, 2000)]);
+        assert!(h.take_changed(), "the Capture button changed");
+        assert_eq!(h.state().capture.as_deref(), Some("2 bars"));
+        assert!(pads.hits.is_empty() && h.state().done.is_empty(), "nothing was recorded or played back");
+        let line = h.act(TimeAction::Capture).unwrap();
+        assert_eq!(line, "capture 1: 2 notes, 2 bars, new clip in slot 1 of Track 1");
+        let st = h.state();
+        assert_eq!(st.capture, None);
+        assert_eq!((st.clip(0, 0).map(|c| (c.name.as_str(), c.notes)), st.launch(0).is_some()),
+                   (Some(("Capture 1", 2)), true));
+        // It plays on in its place: it was played over bars 2 and 3, so bar
+        // 4 is its first bar again. Kept halfway through bar 4, it plays
+        // its second bar's note in bar 5 and its first bar's in bar 6.
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        let back: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(back.len(), 2, "{back:?}");
+        for ((f, p), (want, pad)) in back.iter().zip([(4 * BAR + 500, 9), (5 * BAR + 1000, 4)]) {
+            assert!(f.abs_diff(want) <= 23 && *p == pad, "{back:?}");
+        }
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        let st = h.state();
+        assert!(st.clip(0, 0).is_none() && st.launch(0).is_none());
+        assert_eq!(st.capture.as_deref(), Some("2 bars"), "it can be kept again");
+        assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
         assert_eq!(h.dropped(), 0);
     }
 

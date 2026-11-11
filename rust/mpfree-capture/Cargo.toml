@@ -1,0 +1,18 @@
+[package]
+name = "mpfree-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CAPTURE: an always-on history of the notes played, and \"keep the last phrase as a clip\" cut to whole bars; the history never allocates while running"
+
+[lib]
+name = "mpfree_capture"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-play = { path = "../mpfree-play" }
+
+[dev-dependencies]
+mpfree-sampler = { path = "../mpfree-sampler" }
