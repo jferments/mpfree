@@ -59,7 +59,7 @@ pub const LAYOUT: &str =
 /// up) first, then the editors for the pad picked.
 pub const TABS: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 4] = ["Pads", "Wave", "Chop", "Play"];
+pub const BUILT: [&str; 5] = ["Pads", "Wave", "Chop", "Play", "Grain"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 1;
 
