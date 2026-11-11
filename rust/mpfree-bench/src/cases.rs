@@ -22,7 +22,8 @@ pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
 
 pub struct Case {
     pub name: String,
-    /// The budget it counts against (see `mpfree_prof::budget`).
+    /// The budget it counts against (see `mpfree_prof::budget`); "period"
+    /// is the whole audio thread.
     pub module: &'static str,
     /// What it plays, for the report.
     pub what: &'static str,
@@ -281,7 +282,43 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| chain(rate)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
+    v.push(measured(|| song(rate)));
     v
+}
+
+/// A busy song on one audio thread, against the whole thread's budget: the
+/// sampler with the master grains, two synths (an 8-voice Supersaw and a
+/// 4-voice Sub Bass), the mixer with a song's inserts, the time engine and
+/// the looper, each run every block in that order. Running them together
+/// also shows what they cost each other in the caches.
+fn song(rate: u32) -> Case {
+    let preset = |name: &str| PRESETS.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("preset {name}")).values;
+    let mut parts = [
+        sampler("sampler", rate, true),
+        synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
+        synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
+        mixer("mixer", rate, 12, 8, true),
+        time(rate, 8),
+        looper(rate, 60),
+    ];
+    let mut bufs: Vec<(Vec<f32>, Vec<f32>)> = parts.iter().map(|_| (vec![0.0f32; MAX_BLOCK], vec![0.0f32; MAX_BLOCK])).collect();
+    Case {
+        name: "Song: sampler, 2 synths, mixer+FX, time, looper".to_string(),
+        module: "period",
+        what: "every engine of a busy song in one block",
+        block: Box::new(move |b, l, r| {
+            let n = l.len();
+            for (part, (bl, br)) in parts.iter_mut().zip(bufs.iter_mut()) {
+                (part.block)(b, &mut bl[..n], &mut br[..n]);
+            }
+            // The mixer's output (part 3) plus the loop is what is heard.
+            for i in 0..n {
+                l[i] = bufs[3].0[i] + bufs[5].0[i];
+                r[i] = bufs[3].1[i] + bufs[5].1[i];
+            }
+        }),
+        mem_bytes: 0,
+    }
 }
 
 /// Builds a case and records the bytes it holds.
