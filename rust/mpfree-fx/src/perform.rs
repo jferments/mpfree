@@ -11,6 +11,11 @@
 //!   high-pass sweeps, crush and a noise riser.
 //! - **Echo throw** sends what you hear into a tempo-timed echo while the
 //!   pad is held; the repeats ring out after it is let go.
+//! - **Wash throw** sends it into a long, dark reverb while the pad is
+//!   held; the tail rings out after. The reverb is a small one (four combs
+//!   and two all-passes a side), awake only while it is fed or ringing.
+//! - **Mix** ([`ids::MIX`]) sets how much of all this is heard: 0 is the
+//!   input exactly, 100 % (the default) the effects alone.
 //!
 //! A pad is a note: `NoteOn` with note 0 to 15 holds slot 0 to 15,
 //! `NoteOff` lets it go, and `AllOff` lets every slot go. Latching is the
@@ -64,6 +69,9 @@ pub mod ids {
     pub const fn hold(k: usize) -> u16 {
         ECHO_TIME + 1 + k as u16
     }
+    /// After the Holds: the overall mix, 0 to 100 % (0 is the input
+    /// exactly, the echo and wash tails included); id 85.
+    pub const MIX: u16 = hold(super::SLOTS);
 }
 
 /// A slot's state, as its read-only STATE parameter reports it.
@@ -90,6 +98,7 @@ pub const EFFECTS: &[&str] = &[
     "Crush",
     "Echo throw",
     "Noise riser",
+    "Wash throw",
 ];
 
 /// What a slot's Amount means for each effect, for the UI and the docs.
@@ -108,6 +117,7 @@ pub const AMOUNT_MEANS: &[&str] = &[
     "bits and sample rate",
     "feedback",
     "level",
+    "decay (100 % = about 5 seconds)",
 ];
 
 const QUANTISE: &[&str] = &["Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
@@ -275,13 +285,24 @@ macro_rules! bank {
                     readonly: false,
                 },
             )*
+            ParamInfo {
+                id: ids::MIX,
+                name: "Mix",
+                group: "Play",
+                min: 0.0,
+                max: 100.0,
+                default: 100.0,
+                unit: Unit::Percent,
+                curve: Curve::Linear,
+                readonly: false,
+            },
         ]
     };
 }
 
 /// How many parameters: the two globals, four per pad, then the DJ filter,
-/// the echo and its time, then a Hold per pad.
-const COUNT: usize = 2 + 4 * SLOTS + 3 + SLOTS;
+/// the echo and its time, then a Hold per pad, then the mix.
+const COUNT: usize = 2 + 4 * SLOTS + 3 + SLOTS + 1;
 /// The ids from here on are not a pad's.
 const PADS_END: u16 = ids::slot(SLOTS);
 /// The first Hold id.
@@ -299,7 +320,7 @@ const L_4BARS: u8 = 13;
 
 /// The default bank follows the Perform FX mockup and the Play page's
 /// throws: stutters and repeats, stops, reverse, pitch, a gate, sweeps,
-/// crush, a riser and two echo throws.
+/// crush, a riser, an echo throw and a wash throw.
 static PARAMS: [ParamInfo; COUNT] = bank![
     (0, "Pad 1", Fx::Stutter, L_16, 100.0),
     (1, "Pad 2", Fx::Repeat, L_8, 100.0),
@@ -316,7 +337,7 @@ static PARAMS: [ParamInfo; COUNT] = bank![
     (12, "Pad 13", Fx::Riser, L_4BARS, 60.0),
     (13, "Pad 14", Fx::Stutter, L_32, 100.0),
     (14, "Pad 15", Fx::Repeat, L_4, 100.0),
-    (15, "Pad 16", Fx::Echo, L_4, 70.0),
+    (15, "Pad 16", Fx::Wash, L_BAR, 70.0),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -335,14 +356,15 @@ enum Fx {
     Crush,
     Echo,
     Riser,
+    Wash,
 }
 
 impl Fx {
     fn from(v: f32) -> Fx {
         use Fx::*;
-        const ALL: [Fx; 14] = [
+        const ALL: [Fx; 15] = [
             Off, Stutter, Repeat, Reverse, HalfSpeed, TapeStop, Brake, PitchDrop, Gate, LpSweep,
-            HpSweep, Crush, Echo, Riser,
+            HpSweep, Crush, Echo, Riser, Wash,
         ];
         ALL[(v.max(0.0) as usize).min(ALL.len() - 1)]
     }
@@ -494,10 +516,131 @@ impl Slot {
     }
 }
 
+/// The wash throw's reverb: four damped feedback combs and two all-passes
+/// a side (Schroeder and Moorer's reverb, with Freeverb's line lengths, the
+/// right side's a little longer), fed with the mono sum. It costs a few
+/// dozen operations a frame while awake and nothing asleep.
+struct Wash {
+    combs: [[Vec<f32>; 4]; 2],
+    comb_at: [[usize; 4]; 2],
+    store: [[f32; 4]; 2],
+    aps: [[Vec<f32>; 2]; 2],
+    ap_at: [[usize; 2]; 2],
+    /// The combs' feedback (the decay).
+    fb: f32,
+}
+
+/// Freeverb's comb and all-pass lengths at 44.1 kHz, and the right side's
+/// extra length.
+const WASH_COMBS: [usize; 4] = [1116, 1188, 1277, 1356];
+const WASH_APS: [usize; 2] = [556, 441];
+const WASH_SPREAD: usize = 23;
+/// The combs' damping (a dark tail), the feed's and the return's gains.
+const WASH_DAMP: f32 = 0.35;
+const WASH_IN: f32 = 0.5;
+const WASH_OUT: f32 = 0.8;
+/// The wash sleeps once nothing goes in and what comes out has stayed
+/// below this (-100 dB) for its longest comb.
+const WASH_QUIET: f32 = 1e-5;
+
+impl Wash {
+    fn new() -> Wash {
+        Wash {
+            combs: Default::default(),
+            comb_at: [[0; 4]; 2],
+            store: [[0.0; 4]; 2],
+            aps: Default::default(),
+            ap_at: [[0; 2]; 2],
+            fb: 0.0,
+        }
+    }
+
+    fn prepare(&mut self, rate: u32) {
+        let scale = |n: usize| ((n as f64 * rate as f64 / 44_100.0).round() as usize).max(1);
+        for ch in 0..2 {
+            let extra = ch * WASH_SPREAD;
+            for (c, n) in WASH_COMBS.iter().enumerate() {
+                self.combs[ch][c] = vec![0.0; scale(n + extra)];
+            }
+            for (a, n) in WASH_APS.iter().enumerate() {
+                self.aps[ch][a] = vec![0.0; scale(n + extra)];
+            }
+        }
+        self.clear();
+    }
+
+    fn clear(&mut self) {
+        for ch in 0..2 {
+            for l in &mut self.combs[ch] {
+                l.fill(0.0);
+            }
+            for l in &mut self.aps[ch] {
+                l.fill(0.0);
+            }
+        }
+        self.comb_at = [[0; 4]; 2];
+        self.ap_at = [[0; 2]; 2];
+        self.store = [[0.0; 4]; 2];
+    }
+
+    /// Feedback for a slot's amount (0 to 1): 0.8 to 0.97.
+    fn set_decay(&mut self, amount: f32) {
+        self.fb = 0.8 + 0.17 * amount.clamp(0.0, 1.0);
+    }
+
+    /// The longest comb, frames.
+    fn longest(&self) -> usize {
+        self.combs[1][3].len()
+    }
+
+    /// Frames until a full tail has fallen below the quiet level.
+    fn tail_frames(&self) -> u32 {
+        let passes = (WASH_QUIET.ln() / self.fb.max(0.01).ln()).ceil().max(1.0);
+        let ap: usize = self.aps[1].iter().map(Vec::len).sum();
+        ((passes as f64 * self.longest() as f64) as usize + ap).min(u32::MAX as usize) as u32
+    }
+
+    /// One frame: `x` in, the two sides out.
+    #[inline]
+    fn frame(&mut self, x: f32) -> [f32; 2] {
+        let mut out = [0.0; 2];
+        for (ch, o) in out.iter_mut().enumerate() {
+            let mut sum = 0.0;
+            for c in 0..4 {
+                let line = &mut self.combs[ch][c];
+                let at = self.comb_at[ch][c];
+                let y = line[at];
+                let st = &mut self.store[ch][c];
+                *st = flush(y + WASH_DAMP * (*st - y));
+                line[at] = x + *st * self.fb;
+                self.comb_at[ch][c] = if at + 1 == line.len() { 0 } else { at + 1 };
+                sum += y;
+            }
+            let mut v = 0.25 * sum;
+            for a in 0..2 {
+                let line = &mut self.aps[ch][a];
+                let at = self.ap_at[ch][a];
+                let b = line[at];
+                line[at] = flush(v + 0.5 * b);
+                v = b - v;
+                self.ap_at[ch][a] = if at + 1 == line.len() { 0 } else { at + 1 };
+            }
+            *o = v;
+        }
+        out
+    }
+
+    fn bytes(&self) -> usize {
+        let combs: usize = self.combs.iter().flatten().map(Vec::len).sum();
+        let aps: usize = self.aps.iter().flatten().map(Vec::len).sum();
+        4 * (combs + aps)
+    }
+}
+
 /// Sixteen pads of performance effects: stutter, beat repeat, reverse,
 /// half speed, tape stop, vinyl brake, pitch drop, trance gate, filter
-/// sweeps, crush, echo throws and a noise riser, with quantised entry and
-/// click-free release.
+/// sweeps, crush, echo and wash throws and a noise riser, with quantised
+/// entry and click-free release, and an overall mix.
 pub struct Perform {
     v: [f32; COUNT],
     rate: u32,
@@ -540,6 +683,18 @@ pub struct Perform {
     echo_amt: Smooth,
     /// The DJ filter at the end of the path, before the echo's send.
     dj: DjFilter,
+    /// The wash: its reverb, its send level, which slots hold it, the
+    /// newest, whether it is awake and frames it has been quiet.
+    wash: Wash,
+    wash_env: f32,
+    wash_on: u16,
+    wash_last: usize,
+    wash_awake: bool,
+    wash_quiet: usize,
+    /// The overall mix, gliding, and each frame's value this block (the
+    /// echo, added later, is scaled by it too).
+    mix: Smooth,
+    mixv: Vec<f32>,
 }
 
 impl Default for Perform {
@@ -594,19 +749,27 @@ impl Perform {
             ],
             echo_amt: Smooth::new(0.0),
             dj: DjFilter::new(),
+            wash: Wash::new(),
+            wash_env: 0.0,
+            wash_on: 0,
+            wash_last: 0,
+            wash_awake: false,
+            wash_quiet: 0,
+            mix: Smooth::new(1.0),
+            mixv: vec![1.0; mpfree_node::MAX_BLOCK],
         };
         p.prepare(48_000, mpfree_node::MAX_BLOCK);
         p
     }
 
-    /// Bytes this node holds for audio (the ring, two loop buffers and the
-    /// echo's lines), for the memory budget.
+    /// Bytes this node holds for audio (the ring, two loop buffers, the
+    /// echo's and the wash's lines), for the memory budget.
     pub fn memory_bytes(&self) -> usize {
         let ring = 2 * self.ring.ch[0].len();
         let loops = 4 * self.loops[0][0].len();
-        let send = 2 * self.send[0].len();
+        let send = 2 * self.send[0].len() + self.mixv.len();
         let echo = 2 * (MAX_LOOP_SECONDS * self.rate as f32) as usize;
-        4 * (ring + loops + send + echo)
+        4 * (ring + loops + send + echo) + self.wash.bytes()
     }
 
     fn fade_frames(&self) -> u64 {
@@ -625,6 +788,7 @@ impl Perform {
         match id {
             ids::DJ_FILTER => self.dj.set_param(crate::ids::dj_filter::POSITION, v),
             ids::ECHO => self.echo_amt.target = v / 100.0,
+            ids::MIX => self.mix.target = v / 100.0,
             2.. if id < PADS_END && (id - 2) % 4 == ids::AMOUNT => {
                 self.slots[(id as usize - 2) / 4].amount.target = v / 100.0;
             }
@@ -662,6 +826,9 @@ impl Perform {
             s.on = false;
             if s.fx == Fx::Echo {
                 self.echo_on &= !(1 << k);
+            }
+            if s.fx == Fx::Wash {
+                self.wash_on &= !(1 << k);
             }
             self.dirty = true;
         }
@@ -770,6 +937,14 @@ impl Perform {
                 self.echo_last = k;
                 echo_started = Some(());
             }
+            if s.fx == Fx::Wash {
+                self.wash_on |= 1 << k;
+                self.wash_last = k;
+                self.wash_awake = true;
+                self.wash_quiet = 0;
+                self.wash
+                    .set_decay(self.v[(ids::slot(k) + ids::AMOUNT) as usize] / 100.0);
+            }
             self.dirty = true;
         }
         self.next_at = next;
@@ -829,8 +1004,14 @@ impl Perform {
         self.echo
             .process(ctx, &[], &mut sl[from..to], &mut sr[from..to]);
         for k in from..to {
-            l[k] += sl[k];
-            r[k] += sr[k];
+            let m = self.mixv[k];
+            if m == 1.0 {
+                l[k] += sl[k];
+                r[k] += sr[k];
+            } else {
+                l[k] += m * sl[k];
+                r[k] += m * sr[k];
+            }
         }
     }
 
@@ -884,12 +1065,14 @@ impl Perform {
     }
 
     fn tail(&self) -> u32 {
-        let fade = self.fade_frames() as u32;
+        let mut t = self.fade_frames() as u32;
         if self.echo_awake {
-            fade.max(self.echo.tail_frames())
-        } else {
-            fade
+            t = t.max(self.echo.tail_frames());
         }
+        if self.wash_awake {
+            t = t.max(self.wash.tail_frames());
+        }
+        t
     }
 }
 
@@ -1138,6 +1321,7 @@ impl Node for Perform {
                 [vec![0.0; span], vec![0.0; span]],
             ];
             self.echo.prepare(rate, mpfree_node::MAX_BLOCK);
+            self.wash.prepare(rate);
         }
         self.dj.prepare(rate, mpfree_node::MAX_BLOCK);
         self.dj.set_param(
@@ -1145,6 +1329,7 @@ impl Node for Perform {
             self.v[ids::DJ_FILTER as usize],
         );
         self.echo_amt.set_time(rate, 20.0);
+        self.mix.set_time(rate, 20.0);
         for s in &mut self.slots {
             s.amount.set_time(rate, 20.0);
         }
@@ -1185,6 +1370,12 @@ impl Node for Perform {
         self.echo_quiet = u64::MAX;
         self.echo_amt.snap(self.echo_amt.target);
         self.dj.reset();
+        self.wash.clear();
+        self.wash_env = 0.0;
+        self.wash_on = 0;
+        self.wash_awake = false;
+        self.wash_quiet = 0;
+        self.mix.snap(self.mix.target);
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len()).min(self.send[0].len());
@@ -1211,6 +1402,8 @@ impl Node for Perform {
             && self.next_at >= end
             && self.dj.resting()
             && self.echo_amt.target == 0.0
+            && !self.wash_awake
+            && self.mix.settled()
         {
             // Nothing playing: the input only goes into the ring (the same
             // output, frame for frame, as the full path below).
@@ -1331,8 +1524,39 @@ impl Node for Perform {
                 self.send[1][i] = y[1] * send;
             }
 
-            left[i] = flush(y[0]);
-            right[i] = flush(y[1]);
+            // The wash: fed while a throw holds it, ringing on after.
+            if self.wash_awake {
+                if self.wash_on != 0 {
+                    self.wash_env = (self.wash_env + step).min(1.0);
+                } else if self.wash_env > 0.0 {
+                    self.wash_env = (self.wash_env - step).max(0.0);
+                }
+                let feed = self.wash_env * WASH_IN * 0.5 * (y[0] + y[1]);
+                let w = self.wash.frame(feed);
+                if self.wash_env > 0.0 || w[0].abs() > WASH_QUIET || w[1].abs() > WASH_QUIET {
+                    self.wash_quiet = 0;
+                } else {
+                    self.wash_quiet += 1;
+                    if self.wash_quiet > self.wash.longest() {
+                        self.wash_awake = false;
+                    }
+                }
+                y[0] += WASH_OUT * w[0];
+                y[1] += WASH_OUT * w[1];
+            }
+
+            // The mix: 0 is the input exactly (the echo, added after, is
+            // scaled the same way in `flush_echo`).
+            let m = self.mix.next();
+            self.mixv[i] = m;
+            if m == 1.0 {
+                left[i] = flush(y[0]);
+                right[i] = flush(y[1]);
+            } else {
+                let d = [flush(x[0]), flush(x[1])];
+                left[i] = d[0] + m * (flush(y[0]) - d[0]);
+                right[i] = d[1] + m * (flush(y[1]) - d[1]);
+            }
         }
         self.flush_echo(ctx, piece, len, left, right);
         // Events at or past the end land on the next block's first frame.

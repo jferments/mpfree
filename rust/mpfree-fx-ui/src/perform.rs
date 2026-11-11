@@ -837,6 +837,9 @@ impl PerformPanel {
                 };
                 p.detail = if fx < 1.0 {
                     String::new()
+                } else if effect_name(fx) == "Wash throw" {
+                    // A wash has no length: its Amount is its decay.
+                    format!("decay {}", text_of(st, s + pf::AMOUNT))
                 } else {
                     format!(
                         "{} · {}",
