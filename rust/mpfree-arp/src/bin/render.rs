@@ -32,7 +32,6 @@
 //! between computers.
 #![forbid(unsafe_code)]
 
-use mpfree_arp::scale::SCALES;
 use mpfree_arp::{midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, Mode, NoteMap, Order, Pattern, Ramp, Rate,
                  Scale, Settings, BUILT_IN};
 use std::f32::consts::TAU;
@@ -321,8 +320,8 @@ fn scale_by_name(s: &str) -> Option<Scale> {
     let s = s.trim().to_ascii_lowercase().replace(['_', '-'], " ");
     let (root, rest) = s.split_once(' ')?;
     let root = ROOTS.iter().position(|r| *r == root)?;
-    let (_, mask) = SCALES.iter().find(|(name, _)| name.to_ascii_lowercase() == rest.trim())?;
-    Some(Scale::new(root as u8, *mask))
+    let def = mpfree_arp::scale::by_name(rest.trim())?;
+    Some(Scale::of(root as u8, def))
 }
 
 fn notes(s: &str, pads: bool) -> Result<Vec<u8>, String> {

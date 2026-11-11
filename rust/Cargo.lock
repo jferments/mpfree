@@ -33,6 +33,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-arp"
 version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
 
 [[package]]
 name = "mpfree-arp-ui"
@@ -140,6 +143,10 @@ dependencies = [
  "mpfree-core",
  "mpfree-grain",
 ]
+
+[[package]]
+name = "mpfree-scale"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-screen-log"

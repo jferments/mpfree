@@ -13,7 +13,7 @@
 
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
-use crate::scale::Scale;
+use crate::scale::{Scale, Snap};
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
@@ -304,6 +304,9 @@ pub struct Settings {
     pub accent: u8,
     /// Keeps generated notes in key, applied last. None for drum pads.
     pub scale: Option<Scale>,
+    /// What happens to a note outside the scale: the scale note below
+    /// (the default), above, the nearest, or not played.
+    pub snap: Snap,
     /// Spreads the notes of a chord step across 0..=100 % of the step,
     /// lowest first, like a strum.
     pub strum: u8,
@@ -329,6 +332,7 @@ impl Default for Settings {
             velocity: Velocity::Played,
             accent: 127,
             scale: None,
+            snap: Snap::Down,
             strum: 0,
             retrigger: false,
             repeats: 0,
@@ -979,12 +983,15 @@ impl Engine {
         self.play(h, Hit { octave: hit.octave + (i / n) as i16, ..hit }, at, len);
     }
 
-    /// Works out the pitch and queues the note; notes outside 0..=127 are
-    /// skipped.
+    /// Works out the pitch and queues the note; notes outside 0..=127, and
+    /// notes the scale skips, are not played.
     fn play(&mut self, h: Held, hit: Hit, at: f64, len: f64) {
-        let mut note = i16::from(h.note) + 12 * hit.octave;
-        note = match self.settings.scale {
-            Some(scale) => scale.step(note, hit.degree),
+        let note = i16::from(h.note) + 12 * hit.octave;
+        let note = match self.settings.scale {
+            Some(scale) => match scale.fit(note, hit.degree, self.settings.snap) {
+                Some(n) => n,
+                None => return,
+            },
             None => note + hit.degree,
         };
         if (0..=127).contains(&note) {
@@ -1403,6 +1410,32 @@ mod tests {
         e.set_pattern(Pattern::parse("1 1 | deg 0 3").unwrap());
         e.press(61, 100); // no scale: semitones
         assert_eq!(notes_of(&mut e, 2), [61, 64]);
+    }
+
+    #[test]
+    fn out_of_key_notes_go_up_to_the_nearest_or_are_skipped() {
+        let run_with = |snap: Snap, held: &[u8]| {
+            let mut e = engine(Mode::Arp);
+            e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap,
+                                      ..Settings::default() });
+            for &n in held {
+                e.press(n, 100);
+            }
+            notes_of(&mut e, 4)
+        };
+        // C, D# and G held in C major, played up.
+        assert_eq!(run_with(Snap::Down, &[60, 63, 67]), [60, 62, 67, 60]);
+        assert_eq!(run_with(Snap::Up, &[60, 63, 67]), [60, 64, 67, 60]);
+        assert_eq!(run_with(Snap::Nearest, &[60, 63, 66, 67]), [60, 62, 65, 67], "D# and F# are halfway: down");
+        // Skip: D# is not played, so its step is silent.
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap: Snap::Skip,
+                                  ..Settings::default() });
+        for n in [60, 63, 67] {
+            e.press(n, 100);
+        }
+        let got: Vec<u8> = ons(&run(&mut e, 3 * STEP, 128)).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(got, [60, 67]);
     }
 
     #[test]
