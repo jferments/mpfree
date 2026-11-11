@@ -301,6 +301,257 @@ fn a_lock_on_a_parameter_no_one_registered_passes_through() {
 }
 
 #[test]
+fn a_hand_beats_a_lane_and_lets_go_to_the_lane_it_holds_then() {
+    let mut e = engine();
+    let lane = |value| ModEvent::Lane { addr: mix(), value };
+    let hand = |value| ModEvent::Touch {
+        addr: mix(),
+        value,
+        over_locks: false,
+    };
+    let log = run(
+        &mut e,
+        512,
+        128,
+        &[
+            (64, lane(90.0)),
+            // The hand takes over...
+            (100, hand(20.0)),
+            // ...while the lane goes on underneath, unheard.
+            (160, lane(70.0)),
+            (200, hand(25.0)),
+            (250, ModEvent::Untouch { addr: mix() }),
+            (300, ModEvent::Unlock { addr: mix() }),
+        ],
+        None,
+    );
+    let mixes: Vec<_> = log
+        .iter()
+        .filter(|x| x.1 == mix())
+        .map(|x| (x.0, x.2))
+        .collect();
+    assert_eq!(
+        mixes,
+        [
+            (0, 50.0),
+            (64, 90.0),
+            (100, 20.0),
+            (200, 25.0),
+            (250, 70.0),
+            (300, 50.0)
+        ]
+    );
+    assert!(!e.is_touched(mix()) && !e.is_locked(mix()));
+
+    run(&mut e, 128, 128, &[(0, hand(40.0))], None);
+    assert!(e.is_touched(mix()));
+    assert!(
+        !e.idle_targets().any(|a| a == mix()),
+        "a held target is not idle"
+    );
+    let log = run(
+        &mut e,
+        128,
+        128,
+        &[(5, ModEvent::Untouch { addr: mix() })],
+        None,
+    );
+    assert_eq!(log, [(5, mix(), 50.0)], "back to the base");
+}
+
+#[test]
+fn a_steps_lock_keeps_its_value_under_a_hand_unless_recording() {
+    let mut e = engine();
+    let hand = |value, over_locks| ModEvent::Touch {
+        addr: mix(),
+        value,
+        over_locks,
+    };
+    let log = run(
+        &mut e,
+        512,
+        128,
+        &[
+            (
+                10,
+                ModEvent::Lane {
+                    addr: mix(),
+                    value: 90.0,
+                },
+            ),
+            (50, hand(20.0, false)),
+            // A locked step: its lock is heard, not the hand.
+            (
+                100,
+                ModEvent::Lock {
+                    addr: mix(),
+                    value: 70.0,
+                },
+            ),
+            (150, hand(30.0, false)),
+            // The step's lock ends: the hand again.
+            (200, ModEvent::Unlock { addr: mix() }),
+            (
+                250,
+                ModEvent::Lock {
+                    addr: mix(),
+                    value: 60.0,
+                },
+            ),
+            // Recording: the hand beats the step's lock too.
+            (300, hand(40.0, true)),
+            (350, ModEvent::Untouch { addr: mix() }),
+            (400, ModEvent::Unlock { addr: mix() }),
+        ],
+        None,
+    );
+    let mixes: Vec<_> = log
+        .iter()
+        .filter(|x| x.1 == mix())
+        .map(|x| (x.0, x.2))
+        .collect();
+    assert_eq!(
+        mixes,
+        [
+            (0, 50.0),
+            (10, 90.0),
+            (50, 20.0),
+            (100, 70.0),
+            (200, 30.0),
+            (250, 60.0),
+            (300, 40.0),
+            (350, 60.0),
+            (400, 50.0)
+        ]
+    );
+}
+
+#[test]
+fn a_hand_is_a_touch_over_a_lane_or_while_recording_and_a_set_otherwise() {
+    let a = mix();
+    let touch = |over_locks| ModEvent::Touch {
+        addr: a,
+        value: 0.5,
+        over_locks,
+    };
+    assert_eq!(ModEvent::hand(a, 0.5, true, false), touch(false));
+    assert_eq!(ModEvent::hand(a, 0.5, false, true), touch(true));
+    assert_eq!(ModEvent::hand(a, 0.5, true, true), touch(true));
+    assert_eq!(
+        ModEvent::hand(a, 0.5, false, false),
+        ModEvent::Set {
+            addr: a,
+            value: 0.5
+        }
+    );
+}
+
+#[test]
+fn a_hand_on_a_macro_moves_its_targets_and_the_matrix_still_moves_a_held_value() {
+    let mut e = engine();
+    e.map(
+        0,
+        MacroMap {
+            target: cut(),
+            from: 0.0,
+            to: 1.0,
+            curve: MapCurve::Linear,
+        },
+    )
+    .unwrap();
+    e.add_row(Row {
+        source: Source::Lfo(0),
+        via: None,
+        target: mix(),
+        depth: 0.25,
+    })
+    .unwrap();
+    let mac = ParamAddr::macro_value(0);
+    let log = run(
+        &mut e,
+        RATE as u64,
+        128,
+        &[
+            (
+                0,
+                ModEvent::Lane {
+                    addr: mac,
+                    value: 0.0,
+                },
+            ),
+            (
+                1000,
+                ModEvent::Touch {
+                    addr: mac,
+                    value: 1.0,
+                    over_locks: false,
+                },
+            ),
+            (
+                1000,
+                ModEvent::Touch {
+                    addr: mix(),
+                    value: 50.0,
+                    over_locks: false,
+                },
+            ),
+        ],
+        None,
+    );
+    let cuts: Vec<_> = log
+        .iter()
+        .filter(|x| x.1 == cut())
+        .map(|x| (x.0, x.2))
+        .collect();
+    assert_eq!(
+        cuts,
+        [(0, 20.0), (1000, 20000.0)],
+        "the macro follows the hand"
+    );
+    // 1 Hz sine around the held 50 %: 25 % to 75 %.
+    let vals: Vec<f32> = log
+        .iter()
+        .filter(|x| x.1 == mix() && x.0 >= 1000)
+        .map(|x| x.2)
+        .collect();
+    let (lo, hi) = vals
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    assert!(
+        (lo - 25.0).abs() < 0.2 && (hi - 75.0).abs() < 0.2,
+        "{lo} {hi}"
+    );
+}
+
+#[test]
+fn a_hand_on_a_parameter_no_one_registered_passes_through() {
+    let mut e = engine();
+    let other = ParamAddr::new(Owner::Inst(2), 9);
+    let log = run(
+        &mut e,
+        128,
+        128,
+        &[
+            (
+                5,
+                ModEvent::Touch {
+                    addr: other,
+                    value: 0.25,
+                    over_locks: false,
+                },
+            ),
+            (9, ModEvent::Untouch { addr: other }),
+        ],
+        None,
+    );
+    assert_eq!(
+        log.iter().filter(|x| x.1 == other).collect::<Vec<_>>(),
+        [&(5, other, 0.25)]
+    );
+    assert_eq!(e.stats().unregistered, 1);
+}
+
+#[test]
 fn an_lfo_row_sweeps_around_the_knob() {
     let mut e = engine();
     e.add_row(Row {
@@ -609,7 +860,30 @@ fn the_same_events_whatever_the_block_size() {
                 },
             ),
             ev(5000, ModEvent::Trigger),
+            ev(
+                6000,
+                ModEvent::Touch {
+                    addr: mix(),
+                    value: 80.0,
+                    over_locks: false,
+                },
+            ),
             ev(9001, ModEvent::Unlock { addr: mix() }),
+            ev(11_000, ModEvent::Untouch { addr: mix() }),
+            ev(
+                14_000,
+                ModEvent::Touch {
+                    addr: ParamAddr::macro_value(0),
+                    value: 0.9,
+                    over_locks: true,
+                },
+            ),
+            ev(
+                20_001,
+                ModEvent::Untouch {
+                    addr: ParamAddr::macro_value(0),
+                },
+            ),
             ev(
                 12_345,
                 ModEvent::Set {
