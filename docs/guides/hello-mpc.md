@@ -259,6 +259,23 @@ Last, and only with the owner's go: `MPFREE_HELLO_STEPS=line`. It is the first t
    - *If it fails*: if the card refuses to open or start the input, the log says why and the row stays Off; after more than 3 read errors in a row the pad player closes it itself and says so, and the looper goes back to recording the pads. Playback does not wait on the input. Not known yet: whether Akai's driver records on the test build, which jacks the two channels are, and the input's gain.
 3. **Three phases**, each started by Enter and ended by Enter, each followed by the same read-only look: Line input on and its meter (and which jack is L or R); a loop of the line input with an overdub, undo and Monitor; Line input off. At the end it shows every `line input:` and `looper:` line of the session.
 
+## Round 7: saved settings, the Dev tab and the Sample tab
+
+Round 7 puts the pad player on the layout the owner approved (2026-11-11, [layout-spec.md](../project/layout-spec.md)) and keeps its settings between starts ([storage-spec.md](../project/storage-spec.md), approved 09:30Z). None of it has been tried on the MPC yet.
+
+- **The top bar:** the tabs are Play, Clips, Synth, Looper and Sample, and Dev comes after them while Prefs > "Show developer tools" is on. The bar shows no MPFree name (the startup screen and Prefs > System info do), and Prefs is not a tab: SHIFT + MENU opens it. Every crate's preview draws the same bar (`mpfree_ui::widgets::APP_TABS`, `Header::app`).
+- **The Dev tab** (the old Debug tab) has six pages, stepped through with SHIFT + wheel: MIDI, Performance, **CPU by engine** (each audio stage, from period, sampler and synth to looper, time and mix, against its budget from `mpfree-prof`), **Processes** (every process on the MPC, CPU and memory, read from `/proc` only while the page shows), Map controls and Console.
+- **Saved settings.** The test stick gets a fourth partition, `MPFREE-DATA` (GPT name `mpfree-test-data`, 64 MiB, ext4 with a journal). The test build mounts it at `/run/mpfree-data` (`rw,nosuid,nodev,noexec,noatime`) and starts the pad player with `--data /run/mpfree-data`. If it does not mount, the pad player starts without saving and the kernel log says so.
+  - Kept: the Prefs rows pad velocity curve, screen pad velocity, Latch keeps pads, audio buffer and Show developer tools (`settings/app.conf`), and every control found with Map controls or the button guide (`settings/map.conf`). Line input is never kept.
+  - All writes go through `mpfree-store`'s one writer thread: a `.part` file, flushed, then renamed, then the folder flushed. It never follows a link, never writes outside the folder and refuses a folder that is not its own. At start the log says `saved settings: …`, `saved buttons: …` and `saving: …`.
+  - The eMMC and the SD card are never written. `write-test-stick.py` keeps partition 4 from the stick it rewrites, after saving a copy in the build folder. `--fresh-data` starts it empty, and `--data-from FILE` writes a saved copy back.
+- **The Sample tab** (#75, #78): the sampler's pad editor on the pad hit last, with the Wave and Chop tabs. Edits stay in memory.
+- **Capture** (#80): the Clips tab's Capture button keeps the phrase just played as a take, even when nothing was recording.
+- **The arp:** the Arp panel's MENU has its options, including scales, chords and the scale run. Its MIDI out and MIDI clock are built as bytes only; no MIDI port is opened yet. NOTE REPEAT pressed twice quickly latches, as SHIFT + NOTE REPEAT does.
+- **System info** (Prefs): the program's version, the system and the hardware.
+
+**The check** has twelve read-only phases now: developer tools and Map controls; the Dev pages; kits, banks and pad levels; Grains; the synth; Note Repeat and the arp; clips, overdub, undo and Capture; the audio looper; the Sample tab; Prefs, System info and saving; the Touch lab; menus, console and STOP. The line input step and the benchmark step each come after their own go, and a second boot shows whether the settings came back.
+
 ### The factory drum kits
 
 [`offline-factory-kit.py`](../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):
