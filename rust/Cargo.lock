@@ -419,6 +419,7 @@ name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
  "mpfree-node",
+ "mpfree-prof",
 ]
 
 [[package]]
@@ -477,6 +478,14 @@ name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-mixer-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-ui",
 ]
 
 [[package]]
