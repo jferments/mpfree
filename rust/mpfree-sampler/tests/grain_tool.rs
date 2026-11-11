@@ -19,7 +19,7 @@ fn demo(name: &str, seed: &str) -> PathBuf {
 #[test]
 fn the_grain_tool_renders_every_preset_repeatably() {
     let a = demo("mpfree-grain-a", "7");
-    let presets = ["cloud", "stretch", "shimmer", "reverse-spray", "stutter-120", "freeze-live"];
+    let presets = ["cloud", "stretch", "shimmer", "reverse-spray", "stutter-120", "freeze-live", "pressure-pad"];
     for p in presets {
         let s = mpfree_sampler::PreparedSample::read_wav(&a.join(format!("{p}.wav"))).unwrap();
         assert_eq!(s.sample_rate(), 44_100);
