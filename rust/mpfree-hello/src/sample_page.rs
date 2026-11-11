@@ -301,8 +301,9 @@ impl SamplePage {
         self.light(ui, pad, false);
     }
 
-    /// The pad that sounds when pad `pad` is hit: itself, or with the
-    /// kit's pads playing notes, the first keygroup holding its note.
+    /// The pad that sounds when pad `pad` is hit: itself; with the kit's
+    /// pads playing notes, the first keygroup holding its note; with 16
+    /// Levels, the pad they play.
     fn played(&self, pad: usize) -> usize {
         let Some(p) = self.projects.get(self.kit) else {
             return pad;
@@ -313,6 +314,7 @@ impl SamplePage {
                 .first()
                 .copied()
                 .unwrap_or(pad),
+            PadsPlay::Levels { pad: of, .. } if pad < 16 => usize::from(of),
             _ => pad,
         }
     }
@@ -756,6 +758,11 @@ impl SamplePage {
                             PadsPlay::Keys { from } => format!(
                                 "the pads play notes, pad 1 {}",
                                 mpfree_sampler_ui::note_name(*from)
+                            ),
+                            PadsPlay::Levels { pad, by } => format!(
+                                "the pads play 16 Levels of pad {} by {}",
+                                self.pad_text(kit, usize::from(*pad)),
+                                by.label().to_lowercase()
                             ),
                         }
                     }

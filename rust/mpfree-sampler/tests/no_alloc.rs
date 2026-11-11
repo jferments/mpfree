@@ -219,6 +219,13 @@ fn render_and_events_never_allocate() {
         q.set_pad(i, Some(Pad::new("k", Layer::new(r))), None)
             .unwrap();
     }
+    // The spare view plays 16 Levels of cutoff (its pads have no filter,
+    // so the levels bring one in).
+    q.set_pads_play(PadsPlay::Levels {
+        pad: 2,
+        by: Levels::Cutoff,
+    })
+    .unwrap();
     let mut spare = Some(EngineView::build(&q, rate));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
@@ -247,7 +254,20 @@ fn render_and_events_never_allocate() {
         None,
     )
     .unwrap();
+    // The wet views play 16 Levels of decay and of start.
+    p.set_pads_play(PadsPlay::Levels {
+        pad: 0,
+        by: Levels::Decay,
+    })
+    .unwrap();
     let mut wet = Some(EngineView::build_warped(&p, rate, &mut warps));
+    p.set_pads_play(PadsPlay::Levels {
+        pad: 1,
+        by: Levels::Start,
+    })
+    .unwrap();
+    let mut wet_start = Some(EngineView::build_warped(&p, rate, &mut warps));
+    p.set_pads_play(PadsPlay::Pads).unwrap();
     p.set_master(MasterFx::default(), None).unwrap();
     let dry = EngineView::build_warped(&p, rate, &mut warps);
 
@@ -274,6 +294,9 @@ fn render_and_events_never_allocate() {
         }
         if block % 200 == 10 {
             wet = Some(e.set_view(wet.take().unwrap()));
+        }
+        if block % 300 == 150 {
+            wet_start = Some(e.set_view(wet_start.take().unwrap()));
         }
         if block % 64 == 0 {
             e.schedule(
