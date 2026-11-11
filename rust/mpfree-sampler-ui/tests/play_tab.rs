@@ -6,8 +6,8 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use std::sync::Arc;
 
 use mpfree_sampler::model::{
-    FilterKind, Keys, Layer, LayerSelect, Pad, PadsPlay, PressureTarget, Project, Region, Source,
-    KEYGROUP_POLYPHONY,
+    FilterKind, Keys, Layer, LayerSelect, Levels, Pad, PadsPlay, PressureTarget, Project, Region,
+    Source, KEYGROUP_POLYPHONY,
 };
 use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row};
 use mpfree_sampler_ui::play_widgets::{
@@ -664,8 +664,61 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     );
     // Past the top, nothing changes.
     assert_eq!(step(&mut s, Row::PadsFrom, 1), None);
-    step_apply(&mut s, Row::PadsPlay, 1);
+    step_apply(&mut s, Row::PadsPlay, -1);
     assert_eq!(row_value(&s, Row::PadsPlay), "Their sounds");
     assert!(s.project.undo());
     assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 108 });
+}
+
+#[test]
+fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
+    let mut s = tone();
+    assert_eq!(row_value(&s, Row::LevelsBy), "–");
+    // Pads play goes round: their sounds, notes, 16 Levels of this pad.
+    step_apply(&mut s, Row::PadsPlay, -1);
+    assert_eq!(
+        s.project.pads_play(),
+        PadsPlay::Levels {
+            pad: PAD as u8,
+            by: Levels::Velocity
+        }
+    );
+    assert_eq!(
+        (row_value(&s, Row::PadsPlay), row_value(&s, Row::LevelsBy)),
+        ("16 Levels".into(), "Velocity".into())
+    );
+    assert_eq!(row_value(&s, Row::PadsFrom), "–");
+    let view = EngineView::build(&s.project, RATE);
+    assert!((0..16).all(|i| view.has_pad(i)), "every pad plays A5");
+    for (delta, by) in [(1, "Tune"), (3, "Start"), (1, "Velocity"), (-2, "Decay")] {
+        step_apply(&mut s, Row::LevelsBy, delta);
+        assert_eq!(row_value(&s, Row::LevelsBy), by, "{delta:+}");
+    }
+    let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
+    assert!(
+        bar.subtitle.ends_with("pads play 16 Levels of A5 by decay"),
+        "{}",
+        bar.subtitle
+    );
+    // Tune at pad 16: seven semitones up from A3 is E4.
+    let mut e = Engine::new(RATE, 8);
+    step_apply(&mut s, Row::LevelsBy, -2);
+    assert_eq!(row_value(&s, Row::LevelsBy), "Tune");
+    e.set_view(EngineView::build(&s.project, RATE));
+    e.apply(Event::NoteOn {
+        pad: 15,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0; 12_000], vec![0.0; 12_000]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    let hz = mpfree_analysis::yin(&l[1000..9192], RATE, 4096, 40.0, 3000.0, 0.15)
+        .unwrap()
+        .0;
+    assert!((hz - 329.63).abs() < 1.0, "{hz}");
+    // Once more round: back to their sounds.
+    step_apply(&mut s, Row::PadsPlay, 1);
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+    assert_eq!(row_value(&s, Row::LevelsBy), "–");
 }
