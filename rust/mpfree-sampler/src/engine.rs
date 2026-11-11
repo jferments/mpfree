@@ -41,7 +41,7 @@ use crate::model::{
     ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx, PadsPlay,
     PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
-use crate::warp::Warps;
+use crate::warp::{CopyMap, Warps};
 
 /// Fade length when a voice is choked, muted by its group, or pushed out by
 /// the pad's polyphony limit.
@@ -179,9 +179,8 @@ pub struct ViewLayer {
     warp_bpm: f64,
     /// It plays a stretched copy, not the source.
     copy: bool,
-    /// For a stretched copy: the source frame its first frame was made
-    /// from, and its frames per source frame.
-    source_at: Option<(i64, f64)>,
+    /// For a stretched copy: where each source frame lands in it.
+    source_at: Option<CopyMap>,
 }
 
 impl ViewLayer {
@@ -321,7 +320,7 @@ impl EngineView {
                             copy: false,
                             source_at: None,
                         };
-                        let warp = r.warp.filter(|_| r.mode != PlayMode::Granular);
+                        let warp = r.warp.as_ref().filter(|_| r.mode != PlayMode::Granular);
                         if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
                             // Tune is in the copy, or left out (repitch):
                             // the tempo alone sets the speed.
@@ -336,7 +335,8 @@ impl EngineView {
                             };
                             if let Some((k, data)) = copy {
                                 let scale = k.scale();
-                                let at = |x: u64| ((x - r.start) as f64 * scale).round() as i64;
+                                let map = CopyMap::new(w, s.rate(), &k);
+                                let at = |x: u64| map.at(x as f64).round() as i64;
                                 let len = k.frames as i64;
                                 v.data = data;
                                 v.start = 0;
@@ -365,7 +365,7 @@ impl EngineView {
                                 // The copy is at the tempo it was made for.
                                 v.warp_bpm *= (r.frames() as f64) / (len as f64);
                                 v.copy = true;
-                                v.source_at = Some((r.start as i64, scale));
+                                v.source_at = Some(map);
                             }
                         }
                         Some(v)
@@ -1100,9 +1100,9 @@ impl Engine {
         };
         let l = &vp.layers[li];
         // A slice is in source frames; a stretched copy has its own.
-        let slice = vary.slice.map(|(a, b)| match l.source_at {
-            Some((first, scale)) => {
-                let at = |x: i64| ((x - first) as f64 * scale).round() as i64;
+        let slice = vary.slice.map(|(a, b)| match &l.source_at {
+            Some(map) => {
+                let at = |x: i64| map.at(x as f64).round() as i64;
                 (at(a), at(b))
             }
             None => (a, b),

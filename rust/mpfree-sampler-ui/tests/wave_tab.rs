@@ -230,7 +230,7 @@ fn markers_never_cross_and_the_region_stays_valid() {
         let r = p.pad(PAD).unwrap().layers[0].region.clone();
         let m = Mark::ALL[rand(4) as usize];
         let to = rand(frames + 2000);
-        let n = moved(&r, m, to, frames);
+        let n = moved(&r, m, to, frames, RATE);
         if let Some(l) = n.sustain_loop {
             assert!(
                 n.start + u64::from(l.crossfade) <= l.start && l.start < l.end && l.end <= n.end,
