@@ -1377,6 +1377,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let mut delay_error = false;
     let (mut pings, mut last_ping, mut last_reply, mut lost) = (0u64, Instant::now(), Instant::now(), false);
     let mut last_timing = Instant::now();
+    let mut last_status = Instant::now();
     let started = Instant::now();
     let mut stopped_by = "time";
     // Pads held (on the controller or the screen), pressed but not yet sounded
@@ -1592,6 +1593,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             }
             window_repeats = 0;
             window_pads = [false; 16];
+        }
+        // Every 30 s, the totals so far, for the system log (the app runs until the power goes off, so it
+        // never prints a final summary; the workstation's paced check reads these).
+        if last_status.elapsed() >= Duration::from_secs(30) {
+            last_status = Instant::now();
+            out.note(&format!("status: {hits} hits ({screen_hits} from the screen), {repeats} repeats, {} underruns \
+                               in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
+                               clipped; pad to sound {}; note engine dropped {} events, overflow {}",
+                              totals.xruns + play.xruns, totals.periods + play.periods,
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();

@@ -15,7 +15,15 @@ started by you pressing Enter:
      that Akai's app is not running, and lists who holds the sound, MIDI,
      touch and screen devices.
   3. Test build RAM: copies the program to /run/mpfree-hello and checks its
-     hash there. Nothing else is written; a power-cycle clears it.
+     hash there. Nothing else is written; a power-cycle clears it. Skipped
+     when the only step is app, which needs no copy.
+  app: READ-ONLY. The pad player that a stick built with --app starts at
+     power-on: one phase at a time, each started by Enter and ended by Enter
+     when you are done, it shows what the app wrote to the system log in
+     that time (buttons, velocities, Note Repeat and Latch, menus, its
+     30-second status lines with underruns and the note engine's dropped
+     events) and asks what you saw. It only reads the log and the service's
+     state; it copies, starts and stops nothing.
   4. inventory: the program lists sound cards, MIDI and input devices, the
      framebuffer and real-time limits (read-only).
   5. screen: stops the test build's own log display (mpfree-test-screen, our
@@ -42,10 +50,11 @@ started by you pressing Enter:
      counts underruns and late periods. Turn the volume knob down first.
   MPFREE_HELLO_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
-  above. After lights, drums, setup and play it checks that the controller still
-  has its normal USB id. The first step that draws on the screen stops the
-  log display, since both would draw on /dev/fb0. At the end it starts the
-  log display again (if it was stopped) and copies the program's own report
+  app, then the numbered ones above. After lights, drums, setup and play it
+  checks that the controller still has its normal USB id. The first step that
+  draws on the screen stops the log display or the pad player (our own
+  services), since both would draw on /dev/fb0. At the end it starts again
+  whichever it stopped, and copies the program's own report
   (/run/mpfree-hello/hello.txt) into this report.
 
 lights, drums, setup and play send the controller only what Akai's app sent it in
@@ -79,7 +88,7 @@ PROGRAM_MAX = 16 << 20
 KIT_MAX = 48 << 20
 KIT_MAGIC = b"MPFKITS1"
 REMOTE_DIR = "/run/mpfree-hello"
-STEPS = ("inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
+STEPS = ("app", "inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
 DEFAULT_STEPS = "inventory,screen,touch,pads,click"
 CONTROLLER_ID = "09e8:0046"
 SETUP_WORD = "SEND"
@@ -150,6 +159,7 @@ s=$(systemctl is-active acvs.service 2>/dev/null)
 say "Akai's app (acvs.service): ${s:-unknown}"
 [ "$s" = active ] && bad "Akai's app is running"
 say "log display (mpfree-test-screen.service): $(systemctl is-active mpfree-test-screen.service 2>/dev/null)"
+say "pad player (mpfree-test-app.service): $(systemctl is-active mpfree-test-app.service 2>/dev/null)"
 say "programs holding sound, MIDI, touch or screen devices:"
 n=0
 for f in "$R"/proc/[0-9]*/fd/*; do
@@ -192,14 +202,32 @@ RUN = r"""R=''
 cd "$R/run/mpfree-hello" || exit 1
 exec "$R/run/mpfree-hello/mpfree-hello" @@ARGS@@
 """
-# Our own log display only; Akai's units are not touched.
+# Our own log display and pad player only (whichever runs); Akai's units are not touched.
 SCREEN_STOP = r"""R=''
-systemctl stop mpfree-test-screen.service
-echo "log display: $(systemctl is-active mpfree-test-screen.service)"
+a=$(systemctl is-active mpfree-test-app.service 2>/dev/null)
+[ "$a" = active ] && systemctl stop mpfree-test-app.service
+echo "pad player: was ${a:-unknown}, now $(systemctl is-active mpfree-test-app.service 2>/dev/null)"
+s=$(systemctl is-active mpfree-test-screen.service 2>/dev/null)
+[ "$s" = active ] && systemctl stop mpfree-test-screen.service
+echo "log display: was ${s:-unknown}, now $(systemctl is-active mpfree-test-screen.service 2>/dev/null)"
 """
 SCREEN_START = r"""R=''
 systemctl start mpfree-test-screen.service
 echo "log display: $(systemctl is-active mpfree-test-screen.service)"
+"""
+APP_START = r"""R=''
+systemctl start mpfree-test-app.service
+echo "pad player: $(systemctl is-active mpfree-test-app.service)"
+"""
+# Read-only: the pad player's state, the test build's clock since boot, and the pad player's log.
+APP_STATE = r"""R=''
+echo "pad player (mpfree-test-app.service): $(systemctl is-active mpfree-test-app.service 2>/dev/null)"
+"""
+UPTIME = r"""R=''
+cat "$R/proc/uptime"
+"""
+APP_LOG = r"""R=''
+journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager --no-hostname -n 5000 2>&1
 """
 REPORT = r"""R=''
 cat "$R/run/mpfree-hello/hello.txt" 2>/dev/null || echo "(no report file)"
@@ -324,6 +352,186 @@ def check_controller(mpc, out):
         raise Stop("the controller's USB id changed")
 
 
+# The app step's phases: (title, what to do, the question afterwards). Each is started by Enter and
+# ended by Enter; the app's log lines from that time are shown.
+APP_PHASES = (
+    ("Button guide",
+     ["If the button guide is on the screen, press each button it asks for: MENU, NOTE REPEAT,",
+      "TAP TEMPO, - and +. Press STOP for one you cannot find. If the guide has gone already,",
+      "press Enter twice."],
+     "Did each button you pressed show its number? Any you could not find?"),
+    ("Velocity, Full Level and Half Level",
+     ["Hit pad 1 three times softly, three times medium and three times hard.",
+      "Press FULL LEVEL (it should light) and hit pad 1 softly twice: both loud.",
+      "Press SHIFT + FULL LEVEL for Half Level and hit pad 1 softly twice: both medium.",
+      "Press FULL LEVEL twice: Full Level, then off (its light goes out)."],
+     "Did soft, medium and hard sound different? Did Full and Half Level sound right, and did FULL LEVEL light?"),
+    ("Note Repeat",
+     ["Hold NOTE REPEAT, then hold pad 1 for about 2 s: it repeats in 1/16 notes at 120 BPM.",
+      "Let go of pad 1, then of NOTE REPEAT."],
+     "Did pad 1 repeat evenly while both were held, and stop when you let go?"),
+    ("Latch",
+     ["Press SHIFT + NOTE REPEAT: Latch is on and NOTE REPEAT stays lit.",
+      "Hold pads 1 and 2 together for a moment, then let go: both keep repeating.",
+      "Hit pad 5 once: pads 1 and 2 stop and pad 5 repeats instead.",
+      "Press NOTE REPEAT: Latch turns off and everything stops."],
+     "Did the pads keep repeating after you let go, did pad 5 take over, and did NOTE REPEAT stop it all?"),
+    ("Menus",
+     ["Press MENU: the Play options open. Turn the wheel to pick a row; press + or - (or hold SHIFT",
+      "and turn the wheel) to change it. Set Note repeat rate to 1/8, then press MENU to close.",
+      "Hold NOTE REPEAT and a pad: it repeats half as fast. Let go.",
+      "Press SHIFT + MENU: Prefs opens. Set Pad velocity curve to Hard, press MENU to close, and",
+      "hit a pad softly a few times: quieter than before."],
+     "Did the menus open and close, and did the rate and the curve change what you heard?"),
+    ("Console, Debug and touch",
+     ["Press SHIFT + STOP: the system log fills the screen. Press SHIFT + STOP again to go back.",
+      "Tap the Debug tab, then the Play tab. Tap a few pads on the screen, a kit in the list,",
+      "and drag the level slider."],
+     "Did SHIFT + STOP show the log and go back? Which touches worked?"),
+    ("STOP",
+     ["Press SHIFT + NOTE REPEAT for Latch, hold pads 1 and 2, let go so they repeat, then press STOP."],
+     "Did STOP silence everything and turn Latch off?"),
+)
+APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
+MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
+SHOWN_PER_PHASE = 60
+
+
+def log_only(out, text):
+    """A line for the report file only (the full log of each phase)."""
+    if out.fh:
+        out.fh.write(text + "\n")
+        out.fh.flush()
+
+
+def uptime(mpc):
+    rc, text = mpc.run(UPTIME, test=True)
+    try:
+        return float(text.split()[0])
+    except (IndexError, ValueError):
+        raise Stop(f"could not read the test build's uptime ({text.strip() or f'exit code {rc}'})")
+
+
+def app_lines(mpc, since):
+    """The pad player's log lines from `since` (seconds since boot) on, as (time, message)."""
+    rc, text = mpc.run(APP_LOG, test=True)
+    lines = []
+    for raw in text.splitlines():
+        m = APP_LINE.match(raw)
+        if not m or float(m.group(1)) < since:
+            continue
+        rest = m.group(2)
+        # "mpfree-hello[211]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app.
+        ident, sep, message = rest.partition(": ")
+        if not sep:
+            message = rest
+        elif not ident.startswith("mpfree-hello"):
+            message = f"({ident}) {message}"
+        lines.append((float(m.group(1)), message))
+    return lines
+
+
+def summarize(out, lines):
+    """Show a phase's log: every event line, and the MIDI lines counted. Every line goes in the report."""
+    events, pads, buttons, wheel = [], [], [], 0
+    other = {"pressure": 0, "session": 0, "Q-Link": 0, "other": 0}
+    for t, message in lines:
+        log_only(out, f"      | [{t:10.3f}] {message}")
+        if not MIDI_LINE.match(message):
+            events.append(message)
+            continue
+        meaning = message.rpartition(" = ")[2]
+        pad = re.fullmatch(r"pad (\d+) down, velocity (\d+)", meaning)
+        button = re.fullmatch(r"button (\d+) pressed", meaning)
+        turned = re.fullmatch(r"data wheel ([+-]\d+)", meaning)
+        if pad:
+            pads.append(f"{pad.group(1)}:{pad.group(2)}")
+        elif button:
+            buttons.append(button.group(1))
+        elif turned:
+            wheel += int(turned.group(1))
+        elif "pressure" in meaning:
+            other["pressure"] += 1
+        elif "session" in meaning:
+            other["session"] += 1
+        elif "Q-Link" in meaning:
+            other["Q-Link"] += 1
+        elif not re.fullmatch(r"pad \d+ up|button \d+ released", meaning):
+            other["other"] += 1
+    out.say(f"    the app's log: {len(lines)} lines (all in the report)")
+    for message in events[:SHOWN_PER_PHASE]:
+        out.say(f"      {message}")
+    if len(events) > SHOWN_PER_PHASE:
+        out.say(f"      ... and {len(events) - SHOWN_PER_PHASE} more")
+    out.say(f"    pads hit (pad:velocity as played): {' '.join(pads) or 'none'}")
+    out.say(f"    buttons pressed (note numbers): {' '.join(buttons) or 'none'}")
+    out.say(f"    data wheel: {wheel:+d}; Q-Link messages: {other['Q-Link']}; pressure messages: {other['pressure']}; "
+            f"session pings and replies: {other['session']}; other MIDI: {other['other']}")
+
+
+def app_check(mpc, out, n, total):
+    """The app step: read-only, paced phases against the pad player started at power-on."""
+    out.say(f"\n[{n}/{total}] The pad player that started at power-on (read-only: this reads its log and nothing else)")
+    rc, text = mpc.run(APP_STATE, test=True)
+    out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+    answer = ready(out, "First, what the screen did from power-on.")
+    if answer == "quit":
+        raise Stop("stopped by you")
+    if answer == "skip":
+        return
+    out.say("\n  Start-up: everything the app wrote since power-on")
+    summarize(out, app_lines(mpc, 0.0))
+    note(out, "Did the loading screen show over the galaxy with a progress bar and messages, then the pad player, "
+              "filling the whole screen with no log at the edges?")
+    if not text.strip().endswith(": active"):
+        out.say("  The pad player is not running, so the other phases are left out. Its log is above; if it")
+        out.say("  stopped with an error, the log display started in its place.")
+        return
+    for k, (title, todo, question) in enumerate(APP_PHASES, start=1):
+        out.say(f"\n  Phase {k} of {len(APP_PHASES)}: {title}")
+        for line in todo:
+            out.say(f"    {line}")
+        answer = ready(out, "Ready?")
+        if answer == "quit":
+            raise Stop("stopped by you")
+        if answer == "skip":
+            continue
+        since = uptime(mpc)
+        while (done := ask("  Go ahead. Press Enter when you are done (q stops here): ")) in ("again", "skip"):
+            print("  Please press just Enter when you are done, or q.")
+        summarize(out, app_lines(mpc, since))
+        if done == "quit":
+            raise Stop("stopped by you")
+        note(out, question)
+    out.say("\n  The app's latest status (every 30 s: hits, underruns, timing, the note engine's dropped events):")
+    statuses = [m for _, m in app_lines(mpc, 0.0) if m.startswith(("status: ", "button guide done: "))]
+    for message in statuses[-2:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
+        out.say(f"    {message}")
+
+
+def copy_program(mpc, out, total, program, digest, kit, kit_digest):
+    """Step 3: the program (and the kits, for drums and play) into the test build's RAM."""
+    out.say(f"\n[3/{total}] Copy the program{' and the drum kits' if kit_digest else ''} into the test build's RAM ({REMOTE_DIR})")
+    rc, text = mpc.run(PREPARE, test=True)
+    if rc != 0:
+        raise Stop(f"could not make {REMOTE_DIR} ({text.strip()})")
+    rc, text = mpc.run(None, test=True, stdin_path=program, command=RECEIVE)
+    if rc != 0:
+        raise Stop(f"copying the program failed ({text.strip()})")
+    rc, text = mpc.run(HASH, test=True)
+    if rc != 0 or text.split()[:1] != [digest]:
+        raise Stop("the program on the MPC does not match the build")
+    out.say("  copied; its hash on the MPC matches")
+    if kit_digest:
+        rc, text = mpc.run(None, test=True, stdin_path=kit, command=RECEIVE_KIT)
+        if rc != 0:
+            raise Stop(f"copying the drum kits failed ({text.strip()})")
+        rc, text = mpc.run(HASH_KIT, test=True)
+        if rc != 0 or text.split()[:1] != [kit_digest]:
+            raise Stop("the drum kits on the MPC do not match the ones made on the workstation")
+        out.say("  drum kits copied; their hash on the MPC matches")
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", required=True)
@@ -337,7 +545,9 @@ def main(argv):
     out = kexec.Out(args.report)
     out.say("MPFree Hello MPC on the test build (changes RAM on the MPC only)")
     steps = chosen_steps(os.environ.get("MPFREE_HELLO_STEPS", DEFAULT_STEPS))
-    total = 3 + len(steps)
+    # The app step only reads; the program is copied only for the others.
+    copy = any(n != "app" for n in steps)
+    total = (3 if copy else 2) + len(steps)
 
     out.say(f"\n[1/{total}] Workstation checks (read-only)")
     out.say(f"  steps: {', '.join(steps)}")
@@ -393,36 +603,24 @@ def main(argv):
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 
-    out.say(f"\n[3/{total}] Copy the program{' and the drum kits' if kit_digest else ''} into the test build's RAM ({REMOTE_DIR})")
-    rc, text = mpc.run(PREPARE, test=True)
-    if rc != 0:
-        raise Stop(f"could not make {REMOTE_DIR} ({text.strip()})")
-    rc, text = mpc.run(None, test=True, stdin_path=program, command=RECEIVE)
-    if rc != 0:
-        raise Stop(f"copying the program failed ({text.strip()})")
-    rc, text = mpc.run(HASH, test=True)
-    if rc != 0 or text.split()[:1] != [digest]:
-        raise Stop("the program on the MPC does not match the build")
-    out.say("  copied; its hash on the MPC matches")
-    if kit_digest:
-        rc, text = mpc.run(None, test=True, stdin_path=kit, command=RECEIVE_KIT)
-        if rc != 0:
-            raise Stop(f"copying the drum kits failed ({text.strip()})")
-        rc, text = mpc.run(HASH_KIT, test=True)
-        if rc != 0 or text.split()[:1] != [kit_digest]:
-            raise Stop("the drum kits on the MPC do not match the ones made on the workstation")
-        out.say("  drum kits copied; their hash on the MPC matches")
+    if copy:
+        copy_program(mpc, out, total, program, digest, kit, kit_digest)
 
-    screen_stopped = False
+    stopped = []
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
     def stop_log_display():
-        """Our own log display and the program would both draw on /dev/fb0; stop ours first."""
-        nonlocal screen_stopped
-        if not screen_stopped:
-            rc, text = mpc.run(SCREEN_STOP, test=True)
-            screen_stopped = True
-            out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+        """Our own log display or pad player and the program would both draw on /dev/fb0; stop ours first."""
+        if stopped:
+            return
+        rc, text = mpc.run(SCREEN_STOP, test=True)
+        for line in text.strip().splitlines() or [f"(no answer, exit code {rc})"]:
+            out.say(f"  {line}")
+        for name, script in (("pad player", APP_START), ("log display", SCREEN_START)):
+            if re.search(rf"^{name}: was active,", text, re.M):
+                stopped.append((name, script))
+        if not stopped:
+            stopped.append(("nothing", None))
 
     def drawn(name):
         stop_log_display()
@@ -436,8 +634,10 @@ def main(argv):
         return answer == "go"
 
     try:
-        for i, name in enumerate(steps, start=4):
-            if name == "inventory":
+        for i, name in enumerate(steps, start=4 if copy else 3):
+            if name == "app":
+                app_check(mpc, out, i, total)
+            elif name == "inventory":
                 if step(i, "Inventory (read-only)", "Lists the sound, MIDI, input and screen devices."):
                     run_phase(mpc, out, "inventory")
             elif name == "screen":
@@ -531,10 +731,11 @@ def main(argv):
         out.say(f"\nSTOP: {str(err) or 'interrupted (Ctrl-C)'}")
         result = 1
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # no Ctrl-C may cut the clean-up short
-    if screen_stopped:
-        out.say("\nStarting the log display again:")
-        rc, text = mpc.run(SCREEN_START, test=True)
-        out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+    for name, script in stopped:
+        if script:
+            out.say(f"\nStarting the {name} again:")
+            rc, text = mpc.run(script, test=True)
+            out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
     out.say(f"\nThe program's own report ({REMOTE_DIR}/hello.txt):")
     rc, text = mpc.run(REPORT, test=True)
     for line in text.splitlines():
