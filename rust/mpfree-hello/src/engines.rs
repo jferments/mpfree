@@ -12,7 +12,9 @@
 //! - `looper`: the audio looper and the line input.
 //! - `time`: the transport, the clips and the arp (`time.advance`,
 //!   `app.process`).
-//! - `mix`: the master out, the looper's feed and the metronome.
+//! - `mix`: the mixer (every sound summed, the Level as its master fader,
+//!   Master safety), the metronome, and the mixer panel's state while it
+//!   shows (`mixing.rs`).
 //!
 //! The FX are not in the pad player yet, so the page says so instead of
 //! showing 0.
@@ -40,7 +42,7 @@ pub const MIX: usize = 5;
 
 /// What the page calls each stage.
 const LABELS: [&str; 6] = ["Whole period", "Sampler (pads, grains)", "Synth (Poly or FM)", "Looper and line input",
-                           "Transport, clips, arp", "Mix, metronome"];
+                           "Transport, clips, arp", "Mixer, metronome"];
 
 /// The numbers the audio loop publishes: each stage's last window (about
 /// 250 ms) and the whole session.
