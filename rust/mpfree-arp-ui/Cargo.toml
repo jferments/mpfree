@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-arp-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The arpeggiator's screens for the MPC One: mode tabs, order and pattern lists, Q-Link sliders and the step strip, built on mpfree-ui"
+
+[dependencies]
+mpfree-arp = { path = "../mpfree-arp" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-arp-preview"
+path = "src/bin/preview.rs"
