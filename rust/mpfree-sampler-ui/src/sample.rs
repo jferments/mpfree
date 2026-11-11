@@ -363,19 +363,27 @@ pub fn feed_input(feed: &mut Feed, seconds: f64, level: f32, rolling: bool) {
     }
 }
 
+/// The sources the sample screens offer, as the app names them.
+pub fn rec_sources() -> Vec<String> {
+    let mut v: Vec<String> = ["Line in", "Master", "Drums", "Synth", "Loop", "Return A"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    v.extend((1..=16).map(|p| format!("Pad {p}")));
+    v
+}
+
 /// The Rec tab's sample screens.
 pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> {
-    let make = |name: &'static str,
-                about: &'static str,
-                line_on: bool|
-     -> Result<RecSample, String> {
+    let make = |name: &'static str, about: &'static str, live: bool| -> Result<RecSample, String> {
         let (project, _) = kit_project();
         let (feed, input) = record::input(120, RATE);
         let state = RecState {
             pad: PAD,
             pad_name: project.pad(PAD).map(|p| p.name.clone()),
             target: rec_tab::target(PAD, rec_tab::Onto::NextEmpty, |p| project.pad(p).is_some()),
-            line_on,
+            sources: rec_sources(),
+            live,
             last: String::new(),
         };
         let mut ui = app_ui_with(fonts(), &project, rec_tab::HINT);
@@ -424,6 +432,19 @@ pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> 
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
     s.recording = Some(rec);
+    out.push(s);
+
+    let mut s = make(
+        "rec-master",
+        "Resampling the master: Source turned to Master, the last 4 bars ready for Skip back",
+        true,
+    )?;
+    let st = s.state.clone();
+    s.tab.settings.source = 1;
+    s.tab.settings.skip = Skip::Bars(4);
+    s.tab.update(&mut s.ui, &st);
+    feed_input(&mut s.feed, 25.0, 0.7, true);
+    s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
     out.push(s);
 
     let mut s = make(

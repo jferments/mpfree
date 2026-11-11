@@ -2190,6 +2190,8 @@ fn player_session(
     // its way to the screen thread to be freed there.
     let mut rec_feed: Option<Box<sampler::RecFeed>> = None;
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
+    // What the sampler's input records from (the Rec tab's Source).
+    let mut rec_source = sampler::RecSource::Line;
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -2508,6 +2510,18 @@ fn player_session(
                         // freed here (not expected).
                         if rec_back.replace(old).is_some() {
                             out.note("sample: two line input buffers going back; one freed on the audio thread");
+                        }
+                    }
+                }
+                gui::FromUi::SampleSource(src) => {
+                    if src != rec_source {
+                        rec_source = src;
+                        if !mix.set_rec_source(src) {
+                            out.note("sample: the mixer has no such strip to resample");
+                        }
+                        // What comes in from now on is from the new source.
+                        if let Some(f) = rec_feed.as_mut() {
+                            f.restart();
                         }
                     }
                 }
@@ -3144,11 +3158,12 @@ fn player_session(
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
         // The same line input into the sampler's buffer, with the bar lines
-        // (the Sample page's Rec tab and Skip back).
-        if let Some(f) = rec_feed.as_mut() {
+        // (the Sample page's Rec tab and Skip back). A point in the mix
+        // goes in after the mixer, below.
+        if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
             let t_rec = Instant::now();
             let (l, r) = looper.input();
-            f.period(time.block(), l, r);
+            f.period(time.block(), l, r, 0);
             engines.add(engines::SAMPLER, t_rec.elapsed());
         }
         if let Some(f) = rec_back.take() {
@@ -3176,6 +3191,15 @@ fn player_session(
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
+        // Resampling: the point in the mix the Rec tab records (before the
+        // metronome), with the bar lines as late as that point hears them.
+        if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
+            if let Some((l, r, latency)) = mix.rec_capture() {
+                let t_rec = Instant::now();
+                f.period(time.block(), l, r, latency);
+                engines.add(engines::SAMPLER, t_rec.elapsed());
+            }
+        }
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }

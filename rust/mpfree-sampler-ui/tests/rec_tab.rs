@@ -111,7 +111,8 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
     assert_eq!(
         rows,
         [
-            ("Input", "Left + right"),
+            ("Source", "Line in"),
+            ("Channels", "Left + right"),
             ("Start", "Now"),
             ("Threshold", "-30 dB"),
             ("Pre-roll", "20 ms"),
@@ -247,10 +248,64 @@ fn skip_back_by_bars_and_onto_this_pad() {
 fn with_the_line_input_off_the_tab_says_where_to_turn_it_on() {
     let s = screen("rec-off");
     let v = s.ui.get::<InputView>(rec_tab::VIEW).unwrap();
-    assert_eq!(
-        v.note,
-        "The line input is off: Looper tab, MENU, Line input"
-    );
+    assert_eq!(v.note, rec_tab::OFF_NOTE);
+    assert!(v
+        .note
+        .starts_with("The line input is off: Looper tab, MENU, Line input"));
     assert!(v.skip.is_none());
     assert_eq!(buttons(&s).1, [false, false]);
+}
+
+#[test]
+fn the_source_row_resamples_the_mix_and_waits_while_a_take_is_made() {
+    let mut s = screen("rec");
+    let index = Row::ALL.iter().position(|r| *r == Row::Source).unwrap();
+    let turn = |s: &mut RecSample, delta: i32| {
+        let ev = UiEvent {
+            widget: rec_tab::LIST.into(),
+            kind: EventKind::Step { index, delta },
+        };
+        let st = s.state.clone();
+        s.tab.action(&mut s.ui, &ev, &st)
+    };
+    // Line in, then Master: the app is told, and the tab says what it hears.
+    assert_eq!(turn(&mut s, 1), Some(RecAction::Source(1)));
+    let v = s.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+    assert_eq!(v.title, "Master");
+    let bar = s.ui.get::<PadBar>(rec_tab::BAR).unwrap();
+    assert_eq!(bar.subtitle, "Left + right · resampling Master");
+    // Past the last source it stays there; back to the line input.
+    assert_eq!(turn(&mut s, 40), Some(RecAction::Source(21)));
+    assert_eq!(
+        s.ui.get::<SettingList>(rec_tab::LIST).unwrap().rows[0].value,
+        "Pad 16"
+    );
+    assert_eq!(turn(&mut s, 5), None, "already the last");
+    assert_eq!(turn(&mut s, -30), Some(RecAction::Source(0)));
+    assert_eq!(
+        s.ui.get::<InputView>(rec_tab::VIEW).unwrap().title,
+        "Line input"
+    );
+    // While a take is being made, the source stays.
+    assert_eq!(press(&mut s, 0), Some(RecAction::Record));
+    s.recording = Some(s.tab.settings.recording(&s.input, bar_frames()));
+    run(&mut s, 0.5);
+    assert!(s.tab.recording());
+    assert_eq!(turn(&mut s, 1), None);
+    assert_eq!(s.tab.settings.source, 0);
+    assert_eq!(
+        s.ui.get::<InfoCard>(rec_tab::WHEEL).unwrap().text,
+        "Source: stop the take first"
+    );
+}
+
+#[test]
+fn the_master_screen_shows_what_it_resamples() {
+    let s = screen("rec-master");
+    let v = s.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+    assert_eq!(v.title, "Master");
+    let skip = v.skip.as_ref().unwrap();
+    assert_eq!(skip.label, "Skip back 4 bars");
+    assert!(((skip.end - skip.start) as f64 - 4.0 * bar_frames()).abs() <= 2.0);
+    assert_eq!(buttons(&s).0, ["Record", "Skip back 4 bars"]);
 }

@@ -495,3 +495,100 @@ fn a_recording_put_on_a_pad_is_one_undo_step() {
     assert!(p.sources().is_empty());
     assert_eq!(p.put_source(PADS, s), Err(ModelError::BadPad));
 }
+
+#[test]
+fn a_restart_hides_what_came_from_the_old_source() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 22_050;
+    feed_periods(&mut f, 400, bar, 0);
+    assert_eq!(i.held(), 51_200);
+    // The input now comes from somewhere else (resampling the master).
+    f.restart();
+    assert_eq!((i.held(), i.audio.oldest()), (0, 51_200));
+    assert_eq!(i.last_frames(1_000).unwrap(), Vec::<f32>::new());
+    assert_eq!(i.last_bars(1), Err(RecordError::Overwritten));
+    feed_periods(&mut f, 200, bar, 0);
+    // Only what came after: Skip back stops at the restart.
+    let all = i.last_frames(60_000).unwrap();
+    assert_eq!((all.len(), all[0]), (2 * 25_600, 51_200.0));
+    // The latest bar began before the restart: not kept.
+    assert_eq!(i.last_bars(1), Err(RecordError::Overwritten));
+    // A bar wholly after the restart is.
+    feed_periods(&mut f, 200, bar, 0);
+    let one = i.last_bars(1).unwrap();
+    assert_eq!((one.len() as u64, one[0]), (2 * bar, 66_150.0));
+    // A take from before the restart is refused rather than mixed.
+    let mut old = Vec::new();
+    assert_eq!(
+        i.audio.copy(51_000, 52_000, &mut old),
+        Err(RecordError::Overwritten)
+    );
+    // A threshold take armed now looks only at the new source.
+    let rec = Recording::new(
+        &i,
+        Start::Threshold {
+            level: 0.5,
+            pre_roll: 100_000,
+        },
+        End::Frames(10),
+        1_000,
+    );
+    let mut rec = rec;
+    feed_periods(&mut f, 1, bar, 0);
+    assert!(matches!(rec.poll(&i), Ok(Progress::Done { frames: 10 })));
+    assert_eq!(rec.data()[0], 51_200.0, "the pre-roll stops at the restart");
+}
+
+#[test]
+fn bar_lines_marked_ahead_of_the_audio_wait_for_it() {
+    // A point in the mix heard 300 frames late: its bar lines are marked
+    // 300 frames into the period after the one the transport crossed them.
+    let (mut f, i) = input(10, RATE);
+    let bar = 22_050u64;
+    let late = 300;
+    for _ in 0..600u64 {
+        let base = f.audio.written();
+        let mut b = (base + PERIOD as u64).div_ceil(bar) * bar;
+        b = b.saturating_sub(bar);
+        while b < base + PERIOD as u64 {
+            if b >= base {
+                f.bars.mark(b + late);
+            }
+            b += bar;
+        }
+        f.bars.set_bar(Some(bar as f64));
+        f.audio.push(&frame_audio(base, PERIOD));
+    }
+    // Now is 76 800; lines at 300, 22 350, 44 400, 66 450 (all in).
+    let one = i.last_bars(1).unwrap();
+    assert_eq!(one[0], 44_400.0);
+    // A line marked past now (the audio for it isn't in yet) is not used.
+    f.bars.mark(i.now() + 200);
+    assert_eq!(i.bars_back(1), Some((44_400, 66_450)));
+    let again = i.last_bars(1).unwrap();
+    assert_eq!(again, one);
+    // A take on the next bar starts on that line once its audio comes.
+    let mut rec = Recording::new(&i, Start::NextBar, End::Frames(64), 1_000);
+    let line = i.now() + 200;
+    feed_periods_plain(&mut f, 1);
+    assert!(
+        matches!(rec.poll(&i), Ok(Progress::Waiting)),
+        "its audio isn't in yet"
+    );
+    feed_periods_plain(&mut f, 1);
+    assert!(matches!(
+        rec.poll(&i),
+        Ok(Progress::Recording { frames: 56 })
+    ));
+    feed_periods_plain(&mut f, 1);
+    assert!(matches!(rec.poll(&i), Ok(Progress::Done { frames: 64 })));
+    assert_eq!(rec.data()[0], line as f32);
+}
+
+/// Periods of [`frame_audio`] with no bar lines.
+fn feed_periods_plain(f: &mut Feed, periods: u64) {
+    for _ in 0..periods {
+        let base = f.audio.written();
+        f.audio.push(&frame_audio(base, PERIOD));
+    }
+}

@@ -22,11 +22,12 @@
 //!   way: the screen thread names the pad, the audio thread copies that
 //!   pad's grains into it ([`Player::fill_cloud`]) about 25 times a second
 //!   and sends it back.
-//! - While the line input is on, the Sample page makes the sampler's input
+//! - While its source comes in (the line input while it is on, or a point
+//!   in the mix: resampling), the Sample page makes the sampler's input
 //!   buffer and sends its writing end here once, in a [`RecFeed`]; each
-//!   period [`RecFeed::period`] appends the line input and marks the
-//!   transport's bar lines in it. Turned off, the box goes back to the
-//!   screen thread, which frees it.
+//!   period [`RecFeed::period`] appends the source and marks the
+//!   transport's bar lines in it. When the source goes, the box goes back
+//!   to the screen thread, which frees it.
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView, PadOut, MAX_GRAINS};
@@ -34,6 +35,7 @@ use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
 };
 
+use mpfree_fx::{CapturePoint, StripId};
 use mpfree_sampler::record::Feed;
 use mpfree_transport::time::frames_between;
 use mpfree_transport::Block;
@@ -919,18 +921,31 @@ mod tests {
     }
 }
 
-/// The audio thread's end of the sampler's line input (step CAP): the
-/// rolling buffer's writer and the bar lines. It travels boxed, so the
+/// What the sampler records from (steps CAP and RESAMP): the line input,
+/// or a point in the mix taken by the mixer's capture point
+/// ([`crate::mixing::SAMPLER_CAPTURE`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecSource {
+    /// The line input, as it comes in (before the mixer).
+    #[default]
+    Line,
+    /// A strip of the mixer at a capture point.
+    Mix(StripId, CapturePoint),
+}
+
+/// The audio thread's end of the sampler's input (steps CAP and RESAMP):
+/// the rolling buffer's writer and the bar lines. It travels boxed, so the
 /// channels move a pointer and the audio thread never frees the buffer.
 pub struct RecFeed(pub Feed);
 
 impl RecFeed {
     /// One period: marks the bar lines the transport's `block` crosses
     /// (from bar 1 on, not the count-in) at their frames in the buffer,
-    /// then appends the period's line input. Never allocates, locks or
-    /// waits.
-    pub fn period(&mut self, block: &Block, left: &[f32; PERIOD], right: &[f32; PERIOD]) {
-        let base = self.0.audio.written();
+    /// `latency` frames later (a point in the mix hears the block that
+    /// much late), then appends the period's input. Never allocates, locks
+    /// or waits.
+    pub fn period(&mut self, block: &Block, left: &[f32], right: &[f32], latency: u32) {
+        let base = self.0.audio.written() + u64::from(latency);
         let mut bar = None;
         for span in block.spans() {
             if !span.state.rolling() {
@@ -945,7 +960,14 @@ impl RecFeed {
             bar = Some(frames_between(0, ticks, span.bpm, span.rate));
         }
         self.0.bars.set_bar(bar);
-        self.0.audio.push_planar(left, right);
+        let n = left.len().min(right.len()).min(PERIOD);
+        self.0.audio.push_planar(&left[..n], &right[..n]);
+    }
+
+    /// The input comes from another source from now on: Skip back and
+    /// takes stop here.
+    pub fn restart(&mut self) {
+        self.0.restart();
     }
 
     /// Frames appended since it started.
@@ -985,7 +1007,7 @@ mod rec_tests {
         let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
         for _ in 0..1_500 {
             assert!(t.process(PERIOD as u32, &mut block));
-            feed.period(&block, &l, &r);
+            feed.period(&block, &l, &r, 0);
         }
         assert_eq!(feed.written(), 1_500 * PERIOD as u64);
         let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
@@ -996,7 +1018,7 @@ mod rec_tests {
         t.command(t.frame(), Command::Stop);
         for _ in 0..800 {
             t.process(PERIOD as u32, &mut block);
-            feed.period(&block, &l, &r);
+            feed.period(&block, &l, &r, 0);
         }
         assert_eq!(inp.bars.bar_frames(), None);
         assert_eq!(inp.bars.count(), 3);
