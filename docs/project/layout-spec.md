@@ -97,14 +97,14 @@ The music tabs, in this order:
 
 - **Each thread owns the inside of its own tab or panel.** A change there needs no layout approval.
 - **Anything in the shared layout is a proposal.** Send it to the owner. Jay approves it, this file is updated, and then it lands.
-- **Previews draw the real bar.** Every crate's preview pictures use the canonical tab list from one shared constant (to be added in mpfree-ui), not a list of their own.
+- **Previews draw the real bar.** Every crate's preview pictures use the canonical tab list, `mpfree_ui::widgets::APP_TABS` (and `Header::app`), not a list of their own.
 
 ## Proposed, waiting for Jay (not part of the spec yet)
 
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
-- **Scales on the synth pads** (arp thread, 09:27Z, Jay's ask; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ): while the synth is on the pads, PAD BANK A to H pick pad layouts (kits as today otherwise), and the status chip reads "Poly · A minor · in key". The rest (Play's MENU options rows, tile names and colours) is inside Play.
+- **Scales on the synth pads** (arp thread; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ). **Approved by Jay 09:55Z:** the pads are chromatic by default (the scale's notes lit once one is picked), and one simple, direct action switches them to In key and back (Jay likes how the Hydrasynth does it). In key fills the rows in sequence by default, with "a fourth apart" as the other choice. While the synth is on the pads, PAD BANK A to H hold a pad layout per bank (approved for now, to discuss later). Chord pads: triads on the bottom two rows, sevenths on the top two. **Still proposed:** which button or touch does the In key switch (the Hello thread proposes it with the new Play page), and the status chip text "Poly · A minor · in key".
 - **SHIFT + REC = Capture on every page** (time thread, 09:35Z, as the sequencer plan had it; patch shift-rec-capture-17e5961.patch). Without it, Capture works from the Takes panel's button on Clips (#80).
-- **A new Play page** (Jay, 09:34Z): the big pads go; Play shows what the hardware can't (time, launches, loop, performance controls, mix) with a small pad map, and a graphical pad editor gets its own page. Being brainstormed in the Hello thread.
+- **A new Play page** (Jay, 09:34Z and 09:40Z): the big pads go. Play is the home for finger drumming, live looping and making beats, with a small pad map, the four Q-Links in a column beside the knobs, and a thin master bar. Mockups A to E (09:52Z, /mnt/project-files/hello-mpc/play-mockups/) are on a card; the Hello thread recommends A, B and C as switchable views (Beats, Loop, Drum). With it: the Clips tab becomes **Arrange** (clip launching, takes, Capture; scenes and the song later), and the graphical pad editor becomes the first, half-screen sub-page of Sample (Pads, Wave, Chop, Play, Grain, FX).
 - **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
 
 ## Where things stand (2026-11-11 08:10Z)
@@ -112,8 +112,9 @@ The music tabs, in this order:
 | Where | Tab bar |
 |---|---|
 | main (= the round 5 test app) | Play, Debug, Console, Prefs |
-| Round 6, #68 (what Jay ran; not merged yet) | Play, Clips, Synth, Console, Prefs (+ Debug in debug mode) |
+| Round 6, #68 (merged) | Play, Clips, Synth, Console, Prefs (+ Debug in debug mode) |
 | Looper patch (round 7) | Play, Clips, Synth, Looper, (Debug), Console, Prefs |
-| #75 Sample tab (on hold) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
+| #75 Sample tab (merged) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
+| Round 7 (this spec) | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
 | #72 themes, arp b1aa92e | No tab change (#72 restyles the drawing only) |
 | Preview pictures (not the app) | synth-ui "Steps, Clips, Looper, Arrange, Synth, Mix"; time-ui "Play, Clips, Debug, Console, Prefs"; sampler-ui "Play, Sample, Debug, Prefs"; arp-ui "Play, Debug, Console, Prefs"; wave preview "Record, Sound, Perform, Browse" |
