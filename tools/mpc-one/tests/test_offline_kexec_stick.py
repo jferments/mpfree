@@ -378,14 +378,38 @@ class KexecStickTests(unittest.TestCase):
         # read-stick-logs.py finds the log partition by this line; it must stay as it was.
         self.assertRegex(report, r"partition 2 logs PARTUUID [0-9a-f-]{36}\n")
         kits_uuid = re.search(r"partition 3 kits PARTUUID ([0-9a-f-]{36}) ", report).group(1)
+        data_uuid = re.search(r"partition 4 data PARTUUID ([0-9a-f-]{36}) \(mpfree-test-data, ", report).group(1)
         self.assertIn("holds Akai's sounds: keep it private", report)
         stick = os.path.join(out, "stick.img")
         table = json.loads(run(["sfdisk", "--json", stick]).stdout)["partitiontable"]["partitions"]
-        self.assertEqual([p.get("name") for p in table], ["mpfree-test-root", "mpfree-test-log", "mpfree-test-kits"])
+        self.assertEqual([p.get("name") for p in table],
+                         ["mpfree-test-root", "mpfree-test-log", "mpfree-test-kits", "mpfree-test-data"])
         self.assertEqual(table[2]["uuid"].lower(), kits_uuid)
         self.assertEqual(table[2]["start"], table[1]["start"] + table[1]["size"])
         self.assertEqual(table[2]["start"] % 2048, 0)
-        self.assertEqual(os.path.getsize(stick), (table[2]["start"] + table[2]["size"] + 2048) * 512)
+        self.assertEqual(table[3]["uuid"].lower(), data_uuid)
+        self.assertEqual(table[3]["start"], table[2]["start"] + table[2]["size"])
+        self.assertEqual(table[3]["start"] % 2048, 0)
+        self.assertEqual(table[3]["size"], (64 << 20) // 512)
+        self.assertEqual(os.path.getsize(stick), (table[3]["start"] + table[3]["size"] + 2048) * 512)
+
+        # Partition 4: an empty journaled ext4, labelled for write-test-stick.py to recognise.
+        data_img = os.path.join(self.tmp, "p4.img")
+        self.partition(stick, 4, data_img)
+        self.assertEqual(run(["e2fsck", "-fn", data_img]).returncode, 0)
+        stats = self.dfs(data_img, "stats")
+        self.assertIn("has_journal", re.search(r"^Filesystem features:(.*)$", stats, re.M).group(1))
+        self.assertRegex(stats, r"Filesystem volume name:\s+MPFREE-DATA\n")
+        self.assertEqual(sorted(n for n in self.dfs(data_img, "ls -p /").split("/") if n.strip() and
+                                not n.strip().isdigit() and n.strip() not in (".", "..")), ["lost+found"])
+        # write-test-stick.py finds it the same way when it carries the old stick's over.
+        spec = importlib.util.spec_from_file_location("write_test_stick", os.path.join(os.path.dirname(TOOL),
+                                                                                      "write-test-stick.py"))
+        writer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(writer)
+        self.assertEqual(writer.image_data_partition(stick), (table[3]["start"], table[3]["size"]))
+        with open(data_img, "rb") as fh:
+            self.assertTrue(writer.is_data_fs(fh.read(), 64 << 20))
 
         kits_img = os.path.join(self.tmp, "p3.img")
         self.partition(stick, 3, kits_img)
@@ -418,6 +442,9 @@ class KexecStickTests(unittest.TestCase):
         self.assertIn("WantedBy=sysinit.target", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
         script = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
         self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
+        self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
+        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen "
+                      "--data /run/mpfree-data\n", script)
         self.assertIn('mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits', script)
         self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
         copy = os.path.join(self.tmp, "app-copy")
@@ -544,7 +571,8 @@ class StaticTests(unittest.TestCase):
         busybox = shutil.which("busybox")
         if busybox:
             for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000"),
-                           tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000", keep="")):
+                           tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000",
+                                                  data_uuid="00000000-0000-0000-0000-000000000001", keep="")):
                 res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(res.returncode, 0, res.stderr)
         lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
@@ -561,7 +589,7 @@ class StaticTests(unittest.TestCase):
         for forbidden in ("/dev/mmc", "/dev/sd", "systemctl", "devmem", "/bind", "/unbind", "rm ", "dd "):
             self.assertNotIn(forbidden, tool.ETHERNET_SCRIPT)
 
-    def test_app_start_mounts_the_kits_read_only_and_changes_nothing_else(self):
+    def test_app_start_mounts_the_kits_read_only_the_data_read_write_and_changes_nothing_else(self):
         spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
@@ -571,11 +599,17 @@ class StaticTests(unittest.TestCase):
             "mkdir -p /run/mpfree-kits",
             'mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||',
             'echo "mpfree-test-app: the kit partition did not mount" > /dev/kmsg',
+            "mkdir -p /run/mpfree-data",
+            # Partition 4, by its own PARTUUID: the only thing mounted read-write (storage-spec.md).
+            'mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then',
+            'echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg',
         ])
+        self.assertEqual(tool.APP_SCRIPT.count("rw"), 1)
+        self.assertIn("data=/dev/disk/by-partuuid/{data_uuid}\n", tool.APP_SCRIPT)
         for line in lines:
             for target in re.findall(r">\s*(\S+)", line):
                 self.assertEqual(target, "/dev/kmsg", line)
-        for forbidden in ("/dev/mmc", "/dev/sd", "rw,", "remount"):
+        for forbidden in ("/dev/mmc", "/dev/sd", "remount"):
             self.assertNotIn(forbidden, tool.APP_SCRIPT)
 
     def test_never_contacts_the_mpc_or_writes_devices(self):

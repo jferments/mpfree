@@ -7,15 +7,13 @@
 //! NOTE REPEAT is held.
 
 use crate::view::{chips, hint, quick_hint, ArpPanel, ArpState};
-use crate::workspace::{self, record_pad_labels, PatternWorkspace, Row};
+use crate::workspace::{self, record_pad_labels, LaneRow, PatternWorkspace, Row};
 use mpfree_arp::{Engine, Events, LatchMode, Library, Mode, Order, Pattern, Rate, Settings};
 use mpfree_ui::widgets::{Header, Label, PadGrid};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 /// The screen as the pad player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The pad player's header tabs (`mpfree-hello`'s `TABS`).
-const APP_TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
 /// The page names the samples add the panel and the quick band under.
 pub const PANEL_PAGE: &str = "Play";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
@@ -94,7 +92,7 @@ fn scene(name: &'static str, about: &'static str, fonts: Fonts, setup: Setup) ->
     let state = ArpState::from_engine(&e, patterns, pattern, mutated);
 
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
-    let mut header = Header::new(&APP_TABS);
+    let mut header = Header::app("Play");
     header.chips = chips(&state);
     ui.add("header", header);
     let mut pads = PadGrid::new(16, 4);
@@ -150,13 +148,21 @@ pub struct WorkspaceSample {
     pub ws: PatternWorkspace,
 }
 
-fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, recording: bool)
+#[derive(Clone, Copy, PartialEq)]
+enum WsScene {
+    Edit,
+    Record,
+    Lanes,
+}
+
+fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, scene: WsScene)
     -> Result<WorkspaceSample, String> {
+    let recording = scene == WsScene::Record;
     let climb = built_in_patterns().into_iter().find(|(n, _)| n == "Climb").map(|(_, p)| p).unwrap_or_default();
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
     let mut e = Engine::new(SAMPLE_RATE, 96.0);
     e.set_settings(Settings { mode: Mode::Pattern, ..Settings::default() });
-    let mut header = Header::new(&APP_TABS);
+    let mut header = Header::app("Play");
     let state = ArpState::from_engine(&e, built_in_patterns(), 3, true);
     header.chips = chips(&state);
     ui.add("header", header);
@@ -168,7 +174,7 @@ fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, record
         pad.color = (!label.is_empty()).then_some(if i < 9 { notes } else { marks });
     }
     ui.add("pads", pads);
-    ui.add("hint", Label::new(workspace::hint(recording), Tone::Dim, Align::Center));
+    ui.add("hint", Label::new("", Tone::Dim, Align::Center));
     let mut ws = PatternWorkspace::add(&mut ui, "Pattern", "Pattern, recording", "Climb", climb)?;
     if recording {
         // Part way through recording on the pads, in Step time.
@@ -179,6 +185,20 @@ fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, record
         ws.recording = true;
         ws.editor.select(Row::Step, 6);
         ws.update(&mut ui, None);
+    } else if scene == WsScene::Lanes {
+        // A 3-value velocity lane and a 5-value octave lane over Climb's
+        // steps, with a little random gate; step 7 playing.
+        for (lane, pos, d) in [(LaneRow::Velocity, 0, 15), (LaneRow::Velocity, 1, -5), (LaneRow::Velocity, 2, -3),
+                               (LaneRow::Octave, 0, 0), (LaneRow::Octave, 1, 0), (LaneRow::Octave, 2, 1),
+                               (LaneRow::Octave, 3, 0), (LaneRow::Octave, 4, -1), (LaneRow::Gate, 0, 6)] {
+            ws.editor.turn_lane(lane, pos, d);
+        }
+        ws.editor.set_lane_len(LaneRow::Velocity, 3);
+        ws.editor.turn_random(LaneRow::Gate, 1);
+        ws.editor.select_lane(LaneRow::Velocity, 1);
+        ws.view = workspace::WsView::Lanes;
+        ws.played = Some(6);
+        ws.update(&mut ui, Some(6));
     } else {
         // An accent, a ratchet and a chance added; the ratchet is selected.
         ws.editor.tap(0);
@@ -186,6 +206,9 @@ fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, record
         ws.editor.turn(Row::Chance, 5, -4);
         ws.editor.select(Row::Ratchet, 3);
         ws.update(&mut ui, Some(4));
+    }
+    if let Some(h) = ui.get_mut::<Label>("hint") {
+        h.text = ws.hint().to_string();
     }
     ui.show(ws.page())?;
     Ok(WorkspaceSample { name, about, ui, ws })
@@ -195,7 +218,10 @@ fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, record
 pub fn workspace_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WorkspaceSample>, String> {
     Ok(vec![
         workspace_scene("workspace-edit", "Pattern workspace: \"Climb\" with an accent, a ratchet and a chance added",
-                        fonts(), false)?,
-        workspace_scene("workspace-record", "Pattern workspace: recording on the pads, 6 of 8 steps in", fonts(), true)?,
+                        fonts(), WsScene::Edit)?,
+        workspace_scene("workspace-record", "Pattern workspace: recording on the pads, 6 of 8 steps in", fonts(),
+                        WsScene::Record)?,
+        workspace_scene("workspace-lanes", "Pattern workspace: the lanes, each looping at its own length", fonts(),
+                        WsScene::Lanes)?,
     ])
 }

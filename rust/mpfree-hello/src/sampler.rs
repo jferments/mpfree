@@ -20,7 +20,7 @@
 //!   the same box, so the screen thread frees it.
 
 use mpfree_sampler::dsp::Ahdsr;
-use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
 use mpfree_sampler::model::{GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source};
 
 use crate::kit::{Kit, Sound, MAX_KITS, MAX_VOICES};
@@ -334,6 +334,17 @@ impl Player {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
     }
+
+    /// The next `frames` frames with each pad of the playing kit apart, for
+    /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
+    /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
+    /// [`Player::render_dry`] renders.
+    // The mixer's wiring (round 8) calls it; until then only the tests do.
+    #[allow(dead_code)]
+    pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
+        self.engine.render_routed(frames, out);
+        self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
 }
 
 /// The level, then the clip to full scale. Returns the peak before the
@@ -409,6 +420,48 @@ mod tests {
             assert!(want.iter().any(|&x| x.abs() > 0.1));
             assert_eq!((mixer.playing(), p.playing()), (0, 0));
         }
+    }
+
+    /// Sixteen pad channels, cleared after each block as the mixer clears its own.
+    struct Channels([[[f32; 128]; 2]; 16]);
+
+    impl PadOut for Channels {
+        fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+            let [l, r] = self.0.get_mut(pad)?;
+            Some((&mut l[..], &mut r[..]))
+        }
+    }
+
+    #[test]
+    fn routed_pads_land_on_their_own_channels_and_add_up_to_the_dry_render() {
+        let (mut ka, mut kb) = (kits(), kits());
+        let mut dry = Player::new(&mut ka, &NOTES, 44_100).unwrap();
+        let mut routed = Player::new(&mut kb, &NOTES, 44_100).unwrap();
+        let mut ch = Channels([[[0.0; 128]; 2]; 16]);
+        let (mut l, mut r) = ([0f32; 128], [0f32; 128]);
+        let mut peaks = [0f32; 16];
+        for period in 0..30 {
+            if period == 1 {
+                for p in [&mut dry, &mut routed] {
+                    assert!(p.hit_at(0, 110, 7));
+                    assert!(p.hit_at(5, 90, 64));
+                }
+            }
+            dry.render_dry(&mut l, &mut r);
+            routed.render_routed(128, &mut ch);
+            for k in 0..128 {
+                let sum: f32 = ch.0.iter().map(|c| c[0][k]).sum();
+                assert!((sum - l[k]).abs() < 1e-6, "period {period}, frame {k}: {sum} vs {}", l[k]);
+            }
+            for (pad, c) in ch.0.iter_mut().enumerate() {
+                peaks[pad] = peaks[pad].max(c[0].iter().chain(&c[1]).fold(0f32, |m, x| m.max(x.abs())));
+                *c = [[0.0; 128]; 2];
+            }
+        }
+        for (pad, peak) in peaks.iter().enumerate() {
+            assert_eq!(*peak > 0.05, pad == 0 || pad == 5, "pad {pad}: peak {peak}");
+        }
+        assert_eq!((dry.playing(), routed.playing()), (0, 0));
     }
 
     #[test]

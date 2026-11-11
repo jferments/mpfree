@@ -15,7 +15,7 @@ impl Sink for Log {
 }
 
 fn note(tick: i64, len: i64, n: u8) -> Note {
-    Note { tick, len, note: n, velocity: 100 }
+    Note::new(tick, len, n, 100)
 }
 
 fn clip(length: i64, notes: &[Note]) -> Clip {
@@ -214,4 +214,28 @@ fn notes_follow_tempo_changes() {
     t.set_tempo_map(TempoMap::new(&[Segment { start: 0, bpm: 120.0 }, Segment { start: 1920, bpm: 60.0 }]).unwrap()).unwrap();
     let log = run(&v, &mut t, &[(0, Command::Play)], 22_050 * 2 + 44_100 * 2 + 1, 1000);
     assert_eq!(ons(&log), vec![0, 22_050, 44_100, 88_200, 132_300]);
+}
+
+#[test]
+fn chance_leaves_notes_out_differently_on_every_pass() {
+    // Sixteen 1/16s at 50 %, over a transport loop of one bar: every pass
+    // of the loop rolls again.
+    let mut c = clip(3840, &(0..16).map(|i| note(i * 240, 100, 0)).collect::<Vec<_>>());
+    c.notes.iter_mut().for_each(|n| n.chance = 50);
+    let v = view(vec![c]);
+    let cmds = [(0, Command::SetLoop(Some((0, 3840)))), (0, Command::Play)];
+    let bar = 88_200u64;
+    let log = run(&v, &mut t120(), &cmds, 16 * bar, 128);
+    let on = ons(&log);
+    assert!((96..=160).contains(&on.len()), "about half of 256: {}", on.len());
+    let passes: Vec<Vec<u64>> =
+        (0..16).map(|p| on.iter().filter(|&&f| f / bar == p).map(|f| f % bar).collect()).collect();
+    assert!(passes.windows(2).any(|w| w[0] != w[1]), "the passes differ");
+    for period in [1, 4096] {
+        assert_eq!(ons(&run(&v, &mut t120(), &cmds, 16 * bar, period)), on, "period {period}");
+    }
+    // At 100 % every note plays.
+    let mut sure = clip(3840, &(0..16).map(|i| note(i * 240, 100, 0)).collect::<Vec<_>>());
+    sure.notes[3].chance = 100;
+    assert_eq!(ons(&run(&view(vec![sure]), &mut t120(), &cmds, 2 * bar, 128)).len(), 32);
 }

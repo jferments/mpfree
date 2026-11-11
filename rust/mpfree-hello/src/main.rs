@@ -30,14 +30,17 @@
 //!                      the loop and fades of the pad last hit, Q-Links 1-4 on
 //!                      the markers; Chop: slices put on the kit's pads; edits
 //!                      stay in memory); STOP ends it
-//!   app [--gain-db G] [--kits FILE] [--keep-screen]
+//!   app [--gain-db G] [--kits FILE] [--keep-screen] [--data DIR]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
 //!                      player; STOP silences, SHIFT + STOP shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
-//!                      startup screen's last frame behind the loading card
+//!                      startup screen's last frame behind the loading card;
+//!                      --data DIR keeps settings and found buttons there
+//!                      (mpfree-store; the test stick's partition 4, which
+//!                      start-app.sh mounts at /run/mpfree-data)
 //!   click --seconds N [--gain-db G]
 //!                      plays a 120 BPM click on the ACVA card (stereo S32_LE,
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
@@ -57,22 +60,28 @@
 //! copies it into its report). It reads the screen back once with
 //! --keep-screen, and `app` runs `journalctl -f` (read-only) for its console
 //! page. With --preview on the workstation it writes only new PNG files. It
-//! never touches storage, the eMMC is hidden from this kernel anyway, and
-//! nothing it does survives a power-cycle.
+//! never touches the MPC's storage (the eMMC is hidden from this kernel
+//! anyway). Only with `app --data DIR` does anything survive a power-cycle:
+//! settings and found buttons, saved through mpfree-store under DIR alone.
 
 #![deny(unsafe_code)] // the few C calls (and a test-only counting allocator) live in sys.rs, the only module allowed unsafe code
 
 mod akai;
 mod app;
 mod alsa;
+mod calibrate_page;
 mod debug_page;
+mod engines;
 mod gui;
 mod kit;
+mod looper_page;
+mod looping;
 mod perf;
 mod sample_page;
 mod sampler;
 mod synth;
 mod sys;
+mod sysinfo;
 mod time;
 mod touchlab_page;
 
@@ -92,6 +101,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use mpfree_prof::Span;
 
 const REPORT_DIR: &str = "/run/mpfree-hello";
 const PANEL_ROTATION: &str = "/proc/device-tree/mipi@ff960000/panel@0/rotation";
@@ -121,6 +132,12 @@ struct Options {
     mono_font: Option<PathBuf>,
     kits: PathBuf,
     keep_screen: bool,
+    /// An arp pattern library file to read at start (read-only).
+    patterns: Option<PathBuf>,
+    /// Save in the pattern workspace also writes `patterns`.
+    save_patterns: bool,
+    /// Where settings and found buttons are kept (`app` only; mpfree-store).
+    data: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -137,6 +154,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         mono_font: None,
         kits: PathBuf::from(KIT_PATH),
         keep_screen: false,
+        patterns: None,
+        save_patterns: false,
+        data: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -160,6 +180,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
+            "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
+            "--save-patterns" => o.save_patterns = true,
+            "--data" => o.data = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -180,6 +203,15 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.keepalive && o.command != "pads" {
         return Err("--keepalive goes with pads".to_string());
+    }
+    if o.patterns.is_some() && o.command != "app" {
+        return Err("--patterns goes with app".to_string());
+    }
+    if o.data.is_some() && o.command != "app" {
+        return Err("--data goes with app".to_string());
+    }
+    if o.save_patterns && o.patterns.is_none() {
+        return Err("--save-patterns needs --patterns FILE (the file it writes)".to_string());
     }
     Ok(o)
 }
@@ -1305,6 +1337,41 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     result
 }
 
+/// The largest arp pattern library file read (a 64-step pattern with five
+/// full lanes is about 1 KB, so this is hundreds of patterns).
+const PATTERNS_MAX_BYTES: u64 = 256 * 1024;
+
+/// Reads the arp pattern library file (read-only).
+fn read_patterns(path: &Path) -> Result<String, String> {
+    let f = File::open(path).map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    f.take(PATTERNS_MAX_BYTES + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > PATTERNS_MAX_BYTES {
+        return Err(format!("larger than {} KB", PATTERNS_MAX_BYTES / 1024));
+    }
+    Ok(text)
+}
+
+/// Writes the arp pattern library file whole, never half: to `FILE.part`
+/// beside it, flushed to the disk, then renamed over `FILE`. A failure
+/// leaves `FILE` as it was (a `.part` may stay; the next save replaces it,
+/// and the pad player never deletes files). Returns the log line.
+fn write_patterns(path: &Path, text: &str) -> String {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let result = (|| -> io::Result<()> {
+        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        fs::rename(&part, path)
+    })();
+    match result {
+        Ok(()) => format!("arp patterns: saved {} bytes to {}", text.len(), path.display()),
+        Err(e) => format!("arp patterns: not saved to {} ({e}); {} is as it was", path.display(), path.display()),
+    }
+}
+
 /// The system log, followed (`journalctl -f`, read-only) into the Console page.
 fn follow_journal(tx: SyncSender<gui::ToUi>) {
     let spawned = thread::Builder::new().name("mpfree-journal".into()).spawn(move || {
@@ -1392,6 +1459,11 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
 /// How often the Sample page's playheads are sent while it shows.
 const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
+/// Seconds of stereo audio the looper keeps for all its layers (about
+/// 21 MB, allocated once at the start).
+const LOOP_SECONDS: u32 = 60;
+/// While overdubbing, the loop's waveform is redrawn about once a second.
+const LOOP_WAVE_PERIODS: u64 = 344;
 
 /// The sequencer's notes on the pads: the sampler's kit, or Poly while the
 /// synth has the pads. Each hit is noted so the screen's pads can flash.
@@ -1430,6 +1502,42 @@ impl time::Pads for SeqPads<'_> {
         match self.synth.as_mut() {
             Some(s) => s.all_off(),
             None => self.player.stop_all(),
+        }
+    }
+}
+
+/// The looper's presses and settings, and the line input switched on or
+/// off (opening the capture device; a failure leaves it off and says why).
+fn looper_action(out: &mut Out, looper: &mut looping::LoopHost, app: &mut app::App, card: u32,
+                 a: looping::LoopAction) -> Vec<app::Effect> {
+    match a {
+        looping::LoopAction::Command(c) => {
+            out.note(&looper.command(c));
+            Vec::new()
+        }
+        looping::LoopAction::Source(s) => {
+            looper.source = s;
+            out.note(&format!("looper: records from {}", s.name().to_lowercase()));
+            Vec::new()
+        }
+        looping::LoopAction::Monitor(on) => {
+            looper.monitor = on;
+            out.note(&format!("looper: monitor {}", if on { "on: the line input is heard" } else { "off" }));
+            Vec::new()
+        }
+        looping::LoopAction::LineInput(true) => match looper.line.open(card) {
+            Ok(line) => {
+                out.note(&line);
+                Vec::new()
+            }
+            Err(e) => {
+                out.note(&e);
+                app.line_input_off()
+            }
+        },
+        looping::LoopAction::LineInput(false) => {
+            out.note(&looper.line.close());
+            Vec::new()
         }
     }
 }
@@ -1531,8 +1639,36 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
+    // Saved settings and found buttons (--data: the stick's partition 4), read
+    // now, before the sound starts with the saved audio buffer. The store
+    // saves on its own thread and reports each save as a line.
+    let store = match &o.data {
+        Some(dir) => {
+            let sink = out.sink.clone();
+            mpfree_store::Store::at(dir, move |line| match &sink {
+                Some(s) => {
+                    let _ = s.try_send(gui::ToUi::Line(line));
+                }
+                None => println!("{line}"),
+            })
+        }
+        None => mpfree_store::Store::none(),
+    };
+    for line in app.restore(&store.settings(app::saved::APP), &store.settings(app::saved::MAP)) {
+        out.say(&line);
+    }
+    out.say(&match (&o.data, store.saves()) {
+        (None, _) => "saving: off (no --data); settings and found buttons reset at every start".to_string(),
+        (Some(d), true) => format!("saving: settings and found buttons are kept in {}", d.display()),
+        (Some(d), false) => format!("saving: off; {} cannot be used (see the storage line above)", d.display()),
+    });
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    // The looper follows the transport; the line input stays closed until
+    // the Prefs row "Line input" opens it.
+    let mut looper = looping::LoopHost::new(RATE, LOOP_SECONDS);
+    let mut loop_time = RenderTime::default();
+    let mut loop_shown_at = Instant::now();
     out.show(gui::ToUi::Time(Box::new(time.state())));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -1548,6 +1684,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                      if timed { "STOP ends" } else { "STOP silences" }));
     ports.quiet = true;
     let mut fx = app.start();
+    // The arp's pattern library file, if one was given.
+    let (saved_tx, saved_rx) = std::sync::mpsc::channel::<String>();
+    if let Some(path) = &o.patterns {
+        match read_patterns(path) {
+            Ok(text) => fx.extend(app.load_patterns(&text)),
+            Err(e) => out.note(&format!("arp patterns file {}: {e}; the built-in patterns stay", path.display())),
+        }
+        app.pattern_file = o.save_patterns;
+    }
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
@@ -1576,9 +1721,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let (mut window_repeats, mut window_pads, mut last_repeat_note) = (0u64, [false; 16], Instant::now());
     let mut totals = AudioTotals::default();
     let mut render_time = RenderTime::default();
+    // CPU by engine: a probe per stage, published every 250 ms for the Dev
+    // tab's page (engines.rs). Made here, before the loop: nothing in the
+    // loop allocates for it.
+    let mut engines = engines::EngineProbes::new();
+    out.show(gui::ToUi::Engines(engines.shared()));
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
+        let period_span = Span::start();
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
@@ -1597,7 +1748,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
-                    app.pad_up(pad);
+                    fx.extend(app.pad_up(pad));
                     held[pad] = false;
                     awaiting[pad] = false;
                     out.show(gui::ToUi::PadUp(pad));
@@ -1619,6 +1770,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
+                gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -1681,7 +1833,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
-                    app.pad_up(pad as usize);
+                    fx.extend(app.pad_up(pad as usize));
                     held[pad as usize] = false;
                     awaiting[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
@@ -1803,6 +1955,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+                app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
                 app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
                 app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
@@ -1832,9 +1985,25 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 // What it gives back (the tempo's status line and note) is
                 // handled with the next period's effects.
                 app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
+                app::Effect::Looper(a) => later.extend(looper_action(out, &mut looper, &mut app, audio, a)),
+                app::Effect::SavePatterns(text) => {
+                    // A file write can take a while (a USB stick): not on this thread.
+                    if let Some(path) = o.patterns.clone() {
+                        let tx = saved_tx.clone();
+                        let spawned = thread::Builder::new()
+                            .name("mpfree-patterns".into())
+                            .spawn(move || drop(tx.send(write_patterns(&path, &text))));
+                        if let Err(e) = spawned {
+                            out.note(&format!("arp patterns: not saved ({e})"));
+                        }
+                    }
+                }
             }
         }
         fx.append(&mut later);
+        while let Ok(line) = saved_rx.try_recv() {
+            out.note(&line);
+        }
         if let Some(p) = audio_change {
             totals.periods += play.periods;
             totals.xruns += play.xruns;
@@ -1882,9 +2051,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
             }
         }
+        let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
+        // The transport runs first, so the arp can follow this period's
+        // clock (TimeHost::arp_clock); the clips play and record after.
+        time.advance(PERIOD as u32);
+        // The arp follows this period's transport (None while stopped: it runs on its own).
+        app.set_clock(time.arp_clock());
         app.process(PERIOD as u32, &mut events);
+        engines.stop(engines::TIME, time_span);
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
@@ -1995,11 +2171,43 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         player.render_dry(&mut left, &mut right);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
+        engines.add(engines::SAMPLER, t_synth - t_render);
         synth.render(i * PERIOD as u64, app.settings.bpm, &mut left, &mut right);
-        synth_time.add(t_synth.elapsed());
+        let synth_took = t_synth.elapsed();
+        synth_time.add(synth_took);
+        engines.add(engines::SYNTH, synth_took);
+        let t_mix = Span::start();
         let p = sampler::master_out(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        // What the looper records from the pads: before the click.
+        looper.take_pads(&left, &right);
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
+        engines.stop(engines::MIX, t_mix);
+        // The loop (and the input, with Monitor on) goes on top too.
+        let t_loop = Instant::now();
+        let (loop_peak, line_note) = looper.period(time.block(), &mut left, &mut right);
+        let loop_took = t_loop.elapsed();
+        loop_time.add(loop_took);
+        engines.add(engines::LOOPER, loop_took);
+        let p = p.max(loop_peak);
+        if let Some(note) = line_note {
+            out.note(&note);
+            // The input closed itself after errors: its row says Off again
+            // and the looper records the pads (next period's effects).
+            if !looper.line.is_open() && app.settings.line_input {
+                fx.extend(app.line_input_off());
+            }
+        }
+        for line in looper.changes(|| time.position_text()) {
+            out.note(&line);
+        }
+        if let Some(wave) = looper.wave_step(i, LOOP_WAVE_PERIODS) {
+            out.show(gui::ToUi::LoopWave(wave));
+        }
+        if app.view() == app::View::Looper && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
+            loop_shown_at = Instant::now();
+            out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+        }
         peak = peak.max(p);
         window_peak = window_peak.max(p);
         if p > 1.0 {
@@ -2010,6 +2218,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             frames[2 * f + 1] = float_to_s32(right[f]);
         }
         let xruns = play.xruns;
+        engines.stop(engines::PERIOD, period_span);
         play.write(&frames, i)?;
         if !pending.is_empty() {
             let written = Instant::now();
@@ -2055,6 +2264,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                               20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
+            out.note(&format!("status: {}; {}", looper.describe(), loop_time.describe()));
+            out.note(&format!("status: {}", engines::log_line(&engines.lifetime())));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -2075,6 +2286,18 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 },
             }));
             window_peak = 0.0;
+            engines.publish();
+            // Prefs or found buttons changed: the store's thread writes them.
+            for (owner, settings) in app.take_saves() {
+                if store.saves() {
+                    if let Err(e) = store.save_settings(owner, &settings) {
+                        out.note(&format!("not saved: {owner}: {e}"));
+                    }
+                }
+            }
+            if app.view() != app::View::Looper {
+                out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+            }
             let meters = synth.meters();
             if meters != synth_meters {
                 out.show(gui::ToUi::SynthMeters(meters.clone()));
@@ -2106,10 +2329,22 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         out.say(&format!("sample tab: {views_swapped} edited kit views swapped in"));
     }
     out.say(&time.describe());
+    if looper.line.is_open() {
+        out.say(&looper.line.close());
+    }
+    out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }
     out.say(&synth_status(&synth, &synth_time));
+    // Whatever is still queued is written before the session ends.
+    for (owner, settings) in app.take_saves() {
+        if store.saves() {
+            let _ = store.save_settings(owner, &settings);
+        }
+    }
+    store.flush();
+    out.say(&engines::log_line(&engines.lifetime()));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
@@ -2462,6 +2697,31 @@ mod tests {
         assert!(parse_args(&args("format")).is_err());
         assert!(parse_args(&args("")).is_err());
         assert!(parse_args(&args("pads click")).is_err());
+        let o = parse_args(&args("app --patterns /tmp/p.txt --save-patterns")).unwrap();
+        assert_eq!((o.patterns, o.save_patterns), (Some(PathBuf::from("/tmp/p.txt")), true));
+        assert!(parse_args(&args("app --save-patterns")).is_err(), "nothing to write to");
+        assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
+    }
+
+    #[test]
+    fn the_patterns_file_is_written_whole_or_not_at_all() {
+        let dir = std::env::temp_dir().join(format!("mpfree-patterns-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("patterns.txt");
+        let line = write_patterns(&file, "Skip = 1 . 3\n");
+        assert!(line.starts_with("arp patterns: saved 13 bytes"), "{line}");
+        assert_eq!(read_patterns(&file).unwrap(), "Skip = 1 . 3\n");
+        assert!(!dir.join("patterns.txt.part").exists());
+        // A folder that isn't there: nothing written, the old file kept.
+        let line = write_patterns(&dir.join("missing").join("p.txt"), "x = 1\n");
+        assert!(line.contains("not saved"), "{line}");
+        assert_eq!(read_patterns(&file).unwrap(), "Skip = 1 . 3\n");
+        // Too big to read.
+        fs::write(&file, vec![b'#'; PATTERNS_MAX_BYTES as usize + 1]).unwrap();
+        assert!(read_patterns(&file).unwrap_err().contains("larger than"));
+        assert!(read_patterns(&dir.join("none.txt")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
         for step in ["lights", "setup", "drums"] {
             let o = parse_args(&args(&format!("{step} --seconds 20"))).unwrap();
             assert_eq!((o.command.as_str(), o.seconds), (step, 20));
