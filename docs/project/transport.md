@@ -56,4 +56,4 @@ On the build host, one 128-frame period (process plus reading every tick and 1/1
 
 ## Next
 
-T2 is the playback engine: compile clips into a play view the audio thread reads, walk each block's spans, and drive the sampler and the arp. Device work waits until the pad player's round 5 (PR #31) is merged.
+T2, the playback engine, is [playback.md](playback.md). Device work waits until the pad player's round 5 (PR #31) is merged.
