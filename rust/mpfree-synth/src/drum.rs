@@ -18,8 +18,8 @@
 
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
-use crate::dsp::{drive, osc, Rng, Wave};
 use crate::drum_params::*;
+use crate::dsp::{drive, osc, Rng, Wave};
 use crate::params::Preset;
 
 /// Hit slots: one per pad plus room for fading hits.
@@ -31,7 +31,11 @@ const ALL_OFF_MS: f32 = 30.0;
 /// A hit ends when every envelope is below this (-80 dB).
 const SILENT: f32 = 1e-4;
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.drums", name: "Drums", kind: Kind::Instrument };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.drums",
+    name: "Drums",
+    kind: Kind::Instrument,
+};
 
 /// The 808's six hat oscillators, in Hz at Tune 0.
 const METAL: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
@@ -51,7 +55,9 @@ pub fn sin_turns(ph: f32) -> f32 {
 
 /// A per-frame multiplier that falls 60 dB in `secs`.
 #[inline]
-fn t60(secs: f32, rate: f32) -> f32 { (-6.907_755 / (secs.max(1e-4) * rate)).exp() }
+fn t60(secs: f32, rate: f32) -> f32 {
+    (-6.907_755 / (secs.max(1e-4) * rate)).exp()
+}
 
 /// A trapezoidal state-variable filter with every output (Simper).
 #[derive(Clone, Copy, Debug, Default)]
@@ -84,7 +90,9 @@ impl Svf {
     }
     #[inline]
     fn run(&mut self, out: Out, x: f32) -> f32 {
-        if out == Out::Off { return x; }
+        if out == Out::Off {
+            return x;
+        }
         let v3 = x - self.ic2;
         let v1 = self.a1 * self.ic1 + self.a2 * v3;
         let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
@@ -174,20 +182,28 @@ impl Voice {
             let hz = self.f0 * (self.sweep * self.pitch * (1.0 / 12.0)).exp2();
             self.pitch *= self.pitch_mul;
             self.ph_a += hz * inv;
-            if self.ph_a >= 1.0 { self.ph_a -= 1.0; }
+            if self.ph_a >= 1.0 {
+                self.ph_a -= 1.0;
+            }
             let mut s = if self.fm_index > 0.0 {
                 self.fm_ph += hz * self.fm_ratio * inv;
-                if self.fm_ph >= 1.0 { self.fm_ph -= self.fm_ph.floor(); }
+                if self.fm_ph >= 1.0 {
+                    self.fm_ph -= self.fm_ph.floor();
+                }
                 let ix = self.fm_index * (0.15 + 0.85 * self.pitch);
                 sin_turns(self.ph_a + ix * sin_turns(self.fm_ph) * 0.159_155)
             } else {
                 sin_turns(self.ph_a)
             };
-            if self.shape > 0.0 { s = s * (1.0 + self.shape) / (1.0 + self.shape * s.abs()); }
+            if self.shape > 0.0 {
+                s = s * (1.0 + self.shape) / (1.0 + self.shape * s.abs());
+            }
             let mut b = self.lvl_a * s;
             if self.lvl_b > 0.0 {
                 self.ph_b += hz * self.ratio_b * inv;
-                if self.ph_b >= 1.0 { self.ph_b -= self.ph_b.floor(); }
+                if self.ph_b >= 1.0 {
+                    self.ph_b -= self.ph_b.floor();
+                }
                 b += self.lvl_b * sin_turns(self.ph_b);
             }
             out += b * self.body;
@@ -197,14 +213,20 @@ impl Voice {
             let mut x = 0.0;
             if self.n_metal > 0 {
                 let mut m = 0.0;
-                for k in 0..self.n_metal { m += osc(Wave::Pulse, &mut self.ph_m[k], self.dt_m[k], 0.5); }
+                for k in 0..self.n_metal {
+                    m += osc(Wave::Pulse, &mut self.ph_m[k], self.dt_m[k], 0.5);
+                }
                 x += m * self.metal_lvl;
             }
-            if self.noise_lvl > 0.0 { x += self.rng.bipolar() * self.noise_lvl; }
+            if self.noise_lvl > 0.0 {
+                x += self.rng.bipolar() * self.noise_lvl;
+            }
             let mut env = self.noise;
             self.noise *= self.noise_mul;
             if self.clap {
-                if self.next_burst < CLAP_BURSTS.len() && self.t as f32 >= CLAP_BURSTS[self.next_burst] * rate {
+                if self.next_burst < CLAP_BURSTS.len()
+                    && self.t as f32 >= CLAP_BURSTS[self.next_burst] * rate
+                {
                     self.burst = 1.0;
                     self.next_burst += 1;
                 }
@@ -219,14 +241,20 @@ impl Voice {
             out += self.rng.bipolar() * self.click * self.click_lvl;
             self.click *= self.click_mul;
         }
-        if self.drive > 0.0 { out = drive(out, 1.0 + self.drive * 9.0, self.drive.sqrt()); }
+        if self.drive > 0.0 {
+            out = drive(out, 1.0 + self.drive * 9.0, self.drive.sqrt());
+        }
         if self.state == State::Kill {
             out *= self.kill;
             self.kill -= self.kill_step;
-            if self.kill <= 0.0 { self.state = State::Free; }
+            if self.kill <= 0.0 {
+                self.state = State::Free;
+            }
         }
         self.frames = self.frames.wrapping_add(1);
-        if self.frames.is_multiple_of(64) && self.state == State::On && self.silent() { self.state = State::Free; }
+        if self.frames.is_multiple_of(64) && self.state == State::On && self.silent() {
+            self.state = State::Free;
+        }
         out
     }
 
@@ -253,22 +281,46 @@ pub struct Drums {
 impl Drums {
     pub fn new(rate: u32) -> Drums {
         let mut values = [0.0; ID_SPACE];
-        for p in PARAMS.iter() { values[p.id as usize] = p.default; }
-        let mut d = Drums { rate, values, voices: [Voice::default(); POOL], clock: 0, rng: Rng::new(0x5EED_D2B1), level: Smooth::new(1.0), gains: Vec::new(), hits: 0 };
+        for p in PARAMS.iter() {
+            values[p.id as usize] = p.default;
+        }
+        let mut d = Drums {
+            rate,
+            values,
+            voices: [Voice::default(); POOL],
+            clock: 0,
+            rng: Rng::new(0x5EED_D2B1),
+            level: Smooth::new(1.0),
+            gains: Vec::new(),
+            hits: 0,
+        };
         d.prepare(rate, mpfree_node::MAX_BLOCK);
         d
     }
 
     /// Loads a factory kit: the Init kit, then the kit's values. Hits ring on.
     pub fn load_preset(&mut self, kit: &Preset) {
-        for p in PARAMS.iter() { if !p.readonly { self.set_param(p.id, p.default); } }
-        for &(id, v) in kit.values { self.set_param(id, v); }
+        for p in PARAMS.iter() {
+            if !p.readonly {
+                self.set_param(p.id, p.default);
+            }
+        }
+        for &(id, v) in kit.values {
+            self.set_param(id, v);
+        }
     }
 
-    pub fn presets() -> &'static [Preset] { KITS }
+    pub fn presets() -> &'static [Preset] {
+        KITS
+    }
 
     /// Hits sounding or fading.
-    pub fn active_voices(&self) -> usize { self.voices.iter().filter(|v| v.state != State::Free).count() }
+    pub fn active_voices(&self) -> usize {
+        self.voices
+            .iter()
+            .filter(|v| v.state != State::Free)
+            .count()
+    }
 
     /// The model name on pad `pad` (0 to 15), for pad labels.
     pub fn pad_name(&self, pad: usize) -> &'static str {
@@ -282,12 +334,20 @@ impl Drums {
     }
 
     #[inline]
-    fn v(&self, id: u16) -> f32 { self.values[id as usize] }
-    fn pv(&self, pad: usize, f: u16) -> f32 { self.v(pad_id(pad, f)) }
+    fn v(&self, id: u16) -> f32 {
+        self.values[id as usize]
+    }
+    fn pv(&self, pad: usize, f: u16) -> f32 {
+        self.v(pad_id(pad, f))
+    }
 
     fn level_target(&self) -> f32 {
         let db = self.v(LEVEL);
-        if db <= -60.0 { 0.0 } else { 10f32.powf(db / 20.0) }
+        if db <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(db / 20.0)
+        }
     }
 
     fn kill_where(&mut self, ms: f32, mut which: impl FnMut(&Voice) -> bool) {
@@ -302,14 +362,34 @@ impl Drums {
     }
 
     fn hit(&mut self, pad: usize, velocity: u8) {
-        if velocity == 0 { return; }
+        if velocity == 0 {
+            return;
+        }
         let choke = self.pv(pad, field::CHOKE) as u8;
-        self.kill_where(KILL_MS, |v| v.pad as usize == pad || (choke > 0 && v.choke == choke));
+        self.kill_where(KILL_MS, |v| {
+            v.pad as usize == pad || (choke > 0 && v.choke == choke)
+        });
         self.clock += 1;
         self.hits += 1;
-        let slot = self.voices.iter().position(|v| v.state == State::Free)
-            .or_else(|| self.voices.iter().enumerate().filter(|(_, v)| v.state == State::Kill).min_by_key(|(_, v)| v.age).map(|(i, _)| i))
-            .unwrap_or_else(|| self.voices.iter().enumerate().min_by_key(|(_, v)| v.age).map_or(0, |(i, _)| i));
+        let slot = self
+            .voices
+            .iter()
+            .position(|v| v.state == State::Free)
+            .or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.state == State::Kill)
+                    .min_by_key(|(_, v)| v.age)
+                    .map(|(i, _)| i)
+            })
+            .unwrap_or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| v.age)
+                    .map_or(0, |(i, _)| i)
+            });
         let seed = self.rng.next_u64();
         let v = self.setup(pad, velocity, seed);
         self.voices[slot] = v;
@@ -324,11 +404,17 @@ impl Drums {
         let model = g(field::MODEL) as u8;
         let ratio = (g(field::TUNE) / 12.0).exp2();
         let decay = g(field::DECAY) * 0.001;
-        let tone = (g(field::TONE) / 100.0 - g(field::VEL_TONE) / 100.0 * (1.0 - vel) * 0.6).clamp(0.0, 1.0);
+        let tone = (g(field::TONE) / 100.0 - g(field::VEL_TONE) / 100.0 * (1.0 - vel) * 0.6)
+            .clamp(0.0, 1.0);
         let snap = g(field::SNAP) / 100.0;
         let nz = g(field::NOISE) / 100.0;
         let vl = g(field::VEL_LEVEL) / 100.0;
-        let amp = (1.0 - vl + vl * vel * vel) * if g(field::LEVEL) <= -60.0 { 0.0 } else { 10f32.powf(g(field::LEVEL) / 20.0) };
+        let amp = (1.0 - vl + vl * vel * vel)
+            * if g(field::LEVEL) <= -60.0 {
+                0.0
+            } else {
+                10f32.powf(g(field::LEVEL) / 20.0)
+            };
         let pan = g(field::PAN) / 100.0;
 
         let mut v = Voice {
@@ -393,10 +479,17 @@ impl Drums {
             }
             CLOSED_HAT | OPEN_HAT | CYMBAL => {
                 v.n_metal = 6;
-                for (k, hz) in METAL.iter().enumerate() { v.dt_m[k] = hz * ratio / rate; v.ph_m[k] = (k as f32 * 0.37) % 1.0; }
+                for (k, hz) in METAL.iter().enumerate() {
+                    v.dt_m[k] = hz * ratio / rate;
+                    v.ph_m[k] = (k as f32 * 0.37) % 1.0;
+                }
                 v.metal_lvl = (1.0 - nz) / 3.0;
                 v.noise_lvl = nz * 0.6;
-                let (bp, hp) = if model == CYMBAL { (5000.0 + tone * 5000.0, 3500.0) } else { (7000.0 + tone * 5000.0, 6000.0 + tone * 2000.0) };
+                let (bp, hp) = if model == CYMBAL {
+                    (5000.0 + tone * 5000.0, 3500.0)
+                } else {
+                    (7000.0 + tone * 5000.0, 6000.0 + tone * 2000.0)
+                };
                 v.f1.set(bp * ratio.sqrt(), 0.9, rate);
                 v.o1 = Out::Bp;
                 v.f2.set(hp, 0.7, rate);
@@ -468,7 +561,9 @@ impl Drums {
     fn apply(&mut self, ev: &NodeEvent) {
         match *ev {
             NodeEvent::NoteOn { note, velocity } => {
-                if let Some(p) = self.pad_of(note) { self.hit(p, velocity); }
+                if let Some(p) = self.pad_of(note) {
+                    self.hit(p, velocity);
+                }
             }
             NodeEvent::AllOff => self.kill_where(ALL_OFF_MS, |_| true),
             NodeEvent::Param { id, value } => self.set_param(id, value),
@@ -478,32 +573,50 @@ impl Drums {
 
     fn run(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let rate = self.rate as f32;
-        for g in &mut self.gains[from..to] { *g = self.level.next(); }
+        for g in &mut self.gains[from..to] {
+            *g = self.level.next();
+        }
         for v in self.voices.iter_mut() {
-            if v.state == State::Free { continue; }
+            if v.state == State::Free {
+                continue;
+            }
             for i in from..to {
                 let x = v.tick(rate) * self.gains[i];
                 left[i] += x * v.gain_l;
                 right[i] += x * v.gain_r;
-                if v.state == State::Free { break; }
+                if v.state == State::Free {
+                    break;
+                }
             }
         }
     }
 }
 
 impl Node for Drums {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.iter().find(|p| p.id == id) else { return };
-        if p.readonly { return; }
+        let Some(p) = PARAMS.iter().find(|p| p.id == id) else {
+            return;
+        };
+        if p.readonly {
+            return;
+        }
         self.values[id as usize] = p.clamp(value);
-        if id == LEVEL { self.level.target = self.level_target(); }
+        if id == LEVEL {
+            self.level.target = self.level_target();
+        }
     }
 
     fn param(&self, id: u16) -> f32 {
-        if id == METER_VOICES { return self.active_voices() as f32; }
+        if id == METER_VOICES {
+            return self.active_voices() as f32;
+        }
         match PARAMS.iter().find(|p| p.id == id) {
             Some(_) => self.values[id as usize],
             None => f32::NAN,
@@ -519,7 +632,9 @@ impl Node for Drums {
     }
 
     fn reset(&mut self) {
-        for v in self.voices.iter_mut() { v.state = State::Free; }
+        for v in self.voices.iter_mut() {
+            v.state = State::Free;
+        }
         self.level.snap(self.level_target());
     }
 
@@ -534,11 +649,18 @@ impl Node for Drums {
                 i += 1;
             }
             let next = events.get(i).map_or(len, |e| (e.offset as usize).min(len));
-            if next > at { self.run(at, next, left, right); }
+            if next > at {
+                self.run(at, next, left, right);
+            }
             at = next;
         }
-        for e in &events[i..] { let ev = e.ev; self.apply(&ev); }
+        for e in &events[i..] {
+            let ev = e.ev;
+            self.apply(&ev);
+        }
     }
 
-    fn tail_frames(&self) -> u32 { (5.2 * self.rate as f32) as u32 }
+    fn tail_frames(&self) -> u32 {
+        (5.2 * self.rate as f32) as u32
+    }
 }

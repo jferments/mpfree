@@ -6,9 +6,9 @@
 //! draws cells as pixels. [`png`] writes preview frames without a device.
 #![forbid(unsafe_code)]
 
+pub mod blockfont;
 pub mod fb;
 pub mod galaxy;
 pub mod menu;
 pub mod png;
 pub mod title;
-pub mod blockfont;

@@ -90,9 +90,17 @@ pub struct Budget {
 }
 
 impl Budget {
-    pub fn new(limit: usize) -> Self { Budget { limit, live: 0, skipped: 0 } }
+    pub fn new(limit: usize) -> Self {
+        Budget {
+            limit,
+            live: 0,
+            skipped: 0,
+        }
+    }
     /// Grains alive now across the voices using this budget.
-    pub fn live(&self) -> usize { self.live }
+    pub fn live(&self) -> usize {
+        self.live
+    }
 }
 
 /// Counters a UI or test can read.
@@ -169,7 +177,9 @@ impl GrainVoice {
         }
     }
 
-    pub fn params(&self) -> &Params { &self.params }
+    pub fn params(&self) -> &Params {
+        &self.params
+    }
 
     /// Takes effect for the next grain; grains already playing finish as
     /// they started. A new window shape rebuilds the table (1025 values).
@@ -179,7 +189,9 @@ impl GrainVoice {
     }
 
     /// Restarts the random sequence.
-    pub fn reseed(&mut self, seed: u64) { self.rng = Rng::new(seed); }
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = Rng::new(seed);
+    }
 
     /// Starts making grains, the first at the start of the next render.
     /// Scanning restarts from `position`.
@@ -191,7 +203,9 @@ impl GrainVoice {
     }
 
     /// Stops making grains; the ones playing finish (a natural release).
-    pub fn stop(&mut self) { self.spawning = false; }
+    pub fn stop(&mut self) {
+        self.spawning = false;
+    }
 
     /// Silences at once and hands its grains back to the budget. Clicks
     /// unless the output is already being faded.
@@ -203,9 +217,15 @@ impl GrainVoice {
     }
 
     /// True while making grains or while any still play.
-    pub fn is_active(&self) -> bool { self.spawning || self.active > 0 }
-    pub fn is_spawning(&self) -> bool { self.spawning }
-    pub fn stats(&self) -> Stats { self.stats }
+    pub fn is_active(&self) -> bool {
+        self.spawning || self.active > 0
+    }
+    pub fn is_spawning(&self) -> bool {
+        self.spawning
+    }
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
 
     /// The reading position (before spray), 0 to 1 across the span of the
     /// last render.
@@ -239,7 +259,10 @@ impl GrainVoice {
     fn size_frames(&self) -> f64 {
         let p = &self.params;
         let rate = f64::from(self.out_rate);
-        let frames = match p.sync.and_then(|s| s.size_beats.map(|b| f64::from(b) * s.frames_per_beat)) {
+        let frames = match p
+            .sync
+            .and_then(|s| s.size_beats.map(|b| f64::from(b) * s.frames_per_beat))
+        {
             Some(f) => f,
             None => f64::from(p.size_ms) * rate / 1000.0,
         };
@@ -250,7 +273,9 @@ impl GrainVoice {
     fn density(&self) -> f64 {
         let p = &self.params;
         let d = match p.sync.and_then(|s| s.grains_per_beat.map(|g| (s, g))) {
-            Some((s, g)) if s.frames_per_beat > 0.0 => f64::from(g) * f64::from(self.out_rate) / s.frames_per_beat,
+            Some((s, g)) if s.frames_per_beat > 0.0 => {
+                f64::from(g) * f64::from(self.out_rate) / s.frames_per_beat
+            }
             _ => f64::from(p.density),
         };
         d.clamp(0.1, 1000.0)
@@ -292,7 +317,14 @@ impl GrainVoice {
     /// Mixes this voice into `left` and `right` (it adds; clear them first
     /// if this is the only voice). `transport_frame` is the absolute frame of
     /// `left[0]`, used only for tempo sync.
-    pub fn render<S: GrainSource>(&mut self, src: &S, budget: &mut Budget, transport_frame: u64, left: &mut [f32], right: &mut [f32]) {
+    pub fn render<S: GrainSource>(
+        &mut self,
+        src: &S,
+        budget: &mut Budget,
+        transport_frame: u64,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         let n = left.len().min(right.len());
         let (start, end) = src.span();
         if end - start < 8 {
@@ -365,8 +397,14 @@ impl GrainVoice {
         }
         let size = size.floor();
         let extent = (size - 1.0) * speed;
-        let pos = start as f64 + (self.base_offset(len) + f64::from(p.spray.clamp(0.0, 1.0) * r_spray) * len * 0.5).rem_euclid(len);
-        let pos = if reverse { pos.clamp(lo + extent, hi) } else { pos.clamp(lo, hi - extent) };
+        let pos = start as f64
+            + (self.base_offset(len) + f64::from(p.spray.clamp(0.0, 1.0) * r_spray) * len * 0.5)
+                .rem_euclid(len);
+        let pos = if reverse {
+            pos.clamp(lo + extent, hi)
+        } else {
+            pos.clamp(lo, hi - extent)
+        };
 
         let pan = p.spread.clamp(0.0, 1.0) * r_pan;
         // Overlapping grains add up; keep a dense cloud near the level of a sparse one.
@@ -387,7 +425,13 @@ impl GrainVoice {
         self.stats.peak_active = self.stats.peak_active.max(self.active);
     }
 
-    fn mix<S: GrainSource>(&mut self, src: &S, budget: &mut Budget, left: &mut [f32], right: &mut [f32]) {
+    fn mix<S: GrainSource>(
+        &mut self,
+        src: &S,
+        budget: &mut Budget,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         let n = left.len();
         if n == 0 {
             return;

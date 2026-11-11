@@ -19,28 +19,57 @@ pub struct SilenceSettings {
 }
 
 impl Default for SilenceSettings {
-    fn default() -> Self { SilenceSettings { threshold_db: -48.0, min_gap_ms: 120.0, min_sound_ms: 15.0, pre_roll_ms: 2.0 } }
+    fn default() -> Self {
+        SilenceSettings {
+            threshold_db: -48.0,
+            min_gap_ms: 120.0,
+            min_sound_ms: 15.0,
+            pre_roll_ms: 2.0,
+        }
+    }
 }
 
 /// The sounding parts of interleaved audio, as (start, end) frames, end
 /// exclusive, in order and never overlapping.
-pub fn sound_spans(data: &[f32], channels: usize, rate: u32, s: SilenceSettings) -> Result<Vec<(u64, u64)>, AnalysisError> {
-    if channels == 0 || channels > 2 { return Err(AnalysisError::BadInput("channels")); }
-    if !data.len().is_multiple_of(channels) { return Err(AnalysisError::BadInput("length")); }
-    if rate == 0 || !s.threshold_db.is_finite() { return Err(AnalysisError::BadInput("settings")); }
+pub fn sound_spans(
+    data: &[f32],
+    channels: usize,
+    rate: u32,
+    s: SilenceSettings,
+) -> Result<Vec<(u64, u64)>, AnalysisError> {
+    if channels == 0 || channels > 2 {
+        return Err(AnalysisError::BadInput("channels"));
+    }
+    if !data.len().is_multiple_of(channels) {
+        return Err(AnalysisError::BadInput("length"));
+    }
+    if rate == 0 || !s.threshold_db.is_finite() {
+        return Err(AnalysisError::BadInput("settings"));
+    }
     let frames = data.len() / channels;
     let level = 10f32.powf(s.threshold_db / 20.0);
     let ms = |m: f32| (m.max(0.0) / 1000.0 * rate as f32) as usize;
-    let loud = |f: usize| data[f * channels..(f + 1) * channels].iter().any(|x| x.abs() > level);
+    let loud = |f: usize| {
+        data[f * channels..(f + 1) * channels]
+            .iter()
+            .any(|x| x.abs() > level)
+    };
     // Runs of loud frames, joined across short gaps.
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut f = 0;
     while f < frames {
-        if !loud(f) { f += 1; continue; }
+        if !loud(f) {
+            f += 1;
+            continue;
+        }
         let start = f;
         let mut last = f;
         while f < frames {
-            if loud(f) { last = f; } else if f - last > ms(s.min_gap_ms) { break; }
+            if loud(f) {
+                last = f;
+            } else if f - last > ms(s.min_gap_ms) {
+                break;
+            }
             f += 1;
         }
         spans.push((start, last + 1));
@@ -61,7 +90,9 @@ mod tests {
     use super::*;
 
     fn burst(out: &mut [f32], at: usize, len: usize, amp: f32) {
-        for i in 0..len { out[at + i] += amp * (i as f32 * 0.3).sin() * (1.0 - i as f32 / len as f32); }
+        for i in 0..len {
+            out[at + i] += amp * (i as f32 * 0.3).sin() * (1.0 - i as f32 / len as f32);
+        }
     }
 
     #[test]
@@ -80,16 +111,24 @@ mod tests {
         assert!(spans[0].0 <= 1_000 && spans[0].0 >= 1_000 - pre);
         assert!(spans[1].0 <= 30_000 && spans[1].1 > 36_205);
         assert!(spans[2].0 <= 90_000 && spans[2].1 <= 110_000);
-        for w in spans.windows(2) { assert!(w[0].1 <= w[1].0); }
+        for w in spans.windows(2) {
+            assert!(w[0].1 <= w[1].0);
+        }
     }
 
     #[test]
     fn stereo_counts_either_side_and_silence_has_no_spans() {
         let mut x = vec![0.0f32; 20_000];
-        for i in 0..2_000 { x[2 * (3_000 + i) + 1] = 0.5; } // right only
+        for i in 0..2_000 {
+            x[2 * (3_000 + i) + 1] = 0.5;
+        } // right only
         let spans = sound_spans(&x, 2, 44_100, SilenceSettings::default()).unwrap();
         assert_eq!(spans.len(), 1);
-        assert!(sound_spans(&vec![0.0; 1000], 1, 44_100, SilenceSettings::default()).unwrap().is_empty());
+        assert!(
+            sound_spans(&vec![0.0; 1000], 1, 44_100, SilenceSettings::default())
+                .unwrap()
+                .is_empty()
+        );
         assert!(sound_spans(&[0.0; 3], 2, 44_100, SilenceSettings::default()).is_err());
     }
 }

@@ -56,7 +56,11 @@ impl Mask {
         for y in ya..=yb {
             for x in xa..=xb {
                 let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                let t = if len2 > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let t = if len2 > 0.0 {
+                    (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
                 let d = (qx * qx + qy * qy).sqrt();
                 self.cover(x, y, h + 0.5 - d);
@@ -89,7 +93,10 @@ impl Mask {
                 let on = (along / dash) as i64 % 2 == 0;
                 if on {
                     let p0 = (a.0 + (b.0 - a.0) * t / len, a.1 + (b.1 - a.1) * t / len);
-                    let p1 = (a.0 + (b.0 - a.0) * (t + piece) / len, a.1 + (b.1 - a.1) * (t + piece) / len);
+                    let p1 = (
+                        a.0 + (b.0 - a.0) * (t + piece) / len,
+                        a.1 + (b.1 - a.1) * (t + piece) / len,
+                    );
                     self.segment(p0, p1, width);
                 }
                 t += piece;
@@ -116,7 +123,10 @@ impl Mask {
             return;
         }
         let h = width * 0.5;
-        let ends = [(cx + radius * a0.cos(), cy + radius * a0.sin()), (cx + radius * a1.cos(), cy + radius * a1.sin())];
+        let ends = [
+            (cx + radius * a0.cos(), cy + radius * a0.sin()),
+            (cx + radius * a1.cos(), cy + radius * a1.sin()),
+        ];
         let (xa, xb, ya, yb) = self.span(cx, cy, cx, cy, radius + h + 1.0);
         for y in ya..=yb {
             for x in xa..=xb {
@@ -126,7 +136,9 @@ impl Mask {
                     ((dx * dx + dy * dy).sqrt() - radius).abs()
                 } else {
                     ends.iter()
-                        .map(|e| ((x as f32 + 0.5 - e.0).powi(2) + (y as f32 + 0.5 - e.1).powi(2)).sqrt())
+                        .map(|e| {
+                            ((x as f32 + 0.5 - e.0).powi(2) + (y as f32 + 0.5 - e.1).powi(2)).sqrt()
+                        })
                         .fold(f32::MAX, f32::min)
                 };
                 self.cover(x, y, h + 0.5 - d);
@@ -165,7 +177,14 @@ impl Mask {
         if self.r.is_empty() {
             return;
         }
-        canvas.blend_mask(self.r.x, self.r.y, self.r.w as usize, self.r.h as usize, &self.px, c);
+        canvas.blend_mask(
+            self.r.x,
+            self.r.y,
+            self.r.w as usize,
+            self.r.h as usize,
+            &self.px,
+            c,
+        );
     }
 }
 

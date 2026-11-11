@@ -98,9 +98,15 @@ mod tests {
         let status = "Name:\tmpfree-headless\nVmRSS:\t  3020 kB\nVmHWM:\t4096 kB\n";
         assert_eq!(super::proc_status_kib("VmRSS", status), Some(3020));
         assert_eq!(super::proc_status_kib("VmHWM", status), Some(4096));
-        assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\tnot-a-number kB\n"), None);
+        assert_eq!(
+            super::proc_status_kib("VmRSS", "VmRSS:\tnot-a-number kB\n"),
+            None
+        );
         assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\t20 MB\n"), None);
-        assert_eq!(super::proc_status_kib("VmRSS", "VmRSS:\t20 kB extra\n"), None);
+        assert_eq!(
+            super::proc_status_kib("VmRSS", "VmRSS:\t20 kB extra\n"),
+            None
+        );
         assert_eq!(super::proc_status_kib("VmRSS", "VmRSSBad:\t20 kB\n"), None);
     }
 

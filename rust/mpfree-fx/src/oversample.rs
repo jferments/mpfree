@@ -21,7 +21,9 @@ fn bessel_i0(x: f64) -> f64 {
     for k in 1..60 {
         term *= q / (k * k) as f64;
         sum += term;
-        if term < 1e-14 * sum { break; }
+        if term < 1e-14 * sum {
+            break;
+        }
     }
     sum
 }
@@ -30,42 +32,71 @@ fn bessel_i0(x: f64) -> f64 {
 /// windowed, normalised to unity gain at DC. `taps` must be odd with
 /// `(taps - 1) / 2` odd, so the zero taps fall on every odd index.
 pub(crate) fn halfband(taps: usize, beta: f64) -> Vec<f32> {
-    assert!(taps % 2 == 1 && ((taps - 1) / 2) % 2 == 1, "half-band needs taps = 4k + 3");
+    assert!(
+        taps % 2 == 1 && ((taps - 1) / 2) % 2 == 1,
+        "half-band needs taps = 4k + 3"
+    );
     let c = (taps / 2) as f64;
     let i0b = bessel_i0(beta);
     let mut h: Vec<f64> = (0..taps)
         .map(|n| {
             let t = n as f64 - c;
-            let sinc = if t == 0.0 { 0.5 } else { (std::f64::consts::PI * t * 0.5).sin() / (std::f64::consts::PI * t) };
+            let sinc = if t == 0.0 {
+                0.5
+            } else {
+                (std::f64::consts::PI * t * 0.5).sin() / (std::f64::consts::PI * t)
+            };
             let r = t / c;
             sinc * bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / i0b
         })
         .collect();
     let sum: f64 = h.iter().sum();
-    for v in &mut h { *v /= sum; }
+    for v in &mut h {
+        *v /= sum;
+    }
     h.into_iter().map(|v| v as f32).collect()
 }
 
 /// A history ring read newest first, kept twice over so reads never wrap
 /// and the newest `len` samples are one contiguous slice.
 #[derive(Clone, Debug)]
-struct Hist { buf: Vec<f32>, len: usize, pos: usize }
+struct Hist {
+    buf: Vec<f32>,
+    len: usize,
+    pos: usize,
+}
 
 impl Hist {
-    fn new(len: usize) -> Hist { Hist { buf: vec![0.0; 2 * len], len, pos: 0 } }
+    fn new(len: usize) -> Hist {
+        Hist {
+            buf: vec![0.0; 2 * len],
+            len,
+            pos: 0,
+        }
+    }
     #[inline]
     fn push(&mut self, x: f32) {
-        self.pos = if self.pos == 0 { self.len - 1 } else { self.pos - 1 };
+        self.pos = if self.pos == 0 {
+            self.len - 1
+        } else {
+            self.pos - 1
+        };
         self.buf[self.pos] = x;
         self.buf[self.pos + self.len] = x;
     }
     /// The sample pushed `k` pushes ago (0 = newest).
     #[inline]
-    fn get(&self, k: usize) -> f32 { self.buf[self.pos + k] }
+    fn get(&self, k: usize) -> f32 {
+        self.buf[self.pos + k]
+    }
     /// The newest `len` samples, newest first.
     #[inline]
-    fn newest(&self) -> &[f32] { &self.buf[self.pos..self.pos + self.len] }
-    fn clear(&mut self) { self.buf.fill(0.0); }
+    fn newest(&self) -> &[f32] {
+        &self.buf[self.pos..self.pos + self.len]
+    }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+    }
 }
 
 /// A dot product in eight independent sums, which the compiler can keep
@@ -77,10 +108,14 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     let whole = n / 8 * 8;
     let mut acc = [0.0f32; 8];
     for (x, y) in a[..whole].chunks_exact(8).zip(b[..whole].chunks_exact(8)) {
-        for i in 0..8 { acc[i] += x[i] * y[i]; }
+        for i in 0..8 {
+            acc[i] += x[i] * y[i];
+        }
     }
     let mut s = ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]));
-    for i in whole..n { s += a[i] * b[i]; }
+    for i in whole..n {
+        s += a[i] * b[i];
+    }
     s
 }
 
@@ -111,17 +146,27 @@ impl Up2 {
         // centre; the factor 2 restores the level lost to the stuffed zeros.
         let even = even.into_iter().map(|c| 2.0 * c).collect::<Vec<_>>();
         let n = even.len();
-        Up2 { even, center: 2.0 * center, at, hist: Hist::new(n) }
+        Up2 {
+            even,
+            center: 2.0 * center,
+            at,
+            hist: Hist::new(n),
+        }
     }
 
     /// One input sample in, two output samples out (in time order).
     #[inline]
     pub fn run(&mut self, x: f32) -> [f32; 2] {
         self.hist.push(x);
-        [dot(&self.even, self.hist.newest()), self.center * self.hist.get(self.at)]
+        [
+            dot(&self.even, self.hist.newest()),
+            self.center * self.hist.get(self.at),
+        ]
     }
 
-    pub fn reset(&mut self) { self.hist.clear(); }
+    pub fn reset(&mut self) {
+        self.hist.clear();
+    }
 }
 
 /// 2x down-sampler for one channel.
@@ -140,7 +185,13 @@ impl Down2 {
     pub fn new(taps: usize) -> Down2 {
         let (even, center, at) = polyphase(taps);
         let n = even.len();
-        Down2 { even, center, at, hist_e: Hist::new(n), hist_o: Hist::new(at + 1) }
+        Down2 {
+            even,
+            center,
+            at,
+            hist_e: Hist::new(n),
+            hist_o: Hist::new(at + 1),
+        }
     }
 
     /// Two input samples in (in time order), one output sample out.
@@ -171,7 +222,9 @@ mod tests {
         let c = TAPS_2X / 2;
         assert!((h[c] - 0.5).abs() < 1e-3);
         for (n, &v) in h.iter().enumerate() {
-            if n != c && (n as isize - c as isize) % 2 == 0 { assert!(v.abs() < 1e-9, "tap {n} = {v}"); }
+            if n != c && (n as isize - c as isize) % 2 == 0 {
+                assert!(v.abs() < 1e-9, "tap {n} = {v}");
+            }
         }
         assert!((h.iter().sum::<f32>() - 1.0).abs() < 1e-5);
     }
@@ -182,10 +235,17 @@ mod tests {
         let mut d = Down2::new(TAPS_2X);
         let lat = (TAPS_2X - 1) / 2;
         let rate = 48_000.0f32;
-        let x: Vec<f32> = (0..4000).map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / rate).sin()).collect();
+        let x: Vec<f32> = (0..4000)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / rate).sin())
+            .collect();
         let y: Vec<f32> = x.iter().map(|&s| d.run(u.run(s))).collect();
         for i in 500..3000 {
-            assert!((y[i + lat] - x[i]).abs() < 1e-3, "frame {i}: {} vs {}", y[i + lat], x[i]);
+            assert!(
+                (y[i + lat] - x[i]).abs() < 1e-3,
+                "frame {i}: {} vs {}",
+                y[i + lat],
+                x[i]
+            );
         }
     }
 }

@@ -3,20 +3,23 @@
 //! must not.
 
 use mpfree_fx::ids;
-use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId};
+use mpfree_fx::{
+    Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
+    MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId,
+};
 use mpfree_grain::GrainNode;
 use mpfree_looper::{Command as LooperCommand, Looper};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
+use mpfree_prof::alloc;
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
+use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::{Drums, Pluck, Poly, PRESETS};
-use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
-use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
-use mpfree_prof::alloc;
 
 pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
 
@@ -41,7 +44,9 @@ impl Lcg {
         self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         self.0
     }
-    fn unit(&mut self) -> f32 { (self.next() >> 9) as f32 / (1u32 << 23) as f32 * 2.0 - 1.0 }
+    fn unit(&mut self) -> f32 {
+        (self.next() >> 9) as f32 / (1u32 << 23) as f32 * 2.0 - 1.0
+    }
 }
 
 /// Program material for effects: a 110 Hz tone under noise bursts that
@@ -79,7 +84,9 @@ pub fn program(rate: u32) -> std::rc::Rc<Program> {
     PROGRAM.with(|p| {
         let mut p = p.borrow_mut();
         if let Some((r, prog)) = p.as_ref() {
-            if *r == rate { return prog.clone(); }
+            if *r == rate {
+                return prog.clone();
+            }
         }
         let n = rate as usize;
         let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
@@ -108,7 +115,9 @@ impl Program {
 
 fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) -> Case {
     n.prepare(rate, MAX_BLOCK);
-    for &(id, v) in params { n.set_param(id, v); }
+    for &(id, v) in params {
+        n.set_param(id, v);
+    }
     n.reset();
     let prog = program(rate);
     Case {
@@ -129,7 +138,9 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
 fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case {
     let mut s = Poly::new(rate);
     s.prepare(rate, MAX_BLOCK);
-    for &(id, v) in values { s.set_param(id, v); }
+    for &(id, v) in values {
+        s.set_param(id, v);
+    }
     s.set_param(POLYPHONY, voices as f32);
     let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
     let mut held: Vec<u8> = Vec::with_capacity(voices);
@@ -145,14 +156,26 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
             events.clear();
             // A chord change falls in this block.
             if f0 % half + len > half || f0 == 0 {
-                let at = if f0 == 0 { 0 } else { (half - f0 % half) as u32 % len as u32 };
-                for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
+                let at = if f0 == 0 {
+                    0
+                } else {
+                    (half - f0 % half) as u32 % len as u32
+                };
+                for &note in held.iter() {
+                    events.push(Timed::new(at, NodeEvent::NoteOff { note }));
+                }
                 held.clear();
                 let root = 36 + (seed.next() >> 28) as u8;
                 for k in 0..voices {
                     let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
                     held.push(note);
-                    events.push(Timed::new(at, NodeEvent::NoteOn { note, velocity: 64 + (seed.next() >> 26) as u8 }));
+                    events.push(Timed::new(
+                        at,
+                        NodeEvent::NoteOn {
+                            note,
+                            velocity: 64 + (seed.next() >> 26) as u8,
+                        },
+                    ));
                 }
             }
             l.fill(0.0);
@@ -168,7 +191,10 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
 fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
     let mut d = Drums::new(rate);
     d.prepare(rate, MAX_BLOCK);
-    let k = Drums::presets().iter().find(|k| k.name == kit).unwrap_or_else(|| panic!("kit {kit}"));
+    let k = Drums::presets()
+        .iter()
+        .find(|k| k.name == kit)
+        .unwrap_or_else(|| panic!("kit {kit}"));
     d.load_preset(k);
     let mut seed = Lcg(17);
     let mut events: Vec<Timed> = Vec::with_capacity(1);
@@ -180,7 +206,13 @@ fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
             events.clear();
             if b % every == 0 {
                 let pad = (seed.next() >> 28) as u8 % 16;
-                events.push(Timed::new(0, NodeEvent::NoteOn { note: 36 + pad, velocity: 40 + (seed.next() >> 25) as u8 % 88 }));
+                events.push(Timed::new(
+                    0,
+                    NodeEvent::NoteOn {
+                        note: 36 + pad,
+                        velocity: 40 + (seed.next() >> 25) as u8 % 88,
+                    },
+                ));
             }
             l.fill(0.0);
             r.fill(0.0);
@@ -195,7 +227,10 @@ fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
 fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
     let mut s = Pluck::new(rate);
     s.prepare(rate, MAX_BLOCK);
-    let p = Pluck::presets().iter().find(|p| p.name == preset).unwrap_or_else(|| panic!("pluck preset {preset}"));
+    let p = Pluck::presets()
+        .iter()
+        .find(|p| p.name == preset)
+        .unwrap_or_else(|| panic!("pluck preset {preset}"));
     s.load_preset(p);
     s.set_param(mpfree_synth::pluck_params::POLYPHONY, voices as f32);
     let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
@@ -211,14 +246,26 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
             let half = u64::from(rate / 2);
             events.clear();
             if f0 % half + len > half || f0 == 0 {
-                let at = if f0 == 0 { 0 } else { (half - f0 % half) as u32 % len as u32 };
-                for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
+                let at = if f0 == 0 {
+                    0
+                } else {
+                    (half - f0 % half) as u32 % len as u32
+                };
+                for &note in held.iter() {
+                    events.push(Timed::new(at, NodeEvent::NoteOff { note }));
+                }
                 held.clear();
                 let root = 40 + (seed.next() >> 28) as u8;
                 for k in 0..voices {
                     let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
                     held.push(note);
-                    events.push(Timed::new(at, NodeEvent::NoteOn { note, velocity: 64 + (seed.next() >> 26) as u8 }));
+                    events.push(Timed::new(
+                        at,
+                        NodeEvent::NoteOn {
+                            note,
+                            velocity: 64 + (seed.next() >> 26) as u8,
+                        },
+                    ));
                 }
             }
             l.fill(0.0);
@@ -246,25 +293,56 @@ enum SamplerPads {
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
 fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
-    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
-        .expect("source");
+    let s = Source::new(
+        "noise",
+        rate,
+        2,
+        (0..rate as usize * 2)
+            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+            .collect(),
+    )
+    .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
     for i in (0..16usize).filter(|_| which != SamplerPads::Grains) {
         let mut r = Region::whole(&s);
-        r.mode = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Loop, PlayMode::OneShot][i % 4];
-        r.sustain_loop = Some(Loop { start: 5000, end: 9000, crossfade: 200, mode: LoopMode::Forward });
+        r.mode = [
+            PlayMode::OneShot,
+            PlayMode::Gate,
+            PlayMode::Loop,
+            PlayMode::OneShot,
+        ][i % 4];
+        r.sustain_loop = Some(Loop {
+            start: 5000,
+            end: 9000,
+            crossfade: 200,
+            mode: LoopMode::Forward,
+        });
         r.tune_cents = (i as i32 - 8) * 50;
         let mut pad = Pad::new("p", Layer::new(r.clone()));
         pad.layers.push(Layer::new(r));
         pad.polyphony = 2;
-        pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 2000.0, resonance: 0.3, env_octaves: 1.0 };
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 2,
+            cutoff_hz: 2000.0,
+            resonance: 0.3,
+            env_octaves: 1.0,
+        };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
     for i in (16..20usize).filter(|_| which != SamplerPads::Samples) {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
-        r.grain = GrainParams { spray: 0.6, size_ms: 300.0, density: 200.0, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        r.grain = GrainParams {
+            spray: 0.6,
+            size_ms: 300.0,
+            density: 200.0,
+            pitch_spray: 5.0,
+            spread: 1.0,
+            scan: 1.0,
+            ..GrainParams::default()
+        };
         let mut pad = Pad::new("g", Layer::new(r));
         pad.polyphony = 2;
         p.set_pad(i, Some(pad), None).expect("pad");
@@ -272,8 +350,19 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
     let mut e = Engine::new(rate, 24);
     if master {
         e.set_master_fx(Engine::make_master_fx(rate));
-        p.set_master(MasterFx { mix: 0.5, grain: GrainParams { density: 200.0, size_ms: 150.0, spray: 0.3, ..MasterFx::default().grain } }, None)
-            .expect("master");
+        p.set_master(
+            MasterFx {
+                mix: 0.5,
+                grain: GrainParams {
+                    density: 200.0,
+                    size_ms: 150.0,
+                    spray: 0.3,
+                    ..MasterFx::default().grain
+                },
+            },
+            None,
+        )
+        .expect("master");
     }
     e.set_view(EngineView::build(&p, rate));
     let mut seed = Lcg(11);
@@ -284,8 +373,13 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
         block: Box::new(move |b, l, r| {
             if b % 4 == 0 {
                 let pad = (seed.next() >> 27) as u8 % 20;
-                e.apply(Event::NoteOff { pad: (pad + 7) % 20 });
-                e.apply(Event::NoteOn { pad, velocity: 40 + (seed.next() >> 25) as u8 % 88 });
+                e.apply(Event::NoteOff {
+                    pad: (pad + 7) % 20,
+                });
+                e.apply(Event::NoteOn {
+                    pad,
+                    velocity: 40 + (seed.next() >> 25) as u8 % 88,
+                });
             }
             l.fill(0.0);
             r.fill(0.0);
@@ -332,15 +426,29 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
             c.push(Box::new(Eq::new()));
             c.push(Box::new(Compressor::new()));
         }
-        m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
-        m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
-        m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
+        m.chain_mut(StripId::Bus(1))
+            .unwrap()
+            .push(Box::new(Drive::new()));
+        m.chain_mut(StripId::Bus(3))
+            .unwrap()
+            .push(Box::new(Compressor::new()));
+        m.chain_mut(StripId::Return(0))
+            .unwrap()
+            .push(Box::new(Cloud::new()));
         if with == Inserts::SongLight {
-            m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
+            m.chain_mut(StripId::Return(0))
+                .unwrap()
+                .set_param(0, ids::cloud::QUALITY, 1.0);
         }
-        m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
-        m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
-        m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
+        m.chain_mut(StripId::Return(1))
+            .unwrap()
+            .push(Box::new(Delay::new()));
+        m.chain_mut(StripId::Master)
+            .unwrap()
+            .push(Box::new(Eq::new()));
+        m.chain_mut(StripId::Track(1))
+            .unwrap()
+            .set_param(1, ids::compressor::SIDECHAIN, 1.0);
         m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
     }
     // The sources' audio, rendered once so the timing is the mixer's alone
@@ -354,7 +462,11 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
     Case {
         name: name.to_string(),
         module: if inserts { "fx" } else { "mix" },
-        what: if inserts { "the routing below plus EQ and compressor on 6 tracks, drive and glue on submixes, reverb, delay, master EQ" } else { "a song's routing, no inserts (Master safety included)" },
+        what: if inserts {
+            "the routing below plus EQ and compressor on 6 tracks, drive and glue on submixes, reverb, delay, master EQ"
+        } else {
+            "a song's routing, no inserts (Master safety included)"
+        },
         block: Box::new(move |b, out_l, out_r| {
             let n = out_l.len();
             let f0 = b * n as u64;
@@ -382,50 +494,233 @@ pub fn all(rate: u32) -> Vec<Case> {
     program(rate);
     let mut v = Vec::new();
     for preset in PRESETS {
-        v.push(measured(|| synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8)));
+        v.push(measured(|| {
+            synth(
+                format!("Poly {}, 8 voices", preset.name),
+                rate,
+                preset.values,
+                8,
+            )
+        }));
     }
-    v.push(measured(|| synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16)));
-    v.push(measured(|| drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)));
-    v.push(measured(|| drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)));
-    for (name, voices) in [("Steel String", 8), ("Harp", 16), ("Marimba", 8), ("Bell", 16)] {
+    v.push(measured(|| {
+        synth(
+            "Poly Init, 16 voices, unison 4".to_string(),
+            rate,
+            &[(UNISON, 4.0)],
+            16,
+        )
+    }));
+    v.push(measured(|| {
+        drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)
+    }));
+    v.push(measured(|| {
+        drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)
+    }));
+    for (name, voices) in [
+        ("Steel String", 8),
+        ("Harp", 16),
+        ("Marimba", 8),
+        ("Bell", 16),
+    ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
-    v.push(measured(|| sampler("Sampler, 20 pads", rate, false, SamplerPads::All)));
-    v.push(measured(|| sampler("Sampler, 20 pads + master grains", rate, true, SamplerPads::All)));
-    v.push(measured(|| sampler("Sampler, the 16 sample pads alone", rate, false, SamplerPads::Samples)));
-    v.push(measured(|| sampler("Sampler, the 4 granular pads alone", rate, false, SamplerPads::Grains)));
-    v.push(measured(|| effect("Multi filter (LP 12)", rate, Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)])));
-    v.push(measured(|| effect("Multi filter (LP 24, drive)", rate, Box::new(MultiFilter::new()),
-                  &[(ids::filter::CUTOFF, 800.0), (ids::filter::SLOPE, 1.0), (ids::filter::DRIVE, 12.0)])));
-    v.push(measured(|| effect("DJ filter", rate, Box::new(DjFilter::new()), &[(ids::dj_filter::POSITION, -40.0)])));
-    v.push(measured(|| effect("Drive (Eco 2x)", rate, Box::new(Drive::new()), &[])));
-    v.push(measured(|| effect("Drive (HQ 4x)", rate, Box::new(Drive::new()), &[(ids::drive::QUALITY, 1.0)])));
-    v.push(measured(|| effect("Crush", rate, Box::new(Crush::new()), &[])));
-    v.push(measured(|| effect("Delay", rate, Box::new(Delay::new()), &[])));
-    v.push(measured(|| effect("Compressor", rate, Box::new(Compressor::new()), &[])));
-    v.push(measured(|| effect("EQ (4 bands and both cuts)", rate, Box::new(Eq::new()), &[
-        (ids::eq::LOW_SLOPE, 2.0), (ids::eq::HIGH_SLOPE, 2.0),
-        (ids::eq::gain(0), 3.0), (ids::eq::gain(1), -4.0), (ids::eq::gain(2), 5.0), (ids::eq::gain(3), 2.0),
-    ])));
-    v.push(measured(|| effect("Chorus (2 voices)", rate, Box::new(Chorus::new()), &[])));
-    v.push(measured(|| effect("Chorus (4 voices)", rate, Box::new(Chorus::new()), &[(ids::chorus::VOICES, 4.0)])));
-    v.push(measured(|| effect("Flanger", rate, Box::new(Flanger::new()), &[])));
-    v.push(measured(|| effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[])));
-    v.push(measured(|| effect("Phaser (12 stages)", rate, Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)])));
-    v.push(measured(|| effect("Lo-fi", rate, Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)])));
-    v.push(measured(|| effect("Master safety", rate, Box::new(MasterSafety::new()), &[])));
-    for (k, c) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
-        v.push(measured(|| effect(&format!("Cloud reverb ({c})"), rate, Box::new(Cloud::new()),
-                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)])));
+    v.push(measured(|| {
+        sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, 20 pads + master grains",
+            rate,
+            true,
+            SamplerPads::All,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 16 sample pads alone",
+            rate,
+            false,
+            SamplerPads::Samples,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 4 granular pads alone",
+            rate,
+            false,
+            SamplerPads::Grains,
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Multi filter (LP 12)",
+            rate,
+            Box::new(MultiFilter::new()),
+            &[(ids::filter::CUTOFF, 800.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Multi filter (LP 24, drive)",
+            rate,
+            Box::new(MultiFilter::new()),
+            &[
+                (ids::filter::CUTOFF, 800.0),
+                (ids::filter::SLOPE, 1.0),
+                (ids::filter::DRIVE, 12.0),
+            ],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "DJ filter",
+            rate,
+            Box::new(DjFilter::new()),
+            &[(ids::dj_filter::POSITION, -40.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Drive (Eco 2x)", rate, Box::new(Drive::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Drive (HQ 4x)",
+            rate,
+            Box::new(Drive::new()),
+            &[(ids::drive::QUALITY, 1.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Crush", rate, Box::new(Crush::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Delay", rate, Box::new(Delay::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Compressor", rate, Box::new(Compressor::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "EQ (4 bands and both cuts)",
+            rate,
+            Box::new(Eq::new()),
+            &[
+                (ids::eq::LOW_SLOPE, 2.0),
+                (ids::eq::HIGH_SLOPE, 2.0),
+                (ids::eq::gain(0), 3.0),
+                (ids::eq::gain(1), -4.0),
+                (ids::eq::gain(2), 5.0),
+                (ids::eq::gain(3), 2.0),
+            ],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Chorus (2 voices)", rate, Box::new(Chorus::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Chorus (4 voices)",
+            rate,
+            Box::new(Chorus::new()),
+            &[(ids::chorus::VOICES, 4.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Flanger", rate, Box::new(Flanger::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Phaser (12 stages)",
+            rate,
+            Box::new(Phaser::new()),
+            &[(ids::phaser::STAGES, 4.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Lo-fi",
+            rate,
+            Box::new(LoFi::new()),
+            &[(ids::lofi::AMOUNT, 100.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Master safety", rate, Box::new(MasterSafety::new()), &[])
+    }));
+    for (k, c) in ["Plate", "Room", "Hall", "Cloud", "Echoes"]
+        .iter()
+        .enumerate()
+    {
+        v.push(measured(|| {
+            effect(
+                &format!("Cloud reverb ({c})"),
+                rate,
+                Box::new(Cloud::new()),
+                &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)],
+            )
+        }));
     }
-    v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
-                  &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
-                    (mpfree_grain::node::param::SPRAY, 50.0)])));
-    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, Inserts::None)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, Inserts::None)));
-    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, Inserts::None)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, Inserts::Song)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb", rate, 12, 8, Inserts::SongLight)));
+    v.push(measured(|| {
+        effect(
+            "Grains FX (dense)",
+            rate,
+            Box::new(GrainNode::new(5)),
+            &[
+                (mpfree_grain::node::param::MIX, 100.0),
+                (mpfree_grain::node::param::DENSITY, 200.0),
+                (mpfree_grain::node::param::SPRAY, 50.0),
+            ],
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, idle (63 strips, nothing playing)",
+            rate,
+            0,
+            0,
+            Inserts::None,
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, 12 tracks and 8 pads, routing only",
+            rate,
+            12,
+            8,
+            Inserts::None,
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, 16 tracks and 32 pads, routing only",
+            rate,
+            16,
+            32,
+            Inserts::None,
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, 12 tracks and 8 pads, with a song's inserts",
+            rate,
+            12,
+            8,
+            Inserts::Song,
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb",
+            rate,
+            12,
+            8,
+            Inserts::SongLight,
+        )
+    }));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
@@ -446,25 +741,37 @@ pub struct Scaling {
 /// as in the synth cases), the sampler at 1 to 32 voices held, and the
 /// sampler's grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
-    let mut v: Vec<Scaling> = PRESETS.iter().map(|p| {
-        // Mono and legato presets play one voice whatever the polyphony.
-        let mono = p.values.iter().any(|&(id, x)| id == VOICE_MODE && x != 0.0);
-        let counts: &[usize] = if mono { &[1] } else { &[1, 2, 4, 8, 16] };
-        Scaling {
-            name: format!("Poly {}{}", p.name, if mono { " (mono)" } else { "" }),
-            module: "synth",
-            points: counts.iter().map(|&n| (n, synth(format!("Poly {} x{n}", p.name), rate, p.values, n))).collect(),
-        }
-    }).collect();
+    let mut v: Vec<Scaling> = PRESETS
+        .iter()
+        .map(|p| {
+            // Mono and legato presets play one voice whatever the polyphony.
+            let mono = p.values.iter().any(|&(id, x)| id == VOICE_MODE && x != 0.0);
+            let counts: &[usize] = if mono { &[1] } else { &[1, 2, 4, 8, 16] };
+            Scaling {
+                name: format!("Poly {}{}", p.name, if mono { " (mono)" } else { "" }),
+                module: "synth",
+                points: counts
+                    .iter()
+                    .map(|&n| (n, synth(format!("Poly {} x{n}", p.name), rate, p.values, n)))
+                    .collect(),
+            }
+        })
+        .collect();
     v.push(Scaling {
         name: "Sampler, looping pads held".to_string(),
         module: "sampler",
-        points: [1usize, 4, 8, 16, 32].iter().map(|&n| (n, held_pads(rate, n))).collect(),
+        points: [1usize, 4, 8, 16, 32]
+            .iter()
+            .map(|&n| (n, held_pads(rate, n)))
+            .collect(),
     });
     v.push(Scaling {
         name: "Sampler grains (per grain)".to_string(),
         module: "sampler",
-        points: [16usize, 32, 64, 128, 256].iter().map(|&n| (n, held_grains(rate, n))).collect(),
+        points: [16usize, 32, 64, 128, 256]
+            .iter()
+            .map(|&n| (n, held_grains(rate, n)))
+            .collect(),
     });
     v
 }
@@ -483,7 +790,9 @@ fn held_grains(rate: u32, grains: usize) -> Case {
         what: "4 granular pads held, grains alive in all",
         block: Box::new(move |b, l, r| {
             if b == 0 {
-                for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+                for pad in 0..4 {
+                    e.apply(Event::NoteOn { pad, velocity: 100 });
+                }
             }
             l.fill(0.0);
             r.fill(0.0);
@@ -495,15 +804,30 @@ fn held_grains(rate: u32, grains: usize) -> Case {
 
 /// The engine behind [`held_grains`].
 fn grain_engine(rate: u32, grains: usize) -> Engine {
-    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
-        .expect("source");
+    let s = Source::new(
+        "noise",
+        rate,
+        2,
+        (0..rate as usize * 2)
+            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+            .collect(),
+    )
+    .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
     let density = grains as f32 / 4.0 * 10.0;
     for i in 0..4usize {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
-        r.grain = GrainParams { spray: 0.6, size_ms: 100.0, density, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        r.grain = GrainParams {
+            spray: 0.6,
+            size_ms: 100.0,
+            density,
+            pitch_spray: 5.0,
+            spread: 1.0,
+            scan: 1.0,
+            ..GrainParams::default()
+        };
         let mut pad = Pad::new("g", Layer::new(r));
         pad.polyphony = 1;
         p.set_pad(i, Some(pad), None).expect("pad");
@@ -516,18 +840,36 @@ fn grain_engine(rate: u32, grains: usize) -> Engine {
 /// The sampler with `n` looping, filtered, stereo pads held down, so exactly
 /// `n` voices sound in every block.
 fn held_pads(rate: u32, n: usize) -> Case {
-    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
-        .expect("source");
+    let s = Source::new(
+        "noise",
+        rate,
+        2,
+        (0..rate as usize * 2)
+            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+            .collect(),
+    )
+    .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
     for i in 0..n {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Loop;
-        r.sustain_loop = Some(Loop { start: 5000, end: 30000, crossfade: 200, mode: LoopMode::Forward });
+        r.sustain_loop = Some(Loop {
+            start: 5000,
+            end: 30000,
+            crossfade: 200,
+            mode: LoopMode::Forward,
+        });
         r.tune_cents = (i as i32 % 24 - 12) * 50;
         let mut pad = Pad::new("p", Layer::new(r));
         pad.polyphony = 1;
-        pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 2000.0, resonance: 0.3, env_octaves: 1.0 };
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 2,
+            cutoff_hz: 2000.0,
+            resonance: 0.3,
+            env_octaves: 1.0,
+        };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
     let mut e = Engine::new(rate, n.max(1));
@@ -538,7 +880,12 @@ fn held_pads(rate: u32, n: usize) -> Case {
         what: "looping pads held down",
         block: Box::new(move |b, l, r| {
             if b == 0 {
-                for pad in 0..n { e.apply(Event::NoteOn { pad: pad as u8, velocity: 100 }); }
+                for pad in 0..n {
+                    e.apply(Event::NoteOn {
+                        pad: pad as u8,
+                        velocity: 100,
+                    });
+                }
             }
             l.fill(0.0);
             r.fill(0.0);
@@ -569,7 +916,13 @@ pub fn fit(points: &[(usize, f64)]) -> (f64, f64) {
 /// the looper, each run every block in that order. Running them together
 /// also shows what they cost each other in the caches.
 fn song(rate: u32) -> Case {
-    let preset = |name: &str| PRESETS.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("preset {name}")).values;
+    let preset = |name: &str| {
+        PRESETS
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("preset {name}"))
+            .values
+    };
     let mut parts = [
         sampler("sampler", rate, true, SamplerPads::All),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
@@ -578,7 +931,10 @@ fn song(rate: u32) -> Case {
         time(rate, 8),
         looper(rate, 60),
     ];
-    let mut bufs: Vec<(Vec<f32>, Vec<f32>)> = parts.iter().map(|_| (vec![0.0f32; MAX_BLOCK], vec![0.0f32; MAX_BLOCK])).collect();
+    let mut bufs: Vec<(Vec<f32>, Vec<f32>)> = parts
+        .iter()
+        .map(|_| (vec![0.0f32; MAX_BLOCK], vec![0.0f32; MAX_BLOCK]))
+        .collect();
     Case {
         name: "Song: sampler, 2 synths, mixer+FX, time, looper".to_string(),
         module: "period",
@@ -656,7 +1012,15 @@ fn time(rate: u32, tracks: usize) -> Case {
         let mut t = Track::new("t", i as u16);
         let mut c = Clip::new("c", 8 * ppq);
         c.notes = (0..32i64)
-            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100, chance: 100 }))
+            .flat_map(|k| {
+                (0..3i64).map(move |n| Note {
+                    tick: k * ppq / 4,
+                    len: ppq / 4 - 10,
+                    note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8,
+                    velocity: 100,
+                    chance: 100,
+                })
+            })
             .collect();
         if i == 1 {
             c.speed = Speed::new(3, 2).expect("speed");
@@ -667,15 +1031,27 @@ fn time(rate: u32, tracks: usize) -> Case {
         }
         t.slots[0] = Some(c);
         song.tracks.push(t);
-        launches.push(Launch { track: i, slot: 0, origin: 0 });
+        launches.push(Launch {
+            track: i,
+            slot: 0,
+            origin: 0,
+        });
     }
     let view = PlayView::compile(&song, &launches).expect("view");
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(0, T::SetLoop(Some((0, 16 * ppq))));
     t.command(0, T::Play);
     let mut engine = mpfree_arp::Engine::new(rate, 128.0);
-    engine.set_settings(mpfree_arp::Settings { mode: mpfree_arp::Mode::Arp, rate: mpfree_arp::Rate::ThirtySecond, octaves: 2, ..mpfree_arp::Settings::default() });
-    let mut sink = TimeSink { arp: ArpHost::new(engine), notes: 0 };
+    engine.set_settings(mpfree_arp::Settings {
+        mode: mpfree_arp::Mode::Arp,
+        rate: mpfree_arp::Rate::ThirtySecond,
+        octaves: 2,
+        ..mpfree_arp::Settings::default()
+    });
+    let mut sink = TimeSink {
+        arp: ArpHost::new(engine),
+        notes: 0,
+    };
     let mut player = Player::new();
     let mut block = TBlock::new();
     let mut arp_notes = 0u64;
@@ -778,7 +1154,11 @@ mod tests {
         for b in 0..2_500u64 {
             (c.block)(b, &mut l, &mut r);
             if b > 1_600 {
-                energy += l.iter().chain(r.iter()).map(|v| f64::from(v.abs())).sum::<f64>();
+                energy += l
+                    .iter()
+                    .chain(r.iter())
+                    .map(|v| f64::from(v.abs()))
+                    .sum::<f64>();
             }
         }
         assert!(energy > 100.0, "{energy}");
@@ -795,31 +1175,49 @@ mod tests {
         let mut c = held_pads(44_100, 4);
         let (l, _) = run(&mut c, 100);
         assert!(l.iter().any(|v| v.abs() > 1e-4));
-        assert!(scaling(44_100).iter().all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
+        assert!(scaling(44_100)
+            .iter()
+            .all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
     }
 
     #[test]
     fn the_grain_points_hold_about_that_many_grains() {
         for n in [16usize, 64, 256] {
             let mut e = grain_engine(44_100, n);
-            for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+            for pad in 0..4 {
+                e.apply(Event::NoteOn { pad, velocity: 100 });
+            }
             let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
             let mut live = 0usize;
             for b in 0..700 {
                 e.render(&mut l, &mut r);
-                if b >= 350 { live += e.live_grains(); }
+                if b >= 350 {
+                    live += e.live_grains();
+                }
             }
             let mean = live as f64 / 350.0;
-            assert!((mean - n as f64).abs() <= n as f64 * 0.25, "{n} grains asked, {mean:.1} alive");
+            assert!(
+                (mean - n as f64).abs() <= n as f64 * 0.25,
+                "{n} grains asked, {mean:.1} alive"
+            );
         }
     }
 
     #[test]
     fn every_case_says_what_it_holds() {
         let cases = all(44_100);
-        assert!(cases.iter().any(|c| c.module == "looper") && cases.iter().any(|c| c.module == "time"));
+        assert!(
+            cases.iter().any(|c| c.module == "looper") && cases.iter().any(|c| c.module == "time")
+        );
         if alloc::installed() {
-            assert!(cases.iter().all(|c| c.mem_bytes > 0), "{:?}", cases.iter().map(|c| (&c.name, c.mem_bytes)).collect::<Vec<_>>());
+            assert!(
+                cases.iter().all(|c| c.mem_bytes > 0),
+                "{:?}",
+                cases
+                    .iter()
+                    .map(|c| (&c.name, c.mem_bytes))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 }
