@@ -5,7 +5,7 @@ Two crates:
 - **`mpfree-param`** names any parameter in MPFree with one small `Copy` type, `ParamAddr`. Parameter locks, macros, the mod matrix, morph scenes and Q-Link bindings all use it, so one parameter can be locked on a step, moved by a macro and swept by an LFO at once, and project files name it the same way everywhere.
 - **`mpfree-mod`** is the engine that works out the value of every parameter something moves, and the pure model behind binding Q-Links to parameters and macros.
 
-Agreed on 2026-11-11 with the threads that own the neighbours: the time engine (parameter locks), FX (chains, the mixer, effects), synths (instruments) and the Hello MPC thread (layout, Q-Links, the control map).
+Agreed on 2026-11-11 with the threads that own the neighbours: the time engine (parameter locks), FX (chains, the mixer, effects), synths (instruments), the sampler (the Sample tab's FX sub-tab) and the Hello MPC thread (layout, Q-Links, the control map). Nothing here runs in the app yet; [What is left](#what-is-left) lists the steps and what each waits on.
 
 ## Naming a parameter: `ParamAddr`
 
@@ -57,6 +57,18 @@ Macros and the morph position are targets too, so they can be locked on a step, 
 - **Locks** come from the player as `Lock { addr, value }` and `Unlock { addr }` on exact frames.
 - **Inside the nodes:** LFOs and envelopes inside a synth or an effect, and per-voice modulation (velocity, pressure, key tracking per note), stay there. This matrix is per track or per bus.
 
+## Parameter locks
+
+Jay chose the Elektron way on 2026-11-11. The time engine's side (locks in clips, the player, recording them) is in PR #122.
+
+- A clip stores a lock as a `RelAddr` and a value on a tick. A lock without a note on its step (trigless) is allowed.
+- The player sends `Lock { addr, value }` on the lock's frame, after that frame's note-offs and before its note-ons, so the note starting there plays with it.
+- A lock lasts for its own note: the track's next note without a lock on that parameter sends `Unlock`, and the parameter goes back to what the layers below give. Stop, locate, a loop back and a clip switch unlock everything; a muted track sends none.
+- A lock moves the whole instrument, not one voice of a poly synth. A pad's lock (`Pad(t, p)`) reaches the voice that starts on that frame.
+- Instrument, pad, mixer strip and insert parameters can be locked, and so can a macro's value and the morph position.
+- Turning a Q-Link while recording records a lock: the app sends `ModEvent::Lock` (not `Set`) and passes the move to the time engine (`TimeHost::knob`), which puts it on the held pad's note, else on a note that started in the last 240 ticks, else on the nearest grid line as a trigless lock.
+- A lock sits above the morph and the macros and below the matrix, so an LFO still moves a locked value.
+
 ## Q-Link bindings
 
 `mpfree_mod::Bindings` is pure control-thread logic for the app's Q-Link column, in banks of four:
@@ -72,7 +84,7 @@ Macros and the morph position are targets too, so they can be locked on a step, 
 
 Two panels on `mpfree-ui`, drawn with theme tokens only. Where they open is the Hello MPC thread's call and Jay's; Hello's proposal (layout spec, "The FX chain editor and macros"), which the previews follow:
 
-- The **chain editor** takes the mixer's place when a strip's insert is tapped (`MixAction::OpenInsert` / `AddInsert`), no tab lit, with "‹ Mixer" in the list's corner (`ChainState::back`, `ChainAction::Back`). In the Sample tab it sits in the FX sub-tab under the pad bar, with a switch between the pad's chain and the track's (`ChainState::scopes`, `ChainAction::Scope`); which one it shows first is to agree with the sampler thread.
+- The **chain editor** takes the mixer's place when a strip's insert is tapped (`MixAction::OpenInsert` / `AddInsert`), no tab lit, with "‹ Mixer" in the list's corner (`ChainState::back`, `ChainAction::Back`). In the Sample tab it sits in the FX sub-tab under the pad bar, with a switch between the pad's chain and the track's (`ChainState::scopes`, `ChainAction::Scope`). It shows the pad's own chain first (kit pad `p` is the mixer's pad channel `p`), as agreed with the sampler thread.
 - **Macros 1-4 and 5-8** are banks of the Q-Link column; a long press on a macro card opens the **macros panel** over the page under the top bar, no tab lit, with "‹ Back" in its corner (`MacroAction::Back`).
 - The Q-Link column is the Play page's (168 px) beside the panel; the hint line says what the buttons do on the page.
 
@@ -81,3 +93,22 @@ Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation
 - **Chain editor** (`ChainView`): the strip's inserts (number, name, a line about its settings, a dot per macro that moves it, `~` when the matrix does, a power button that bypasses with spillover; Up, Down, Remove, + Add effect); the selected effect's page (its parameter groups as tabs, up to eight knobs, each with a green ring for how far modulation moves it and a badge in its macro's colour); and the Modulate column for the knob last touched (macro 1 to 8, Learn to a Q-Link, matrix rows with a depth bar, + LFO, + Follower; a switch takes macros only).
 - **Macros and morph** (`MacrosView`): four macro cards at a time (drag the knob; each target shows its name, its range as a bar, where it is now, and the range as text; a tap asks to edit its range and curve), and the morph: A to B slider, what changes (each parameter's A and B values and where it is now), Snap back to A, Save A, Save B.
 - Touches become `ChainAction`s and `MacroAction`s for the app: parameter moves go to the mod engine as `ModEvent::Set`, chain edits to the mixer as `Edit`s, macro maps and rows to the engine. `strip_of` and `strip_id` convert between the mixer's `StripId` and the address's `Strip`.
+
+## What is left
+
+As of 2026-11-11 the crates are on `main` (PR #102), tested and benched on the desktop, and nothing calls them yet. The steps, in order, with what each waits on:
+
+1. **Placing the panels in the app** waits on Jay approving Hello's proposal (layout spec, "The FX chain editor and macros"). The Hello thread's round then wires them in:
+   - The mixer's `OpenInsert { strip, slot }` opens the chain editor on that slot and `AddInsert` opens it with the effect picker; `Back` returns to the mixer.
+   - The sampler adds "FX" to `mpfree_sampler_ui::wave_tab::BUILT`, and the FX sub-tab shows the chain editor.
+   - The Q-Link column takes `Bindings::with_macros`, and a long press on a macro card opens the macros panel.
+   - Chain edits go to `Mixer::edit` (bypass is `Chain::set_on`), and parameter moves go to the engine as `ModEvent::Set`.
+2. **The engine in the audio loop** waits on PR #122. The host owns a `ModEngine` and turns the player's `Lock` and `Unlock` into `ModEvent`s at the same frame offset. It calls `add_target` for every address a compiled clip locks, and routes the engine's output by owner (see [Where each piece goes](#where-each-piece-goes)). Q-Link turns also go to `TimeHost::knob` while recording. The mod thread writes this and hands it to the Hello thread's round.
+3. **Effect pages** wait on PR #116 (`mpfree-fx-ui`). `ChainAction::OpenPage(slot)` lets a tap on the selected insert's name open its full effect page, and the effect's picture (`mpfree_fx_ui::visual`) goes above the knobs.
+4. **Not blocked:**
+   - An effect picker for "+ Add effect" (`ChainAction::AddEffect` has nothing to open yet).
+   - A range and curve editor for a macro's target (`MacroAction::EditTarget` has nothing to open yet).
+5. **Later:**
+   - Saving macro maps, matrix rows, scenes and LFO settings with a project. The engine has no save yet, and there is no project file to save into; the Q-Link bindings already save to `mpfree-store`.
+   - The theme retrofit once the theme system (PR #72) lands.
+   - The Mod bench case's numbers on the MPC, and a bench of FM under modulation, since FM rebuilds its patch on every parameter change.
