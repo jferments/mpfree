@@ -416,7 +416,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          p = Path("docs/hardware/data/mpc-one-3.6.0-observed.json")
+          p = Path("docs/dev/hardware/data/mpc-one-3.6.0-observed.json")
           d = json.loads(p.read_text())
           assert d["provenance"]["hardware_serial_redacted"] is True
           assert d["provenance"]["raw_report_in_repo"] is False
@@ -442,6 +442,16 @@ jobs:
           PY
           test "$(git hash-object tools/mpc-one/reference-lab/prepare_mpc_one_usb.py)" = "45721099d111608d19fe9d49a0aa1f8b06a99fdd"
           test "$(git hash-object tools/mpc-one/reference-lab/verify_mpc_one_usb.py)" = "23d013fc8ca5acaa7ff4a01374cb601bf2d04efe"
+      - name: Docs (links, indexes, manual page headers, retired names; docs/agents/docs-system.md)
+        run: python3 docs/tools/check_docs.py
+      - name: Docs that may need updating for this change (report only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --quiet --unshallow origin 2>/dev/null || true
+          git fetch --no-tags --quiet origin "$BASE_REF"
+          python3 docs/tools/doc_drift.py --base FETCH_HEAD --summary "$GITHUB_STEP_SUMMARY"
 
   core:
     name: Deterministic core build, tests and offline WAV
@@ -490,7 +500,7 @@ jobs:
     timeout-minutes: 60
     env:
       # Pinned so a new Rust release's new lints never turn every PR red at once;
-      # bump it on purpose, with the fixes, in one PR (docs/guides/testing-and-ci.md).
+      # bump it on purpose, with the fixes, in one PR (docs/dev/guides/testing-and-ci.md).
       MPFREE_CLIPPY_TOOLCHAIN: "1.97.0"
       MPFREE_CARGO_TARGET_BUDGET_GIB: 15
     steps:
@@ -535,7 +545,7 @@ jobs:
   coverage:
     name: Rust line coverage by crate (report only)
     # Report, not a gate: on main and by hand. Its numbers point the next
-    # tests at the thinnest crates (docs/guides/testing-and-ci.md).
+    # tests at the thinnest crates (docs/dev/guides/testing-and-ci.md).
     if: github.event_name != 'pull_request'
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).

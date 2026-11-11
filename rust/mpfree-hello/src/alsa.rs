@@ -193,7 +193,7 @@ impl HwParams {
         get(&self.0, HW_FIFO)
     }
 
-    /// The stock app's playback stream (docs/hardware/audio-runtime.md): stereo S32_LE at
+    /// The stock app's playback stream (docs/dev/hardware/audio-runtime.md): stereo S32_LE at
     /// 44.1 kHz, interleaved, 128-frame periods, 3 periods (384 frames).
     pub fn stock_playback(periods: u32) -> HwParams {
         let mut p = HwParams::any();
@@ -211,7 +211,7 @@ impl HwParams {
 
     /// The line input's stream: the same format as playback, 128-frame
     /// periods, 2 periods (256 frames), the capture buffer seen while Akai's
-    /// own service ran (docs/hardware/audio-runtime.md).
+    /// own service ran (docs/dev/hardware/audio-runtime.md).
     pub fn stock_capture() -> HwParams {
         HwParams::stock_playback(2)
     }

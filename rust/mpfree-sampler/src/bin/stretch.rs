@@ -17,7 +17,7 @@
 //!   at two thirds.
 //!
 //! With `--ratio R` and/or `--semitones S` it renders just `custom.wav`.
-//! With `--calibration FILE` (the MPC's, `docs/perf/mpc-one-calibration.txt`)
+//! With `--calibration FILE` (the MPC's, `docs/dev/perf/mpc-one-calibration.txt`)
 //! the report adds an estimate of each render's time on the MPC.
 #![forbid(unsafe_code)]
 

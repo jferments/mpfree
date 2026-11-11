@@ -3,7 +3,7 @@
 //! Everything lives under one folder that the caller names. On the MPC it is
 //! the test stick's MPFREE-DATA partition, which the test boot's
 //! `start-app.sh` mounts at `/run/mpfree-data` and passes with `--data`;
-//! nothing else is written (docs/project/storage-spec.md). Inside it:
+//! nothing else is written (docs/dev/design/storage-spec.md). Inside it:
 //!
 //! ```text
 //! FORMAT                  "mpfree-data 1"

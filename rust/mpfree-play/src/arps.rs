@@ -1,5 +1,5 @@
 //! One arpeggiator per track (owner decisions 2 and 3, 2026-11-11, in
-//! docs/project/arpeggiator.md).
+//! docs/dev/design/arpeggiator.md).
 //!
 //! - **One arp per track.** Each track slot has its own [`ArpHost`] (and
 //!   so its own engine, settings, latch and pattern). A latched arp keeps
