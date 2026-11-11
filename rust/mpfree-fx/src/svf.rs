@@ -228,6 +228,48 @@ static MULTI_PARAMS: [ParamInfo; 6] = [
     },
 ];
 
+/// Sets a [`MultiFilter`]'s one or two stages.
+#[allow(clippy::too_many_arguments)]
+fn set_stages(
+    a: &mut Svf,
+    b: &mut Svf,
+    mode: SvfMode,
+    cascaded: bool,
+    hz: f32,
+    res: f32,
+    gain: f32,
+    rate: u32,
+) {
+    let q = res_to_q(res);
+    if cascaded {
+        // 24 dB: a Butterworth-shaped first stage, resonance on the second.
+        let q1 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
+            0.541
+        } else {
+            q
+        };
+        let q2 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
+            1.307 * (q / 0.707)
+        } else {
+            q
+        };
+        a.set(mode, hz, q1, gain, rate);
+        b.set(mode, hz, q2, gain, rate);
+    } else {
+        a.set(mode, hz, q, gain, rate);
+    }
+}
+
+/// The product of two complex gains.
+pub(crate) fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+
+/// A complex gain's level in dB (-240 dB for silence).
+pub(crate) fn power_db(h: (f64, f64)) -> f32 {
+    (10.0 * (h.0 * h.0 + h.1 * h.1).max(1e-24).log10()) as f32
+}
+
 /// A multi-mode filter: low-pass, high-pass, band-pass and notch at 12 or
 /// 24 dB per octave, plus a bell and two shelves; resonance up to a long
 /// ring; optional drive into a soft saturator before the filter
@@ -283,26 +325,34 @@ impl MultiFilter {
     }
 
     fn update(&mut self) {
-        let mode = self.mode();
+        let (mode, cascaded) = (self.mode(), self.cascaded());
         let hz = self.log_hz.value.exp2();
-        let q = res_to_q(self.res.value);
-        if self.cascaded() {
-            // 24 dB: a Butterworth-shaped first stage, resonance on the second.
-            let q1 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
-                0.541
-            } else {
-                q
-            };
-            let q2 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
-                1.307 * (q / 0.707)
-            } else {
-                q
-            };
-            self.a.set(mode, hz, q1, self.gain.value, self.rate);
-            self.b.set(mode, hz, q2, self.gain.value, self.rate);
-        } else {
-            self.a.set(mode, hz, q, self.gain.value, self.rate);
+        let (res, gain, rate) = (self.res.value, self.gain.value, self.rate);
+        set_stages(
+            &mut self.a,
+            &mut self.b,
+            mode,
+            cascaded,
+            hz,
+            res,
+            gain,
+            rate,
+        );
+    }
+
+    /// The response in dB at `hz` for the settings the filter is heading
+    /// to, for drawing. Exact to the filter; the drive is left out (it
+    /// colours by level, it is not a curve).
+    pub fn response_db(&self, hz: f32) -> f32 {
+        let (mut a, mut b) = (Svf::default(), Svf::default());
+        let (mode, cascaded) = (self.mode(), self.cascaded());
+        let (cut, res, gain) = (self.v[2], self.v[3] / 100.0, self.v[4]);
+        set_stages(&mut a, &mut b, mode, cascaded, cut, res, gain, self.rate);
+        let mut h = a.response(hz, self.rate);
+        if cascaded {
+            h = cmul(h, b.response(hz, self.rate));
         }
+        power_db(h)
     }
 
     fn apply(&mut self, id: u16, value: f32) {
@@ -500,6 +550,27 @@ static DJ_PARAMS: [ParamInfo; 2] = [
     },
 ];
 
+/// The DJ filter's corner at `pos` (-1 to 1): a low-pass from 20 kHz down
+/// to 80 Hz to the left, a high-pass from 20 Hz up to 8 kHz to the right.
+fn dj_corner(pos: f32) -> f32 {
+    let a = pos.abs();
+    if pos < 0.0 {
+        20_000.0 * (80.0f32 / 20_000.0).powf(a)
+    } else {
+        20.0 * (8_000.0f32 / 20.0).powf(a)
+    }
+}
+
+/// Sets the DJ filter's stage for `pos` and `res` (both -1 or 0 to 1).
+fn dj_set(f: &mut Svf, pos: f32, res: f32, rate: u32) {
+    let mode = if pos < 0.0 {
+        SvfMode::LowPass
+    } else {
+        SvfMode::HighPass
+    };
+    f.set(mode, dj_corner(pos), 0.707 + res * 6.0, 0.0, rate);
+}
+
 /// The one-knob DJ filter: position below 0 is a low-pass falling from
 /// 20 kHz to 80 Hz, above 0 a high-pass rising from 20 Hz to 8 kHz, and the
 /// middle is off. The filter fades in over the first 10 % each side, so the
@@ -554,43 +625,58 @@ impl DjFilter {
         }
         self.last_pos = pos;
         self.last_res = res;
-        let a = pos.abs();
-        let q = 0.707 + res * 6.0;
-        if pos < 0.0 {
-            self.f.set(
-                SvfMode::LowPass,
-                20_000.0 * (80.0f32 / 20_000.0).powf(a),
-                q,
-                0.0,
-                self.rate,
-            );
-        } else {
-            self.f.set(
-                SvfMode::HighPass,
-                20.0 * (8_000.0f32 / 20.0).powf(a),
-                q,
-                0.0,
-                self.rate,
-            );
+        dj_set(&mut self.f, pos, res, self.rate);
+    }
+
+    /// The response in dB at `hz` for where the knob is heading, for
+    /// drawing (exact, the fade-in near the middle included).
+    pub fn response_db(&self, hz: f32) -> f32 {
+        let (pos, res) = (self.v[0] / 100.0, self.v[1] / 100.0);
+        let wet = f64::from((pos.abs() / 0.1).min(1.0));
+        if wet == 0.0 {
+            return 0.0;
         }
+        let mut f = Svf::default();
+        dj_set(&mut f, pos, res, self.rate);
+        let h = f.response(hz, self.rate);
+        power_db((1.0 - wet + wet * h.0, wet * h.1))
+    }
+
+    /// The filter's corner for where the knob is heading: `None` in the
+    /// middle, else whether it is the low-pass, and its corner in Hz.
+    pub fn corner(&self) -> Option<(bool, f32)> {
+        let pos = self.v[0] / 100.0;
+        if pos == 0.0 {
+            return None;
+        }
+        Some((pos < 0.0, dj_corner(pos)))
+    }
+
+    /// One stereo frame (Perform FX runs the filter inside its own loop).
+    #[inline]
+    pub(crate) fn frame(&mut self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.pos.next();
+        let q = self.res.next();
+        let wet = (p.abs() / 0.1).min(1.0);
+        if wet == 0.0 && self.pos.settled() {
+            // Off: keep the filter's state quiet so a later turn starts clean.
+            self.f.reset();
+            return (x, y);
+        }
+        self.coefs(p, q);
+        let fx = self.f.run(0, x);
+        let fy = self.f.run(1, y);
+        (crate::lerp(x, fx, wet), crate::lerp(y, fy, wet))
+    }
+
+    /// Off and staying off: the knob is in the middle and not moving.
+    pub(crate) fn resting(&self) -> bool {
+        self.pos.value == 0.0 && self.pos.settled()
     }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         for i in 0..l.len() {
-            let p = self.pos.next();
-            let q = self.res.next();
-            let wet = (p.abs() / 0.1).min(1.0);
-            if wet == 0.0 && self.pos.settled() {
-                // Off: keep the filter's state quiet so a later turn starts clean.
-                self.f.reset();
-                continue;
-            }
-            self.coefs(p, q);
-            let (x, y) = (l[i], r[i]);
-            let fx = self.f.run(0, x);
-            let fy = self.f.run(1, y);
-            l[i] = crate::lerp(x, fx, wet);
-            r[i] = crate::lerp(y, fy, wet);
+            (l[i], r[i]) = self.frame(l[i], r[i]);
         }
     }
 }
