@@ -126,8 +126,8 @@ def inspect_idblock(backup: Path, expected_p1_sha256: str | None) -> None:
 def inspect_rkimage(path: Path) -> None:
     regular_file(path)
     size = path.stat().st_size
-    # 32 KiB RK3288 SPL envelope; conservative offline triage limit.
-    if not 4 <= size <= 32772:
+    # 32 KiB RK3288 SPL envelope per U-Boot rkcommon.c, including the 4-byte RK32 header.
+    if not 4 <= size <= 32768:
         raise ValueError("Unexpected RK3288 RKIMAGE size %d (must be 4..32772 bytes)" % size)
     raw = path.read_bytes()
     plain = raw[:4] == RK32
