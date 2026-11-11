@@ -74,6 +74,11 @@ pub fn fill(data: &Path) -> Result<Library, String> {
         .map_err(e)?;
     lib.write_new(&Loc::top(Place::Kits), "Boom bap.kit", b"mpfree-kit 1\n")
         .map_err(e)?;
+    let inst = Loc::top(Place::Instruments);
+    for (engine, preset) in [("FM", "Glass bell.preset"), ("Poly", "Warm pad.preset")] {
+        let f = lib.new_folder(&inst, engine).map_err(e)?;
+        lib.write_new(&f, preset, b"mpfree-preset 1\n").map_err(e)?;
+    }
     lib.write_new(
         &Loc::top(Place::Recordings),
         "Take 2026-11-11 20.31.wav",
