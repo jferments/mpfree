@@ -2,7 +2,8 @@
 //!
 //! - [`view`]: the control thread compiles the project's playing clips into
 //!   a read-only [`PlayView`] (notes sorted, quantise and speed applied,
-//!   swing resolved) and swaps it in.
+//!   swing resolved) and swaps it in. A launch made while the music plays
+//!   is a [`Cue`]: it waits for the next bar line.
 //! - [`player`]: each period, the [`Player`] walks the transport's spans and
 //!   plays every clip's notes on their exact frames into a [`Sink`], which
 //!   the host maps to the sampler, the arp or MIDI out.
@@ -28,4 +29,4 @@ pub use arp::ArpHost;
 pub use player::{Erased, Event, Out, Player, Sink, Stats, ALL};
 pub use record::{Recorder, Taken};
 pub use takes::{Take, Takes};
-pub use view::{CompileError, Launch, PlayView};
+pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};
