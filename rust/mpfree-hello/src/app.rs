@@ -2506,17 +2506,17 @@ mod tests {
                 _ => None,
             })
         };
-        // Engine: FM, Drums, Pluck, and no further; then back to Poly.
-        for want in [Engine::Fm, Engine::Drums, Engine::Pluck] {
+        // Engine: FM, Drums, Pluck, Wavetable, and no further; then back to Poly.
+        for want in [Engine::Fm, Engine::Drums, Engine::Pluck, Engine::Wavetable] {
             let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
             assert_eq!(p.engine, want);
         }
         assert_eq!(
             pads(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Pluck is the last"
+            "Wavetable is the last"
         );
-        for _ in 0..3 {
+        for _ in 0..4 {
             app.step_item(row(SynthItem::Engine), -1);
         }
         assert_eq!(app.synth_pads.engine, Engine::Poly);
