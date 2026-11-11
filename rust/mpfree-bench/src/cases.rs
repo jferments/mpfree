@@ -8,7 +8,7 @@ use mpfree_fx::{
     MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId,
 };
 use mpfree_grain::GrainNode;
-use mpfree_looper::{Command as LooperCommand, Looper};
+use mpfree_looper::{Command as LooperCommand, Looper, Phase as LooperPhase, MAX_LOOPS};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_prof::alloc;
@@ -17,7 +17,8 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::{Drums, Pluck, Poly, PRESETS};
+use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
+use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -137,12 +138,31 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
 /// A synth playing `voices`-note chords that change every half second, so
 /// note starts, releases and steals are all in the numbers.
 fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case {
-    let mut s = Poly::new(rate);
+    chords(
+        name,
+        rate,
+        Box::new(Poly::new(rate)),
+        values,
+        POLYPHONY,
+        voices,
+    )
+}
+
+/// Any instrument node playing [`synth`]'s chords; `polyphony` is its voice
+/// count parameter.
+fn chords(
+    name: String,
+    rate: u32,
+    mut s: Box<dyn Node>,
+    values: &[(u16, f32)],
+    polyphony: u16,
+    voices: usize,
+) -> Case {
     s.prepare(rate, MAX_BLOCK);
     for &(id, v) in values {
         s.set_param(id, v);
     }
-    s.set_param(POLYPHONY, voices as f32);
+    s.set_param(polyphony, voices as f32);
     let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
     let mut held: Vec<u8> = Vec::with_capacity(voices);
     let mut seed = Lcg(3);
@@ -531,6 +551,40 @@ pub fn all(rate: u32) -> Vec<Case> {
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
+    // Wavetable: the first case also holds the factory tables (built once
+    // per process, shared by every instance).
+    for preset in WT_PRESETS {
+        v.push(measured(|| {
+            chords(
+                format!("Wavetable {}, 8 voices", preset.name),
+                rate,
+                Box::new(Wavetable::new(rate)),
+                preset.values,
+                wt::POLYPHONY,
+                8,
+            )
+        }));
+    }
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 8 voices, both osc, unison 4".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 4.0)],
+            wt::POLYPHONY,
+            8,
+        )
+    }));
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 16 voices, both osc, unison 8".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 8.0)],
+            wt::POLYPHONY,
+            16,
+        )
+    }));
     v.push(measured(|| {
         sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
     }));
@@ -760,10 +814,12 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     v.push(measured(|| chain(rate)));
+    v.push(measured(|| modulation(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
+    v.push(measured(|| looper_loops(rate, 60)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1158,6 +1214,116 @@ fn looper(rate: u32, seconds: u32) -> Case {
     }
 }
 
+/// The looper with its transport and line input, run a period at a time.
+struct LoopRig {
+    t: Transport,
+    lp: Looper,
+    block: TBlock,
+    rate: u32,
+    frame: u64,
+    seed: Lcg,
+    line_in: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl LoopRig {
+    /// One period of `l.len()` frames: the input from `l` and `r` goes in,
+    /// the loops come out in them.
+    fn period(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len();
+        for (i, (a, c)) in l.iter().zip(r.iter()).enumerate() {
+            input_frame(&mut self.line_in, i, *a, *c);
+        }
+        self.out[..2 * n].fill(0.0);
+        self.t.process(n as u32, &mut self.block);
+        self.lp
+            .process(&self.block, &self.line_in[..2 * n], &mut self.out[..2 * n]);
+        for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+            *a = self.out[2 * i];
+            *c = self.out[2 * i + 1];
+        }
+        self.frame += n as u64;
+    }
+
+    /// Play `seconds` of program material in, 128 frames at a time.
+    fn run(&mut self, seconds: f64) {
+        let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+        let end = self.frame + (seconds * f64::from(self.rate)) as u64;
+        while self.frame < end {
+            input(self.rate, self.frame, &mut self.seed, &mut l, &mut r);
+            self.period(&mut l, &mut r);
+        }
+    }
+}
+
+/// [`MAX_LOOPS`] one-bar loops (2 s at 120 BPM) of three layers each,
+/// all playing.
+fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
+    let mut g = LoopRig {
+        t: Transport::new(rate, 120.0).expect("transport"),
+        lp: Looper::new(rate, seconds),
+        block: TBlock::new(),
+        rate,
+        frame: 0,
+        seed: Lcg(29),
+        line_in: vec![0.0; 2 * MAX_BLOCK],
+        out: vec![0.0; 2 * MAX_BLOCK],
+    };
+    g.t.command(0, T::Play);
+    for k in 0..MAX_LOOPS {
+        // The pass from the next bar line, going straight into an overdub
+        // for a bar, then one more overdub.
+        let phase = |g: &LoopRig| g.lp.loop_status(k).map(|s| s.phase);
+        g.lp.select_loop(k);
+        g.lp.command(LooperCommand::SetBars(Some(1)));
+        g.lp.command(LooperCommand::Record);
+        while phase(&g) != Some(LooperPhase::Recording) {
+            g.run(0.05);
+        }
+        g.lp.command(LooperCommand::Overdub);
+        while phase(&g) != Some(LooperPhase::Overdubbing) {
+            g.run(0.05);
+        }
+        g.run(2.0);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(0.25);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(2.0);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(0.25);
+    }
+    g
+}
+
+/// Every loop playing at once ([`loops_rig`]), recorded before the timing
+/// starts. Timed: an overdub every other 2 s, on one loop after another,
+/// so the block mixes every layer of every loop and writes one more.
+fn looper_loops(rate: u32, seconds: u32) -> Case {
+    let mut g = loops_rig(rate, seconds);
+    let every = 2 * u64::from(rate);
+    let mut next = g.frame + every;
+    let mut turn = 0usize;
+    Case {
+        name: format!("Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing"),
+        module: "looper",
+        what: "every loop playing, with an overdub on one loop after another",
+        block: Box::new(move |_, l, r| {
+            if g.frame >= next {
+                next += every;
+                if turn.is_multiple_of(2) {
+                    g.lp.select_loop(turn / 2 % MAX_LOOPS);
+                }
+                g.lp.command(LooperCommand::Overdub);
+                turn += 1;
+            }
+            let f = g.frame;
+            input(rate, f, &mut g.seed, l, r);
+            g.period(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 fn input_frame(buf: &mut [f32], i: usize, l: f32, r: f32) {
     buf[2 * i] = l;
     buf[2 * i + 1] = r;
@@ -1285,6 +1451,128 @@ fn track_host_alone(rate: u32, tracks: usize) -> Case {
     }
 }
 
+/// The mod engine with a busy performance set: 8 macros moving 8
+/// parameters each, 16 matrix rows (8 LFOs, 2 followers listening to the
+/// block's audio), the morph between two scenes swept by an LFO, and a
+/// parameter lock every 16th note. Only the engine's own cost: what it
+/// sends is counted, not applied (the nodes' cost is in their cases).
+fn modulation(rate: u32) -> Case {
+    use mpfree_mod::{
+        MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK,
+    };
+    use mpfree_node::{Curve, ParamInfo, Unit};
+    use mpfree_param::{Owner, ParamAddr, Strip};
+    const P: ParamInfo = ParamInfo {
+        id: 0,
+        name: "p",
+        group: "g",
+        min: 20.0,
+        max: 20000.0,
+        default: 1000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    };
+    let mut e = ModEngine::new(rate, DEFAULT_TICK);
+    let addr = |i: usize| {
+        ParamAddr::new(
+            Owner::Insert(Strip::Track((i / 16) as u8), (i % 4) as u16),
+            (i % 16) as u16,
+        )
+    };
+    for i in 0..80 {
+        e.add_target(
+            addr(i),
+            ParamInfo {
+                id: (i % 16) as u16,
+                ..P
+            },
+            1000.0,
+        )
+        .expect("room");
+    }
+    for m in 0..8 {
+        for k in 0..8 {
+            e.map(
+                m,
+                MacroMap {
+                    target: addr(m * 8 + k),
+                    from: 0.1,
+                    to: 0.9,
+                    curve: MapCurve::S,
+                },
+            )
+            .expect("map");
+        }
+    }
+    for r in 0..16 {
+        let source = if r < 14 {
+            Source::Lfo((r % 8) as u8)
+        } else {
+            Source::Follower((r - 14) as u8)
+        };
+        e.add_row(Row {
+            source,
+            via: None,
+            target: addr(64 + r),
+            depth: 0.2,
+        })
+        .expect("row");
+    }
+    e.add_row(Row {
+        source: Source::Lfo(7),
+        via: None,
+        target: ParamAddr::morph_pos(0),
+        depth: 0.5,
+    })
+    .expect("row");
+    e.capture_scene(0);
+    for i in 0..80 {
+        let _ = e.set_scene_value(addr(i), 1, Some(5000.0));
+    }
+    let mut seed = Lcg(9);
+    let mut sent = 0u64;
+    // A 16th note at 120 BPM.
+    let step = u64::from(rate) / 8;
+    let lock = addr(70);
+    let mut events: Vec<ModTimed> = Vec::with_capacity(4);
+    Case {
+        name: "Mod: 8 macros x 8, 16 rows, morph, locks".to_string(),
+        module: "fx",
+        what: "macros, mod matrix and morph for a performance set",
+        block: Box::new(move |b, l, r| {
+            let len = l.len();
+            let f0 = b * len as u64;
+            input(rate, f0, &mut seed, l, r);
+            events.clear();
+            let next = f0.div_ceil(step) * step;
+            if next < f0 + len as u64 {
+                let n = next / step;
+                let ev = if n % 2 == 0 {
+                    ModEvent::Lock {
+                        addr: lock,
+                        value: 300.0 + (n % 7) as f32 * 100.0,
+                    }
+                } else {
+                    ModEvent::Unlock { addr: lock }
+                };
+                events.push(ModTimed::new((next - f0) as u32, ev));
+            }
+            let ctx = Ctx {
+                rate,
+                frame: f0,
+                bpm: 120.0,
+                beats: f0 as f64 * 2.0 / rate as f64,
+                playing: true,
+                sidechain: None,
+            };
+            let follow = [Some((&l[..], &r[..])), Some((&r[..], &l[..])), None, None];
+            e.process(&ctx, len, &events, &follow, &mut |_, _| sent += 1);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1340,6 +1628,33 @@ mod tests {
         assert!(scaling(44_100)
             .iter()
             .all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
+    }
+
+    #[test]
+    fn the_loops_case_has_every_loop_playing() {
+        let mut c = measured(|| looper_loops(44_100, 60));
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let mut energy = 0.0f64;
+        for b in 0..1_500u64 {
+            (c.block)(b, &mut l, &mut r);
+            energy += l
+                .iter()
+                .chain(r.iter())
+                .map(|v| f64::from(v.abs()))
+                .sum::<f64>();
+        }
+        assert!(energy > 1_000.0, "{energy}");
+        let g = loops_rig(44_100, 60);
+        for k in 0..MAX_LOOPS {
+            let s = g.lp.loop_status(k).unwrap();
+            assert_eq!(
+                (s.phase, s.layers, s.frames),
+                (LooperPhase::Playing, 3, 88_200),
+                "loop {k}"
+            );
+        }
+        let st = g.lp.stats();
+        assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));
     }
 
     #[test]
