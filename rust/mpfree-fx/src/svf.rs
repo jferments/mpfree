@@ -38,7 +38,16 @@ pub struct Svf {
 
 impl Default for Svf {
     fn default() -> Svf {
-        let mut s = Svf { a1: 0.0, a2: 0.0, a3: 0.0, m0: 0.0, m1: 0.0, m2: 1.0, ic1: [0.0; 2], ic2: [0.0; 2] };
+        let mut s = Svf {
+            a1: 0.0,
+            a2: 0.0,
+            a3: 0.0,
+            m0: 0.0,
+            m1: 0.0,
+            m2: 1.0,
+            ic1: [0.0; 2],
+            ic2: [0.0; 2],
+        };
         s.set(SvfMode::LowPass, 1000.0, 0.707, 0.0, 48_000);
         s
     }
@@ -92,7 +101,10 @@ impl Svf {
         self.m0 * v0 + self.m1 * v1 + self.m2 * v2
     }
 
-    pub fn reset(&mut self) { self.ic1 = [0.0; 2]; self.ic2 = [0.0; 2]; }
+    pub fn reset(&mut self) {
+        self.ic1 = [0.0; 2];
+        self.ic2 = [0.0; 2];
+    }
 
     /// The steady-state response at `hz` as a complex gain `(re, im)`, for
     /// drawing curves. Exact: the trapezoidal filter is the bilinear
@@ -107,16 +119,29 @@ impl Svf {
         let (dr, di) = (1.0 - w * w, k * w);
         let (nr, ni) = (f64::from(self.m2), f64::from(self.m1) * w);
         let den = dr * dr + di * di;
-        (f64::from(self.m0) + (nr * dr + ni * di) / den, (ni * dr - nr * di) / den)
+        (
+            f64::from(self.m0) + (nr * dr + ni * di) / den,
+            (ni * dr - nr * di) / den,
+        )
     }
 }
 
 /// Resonance 0 to 1 as a filter Q: 0 is flat (0.707), 1 is 40 (rings
 /// long, close to self-oscillation, but never unstable).
 #[inline]
-fn res_to_q(res: f32) -> f32 { 0.707 * (40.0f32 / 0.707).powf(res.clamp(0.0, 1.0)) }
+fn res_to_q(res: f32) -> f32 {
+    0.707 * (40.0f32 / 0.707).powf(res.clamp(0.0, 1.0))
+}
 
-const TYPES: &[&str] = &["Low-pass", "High-pass", "Band-pass", "Notch", "Bell", "Low shelf", "High shelf"];
+const TYPES: &[&str] = &[
+    "Low-pass",
+    "High-pass",
+    "Band-pass",
+    "Notch",
+    "Bell",
+    "Low shelf",
+    "High shelf",
+];
 const SLOPES: &[&str] = &["12 dB", "24 dB"];
 
 /// [`MultiFilter`] parameter ids.
@@ -129,14 +154,78 @@ pub mod multi {
     pub const DRIVE: u16 = 5;
 }
 
-static MULTI_INFO: NodeInfo = NodeInfo { id: "mpfree.fx.filter", name: "Multi filter", kind: Kind::Effect };
+static MULTI_INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.filter",
+    name: "Multi filter",
+    kind: Kind::Effect,
+};
 static MULTI_PARAMS: [ParamInfo; 6] = [
-    ParamInfo { id: 0, name: "Type", group: "Filter", min: 0.0, max: 6.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(TYPES), readonly: false },
-    ParamInfo { id: 1, name: "Slope", group: "Filter", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SLOPES), readonly: false },
-    ParamInfo { id: 2, name: "Cutoff", group: "Filter", min: 20.0, max: 20_000.0, default: 20_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 3, name: "Resonance", group: "Filter", min: 0.0, max: 100.0, default: 0.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 4, name: "Gain", group: "Filter", min: -24.0, max: 24.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Drive", group: "Filter", min: 0.0, max: 24.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Type",
+        group: "Filter",
+        min: 0.0,
+        max: 6.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TYPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Slope",
+        group: "Filter",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SLOPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Cutoff",
+        group: "Filter",
+        min: 20.0,
+        max: 20_000.0,
+        default: 20_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Resonance",
+        group: "Filter",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Gain",
+        group: "Filter",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Drive",
+        group: "Filter",
+        min: 0.0,
+        max: 24.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// A multi-mode filter: low-pass, high-pass, band-pass and notch at 12 or
@@ -155,7 +244,9 @@ pub struct MultiFilter {
 }
 
 impl Default for MultiFilter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MultiFilter {
@@ -187,7 +278,9 @@ impl MultiFilter {
         }
     }
 
-    fn cascaded(&self) -> bool { self.v[1] >= 0.5 && (self.v[0] as usize) < 4 }
+    fn cascaded(&self) -> bool {
+        self.v[1] >= 0.5 && (self.v[0] as usize) < 4
+    }
 
     fn update(&mut self) {
         let mode = self.mode();
@@ -195,8 +288,16 @@ impl MultiFilter {
         let q = res_to_q(self.res.value);
         if self.cascaded() {
             // 24 dB: a Butterworth-shaped first stage, resonance on the second.
-            let q1 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) { 0.541 } else { q };
-            let q2 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) { 1.307 * (q / 0.707) } else { q };
+            let q1 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
+                0.541
+            } else {
+                q
+            };
+            let q2 = if matches!(mode, SvfMode::LowPass | SvfMode::HighPass) {
+                1.307 * (q / 0.707)
+            } else {
+                q
+            };
             self.a.set(mode, hz, q1, self.gain.value, self.rate);
             self.b.set(mode, hz, q2, self.gain.value, self.rate);
         } else {
@@ -205,7 +306,9 @@ impl MultiFilter {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = MULTI_PARAMS.get(id as usize) else { return };
+        let Some(p) = MULTI_PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         let was_cascaded = self.cascaded();
         self.v[id as usize] = v;
@@ -217,7 +320,9 @@ impl MultiFilter {
             _ => {
                 // Type or slope: new coefficients now; a second stage that
                 // was idle starts from silence.
-                if self.cascaded() && !was_cascaded { self.b.reset(); }
+                if self.cascaded() && !was_cascaded {
+                    self.b.reset();
+                }
                 self.update();
             }
         }
@@ -255,10 +360,18 @@ impl MultiFilter {
 }
 
 impl Node for MultiFilter {
-    fn info(&self) -> &'static NodeInfo { &MULTI_INFO }
-    fn params(&self) -> &'static [ParamInfo] { &MULTI_PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &MULTI_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &MULTI_PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
         self.log_hz.set_time(self.rate, 10.0);
@@ -279,7 +392,11 @@ impl Node for MultiFilter {
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
@@ -303,24 +420,44 @@ pub(crate) struct Segs<'e> {
 }
 
 impl<'e> Segs<'e> {
-    pub(crate) fn new(events: &'e [Timed]) -> Segs<'e> { Segs { events, i: 0, at: 0, done: false } }
+    pub(crate) fn new(events: &'e [Timed]) -> Segs<'e> {
+        Segs {
+            events,
+            i: 0,
+            at: 0,
+            done: false,
+        }
+    }
 
     /// Applies the events due at the current frame, then returns the next
     /// piece `(from, to)`, or `None` at the end (after applying any events
     /// at or past the end, so nothing is lost).
-    pub(crate) fn next<F: FnMut(&NodeEvent)>(&mut self, len: usize, mut apply: F) -> Option<(usize, usize)> {
-        if self.done { return None; }
+    pub(crate) fn next<F: FnMut(&NodeEvent)>(
+        &mut self,
+        len: usize,
+        mut apply: F,
+    ) -> Option<(usize, usize)> {
+        if self.done {
+            return None;
+        }
         while self.at < len {
             while self.i < self.events.len() && (self.events[self.i].offset as usize) <= self.at {
                 apply(&self.events[self.i].ev);
                 self.i += 1;
             }
-            let next = self.events.get(self.i).map_or(len, |e| (e.offset as usize).min(len));
+            let next = self
+                .events
+                .get(self.i)
+                .map_or(len, |e| (e.offset as usize).min(len));
             let from = self.at;
             self.at = next;
-            if next > from { return Some((from, next)); }
+            if next > from {
+                return Some((from, next));
+            }
         }
-        for e in &self.events[self.i..] { apply(&e.ev); }
+        for e in &self.events[self.i..] {
+            apply(&e.ev);
+        }
         self.i = self.events.len();
         self.done = true;
         None
@@ -333,10 +470,34 @@ pub mod dj {
     pub const RESONANCE: u16 = 1;
 }
 
-static DJ_INFO: NodeInfo = NodeInfo { id: "mpfree.fx.dj_filter", name: "DJ filter", kind: Kind::Effect };
+static DJ_INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.dj_filter",
+    name: "DJ filter",
+    kind: Kind::Effect,
+};
 static DJ_PARAMS: [ParamInfo; 2] = [
-    ParamInfo { id: 0, name: "Position", group: "DJ filter", min: -100.0, max: 100.0, default: 0.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 1, name: "Resonance", group: "DJ filter", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Position",
+        group: "DJ filter",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Resonance",
+        group: "DJ filter",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// The one-knob DJ filter: position below 0 is a low-pass falling from
@@ -354,19 +515,31 @@ pub struct DjFilter {
 }
 
 impl Default for DjFilter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DjFilter {
     pub fn new() -> DjFilter {
         let v = defaults(&DJ_PARAMS);
-        let mut d = DjFilter { v, rate: 48_000, pos: Smooth::new(0.0), res: Smooth::new(v[1] / 100.0), f: Svf::default(), last_pos: f32::NAN, last_res: f32::NAN };
+        let mut d = DjFilter {
+            v,
+            rate: 48_000,
+            pos: Smooth::new(0.0),
+            res: Smooth::new(v[1] / 100.0),
+            f: Svf::default(),
+            last_pos: f32::NAN,
+            last_res: f32::NAN,
+        };
         d.prepare(48_000, mpfree_node::MAX_BLOCK);
         d
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = DJ_PARAMS.get(id as usize) else { return };
+        let Some(p) = DJ_PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -376,15 +549,29 @@ impl DjFilter {
     }
 
     fn coefs(&mut self, pos: f32, res: f32) {
-        if pos == self.last_pos && res == self.last_res { return; }
+        if pos == self.last_pos && res == self.last_res {
+            return;
+        }
         self.last_pos = pos;
         self.last_res = res;
         let a = pos.abs();
         let q = 0.707 + res * 6.0;
         if pos < 0.0 {
-            self.f.set(SvfMode::LowPass, 20_000.0 * (80.0f32 / 20_000.0).powf(a), q, 0.0, self.rate);
+            self.f.set(
+                SvfMode::LowPass,
+                20_000.0 * (80.0f32 / 20_000.0).powf(a),
+                q,
+                0.0,
+                self.rate,
+            );
         } else {
-            self.f.set(SvfMode::HighPass, 20.0 * (8_000.0f32 / 20.0).powf(a), q, 0.0, self.rate);
+            self.f.set(
+                SvfMode::HighPass,
+                20.0 * (8_000.0f32 / 20.0).powf(a),
+                q,
+                0.0,
+                self.rate,
+            );
         }
     }
 
@@ -409,10 +596,18 @@ impl DjFilter {
 }
 
 impl Node for DjFilter {
-    fn info(&self) -> &'static NodeInfo { &DJ_INFO }
-    fn params(&self) -> &'static [ParamInfo] { &DJ_PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &DJ_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &DJ_PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
         self.pos.set_time(self.rate, 15.0);
@@ -428,11 +623,17 @@ impl Node for DjFilter {
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
-    fn tail_frames(&self) -> u32 { self.rate / 10 }
+    fn tail_frames(&self) -> u32 {
+        self.rate / 10
+    }
 }
 
 #[cfg(test)]

@@ -34,8 +34,14 @@ fn it_moves_and_ends_with_something_to_see() {
         let (a, b) = (frame(k, 1280, 800, 0.8), frame(k, 1280, 800, 1.6));
         assert!(a != b, "{k:?} does not move");
         let last = frame(k, 1280, 800, len + 0.5);
-        let bright = last.iter().filter(|&&p| ((p >> 16) & 255) + ((p >> 8) & 255) + (p & 255) > 400).count();
-        assert!(bright > 2000, "{k:?}: only {bright} bright pixels at the end");
+        let bright = last
+            .iter()
+            .filter(|&&p| ((p >> 16) & 255) + ((p >> 8) & 255) + (p & 255) > 400)
+            .count();
+        assert!(
+            bright > 2000,
+            "{k:?}: only {bright} bright pixels at the end"
+        );
     }
 }
 

@@ -9,7 +9,11 @@ fn tone(hz: f32, amps: &[f32], rate: u32, secs: f32) -> Vec<f32> {
     (0..n)
         .map(|i| {
             let t = i as f32 / rate as f32;
-            amps.iter().enumerate().map(|(k, a)| a * (TAU * hz * (k + 1) as f32 * t).sin()).sum::<f32>() * 0.3
+            amps.iter()
+                .enumerate()
+                .map(|(k, a)| a * (TAU * hz * (k + 1) as f32 * t).sin())
+                .sum::<f32>()
+                * 0.3
         })
         .collect()
 }
@@ -26,7 +30,9 @@ fn noise(n: usize, seed: u32, amp: f32) -> Vec<f32> {
         .collect()
 }
 
-fn cents(a: f32, b: f32) -> f32 { 1200.0 * (a / b).log2() }
+fn cents(a: f32, b: f32) -> f32 {
+    1200.0 * (a / b).log2()
+}
 
 #[test]
 fn yin_finds_pure_tones_to_within_two_cents() {
@@ -50,8 +56,15 @@ fn rich_and_weak_fundamental_tones_do_not_slip_an_octave() {
     for hz in [55.0, 98.0, 196.0, 330.0] {
         for amps in [&saw[..], &weak[..]] {
             let x = tone(hz, amps, rate, 0.3);
-            let p = root_pitch(&x, 1, rate, PitchSettings::default()).unwrap().unwrap();
-            assert!(cents(p.hz, hz).abs() < 5.0, "{hz} Hz with {} harmonics: {} Hz", amps.len(), p.hz);
+            let p = root_pitch(&x, 1, rate, PitchSettings::default())
+                .unwrap()
+                .unwrap();
+            assert!(
+                cents(p.hz, hz).abs() < 5.0,
+                "{hz} Hz with {} harmonics: {} Hz",
+                amps.len(),
+                p.hz
+            );
         }
     }
 }
@@ -62,7 +75,9 @@ fn notes_cents_and_names() {
     // A3 tuned 30 cents sharp.
     let hz = 220.0 * (30.0f32 / 1200.0).exp2();
     let x = tone(hz, &[1.0, 0.5, 0.25], rate, 0.5);
-    let p = root_pitch(&x, 1, rate, PitchSettings::default()).unwrap().unwrap();
+    let p = root_pitch(&x, 1, rate, PitchSettings::default())
+        .unwrap()
+        .unwrap();
     assert_eq!(p.note, 57);
     assert_eq!(note_name(p.note), "A3");
     assert!((p.cents - 30.0).abs() < 2.0, "{}", p.cents);
@@ -82,9 +97,15 @@ fn a_plucked_note_with_a_noisy_attack() {
     let hz = 146.83;
     let mut mono = noise(2_000, 7, 0.8);
     let body = tone(hz, &[1.0, 0.6, 0.4, 0.3, 0.2, 0.1], rate, 1.5);
-    mono.extend(body.iter().enumerate().map(|(i, v)| v * (-(i as f32) / rate as f32 * 2.5).exp()));
+    mono.extend(
+        body.iter()
+            .enumerate()
+            .map(|(i, v)| v * (-(i as f32) / rate as f32 * 2.5).exp()),
+    );
     let stereo: Vec<f32> = mono.iter().flat_map(|&v| [v, v * 0.9]).collect();
-    let p = root_pitch(&stereo, 2, rate, PitchSettings::default()).unwrap().unwrap();
+    let p = root_pitch(&stereo, 2, rate, PitchSettings::default())
+        .unwrap()
+        .unwrap();
     assert_eq!(note_name(p.note), "D3");
     assert!(p.cents.abs() < 3.0, "{}", p.cents);
     assert!(p.frame >= 2_000, "read from the attack at {}", p.frame);
@@ -104,7 +125,9 @@ fn an_808_glide_settles_on_its_note() {
             phase.sin() * 0.8 * (-t * 1.2).exp()
         })
         .collect();
-    let p = root_pitch(&x, 1, rate, PitchSettings::default()).unwrap().unwrap();
+    let p = root_pitch(&x, 1, rate, PitchSettings::default())
+        .unwrap()
+        .unwrap();
     assert_eq!(note_name(p.note), "G1");
     assert!(p.cents.abs() < 5.0, "{}", p.cents);
 }
@@ -115,20 +138,45 @@ fn the_longest_note_wins_and_silence_is_skipped() {
     let mut x = vec![0.0f32; rate as usize / 2];
     x.extend(tone(220.0, &[1.0, 0.3], rate, 1.4)); // A3, longer
     x.extend(tone(329.63, &[1.0, 0.3], rate, 0.6)); // E4, shorter
-    let p = root_pitch(&x, 1, rate, PitchSettings::default()).unwrap().unwrap();
+    let p = root_pitch(&x, 1, rate, PitchSettings::default())
+        .unwrap()
+        .unwrap();
     assert_eq!(note_name(p.note), "A3");
     assert!(p.frame >= rate as u64 / 2);
-    assert!(p.confidence > 0.5 && p.confidence < 0.9, "two notes share the weight: {}", p.confidence);
+    assert!(
+        p.confidence > 0.5 && p.confidence < 0.9,
+        "two notes share the weight: {}",
+        p.confidence
+    );
 }
 
 #[test]
 fn noise_silence_and_short_input_have_no_pitch() {
     let rate = 44_100;
     let s = PitchSettings::default();
-    assert_eq!(root_pitch(&noise(rate as usize, 3, 0.5), 1, rate, s).unwrap(), None);
-    assert_eq!(root_pitch(&vec![0.0; rate as usize], 1, rate, s).unwrap(), None);
-    assert_eq!(root_pitch(&tone(440.0, &[1.0], rate, 0.01), 1, rate, s).unwrap(), None);
-    assert_eq!(root_pitch(&[0.0; 4], 3, rate, s), Err(AnalysisError::BadInput("channels")));
-    let bad = PitchSettings { min_hz: 500.0, max_hz: 100.0, ..s };
-    assert_eq!(root_pitch(&[0.0; 4], 1, rate, bad), Err(AnalysisError::BadInput("pitch range")));
+    assert_eq!(
+        root_pitch(&noise(rate as usize, 3, 0.5), 1, rate, s).unwrap(),
+        None
+    );
+    assert_eq!(
+        root_pitch(&vec![0.0; rate as usize], 1, rate, s).unwrap(),
+        None
+    );
+    assert_eq!(
+        root_pitch(&tone(440.0, &[1.0], rate, 0.01), 1, rate, s).unwrap(),
+        None
+    );
+    assert_eq!(
+        root_pitch(&[0.0; 4], 3, rate, s),
+        Err(AnalysisError::BadInput("channels"))
+    );
+    let bad = PitchSettings {
+        min_hz: 500.0,
+        max_hz: 100.0,
+        ..s
+    };
+    assert_eq!(
+        root_pitch(&[0.0; 4], 1, rate, bad),
+        Err(AnalysisError::BadInput("pitch range"))
+    );
 }

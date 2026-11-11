@@ -24,10 +24,18 @@ pub struct Orientation {
 
 impl Orientation {
     pub const ALL: [Orientation; 8] = {
-        let mut all = [Orientation { swap_xy: false, flip_x: false, flip_y: false }; 8];
+        let mut all = [Orientation {
+            swap_xy: false,
+            flip_x: false,
+            flip_y: false,
+        }; 8];
         let mut i = 0;
         while i < 8 {
-            all[i] = Orientation { swap_xy: i & 4 != 0, flip_x: i & 2 != 0, flip_y: i & 1 != 0 };
+            all[i] = Orientation {
+                swap_xy: i & 4 != 0,
+                flip_x: i & 2 != 0,
+                flip_y: i & 1 != 0,
+            };
             i += 1;
         }
         all
@@ -67,7 +75,13 @@ impl AxisMap {
         if width < 2 || height < 2 {
             return Err(MapError::InvalidSize);
         }
-        Ok(Self { raw_x, raw_y, orientation, width, height })
+        Ok(Self {
+            raw_x,
+            raw_y,
+            orientation,
+            width,
+            height,
+        })
     }
 
     pub fn map(&self, raw_x: i32, raw_y: i32) -> (f32, f32) {
@@ -107,13 +121,21 @@ impl AxisMap {
         if self.orientation.swap_xy {
             std::mem::swap(&mut u, &mut v);
         }
-        let raw = |t: f64, r: RawRange| (f64::from(r.min) + t * (f64::from(r.max) - f64::from(r.min))).round() as i32;
+        let raw = |t: f64, r: RawRange| {
+            (f64::from(r.min) + t * (f64::from(r.max) - f64::from(r.min))).round() as i32
+        };
         (raw(u, self.raw_x), raw(v, self.raw_y))
     }
 
     pub fn pointer(&self, ev: &ContactEvent) -> PointerEvent {
         let (x, y) = self.map(ev.contact.raw_x, ev.contact.raw_y);
-        PointerEvent { id: ev.contact.id, phase: ev.phase, x, y, time_us: ev.time_us }
+        PointerEvent {
+            id: ev.contact.id,
+            phase: ev.phase,
+            x,
+            y,
+            time_us: ev.time_us,
+        }
     }
 }
 
@@ -138,7 +160,10 @@ mod tests {
     #[test]
     fn rejects_degenerate_configuration() {
         let o = Orientation::default();
-        assert_eq!(AxisMap::new(RawRange { min: 5, max: 5 }, R, o, 1280, 800), Err(MapError::InvalidRange));
+        assert_eq!(
+            AxisMap::new(RawRange { min: 5, max: 5 }, R, o, 1280, 800),
+            Err(MapError::InvalidRange)
+        );
         assert_eq!(AxisMap::new(R, R, o, 1, 800), Err(MapError::InvalidSize));
     }
 
@@ -176,10 +201,20 @@ mod tests {
         let r = RawRange { min: 0, max: 2048 };
         for o in Orientation::ALL {
             let m = AxisMap::new(r, r, o, 1280, 800).unwrap();
-            for (rx, ry) in [(0, 0), (2048, 0), (0, 2048), (2048, 2048), (1024, 512), (37, 1999)] {
+            for (rx, ry) in [
+                (0, 0),
+                (2048, 0),
+                (0, 2048),
+                (2048, 2048),
+                (1024, 512),
+                (37, 1999),
+            ] {
                 let (x, y) = m.map(rx, ry);
                 let (bx, by) = m.unmap(x, y);
-                assert!((bx - rx).abs() <= 2 && (by - ry).abs() <= 2, "{o:?} {rx},{ry} -> {x},{y} -> {bx},{by}");
+                assert!(
+                    (bx - rx).abs() <= 2 && (by - ry).abs() <= 2,
+                    "{o:?} {rx},{ry} -> {x},{y} -> {bx},{by}"
+                );
             }
         }
     }

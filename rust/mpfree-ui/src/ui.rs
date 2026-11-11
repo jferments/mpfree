@@ -19,8 +19,17 @@ pub struct PaintCx<'a> {
 
 impl PaintCx<'_> {
     /// One line of text in `r` (see [`Fonts::draw_in`]).
-    pub fn text(&mut self, font: FontId, px: f32, r: Rect, align: Align, color: Color, s: &str) -> i32 {
-        self.fonts.draw_in(self.canvas, font, px, r, align, color, s)
+    pub fn text(
+        &mut self,
+        font: FontId,
+        px: f32,
+        r: Rect,
+        align: Align,
+        color: Color,
+        s: &str,
+    ) -> i32 {
+        self.fonts
+            .draw_in(self.canvas, font, px, r, align, color, s)
     }
 
     pub fn measure(&mut self, font: FontId, px: f32, s: &str) -> i32 {
@@ -29,7 +38,8 @@ impl PaintCx<'_> {
 
     /// A panel: the theme's surface with its corner radius.
     pub fn panel(&mut self, r: Rect) {
-        self.canvas.fill_round_rect(r, self.theme.radius, self.theme.surface);
+        self.canvas
+            .fill_round_rect(r, self.theme.radius, self.theme.surface);
     }
 
     /// A panel with a title line; returns the area below the title.
@@ -38,7 +48,14 @@ impl PaintCx<'_> {
         let inner = r.inset(self.theme.pad);
         let (head, body) = inner.take_top(26);
         let (px, dim) = (self.theme.size_small, self.theme.text_dim);
-        self.text(FontId::Bold, px, head, Align::Left, dim, &title.to_uppercase());
+        self.text(
+            FontId::Bold,
+            px,
+            head,
+            Align::Left,
+            dim,
+            &title.to_uppercase(),
+        );
         if !right.is_empty() {
             let faint = self.theme.text_dim;
             self.text(FontId::Sans, px, head, Align::Right, faint, right);
@@ -90,7 +107,14 @@ pub trait Widget: Any + Send {
 
     /// A finger this widget owns went down, moved or lifted at (x, y).
     /// `finger` stays the same from down to up.
-    fn touch(&mut self, _finger: u64, _phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
+    fn touch(
+        &mut self,
+        _finger: u64,
+        _phase: Touch,
+        _x: i32,
+        _y: i32,
+        _r: Rect,
+    ) -> Option<EventKind> {
         None
     }
 
@@ -130,8 +154,17 @@ pub struct Ui {
 impl Ui {
     pub fn new(theme: Theme, mut fonts: Fonts, width: i32, height: i32) -> Ui {
         fonts.set_roles(theme.face_body, theme.face_title);
-        Ui { theme, fonts, size: (width, height), widgets: Vec::new(), pages: Vec::new(), current: 0, full: true,
-             fingers: Vec::new(), overrides: Vec::new() }
+        Ui {
+            theme,
+            fonts,
+            size: (width, height),
+            widgets: Vec::new(),
+            pages: Vec::new(),
+            current: 0,
+            full: true,
+            fingers: Vec::new(),
+            overrides: Vec::new(),
+        }
     }
 
     pub fn size(&self) -> (i32, i32) {
@@ -162,7 +195,10 @@ impl Ui {
     }
 
     fn override_for(&self, key: &str) -> Option<&str> {
-        self.overrides.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.overrides
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// The layout for a page variant (a key with a dot, such as
@@ -185,11 +221,19 @@ impl Ui {
         let area = Rect::new(0, 0, self.size.0, self.size.1).inset(if margin { g } else { 0 });
         let mut slots = Vec::new();
         for (slot, r) in layout::solve(&node, area, g) {
-            let i = self.widgets.iter().position(|(n, _, _)| *n == slot)
+            let i = self
+                .widgets
+                .iter()
+                .position(|(n, _, _)| *n == slot)
                 .ok_or_else(|| format!("page {name}: no widget called '{slot}'"))?;
             slots.push((i, r));
         }
-        let page = Page { name: name.to_string(), spec: spec.to_string(), margin, slots };
+        let page = Page {
+            name: name.to_string(),
+            spec: spec.to_string(),
+            margin,
+            slots,
+        };
         match self.pages.iter().position(|p| p.name == name) {
             Some(i) => self.pages[i] = page,
             None => self.pages.push(page),
@@ -201,14 +245,21 @@ impl Ui {
     /// Rearrange an existing page: a new layout spec over the same widgets.
     /// On an error the page keeps its old layout.
     pub fn set_layout(&mut self, page: &str, spec: &str) -> Result<(), String> {
-        let p = self.pages.iter().find(|p| p.name == page).ok_or_else(|| format!("no page called '{page}'"))?;
+        let p = self
+            .pages
+            .iter()
+            .find(|p| p.name == page)
+            .ok_or_else(|| format!("no page called '{page}'"))?;
         let margin = p.margin;
         self.add_page_with_margin(page, spec, margin)
     }
 
     /// The layout spec a page was made from.
     pub fn layout_of(&self, page: &str) -> Option<&str> {
-        self.pages.iter().find(|p| p.name == page).map(|p| p.spec.as_str())
+        self.pages
+            .iter()
+            .find(|p| p.name == page)
+            .map(|p| p.spec.as_str())
     }
 
     /// Rearrange pages from a layout file: one `Page name = spec` per line
@@ -220,7 +271,11 @@ impl Ui {
     /// screen as it was.
     pub fn apply_layouts(&mut self, text: &str) -> Result<(), String> {
         let entries = layout::parse_file(text)?;
-        let before: Vec<(String, String)> = self.pages.iter().map(|p| (p.name.clone(), p.spec.clone())).collect();
+        let before: Vec<(String, String)> = self
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.spec.clone()))
+            .collect();
         for (page, spec) in &entries {
             if page.contains('.') {
                 continue;
@@ -244,7 +299,11 @@ impl Ui {
     pub fn set_theme(&mut self, theme: Theme) {
         self.fonts.set_roles(theme.face_body, theme.face_title);
         self.theme = theme;
-        let pages: Vec<(String, String)> = self.pages.iter().map(|p| (p.name.clone(), p.spec.clone())).collect();
+        let pages: Vec<(String, String)> = self
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.spec.clone()))
+            .collect();
         for (name, spec) in pages {
             let _ = self.set_layout(&name, &spec);
         }
@@ -252,7 +311,10 @@ impl Ui {
     }
 
     pub fn page(&self) -> &str {
-        self.pages.get(self.current).map(|p| p.name.as_str()).unwrap_or("")
+        self.pages
+            .get(self.current)
+            .map(|p| p.name.as_str())
+            .unwrap_or("")
     }
 
     pub fn pages(&self) -> Vec<String> {
@@ -261,7 +323,11 @@ impl Ui {
 
     /// Show another page. Fingers held on the old page are cancelled.
     pub fn show(&mut self, page: &str) -> Result<(), String> {
-        let i = self.pages.iter().position(|p| p.name == page).ok_or_else(|| format!("no page called '{page}'"))?;
+        let i = self
+            .pages
+            .iter()
+            .position(|p| p.name == page)
+            .ok_or_else(|| format!("no page called '{page}'"))?;
         if i != self.current {
             self.current = i;
             self.full = true;
@@ -273,7 +339,10 @@ impl Ui {
     /// Where `name` sits on the current page.
     pub fn rect_of(&self, name: &str) -> Option<Rect> {
         let page = self.pages.get(self.current)?;
-        page.slots.iter().find(|(i, _)| self.widgets[*i].0 == name).map(|(_, r)| *r)
+        page.slots
+            .iter()
+            .find(|(i, _)| self.widgets[*i].0 == name)
+            .map(|(_, r)| *r)
     }
 
     pub fn get<W: Widget>(&self, name: &str) -> Option<&W> {
@@ -300,8 +369,12 @@ impl Ui {
         if self.full {
             return true;
         }
-        let Some(page) = self.pages.get(self.current) else { return false };
-        page.slots.iter().any(|(i, _)| self.widgets[*i].2 || self.widgets[*i].1.animating())
+        let Some(page) = self.pages.get(self.current) else {
+            return false;
+        };
+        page.slots
+            .iter()
+            .any(|(i, _)| self.widgets[*i].2 || self.widgets[*i].1.animating())
     }
 
     /// Route a touch. A finger belongs to the widget it first touched until it
@@ -314,7 +387,12 @@ impl Ui {
         let owner = match phase {
             Touch::Down => {
                 self.fingers.retain(|(f, _)| *f != finger);
-                let hit = self.pages[cur].slots.iter().rev().find(|(_, r)| r.contains(x, y)).copied()?;
+                let hit = self.pages[cur]
+                    .slots
+                    .iter()
+                    .rev()
+                    .find(|(_, r)| r.contains(x, y))
+                    .copied()?;
                 self.fingers.push((finger, hit.0));
                 hit
             }
@@ -331,13 +409,18 @@ impl Ui {
         let (name, w, dirty) = &mut self.widgets[wi];
         let kind = w.touch(finger, phase, x, y, r);
         *dirty = true;
-        kind.map(|kind| UiEvent { widget: name.clone(), kind })
+        kind.map(|kind| UiEvent {
+            widget: name.clone(),
+            kind,
+        })
     }
 
     /// Draw what changed on the current page; returns the rectangles drawn,
     /// for the screen to copy.
     pub fn paint(&mut self, canvas: &mut dyn Canvas) -> Vec<Rect> {
-        let Some(page) = self.pages.get(self.current) else { return Vec::new() };
+        let Some(page) = self.pages.get(self.current) else {
+            return Vec::new();
+        };
         let mut damage = Vec::new();
         let screen = Rect::new(0, 0, self.size.0, self.size.1);
         let mut styled = Styled::new(canvas, &self.theme);
@@ -354,7 +437,11 @@ impl Ui {
             if !(*full || *dirty || w.animating()) {
                 continue;
             }
-            let parts = if *full { vec![r] } else { w.changed_parts(r).unwrap_or_else(|| vec![r]) };
+            let parts = if *full {
+                vec![r]
+            } else {
+                w.changed_parts(r).unwrap_or_else(|| vec![r])
+            };
             for part in parts {
                 let part = part.intersect(r);
                 if part.is_empty() {
@@ -362,7 +449,14 @@ impl Ui {
                 }
                 canvas.set_clip(part);
                 canvas.fill_rect(part, theme.bg);
-                w.paint(&mut PaintCx { canvas: &mut *canvas, theme, fonts }, r);
+                w.paint(
+                    &mut PaintCx {
+                        canvas: &mut *canvas,
+                        theme,
+                        fonts,
+                    },
+                    r,
+                );
                 if !*full {
                     damage.push(part);
                 }
@@ -393,14 +487,24 @@ mod tests {
             cx.canvas.fill_rect(r, Color::rgb(0xFFFFFF));
         }
 
-        fn touch(&mut self, finger: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
+        fn touch(
+            &mut self,
+            finger: u64,
+            phase: Touch,
+            _x: i32,
+            _y: i32,
+            _r: Rect,
+        ) -> Option<EventKind> {
             self.touches.push((finger, phase));
             (phase == Touch::Down).then_some(EventKind::Tab(0))
         }
     }
 
     fn probe() -> Probe {
-        Probe { paints: std::cell::Cell::new(0), touches: Vec::new() }
+        Probe {
+            paints: std::cell::Cell::new(0),
+            touches: Vec::new(),
+        }
     }
 
     fn ui() -> Ui {
@@ -415,7 +519,8 @@ mod tests {
     #[test]
     fn layout_files_survive_pages_being_added_again() {
         let mut ui = ui();
-        ui.apply_layouts("one = row(b, a)\none.wide = row(a:150, b)\n").unwrap();
+        ui.apply_layouts("one = row(b, a)\none.wide = row(a:150, b)\n")
+            .unwrap();
         assert_eq!(ui.layout_of("one"), Some("row(b, a)"));
         // The app re-adds the page with its own spec: the file still wins.
         ui.add_page("one", "row(a, b)").unwrap();
@@ -423,7 +528,11 @@ mod tests {
         // Variants are asked for by key.
         let spec = ui.layout_for("one.wide", "row(a, b)");
         ui.add_page("one", &spec).unwrap();
-        assert_eq!(ui.layout_of("one"), Some("row(b, a)"), "a page's own override beats a variant");
+        assert_eq!(
+            ui.layout_of("one"),
+            Some("row(b, a)"),
+            "a page's own override beats a variant"
+        );
         assert_eq!(ui.layout_for("one.wide", "x"), "row(a:150, b)");
         assert_eq!(ui.layout_for("one.narrow", "row(a, b)"), "row(a, b)");
         // A bad file changes nothing.
@@ -453,7 +562,11 @@ mod tests {
         assert_eq!(ui.get::<Probe>("b").unwrap().paints.get(), 2);
         ui.show("two").unwrap();
         assert_eq!(ui.paint(&mut c).len(), 1);
-        assert_eq!(ui.get::<Probe>("a").unwrap().paints.get(), 1, "a is not on page two");
+        assert_eq!(
+            ui.get::<Probe>("a").unwrap().paints.get(),
+            1,
+            "a is not on page two"
+        );
     }
 
     #[test]
@@ -474,7 +587,10 @@ mod tests {
         assert!(ui.touch(7, Touch::Down, a.x + 1, a.y + 1).is_some());
         assert_eq!(ui.touch(7, Touch::Move, b.x + 1, b.y + 1), None);
         ui.touch(7, Touch::Up, b.x + 1, b.y + 1);
-        assert_eq!(ui.get::<Probe>("a").unwrap().touches, vec![(7, Touch::Down), (7, Touch::Move), (7, Touch::Up)]);
+        assert_eq!(
+            ui.get::<Probe>("a").unwrap().touches,
+            vec![(7, Touch::Down), (7, Touch::Move), (7, Touch::Up)]
+        );
         assert!(ui.get::<Probe>("b").unwrap().touches.is_empty());
         // After lifting, a move goes nowhere.
         assert_eq!(ui.touch(7, Touch::Move, a.x + 1, a.y + 1), None);

@@ -121,7 +121,9 @@ fn stroke_chamfer(c: &mut dyn Canvas, r: Rect, k: i32, width: i32, col: Color) {
     let ik = (k - width * 41 / 100).max(0);
     let rows = r.intersect(c.clip());
     for y in rows.y..rows.bottom() {
-        let Some((x0, x1)) = chamfer_span(r, k, y) else { continue };
+        let Some((x0, x1)) = chamfer_span(r, k, y) else {
+            continue;
+        };
         match chamfer_span(inner, ik, y) {
             Some((i0, i1)) if !inner.is_empty() => {
                 c.fill_rect(Rect::new(x0, y, (i0 - x0).max(1), 1), col);
@@ -146,7 +148,9 @@ impl Styled<'_> {
         match self.shaped(r, radius) {
             Corners::Round => self.inner.stroke_round_rect(r, radius, width, c),
             Corners::Square => self.inner.stroke_round_rect(r, 0, width, c),
-            Corners::Chamfer => stroke_chamfer(self.inner, r, radius.clamp(0, r.w.min(r.h) / 2), width, c),
+            Corners::Chamfer => {
+                stroke_chamfer(self.inner, r, radius.clamp(0, r.w.min(r.h) / 2), width, c)
+            }
         }
     }
 }
@@ -194,7 +198,12 @@ impl Canvas for Styled<'_> {
             }
             if width == 1 {
                 // A thin line under glow reads better a little brighter inside.
-                self.outline(r.inset(1), (radius - 1).max(0), 1, c.with_alpha((c.a as u32 * g / 600) as u8));
+                self.outline(
+                    r.inset(1),
+                    (radius - 1).max(0),
+                    1,
+                    c.with_alpha((c.a as u32 * g / 600) as u8),
+                );
             }
         }
         self.outline(r, radius, width, c)
@@ -217,7 +226,10 @@ impl Canvas for Styled<'_> {
                 for xx in 0..gw {
                     let lo = xx.saturating_sub(R);
                     let hi = (xx + R).min(gw - 1);
-                    let s: u32 = a[yy * gw + lo..=yy * gw + hi].iter().map(|&v| v as u32).sum();
+                    let s: u32 = a[yy * gw + lo..=yy * gw + hi]
+                        .iter()
+                        .map(|&v| v as u32)
+                        .sum();
                     b[yy * gw + xx] = (s / (2 * R as u32 + 1)) as u16;
                 }
             }
@@ -231,7 +243,8 @@ impl Canvas for Styled<'_> {
                     out[yy * gw + xx] = v.min(255) as u8;
                 }
             }
-            self.inner.blend_mask(x - R as i32, y - R as i32, gw, gh, &out, c);
+            self.inner
+                .blend_mask(x - R as i32, y - R as i32, gw, gh, &out, c);
         }
         self.inner.blend_mask(x, y, w, h, mask, c)
     }
@@ -273,7 +286,7 @@ mod tests {
         assert_eq!(c.pixel(18, 10), red); // top edge after the cut
         assert_eq!(c.pixel(10, 25), red); // left edge
         assert_eq!(c.pixel(49, 39), Color::rgb(0)); // far corner cut
-        // A pill stays round: its end is soft, not cut flat.
+                                                    // A pill stays round: its end is soft, not cut flat.
         let mut p = SoftCanvas::new(60, 20);
         Styled::new(&mut p, &t).fill_round_rect(Rect::new(0, 0, 60, 20), 10, red);
         let mut q = SoftCanvas::new(60, 20);

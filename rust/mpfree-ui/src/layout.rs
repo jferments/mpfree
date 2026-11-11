@@ -59,7 +59,9 @@ impl Parser<'_> {
     fn name(&mut self) -> Result<String, String> {
         self.skip();
         let start = self.i;
-        while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || b"_-".contains(&self.s[self.i])) {
+        while self.i < self.s.len()
+            && (self.s[self.i].is_ascii_alphanumeric() || b"_-".contains(&self.s[self.i]))
+        {
             self.i += 1;
         }
         if start == self.i {
@@ -76,7 +78,11 @@ impl Parser<'_> {
         let mut kids = Vec::new();
         loop {
             let kid = self.node()?;
-            let size = if self.eat(b':') { self.size()? } else { Size::Weight(1.0) };
+            let size = if self.eat(b':') {
+                self.size()?
+            } else {
+                Size::Weight(1.0)
+            };
             kids.push((kid, size));
             if self.eat(b',') {
                 continue;
@@ -101,13 +107,19 @@ impl Parser<'_> {
         }
         let num = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("");
         if self.eat(b'*') {
-            let w = if num.is_empty() { 1.0 } else { num.parse::<f32>().map_err(|_| self.err("bad weight"))? };
+            let w = if num.is_empty() {
+                1.0
+            } else {
+                num.parse::<f32>().map_err(|_| self.err("bad weight"))?
+            };
             if !(w > 0.0 && w <= 1000.0) {
                 return Err(self.err("weight must be above 0"));
             }
             return Ok(Size::Weight(w));
         }
-        let px = num.parse::<i32>().map_err(|_| self.err("expected a size such as 60, 2* or *"))?;
+        let px = num
+            .parse::<i32>()
+            .map_err(|_| self.err("expected a size such as 60, 2* or *"))?;
         if !(0..=10_000).contains(&px) {
             return Err(self.err("size out of range"));
         }
@@ -117,7 +129,10 @@ impl Parser<'_> {
 
 /// Read a spec. Slot names must be unique within it.
 pub fn parse(spec: &str) -> Result<Node, String> {
-    let mut p = Parser { s: spec.as_bytes(), i: 0 };
+    let mut p = Parser {
+        s: spec.as_bytes(),
+        i: 0,
+    };
     let node = p.node()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected text after the layout"));
@@ -161,28 +176,47 @@ fn place(node: &Node, r: Rect, gap: i32, out: &mut Vec<(String, Rect)>) {
     };
     let total = if across { r.w } else { r.h };
     let avail = (total - gap * (kids.len() as i32 - 1)).max(0);
-    let fixed: i32 = kids.iter().map(|(_, s)| if let Size::Px(p) = s { *p } else { 0 }).sum();
-    let weights: f32 = kids.iter().map(|(_, s)| if let Size::Weight(w) = s { *w } else { 0.0 }).sum();
+    let fixed: i32 = kids
+        .iter()
+        .map(|(_, s)| if let Size::Px(p) = s { *p } else { 0 })
+        .sum();
+    let weights: f32 = kids
+        .iter()
+        .map(|(_, s)| if let Size::Weight(w) = s { *w } else { 0.0 })
+        .sum();
     let mut rest = (avail - fixed).max(0);
     let last_weighted = kids.iter().rposition(|(_, s)| matches!(s, Size::Weight(_)));
-    let shares: Vec<i32> = kids.iter().enumerate().map(|(i, (_, s))| match s {
-        Size::Px(p) => *p,
-        Size::Weight(w) => {
-            if Some(i) == last_weighted {
-                0 // gets what is left, below
-            } else {
-                let n = ((avail - fixed).max(0) as f32 * w / weights).floor() as i32;
-                rest -= n;
-                n
+    let shares: Vec<i32> = kids
+        .iter()
+        .enumerate()
+        .map(|(i, (_, s))| match s {
+            Size::Px(p) => *p,
+            Size::Weight(w) => {
+                if Some(i) == last_weighted {
+                    0 // gets what is left, below
+                } else {
+                    let n = ((avail - fixed).max(0) as f32 * w / weights).floor() as i32;
+                    rest -= n;
+                    n
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
     let mut pos = if across { r.x } else { r.y };
     let end = pos + total;
     for (i, (kid, _)) in kids.iter().enumerate() {
         let start = pos.min(end);
-        let len = if Some(i) == last_weighted { rest } else { shares[i] }.min(end - start);
-        let cell = if across { Rect::new(start, r.y, len, r.h) } else { Rect::new(r.x, start, r.w, len) };
+        let len = if Some(i) == last_weighted {
+            rest
+        } else {
+            shares[i]
+        }
+        .min(end - start);
+        let cell = if across {
+            Rect::new(start, r.y, len, r.h)
+        } else {
+            Rect::new(r.x, start, r.w, len)
+        };
         place(kid, cell, gap, out);
         pos += len + gap;
     }
@@ -218,11 +252,19 @@ pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
         }
         let depth = |s: &str| s.matches('(').count() as i32 - s.matches(')').count() as i32;
         let (start, page, mut spec, d) = match open.take() {
-            Some((start, page, spec, d)) => (start, page, format!("{spec} {line}"), d + depth(line)),
+            Some((start, page, spec, d)) => {
+                (start, page, format!("{spec} {line}"), d + depth(line))
+            }
             None => {
-                let (page, spec) = line.split_once('=')
+                let (page, spec) = line
+                    .split_once('=')
                     .ok_or_else(|| format!("layout line {}: expected Page = spec", n + 1))?;
-                (n, page.trim().to_string(), spec.trim().to_string(), depth(spec))
+                (
+                    n,
+                    page.trim().to_string(),
+                    spec.trim().to_string(),
+                    depth(spec),
+                )
             }
         };
         if d > 0 {
@@ -235,7 +277,11 @@ pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
             spec = spec.replace(name.as_str(), text);
         }
         if let Some(name) = page.strip_prefix('@') {
-            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
                 return Err(format!("layout line {}: bad name {page:?}", start + 1));
             }
             defs.retain(|(n, _)| *n != page);
@@ -244,14 +290,23 @@ pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
             continue;
         }
         if let Some(i) = spec.find('@') {
-            return Err(format!("layout line {} ({page}): {} is not defined above", start + 1,
-                               spec[i..].split(|c: char| !(c.is_ascii_alphanumeric() || "@_-".contains(c))).next().unwrap_or("@")));
+            return Err(format!(
+                "layout line {} ({page}): {} is not defined above",
+                start + 1,
+                spec[i..]
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || "@_-".contains(c)))
+                    .next()
+                    .unwrap_or("@")
+            ));
         }
         parse(&spec).map_err(|e| format!("layout line {} ({page}): {e}", start + 1))?;
         out.push((page, spec));
     }
     if let Some((start, page, _, _)) = open {
-        return Err(format!("layout line {} ({page}): a bracket is never closed", start + 1));
+        return Err(format!(
+            "layout line {} ({page}): a bracket is never closed",
+            start + 1
+        ));
     }
     Ok(out)
 }
@@ -292,7 +347,16 @@ mod tests {
 
     #[test]
     fn rejects_bad_specs() {
-        for bad in ["", "row(", "row(a b)", "grid(a)", "row(a:x)", "row(a, a)", "row(a) b", "row(a:0*)"] {
+        for bad in [
+            "",
+            "row(",
+            "row(a b)",
+            "grid(a)",
+            "row(a:x)",
+            "row(a, a)",
+            "row(a) b",
+            "row(a:0*)",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert_eq!(parse(" pads ").unwrap(), Node::Slot("pads".into()));
@@ -302,13 +366,33 @@ mod tests {
     fn layout_files() {
         let f = "# mine\nPlay = col(header:60,\n  row(side:480, pads:*):*)\nDebug = a # just one\n";
         let got = parse_file(f).unwrap();
-        assert_eq!(got, vec![("Play".to_string(), "col(header:60, row(side:480, pads:*):*)".to_string()),
-                             ("Debug".to_string(), "a".to_string())]);
-        assert!(parse_file("Play = col(a, b").unwrap_err().contains("never closed"));
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "Play".to_string(),
+                    "col(header:60, row(side:480, pads:*):*)".to_string()
+                ),
+                ("Debug".to_string(), "a".to_string())
+            ]
+        );
+        assert!(parse_file("Play = col(a, b")
+            .unwrap_err()
+            .contains("never closed"));
         let shared = parse_file("@side = 460\n@sidebar = 99\nPlay = row(pads:*, side:@side)\nArp = row(pads:*, l:@sidebar)\n").unwrap();
-        assert_eq!(shared, vec![("Play".to_string(), "row(pads:*, side:460)".to_string()),
-                                ("Arp".to_string(), "row(pads:*, l:99)".to_string())]);
-        assert_eq!(parse_file("Play = row(a:@w)").unwrap_err(), "layout line 1 (Play): @w is not defined above");
-        assert!(parse_file("Play col(a)").unwrap_err().starts_with("layout line 1"));
+        assert_eq!(
+            shared,
+            vec![
+                ("Play".to_string(), "row(pads:*, side:460)".to_string()),
+                ("Arp".to_string(), "row(pads:*, l:99)".to_string())
+            ]
+        );
+        assert_eq!(
+            parse_file("Play = row(a:@w)").unwrap_err(),
+            "layout line 1 (Play): @w is not defined above"
+        );
+        assert!(parse_file("Play col(a)")
+            .unwrap_err()
+            .starts_with("layout line 1"));
     }
 }
