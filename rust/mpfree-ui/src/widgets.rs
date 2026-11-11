@@ -26,35 +26,64 @@ impl Chip {
     }
 }
 
-/// The top bar: the MPFree name, page tabs, and status chips.
+/// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
+/// Every crate's preview draws this bar ([`Header::app`]), never a list of its
+/// own; adding, removing, renaming or reordering a tab needs Jay's approval.
+pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+/// The tab after them while Prefs > "Show developer tools" is on.
+pub const DEV_TAB: &str = "Dev";
+
+/// The top bar: page tabs and status chips (the MPFree name is on the
+/// startup and loading screens only, so the tabs get its room). A tap on a
+/// tab gives `Tab(i)`; a tap on a chip gives `Select(i)`, `i` its place in
+/// `chips` (chips are laid out from the right edge, so 0 is rightmost).
 pub struct Header {
     pub tabs: Vec<String>,
     pub active: usize,
     pub chips: Vec<Chip>,
+    /// Where each chip was last drawn (chip index, rect), for taps: a chip's
+    /// width depends on its text, which only painting can measure.
+    drawn_chips: RefCell<Vec<(usize, Rect)>>,
 }
 
-const BRAND_W: i32 = 170;
+/// The room left of the first tab.
+const LEFT_W: i32 = 8;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
+/// Room for six full-width tabs.
+const TABS_W: i32 = 6 * (TAB_W + TAB_GAP);
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
-        Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new() }
+        Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new(),
+                 drawn_chips: RefCell::new(Vec::new()) }
     }
 
-    fn tab_rect(&self, r: Rect, i: usize) -> Rect {
+    /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
+    /// (none if it is not one of them, as on Prefs).
+    pub fn app(active: &str) -> Header {
+        let mut h = Header::new(&APP_TABS);
+        h.active = APP_TABS.iter().position(|t| *t == active).unwrap_or(usize::MAX);
+        h
+    }
+
+    /// Where chip `i` was last drawn, if it fitted.
+    pub fn chip_rect(&self, i: usize) -> Option<Rect> {
+        self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
+    }
+
+    /// Up to six tabs are TAB_W wide. More tabs share the same width, so the
+    /// chips on the right keep their room.
+    pub fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        Rect::new(r.x + BRAND_W + i as i32 * (TAB_W + TAB_GAP), r.y + (r.h - h) / 2, TAB_W, h)
+        let pitch = TABS_W / self.tabs.len().max(6) as i32;
+        Rect::new(r.x + LEFT_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
     }
 }
 
 impl Widget for Header {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let (brand, _) = r.take_left(BRAND_W);
-        let mp = cx.measure(FontId::Bold, t.size_brand, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0), Align::Left, t.text, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0).take_left(mp).1, Align::Left, t.accent, "Free");
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
             let on = i == self.active;
@@ -70,13 +99,16 @@ impl Widget for Header {
         let limit = self.tab_rect(r, self.tabs.len()).x;
         let mut right = r.right();
         let h = 34.min(r.h);
-        for chip in &self.chips {
+        let mut drawn = self.drawn_chips.borrow_mut();
+        drawn.clear();
+        for (i, chip) in self.chips.iter().enumerate() {
             let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
             let w = tw + 40;
             if right - w < limit {
                 break;
             }
             let cr = Rect::new(right - w, r.y + (r.h - h) / 2, w, h);
+            drawn.push((i, cr));
             cx.canvas.fill_round_rect(cr, h / 2, t.surface);
             let dot = Rect::new(cr.x + 14, cr.y + h / 2 - 4, 8, 8);
             cx.canvas.fill_round_rect(dot, 4, t.tone(chip.tone));
@@ -90,9 +122,12 @@ impl Widget for Header {
         if phase != Touch::Down {
             return None;
         }
-        let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
-        self.active = i;
-        Some(EventKind::Tab(i))
+        if let Some(i) = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y)) {
+            self.active = i;
+            return Some(EventKind::Tab(i));
+        }
+        let drawn = self.drawn_chips.borrow();
+        drawn.iter().find(|(_, cr)| cr.contains(x, y)).map(|(i, _)| EventKind::Select(*i))
     }
 }
 
@@ -557,7 +592,7 @@ impl Loading {
         if !title.is_empty() {
             let mid = Rect::new(r.x, r.y + r.h / 2 - 150, r.w, 120);
             let tw = cx.measure(FontId::Bold, 96.0, title);
-            // "MP" in the text colour and the rest in the accent, as in the header.
+            // "MP" in the text colour and the rest in the accent.
             let split = title.char_indices().nth(2).map(|(i, _)| i).unwrap_or(title.len());
             let (a, b) = title.split_at(split);
             let aw = cx.measure(FontId::Bold, 96.0, a);
@@ -855,6 +890,13 @@ mod tests {
     }
 
     #[test]
+    fn the_app_bar_is_the_approved_one() {
+        assert_eq!(APP_TABS, ["Play", "Clips", "Synth", "Looper", "Sample"]);
+        assert_eq!(Header::app("Synth").active, 2);
+        assert_eq!(Header::app("Prefs").active, usize::MAX);
+    }
+
+    #[test]
     fn tabs_switch() {
         let mut h = Header::new(&["Play", "Debug"]);
         let r = Rect::new(0, 0, 1280, 60);
@@ -959,5 +1001,27 @@ mod tests {
             assert_eq!(c.pixel(x, 2), bg, "top margin at x {x}");
             assert_eq!(c.pixel(x, 397), bg, "bottom margin at x {x}");
         }
+    }
+
+    #[test]
+    fn a_tap_on_a_chip_names_it() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::new(&["Play", "Debug"]);
+        h.chips = vec![Chip::new("Akai session", Tone::Good), Chip::new("Arp off", Tone::Dim)];
+        ui.add("header", h);
+        ui.add_full_page("p", "col(header:60)").unwrap();
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        // Chip 0 sits at the right edge, chip 1 to its left.
+        let ev = |ui: &mut Ui, x| ui.touch(1, Touch::Down, x, 30).map(|e| e.kind);
+        assert_eq!(ev(&mut ui, 1270), Some(EventKind::Select(0)));
+        ui.touch(1, Touch::Up, 1270, 30);
+        let first = ui.get::<Header>("header").unwrap().chip_rect(1).unwrap();
+        assert_eq!(ev(&mut ui, first.x + 5), Some(EventKind::Select(1)));
+        ui.touch(1, Touch::Up, first.x + 5, 30);
+        // The first tab starts at the left edge: there is no name before it.
+        assert_eq!(ev(&mut ui, LEFT_W + 20), Some(EventKind::Tab(0)));
+        ui.touch(1, Touch::Up, LEFT_W + 20, 30);
+        assert_eq!(ev(&mut ui, first.x - 20), None, "between the chips and the tabs");
     }
 }

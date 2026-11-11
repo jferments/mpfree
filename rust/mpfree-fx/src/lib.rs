@@ -9,6 +9,12 @@
 //! - [`Crush`]: bit depth and sample-rate reduction (aliasing on purpose).
 //! - [`Delay`]: free or tempo-synced echo with ping-pong, a filter and
 //!   saturation in the feedback, tape-style time changes and freeze.
+//! - [`Eq`]: four parametric bands (bell or shelf) with low and high cuts,
+//!   and the exact response curve for drawing.
+//! - [`Chorus`], [`Flanger`], [`Phaser`]: modulation effects with a free
+//!   or tempo-synced LFO and stereo width.
+//! - [`LoFi`]: tape wow, flutter and saturation, vinyl crackle and hiss
+//!   that ride the music, tone and width, all under one Amount.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
@@ -41,17 +47,25 @@ mod comp;
 mod crush;
 mod delay;
 mod drive;
+mod eq;
+mod lofi;
 mod master;
+mod mixer;
+mod modfx;
 mod oversample;
 mod svf;
 
-pub use chain::{Chain, ChainStats, MAX_SLOT_EVENTS};
+pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
 pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
+pub use eq::Eq;
+pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
+pub use mixer::{param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig, MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB};
+pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 
@@ -65,7 +79,13 @@ pub mod ids {
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
+    pub use crate::eq::ids as eq;
+    pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
+    pub use crate::mixer::ids as mixer;
+    pub use crate::modfx::chorus;
+    pub use crate::modfx::flanger;
+    pub use crate::modfx::phaser;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
 }
@@ -101,6 +121,21 @@ pub(crate) fn flush(x: f32) -> f32 { if x.abs() < 1e-20 { 0.0 } else { x } }
 #[inline]
 pub(crate) fn soft(x: f32) -> f32 {
     if x >= 3.0 { 1.0 } else if x <= -3.0 { -1.0 } else { x * (27.0 + x * x) / (27.0 + 9.0 * x * x) }
+}
+
+/// `tanh(x)` to within about 2e-7, without the library call: a rational
+/// fit (odd degree 13 over even degree 6, Eigen's single-precision
+/// `ptanh`), never past ±1 and exactly ±1 from |x| = 7.9 up. Several times cheaper than
+/// `f32::tanh`, which calls the C library on the MPC's ARM.
+#[inline]
+pub(crate) fn fast_tanh(x: f32) -> f32 {
+    const CLAMP: f32 = 7.905_311;
+    let x = x.clamp(-CLAMP, CLAMP);
+    let x2 = x * x;
+    let p = (((((-2.760_768_5e-16 * x2 + 2.000_188e-13) * x2 - 8.604_672e-11) * x2 + 5.122_297e-8) * x2
+        + 1.485_722_4e-5) * x2 + 6.372_619_3e-4) * x2 + 4.893_524_6e-3;
+    let q = ((1.198_258_4e-6 * x2 + 1.185_347_1e-4) * x2 + 2.268_434_6e-3) * x2 + 4.893_525e-3;
+    (x * p / q).clamp(-1.0, 1.0)
 }
 
 /// A one-pole DC blocker for one channel.
@@ -188,6 +223,26 @@ mod tests {
         for i in -300..=300 {
             let y = soft(i as f32 / 100.0);
             assert!(y >= prev - 1e-6, "monotonic");
+            prev = y;
+        }
+    }
+
+    #[test]
+    fn fast_tanh_matches_tanh() {
+        let mut worst = 0.0f32;
+        for i in -12_000..=12_000 {
+            let x = i as f32 / 1000.0;
+            worst = worst.max((fast_tanh(x) - x.tanh()).abs());
+        }
+        assert!(worst < 1e-6, "{worst}");
+        assert_eq!(fast_tanh(0.0), 0.0);
+        assert_eq!((fast_tanh(50.0), fast_tanh(-50.0)), (1.0, -1.0));
+        assert!(fast_tanh(f32::NAN).is_nan());
+        let mut prev = -1.0;
+        for i in -8000..=8000 {
+            let y = fast_tanh(i as f32 / 1000.0);
+            assert!(y >= prev - 1e-6, "monotonic (to its accuracy) at {i}");
+            assert!(y.abs() <= 1.0);
             prev = y;
         }
     }

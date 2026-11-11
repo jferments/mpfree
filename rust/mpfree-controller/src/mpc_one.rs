@@ -41,8 +41,14 @@ pub mod button {
     pub const SHIFT: u8 = 49;
     pub const STOP: u8 = 81;
     pub const PLAY: u8 = 82;
-    /// LED only so far: blinks at the tempo in the factory app.
+    /// Blinks at the tempo in the factory app. Pressed in the Hello MPC
+    /// round 5 button guide (2026-11-11), like the four below.
     pub const TAP_TEMPO: u8 = 53;
+    pub const MENU: u8 = 123;
+    pub const NOTE_REPEAT: u8 = 11;
+    /// The - and + buttons beside the data wheel.
+    pub const MINUS: u8 = 55;
+    pub const PLUS: u8 = 54;
 }
 
 const PAD_CHANNEL: u8 = 9; // MIDI channel 10, zero-based

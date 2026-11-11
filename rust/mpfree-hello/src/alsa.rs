@@ -1,5 +1,6 @@
-//! Direct ALSA, no alsa-lib: the PCM playback calls the click needs, and the
-//! RawMIDI substream choice the pad test needs.
+//! Direct ALSA, no alsa-lib: the PCM playback calls the click needs, the
+//! PCM capture calls the line input needs, and the RawMIDI substream choice
+//! the pad test needs.
 //!
 //! The parameter blocks are kept as byte arrays in the 32-bit ARM layout the
 //! MPC's kernel expects (sizes and offsets from <sound/asound.h> compiled for
@@ -21,10 +22,18 @@ pub const PCM_PREPARE: u32 = 0x0000_4140;
 pub const PCM_DROP: u32 = 0x0000_4143;
 pub const PCM_DRAIN: u32 = 0x0000_4144;
 pub const PCM_WRITEI_FRAMES: u32 = 0x400C_4150;
+/// _IOR('A', 0x51, struct snd_xferi): read interleaved frames (capture).
+pub const PCM_READI_FRAMES: u32 = 0x800C_4151;
+/// _IO('A', 0x42): start a prepared stream now (capture starts here).
+pub const PCM_START: u32 = 0x0000_4142;
 /// _IOR('A', 0x21, snd_pcm_sframes_t): frames queued ahead of the next one written.
 pub const PCM_DELAY: u32 = 0x8004_4121;
 pub const CTL_RAWMIDI_PREFER_SUBDEVICE: u32 = 0x4004_5542;
 pub const RAWMIDI_INFO: u32 = 0x810C_5701;
+
+/// Errors the stream calls report.
+pub const EAGAIN: i32 = 11;
+pub const EPIPE: i32 = 32;
 
 pub const RAWMIDI_STREAM_OUTPUT: u32 = 0;
 pub const RAWMIDI_STREAM_INPUT: u32 = 1;
@@ -195,6 +204,13 @@ impl HwParams {
         p
     }
 
+    /// The line input's stream: the same format as playback, 128-frame
+    /// periods, 2 periods (256 frames), the capture buffer seen while Akai's
+    /// own service ran (docs/hardware/audio-runtime.md).
+    pub fn stock_capture() -> HwParams {
+        HwParams::stock_playback(2)
+    }
+
     /// Only the format, channels and rate: what the card allows for the rest.
     pub fn format_only() -> HwParams {
         let mut p = HwParams::any();
@@ -241,6 +257,14 @@ impl Pcm {
         Ok(Pcm { file })
     }
 
+    /// Open a capture device without waiting if something else holds it.
+    /// It stays non-blocking: reads return what has arrived (or nothing),
+    /// so the playback loop never waits on the input.
+    pub fn open_capture(path: &str) -> io::Result<Pcm> {
+        let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;
+        Ok(Pcm { file })
+    }
+
     pub fn refine(&self, p: &mut HwParams) -> io::Result<()> {
         sys::ioctl_buf(self.file.as_raw_fd(), PCM_HW_REFINE, &mut p.0).map(|_| ())
     }
@@ -255,6 +279,10 @@ impl Pcm {
 
     pub fn prepare(&self) -> io::Result<()> {
         sys::ioctl_none(self.file.as_raw_fd(), PCM_PREPARE).map(|_| ())
+    }
+
+    pub fn start(&self) -> io::Result<()> {
+        sys::ioctl_none(self.file.as_raw_fd(), PCM_START).map(|_| ())
     }
 
     pub fn drain(&self) -> io::Result<()> {
@@ -278,6 +306,25 @@ impl Pcm {
         put(&mut x, 8, frames);
         sys::ioctl_buf(self.file.as_raw_fd(), PCM_WRITEI_FRAMES, &mut x)?;
         Ok(get(&x, 0))
+    }
+
+    /// Read up to `interleaved.len() / 2` stereo frames that have arrived,
+    /// without waiting: Ok(0) if none have. An overrun (the input was not
+    /// read in time) shows as an error with raw_os_error() == Some(32)
+    /// (EPIPE); prepare and start again.
+    pub fn read_frames(&self, interleaved: &mut [i32]) -> io::Result<u32> {
+        if !sys::IS_DEVICE_ABI {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "device calls are for 32-bit ARM only"));
+        }
+        let frames = (interleaved.len() / 2) as u32;
+        let mut x = [0u8; 12];
+        put(&mut x, 4, interleaved.as_mut_ptr() as usize as u32);
+        put(&mut x, 8, frames);
+        match sys::ioctl_buf(self.file.as_raw_fd(), PCM_READI_FRAMES, &mut x) {
+            Ok(_) => Ok(get(&x, 0)),
+            Err(e) if e.raw_os_error() == Some(EAGAIN) => Ok(0),
+            Err(e) => Err(e),
+        }
     }
 
     /// Frames between what the card plays now and the end of what was
@@ -366,6 +413,8 @@ mod tests {
         assert_eq!(PCM_DROP, ioc(0, b'A', 0x43, 0));
         assert_eq!(PCM_DRAIN, ioc(0, b'A', 0x44, 0));
         assert_eq!(PCM_WRITEI_FRAMES, ioc(W, b'A', 0x50, 12));
+        assert_eq!(PCM_READI_FRAMES, ioc(R, b'A', 0x51, 12));
+        assert_eq!(PCM_START, ioc(0, b'A', 0x42, 0));
         assert_eq!(PCM_DELAY, ioc(R, b'A', 0x21, 4));
         assert_eq!(CTL_RAWMIDI_PREFER_SUBDEVICE, ioc(W, b'U', 0x42, 4));
         assert_eq!(RAWMIDI_INFO, ioc(R, b'W', 0x01, RAWMIDI_INFO_SIZE));
@@ -394,6 +443,27 @@ mod tests {
         // RATE is the fourth interval (8, 9, 10, 11).
         assert_eq!(get(&p.0, HW_INTERVALS + 3 * 12), 44_100);
         assert_eq!(get(&p.0, HW_INTERVALS + 3 * 12 + 8), INTERVAL_INTEGER);
+    }
+
+    #[test]
+    fn stock_capture_is_stereo_s32_at_44k1_with_a_256_frame_buffer() {
+        let p = HwParams::stock_capture();
+        assert!(p.mask_has(PARAM_ACCESS, ACCESS_RW_INTERLEAVED));
+        assert!(p.mask_has(PARAM_FORMAT, FORMAT_S32_LE));
+        for (param, v) in [(PARAM_CHANNELS, 2), (PARAM_RATE, 44_100), (PARAM_PERIOD_SIZE, 128), (PARAM_PERIODS, 2)] {
+            assert_eq!(p.interval(param).single(), Some(v), "param {param}");
+        }
+    }
+
+    #[test]
+    fn capture_calls_are_device_only() {
+        // On the workstation the stream calls refuse before any ioctl.
+        if !sys::IS_DEVICE_ABI {
+            let f = File::open("/dev/null").unwrap();
+            let pcm = Pcm { file: f };
+            let mut buf = [0i32; 16];
+            assert_eq!(pcm.read_frames(&mut buf).unwrap_err().kind(), io::ErrorKind::Unsupported);
+        }
     }
 
     #[test]

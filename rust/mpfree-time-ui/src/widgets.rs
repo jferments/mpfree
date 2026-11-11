@@ -578,6 +578,8 @@ pub struct TakeList {
     /// What Undo and Redo would do, such as "take 3"; None when nothing.
     pub undo: Option<String>,
     pub redo: Option<String>,
+    /// What Capture would keep, such as "2 bars"; None when nothing.
+    pub capture: Option<String>,
 }
 
 const TAKE_ROW_H: i32 = 38;
@@ -586,7 +588,7 @@ const TAKE_BUTTON_H: i32 = 48;
 impl TakeList {
     pub fn new(title: &str) -> TakeList {
         TakeList { title: title.to_string(), right: String::new(), items: Vec::new(), current: None, undo: None,
-                   redo: None }
+                   redo: None, capture: None }
     }
 
     fn body(r: Rect) -> Rect {
@@ -594,11 +596,13 @@ impl TakeList {
         r.inset(14).take_top(34).1
     }
 
-    /// Undo (0) or Redo (1).
+    /// Undo (0), Redo (1) or Capture (2): the event's index. Left to right
+    /// they are Capture, Undo, Redo.
     pub fn button_rect(r: Rect, i: usize) -> Rect {
         let body = TakeList::body(r);
-        let w = (body.w - 8) / 2;
-        Rect::new(body.x + i as i32 * (w + 8), body.bottom() - TAKE_BUTTON_H, w, TAKE_BUTTON_H)
+        let w = (body.w - 16) / 3;
+        let at = [1, 2, 0][i.min(2)];
+        Rect::new(body.x + at * (w + 8), body.bottom() - TAKE_BUTTON_H, w, TAKE_BUTTON_H)
     }
 }
 
@@ -613,7 +617,7 @@ impl Widget for TakeList {
             let b = rest.take_top(24).0;
             if b.bottom() <= limit {
                 cx.text(FontId::Sans, t.size_small, b, Align::Left, t.text_faint,
-                        "REC records one; UNDO takes it back");
+                        "REC records one; Capture keeps what you just played");
             }
         }
         let mut y = body.y;
@@ -640,12 +644,25 @@ impl Widget for TakeList {
             cx.text(FontId::Sans, t.size_small + 1.0, title, Align::Left, ink, &item.title);
             y += TAKE_ROW_H;
         }
-        for (i, (word, what)) in [("Undo", &self.undo), ("Redo", &self.redo)].into_iter().enumerate() {
+        for (i, (word, what)) in [("Undo", &self.undo), ("Redo", &self.redo), ("Capture", &self.capture)]
+            .into_iter()
+            .enumerate()
+        {
             let b = TakeList::button_rect(r, i);
             match what {
                 Some(w) => {
                     cx.canvas.fill_round_rect(b, 12, t.raised);
-                    cx.text(FontId::Bold, t.size_small + 1.0, b, Align::Center, t.text, &format!("{word} {w}"));
+                    // Capture stands out: there is something to keep.
+                    let ink = if i == 2 {
+                        cx.canvas.stroke_round_rect(b, 12, 2, t.accent);
+                        t.accent
+                    } else {
+                        t.text
+                    };
+                    let full = format!("{word} {w}");
+                    // A narrow panel shows the word alone.
+                    let fits = cx.measure(FontId::Bold, t.size_small + 1.0, &full) <= b.w - 12;
+                    cx.text(FontId::Bold, t.size_small + 1.0, b, Align::Center, ink, if fits { &full } else { word });
                 }
                 None => {
                     cx.canvas.stroke_round_rect(b, 12, 1, t.outline);
@@ -659,8 +676,8 @@ impl Widget for TakeList {
         if phase != Touch::Down {
             return None;
         }
-        let i = (0..2).find(|&i| TakeList::button_rect(r, i).contains(x, y))?;
-        let live = if i == 0 { self.undo.is_some() } else { self.redo.is_some() };
+        let i = (0..3).find(|&i| TakeList::button_rect(r, i).contains(x, y))?;
+        let live = [&self.undo, &self.redo, &self.capture][i].is_some();
         live.then_some(EventKind::Tab(i))
     }
 }
