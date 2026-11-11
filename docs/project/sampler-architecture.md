@@ -177,7 +177,17 @@ The first of the pad editor's tabs, as in the Wave mockup. It shows one layer of
 - Markers snap to the nearest zero crossing (the default), to sixteenths of the source's tempo, or not at all. A Q-Link moves its marker one pixel of the current zoom per detent, snapping in the direction of the turn. With SHIFT it moves one frame per detent, unsnapped. The wheel zooms round the marker last moved or touched.
 - Region rows: mode, loop (off, forward, ping-pong), crossfade, gain (0.5 dB steps), tune (semitones), reverse, channels, fade in, fade out and snap. Loop mode always keeps a loop: choosing it makes one over the middle half of the region, and Off is skipped while it is on.
 - A tap on the wave asks the app to play the pad. Playheads come from the app with `set_playheads`.
-- `mpfree-sampler-preview OUT_DIR` draws the sample screens to PNG files. The pad player doesn't show the tab yet; that is the next step once the tab's name is settled.
+- `mpfree-sampler-preview OUT_DIR` draws the sample screens to PNG files.
+
+### The Sample tab in the pad player (`mpfree-hello`)
+
+The pad player's top bar has a Sample tab after Synth (Jay's name for the pad editor). It shows the Wave tab for the playing kit's pad that was hit last.
+- **Who owns what.** `sampler::Player::new` builds one project per kit (and the Grains kit) and hands them to the screen thread with `take_projects`. The screen thread owns them from then on (`sample_page.rs`); their undo history starts there, so UNDO never takes a loaded kit apart (`Project::clear_history`). The audio is shared with the engine's views (`Arc`), not copied.
+- **Edits reach the sound.** An edit changes the project on the screen thread, which then builds the kit's `EngineView` again and sends it to the audio thread in a box (`FromUi::SampleView`). `Player::swap_view` puts it in place (in the engine, if the kit is playing) and leaves the old view in the same box, which goes back (`ToUi::SampleViewBack`) to be freed on the screen thread. One view travels at a time; edits made meanwhile go with the next one. The audio thread never builds, allocates or frees a view; if the screen's channel is full, it keeps the box and tries again next period. Sounds already playing finish as they started; the next hit plays the edit.
+- **Controls.** Q-Links 1-4 move Start, End, loop start and loop end (SHIFT: one frame a detent); letting go of a Q-Link, or a second without turning, ends the turn (one undo step). The wheel zooms. SHIFT + wheel and - / + pick the previous or next pad with a sound. UNDO and SHIFT + UNDO undo and redo on this tab (the time engine's takes elsewhere). A tap on the wave plays the pad; in Gate, Loop and Granular modes it keeps sounding until the next tap or leaving the tab. Opening the tab while the synth has the pads gives them back to the last drum kit.
+- **On screen.** Pad names use the kit's bank letter (kit 2's pad 5 is B5). The playing kit's playheads come from the audio thread about 25 times a second while the tab shows (`Playheads`, fixed size). A pad without a sound, or the synth, shows a page that says so.
+- **In the log.** Each finished drag or turn writes one `sample:` line with what changed (for example `sample: kit 1 (House) pad A1 Kick: Start 0.000 s -> 0.012 s`), and the session's last lines count the views swapped in.
+- **Not yet.** Edits live in memory until the power goes off (no saving yet). Chop, Play, Grain and FX are greyed out.
 
 ### Warp and stretch
 

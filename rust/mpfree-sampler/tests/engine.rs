@@ -373,6 +373,23 @@ fn undo_redo_and_gestures() {
 }
 
 #[test]
+fn a_cleared_history_keeps_the_project_as_it_is() {
+    let s = dc(1000, RATE);
+    let mut p = project_with(&[(0, Pad::new("a", Layer::new(Region::whole(&s))))], vec![s.clone()]);
+    p.edit_pad(0, Some(1), |pad| pad.level_db = -3.0).unwrap();
+    assert!(p.undo());
+    let revision = p.revision();
+    p.clear_history();
+    assert!(!p.can_undo() && !p.can_redo());
+    assert!(!p.undo(), "the loading steps are gone");
+    assert_eq!((p.pad(0).unwrap().level_db, p.sources().len(), p.revision()), (0.0, 1, revision));
+    p.edit_pad(0, Some(2), |pad| pad.level_db = -6.0).unwrap();
+    assert!(p.undo());
+    assert_eq!(p.pad(0).unwrap().level_db, 0.0);
+    assert!(!p.undo());
+}
+
+#[test]
 fn chop_sets_slice_and_go_to_pads() {
     let s = ramp(1600);
     let mut p = Project::new();

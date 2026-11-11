@@ -591,6 +591,15 @@ impl Project {
         }
     }
 
+    /// Forgets every undo and redo step (and the sources only a redo could
+    /// bring back), so undo can't take apart what is there now, such as a
+    /// project just built from a kit. Nothing else changes.
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.removed.clear();
+    }
+
     pub fn can_undo(&self) -> bool { !self.undo.is_empty() }
     pub fn can_redo(&self) -> bool { !self.redo.is_empty() }
 

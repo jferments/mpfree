@@ -41,6 +41,10 @@ pub struct Header {
 const BRAND_W: i32 = 170;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
+/// Up to this many tabs are TAB_W wide; more share the same room, so the
+/// chips keep theirs, down to MIN_TAB_W.
+const FULL_TABS: i32 = 5;
+const MIN_TAB_W: i32 = 84;
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
@@ -55,7 +59,9 @@ impl Header {
 
     fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        Rect::new(r.x + BRAND_W + i as i32 * (TAB_W + TAB_GAP), r.y + (r.h - h) / 2, TAB_W, h)
+        let n = self.tabs.len() as i32;
+        let w = if n <= FULL_TABS { TAB_W } else { (FULL_TABS * (TAB_W + TAB_GAP) / n - TAB_GAP).max(MIN_TAB_W) };
+        Rect::new(r.x + BRAND_W + i as i32 * (w + TAB_GAP), r.y + (r.h - h) / 2, w, h)
     }
 }
 

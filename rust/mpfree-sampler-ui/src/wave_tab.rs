@@ -378,6 +378,10 @@ enum Key {
 pub struct WaveTab {
     /// The page name the tab's layout is added under.
     pub name: String,
+    /// The bank letter shown in pad names, when the app's pads 1-16 stand
+    /// for one bank of its own (the pad player's kits are banks A-H).
+    /// None names pads by their place in the project, as "A5" for pad 4.
+    pub bank: Option<char>,
     snap: Snap,
     focus: Mark,
     gesture: Option<(Key, u64)>,
@@ -408,6 +412,7 @@ impl WaveTab {
         let wave = slot(ui, WAVE).ok_or("no waveform slot")?;
         let mut tab = WaveTab {
             name: name.to_string(),
+            bank: None,
             snap: Snap::default(),
             focus: Mark::Start,
             gesture: None,
@@ -461,7 +466,11 @@ impl WaveTab {
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color;
             let layer = if st.layers > 1 { format!(" · layer {} of {}", st.layer + 1, st.layers) } else { String::new() };
-            bar.title = format!("Pad {} · {}{layer}", pad_label(st.pad), st.pad_name);
+            let pad = match self.bank {
+                Some(b) => format!("{b}{}", st.pad % 16 + 1),
+                None => pad_label(st.pad),
+            };
+            bar.title = format!("Pad {pad} · {}{layer}", st.pad_name);
             let mut about = vec![if st.source_name == st.pad_name {
                 format!("Source {}", short_id(st.source.id))
             } else {
