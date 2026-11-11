@@ -122,20 +122,29 @@ faster" as unproven.
 
 ## Measuring on the device
 
-Planned, not yet run. The armv7 `mpfree-bench` is a static binary that reads
-and computes only: it opens no device, writes nothing unless `--json` names
-a file, and runs on one thread at normal priority for about a minute per
-build. The step belongs in a Hello MPC test round (paced through
-`tools/mpc-one/results.py`, one zip per round) so its output lands with the
-rest of the round's results:
+`tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
+(the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
+it copies the two builds to `/run/mpfree-bench`, runs each with fixed
+arguments (`--calibrate`, then `--json <build>.json`), and prints the output
+and the JSON into the results log. It starts, stops and changes no service,
+and the benchmark opens no device. It runs as an ordinary process, so the pad
+player's real-time audio thread always comes first. Like host_hello_mpc.py it
+uses only the test build's own host key, so on stock 3.6 it runs nothing.
+It needs `MPFREE_ACCEPT_BENCH=YES` and a terminal; each step waits for
+Enter. Its tests (`tests/test_host_bench_mpc.py`) run it against a fake test
+build under BusyBox.
 
-1. `mpfree-bench --calibrate` (default build, then the `cortex-a17` build):
-   the calibration files, kept in `docs/perf/`.
-2. `mpfree-bench --json …` for both builds: every engine's device numbers.
+The two builds it expects:
 
-The runbook step comes with the round, written and rehearsed word for word
-against Jay's paths, labelled with what it touches, and run only on Jay's
-go.
+- default: `rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-bench`
+  (static, as every device build: `-C target-feature=+crt-static -C
+  relocation-model=static`);
+- a17: the same plus `-C target-cpu=cortex-a17`, built with `--target-dir
+  rust/target/a17`.
+
+The step goes in a Hello MPC test round's runbook, rehearsed against Jay's
+paths, and runs only on Jay's go. Its results become
+`docs/perf/mpc-one-calibration.txt` and the first per-engine device table.
 
 ## Dev tools pages
 
