@@ -582,7 +582,8 @@ class StaticTests(unittest.TestCase):
     def program_sources(self):
         """(name, code) for every Rust file built into the program, without its test module (tests never
         reach the MPC; test code may write temporary files)."""
-        files = [(f"mpfree-hello/{n}", os.path.join(HELLO_SRC, n)) for n in sorted(os.listdir(HELLO_SRC))]
+        files = [(f"mpfree-hello/{os.path.relpath(os.path.join(d, n), HELLO_SRC)}", os.path.join(d, n))
+                 for d, _, names in sorted(os.walk(HELLO_SRC)) for n in sorted(names) if n.endswith(".rs")]
         files += [(f"mpfree-ui/{n}", os.path.join(UI_SRC, n)) for n in sorted(os.listdir(UI_SRC))]
         for d in LINKED_SRC:
             crate = os.path.basename(os.path.dirname(d))
@@ -610,11 +611,21 @@ class StaticTests(unittest.TestCase):
 
     def test_the_program_writes_only_where_reviewed(self):
         """Every place the program opens a file for writing, in its Rust source."""
+        # The arp patterns file (write_patterns in main): only with --patterns FILE --save-patterns, off by
+        # default and never on the test boot (see test_the_test_boot_never_saves_patterns). It writes FILE.part,
+        # syncs it and renames it over FILE, or removes the .part and leaves FILE as it was.
+        patterns_file = (
+            "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;",
+            "fs::rename(&part, path)",
+            "let _ = fs::remove_file(&part);",
+        )
         found = []
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
                     found.append((name, line.strip()))
+                if name == "mpfree-hello/main.rs" and line.strip() in patterns_file:
+                    continue
                 for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
                                "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir",
                                "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions"):
@@ -633,6 +644,8 @@ class StaticTests(unittest.TestCase):
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
+            # the arp patterns file, only with --save-patterns (above)
+            patterns_file[0],
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
@@ -645,6 +658,14 @@ class StaticTests(unittest.TestCase):
         self.assertIn('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])', code)
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
+
+    def test_the_test_boot_never_saves_patterns(self):
+        """The stick's start line for the pad player never passes --save-patterns, so the test boot writes no
+        patterns file."""
+        with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
+            starts = [ln for ln in fh.read().splitlines() if "mpfree-hello app" in ln]
+        self.assertEqual(len(starts), 1, starts)
+        self.assertNotIn("--save-patterns", starts[0])
 
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""
