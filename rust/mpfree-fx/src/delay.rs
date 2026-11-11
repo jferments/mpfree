@@ -56,7 +56,8 @@ impl Line {
     fn read(&self, d: f32) -> f32 {
         let n = self.buf.len();
         let d = d.clamp(2.0, (n - 3) as f32);
-        let di = d.floor();
+        // Truncation is floor here (d > 0), with no library call.
+        let di = d as usize as f32;
         let t = d - di;
         let at = |k: isize| -> f32 { self.buf[((self.w as isize - k).rem_euclid(n as isize)) as usize] };
         let k = di as isize;
