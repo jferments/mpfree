@@ -69,8 +69,14 @@
 //!
 //! **Cheap when quiet:** a strip that has been silent for longer than its
 //! compensation delays, with nothing gliding and no events, skips its
-//! fader and routing work, so an empty pad channel costs a scan of its
-//! input and nothing more.
+//! fader and routing work. A strip whose input nothing wrote this block
+//! (no producer took it, nothing routed in) does not even scan it, so an
+//! unused pad channel costs a few flag checks.
+//!
+//! **Profiling** ([`Mixer::set_profiling`], off by default): the mixer
+//! times each block, each strip (inserts, fader and routing) and each
+//! insert slot into `mpfree-prof` probes, for the Dev tools pages and
+//! `examples/mixer_cost.rs`.
 //!
 //! **Real-time safe:** building the mixer, [`Mixer::chain_mut`] and
 //! [`Insert::new`] allocate and belong on the control thread; everything
