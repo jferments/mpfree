@@ -76,6 +76,16 @@ pub trait TouchSource {
     fn snapshot(&mut self, slots: usize) -> io::Result<MtSnapshot>;
 }
 
+impl<T: TouchSource + ?Sized> TouchSource for Box<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (**self).read(buf)
+    }
+
+    fn snapshot(&mut self, slots: usize) -> io::Result<MtSnapshot> {
+        (**self).snapshot(slots)
+    }
+}
+
 /// The real device, opened read-only and non-blocking. Never grabbed.
 pub struct EvdevFile {
     file: File,
@@ -85,6 +95,13 @@ impl EvdevFile {
     pub fn open(path: &str) -> io::Result<EvdevFile> {
         let file = OpenOptions::new().read(true).custom_flags(sys::O_NONBLOCK).open(path)?;
         Ok(EvdevFile { file })
+    }
+
+    /// Wrap a file the caller opened (read-only, non-blocking). The ioctls
+    /// simply fail on anything that isn't an evdev node, and the reader then
+    /// runs unseeded.
+    pub fn from_file(file: File) -> EvdevFile {
+        EvdevFile { file }
     }
 
     /// Range metadata of one axis (and its current value).
@@ -154,6 +171,8 @@ pub struct ReaderStats {
     pub drained_events: u64,
     /// Contacts that went down.
     pub contacts: u64,
+    /// Raw input events read (all types, including SYN), after open.
+    pub raw_events: u64,
 }
 
 /// Touch events in logical pixels from any [`TouchSource`].
@@ -240,6 +259,7 @@ impl<S: TouchSource> TouchReader<S> {
                 Err(e) => return Err(e),
             };
             let whole = n - n % EVENT_SIZE;
+            self.stats.raw_events += (whole / EVENT_SIZE) as u64;
             for at in (0..whole).step_by(EVENT_SIZE) {
                 let ev = parse_input_event(&self.buf[at..at + EVENT_SIZE]);
                 match self.decoder.push(ev) {
