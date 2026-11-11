@@ -55,7 +55,9 @@ mod tests {
     #[test]
     fn round_trips_and_finds_a_harmonic() {
         let n = 64;
-        let mut re: Vec<f64> = (0..n).map(|i| (TAU * 3.0 * i as f64 / n as f64).cos()).collect();
+        let mut re: Vec<f64> = (0..n)
+            .map(|i| (TAU * 3.0 * i as f64 / n as f64).cos())
+            .collect();
         let orig = re.clone();
         let mut im = vec![0.0; n];
         fft(&mut re, &mut im, false);

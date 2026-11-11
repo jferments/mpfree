@@ -21,14 +21,20 @@ pub struct Wav {
     pub frame_len: Option<usize>,
 }
 
-fn u16_at(d: &[u8], i: usize) -> Option<u16> { Some(u16::from_le_bytes(d.get(i..i + 2)?.try_into().ok()?)) }
-fn u32_at(d: &[u8], i: usize) -> Option<u32> { Some(u32::from_le_bytes(d.get(i..i + 4)?.try_into().ok()?)) }
+fn u16_at(d: &[u8], i: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(d.get(i..i + 2)?.try_into().ok()?))
+}
+fn u32_at(d: &[u8], i: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(d.get(i..i + 4)?.try_into().ok()?))
+}
 
 /// Reads a RIFF WAVE: PCM 8/16/24/32 or float 32/64, any channel count
 /// (mixed to mono). WAVE_FORMAT_EXTENSIBLE is read by its sub-format.
 pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
     let bad = TableError::Wav;
-    if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" { return Err(bad("not a RIFF WAVE file")); }
+    if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return Err(bad("not a RIFF WAVE file"));
+    }
     let mut fmt = None;
     let mut pcm: Option<&[u8]> = None;
     let mut frame_len = None;
@@ -46,7 +52,9 @@ pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
                 let ch = u16_at(body, 2).ok_or(bad("fmt"))?;
                 let rate = u32_at(body, 4).ok_or(bad("fmt"))?;
                 let bits = u16_at(body, 14).ok_or(bad("fmt"))?;
-                if tag == 0xFFFE { tag = u16_at(body, 24).ok_or(bad("extensible fmt"))?; }
+                if tag == 0xFFFE {
+                    tag = u16_at(body, 24).ok_or(bad("extensible fmt"))?;
+                }
                 fmt = Some((tag, ch, rate, bits));
             }
             b"data" => pcm = Some(body),
@@ -54,7 +62,10 @@ pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
                 let text = String::from_utf8_lossy(body);
                 if let Some(rest) = text.strip_prefix("<!>") {
                     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                    frame_len = digits.parse::<usize>().ok().filter(|&n| (16..=8192).contains(&n));
+                    frame_len = digits
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|&n| (16..=8192).contains(&n));
                 }
             }
             _ => {}
@@ -63,10 +74,14 @@ pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
     }
     let (tag, ch, rate, bits) = fmt.ok_or(bad("no fmt chunk"))?;
     let pcm = pcm.ok_or(bad("no data chunk"))?;
-    if ch == 0 || rate == 0 { return Err(bad("no channels")); }
+    if ch == 0 || rate == 0 {
+        return Err(bad("no channels"));
+    }
     let bytes = usize::from(bits / 8);
     let ok = matches!((tag, bits), (1, 8 | 16 | 24 | 32) | (3, 32 | 64));
-    if !ok { return Err(bad("only PCM 8/16/24/32-bit or float 32/64-bit")); }
+    if !ok {
+        return Err(bad("only PCM 8/16/24/32-bit or float 32/64-bit"));
+    }
     let ch = usize::from(ch);
     let stride = bytes * ch;
     let frames = (pcm.len() / stride).min(MAX_WAV_SAMPLES + 1);
@@ -82,11 +97,22 @@ pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
     };
     let samples = (0..frames)
         .map(|f| {
-            let s: f32 = (0..ch).map(|c| read(&pcm[f * stride + c * bytes..])).sum::<f32>() / ch as f32;
-            if s.is_finite() { s } else { 0.0 }
+            let s: f32 = (0..ch)
+                .map(|c| read(&pcm[f * stride + c * bytes..]))
+                .sum::<f32>()
+                / ch as f32;
+            if s.is_finite() {
+                s
+            } else {
+                0.0
+            }
         })
         .collect();
-    Ok(Wav { samples, rate, frame_len })
+    Ok(Wav {
+        samples,
+        rate,
+        frame_len,
+    })
 }
 
 /// A table from a WAV file's bytes. The frame size is the `clm ` chunk's;
@@ -95,8 +121,12 @@ pub fn decode_wav(data: &[u8]) -> Result<Wav, TableError> {
 pub fn table_from_wav(name: &str, data: &[u8]) -> Result<Table, TableError> {
     let w = decode_wav(data)?;
     let n = w.samples.len();
-    if n == 0 { return Err(TableError::Empty); }
-    if n > MAX_WAV_SAMPLES { return Err(TableError::TooManyFrames(n / w.frame_len.unwrap_or(FRAME))); }
+    if n == 0 {
+        return Err(TableError::Empty);
+    }
+    if n > MAX_WAV_SAMPLES {
+        return Err(TableError::TooManyFrames(n / w.frame_len.unwrap_or(FRAME)));
+    }
     let frame_len = match w.frame_len {
         Some(f) => f,
         None if n % FRAME == 0 => FRAME,
@@ -110,34 +140,69 @@ pub fn table_from_wav(name: &str, data: &[u8]) -> Result<Table, TableError> {
 /// it, each starting on a rising zero crossing and as long as the pitch
 /// measured there, and builds a table: scanning the position plays through
 /// the sample's timbre at any pitch.
-pub fn table_from_sample(name: &str, mono: &[f32], rate: u32, frames: usize) -> Result<Table, TableError> {
+pub fn table_from_sample(
+    name: &str,
+    mono: &[f32],
+    rate: u32,
+    frames: usize,
+) -> Result<Table, TableError> {
     let frames = frames.clamp(1, MAX_FRAMES);
-    let set = PitchSettings { min_hz: 30.0, max_hz: 2_000.0, ..PitchSettings::default() };
-    let root = root_pitch(mono, 1, rate, set).ok().flatten().ok_or(TableError::NoPitch)?;
+    let set = PitchSettings {
+        min_hz: 30.0,
+        max_hz: 2_000.0,
+        ..PitchSettings::default()
+    };
+    let root = root_pitch(mono, 1, rate, set)
+        .ok()
+        .flatten()
+        .ok_or(TableError::NoPitch)?;
     let period = rate as f32 / root.hz;
     let window = (period * 4.0) as usize;
     let span = window + (rate as f32 / (root.hz / 1.5)) as usize + 2;
-    if mono.len() < span + period as usize * 2 { return Err(TableError::NoPitch); }
+    if mono.len() < span + period as usize * 2 {
+        return Err(TableError::NoPitch);
+    }
     let peak = mono.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let last = mono.len() - span - period as usize * 2;
     let mut cycles = Vec::with_capacity(frames * FRAME);
     let mut kept = 0;
     for j in 0..frames {
-        let at = if frames == 1 { last / 2 } else { last * j / (frames - 1) };
+        let at = if frames == 1 {
+            last / 2
+        } else {
+            last * j / (frames - 1)
+        };
         // The pitch here, near the root (a sample drifts).
-        let p = match yin(&mono[at..], rate, window, root.hz / 1.5, root.hz * 1.5, 0.25) {
+        let p = match yin(
+            &mono[at..],
+            rate,
+            window,
+            root.hz / 1.5,
+            root.hz * 1.5,
+            0.25,
+        ) {
             Some((hz, _)) if hz > 0.0 => rate as f32 / hz,
             _ => period,
         };
-        let Some(start) = rising_zero(mono, at, p as usize + 2) else { continue };
-        if (start as f32 + p + 2.0) as usize >= mono.len() { continue; }
-        let cyc: Vec<f32> = (0..FRAME).map(|i| interp(mono, start as f32 + i as f32 * p / FRAME as f32)).collect();
+        let Some(start) = rising_zero(mono, at, p as usize + 2) else {
+            continue;
+        };
+        if (start as f32 + p + 2.0) as usize >= mono.len() {
+            continue;
+        }
+        let cyc: Vec<f32> = (0..FRAME)
+            .map(|i| interp(mono, start as f32 + i as f32 * p / FRAME as f32))
+            .collect();
         let rms = (cyc.iter().map(|v| v * v).sum::<f32>() / FRAME as f32).sqrt();
-        if rms < peak * 0.01 { continue; }
+        if rms < peak * 0.01 {
+            continue;
+        }
         cycles.extend(cycles_seamless(cyc));
         kept += 1;
     }
-    if kept == 0 { return Err(TableError::NoPitch); }
+    if kept == 0 {
+        return Err(TableError::NoPitch);
+    }
     Table::from_frames(name, &cycles, FRAME)
 }
 
@@ -160,7 +225,9 @@ fn interp(x: &[f32], at: f32) -> f32 {
 fn cycles_seamless(mut c: Vec<f32>) -> Vec<f32> {
     let n = c.len();
     let gap = c[0] - (c[n - 1] + (c[n - 1] - c[n - 2]));
-    for (i, v) in c.iter_mut().enumerate() { *v += gap * i as f32 / n as f32; }
+    for (i, v) in c.iter_mut().enumerate() {
+        *v += gap * i as f32 / n as f32;
+    }
     c
 }
 
@@ -183,17 +250,23 @@ mod tests {
             d.extend(b"clm ");
             d.extend((c.len() as u32).to_le_bytes());
             d.extend(c.as_bytes());
-            if c.len() % 2 == 1 { d.push(0); }
+            if c.len() % 2 == 1 {
+                d.push(0);
+            }
         }
         d.extend(b"data");
         d.extend(((samples.len() * 4) as u32).to_le_bytes());
-        for s in samples { d.extend(s.to_le_bytes()); }
+        for s in samples {
+            d.extend(s.to_le_bytes());
+        }
         let n = (d.len() - 8) as u32;
         d[4..8].copy_from_slice(&n.to_le_bytes());
         d
     }
 
-    fn saw(n: usize) -> Vec<f32> { (0..n).map(|i| 1.0 - 2.0 * i as f32 / n as f32).collect() }
+    fn saw(n: usize) -> Vec<f32> {
+        (0..n).map(|i| 1.0 - 2.0 * i as f32 / n as f32).collect()
+    }
 
     #[test]
     fn reads_a_single_cycle_and_a_serum_table() {
@@ -202,14 +275,23 @@ mod tests {
         let mut multi = saw(256);
         multi.extend(saw(256).iter().map(|v| -v));
         multi.extend(saw(256));
-        let w = wav(&multi, Some("<!>256 10000000 wavetable (www.xferrecords.com)"));
+        let w = wav(
+            &multi,
+            Some("<!>256 10000000 wavetable (www.xferrecords.com)"),
+        );
         assert_eq!(decode_wav(&w).unwrap().frame_len, Some(256));
         let t = table_from_wav("serum", &w).unwrap();
         assert_eq!(t.frames(), 3);
         let two = table_from_wav("two", &wav(&saw(4096), None)).unwrap();
         assert_eq!(two.frames(), 2, "whole 2048 frames win over one long cycle");
-        assert_eq!(table_from_wav("long", &wav(&saw(5000), None)).unwrap_err(), TableError::NotFrames(5000));
-        assert!(matches!(table_from_wav("bad", b"RIFF....WAVEjunk"), Err(TableError::Wav(_))));
+        assert_eq!(
+            table_from_wav("long", &wav(&saw(5000), None)).unwrap_err(),
+            TableError::NotFrames(5000)
+        );
+        assert!(matches!(
+            table_from_wav("bad", b"RIFF....WAVEjunk"),
+            Err(TableError::Wav(_))
+        ));
     }
 
     #[test]
@@ -235,6 +317,9 @@ mod tests {
         assert!(bright(0) > bright(7) * 1.5, "{} {}", bright(0), bright(7));
         let mut rng = crate::dsp::Rng::new(7);
         let noise: Vec<f32> = (0..20_000).map(|_| rng.bipolar()).collect();
-        assert_eq!(table_from_sample("noise", &noise, rate, 8).unwrap_err(), TableError::NoPitch);
+        assert_eq!(
+            table_from_sample("noise", &noise, rate, 8).unwrap_err(),
+            TableError::NoPitch
+        );
     }
 }

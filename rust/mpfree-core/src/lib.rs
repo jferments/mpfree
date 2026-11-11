@@ -5,7 +5,6 @@
 //! Configuration and reset MUST NOT be called concurrently with rendering.
 #![forbid(unsafe_code)]
 
-
 use std::f64::consts::PI;
 
 const MAX_CLICK_SAMPLES: usize = 512;
@@ -77,8 +76,8 @@ impl ClickEngine {
             return false;
         }
         self.config = candidate;
-        self.click_length = ((candidate.sample_rate as f64 * 0.0035).round() as usize)
-            .clamp(8, MAX_CLICK_SAMPLES);
+        self.click_length =
+            ((candidate.sample_rate as f64 * 0.0035).round() as usize).clamp(8, MAX_CLICK_SAMPLES);
         // Calculate sine and envelope outside the real-time render path.
         for i in 0..self.click_length {
             let t = i as f64 / candidate.sample_rate as f64;
@@ -107,7 +106,9 @@ impl ClickEngine {
         }
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             if self.frame == self.next_beat_frame {
-                self.accented = self.beat.is_multiple_of(u64::from(self.config.beats_per_bar));
+                self.accented = self
+                    .beat
+                    .is_multiple_of(u64::from(self.config.beats_per_bar));
                 self.click_position = 0;
                 self.beat = self.beat.saturating_add(1);
 
@@ -179,7 +180,10 @@ mod tests {
         engine.reset();
         assert_eq!(engine.rendered_frames(), 0);
         assert_eq!(engine.beats_emitted(), 0);
-        assert!(engine.configure(ClickConfig { bpm: 109.0, ..ClickConfig::default() }));
+        assert!(engine.configure(ClickConfig {
+            bpm: 109.0,
+            ..ClickConfig::default()
+        }));
         let mut a = [0.0; 128];
         let mut b = [0.0; 128];
         let mut remaining = 7 * 44_100;
@@ -194,7 +198,11 @@ mod tests {
 
     #[test]
     fn output_is_invariant_to_render_block_partitioning() {
-        let config = ClickConfig { bpm: 137.2, beats_per_bar: 3, ..ClickConfig::default() };
+        let config = ClickConfig {
+            bpm: 137.2,
+            beats_per_bar: 3,
+            ..ClickConfig::default()
+        };
         let mut full = ClickEngine::new();
         let mut chunked = ClickEngine::new();
         assert!(full.configure(config) && chunked.configure(config));
@@ -220,11 +228,26 @@ mod tests {
     fn rejects_invalid_configuration_without_mutation() {
         let mut engine = ClickEngine::new();
         for invalid in [
-            ClickConfig { sample_rate: 0, ..ClickConfig::default() },
-            ClickConfig { bpm: 0.0, ..ClickConfig::default() },
-            ClickConfig { bpm: f64::INFINITY, ..ClickConfig::default() },
-            ClickConfig { bpm: f64::NAN, ..ClickConfig::default() },
-            ClickConfig { beats_per_bar: 0, ..ClickConfig::default() },
+            ClickConfig {
+                sample_rate: 0,
+                ..ClickConfig::default()
+            },
+            ClickConfig {
+                bpm: 0.0,
+                ..ClickConfig::default()
+            },
+            ClickConfig {
+                bpm: f64::INFINITY,
+                ..ClickConfig::default()
+            },
+            ClickConfig {
+                bpm: f64::NAN,
+                ..ClickConfig::default()
+            },
+            ClickConfig {
+                beats_per_bar: 0,
+                ..ClickConfig::default()
+            },
         ] {
             assert!(!engine.configure(invalid));
             assert_eq!(engine.configuration(), ClickConfig::default());

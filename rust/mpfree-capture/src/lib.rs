@@ -77,7 +77,13 @@ struct Hit {
     velocity: u8,
 }
 
-const NO_HIT: Hit = Hit { at: 0.0, song: 0.0, kind: Kind::AllOff, note: 0, velocity: 0 };
+const NO_HIT: Hit = Hit {
+    at: 0.0,
+    song: 0.0,
+    kind: Kind::AllOff,
+    note: 0,
+    velocity: 0,
+};
 
 /// The phrase being played, kept up to date as notes come.
 #[derive(Clone, Copy, Debug)]
@@ -235,7 +241,10 @@ impl Capture {
                     // fall a fraction of a tick early.
                     ((song + self.shift as f64).max(self.clock), song)
                 } else {
-                    (self.clock + ticks_in((frame - span.frame) as f64, span.bpm, span.rate), 0.0)
+                    (
+                        self.clock + ticks_in((frame - span.frame) as f64, span.bpm, span.rate),
+                        0.0,
+                    )
                 };
                 self.hit(at, song, bar as u32, timed, event);
             }
@@ -251,7 +260,13 @@ impl Capture {
     }
 
     fn hit(&mut self, at: f64, song: f64, bar: u32, timed: bool, event: Event) {
-        let mut h = Hit { at, song, kind: Kind::AllOff, note: 0, velocity: 0 };
+        let mut h = Hit {
+            at,
+            song,
+            kind: Kind::AllOff,
+            note: 0,
+            velocity: 0,
+        };
         match event {
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
@@ -272,7 +287,11 @@ impl Capture {
                 let gap = (i64::from(bar) * GAP_BARS) as f64;
                 let new = match self.head {
                     None => true,
-                    Some(p) => p.timed != timed || p.bar != bar || self.n_held == 0 && at - self.quiet_since >= gap,
+                    Some(p) => {
+                        p.timed != timed
+                            || p.bar != bar
+                            || self.n_held == 0 && at - self.quiet_since >= gap
+                    }
                 };
                 if !self.held[n] {
                     self.held[n] = true;
@@ -284,7 +303,16 @@ impl Capture {
                         p.last = seq;
                         p.last_at = at;
                     }
-                    _ => self.head = Some(Head { first: seq, timed, bar, first_at: at, last: seq, last_at: at }),
+                    _ => {
+                        self.head = Some(Head {
+                            first: seq,
+                            timed,
+                            bar,
+                            first_at: at,
+                            last: seq,
+                            last_at: at,
+                        })
+                    }
                 }
                 h.kind = Kind::On;
                 h.note = n as u8;
@@ -322,9 +350,16 @@ impl Capture {
     pub fn pending(&self) -> Option<Pending> {
         let h = self.head.filter(|h| self.kept != Some(h.last))?;
         let bar = i64::from(h.bar).max(1);
-        let start = if h.timed { floor_to(h.first_at.round() as i64, bar) as f64 } else { h.first_at };
+        let start = if h.timed {
+            floor_to(h.first_at.round() as i64, bar) as f64
+        } else {
+            h.first_at
+        };
         let bars = (h.last_at - start).round() as i64 / bar + 1;
-        Some(Pending { bars: bars.clamp(1, MAX_BARS), timed: h.timed })
+        Some(Pending {
+            bars: bars.clamp(1, MAX_BARS),
+            timed: h.timed,
+        })
     }
 
     /// The last phrase as clip notes, or None if nothing was played.
@@ -334,7 +369,13 @@ impl Capture {
         let bar = i64::from(h.bar).max(1);
         let oldest = self.pushed.saturating_sub(MAX_HITS as u64);
         let hit = |seq: u64| &self.hits[(seq % MAX_HITS as u64) as usize];
-        let start_of = |at: f64| if h.timed { floor_to(at.round() as i64, bar) as f64 } else { at };
+        let start_of = |at: f64| {
+            if h.timed {
+                floor_to(at.round() as i64, bar) as f64
+            } else {
+                at
+            }
+        };
         let tick = |at: f64, start: f64| (at - start).round() as i64;
         // The first note start whose phrase fits in MAX_BARS.
         let mut seq = h.first.max(oldest);
@@ -363,9 +404,18 @@ impl Capture {
                     if let Some(o) = open[n].take() {
                         close(&mut played, o, x.at);
                     }
-                    let note = Note { tick: tick(x.at, start), len: 1, note: x.note, velocity: x.velocity.max(1), chance: 100 };
+                    let note = Note {
+                        tick: tick(x.at, start),
+                        len: 1,
+                        note: x.note,
+                        velocity: x.velocity.max(1),
+                        chance: 100,
+                    };
                     open[n] = Some((played.len(), x.at));
-                    played.push(Played { note, song: h.timed.then_some(x.song) });
+                    played.push(Played {
+                        note,
+                        song: h.timed.then_some(x.song),
+                    });
                 }
                 Kind::Off => {
                     if let Some(o) = open[usize::from(x.note)].take() {
@@ -392,7 +442,13 @@ impl Capture {
             let x = hit(first);
             start as i64 - ((x.at - x.song) / bar as f64).round() as i64 * bar
         });
-        Some(Phrase { played, length, bar, song_start, id: h.last })
+        Some(Phrase {
+            played,
+            length,
+            bar,
+            song_start,
+            id: h.last,
+        })
     }
 
     /// CAPTURE kept phrase `id`: [`Capture::pending`] says nothing until
@@ -460,8 +516,15 @@ pub enum KeepError {
 /// into the clip playing on the track when it was played in time over it,
 /// else as a new clip, named `name`, in the track's first empty slot.
 /// Nothing changes on an error.
-pub fn keep(phrase: &Phrase, project: &mut Project, launches: &[Launch], takes: &mut Takes, track: usize, now: Now,
-            name: &str) -> Result<Kept, KeepError> {
+pub fn keep(
+    phrase: &Phrase,
+    project: &mut Project,
+    launches: &[Launch],
+    takes: &mut Takes,
+    track: usize,
+    now: Now,
+    name: &str,
+) -> Result<Kept, KeepError> {
     if phrase.played.is_empty() {
         return Err(KeepError::Nothing);
     }
@@ -470,7 +533,10 @@ pub fn keep(phrase: &Phrase, project: &mut Project, launches: &[Launch], takes: 
     }
     let bars = phrase.bars();
     // Over the clip that was playing: from where each note was played.
-    let playing = launches.iter().find(|l| l.track == track).and_then(|l| Some((l, project.clip(track, l.slot)?)));
+    let playing = launches
+        .iter()
+        .find(|l| l.track == track)
+        .and_then(|l| Some((l, project.clip(track, l.slot)?)));
     if let (Some(first), Some((l, clip))) = (phrase.played[0].song, playing) {
         if first >= l.origin as f64 {
             let song_len = clip.speed.to_song(clip.length as f64);
@@ -486,16 +552,32 @@ pub fn keep(phrase: &Phrase, project: &mut Project, launches: &[Launch], takes: 
                     if tick >= clip.length {
                         tick -= clip.length;
                     }
-                    let len = (clip.speed.to_clip(p.note.len as f64).round() as Tick).clamp(1, MAX_CLIP_TICKS);
-                    Some(Note { tick: tick.max(0), len, ..p.note })
+                    let len = (clip.speed.to_clip(p.note.len as f64).round() as Tick)
+                        .clamp(1, MAX_CLIP_TICKS);
+                    Some(Note {
+                        tick: tick.max(0),
+                        len,
+                        ..p.note
+                    })
                 })
                 .collect();
             let n = notes.len();
-            let take = takes.capture_notes(project, track, l.slot, &notes).map_err(KeepError::Model)?;
-            return Ok(Kept { track, slot: l.slot, take, notes: n, bars, launch: None });
+            let take = takes
+                .capture_notes(project, track, l.slot, &notes)
+                .map_err(KeepError::Model)?;
+            return Ok(Kept {
+                track,
+                slot: l.slot,
+                take,
+                notes: n,
+                bars,
+                launch: None,
+            });
         }
     }
-    let slot = (0..SLOTS).find(|&s| project.tracks[track].slots[s].is_none()).ok_or(KeepError::NoSlot(track))?;
+    let slot = (0..SLOTS)
+        .find(|&s| project.tracks[track].slots[s].is_none())
+        .ok_or(KeepError::NoSlot(track))?;
     let mut clip = Clip::new(name, phrase.length);
     clip.notes = phrase.notes();
     let n = clip.notes.len();
@@ -503,15 +585,32 @@ pub fn keep(phrase: &Phrase, project: &mut Project, launches: &[Launch], takes: 
         // In time: on the song's bar where it was played, moved back by
         // whole passes so it plays from bar 1, the loop's start and now.
         Some(s) => {
-            let floor = now.position.min(now.loop_range.map_or(0, |(a, _)| a)).min(0).min(s);
+            let floor = now
+                .position
+                .min(now.loop_range.map_or(0, |(a, _)| a))
+                .min(0)
+                .min(s);
             floor - (floor - s).rem_euclid(phrase.length)
         }
         // Free: from the next bar line (stopped: this bar's).
         None if now.rolling => now.meter.next_bar(now.position),
         None => floor_to(now.position, now.meter.bar_ticks()),
     };
-    let take = takes.capture_clip(project, track, slot, clip).map_err(KeepError::Model)?;
-    Ok(Kept { track, slot, take, notes: n, bars, launch: Some(Launch { track, slot, origin }) })
+    let take = takes
+        .capture_clip(project, track, slot, clip)
+        .map_err(KeepError::Model)?;
+    Ok(Kept {
+        track,
+        slot,
+        take,
+        notes: n,
+        bars,
+        launch: Some(Launch {
+            track,
+            slot,
+            origin,
+        }),
+    })
 }
 
 #[cfg(test)]

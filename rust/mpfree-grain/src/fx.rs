@@ -98,7 +98,9 @@ impl GrainFx {
 
     /// The grain settings. `position` 0 is the oldest audio the buffer
     /// holds and 1 the newest.
-    pub fn params(&self) -> &Params { self.voice.params() }
+    pub fn params(&self) -> &Params {
+        self.voice.params()
+    }
 
     /// Sets the grain settings. A `position` of 1 or more is held just
     /// below 1: a grain voice's position wraps round, and here 1 should
@@ -110,13 +112,19 @@ impl GrainFx {
         self.voice.set_params(p);
     }
 
-    pub fn mix(&self) -> f32 { self.mix }
+    pub fn mix(&self) -> f32 {
+        self.mix
+    }
 
     /// From 0 (only the input) to 1 (only grains), equal power. Glides
     /// there over 10 ms. At 0 the output is the input exactly and no grains
     /// are made.
     pub fn set_mix(&mut self, mix: f32) {
-        let mix = if mix.is_finite() { mix.clamp(0.0, 1.0) } else { 0.0 };
+        let mix = if mix.is_finite() {
+            mix.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         if mix == self.mix {
             return;
         }
@@ -130,7 +138,9 @@ impl GrainFx {
         self.ramp_left = if there { 0 } else { self.ramp_frames };
     }
 
-    pub fn frozen(&self) -> bool { self.frozen }
+    pub fn frozen(&self) -> bool {
+        self.frozen
+    }
 
     /// Freeze on: the buffer keeps what it holds now (including audio
     /// waiting for the next chunk), and grains keep playing from it.
@@ -164,12 +174,20 @@ impl GrainFx {
     }
 
     /// The buffer the grains read, for drawing it.
-    pub fn buffer(&self) -> &LiveBuffer { &self.buffer }
-    pub fn stats(&self) -> Stats { self.voice.stats() }
+    pub fn buffer(&self) -> &LiveBuffer {
+        &self.buffer
+    }
+    pub fn stats(&self) -> Stats {
+        self.voice.stats()
+    }
     /// The grains playing now, for drawing them; returns how many.
-    pub fn grains(&self, out: &mut [GrainView]) -> usize { self.voice.grains(out) }
+    pub fn grains(&self, out: &mut [GrainView]) -> usize {
+        self.voice.grains(out)
+    }
     /// Where grains read (before spray), 0 (oldest) to 1 (newest).
-    pub fn playhead(&self) -> f32 { self.voice.playhead() }
+    pub fn playhead(&self) -> f32 {
+        self.voice.playhead()
+    }
 
     fn flush(&mut self) {
         if self.staged > 0 {
@@ -181,7 +199,13 @@ impl GrainFx {
     /// Runs the effect on `left` and `right` in place. `transport_frame`
     /// is the absolute frame of `left[0]` (for grains synced to the tempo);
     /// `budget` is the grain budget shared with every other grain voice.
-    pub fn process(&mut self, budget: &mut Budget, transport_frame: u64, left: &mut [f32], right: &mut [f32]) {
+    pub fn process(
+        &mut self,
+        budget: &mut Budget,
+        transport_frame: u64,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         let n = left.len().min(right.len());
         let chunk = Self::CHUNK as u64;
         let mut at = 0;
@@ -198,7 +222,8 @@ impl GrainFx {
             wl.fill(0.0);
             wr.fill(0.0);
             if self.running {
-                self.voice.render(&self.buffer, budget, transport_frame + at as u64, wl, wr);
+                self.voice
+                    .render(&self.buffer, budget, transport_frame + at as u64, wl, wr);
             }
             for i in 0..k {
                 let (x, y) = (left[at + i], right[at + i]);

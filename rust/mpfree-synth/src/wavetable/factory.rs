@@ -10,7 +10,18 @@ use std::sync::{Arc, OnceLock};
 use super::table::{Spectrum, Table, MAX_HARMONICS};
 
 /// Factory table names, in the order of the Table choice.
-pub const NAMES: &[&str] = &["Basic", "Harmonics", "Pulse", "Sync", "Vowels", "Organ", "Bits", "Resonance", "FM", "Drift"];
+pub const NAMES: &[&str] = &[
+    "Basic",
+    "Harmonics",
+    "Pulse",
+    "Sync",
+    "Vowels",
+    "Organ",
+    "Bits",
+    "Resonance",
+    "FM",
+    "Drift",
+];
 
 /// Samples per cycle for drawn (time-domain) frames.
 const DRAW: usize = 16_384;
@@ -19,11 +30,19 @@ static TABLES: OnceLock<Vec<Arc<Table>>> = OnceLock::new();
 
 /// Every factory table, built on the first call.
 pub fn factory() -> &'static [Arc<Table>] {
-    TABLES.get_or_init(|| NAMES.iter().enumerate().map(|(i, n)| Arc::new(build(i, n))).collect())
+    TABLES.get_or_init(|| {
+        NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, n)| Arc::new(build(i, n)))
+            .collect()
+    })
 }
 
 /// Bytes the factory tables hold.
-pub fn factory_bytes() -> usize { factory().iter().map(|t| t.bytes()).sum() }
+pub fn factory_bytes() -> usize {
+    factory().iter().map(|t| t.bytes()).sum()
+}
 
 fn build(i: usize, name: &str) -> Table {
     let spectra = match i {
@@ -45,7 +64,9 @@ fn build(i: usize, name: &str) -> Table {
 }
 
 /// A falling saw at phase `t`, 1 to -1.
-fn saw(t: f64) -> f64 { 1.0 - 2.0 * t }
+fn saw(t: f64) -> f64 {
+    1.0 - 2.0 * t
+}
 
 /// `n` frames drawn by `f(k, t)`: `k` is 0 to 1 through the table, `t` the
 /// phase in the cycle.
@@ -53,7 +74,9 @@ fn drawn(n: usize, f: impl Fn(f64, f64) -> f64) -> Vec<Spectrum> {
     (0..n)
         .map(|j| {
             let k = j as f64 / (n - 1) as f64;
-            let cycle: Vec<f32> = (0..DRAW).map(|i| f(k, i as f64 / DRAW as f64) as f32).collect();
+            let cycle: Vec<f32> = (0..DRAW)
+                .map(|i| f(k, i as f64 / DRAW as f64) as f32)
+                .collect();
             Spectrum::of_cycle(&cycle)
         })
         .collect()
@@ -79,9 +102,22 @@ fn morph(keys: &[Spectrum], n: usize) -> Vec<Spectrum> {
 /// Sine, triangle, saw, square.
 fn basic() -> Vec<Spectrum> {
     let sine = sines(|n| if n == 1 { 1.0 } else { 0.0 });
-    let tri = sines(|n| if n % 2 == 1 { let s = if (n / 2) % 2 == 0 { 1.0 } else { -1.0 }; s * 8.0 / (PI * PI * (n * n) as f64) } else { 0.0 });
+    let tri = sines(|n| {
+        if n % 2 == 1 {
+            let s = if (n / 2) % 2 == 0 { 1.0 } else { -1.0 };
+            s * 8.0 / (PI * PI * (n * n) as f64)
+        } else {
+            0.0
+        }
+    });
     let saw = sines(|n| 2.0 / (PI * n as f64));
-    let square = sines(|n| if n % 2 == 1 { 4.0 / (PI * n as f64) } else { 0.0 });
+    let square = sines(|n| {
+        if n % 2 == 1 {
+            4.0 / (PI * n as f64)
+        } else {
+            0.0
+        }
+    });
     morph(&[sine, tri, saw, square], 16)
 }
 
@@ -122,7 +158,13 @@ fn pulse() -> Vec<Spectrum> {
 /// three formants.
 fn vowels() -> Vec<Spectrum> {
     // (F1, F2, F3) in Hz.
-    const V: [[f64; 3]; 5] = [[800.0, 1150.0, 2900.0], [400.0, 1600.0, 2700.0], [270.0, 2300.0, 3000.0], [450.0, 800.0, 2830.0], [325.0, 700.0, 2530.0]];
+    const V: [[f64; 3]; 5] = [
+        [800.0, 1150.0, 2900.0],
+        [400.0, 1600.0, 2700.0],
+        [270.0, 2300.0, 3000.0],
+        [450.0, 800.0, 2830.0],
+        [325.0, 700.0, 2530.0],
+    ];
     let f0 = 110.0;
     let n = 16;
     (0..n)
@@ -130,12 +172,17 @@ fn vowels() -> Vec<Spectrum> {
             let x = j as f64 / (n - 1) as f64 * 4.0;
             let i = (x.floor() as usize).min(3);
             let t = x - i as f64;
-            let f: Vec<f64> = (0..3).map(|q| V[i][q] + (V[i + 1][q] - V[i][q]) * t).collect();
+            let f: Vec<f64> = (0..3)
+                .map(|q| V[i][q] + (V[i + 1][q] - V[i][q]) * t)
+                .collect();
             sines(|h| {
                 let hz = h as f64 * f0;
-                if hz > 8_000.0 { return 0.0; }
+                if hz > 8_000.0 {
+                    return 0.0;
+                }
                 let res = |c: f64, bw: f64, g: f64| g / (1.0 + ((hz - c) / bw).powi(2));
-                (res(f[0], 80.0, 1.0) + res(f[1], 100.0, 0.5) + res(f[2], 150.0, 0.25)) / (h as f64).sqrt()
+                (res(f[0], 80.0, 1.0) + res(f[1], 100.0, 0.5) + res(f[2], 150.0, 0.25))
+                    / (h as f64).sqrt()
             })
         })
         .collect()
@@ -159,7 +206,9 @@ fn organ() -> Vec<Spectrum> {
             let mut a = [0.0; 16];
             for (d, &h) in H.iter().enumerate() {
                 // A drawbar step is 3 dB.
-                if r[d] > 0.0 { a[h - 1] += 10f64.powf(-3.0 * (8.0 - r[d]) / 20.0); }
+                if r[d] > 0.0 {
+                    a[h - 1] += 10f64.powf(-3.0 * (8.0 - r[d]) / 20.0);
+                }
             }
             sines(|n| if n <= 16 { a[n - 1] } else { 0.0 })
         })
@@ -173,7 +222,13 @@ fn drift() -> Vec<Spectrum> {
     let keys: Vec<Spectrum> = (0..5)
         .map(|_| {
             let r: Vec<f64> = (0..64).map(|_| f64::from(rng.unit())).collect();
-            sines(|n| if n <= 64 { r[n - 1] * r[n - 1] / (n as f64).powf(0.7) } else { 0.0 })
+            sines(|n| {
+                if n <= 64 {
+                    r[n - 1] * r[n - 1] / (n as f64).powf(0.7)
+                } else {
+                    0.0
+                }
+            })
         })
         .collect();
     morph(&keys, 16)
@@ -190,7 +245,11 @@ mod tests {
         for (tab, name) in t.iter().zip(NAMES) {
             assert_eq!(&tab.name, name);
             assert!(tab.frames() >= 16);
-            let p = tab.preview(0).iter().chain(tab.preview(tab.frames() - 1)).fold(0.0f32, |m, v| m.max(v.abs()));
+            let p = tab
+                .preview(0)
+                .iter()
+                .chain(tab.preview(tab.frames() - 1))
+                .fold(0.0f32, |m, v| m.max(v.abs()));
             assert!(p > 0.05 && p <= 1.0001, "{name}: {p}");
         }
         let mb = factory_bytes() as f64 / 1e6;

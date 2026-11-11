@@ -35,9 +35,9 @@ pub mod saved;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 
+use crate::looping::{LoopAction, LoopSource};
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
-use crate::looping::{LoopAction, LoopSource};
 use mpfree_looper::Command as LoopCommand;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
@@ -95,7 +95,13 @@ pub enum View {
 /// pages, and the Dev tab only with the developer tools on. Prefs is not a
 /// tab (SHIFT + MENU).
 pub fn tabs(dev: bool) -> Vec<View> {
-    let mut t = vec![View::Play, View::Clips, View::Synth, View::Looper, View::Sample];
+    let mut t = vec![
+        View::Play,
+        View::Clips,
+        View::Synth,
+        View::Looper,
+        View::Sample,
+    ];
     if dev {
         t.push(View::Debug);
     }
@@ -120,7 +126,14 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 6] = [View::Debug, View::Perf, View::Engines, View::Procs, View::Map, View::Console];
+pub const DEBUG_PAGES: [View; 6] = [
+    View::Debug,
+    View::Perf,
+    View::Engines,
+    View::Procs,
+    View::Map,
+    View::Console,
+];
 
 impl View {
     /// The tab a page belongs to (the Arp panel to Play, the debug pages to
@@ -128,7 +141,9 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Engines | View::Procs | View::Map | View::Console => Some(View::Debug),
+            View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
+                Some(View::Debug)
+            }
             View::Options | View::Guide | View::Prefs | View::System => None,
             v => Some(v),
         }
@@ -216,9 +231,17 @@ pub enum GuideStep {
 }
 
 impl GuideStep {
-    const ALL: [GuideStep; 9] =
-        [GuideStep::Menu, GuideStep::NoteRepeat, GuideStep::TapTempo, GuideStep::Minus, GuideStep::Plus,
-         GuideStep::Rec, GuideStep::Overdub, GuideStep::Undo, GuideStep::PlayStart];
+    const ALL: [GuideStep; 9] = [
+        GuideStep::Menu,
+        GuideStep::NoteRepeat,
+        GuideStep::TapTempo,
+        GuideStep::Minus,
+        GuideStep::Plus,
+        GuideStep::Rec,
+        GuideStep::Overdub,
+        GuideStep::Undo,
+        GuideStep::PlayStart,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -263,8 +286,14 @@ pub struct ButtonMap {
 impl ButtonMap {
     /// The numbers the round 5 guide found on the reference MPC One.
     pub fn measured() -> ButtonMap {
-        ButtonMap { menu: Some(button::MENU), note_repeat: Some(button::NOTE_REPEAT), tap_tempo: Some(button::TAP_TEMPO),
-                    minus: Some(button::MINUS), plus: Some(button::PLUS), ..ButtonMap::default() }
+        ButtonMap {
+            menu: Some(button::MENU),
+            note_repeat: Some(button::NOTE_REPEAT),
+            tap_tempo: Some(button::TAP_TEMPO),
+            minus: Some(button::MINUS),
+            plus: Some(button::PLUS),
+            ..ButtonMap::default()
+        }
     }
 
     fn get(&self, s: GuideStep) -> Option<u8> {
@@ -306,14 +335,27 @@ impl ButtonMap {
             _ => {}
         }
         if let Some(k) = self.bank_of(note) {
-            return Some(["PAD BANK A/E", "PAD BANK B/F", "PAD BANK C/G", "PAD BANK D/H"][k as usize]);
+            return Some(
+                [
+                    "PAD BANK A/E",
+                    "PAD BANK B/F",
+                    "PAD BANK C/G",
+                    "PAD BANK D/H",
+                ][k as usize],
+            );
         }
-        GuideStep::ALL.iter().find(|&&s| self.get(s) == Some(note)).map(|s| s.short())
+        GuideStep::ALL
+            .iter()
+            .find(|&&s| self.get(s) == Some(note))
+            .map(|s| s.short())
     }
 
     /// Which PAD BANK button a note is (0 = A/E), once found.
     pub fn bank_of(&self, note: u8) -> Option<u8> {
-        self.bank.iter().position(|&b| b == Some(note)).map(|k| k as u8)
+        self.bank
+            .iter()
+            .position(|&b| b == Some(note))
+            .map(|k| k as u8)
     }
 
     /// The number a control with a job has now (the mapper starts from it).
@@ -356,10 +398,14 @@ impl ButtonMap {
 
     /// One line for the log: every button the guide asked for.
     pub fn describe(&self) -> String {
-        GuideStep::ALL.iter().map(|&s| match self.get(s) {
-            Some(n) => format!("{} = button {n}", s.short()),
-            None => format!("{} = not found", s.short()),
-        }).collect::<Vec<_>>().join(", ")
+        GuideStep::ALL
+            .iter()
+            .map(|&s| match self.get(s) {
+                Some(n) => format!("{} = button {n}", s.short()),
+                None => format!("{} = not found", s.short()),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -409,11 +455,25 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { curve: Curve::Linear, screen_velocity: 100, rate: Rate::Sixteenth, bpm: 120.0,
-                   latch_mode: LatchMode::Replace, periods: 3, show_pressure: false, midi_paused: false,
-                   console_paused: false, debug_mode: false, line_input: false, loop_monitor: false,
-                   loop_source: LoopSource::Pads, loop_bars: Some(2), loop_latency: crate::looping::estimated_latency(3), loop_latency_set: false,
-                   loop_level_db: 0.0 }
+        Settings {
+            curve: Curve::Linear,
+            screen_velocity: 100,
+            rate: Rate::Sixteenth,
+            bpm: 120.0,
+            latch_mode: LatchMode::Replace,
+            periods: 3,
+            show_pressure: false,
+            midi_paused: false,
+            console_paused: false,
+            debug_mode: false,
+            line_input: false,
+            loop_monitor: false,
+            loop_source: LoopSource::Pads,
+            loop_bars: Some(2),
+            loop_latency: crate::looping::estimated_latency(3),
+            loop_latency_set: false,
+            loop_level_db: 0.0,
+        }
     }
 }
 
@@ -508,7 +568,9 @@ pub enum Effect {
     /// with a sound.
     SamplePad(i32),
     /// UNDO (or SHIFT + UNDO, redo) on the Sample page: the last edit there.
-    SampleUndo { redo: bool },
+    SampleUndo {
+        redo: bool,
+    },
     /// Start the audio again with this many periods.
     Audio(u32),
     ClearLogs,
@@ -529,7 +591,10 @@ pub enum Effect {
     WorkspaceWheel(i32),
     /// The data wheel on the Clips page: step the selected record setting,
     /// or (with SHIFT) scroll the grid.
-    ClipsWheel { delta: i32, scroll: bool },
+    ClipsWheel {
+        delta: i32,
+        scroll: bool,
+    },
     /// Write this library text to the patterns file (off the audio thread).
     SavePatterns(String),
     /// STOP in the timed `play` step: end it.
@@ -544,7 +609,10 @@ pub enum Effect {
     Map(MapView),
     /// A PAD BANK button pressed: 0 = A/E to 3 = D/H, and whether SHIFT
     /// was held (E-H). The audio loop knows the bank playing, so it picks.
-    Bank { button: u8, shift: bool },
+    Bank {
+        button: u8,
+        shift: bool,
+    },
     /// For the looper and the line input.
     Looper(LoopAction),
 }
@@ -633,10 +701,24 @@ pub struct App {
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
 /// opened by the last row; Line input and System info go just before it.
-const PREFS_ROWS: &[Item] = &[Item::Curve, Item::LatchMode, Item::Buffer, Item::FindButtons, Item::DebugMode,
-                               Item::MapControls, Item::LineInput, Item::SystemInfo, Item::TouchSection];
+const PREFS_ROWS: &[Item] = &[
+    Item::Curve,
+    Item::LatchMode,
+    Item::Buffer,
+    Item::FindButtons,
+    Item::DebugMode,
+    Item::MapControls,
+    Item::LineInput,
+    Item::SystemInfo,
+    Item::TouchSection,
+];
 /// Prefs' touch screen section.
-const PREFS_TOUCH_ROWS: &[Item] = &[Item::PrefsBack, Item::ScreenVelocity, Item::CalibrateTouch, Item::TouchLab];
+const PREFS_TOUCH_ROWS: &[Item] = &[
+    Item::PrefsBack,
+    Item::ScreenVelocity,
+    Item::CalibrateTouch,
+    Item::TouchLab,
+];
 
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
@@ -645,17 +727,51 @@ impl App {
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
         let sent_notes = engine.active().clone();
-        let mut app = App { settings, map: ButtonMap::measured(), engine, timed, shift: false, repeat_held: false,
-                            repeat_pressed_at: None,
-                            latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
-                            selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
-                            taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, custom_scales: Vec::new(), scale_pick: 0, clock: None, swing_from_transport: true, patterns,
-                            pattern_index: 0, pattern, mutations: 0, recorder: None,
-                            record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
-                            sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
-                            mapper: mapper::Mapper::default(), swallowed: [false; 128], prefs_touch: false,
-                            loop_muted: false, save_dirty: false, saved: Default::default() };
+        let mut app = App {
+            settings,
+            map: ButtonMap::measured(),
+            engine,
+            timed,
+            shift: false,
+            repeat_held: false,
+            repeat_pressed_at: None,
+            latched: false,
+            pad_level: PadLevel::Off,
+            view: View::Play,
+            back: View::Play,
+            selected: 0,
+            guide_steps: Vec::new(),
+            guide: 0,
+            guide_note: String::new(),
+            taps: Vec::new(),
+            beat_zero: 0.0,
+            tap_light: false,
+            arp_mode: Mode::Repeat,
+            arp: mpfree_arp::Settings::default(),
+            scale_root: 0,
+            custom_scales: Vec::new(),
+            scale_pick: 0,
+            clock: None,
+            swing_from_transport: true,
+            patterns,
+            pattern_index: 0,
+            pattern,
+            mutations: 0,
+            recorder: None,
+            record_mode: RecordMode::Step,
+            pattern_file: false,
+            qlink_turns: [0; 4],
+            sent_step: 0,
+            sent_notes,
+            arp_dirty: true,
+            rolling: false,
+            mapper: mapper::Mapper::default(),
+            swallowed: [false; 128],
+            prefs_touch: false,
+            loop_muted: false,
+            save_dirty: false,
+            saved: Default::default(),
+        };
         app.engine.set_pattern(pattern);
         app.update_engine();
         app
@@ -673,14 +789,22 @@ impl App {
 
     /// The first page once everything is ready, and the lights to start with.
     pub fn start(&mut self) -> Vec<Effect> {
-        let mut fx = vec![self.status(), Effect::Settings(self.settings.clone()),
-                          Effect::Light(button::FULL_LEVEL, LIGHT_OFF), Effect::Patterns(self.patterns.clone()),
-                          self.arp_view()];
+        let mut fx = vec![
+            self.status(),
+            Effect::Settings(self.settings.clone()),
+            Effect::Light(button::FULL_LEVEL, LIGHT_OFF),
+            Effect::Patterns(self.patterns.clone()),
+            self.arp_view(),
+        ];
         fx.extend(self.repeat_light());
         let s = &self.settings;
         fx.push(Effect::Looper(LoopAction::Source(s.loop_source)));
-        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(s.loop_bars))));
-        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
+        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
+            s.loop_bars,
+        ))));
+        fx.push(Effect::Looper(LoopAction::Command(
+            LoopCommand::SetLatency(s.loop_latency_now()),
+        )));
         // Buttons not known yet are found with the control mapper (Debug
         // mode), at the owner's pace: nothing asks for them at power-on.
         fx.push(Effect::Show(self.view));
@@ -748,7 +872,11 @@ impl App {
         s.mode = self.engine_mode();
         s.rate = self.settings.rate;
         self.engine.set_settings(s);
-        let latch = if self.latched { self.settings.latch_mode } else { LatchMode::Off };
+        let latch = if self.latched {
+            self.settings.latch_mode
+        } else {
+            LatchMode::Off
+        };
         if self.engine.latch() != latch {
             self.engine.set_latch(latch);
         }
@@ -765,13 +893,28 @@ impl App {
     }
 
     fn status(&self) -> Effect {
-        Effect::Status(Status { shift: self.shift, pad_level: self.pad_level, repeat: self.repeating(),
-                                latched: self.latched, rate: self.settings.rate.label(), bpm: self.settings.bpm })
+        Effect::Status(Status {
+            shift: self.shift,
+            pad_level: self.pad_level,
+            repeat: self.repeating(),
+            latched: self.latched,
+            rate: self.settings.rate.label(),
+            bpm: self.settings.bpm,
+        })
     }
 
     /// The NOTE REPEAT light: on while the pads play through the arp.
     fn repeat_light(&self) -> Option<Effect> {
-        self.map.note_repeat.map(|n| Effect::Light(n, if self.generating() { LIGHT_ON } else { LIGHT_OFF }))
+        self.map.note_repeat.map(|n| {
+            Effect::Light(
+                n,
+                if self.generating() {
+                    LIGHT_ON
+                } else {
+                    LIGHT_OFF
+                },
+            )
+        })
     }
 
     // ------------------------------------------------------------ buttons
@@ -814,10 +957,21 @@ impl App {
         }
         let shift = self.shift;
         if note == button::FULL_LEVEL {
-            let want = if shift { PadLevel::Half } else { PadLevel::Full };
-            self.pad_level = if self.pad_level == want { PadLevel::Off } else { want };
+            let want = if shift {
+                PadLevel::Half
+            } else {
+                PadLevel::Full
+            };
+            self.pad_level = if self.pad_level == want {
+                PadLevel::Off
+            } else {
+                want
+            };
             let on = self.pad_level != PadLevel::Off;
-            fx.push(Effect::Light(button::FULL_LEVEL, if on { LIGHT_ON } else { LIGHT_OFF }));
+            fx.push(Effect::Light(
+                button::FULL_LEVEL,
+                if on { LIGHT_ON } else { LIGHT_OFF },
+            ));
             fx.push(self.status());
             fx.push(Effect::Note(match self.pad_level {
                 PadLevel::Off => "pad level: as played".to_string(),
@@ -848,7 +1002,11 @@ impl App {
         } else if self.view == View::Looper && Some(note) == self.map.overdub {
             fx.extend(self.looper_tap(crate::looper_page::B_OVERDUB));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
-            fx.extend(self.looper_tap(if shift { crate::looper_page::B_REDO } else { crate::looper_page::B_UNDO }));
+            fx.extend(self.looper_tap(if shift {
+                crate::looper_page::B_REDO
+            } else {
+                crate::looper_page::B_UNDO
+            }));
         } else if Some(note) == self.map.rec {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
@@ -856,9 +1014,15 @@ impl App {
         } else if Some(note) == self.map.undo && self.view == View::Sample {
             fx.push(Effect::SampleUndo { redo: shift });
         } else if Some(note) == self.map.undo {
-            fx.push(Effect::Time(if shift { TimeAction::Redo } else { TimeAction::Undo }));
+            fx.push(Effect::Time(if shift {
+                TimeAction::Redo
+            } else {
+                TimeAction::Undo
+            }));
         } else if Some(note) == self.map.note_repeat {
-            let double = self.repeat_pressed_at.is_some_and(|at| t - at <= DOUBLE_PRESS_SECONDS);
+            let double = self
+                .repeat_pressed_at
+                .is_some_and(|at| t - at <= DOUBLE_PRESS_SECONDS);
             self.repeat_pressed_at = None;
             if shift || self.latched || double {
                 // SHIFT + NOTE REPEAT, or NOTE REPEAT pressed twice, toggles
@@ -895,8 +1059,15 @@ impl App {
                 fx.extend(self.step_item(self.selected, d));
             } else if self.view == View::Map && !shift {
                 // + listens for the selected control, - skips it.
-                fx.extend(if d > 0 { self.map_listen() } else { self.map_skip() });
-            } else if matches!(self.view, View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console) {
+                fx.extend(if d > 0 {
+                    self.map_listen()
+                } else {
+                    self.map_skip()
+                });
+            } else if matches!(
+                self.view,
+                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+            ) {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
@@ -916,7 +1087,11 @@ impl App {
         self.latched = false;
         self.engine.panic();
         self.update_engine();
-        let mut fx = vec![Effect::StopSounds, Effect::Note("STOP: all sounds stopped".to_string()), self.status()];
+        let mut fx = vec![
+            Effect::StopSounds,
+            Effect::Note("STOP: all sounds stopped".to_string()),
+            self.status(),
+        ];
         fx.extend(self.repeat_light());
         fx
     }
@@ -940,7 +1115,10 @@ impl App {
         }
         self.settings.bpm = (bpm * 10.0).round() / 10.0;
         self.update_engine();
-        let mut fx = vec![self.status(), Effect::Note(format!("tempo {:.1} BPM (tapped)", self.settings.bpm))];
+        let mut fx = vec![
+            self.status(),
+            Effect::Note(format!("tempo {:.1} BPM (tapped)", self.settings.bpm)),
+        ];
         if self.in_menu() {
             fx.push(self.menu_view());
         }
@@ -952,7 +1130,10 @@ impl App {
     pub fn set_tempo(&mut self, bpm: f64) -> Vec<Effect> {
         self.settings.bpm = bpm.clamp(30.0, 300.0);
         self.update_engine();
-        let mut fx = vec![self.status(), Effect::Note(format!("tempo {:.1} BPM", self.settings.bpm))];
+        let mut fx = vec![
+            self.status(),
+            Effect::Note(format!("tempo {:.1} BPM", self.settings.bpm)),
+        ];
         if self.in_menu() {
             fx.push(self.menu_view());
         }
@@ -987,14 +1168,21 @@ impl App {
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
-            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console if self.shift => self.debug_step(delta.signum()),
+            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+                if self.shift =>
+            {
+                self.debug_step(delta.signum())
+            }
             View::Map => {
                 self.mapper.move_by(delta);
                 vec![Effect::Map(self.mapper.view())]
             }
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
-            View::Clips => vec![Effect::ClipsWheel { delta, scroll: self.shift }],
+            View::Clips => vec![Effect::ClipsWheel {
+                delta,
+                scroll: self.shift,
+            }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Synth => vec![Effect::SynthWheel(delta)],
             View::Sample if self.shift => vec![Effect::SamplePad(delta.signum())],
@@ -1014,8 +1202,21 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         if self.view != v
-            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Looper | View::Sample | View::Debug
-                                   | View::Console | View::Arp | View::Perf | View::Engines | View::Procs | View::Map)
+            && matches!(
+                self.view,
+                View::Play
+                    | View::Clips
+                    | View::Synth
+                    | View::Looper
+                    | View::Sample
+                    | View::Debug
+                    | View::Console
+                    | View::Arp
+                    | View::Perf
+                    | View::Engines
+                    | View::Procs
+                    | View::Map
+            )
         {
             self.back = self.view;
         }
@@ -1045,7 +1246,11 @@ impl App {
     /// Open `v`, or go back if it is open already.
     fn toggle(&mut self, v: View) -> Vec<Effect> {
         if self.view == v {
-            let back = if self.back == v { View::Play } else { self.back };
+            let back = if self.back == v {
+                View::Play
+            } else {
+                self.back
+            };
             self.view = back;
             let mut fx = vec![Effect::Show(back)];
             fx.extend(self.after_view_change());
@@ -1103,7 +1308,10 @@ impl App {
         if !self.settings.debug_mode {
             return Vec::new();
         }
-        let at = DEBUG_PAGES.iter().position(|&v| v == self.view).unwrap_or(0) as i32;
+        let at = DEBUG_PAGES
+            .iter()
+            .position(|&v| v == self.view)
+            .unwrap_or(0) as i32;
         let to = (at + d).rem_euclid(DEBUG_PAGES.len() as i32) as usize;
         self.show(DEBUG_PAGES[to])
     }
@@ -1113,10 +1321,18 @@ impl App {
             return Vec::new();
         }
         self.settings.debug_mode = on;
-        if !on && matches!(self.back, View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console) {
+        if !on
+            && matches!(
+                self.back,
+                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+            )
+        {
             self.back = View::Play;
         }
-        vec![Effect::Note(format!("developer tools: {}", if on { "on" } else { "off" }))]
+        vec![Effect::Note(format!(
+            "developer tools: {}",
+            if on { "on" } else { "off" }
+        ))]
     }
 
     /// The mapper's list starts from what the app knows (measured buttons,
@@ -1150,7 +1366,10 @@ impl App {
         }
         if matches!(l.job, mapper::Job::Bank(_)) {
             // The audio loop lights the bank playing.
-            fx.push(Effect::Bank { button: u8::MAX, shift: false });
+            fx.push(Effect::Bank {
+                button: u8::MAX,
+                shift: false,
+            });
         }
         fx
     }
@@ -1239,8 +1458,10 @@ impl App {
             }
             B_MONITOR if self.settings.line_input => {
                 self.settings.loop_monitor = !self.settings.loop_monitor;
-                let mut fx = vec![Effect::Looper(LoopAction::Monitor(self.settings.loop_monitor)),
-                                  Effect::Settings(self.settings.clone())];
+                let mut fx = vec![
+                    Effect::Looper(LoopAction::Monitor(self.settings.loop_monitor)),
+                    Effect::Settings(self.settings.clone()),
+                ];
                 if self.in_menu() {
                     fx.push(self.menu_view());
                 }
@@ -1270,8 +1491,12 @@ impl App {
             return Vec::new();
         }
         self.settings.loop_source = source;
-        vec![Effect::Looper(LoopAction::Source(source)),
-             Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(self.settings.loop_latency_now())))]
+        vec![
+            Effect::Looper(LoopAction::Source(source)),
+            Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(
+                self.settings.loop_latency_now(),
+            ))),
+        ]
     }
 
     // ------------------------------------------------------------ menus
@@ -1285,9 +1510,17 @@ impl App {
         match (self.view, self.back) {
             (View::Prefs, _) if self.prefs_touch => PREFS_TOUCH_ROWS,
             (View::Prefs, _) => PREFS_ROWS,
-            (_, View::Looper) => &[Item::LoopSource, Item::LineInput, Item::LoopMonitor, Item::LoopBars, Item::LoopLatency,
-                                   Item::LoopLevel],
-            (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
+            (_, View::Looper) => &[
+                Item::LoopSource,
+                Item::LineInput,
+                Item::LoopMonitor,
+                Item::LoopBars,
+                Item::LoopLatency,
+                Item::LoopLevel,
+            ],
+            (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
+                &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
+            }
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -1299,39 +1532,85 @@ impl App {
         match item {
             Item::Curve => ("Pad velocity curve", s.curve.label().to_string()),
             Item::ScreenVelocity => ("Screen pad velocity", s.screen_velocity.to_string()),
-            Item::LatchMode => ("Latch keeps pads", match s.latch_mode {
-                LatchMode::Toggle => "Toggle".to_string(),
-                _ => "Replace".to_string(),
-            }),
-            Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
+            Item::LatchMode => (
+                "Latch keeps pads",
+                match s.latch_mode {
+                    LatchMode::Toggle => "Toggle".to_string(),
+                    _ => "Replace".to_string(),
+                },
+            ),
+            Item::Buffer => (
+                "Audio buffer",
+                format!(
+                    "{} periods, {:.1} ms",
+                    s.periods,
+                    s.periods as f64 * 128.0 / 44.1
+                ),
+            ),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchSection => ("Touch screen", "Open".to_string()),
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
-            Item::DebugMode => ("Show developer tools", if s.debug_mode { "On" } else { "Off" }.to_string()),
+            Item::DebugMode => (
+                "Show developer tools",
+                if s.debug_mode { "On" } else { "Off" }.to_string(),
+            ),
             Item::MapControls => ("Map controls", "Open".to_string()),
             Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
-            Item::PadLevel => ("Pad level", match self.pad_level {
-                PadLevel::Off => "As played".to_string(),
-                PadLevel::Full => "Full (127)".to_string(),
-                PadLevel::Half => "Half (64)".to_string(),
-            }),
+            Item::PadLevel => (
+                "Pad level",
+                match self.pad_level {
+                    PadLevel::Off => "As played".to_string(),
+                    PadLevel::Full => "Full (127)".to_string(),
+                    PadLevel::Half => "Half (64)".to_string(),
+                },
+            ),
             Item::Latch => ("Latch", if self.latched { "On" } else { "Off" }.to_string()),
-            Item::ShowPressure => ("Pad pressure in the MIDI log", if s.show_pressure { "Shown" } else { "Hidden" }.to_string()),
-            Item::MidiLog => ("MIDI log", if s.midi_paused { "Paused" } else { "Running" }.to_string()),
+            Item::ShowPressure => (
+                "Pad pressure in the MIDI log",
+                if s.show_pressure { "Shown" } else { "Hidden" }.to_string(),
+            ),
+            Item::MidiLog => (
+                "MIDI log",
+                if s.midi_paused { "Paused" } else { "Running" }.to_string(),
+            ),
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
-            Item::ConsoleFollow => ("Console", if s.console_paused { "Paused" } else { "Following" }.to_string()),
+            Item::ConsoleFollow => (
+                "Console",
+                if s.console_paused {
+                    "Paused"
+                } else {
+                    "Following"
+                }
+                .to_string(),
+            ),
             Item::ClearConsole => ("Clear the console", "Clear".to_string()),
-            Item::LineInput => ("Line input", if s.line_input { "On" } else { "Off" }.to_string()),
+            Item::LineInput => (
+                "Line input",
+                if s.line_input { "On" } else { "Off" }.to_string(),
+            ),
             Item::LoopSource => ("Record from", s.loop_source.name().to_string()),
-            Item::LoopMonitor => ("Monitor the input", if s.loop_monitor { "On" } else { "Off" }.to_string()),
+            Item::LoopMonitor => (
+                "Monitor the input",
+                if s.loop_monitor { "On" } else { "Off" }.to_string(),
+            ),
             Item::LoopBars => ("First pass length", crate::looping::bars_text(s.loop_bars)),
-            Item::LoopLatency => ("Latency to make up for", format!("{} frames, {:.1} ms{}", s.loop_latency,
-                                                                     s.loop_latency as f64 / 44.1,
-                                                                     if s.loop_latency_set { "" } else { " (estimated)" })),
+            Item::LoopLatency => (
+                "Latency to make up for",
+                format!(
+                    "{} frames, {:.1} ms{}",
+                    s.loop_latency,
+                    s.loop_latency as f64 / 44.1,
+                    if s.loop_latency_set {
+                        ""
+                    } else {
+                        " (estimated)"
+                    }
+                ),
+            ),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
             Item::Arp(a) => self.arp_item_text(a),
         }
@@ -1339,90 +1618,136 @@ impl App {
 
     fn item_help(&self, item: Item) -> Vec<&'static str> {
         match item {
-            Item::Curve => vec!["How hard a pad must be hit for a loud note.",
-                                "Soft: loud notes come easily. Hard: more of the",
-                                "pad's travel stays below the top, for more",
-                                "dynamics. Linear plays the pad's own value.",
-                                "FULL LEVEL and Half Level override it."],
-            Item::ScreenVelocity => vec!["The velocity of pads played on the screen.",
-                                         "The touchscreen cannot sense how hard you tap."],
-            Item::LatchMode => vec!["With Latch on (NOTE REPEAT twice, or SHIFT +",
-                                    "NOTE REPEAT), pads keep repeating after you",
-                                    "let go.",
-                                    "Replace: a fresh press starts a new set.",
-                                    "Toggle: each press adds or removes that pad."],
-            Item::Buffer => vec!["How much sound is queued ahead of the speakers.",
-                                 "3 periods is what Akai's app uses. 2 periods",
-                                 "plays about 2.9 ms sooner after a hit, with",
-                                 "more risk of clicks (underruns). Changing it",
-                                 "restarts the sound."],
-            Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +,",
-                                      "REC, OVERDUB, UNDO and PLAY START again,",
-                                      "one at a time."],
-            Item::TouchSection => vec!["The touch screen's settings: screen pad",
-                                       "velocity, Calibrate touch and the Touch lab."],
+            Item::Curve => vec![
+                "How hard a pad must be hit for a loud note.",
+                "Soft: loud notes come easily. Hard: more of the",
+                "pad's travel stays below the top, for more",
+                "dynamics. Linear plays the pad's own value.",
+                "FULL LEVEL and Half Level override it.",
+            ],
+            Item::ScreenVelocity => vec![
+                "The velocity of pads played on the screen.",
+                "The touchscreen cannot sense how hard you tap.",
+            ],
+            Item::LatchMode => vec![
+                "With Latch on (NOTE REPEAT twice, or SHIFT +",
+                "NOTE REPEAT), pads keep repeating after you",
+                "let go.",
+                "Replace: a fresh press starts a new set.",
+                "Toggle: each press adds or removes that pad.",
+            ],
+            Item::Buffer => vec![
+                "How much sound is queued ahead of the speakers.",
+                "3 periods is what Akai's app uses. 2 periods",
+                "plays about 2.9 ms sooner after a hit, with",
+                "more risk of clicks (underruns). Changing it",
+                "restarts the sound.",
+            ],
+            Item::FindButtons => vec![
+                "Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +,",
+                "REC, OVERDUB, UNDO and PLAY START again,",
+                "one at a time.",
+            ],
+            Item::TouchSection => vec![
+                "The touch screen's settings: screen pad",
+                "velocity, Calibrate touch and the Touch lab.",
+            ],
             Item::PrefsBack => vec!["Back to the other Prefs. MENU does the same."],
-            Item::CalibrateTouch => vec!["Tap a target in each corner to check that",
-                                         "touches land where you touch. This version",
-                                         "only reports and logs the result; nothing",
-                                         "is saved. Exit or MENU leaves it."],
-            Item::TouchLab => vec!["Timed touchscreen tests: taps, long presses,",
-                                   "drags, swipes, flings and held fingers. Each",
-                                   "step's result goes to the system log. Exit,",
-                                   "MENU or a page button leaves it."],
-            Item::DebugMode => vec!["Adds the Dev tab: the MIDI log, the",
-                                    "Performance page (CPU per thread, memory,",
-                                    "audio render time), Map controls and the",
-                                    "Console. The numbers also go to the log",
-                                    "every 30 s. SHIFT + wheel picks the page."],
-            Item::MapControls => vec!["Find the numbers of the MPC's buttons, one at",
-                                      "a time, at your pace: pick a control, press it,",
-                                      "and see which ones are left. Turns on debug",
-                                      "mode. Wheel: pick, +: listen, -: skip."],
-            Item::SystemInfo => vec!["The pad player's version and commit, the",
-                                     "operating system, the kernel and the",
-                                     "hardware it runs on, read when it opens.",
-                                     "MENU goes back to Prefs."],
-            Item::Rate => vec!["How often a held pad repeats with NOTE REPEAT",
-                               "or Latch: from quarter notes to 32nd notes,",
-                               "T for triplets."],
-            Item::Tempo => vec!["The tempo the transport, the clips and",
-                                "Note Repeat follow. TAP TEMPO sets it too:",
-                                "tap it three or four times."],
-            Item::PadLevel => vec!["FULL LEVEL plays every hit at 127,",
-                                   "SHIFT + FULL LEVEL (Half Level) at 64."],
-            Item::Latch => vec!["NOTE REPEAT twice, or SHIFT + NOTE REPEAT.",
-                                "Pads you play keep repeating until Latch goes",
-                                "off (NOTE REPEAT once) or STOP."],
-            Item::ShowPressure => vec!["Pad pressure (aftertouch) sends many messages",
-                                       "while a pad is held. Hidden, they are counted",
-                                       "but not listed."],
+            Item::CalibrateTouch => vec![
+                "Tap a target in each corner to check that",
+                "touches land where you touch. This version",
+                "only reports and logs the result; nothing",
+                "is saved. Exit or MENU leaves it.",
+            ],
+            Item::TouchLab => vec![
+                "Timed touchscreen tests: taps, long presses,",
+                "drags, swipes, flings and held fingers. Each",
+                "step's result goes to the system log. Exit,",
+                "MENU or a page button leaves it.",
+            ],
+            Item::DebugMode => vec![
+                "Adds the Dev tab: the MIDI log, the",
+                "Performance page (CPU per thread, memory,",
+                "audio render time), Map controls and the",
+                "Console. The numbers also go to the log",
+                "every 30 s. SHIFT + wheel picks the page.",
+            ],
+            Item::MapControls => vec![
+                "Find the numbers of the MPC's buttons, one at",
+                "a time, at your pace: pick a control, press it,",
+                "and see which ones are left. Turns on debug",
+                "mode. Wheel: pick, +: listen, -: skip.",
+            ],
+            Item::SystemInfo => vec![
+                "The pad player's version and commit, the",
+                "operating system, the kernel and the",
+                "hardware it runs on, read when it opens.",
+                "MENU goes back to Prefs.",
+            ],
+            Item::Rate => vec![
+                "How often a held pad repeats with NOTE REPEAT",
+                "or Latch: from quarter notes to 32nd notes,",
+                "T for triplets.",
+            ],
+            Item::Tempo => vec![
+                "The tempo the transport, the clips and",
+                "Note Repeat follow. TAP TEMPO sets it too:",
+                "tap it three or four times.",
+            ],
+            Item::PadLevel => vec![
+                "FULL LEVEL plays every hit at 127,",
+                "SHIFT + FULL LEVEL (Half Level) at 64.",
+            ],
+            Item::Latch => vec![
+                "NOTE REPEAT twice, or SHIFT + NOTE REPEAT.",
+                "Pads you play keep repeating until Latch goes",
+                "off (NOTE REPEAT once) or STOP.",
+            ],
+            Item::ShowPressure => vec![
+                "Pad pressure (aftertouch) sends many messages",
+                "while a pad is held. Hidden, they are counted",
+                "but not listed.",
+            ],
             Item::MidiLog => vec!["Pause the MIDI log to read it."],
             Item::ClearLogs => vec!["Empty the MIDI and event logs."],
-            Item::ConsoleFollow => vec!["Pause the console to read it; it keeps",
-                                        "collecting lines meanwhile."],
+            Item::ConsoleFollow => vec![
+                "Pause the console to read it; it keeps",
+                "collecting lines meanwhile.",
+            ],
             Item::ClearConsole => vec!["Empty the console page."],
-            Item::LineInput => vec!["Opens the MPC's line input for the looper.",
-                                    "Off at every start. Which jacks it reads is",
-                                    "not checked yet (line in L and R, most",
-                                    "likely). Turning it off closes the input."],
-            Item::LoopSource => vec!["What the looper records: the pads and the",
-                                     "synth (before the click), or the line input.",
-                                     "Turning Line input on picks it; recording",
-                                     "the pads opens nothing."],
-            Item::LoopMonitor => vec!["Hear the line input through the outputs,",
-                                      "about 9 ms late. Leave it off if you hear",
-                                      "the instrument another way."],
-            Item::LoopBars => vec!["How long the looper's first pass is: 1, 2,",
-                                   "4 or 8 bars, or free: from the next bar line",
-                                   "until the bar line after Record again."],
-            Item::LoopLatency => vec!["How late your playing reaches the looper:",
-                                      "the output buffer, the input buffer and the",
-                                      "converters. Estimated from the audio buffer",
-                                      "until you set it. Measure it with a cable",
-                                      "from an output to the input."],
-            Item::LoopLevel => vec!["The loop's playback level, -24 to +6 dB.",
-                                    "0 dB plays it as it was recorded."],
+            Item::LineInput => vec![
+                "Opens the MPC's line input for the looper.",
+                "Off at every start. Which jacks it reads is",
+                "not checked yet (line in L and R, most",
+                "likely). Turning it off closes the input.",
+            ],
+            Item::LoopSource => vec![
+                "What the looper records: the pads and the",
+                "synth (before the click), or the line input.",
+                "Turning Line input on picks it; recording",
+                "the pads opens nothing.",
+            ],
+            Item::LoopMonitor => vec![
+                "Hear the line input through the outputs,",
+                "about 9 ms late. Leave it off if you hear",
+                "the instrument another way.",
+            ],
+            Item::LoopBars => vec![
+                "How long the looper's first pass is: 1, 2,",
+                "4 or 8 bars, or free: from the next bar line",
+                "until the bar line after Record again.",
+            ],
+            Item::LoopLatency => vec![
+                "How late your playing reaches the looper:",
+                "the output buffer, the input buffer and the",
+                "converters. Estimated from the audio buffer",
+                "until you set it. Measure it with a cable",
+                "from an output to the input.",
+            ],
+            Item::LoopLevel => vec![
+                "The loop's playback level, -24 to +6 dB.",
+                "0 dB plays it as it was recorded.",
+            ],
             Item::Arp(a) => Self::arp_item_help(a),
         }
     }
@@ -1435,26 +1760,38 @@ impl App {
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
-            (_, b @ (View::Perf | View::Engines | View::Procs | View::Map | View::Console)) => format!("{} options", b.name()),
+            (_, b @ (View::Perf | View::Engines | View::Procs | View::Map | View::Console)) => {
+                format!("{} options", b.name())
+            }
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
         };
         let (name, _) = self.item_text(items[selected]);
         Effect::Menu(MenuView {
             title,
-            rows: items.iter().map(|&i| {
-                let (n, v) = self.item_text(i);
-                (n.to_string(), v)
-            }).collect(),
+            rows: items
+                .iter()
+                .map(|&i| {
+                    let (n, v) = self.item_text(i);
+                    (n.to_string(), v)
+                })
+                .collect(),
             selected,
             help_heading: name.to_string(),
-            help: self.item_help(items[selected]).into_iter().map(String::from).collect(),
+            help: self
+                .item_help(items[selected])
+                .into_iter()
+                .map(String::from)
+                .collect(),
         })
     }
 
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
     fn leave_prefs_section(&mut self) -> Vec<Effect> {
         self.prefs_touch = false;
-        self.selected = PREFS_ROWS.iter().position(|&i| i == Item::TouchSection).unwrap_or(0);
+        self.selected = PREFS_ROWS
+            .iter()
+            .position(|&i| i == Item::TouchSection)
+            .unwrap_or(0);
         vec![self.menu_view()]
     }
 
@@ -1485,9 +1822,15 @@ impl App {
         let s = &mut self.settings;
         match items[i] {
             Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
-            Item::ScreenVelocity => s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8,
+            Item::ScreenVelocity => {
+                s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
+            }
             Item::LatchMode => {
-                s.latch_mode = if s.latch_mode == LatchMode::Toggle { LatchMode::Replace } else { LatchMode::Toggle };
+                s.latch_mode = if s.latch_mode == LatchMode::Toggle {
+                    LatchMode::Replace
+                } else {
+                    LatchMode::Toggle
+                };
                 self.update_engine();
             }
             Item::Buffer => {
@@ -1497,7 +1840,9 @@ impl App {
                     fx.push(Effect::Audio(p));
                     if !s.loop_latency_set {
                         s.loop_latency = crate::looping::estimated_latency(p);
-                        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
+                        fx.push(Effect::Looper(LoopAction::Command(
+                            LoopCommand::SetLatency(s.loop_latency_now()),
+                        )));
                     }
                 }
             }
@@ -1531,9 +1876,16 @@ impl App {
                 fx.push(self.status());
             }
             Item::PadLevel => {
-                self.pad_level = cycle(&[PadLevel::Off, PadLevel::Full, PadLevel::Half], self.pad_level, d);
+                self.pad_level = cycle(
+                    &[PadLevel::Off, PadLevel::Full, PadLevel::Half],
+                    self.pad_level,
+                    d,
+                );
                 let on = self.pad_level != PadLevel::Off;
-                fx.push(Effect::Light(button::FULL_LEVEL, if on { LIGHT_ON } else { LIGHT_OFF }));
+                fx.push(Effect::Light(
+                    button::FULL_LEVEL,
+                    if on { LIGHT_ON } else { LIGHT_OFF },
+                ));
                 fx.push(self.status());
             }
             Item::Latch => {
@@ -1555,7 +1907,11 @@ impl App {
                         fx.push(Effect::Looper(LoopAction::Monitor(false)));
                     }
                     // The looper follows: the line input while it is on.
-                    fx.extend(self.set_loop_source(if on { LoopSource::Line } else { LoopSource::Pads }));
+                    fx.extend(self.set_loop_source(if on {
+                        LoopSource::Line
+                    } else {
+                        LoopSource::Pads
+                    }));
                 }
             }
             Item::LoopSource => {
@@ -1572,16 +1928,22 @@ impl App {
             Item::LoopBars => {
                 const BARS: [Option<u32>; 5] = [Some(1), Some(2), Some(4), Some(8), None];
                 s.loop_bars = cycle(&BARS, s.loop_bars, d);
-                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(s.loop_bars))));
+                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
+                    s.loop_bars,
+                ))));
             }
             Item::LoopLatency => {
                 s.loop_latency = (s.loop_latency as i32 + 16 * d).clamp(0, 4096) as u32;
                 s.loop_latency_set = true;
-                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
+                fx.push(Effect::Looper(LoopAction::Command(
+                    LoopCommand::SetLatency(s.loop_latency_now()),
+                )));
             }
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
-                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(10f32.powf(s.loop_level_db / 20.0)))));
+                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
+                    10f32.powf(s.loop_level_db / 20.0),
+                ))));
             }
             Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
         }
@@ -1606,26 +1968,39 @@ impl App {
 
     fn guide_view(&self) -> Effect {
         let now = self.guide_step();
-        let found = GuideStep::ALL.iter().map(|&s| {
-            let v = match self.map.get(s) {
-                Some(n) => format!("button {n}"),
-                None if now == Some(s) => "now".to_string(),
-                None => "-".to_string(),
-            };
-            (s.short().to_string(), v)
-        }).collect();
+        let found = GuideStep::ALL
+            .iter()
+            .map(|&s| {
+                let v = match self.map.get(s) {
+                    Some(n) => format!("button {n}"),
+                    None if now == Some(s) => "now".to_string(),
+                    None => "-".to_string(),
+                };
+                (s.short().to_string(), v)
+            })
+            .collect();
         let (heading, mut lines) = match now {
-            Some(step) => (format!("Press {}", step.label()), vec![
-                "MPFree does not know this button's number yet.".to_string(),
-                "Press it once; the number goes in the log for next time.".to_string(),
-                "Not on your MPC, or not sure? Press STOP or tap Skip.".to_string(),
-            ]),
-            None => ("All done".to_string(), vec!["Tap Done to play.".to_string()]),
+            Some(step) => (
+                format!("Press {}", step.label()),
+                vec![
+                    "MPFree does not know this button's number yet.".to_string(),
+                    "Press it once; the number goes in the log for next time.".to_string(),
+                    "Not on your MPC, or not sure? Press STOP or tap Skip.".to_string(),
+                ],
+            ),
+            None => (
+                "All done".to_string(),
+                vec!["Tap Done to play.".to_string()],
+            ),
         };
         if !self.guide_note.is_empty() {
             lines.insert(0, self.guide_note.clone());
         }
-        Effect::Guide(GuideView { heading, lines, found })
+        Effect::Guide(GuideView {
+            heading,
+            lines,
+            found,
+        })
     }
 
     fn guide_press(&mut self, note: u8) -> Vec<Effect> {
@@ -1633,8 +2008,14 @@ impl App {
         if note == button::STOP {
             return self.guide_button(if self.guide_step().is_some() { 0 } else { 1 });
         }
-        let Some(step) = self.guide_step() else { return vec![self.guide_view()] };
-        if let Some(name) = self.map.name(note).filter(|_| self.map.get(step) != Some(note)) {
+        let Some(step) = self.guide_step() else {
+            return vec![self.guide_view()];
+        };
+        if let Some(name) = self
+            .map
+            .name(note)
+            .filter(|_| self.map.get(step) != Some(note))
+        {
             if self.map.get(step).is_none() || GuideStep::ALL.iter().all(|&s| s.short() != name) {
                 self.guide_note = format!("That was {name} (button {note}).");
                 return vec![self.guide_view()];
@@ -1644,7 +2025,10 @@ impl App {
         self.map.set(step, note);
         self.save_dirty = true;
         self.guide_note = format!("{} is button {note}.", step.short());
-        let mut fx = vec![Effect::Note(format!("button guide: {} is button {note}", step.short()))];
+        let mut fx = vec![Effect::Note(format!(
+            "button guide: {} is button {note}",
+            step.short()
+        ))];
         fx.extend(self.next_guide_step());
         fx
     }
@@ -1660,7 +2044,10 @@ impl App {
     fn finish_guide(&mut self) -> Vec<Effect> {
         self.guide = self.guide_steps.len();
         self.view = self.back;
-        let mut fx = vec![Effect::Note(format!("button guide done: {}", self.map.describe())), self.status()];
+        let mut fx = vec![
+            Effect::Note(format!("button guide done: {}", self.map.describe())),
+            self.status(),
+        ];
         fx.extend(self.repeat_light());
         fx.push(Effect::Show(self.view));
         fx.extend(self.after_view_change());
@@ -1674,7 +2061,10 @@ impl App {
         }
         if let (0, Some(step)) = (i, self.guide_step()) {
             self.guide_note = format!("Skipped {}.", step.short());
-            let mut fx = vec![Effect::Note(format!("button guide: {} skipped", step.short()))];
+            let mut fx = vec![Effect::Note(format!(
+                "button guide: {} skipped",
+                step.short()
+            ))];
             fx.extend(self.next_guide_step());
             fx
         } else {
@@ -1697,7 +2087,12 @@ mod tests {
     /// made-up numbers, so the guide stays closed).
     fn ready() -> App {
         let mut app = App::new(44_100, false);
-        (app.map.rec, app.map.overdub, app.map.undo, app.map.play_start) = (Some(90), Some(91), Some(92), Some(93));
+        (
+            app.map.rec,
+            app.map.overdub,
+            app.map.undo,
+            app.map.play_start,
+        ) = (Some(90), Some(91), Some(92), Some(93));
         let fx = app.start();
         assert!(fx.contains(&Effect::Show(View::Play)));
         app
@@ -1723,10 +2118,13 @@ mod tests {
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {
         let mut ev = Events::new();
         app.process(frames, &mut ev);
-        ev.as_slice().iter().filter_map(|e| match e.kind {
-            EventKind::On { note, velocity } => Some((e.offset, note, velocity)),
-            EventKind::Off { .. } => None,
-        }).collect()
+        ev.as_slice()
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::On { note, velocity } => Some((e.offset, note, velocity)),
+                EventKind::Off { .. } => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1738,7 +2136,10 @@ mod tests {
         assert_eq!(Curve::Linear.apply(64), 64);
         assert!(Curve::Soft.apply(64) > 80);
         assert!(Curve::Hard.apply(64) <= 40);
-        assert!(Curve::Hard.apply(120) <= 115, "Hard keeps strong hits below the top");
+        assert!(
+            Curve::Hard.apply(120) <= 115,
+            "Hard keeps strong hits below the top"
+        );
     }
 
     #[test]
@@ -1764,7 +2165,10 @@ mod tests {
         let mut app = ready();
         app.pad_down(0, 100);
         assert_eq!(ons(&mut app, 128), vec![(0, 0, 100)]);
-        assert!(ons(&mut app, 44_100).is_empty(), "no repeat without NOTE REPEAT");
+        assert!(
+            ons(&mut app, 44_100).is_empty(),
+            "no repeat without NOTE REPEAT"
+        );
         let fx = app.button(REPEAT, true, 0.0);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_ON)));
         // 1/16 at 120 BPM = 5512.5 frames: hits at 0 and 5512.5 within 6000 frames.
@@ -1789,7 +2193,11 @@ mod tests {
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_ON)) && app.repeating());
         app.pad_down(4, 90);
         app.pad_up(4);
-        assert_eq!(ons(&mut app, 11_100).len(), 3, "keeps repeating after release");
+        assert_eq!(
+            ons(&mut app, 11_100).len(),
+            3,
+            "keeps repeating after release"
+        );
         assert!(app.active(4));
         let fx = press(&mut app, button::STOP);
         assert!(fx.contains(&Effect::StopSounds) && !app.repeating());
@@ -1812,8 +2220,14 @@ mod tests {
         assert_eq!(press(&mut timed, button::STOP), vec![Effect::Quit]);
         let mut app = ready();
         app.button(button::SHIFT, true, 0.0);
-        assert_eq!(press(&mut app, button::STOP), vec![Effect::Show(View::Console)]);
-        assert_eq!(press(&mut app, button::STOP), vec![Effect::Show(View::Play)]);
+        assert_eq!(
+            press(&mut app, button::STOP),
+            vec![Effect::Show(View::Console)]
+        );
+        assert_eq!(
+            press(&mut app, button::STOP),
+            vec![Effect::Show(View::Play)]
+        );
     }
 
     /// Where `item` sits in the menu on screen.
@@ -1831,22 +2245,35 @@ mod tests {
             app.button(button::SHIFT, false, 0.0);
         };
         open_prefs(&mut app);
-        assert!(!app.items().contains(&Item::TouchLab) && !app.items().contains(&Item::ScreenVelocity));
+        assert!(
+            !app.items().contains(&Item::TouchLab) && !app.items().contains(&Item::ScreenVelocity)
+        );
         assert_eq!(app.items().last(), Some(&Item::TouchSection));
         // + on "Touch screen" opens the section on its first setting.
         let fx = app.step_item(row(&app, Item::TouchSection), 1);
-        assert!(matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Touch screen" && m.selected == 1
-                         && m.rows[1].0 == "Screen pad velocity"), "{fx:?}");
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Touch screen" && m.selected == 1
+                         && m.rows[1].0 == "Screen pad velocity"),
+            "{fx:?}"
+        );
         assert_eq!(app.items(), PREFS_TOUCH_ROWS);
         // Its rows work as before.
         app.step_item(row(&app, Item::ScreenVelocity), 1);
         assert_eq!(app.settings.screen_velocity, 110);
-        assert_eq!(app.step_item(row(&app, Item::TouchLab), 1), vec![Effect::TouchLab]);
-        assert_eq!(app.step_item(row(&app, Item::CalibrateTouch), 1), vec![Effect::CalibrateTouch]);
+        assert_eq!(
+            app.step_item(row(&app, Item::TouchLab), 1),
+            vec![Effect::TouchLab]
+        );
+        assert_eq!(
+            app.step_item(row(&app, Item::CalibrateTouch), 1),
+            vec![Effect::CalibrateTouch]
+        );
         // MENU goes back to the main rows, on the row that opened the section.
         let fx = press(&mut app, MENU);
-        assert!(matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Touch screen"),
-                "{fx:?}");
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Touch screen"),
+            "{fx:?}"
+        );
         assert_eq!(app.view(), View::Prefs);
         // So does its Back row.
         app.step_item(row(&app, Item::TouchSection), 1);
@@ -1890,7 +2317,16 @@ mod tests {
     #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
-        assert_eq!(tabs(false), vec![View::Play, View::Clips, View::Synth, View::Looper, View::Sample]);
+        assert_eq!(
+            tabs(false),
+            vec![
+                View::Play,
+                View::Clips,
+                View::Synth,
+                View::Looper,
+                View::Sample
+            ]
+        );
         assert_eq!(View::Sample.tab_index(true), Some(4));
         assert_eq!(app.tab(4), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
@@ -1902,7 +2338,10 @@ mod tests {
         // time engine's takes elsewhere.
         assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: true }]);
         app.button(button::SHIFT, false, 0.0);
-        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: false }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: false }]
+        );
         app.map.minus = Some(40);
         app.map.plus = Some(41);
         assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
@@ -1921,7 +2360,9 @@ mod tests {
         let mut app = ready();
         let fx = press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
-        assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Play options" && m.rows[0].0 == "Note repeat rate"));
+        assert!(
+            matches!(&fx[0], Effect::Menu(m) if m.title == "Play options" && m.rows[0].0 == "Note repeat rate")
+        );
         // The wheel moves between rows; SHIFT + wheel steps the value.
         let fx = app.wheel(1);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.selected == 1));
@@ -1930,7 +2371,9 @@ mod tests {
         let fx = app.wheel(1);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Menu(m) if m.selected == 0 && m.rows[0].1 == "1/16T")));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Menu(m) if m.selected == 0 && m.rows[0].1 == "1/16T")));
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Play);
         app.button(button::SHIFT, true, 0.0);
@@ -1943,7 +2386,13 @@ mod tests {
         assert!(fx.contains(&Effect::Settings(app.settings.clone())));
         // The audio buffer restarts the sound only when it changes.
         let buffer = row(&app, Item::Buffer);
-        assert_eq!(app.step_item(buffer, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
+        assert_eq!(
+            app.step_item(buffer, 1)
+                .iter()
+                .filter(|e| matches!(e, Effect::Audio(_)))
+                .count(),
+            0
+        );
         assert!(app.step_item(buffer, -1).contains(&Effect::Audio(2)));
         // The Debug page's options.
         app.open_tab(View::Debug);
@@ -1958,50 +2407,101 @@ mod tests {
     fn at_power_on_nothing_asks_and_the_mapper_finds_buttons_at_the_owners_pace() {
         let mut app = App::new(44_100, false);
         assert_eq!(app.map.menu, Some(123));
-        assert_eq!((app.map.note_repeat, app.map.tap_tempo, app.map.minus, app.map.plus), (Some(11), Some(53), Some(55), Some(54)));
+        assert_eq!(
+            (
+                app.map.note_repeat,
+                app.map.tap_tempo,
+                app.map.minus,
+                app.map.plus
+            ),
+            (Some(11), Some(53), Some(55), Some(54))
+        );
         let fx = app.start();
         assert!(!fx.iter().any(|e| matches!(e, Effect::Guide(_))));
         assert_eq!(app.view(), View::Play);
         // Only the music tabs until the developer tools are on; Prefs and
         // the Console are not tabs.
-        assert_eq!(tabs(false), vec![View::Play, View::Clips, View::Synth, View::Looper, View::Sample]);
+        assert_eq!(
+            tabs(false),
+            vec![
+                View::Play,
+                View::Clips,
+                View::Synth,
+                View::Looper,
+                View::Sample
+            ]
+        );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
         assert_eq!(names[..5], mpfree_ui::widgets::APP_TABS[..]);
         assert_eq!(names[5], mpfree_ui::widgets::DEV_TAB);
         assert_eq!(app.tab(5), vec![]);
         app.open_tab(View::Prefs);
-        let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();
+        let row = app
+            .items()
+            .iter()
+            .position(|&i| i == Item::MapControls)
+            .unwrap();
         let fx = app.step_item(row, 1);
         assert!(app.settings.debug_mode);
         assert_eq!(app.view(), View::Map);
         assert!(fx.contains(&Effect::Note("developer tools: on".into())));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Map(m) if m.rows[2].value == "button 81" && m.left > 20)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Map(m) if m.rows[2].value == "button 81" && m.left > 20)));
         // Tap REC: MPFree listens; STOP stops listening without silencing.
         app.map_row(0);
         let fx = press(&mut app, button::STOP);
         assert!(!fx.contains(&Effect::StopSounds), "{fx:?}");
-        assert!(fx.iter().any(|e| matches!(e, Effect::Map(m) if !m.listening)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Map(m) if !m.listening)));
         app.map_row(0);
         let fx = press(&mut app, 73);
         assert!(fx.contains(&Effect::Note("map: REC = button 73".into())));
         assert_eq!(app.map.rec, Some(73));
         // The wheel picks PAD BANK A/E, + listens, and it works at once.
-        let at = mapper::CONTROLS.iter().position(|c| c.name == "PAD BANK A/E").unwrap() as i32;
+        let at = mapper::CONTROLS
+            .iter()
+            .position(|c| c.name == "PAD BANK A/E")
+            .unwrap() as i32;
         app.wheel(at - app.mapper.selected as i32);
         press(&mut app, button::PLUS);
         let fx = press(&mut app, 35);
-        assert!(fx.contains(&Effect::Bank { button: u8::MAX, shift: false }), "{fx:?}");
+        assert!(
+            fx.contains(&Effect::Bank {
+                button: u8::MAX,
+                shift: false
+            }),
+            "{fx:?}"
+        );
         // - skips the next one; leaving the page writes the summary.
         let fx = press(&mut app, button::MINUS);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.ends_with("skipped"))));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.ends_with("skipped"))));
         let fx = app.open_tab(View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
                                              && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
-        assert_eq!(press(&mut app, 73), vec![Effect::Time(TimeAction::Transport(Command::Record))]);
-        assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: false }]);
+        assert_eq!(
+            press(&mut app, 73),
+            vec![Effect::Time(TimeAction::Transport(Command::Record))]
+        );
+        assert_eq!(
+            press(&mut app, 35),
+            vec![Effect::Bank {
+                button: 0,
+                shift: false
+            }]
+        );
         app.button(button::SHIFT, true, 0.0);
-        assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: true }]);
+        assert_eq!(
+            press(&mut app, 35),
+            vec![Effect::Bank {
+                button: 0,
+                shift: true
+            }]
+        );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
         assert_eq!(tabs(true)[5], View::Debug);
@@ -2023,7 +2523,13 @@ mod tests {
         assert_eq!(View::Procs.tab_view(), Some(View::Debug));
         // Their options menus are titled after the page.
         app.debug_page(2);
-        match app.button(MENU, true, 0.0).into_iter().find_map(|e| if let Effect::Menu(m) = e { Some(m) } else { None }) {
+        match app.button(MENU, true, 0.0).into_iter().find_map(|e| {
+            if let Effect::Menu(m) = e {
+                Some(m)
+            } else {
+                None
+            }
+        }) {
             Some(m) => assert_eq!(m.title, "CPU by engine options"),
             None => panic!("MENU opens the options"),
         }
@@ -2039,8 +2545,15 @@ mod tests {
         let latency = |l| Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(l)));
         assert!(!app.settings.line_input && app.settings.loop_source == LoopSource::Pads);
         let fx = App::new(44_100, false).start();
-        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
-        assert!(!fx.iter().any(|e| matches!(e, Effect::Looper(LoopAction::LineInput(_)))), "nothing opens at start");
+        assert!(
+            fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)),
+            "{fx:?}"
+        );
+        assert!(
+            !fx.iter()
+                .any(|e| matches!(e, Effect::Looper(LoopAction::LineInput(_)))),
+            "nothing opens at start"
+        );
         // The Looper tab's options: Record from, then Line input.
         app.open_tab(View::Looper);
         press(&mut app, MENU);
@@ -2048,22 +2561,42 @@ mod tests {
         assert_eq!(app.items()[..2], [Item::LoopSource, Item::LineInput]);
         let fx = app.step_item(1, 1);
         assert!(fx.contains(&Effect::Looper(LoopAction::LineInput(true))));
-        assert!(fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)), "{fx:?}");
+        assert!(
+            fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)),
+            "{fx:?}"
+        );
         // REC on the Looper tab is the looper's Record.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Looper);
-        assert_eq!(press(&mut app, 90), vec![Effect::Looper(LoopAction::Command(LoopCommand::Record))]);
+        assert_eq!(
+            press(&mut app, 90),
+            vec![Effect::Looper(LoopAction::Command(LoopCommand::Record))]
+        );
         // The input fails to open: Off again, and the pads.
         let fx = app.line_input_off();
-        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
+        assert!(
+            fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)),
+            "{fx:?}"
+        );
         assert!(!app.settings.line_input);
         // Record from can pick the line input by hand; Pads needs no latency.
         press(&mut app, MENU);
         let fx = app.step_item(0, 1);
-        assert!(fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)), "{fx:?}");
+        assert!(
+            fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)),
+            "{fx:?}"
+        );
         let fx = app.step_item(0, -1);
-        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
-        assert!(app.step_item(0, -1).iter().all(|e| !matches!(e, Effect::Looper(_))), "already the pads");
+        assert!(
+            fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)),
+            "{fx:?}"
+        );
+        assert!(
+            app.step_item(0, -1)
+                .iter()
+                .all(|e| !matches!(e, Effect::Looper(_))),
+            "already the pads"
+        );
     }
 
     #[test]
@@ -2073,7 +2606,10 @@ mod tests {
         assert_eq!(bank_target(5, 1, false), 1, "F, then B: B");
         assert_eq!(bank_target(5, 0, false), 0);
         assert_eq!(bank_target(2, 3, true), 7, "SHIFT + D/H: H");
-        assert_eq!((bank_letter(0), bank_letter(7), bank_letter(9)), ('A', 'H', 'B'));
+        assert_eq!(
+            (bank_letter(0), bank_letter(7), bank_letter(9)),
+            ('A', 'H', 'B')
+        );
     }
 
     #[test]
@@ -2083,7 +2619,9 @@ mod tests {
         app.open_tab(View::Prefs);
         let fx = app.step_item(row(&app, Item::FindButtons), 1);
         assert_eq!(app.view(), View::Guide);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press MENU")));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press MENU")));
         // A measured button is named, not taken.
         let fx = press(&mut app, button::FULL_LEVEL);
         assert!(matches!(&fx[0], Effect::Guide(g) if g.lines[0].contains("FULL LEVEL")));
@@ -2125,12 +2663,19 @@ mod tests {
         let fx = app.button(REPEAT, false, 0.0);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
         assert_eq!(app.engine.settings().mode, Mode::Direct);
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel is the kit again");
+        assert_eq!(
+            app.wheel(1),
+            vec![Effect::Kit(1)],
+            "the wheel is the kit again"
+        );
         // Held again, a while later: the arp, not Repeat.
         app.pad_down(0, 100);
         app.pad_down(4, 100);
         let fx = app.button(REPEAT, true, 10.0);
-        assert!(!fx.contains(&Effect::Note("Latch on".into())), "too slow for a double press");
+        assert!(
+            !fx.contains(&Effect::Note("Latch on".into())),
+            "too slow for a double press"
+        );
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_ON)));
         let _ = ons(&mut app, 128);
         let got = notes(&mut app, 4 * 5513);
@@ -2154,7 +2699,11 @@ mod tests {
         assert!(app.repeating());
         app.pad_down(4, 90);
         app.pad_up(4);
-        assert_eq!(ons(&mut app, 11_100).len(), 3, "keeps repeating after release");
+        assert_eq!(
+            ons(&mut app, 11_100).len(),
+            3,
+            "keeps repeating after release"
+        );
         // One press lets go, and a press soon after is a plain hold again.
         let fx = app.button(REPEAT, true, 8.0);
         assert!(fx.contains(&Effect::Note("Latch off".into())));
@@ -2194,15 +2743,29 @@ mod tests {
         app.wheel(2);
         assert_eq!(app.pattern_index, 2);
         assert_eq!(*app.engine.pattern(), app.patterns[2].1);
-        assert_eq!(app.qlink(1, 5, None), Some(vec![Effect::Status(app.status_now()), Effect::Light(REPEAT, LIGHT_ON)]));
+        assert_eq!(
+            app.qlink(1, 5, None),
+            Some(vec![
+                Effect::Status(app.status_now()),
+                Effect::Light(REPEAT, LIGHT_ON)
+            ])
+        );
         assert_eq!(app.engine.settings().gate, 60);
-        assert_eq!(app.qlink(3, 3, None), Some(Vec::new()), "octaves need a longer turn");
+        assert_eq!(
+            app.qlink(3, 3, None),
+            Some(Vec::new()),
+            "octaves need a longer turn"
+        );
         app.qlink(3, 1, None);
         assert_eq!(app.engine.settings().octaves, 2);
         app.qlink(0, 3, None);
         assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
         app.qlink(2, 0, Some(127));
-        assert_eq!(app.engine.settings().swing, 75, "absolute positions without Akai's session");
+        assert_eq!(
+            app.engine.settings().swing,
+            75,
+            "absolute positions without Akai's session"
+        );
         // MENU: the options, and back to the panel.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
@@ -2222,17 +2785,43 @@ mod tests {
         let mut app = ready();
         app.toggle_panel();
         let fx = press(&mut app, MENU);
-        let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else { panic!("no menu") };
+        let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else {
+            panic!("no menu")
+        };
         assert_eq!(m.title, "Arp options");
-        assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
-                   ["Tempo", "Accent level", "Scale", "Scale root", "Out-of-key notes", "Chord on each pad", "Scale run",
-                    "Chords take turns", "Strum", "New notes restart", "Swing from"]);
+        assert_eq!(
+            m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            [
+                "Tempo",
+                "Accent level",
+                "Scale",
+                "Scale root",
+                "Out-of-key notes",
+                "Chord on each pad",
+                "Scale run",
+                "Chords take turns",
+                "Strum",
+                "New notes restart",
+                "Swing from"
+            ]
+        );
         assert_eq!(m.rows[10].1, "Transport");
-        assert_eq!((m.rows[5].1.as_str(), m.rows[6].1.as_str(), m.rows[7].1.as_str()), ("Off", "Off", "Off"));
+        assert_eq!(
+            (
+                m.rows[5].1.as_str(),
+                m.rows[6].1.as_str(),
+                m.rows[7].1.as_str()
+            ),
+            ("Off", "Off", "Off")
+        );
         assert_eq!(m.rows[4].1, "Note below");
-        assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
+        assert_eq!(
+            m.rows[2].1, "Off",
+            "no scale until one is picked: drum kits stay as they are"
+        );
         assert!(app.generating(), "the arp plays on under its options");
-        let row = |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
+        let row =
+            |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
         // Accent level steps by 8, down from 127.
         let fx = app.step_item(row(&app, ArpItem::Accent), -1);
         assert_eq!(app.engine.settings().accent, 119);
@@ -2245,22 +2834,36 @@ mod tests {
         let fx = app.step_item(row(&app, ArpItem::Root), 1);
         assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
         assert!(fx.contains(&Effect::Note("arp scale: D Dorian".to_string())));
-        assert!(matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Dorian"));
+        assert!(
+            matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Dorian")
+        );
         app.step_item(row(&app, ArpItem::Scale), 1);
         assert_eq!(app.engine.settings().scale, Some(Scale::new(2, PHRYGIAN)));
         // A scale with other notes coming down keeps them when the root moves.
-        let classical = mpfree_arp::scale::SCALES.iter().position(|d| d.name == "Mel. minor classical").unwrap();
+        let classical = mpfree_arp::scale::SCALES
+            .iter()
+            .position(|d| d.name == "Mel. minor classical")
+            .unwrap();
         for _ in 3..classical {
             app.step_item(row(&app, ArpItem::Scale), 1);
         }
         app.step_item(row(&app, ArpItem::Root), 1);
         let s = app.engine.settings().scale.unwrap();
-        assert_eq!((s.root, s.mask, s.down), (3, mpfree_arp::scale::MELODIC_MINOR, mpfree_arp::scale::MINOR));
+        assert_eq!(
+            (s.root, s.mask, s.down),
+            (
+                3,
+                mpfree_arp::scale::MELODIC_MINOR,
+                mpfree_arp::scale::MINOR
+            )
+        );
         app.step_item(row(&app, ArpItem::Root), -1);
         // Out-of-key notes: below, above, nearest, not played.
         let fx = app.step_item(row(&app, ArpItem::Snap), 1);
         assert_eq!(app.engine.settings().snap, Snap::Up);
-        assert!(fx.contains(&Effect::Note("arp out-of-key notes: note above".to_string())));
+        assert!(fx.contains(&Effect::Note(
+            "arp out-of-key notes: note above".to_string()
+        )));
         for _ in 0..5 {
             app.step_item(row(&app, ArpItem::Snap), 1);
         }
@@ -2280,7 +2883,9 @@ mod tests {
         app.step_item(row(&app, ArpItem::Turns), 1);
         let fx = app.step_item(row(&app, ArpItem::Turns), 1);
         assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Bar);
-        assert!(fx.contains(&Effect::Note("arp chords take turns: every bar".to_string())));
+        assert!(fx.contains(&Effect::Note(
+            "arp chords take turns: every bar".to_string()
+        )));
         for _ in 0..4 {
             app.step_item(row(&app, ArpItem::Turns), -1);
         }
@@ -2293,25 +2898,42 @@ mod tests {
             app.step_item(row(&app, ArpItem::Scale), -1);
         }
         assert_eq!(app.engine.settings().scale, None);
-        assert_eq!(app.step_item(row(&app, ArpItem::Scale), -1).iter().filter(|e| matches!(e, Effect::Note(_))).count(),
-                   0, "nothing below Off");
+        assert_eq!(
+            app.step_item(row(&app, ArpItem::Scale), -1)
+                .iter()
+                .filter(|e| matches!(e, Effect::Note(_)))
+                .count(),
+            0,
+            "nothing below Off"
+        );
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, mpfree_arp::scale::MAJOR)));
+        assert_eq!(
+            app.engine.settings().scale,
+            Some(Scale::new(2, mpfree_arp::scale::MAJOR))
+        );
         // Strum in tens of percent; New notes restart on and off.
         app.step_item(row(&app, ArpItem::Strum), 1);
         assert_eq!(app.engine.settings().strum, 10);
         app.step_item(row(&app, ArpItem::Retrigger), 1);
         assert!(app.engine.settings().retrigger);
         // The panel's own settings leave them alone.
-        app.arp_action(ArpAction::Settings(mpfree_arp::Settings { gate: 80, ..app.arp }));
+        app.arp_action(ArpAction::Settings(mpfree_arp::Settings {
+            gate: 80,
+            ..app.arp
+        }));
         let s = app.engine.settings();
-        assert_eq!((s.accent, s.strum, s.retrigger, s.gate), (119, 10, true, 80));
+        assert_eq!(
+            (s.accent, s.strum, s.retrigger, s.gate),
+            (119, 10, true, 80)
+        );
         // MENU goes back to the panel; the Play page's options are as before.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Arp);
         app.toggle_panel();
         press(&mut app, MENU);
-        assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4));
+        assert!(
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4)
+        );
     }
 
     #[test]
@@ -2322,7 +2944,11 @@ mod tests {
             if !from_transport {
                 app.toggle_panel();
                 press(&mut app, MENU);
-                let row = app.items().iter().position(|&i| i == Item::Arp(ArpItem::SwingFrom)).unwrap();
+                let row = app
+                    .items()
+                    .iter()
+                    .position(|&i| i == Item::Arp(ArpItem::SwingFrom))
+                    .unwrap();
                 let fx = app.step_item(row, -1);
                 assert!(fx.contains(&Effect::Note("arp swing from: arp".to_string())));
                 press(&mut app, MENU);
@@ -2339,16 +2965,32 @@ mod tests {
                     app.set_clock(Some(c));
                 }
                 app.process(128, &mut ev);
-                ons.extend(ev.as_slice().iter().filter(|e| matches!(e.kind, EventKind::On { .. }))
-                    .map(|e| i * 128 + u64::from(e.offset)));
+                ons.extend(
+                    ev.as_slice()
+                        .iter()
+                        .filter(|e| matches!(e.kind, EventKind::On { .. }))
+                        .map(|e| i * 128 + u64::from(e.offset)),
+                );
             }
-            ons.windows(2).skip(1).take(4).map(|w| w[1] - w[0]).collect::<Vec<_>>()
+            ons.windows(2)
+                .skip(1)
+                .take(4)
+                .map(|w| w[1] - w[0])
+                .collect::<Vec<_>>()
         };
         let straight = gaps(true, None, true);
-        assert!(straight.iter().all(|&g| g.abs_diff(5512) <= 1), "{straight:?}");
+        assert!(
+            straight.iter().all(|&g| g.abs_diff(5512) <= 1),
+            "{straight:?}"
+        );
         // The transport swings 1/16s at 75 %: long, short, long, short.
         let swung = gaps(true, Some((240, 75)), true);
-        assert!(swung.iter().all(|&g| g.abs_diff(8269) <= 1 || g.abs_diff(2756) <= 1), "{swung:?}");
+        assert!(
+            swung
+                .iter()
+                .all(|&g| g.abs_diff(8269) <= 1 || g.abs_diff(2756) <= 1),
+            "{swung:?}"
+        );
         assert_ne!(swung[0], swung[1]);
         // Swing from: Arp ignores it; no clock at all free-runs.
         assert_eq!(gaps(false, Some((240, 75)), true), straight);
@@ -2366,7 +3008,10 @@ mod tests {
         app.pad_down(2, 100);
         app.pad_up(0);
         app.pad_up(2);
-        assert!(ons(&mut app, 20_000).is_empty(), "not latched: nothing after letting go");
+        assert!(
+            ons(&mut app, 20_000).is_empty(),
+            "not latched: nothing after letting go"
+        );
         app.arp_action(ArpAction::Latch);
         app.pad_down(0, 100);
         app.pad_down(2, 100);
@@ -2389,14 +3034,24 @@ mod tests {
         app.toggle_panel();
         let fx = app.arp_action(ArpAction::Button(PatternButton::Record));
         assert_eq!(app.view(), View::Pattern);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.open && !w.recording)));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.open && w.recording)));
-        assert_eq!(app.engine.settings().mode, Mode::Direct, "pads sound as pressed while recording");
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Workspace(w) if w.open && !w.recording)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Workspace(w) if !w.open && w.recording)));
+        assert_eq!(
+            app.engine.settings().mode,
+            Mode::Direct,
+            "pads sound as pressed while recording"
+        );
         let len = app.recorder.unwrap().length();
         assert_eq!(len, 8, "at least 8 steps, though Straight has 1");
         // Pad 1 writes "1", pad 16 a rest, pad 13 the next note.
         let fx = app.pad_down(0, 100);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Recorded(p, 1) if p.len() == len)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Recorded(p, 1) if p.len() == len)));
         app.pad_up(0);
         assert_eq!(ons(&mut app, 128).len(), 1, "the pad still sounds");
         app.pad_down(15, 100);
@@ -2406,15 +3061,34 @@ mod tests {
             fx = app.pad_down(12, 120);
             app.pad_up(12);
         }
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.recording)), "full: recording stops");
-        assert_eq!(app.pattern.steps()[0], mpfree_arp::Step::play(mpfree_arp::Pick::Index(1)));
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Workspace(w) if !w.recording)),
+            "full: recording stops"
+        );
+        assert_eq!(
+            app.pattern.steps()[0],
+            mpfree_arp::Step::play(mpfree_arp::Pick::Index(1))
+        );
         assert_eq!(app.pattern.steps()[1], mpfree_arp::Step::Rest);
-        assert!(matches!(app.pattern.steps()[2], mpfree_arp::Step::Play { accent: true, .. }), "a hard hit");
-        assert_eq!(app.engine.settings().mode, Mode::Repeat, "the panel's mode again");
+        assert!(
+            matches!(
+                app.pattern.steps()[2],
+                mpfree_arp::Step::Play { accent: true, .. }
+            ),
+            "a hard hit"
+        );
+        assert_eq!(
+            app.engine.settings().mode,
+            Mode::Repeat,
+            "the panel's mode again"
+        );
         // Save keeps it in the list (in memory); Back returns to the panel.
         let p = app.pattern;
         let fx = app.workspace_action(WsAction::Save(p));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Patterns(l) if l[0].1 == p)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Patterns(l) if l[0].1 == p)));
         app.workspace_action(WsAction::Back);
         assert_eq!(app.view(), View::Arp);
     }
@@ -2429,9 +3103,13 @@ mod tests {
         app.workspace_action(WsAction::Changed(Pattern::parse("1 . . .").unwrap()));
         // Free time with nothing latched: Step time, and it says why.
         let fx = app.workspace_action(WsAction::RecordMode(RecordMode::FreeTime));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.free_time && !w.recording)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Workspace(w) if w.free_time && !w.recording)));
         let fx = app.workspace_action(WsAction::Record(true));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("Free time plays the pattern"))));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.starts_with("Free time plays the pattern"))));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::Step);
         app.workspace_action(WsAction::Record(false));
         app.workspace_action(WsAction::Changed(Pattern::parse("1 . . .").unwrap()));
@@ -2445,18 +3123,42 @@ mod tests {
         app.pad_up(0);
         app.pad_up(4);
         let fx = app.workspace_action(WsAction::Record(true));
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.free_time && w.recording)));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Workspace(w) if w.free_time && w.recording)));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::FreeTime);
-        assert_eq!(app.engine.settings().mode, Mode::Pattern, "the pattern keeps playing");
+        assert_eq!(
+            app.engine.settings().mode,
+            Mode::Pattern,
+            "the pattern keeps playing"
+        );
         let _ = ons(&mut app, 3 * 5513 + 400);
         // Pad 2 (the 2nd held note), hit hard, lands on the step nearest now.
         let at = (app.engine.position().round() as usize) % 4;
         let fx = app.pad_down(1, 127);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Recorded(_, i) if *i == at)), "{fx:?}");
-        assert!(matches!(app.pattern.steps()[at], Step::Play { pick: Pick::Index(2), accent: true, .. }));
-        assert_eq!(*app.engine.pattern(), app.pattern, "the engine plays it at once");
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Recorded(_, i) if *i == at)),
+            "{fx:?}"
+        );
+        assert!(matches!(
+            app.pattern.steps()[at],
+            Step::Play {
+                pick: Pick::Index(2),
+                accent: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            *app.engine.pattern(),
+            app.pattern,
+            "the engine plays it at once"
+        );
         assert!(app.pad_up(1).is_empty(), "a short press ties nothing");
-        let active: Vec<u8> = (0..16).filter(|&s| app.active(s)).map(|s| s as u8).collect();
+        let active: Vec<u8> = (0..16)
+            .filter(|&s| app.active(s))
+            .map(|s| s as u8)
+            .collect();
         assert_eq!(active, [0, 4], "record pads don't change the latched chord");
         // Held across two more steps: ties after it.
         let at = (app.engine.position().round() as usize) % 4;
@@ -2486,44 +3188,88 @@ mod tests {
     #[test]
     fn a_patterns_file_adds_and_replaces_and_save_writes_only_the_owners() {
         let mut app = ready();
-        let fx = app.load_patterns("# mine\nSkip = 1 . 3 2\nstraight = x x .\n[scales]\nBright minor = 1 2 b3 4 5 6 7\n");
-        assert!(fx.contains(&Effect::Note("arp patterns file: 1 added, 1 built-in ones replaced, 1 scales of your own"
-            .into())), "{fx:?}");
+        let fx = app.load_patterns(
+            "# mine\nSkip = 1 . 3 2\nstraight = x x .\n[scales]\nBright minor = 1 2 b3 4 5 6 7\n",
+        );
+        assert!(
+            fx.contains(&Effect::Note(
+                "arp patterns file: 1 added, 1 built-in ones replaced, 1 scales of your own".into()
+            )),
+            "{fx:?}"
+        );
         assert_eq!(app.patterns.last().unwrap().0, "Skip");
-        assert_eq!(app.patterns[0], ("Straight".to_string(), Pattern::parse("x x .").unwrap()), "keeps its place");
-        assert_eq!(*app.engine.pattern(), Pattern::parse("x x .").unwrap(), "the pattern in use is reloaded");
+        assert_eq!(
+            app.patterns[0],
+            ("Straight".to_string(), Pattern::parse("x x .").unwrap()),
+            "keeps its place"
+        );
+        assert_eq!(
+            *app.engine.pattern(),
+            Pattern::parse("x x .").unwrap(),
+            "the pattern in use is reloaded"
+        );
         let text = app.library_text();
         let lib = mpfree_arp::Library::parse(&text).unwrap();
         let names: Vec<&str> = lib.iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["Straight", "Skip"], "only patterns that differ from the built-ins");
+        assert_eq!(
+            names,
+            ["Straight", "Skip"],
+            "only patterns that differ from the built-ins"
+        );
         // A bad file is not used at all.
         let before = app.patterns.clone();
         let fx = app.load_patterns("Fine = 1 2\nBad = 1 z\nNo equals sign\n");
         assert_eq!(app.patterns, before);
-        assert!(fx.contains(&Effect::Note("arp patterns file not used (2 bad lines); the built-in patterns stay".into())));
+        assert!(fx.contains(&Effect::Note(
+            "arp patterns file not used (2 bad lines); the built-in patterns stay".into()
+        )));
         // Save logs a library line; it writes the file only with --save-patterns.
         app.toggle_panel();
         app.arp_action(ArpAction::Button(PatternButton::Edit));
         let p = Pattern::parse("1 2 . 3").unwrap();
         let fx = app.workspace_action(WsAction::Save(p));
-        assert!(fx.contains(&Effect::Note("arp-pattern-saved: Straight = 1 2 . 3".into())));
+        assert!(fx.contains(&Effect::Note(
+            "arp-pattern-saved: Straight = 1 2 . 3".into()
+        )));
         assert!(!fx.iter().any(|e| matches!(e, Effect::SavePatterns(_))));
         app.pattern_file = true;
         let fx = app.workspace_action(WsAction::Save(p));
-        let saved = fx.iter().find_map(|e| match e { Effect::SavePatterns(t) => Some(t.clone()), _ => None }).unwrap();
-        assert!(saved.contains("Straight = 1 2 . 3\n") && saved.contains("Skip     = 1 . 3 2\n"), "{saved}");
-        assert!(saved.contains("[scales]\nBright minor = 0 2 3 5 7 9 11\n"), "{saved}");
+        let saved = fx
+            .iter()
+            .find_map(|e| match e {
+                Effect::SavePatterns(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            saved.contains("Straight = 1 2 . 3\n") && saved.contains("Skip     = 1 . 3 2\n"),
+            "{saved}"
+        );
+        assert!(
+            saved.contains("[scales]\nBright minor = 0 2 3 5 7 9 11\n"),
+            "{saved}"
+        );
         // The owner's scale comes after the built-in ones in the Scale row.
         app.workspace_action(WsAction::Back);
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
-        let row = app.items().iter().position(|&i| i == Item::Arp(ArpItem::Scale)).unwrap();
+        let row = app
+            .items()
+            .iter()
+            .position(|&i| i == Item::Arp(ArpItem::Scale))
+            .unwrap();
         for _ in 1..mpfree_arp::scale::SCALES.len() {
             app.step_item(row, 1);
         }
         let fx = app.step_item(row, 1);
-        assert_eq!(app.engine.settings().scale, Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MELODIC_MINOR)));
-        assert!(fx.contains(&Effect::Note("arp scale: C Bright minor".into())), "{fx:?}");
+        assert_eq!(
+            app.engine.settings().scale,
+            Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MELODIC_MINOR))
+        );
+        assert!(
+            fx.contains(&Effect::Note("arp scale: C Bright minor".into())),
+            "{fx:?}"
+        );
     }
 
     #[test]
@@ -2539,8 +3285,14 @@ mod tests {
         assert!(app.recorder.is_some());
         let fx = app.tab(1);
         assert!(app.recorder.is_none());
-        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.recording)));
-        assert_eq!(app.workspace_action(WsAction::Back), Vec::new(), "only in the workspace");
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Workspace(w) if !w.recording)));
+        assert_eq!(
+            app.workspace_action(WsAction::Back),
+            Vec::new(),
+            "only in the workspace"
+        );
         // Original goes back to the list's pattern.
         app.tab(0);
         app.toggle_panel();
@@ -2558,21 +3310,42 @@ mod tests {
         app.button(button::TAP_TEMPO, true, 20.0);
         app.button(button::TAP_TEMPO, true, 20.6);
         assert_eq!(app.settings.bpm, 100.0, "a pause starts a new count");
-        assert_eq!(app.tick(20.61), Some(Effect::Light(button::TAP_TEMPO, LIGHT_ON)));
+        assert_eq!(
+            app.tick(20.61),
+            Some(Effect::Light(button::TAP_TEMPO, LIGHT_ON))
+        );
         assert_eq!(app.tick(20.62), None);
-        assert_eq!(app.tick(20.9), Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF)));
+        assert_eq!(
+            app.tick(20.9),
+            Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF))
+        );
     }
 
     #[test]
     fn the_transport_buttons_drive_the_time_engine() {
         let mut app = ready();
         let time = |a: TimeAction| Effect::Time(a);
-        assert_eq!(press(&mut app, button::PLAY), vec![time(TimeAction::Transport(Command::Play))]);
-        assert_eq!(press(&mut app, 93), vec![time(TimeAction::Transport(Command::PlayStart))]);
-        assert_eq!(press(&mut app, 90), vec![time(TimeAction::Transport(Command::Record))]);
-        assert_eq!(press(&mut app, 91), vec![time(TimeAction::Transport(Command::ToggleOverdub))]);
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            vec![time(TimeAction::Transport(Command::Play))]
+        );
+        assert_eq!(
+            press(&mut app, 93),
+            vec![time(TimeAction::Transport(Command::PlayStart))]
+        );
+        assert_eq!(
+            press(&mut app, 90),
+            vec![time(TimeAction::Transport(Command::Record))]
+        );
+        assert_eq!(
+            press(&mut app, 91),
+            vec![time(TimeAction::Transport(Command::ToggleOverdub))]
+        );
         assert_eq!(press(&mut app, 92), vec![time(TimeAction::Undo)]);
-        assert_eq!(held(&mut app, button::SHIFT, |a| press(a, 92)), vec![time(TimeAction::Redo)]);
+        assert_eq!(
+            held(&mut app, button::SHIFT, |a| press(a, 92)),
+            vec![time(TimeAction::Redo)]
+        );
         // Rolling, STOP stops the transport and leaves the sounds alone.
         app.set_rolling(true);
         let fx = press(&mut app, button::STOP);
@@ -2581,7 +3354,10 @@ mod tests {
         // Stopped, STOP silences everything, as before, and goes back to bar 1.
         app.set_rolling(false);
         let fx = press(&mut app, button::STOP);
-        assert!(fx.contains(&Effect::StopSounds) && fx.contains(&time(TimeAction::Transport(Command::Stop))));
+        assert!(
+            fx.contains(&Effect::StopSounds)
+                && fx.contains(&time(TimeAction::Transport(Command::Stop)))
+        );
     }
 
     #[test]
@@ -2589,8 +3365,20 @@ mod tests {
         let mut app = ready();
         app.open_tab(View::Clips);
         assert_eq!(app.view(), View::Clips);
-        assert_eq!(app.wheel(1), vec![Effect::ClipsWheel { delta: 1, scroll: false }]);
-        assert_eq!(held(&mut app, button::SHIFT, |a| a.wheel(-1)), vec![Effect::ClipsWheel { delta: -1, scroll: true }]);
+        assert_eq!(
+            app.wheel(1),
+            vec![Effect::ClipsWheel {
+                delta: 1,
+                scroll: false
+            }]
+        );
+        assert_eq!(
+            held(&mut app, button::SHIFT, |a| a.wheel(-1)),
+            vec![Effect::ClipsWheel {
+                delta: -1,
+                scroll: true
+            }]
+        );
         // MENU there opens the options and goes back to Clips.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
@@ -2603,6 +3391,10 @@ mod tests {
         app.set_tempo(1000.0);
         assert_eq!(app.settings.bpm, 300.0);
         app.open_tab(View::Play);
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel picks kits on Play");
+        assert_eq!(
+            app.wheel(1),
+            vec![Effect::Kit(1)],
+            "the wheel picks kits on Play"
+        );
     }
 }

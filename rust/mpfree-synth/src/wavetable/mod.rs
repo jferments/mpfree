@@ -29,7 +29,10 @@ pub mod table;
 
 use std::sync::Arc;
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs, PressureMode, PressureShape, Smooth, Timed};
+use mpfree_node::{
+    Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
+    PressureMode, PressureShape, Smooth, Timed,
+};
 
 use crate::dsp::*;
 use crate::params::{Preset, LFO_SYNC_BEATS};
@@ -51,7 +54,11 @@ const KILL_MS: f32 = 3.0;
 /// Peak of one full-velocity note at the defaults, about -12 dBFS (as Poly).
 const VOICE_GAIN: f32 = 0.2;
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.wavetable", name: "Wavetable", kind: Kind::Instrument };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.wavetable",
+    name: "Wavetable",
+    kind: Kind::Instrument,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -67,10 +74,20 @@ enum Warp {
     #[default]
     Off,
     /// Phase distortion: the knee at `k`, slopes `a` before it, `b` after.
-    Bend { k: f32, a: f32, b: f32 },
-    Sync { ratio: f32 },
-    Mirror { amt: f32 },
-    Fm { index: f32 },
+    Bend {
+        k: f32,
+        a: f32,
+        b: f32,
+    },
+    Sync {
+        ratio: f32,
+    },
+    Mirror {
+        amt: f32,
+    },
+    Fm {
+        index: f32,
+    },
 }
 
 impl Warp {
@@ -79,9 +96,15 @@ impl Warp {
         match mode {
             1 => {
                 let k = 0.5 - 0.48 * amt;
-                Warp::Bend { k, a: 0.5 / k, b: 0.5 / (1.0 - k) }
+                Warp::Bend {
+                    k,
+                    a: 0.5 / k,
+                    b: 0.5 / (1.0 - k),
+                }
             }
-            2 => Warp::Sync { ratio: 1.0 + 7.0 * amt },
+            2 => Warp::Sync {
+                ratio: 1.0 + 7.0 * amt,
+            },
             3 => Warp::Mirror { amt },
             4 => Warp::Fm { index: amt * 0.5 },
             _ => Warp::Off,
@@ -105,7 +128,13 @@ impl Warp {
     fn apply(self, p: f32, other: f32) -> f32 {
         match self {
             Warp::Off => p,
-            Warp::Bend { k, a, b } => if p < k { p * a } else { 0.5 + (p - k) * b },
+            Warp::Bend { k, a, b } => {
+                if p < k {
+                    p * a
+                } else {
+                    0.5 + (p - k) * b
+                }
+            }
             Warp::Sync { ratio } => (p * ratio).fract(),
             Warp::Mirror { amt } => {
                 let m = 1.0 - (1.0 - 2.0 * p).abs();
@@ -138,11 +167,22 @@ impl Run {
         let lv = &tab.levels()[level];
         let len = lv.len as f32;
         let last = tab.frames() - 1;
-        if last == 0 { return Run { len, ..Run::default() }; }
+        if last == 0 {
+            return Run {
+                len,
+                ..Run::default()
+            };
+        }
         let (from, to) = (from.clamp(0.0, last as f32), to.clamp(0.0, last as f32));
         let f0 = (from.min(to) as usize).min(last - 1);
         let st = lv.stride();
-        Run { off0: f0 * st, off1: (f0 + 1) * st, t: from - f0 as f32, t_inc: (to - from) / CTRL as f32, len }
+        Run {
+            off0: f0 * st,
+            off1: (f0 + 1) * st,
+            t: from - f0 as f32,
+            t_inc: (to - from) / CTRL as f32,
+            len,
+        }
     }
 
     /// One sample at phase `ph` (0 to 1): linear in phase, then between
@@ -237,7 +277,9 @@ impl Voice {
         }
     }
 
-    fn sounding(&self) -> bool { matches!(self.state, State::On | State::Release) }
+    fn sounding(&self) -> bool {
+        matches!(self.state, State::On | State::Release)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,7 +338,9 @@ pub struct Wavetable {
 }
 
 impl Default for Wavetable {
-    fn default() -> Self { Wavetable::new(48_000) }
+    fn default() -> Self {
+        Wavetable::new(48_000)
+    }
 }
 
 impl Wavetable {
@@ -304,13 +348,24 @@ impl Wavetable {
     /// first call in the process: call it on the control thread.
     pub fn new(rate: u32) -> Wavetable {
         let mut values = [0.0; ID_SPACE];
-        for p in PARAMS { values[p.id as usize] = p.default; }
+        for p in PARAMS {
+            values[p.id as usize] = p.default;
+        }
         let v = |id: u16| values[id as usize];
         let f = factory();
         let sm = Smoothed {
-            lvl: [Smooth::new(v(osc_id(0, OSC_LEVEL)) / 100.0), Smooth::new(v(osc_id(1, OSC_LEVEL)) / 100.0)],
-            pos: [Smooth::new(v(osc_id(0, POSITION)) / 100.0), Smooth::new(v(osc_id(1, POSITION)) / 100.0)],
-            warp: [Smooth::new(v(osc_id(0, WARP)) / 100.0), Smooth::new(v(osc_id(1, WARP)) / 100.0)],
+            lvl: [
+                Smooth::new(v(osc_id(0, OSC_LEVEL)) / 100.0),
+                Smooth::new(v(osc_id(1, OSC_LEVEL)) / 100.0),
+            ],
+            pos: [
+                Smooth::new(v(osc_id(0, POSITION)) / 100.0),
+                Smooth::new(v(osc_id(1, POSITION)) / 100.0),
+            ],
+            warp: [
+                Smooth::new(v(osc_id(0, WARP)) / 100.0),
+                Smooth::new(v(osc_id(1, WARP)) / 100.0),
+            ],
             sub: Smooth::new(v(SUB_LEVEL) / 100.0),
             noise: Smooth::new(v(NOISE_LEVEL) / 100.0),
             cutoff: Smooth::new(v(CUTOFF).log2()),
@@ -349,11 +404,19 @@ impl Wavetable {
     }
 
     pub fn load_preset(&mut self, preset: &Preset) {
-        for p in PARAMS { if !p.readonly { self.set_param(p.id, p.default); } }
-        for &(id, v) in preset.values { self.set_param(id, v); }
+        for p in PARAMS {
+            if !p.readonly {
+                self.set_param(p.id, p.default);
+            }
+        }
+        for &(id, v) in preset.values {
+            self.set_param(id, v);
+        }
     }
 
-    pub fn presets() -> &'static [Preset] { PRESETS }
+    pub fn presets() -> &'static [Preset] {
+        PRESETS
+    }
 
     /// Loads a user table into oscillator `o` (0 = A, 1 = B); the Table
     /// choice's "User" plays it. Returns the table it replaces, which the
@@ -366,18 +429,29 @@ impl Wavetable {
     }
 
     /// The table oscillator `o` reads now.
-    pub fn table(&self, o: usize) -> &Arc<Table> { &self.tables[o.min(1)] }
+    pub fn table(&self, o: usize) -> &Arc<Table> {
+        &self.tables[o.min(1)]
+    }
 
     /// The user table loaded into oscillator `o`, if any.
-    pub fn user_table(&self, o: usize) -> Option<&Arc<Table>> { self.user[o.min(1)].as_ref() }
+    pub fn user_table(&self, o: usize) -> Option<&Arc<Table>> {
+        self.user[o.min(1)].as_ref()
+    }
 
-    pub fn active_voices(&self) -> usize { self.voices.iter().filter(|v| v.state != State::Free).count() }
+    pub fn active_voices(&self) -> usize {
+        self.voices
+            .iter()
+            .filter(|v| v.state != State::Free)
+            .count()
+    }
 
     /// The pressure each sounding voice uses (0 to 1), for the live bars.
     pub fn pressures(&self, out: &mut [f32]) -> usize {
         let mut n = 0;
         for v in self.voices.iter().filter(|v| v.sounding()) {
-            if n == out.len() { break; }
+            if n == out.len() {
+                break;
+            }
             out[n] = v.pv;
             n += 1;
         }
@@ -387,7 +461,11 @@ impl Wavetable {
     /// Where each oscillator reads now, 0 to 1 through its table: the
     /// newest sounding voice's, else the knob's. For the table visual.
     pub fn live_positions(&self) -> [f32; 2] {
-        let newest = self.voices.iter().filter(|v| v.sounding()).max_by_key(|v| v.age);
+        let newest = self
+            .voices
+            .iter()
+            .filter(|v| v.sounding())
+            .max_by_key(|v| v.age);
         std::array::from_fn(|o| {
             let frames = self.tables[o].frames();
             match newest {
@@ -398,7 +476,9 @@ impl Wavetable {
     }
 
     #[inline]
-    fn v(&self, id: u16) -> f32 { self.values[id as usize] }
+    fn v(&self, id: u16) -> f32 {
+        self.values[id as usize]
+    }
 
     /// Points each oscillator at its chosen table. Clones an `Arc` (no
     /// allocation); the old one is still held by the factory or `user`.
@@ -412,7 +492,9 @@ impl Wavetable {
                 _ if i >= USER_TABLE => &f[0],
                 _ => &f[(i as usize).min(f.len() - 1)],
             };
-            if Arc::ptr_eq(t, &self.tables[o]) { continue; }
+            if Arc::ptr_eq(t, &self.tables[o]) {
+                continue;
+            }
             self.tables[o] = t.clone();
             // Sounding voices move to the new table where they are.
             let tab = &self.tables[o];
@@ -427,15 +509,28 @@ impl Wavetable {
     fn update_pressure(&mut self) {
         let shape = PressureShape::from_params(PRESS_BASE, |id| self.values[id as usize]);
         self.press_c = shape.coefs(self.ctrl_rate());
-        let slots: [Slot; 4] = std::array::from_fn(|n| Slot { target: self.v(press_target(n)) as u8, depth: self.v(press_depth(n)) / 100.0 });
-        self.depths = if shape.mode == PressureMode::Off { Depths::default() } else { Depths::from_slots(&slots) };
+        let slots: [Slot; 4] = std::array::from_fn(|n| Slot {
+            target: self.v(press_target(n)) as u8,
+            depth: self.v(press_depth(n)) / 100.0,
+        });
+        self.depths = if shape.mode == PressureMode::Off {
+            Depths::default()
+        } else {
+            Depths::from_slots(&slots)
+        };
     }
 
-    fn ctrl_rate(&self) -> f32 { self.rate as f32 / CTRL as f32 }
+    fn ctrl_rate(&self) -> f32 {
+        self.rate as f32 / CTRL as f32
+    }
 
     fn update_targets(&mut self) {
         let pan = self.v(PAN) / 100.0;
-        let lvl = if self.v(LEVEL) <= -60.0 { 0.0 } else { 10f32.powf(self.v(LEVEL) / 20.0) };
+        let lvl = if self.v(LEVEL) <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(self.v(LEVEL) / 20.0)
+        };
         for o in 0..2 {
             self.sm.lvl[o].target = self.v(osc_id(o, OSC_LEVEL)) / 100.0;
             self.sm.pos[o].target = self.v(osc_id(o, POSITION)) / 100.0;
@@ -453,8 +548,18 @@ impl Wavetable {
     fn update_envs(&mut self) {
         let fr = self.rate as f32;
         let cr = self.ctrl_rate();
-        let (aa, ad, as_, ar) = (self.v(AMP_A), self.v(AMP_D), self.v(AMP_S) / 100.0, self.v(AMP_R));
-        let (ma, md, ms, mr) = (self.v(MENV_A), self.v(MENV_D), self.v(MENV_S) / 100.0, self.v(MENV_R));
+        let (aa, ad, as_, ar) = (
+            self.v(AMP_A),
+            self.v(AMP_D),
+            self.v(AMP_S) / 100.0,
+            self.v(AMP_R),
+        );
+        let (ma, md, ms, mr) = (
+            self.v(MENV_A),
+            self.v(MENV_D),
+            self.v(MENV_S) / 100.0,
+            self.v(MENV_R),
+        );
         for v in &mut self.voices {
             v.amp.set(aa, ad, as_, ar, fr);
             v.menv.set(ma, md, ms, mr, cr);
@@ -468,7 +573,21 @@ impl Wavetable {
         let [l0, l1] = &mut sm.lvl;
         let [p0, p1] = &mut sm.pos;
         let [w0, w1] = &mut sm.warp;
-        for s in [l0, l1, p0, p1, w0, w1, &mut sm.sub, &mut sm.noise, &mut sm.res, &mut sm.drive, &mut sm.out_l, &mut sm.out_r, &mut sm.cutoff] {
+        for s in [
+            l0,
+            l1,
+            p0,
+            p1,
+            w0,
+            w1,
+            &mut sm.sub,
+            &mut sm.noise,
+            &mut sm.res,
+            &mut sm.drive,
+            &mut sm.out_l,
+            &mut sm.out_r,
+            &mut sm.cutoff,
+        ] {
             s.set_time(cr, 15.0);
             s.snap(s.target);
         }
@@ -478,13 +597,21 @@ impl Wavetable {
     // ---- notes ----
 
     fn note_on(&mut self, note: u8, velocity: u8) {
-        if velocity == 0 { self.note_off(note); return; }
+        if velocity == 0 {
+            self.note_off(note);
+            return;
+        }
         let vel = f32::from(velocity.min(127)) / 127.0;
         self.clock += 1;
-        if self.stack_len == 0 && self.v(LFO_RETRIG) >= 0.5 { self.lfo_phase = 0.0; }
+        if self.stack_len == 0 && self.v(LFO_RETRIG) >= 0.5 {
+            self.lfo_phase = 0.0;
+        }
         let mode = self.v(VOICE_MODE) as u8;
         self.stack_remove(note);
-        if self.stack_len == MAX_POLY { self.stack.copy_within(1.., 0); self.stack_len -= 1; }
+        if self.stack_len == MAX_POLY {
+            self.stack.copy_within(1.., 0);
+            self.stack_len -= 1;
+        }
         let was_held = self.stack_len > 0;
         self.stack[self.stack_len] = note;
         self.stack_len += 1;
@@ -492,14 +619,24 @@ impl Wavetable {
 
         if mode != 0 {
             let legato = mode == 2 && was_held && self.voices[0].state == State::On;
-            let from = if self.voices[0].sounding() { self.voices[0].pitch } else { self.last_pitch };
+            let from = if self.voices[0].sounding() {
+                self.voices[0].pitch
+            } else {
+                self.last_pitch
+            };
             let v = &mut self.voices[0];
             let fresh = v.state == State::Free || v.state == State::Kill;
-            if fresh { Self::fresh(v); }
+            if fresh {
+                Self::fresh(v);
+            }
             v.press.start();
             v.note = note;
             v.target = f32::from(note);
-            v.pitch = if glide && (mode == 1 || legato) { from } else { v.target };
+            v.pitch = if glide && (mode == 1 || legato) {
+                from
+            } else {
+                v.target
+            };
             if !legato {
                 v.vel = vel;
                 v.amp.gate_on();
@@ -509,21 +646,36 @@ impl Wavetable {
             v.age = self.clock;
             self.last_pitch = f32::from(note);
             self.voice_control(0);
-            if fresh { Self::snap_gain(&mut self.voices[0]); }
+            if fresh {
+                Self::snap_gain(&mut self.voices[0]);
+            }
             return;
         }
 
         let from = self.last_pitch;
         self.last_pitch = f32::from(note);
-        let slot = match self.voices.iter().position(|v| v.sounding() && v.note == note) {
+        let slot = match self
+            .voices
+            .iter()
+            .position(|v| v.sounding() && v.note == note)
+        {
             Some(i) => i,
             None => {
                 let poly = (self.v(POLYPHONY) as usize).clamp(1, MAX_POLY);
-                if self.voices.iter().filter(|v| v.sounding()).count() >= poly { self.steal(); }
+                if self.voices.iter().filter(|v| v.sounding()).count() >= poly {
+                    self.steal();
+                }
                 match self.voices.iter().position(|v| v.state == State::Free) {
                     Some(i) => i,
                     None => {
-                        let Some(i) = (0..POOL).min_by(|&a, &b| self.voices[a].kill_gain.total_cmp(&self.voices[b].kill_gain)) else { self.dropped += 1; return };
+                        let Some(i) = (0..POOL).min_by(|&a, &b| {
+                            self.voices[a]
+                                .kill_gain
+                                .total_cmp(&self.voices[b].kill_gain)
+                        }) else {
+                            self.dropped += 1;
+                            return;
+                        };
                         i
                     }
                 }
@@ -532,7 +684,9 @@ impl Wavetable {
         let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
         let v = &mut self.voices[slot];
         let fresh = !v.sounding();
-        if fresh { Self::fresh(v); }
+        if fresh {
+            Self::fresh(v);
+        }
         v.press.start();
         v.note = note;
         v.vel = vel;
@@ -549,7 +703,9 @@ impl Wavetable {
             }
         }
         self.voice_control(slot);
-        if fresh { Self::snap_gain(&mut self.voices[slot]); }
+        if fresh {
+            Self::snap_gain(&mut self.voices[slot]);
+        }
     }
 
     fn snap_gain(v: &mut Voice) {
@@ -571,8 +727,19 @@ impl Wavetable {
     }
 
     fn steal(&mut self) {
-        let rel = (0..POOL).filter(|&i| self.voices[i].state == State::Release).min_by(|&a, &b| self.voices[a].amp.level.total_cmp(&self.voices[b].amp.level));
-        let victim = rel.or_else(|| (0..POOL).filter(|&i| self.voices[i].state == State::On).min_by_key(|&i| self.voices[i].age));
+        let rel = (0..POOL)
+            .filter(|&i| self.voices[i].state == State::Release)
+            .min_by(|&a, &b| {
+                self.voices[a]
+                    .amp
+                    .level
+                    .total_cmp(&self.voices[b].amp.level)
+            });
+        let victim = rel.or_else(|| {
+            (0..POOL)
+                .filter(|&i| self.voices[i].state == State::On)
+                .min_by_key(|&i| self.voices[i].age)
+        });
         if let Some(i) = victim {
             let n = (KILL_MS * 0.001 * self.rate as f32).max(1.0);
             let v = &mut self.voices[i];
@@ -595,12 +762,16 @@ impl Wavetable {
         let glide = self.v(GLIDE) > 0.0;
         if mode != 0 {
             let v = &mut self.voices[0];
-            if v.state != State::On || v.note != note { return; }
+            if v.state != State::On || v.note != note {
+                return;
+            }
             if self.stack_len > 0 {
                 let back = self.stack[self.stack_len - 1];
                 v.note = back;
                 v.target = f32::from(back);
-                if !glide { v.pitch = v.target; }
+                if !glide {
+                    v.pitch = v.target;
+                }
                 self.last_pitch = v.target;
             } else {
                 Self::release(v);
@@ -608,7 +779,9 @@ impl Wavetable {
             return;
         }
         for v in &mut self.voices {
-            if v.state == State::On && v.note == note { Self::release(v); }
+            if v.state == State::On && v.note == note {
+                Self::release(v);
+            }
         }
     }
 
@@ -622,13 +795,17 @@ impl Wavetable {
     fn all_off(&mut self) {
         self.stack_len = 0;
         for v in &mut self.voices {
-            if v.state == State::On { Self::release(v); }
+            if v.state == State::On {
+                Self::release(v);
+            }
         }
     }
 
     fn pressure(&mut self, note: u8, value: u8) {
         for v in &mut self.voices {
-            if v.sounding() && v.note == note { v.press.set(value); }
+            if v.sounding() && v.note == note {
+                v.press.set(value);
+            }
         }
     }
 
@@ -637,7 +814,13 @@ impl Wavetable {
             NodeEvent::NoteOn { note, velocity } => self.note_on(note, velocity),
             NodeEvent::NoteOff { note } => self.note_off(note),
             NodeEvent::Pressure { note, value } => self.pressure(note, value),
-            NodeEvent::Bend { value } => self.sm.bend.target = if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 },
+            NodeEvent::Bend { value } => {
+                self.sm.bend.target = if value.is_finite() {
+                    value.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                }
+            }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
         }
@@ -668,7 +851,13 @@ impl Wavetable {
 
         let c = &self.press_c;
         let chord = if c.mode == PressureMode::Highest {
-            self.chord.step(c, self.voices.iter().filter(|v| v.sounding()).map(|v| (v.state == State::On, v.press.aim(c))))
+            self.chord.step(
+                c,
+                self.voices
+                    .iter()
+                    .filter(|v| v.sounding())
+                    .map(|v| (v.state == State::On, v.press.aim(c))),
+            )
         } else {
             0.0
         };
@@ -680,7 +869,9 @@ impl Wavetable {
                 PressureMode::Highest => chord,
                 PressureMode::Off => 0.0,
             };
-            if v.sounding() { top = top.max(v.pv); }
+            if v.sounding() {
+                top = top.max(v.pv);
+            }
         }
         let vib_hz = self.values[PRESS_VIB_RATE as usize];
         self.vib_phase = (self.vib_phase + vib_hz * CTRL as f32 / self.rate as f32).fract();
@@ -693,15 +884,24 @@ impl Wavetable {
             let beats = ctx.beats + offset as f64 * ctx.bpm / 60.0 / f64::from(ctx.rate);
             self.lfo_phase = (beats / LFO_SYNC_BEATS[sync]).rem_euclid(1.0);
         } else {
-            let hz = if sync > 0 { ctx.bpm / 60.0 / LFO_SYNC_BEATS[sync] } else { f64::from(self.v(LFO_RATE)) };
+            let hz = if sync > 0 {
+                ctx.bpm / 60.0 / LFO_SYNC_BEATS[sync]
+            } else {
+                f64::from(self.v(LFO_RATE))
+            };
             let hz = hz * f64::from(exp2(self.depths.get(target::LFO_RATE) * 2.0 * top));
-            self.lfo_phase = (self.lfo_phase + hz * CTRL as f64 / f64::from(self.rate)).rem_euclid(1.0);
+            self.lfo_phase =
+                (self.lfo_phase + hz * CTRL as f64 / f64::from(self.rate)).rem_euclid(1.0);
         }
-        if self.lfo_phase < prev { self.lfo_held = self.rng.bipolar(); }
+        if self.lfo_phase < prev {
+            self.lfo_held = self.rng.bipolar();
+        }
         self.sh.lfo = lfo_value(shape, self.lfo_phase as f32, self.lfo_held);
 
         for i in 0..POOL {
-            if self.voices[i].state != State::Free { self.voice_control(i); }
+            if self.voices[i].state != State::Free {
+                self.voice_control(i);
+            }
         }
     }
 
@@ -714,8 +914,16 @@ impl Wavetable {
         let spread = self.v(UNISON_SPREAD) / 100.0;
         let bend = self.sm.bend.value * self.v(BEND_RANGE);
         let glide_ms = self.v(GLIDE);
-        let glide_c = if glide_ms > 0.0 { seg_coef(glide_ms, self.ctrl_rate()) } else { 1.0 };
-        let tune: [f32; 2] = std::array::from_fn(|o| self.v(osc_id(o, OCT)) * 12.0 + self.v(osc_id(o, SEMI)) + self.v(osc_id(o, FINE)) / 100.0);
+        let glide_c = if glide_ms > 0.0 {
+            seg_coef(glide_ms, self.ctrl_rate())
+        } else {
+            1.0
+        };
+        let tune: [f32; 2] = std::array::from_fn(|o| {
+            self.v(osc_id(o, OCT)) * 12.0
+                + self.v(osc_id(o, SEMI))
+                + self.v(osc_id(o, FINE)) / 100.0
+        });
         let vib = lfo * self.v(LFO_PITCH);
         let d = self.depths;
         let vib_p = self.vib;
@@ -733,7 +941,10 @@ impl Wavetable {
         let res = self.sm.res.value;
         let base_pos = [self.sm.pos[0].value, self.sm.pos[1].value];
         let base_warp = [self.sm.warp[0].value, self.sm.warp[1].value];
-        let modes = [self.v(osc_id(0, WARP_MODE)) as u8, self.v(osc_id(1, WARP_MODE)) as u8];
+        let modes = [
+            self.v(osc_id(0, WARP_MODE)) as u8,
+            self.v(osc_id(1, WARP_MODE)) as u8,
+        ];
         let (drive_gain, drive_amt) = (self.sh.drive_gain, self.sh.drive_amt);
         let norm = VOICE_GAIN / (unison as f32).sqrt();
         let tabs = [&self.tables[0], &self.tables[1]];
@@ -741,13 +952,21 @@ impl Wavetable {
         let v = &mut self.voices[i];
         let p = v.pv;
         v.pitch += (v.target - v.pitch) * glide_c;
-        if (v.target - v.pitch).abs() < 1e-4 { v.pitch = v.target; }
+        if (v.target - v.pitch).abs() < 1e-4 {
+            v.pitch = v.target;
+        }
         let mut base = v.pitch + bend + vib;
-        if d.any { base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p); }
+        if d.any {
+            base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
+        }
         let me = v.menv.next();
         for o in 0..2 {
             // Position: knob, mod env, LFO (unipolar sweep up), velocity, pressure.
-            let pos = base_pos[o] + me * menv_pos[o] + (0.5 + 0.5 * lfo) * lfo_pos[o] + (v.vel - 0.5) * vel_pos + p * d.get(target::POSITION);
+            let pos = base_pos[o]
+                + me * menv_pos[o]
+                + (0.5 + 0.5 * lfo) * lfo_pos[o]
+                + (v.vel - 0.5) * vel_pos
+                + p * d.get(target::POSITION);
             let at = pos.clamp(0.0, 1.0) * (tabs[o].frames() - 1) as f32;
             let from = if v.snap { at } else { v.pos[o] };
             v.pos[o] = at;
@@ -755,7 +974,11 @@ impl Wavetable {
             v.warp[o] = Warp::new(modes[o], w);
             let mut top = 0.0f32;
             for u in 0..unison {
-                let pos = if unison > 1 { u as f32 / (unison - 1) as f32 * 2.0 - 1.0 } else { 0.0 };
+                let pos = if unison > 1 {
+                    u as f32 / (unison - 1) as f32 * 2.0 - 1.0
+                } else {
+                    0.0
+                };
                 let cents = pos * detune * if o == 0 { 1.0 } else { -0.7 };
                 v.dt[o][u] = (note_hz(base + tune[o] + cents) / rate).min(0.45);
                 top = top.max(v.dt[o][u]);
@@ -766,13 +989,22 @@ impl Wavetable {
         }
         v.snap = false;
         for u in 0..unison {
-            let pos = if unison > 1 { u as f32 / (unison - 1) as f32 * 2.0 - 1.0 } else { 0.0 };
+            let pos = if unison > 1 {
+                u as f32 / (unison - 1) as f32 * 2.0 - 1.0
+            } else {
+                0.0
+            };
             let q = pos * spread;
             v.pan_l[u] = (1.0 - q).sqrt();
             v.pan_r[u] = (1.0 + q).sqrt();
         }
         v.dt_sub = (note_hz(base + tune[0] - 12.0) / rate).min(0.45);
-        let oct = cutoff + me * menv_cut + (f32::from(v.note) - 60.0) / 12.0 * key + v.vel * vel_cut + lfo_cut + p * d.get(target::CUTOFF) * 4.0;
+        let oct = cutoff
+            + me * menv_cut
+            + (f32::from(v.note) - 60.0) / 12.0 * key
+            + v.vel * vel_cut
+            + lfo_cut
+            + p * d.get(target::CUTOFF) * 4.0;
         let res = (res + p * d.get(target::RESONANCE)).clamp(0.0, 1.0);
         v.coefs = FilterCoefs::new(exp2(oct), res, rate);
         v.drive_gain = drive_gain;
@@ -790,7 +1022,9 @@ impl Wavetable {
         let mode = FilterMode::from_index(f32::from(s.mode));
         let (ta, tb) = (&*self.tables[0], &*self.tables[1]);
         for v in &mut self.voices {
-            if v.state == State::Free { continue; }
+            if v.state == State::Free {
+                continue;
+            }
             let (wa, wb) = (v.warp[0], v.warp[1]);
             // B is read when heard or when it frequency-modulates A; A when
             // heard or when it modulates B.
@@ -827,8 +1061,12 @@ impl Wavetable {
                 v.run[0].t += ra.t_inc;
                 v.run[1].t += rb.t_inc;
                 let mut c = 0.0;
-                if use_sub { c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub; }
-                if use_noise { c += self.rng.bipolar() * s.noise; }
+                if use_sub {
+                    c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
+                }
+                if use_noise {
+                    c += self.rng.bipolar() * s.noise;
+                }
                 let l = drive(l + c, v.drive_gain, v.drive_amt);
                 let r = drive(r + c, v.drive_gain, v.drive_amt);
                 let l = v.filt[0].process(mode, &v.coefs, l);
@@ -837,12 +1075,17 @@ impl Wavetable {
                 v.gain += v.gain_inc;
                 if v.state == State::Kill {
                     v.kill_gain -= v.kill_step;
-                    if v.kill_gain <= 0.0 { v.kill_gain = 0.0; v.state = State::Free; }
+                    if v.kill_gain <= 0.0 {
+                        v.kill_gain = 0.0;
+                        v.state = State::Free;
+                    }
                     g *= v.kill_gain;
                 }
                 left[k] += l * g * s.out_l;
                 right[k] += r * g * s.out_r;
-                if v.state == State::Free { break; }
+                if v.state == State::Free {
+                    break;
+                }
                 if v.amp.idle() && v.state != State::On {
                     v.state = State::Free;
                     break;
@@ -853,18 +1096,35 @@ impl Wavetable {
 }
 
 impl Node for Wavetable {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { PARAMS }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        PARAMS
+    }
 
     fn set_param(&mut self, id: u16, value: f32) {
         let Some(p) = info(id) else { return };
-        if p.readonly { return; }
+        if p.readonly {
+            return;
+        }
         self.values[id as usize] = p.clamp(value);
         self.update_targets();
-        if matches!(id, AMP_A | AMP_D | AMP_S | AMP_R | MENV_A | MENV_D | MENV_S | MENV_R) { self.update_envs(); }
-        if id == TABLE || id == OSC_B + TABLE { self.pick_tables(); }
-        if id >= PRESS_BASE { self.update_pressure(); }
-        if id == VOICE_MODE { self.all_off(); }
+        if matches!(
+            id,
+            AMP_A | AMP_D | AMP_S | AMP_R | MENV_A | MENV_D | MENV_S | MENV_R
+        ) {
+            self.update_envs();
+        }
+        if id == TABLE || id == OSC_B + TABLE {
+            self.pick_tables();
+        }
+        if id >= PRESS_BASE {
+            self.update_pressure();
+        }
+        if id == VOICE_MODE {
+            self.all_off();
+        }
     }
 
     fn param(&self, id: u16) -> f32 {
@@ -884,7 +1144,9 @@ impl Node for Wavetable {
     }
 
     fn reset(&mut self) {
-        for v in &mut self.voices { *v = Voice::new(); }
+        for v in &mut self.voices {
+            *v = Voice::new();
+        }
         self.update_envs();
         self.reset_smoothers();
         self.stack_len = 0;
@@ -897,7 +1159,9 @@ impl Node for Wavetable {
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         assert_eq!(left.len(), right.len());
-        if ctx.rate != self.rate { self.prepare(ctx.rate, left.len()); }
+        if ctx.rate != self.rate {
+            self.prepare(ctx.rate, left.len());
+        }
         let len = left.len();
         let mut at = 0usize;
         let mut i = 0usize;
@@ -909,13 +1173,17 @@ impl Node for Wavetable {
             let next = events.get(i).map_or(len, |e| (e.offset as usize).min(len));
             while at < next {
                 let abs = ctx.frame + at as u64;
-                if abs.is_multiple_of(CTRL) { self.control(ctx, at); }
+                if abs.is_multiple_of(CTRL) {
+                    self.control(ctx, at);
+                }
                 let end = next.min(at + (CTRL - abs % CTRL) as usize);
                 self.render(at, end, left, right);
                 at = end;
             }
         }
-        for e in &events[i..] { self.apply(&e.ev); }
+        for e in &events[i..] {
+            self.apply(&e.ev);
+        }
         self.meter_voices = self.voices.iter().filter(|v| v.sounding()).count() as f32;
     }
 
@@ -932,9 +1200,13 @@ mod tests {
     #[test]
     fn params_are_sound() {
         mpfree_node::check_params(PARAMS).unwrap();
-        for p in PARAMS { assert!((p.id as usize) < ID_SPACE); }
+        for p in PARAMS {
+            assert!((p.id as usize) < ID_SPACE);
+        }
         for preset in PRESETS {
-            for &(id, _) in preset.values { assert!(info(id).is_some(), "{}: id {id}", preset.name); }
+            for &(id, _) in preset.values {
+                assert!(info(id).is_some(), "{}: id {id}", preset.name);
+            }
         }
     }
 

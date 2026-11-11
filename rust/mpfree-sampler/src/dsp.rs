@@ -17,7 +17,11 @@ pub fn hermite(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
 /// Linear gain from decibels.
 #[inline]
 pub fn db_to_gain(db: f32) -> f32 {
-    if db <= -120.0 { 0.0 } else { 10f32.powf(db / 20.0) }
+    if db <= -120.0 {
+        0.0
+    } else {
+        10f32.powf(db / 20.0)
+    }
 }
 
 /// Equal-power pan: `pan` from -1 (left) to +1 (right), returns (left, right) gains.
@@ -45,15 +49,30 @@ pub struct Ahdsr {
 
 impl Ahdsr {
     /// Open: instant attack, full sustain, a short release so nothing clicks.
-    pub const OPEN: Ahdsr = Ahdsr { attack_ms: 0.0, hold_ms: 0.0, decay_ms: 0.0, sustain: 1.0, release_ms: 5.0 };
+    pub const OPEN: Ahdsr = Ahdsr {
+        attack_ms: 0.0,
+        hold_ms: 0.0,
+        decay_ms: 0.0,
+        sustain: 1.0,
+        release_ms: 5.0,
+    };
 }
 
 impl Default for Ahdsr {
-    fn default() -> Self { Ahdsr::OPEN }
+    fn default() -> Self {
+        Ahdsr::OPEN
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage { Attack, Hold, Decay, Sustain, Release, Done }
+enum Stage {
+    Attack,
+    Hold,
+    Decay,
+    Sustain,
+    Release,
+    Done,
+}
 
 /// Envelope level below which a release counts as finished (about -80 dB).
 const FLOOR: f32 = 1.0e-4;
@@ -80,15 +99,28 @@ fn exp_coef(ms: f32, rate: f32) -> f32 {
 
 impl Envelope {
     pub fn idle() -> Envelope {
-        Envelope { stage: Stage::Done, level: 0.0, attack_step: 1.0, hold_left: 0,
-            decay_coef: 0.0, sustain: 1.0, release_coef: 0.0 }
+        Envelope {
+            stage: Stage::Done,
+            level: 0.0,
+            attack_step: 1.0,
+            hold_left: 0,
+            decay_coef: 0.0,
+            sustain: 1.0,
+            release_coef: 0.0,
+        }
     }
 
     pub fn start(p: &Ahdsr, rate: f32) -> Envelope {
         let attack_n = (p.attack_ms.max(0.0) * 0.001 * rate).max(0.0);
-        let (stage, level, attack_step) = if attack_n < 1.0 { (Stage::Hold, 1.0, 1.0) } else { (Stage::Attack, 0.0, 1.0 / attack_n) };
+        let (stage, level, attack_step) = if attack_n < 1.0 {
+            (Stage::Hold, 1.0, 1.0)
+        } else {
+            (Stage::Attack, 0.0, 1.0 / attack_n)
+        };
         Envelope {
-            stage, level, attack_step,
+            stage,
+            level,
+            attack_step,
             hold_left: (p.hold_ms.max(0.0) * 0.001 * rate) as u32,
             decay_coef: exp_coef(p.decay_ms, rate),
             sustain: p.sustain.clamp(0.0, 1.0),
@@ -97,33 +129,57 @@ impl Envelope {
     }
 
     pub fn release(&mut self) {
-        if self.stage != Stage::Done { self.stage = Stage::Release; }
+        if self.stage != Stage::Done {
+            self.stage = Stage::Release;
+        }
     }
 
-    pub fn is_done(&self) -> bool { self.stage == Stage::Done }
-    pub fn is_releasing(&self) -> bool { self.stage == Stage::Release }
-    pub fn level(&self) -> f32 { self.level }
+    pub fn is_done(&self) -> bool {
+        self.stage == Stage::Done
+    }
+    pub fn is_releasing(&self) -> bool {
+        self.stage == Stage::Release
+    }
+    pub fn level(&self) -> f32 {
+        self.level
+    }
 
     #[inline]
     pub fn next(&mut self) -> f32 {
         match self.stage {
             Stage::Attack => {
                 self.level += self.attack_step;
-                if self.level >= 1.0 { self.level = 1.0; self.stage = Stage::Hold; }
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.stage = Stage::Hold;
+                }
             }
             Stage::Hold => {
-                if self.hold_left == 0 { self.stage = Stage::Decay; } else { self.hold_left -= 1; }
+                if self.hold_left == 0 {
+                    self.stage = Stage::Decay;
+                } else {
+                    self.hold_left -= 1;
+                }
             }
             Stage::Decay => {
                 self.level = self.sustain + (self.level - self.sustain) * self.decay_coef;
-                if (self.level - self.sustain).abs() < FLOOR { self.level = self.sustain; self.stage = Stage::Sustain; }
+                if (self.level - self.sustain).abs() < FLOOR {
+                    self.level = self.sustain;
+                    self.stage = Stage::Sustain;
+                }
             }
             Stage::Sustain => {
-                if self.sustain <= 0.0 { self.level = 0.0; self.stage = Stage::Done; }
+                if self.sustain <= 0.0 {
+                    self.level = 0.0;
+                    self.stage = Stage::Done;
+                }
             }
             Stage::Release => {
                 self.level *= self.release_coef;
-                if self.level < FLOOR { self.level = 0.0; self.stage = Stage::Done; }
+                if self.level < FLOOR {
+                    self.level = 0.0;
+                    self.stage = Stage::Done;
+                }
             }
             Stage::Done => self.level = 0.0,
         }
@@ -132,7 +188,12 @@ impl Envelope {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FilterKind { Off, LowPass, HighPass, BandPass }
+pub enum FilterKind {
+    Off,
+    LowPass,
+    HighPass,
+    BandPass,
+}
 
 /// A filter setting. `poles` is 2 or 4 (4 = two 2-pole stages in series).
 /// `env_octaves` is how far the filter envelope moves the cutoff at full level.
@@ -147,7 +208,15 @@ pub struct Filter {
 }
 
 impl Default for Filter {
-    fn default() -> Self { Filter { kind: FilterKind::Off, poles: 2, cutoff_hz: 20_000.0, resonance: 0.0, env_octaves: 0.0 } }
+    fn default() -> Self {
+        Filter {
+            kind: FilterKind::Off,
+            poles: 2,
+            cutoff_hz: 20_000.0,
+            resonance: 0.0,
+            env_octaves: 0.0,
+        }
+    }
 }
 
 /// One 2-pole topology-preserving state-variable filter stage per channel
@@ -195,7 +264,9 @@ impl Svf {
 pub struct Rng(u32);
 
 impl Rng {
-    pub fn new(seed: u32) -> Rng { Rng(if seed == 0 { 0x9E37_79B9 } else { seed }) }
+    pub fn new(seed: u32) -> Rng {
+        Rng(if seed == 0 { 0x9E37_79B9 } else { seed })
+    }
     pub fn next_u32(&mut self) -> u32 {
         let mut x = self.0;
         x ^= x << 13;
@@ -205,7 +276,9 @@ impl Rng {
         x
     }
     /// 0..n (n > 0).
-    pub fn below(&mut self, n: u32) -> u32 { self.next_u32() % n.max(1) }
+    pub fn below(&mut self, n: u32) -> u32 {
+        self.next_u32() % n.max(1)
+    }
 }
 
 #[cfg(test)]
@@ -236,17 +309,37 @@ mod tests {
     #[test]
     fn envelope_runs_its_stages() {
         let rate = 1000.0; // 1 sample = 1 ms
-        let p = Ahdsr { attack_ms: 10.0, hold_ms: 5.0, decay_ms: 50.0, sustain: 0.5, release_ms: 20.0 };
+        let p = Ahdsr {
+            attack_ms: 10.0,
+            hold_ms: 5.0,
+            decay_ms: 50.0,
+            sustain: 0.5,
+            release_ms: 20.0,
+        };
         let mut e = Envelope::start(&p, rate);
         let mut peak_at = 0;
-        for i in 0..10 { if e.next() >= 1.0 { peak_at = i; break; } }
+        for i in 0..10 {
+            if e.next() >= 1.0 {
+                peak_at = i;
+                break;
+            }
+        }
         assert_eq!(peak_at, 9, "linear attack reaches 1 after 10 samples");
-        for _ in 0..200 { e.next(); }
+        for _ in 0..200 {
+            e.next();
+        }
         assert!((e.level() - 0.5).abs() < 1e-3, "settles at sustain");
         e.release();
         let mut n = 0;
-        while !e.is_done() { e.next(); n += 1; assert!(n < 100); }
-        assert!((19..=21).contains(&n), "release takes about its time, took {n}");
+        while !e.is_done() {
+            e.next();
+            n += 1;
+            assert!(n < 100);
+        }
+        assert!(
+            (19..=21).contains(&n),
+            "release takes about its time, took {n}"
+        );
     }
 
     #[test]
@@ -261,7 +354,9 @@ mod tests {
         let mut f = Svf::default();
         f.set(1000.0, 0.0, rate);
         let mut y = 0.0;
-        for _ in 0..4000 { y = f.process(0, 1.0, FilterKind::LowPass); }
+        for _ in 0..4000 {
+            y = f.process(0, 1.0, FilterKind::LowPass);
+        }
         assert!((y - 1.0).abs() < 1e-3, "DC passes: {y}");
         let mut f = Svf::default();
         f.set(200.0, 0.0, rate);
@@ -269,7 +364,9 @@ mod tests {
         for i in 0..4000 {
             let x = if i % 2 == 0 { 1.0 } else { -1.0 }; // Nyquist
             let y = f.process(0, x, FilterKind::LowPass);
-            if i > 2000 { peak = peak.max(y.abs()); }
+            if i > 2000 {
+                peak = peak.max(y.abs());
+            }
         }
         assert!(peak < 1e-3, "Nyquist is cut: {peak}");
     }
@@ -278,6 +375,8 @@ mod tests {
     fn rng_is_repeatable() {
         let mut a = Rng::new(7);
         let mut b = Rng::new(7);
-        for _ in 0..10 { assert_eq!(a.next_u32(), b.next_u32()); }
+        for _ in 0..10 {
+            assert_eq!(a.next_u32(), b.next_u32());
+        }
     }
 }

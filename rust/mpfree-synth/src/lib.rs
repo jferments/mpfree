@@ -27,9 +27,9 @@
 //! output for any block size (`tests/` checks both).
 #![forbid(unsafe_code)]
 
-pub mod dsp;
 pub mod drum;
 pub mod drum_params;
+pub mod dsp;
 pub mod dx7;
 pub mod fm;
 pub mod fm_params;
@@ -40,9 +40,9 @@ pub mod poly;
 pub mod pressure;
 pub mod wavetable;
 
-pub use params::{Preset, PARAMS, PRESETS};
 pub use drum::Drums;
 pub use fm::Fm;
+pub use params::{Preset, PARAMS, PRESETS};
 pub use pluck::Pluck;
 pub use poly::Poly;
 pub use wavetable::Wavetable;

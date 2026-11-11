@@ -64,7 +64,11 @@ pub use drive::Drive;
 pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
-pub use mixer::{param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig, MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB};
+pub use mixer::{
+    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig,
+    MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS,
+    SILENT_DB,
+};
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
@@ -101,26 +105,48 @@ pub struct Preset {
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,
 /// so a mix of 0 or 100 % passes the dry or wet signal bit for bit.
 #[inline]
-pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 { a * (1.0 - t) + b * t }
+pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a * (1.0 - t) + b * t
+}
 
 /// Decibels to a linear gain.
 #[inline]
-pub fn db_to_gain(db: f32) -> f32 { 10f32.powf(db * 0.05) }
+pub fn db_to_gain(db: f32) -> f32 {
+    10f32.powf(db * 0.05)
+}
 
 /// A linear gain to decibels (-180 dB for silence).
 #[inline]
-pub fn gain_to_db(g: f32) -> f32 { if g <= 1e-9 { -180.0 } else { 20.0 * g.log10() } }
+pub fn gain_to_db(g: f32) -> f32 {
+    if g <= 1e-9 {
+        -180.0
+    } else {
+        20.0 * g.log10()
+    }
+}
 
 /// Flushes values too small to hear to zero, so feedback paths never sit in
 /// slow denormal arithmetic on ARM.
 #[inline]
-pub(crate) fn flush(x: f32) -> f32 { if x.abs() < 1e-20 { 0.0 } else { x } }
+pub(crate) fn flush(x: f32) -> f32 {
+    if x.abs() < 1e-20 {
+        0.0
+    } else {
+        x
+    }
+}
 
 /// A cheap, smooth saturator: about `x` for small `x`, exactly 1 in size
 /// from |x| = 3 up, with no corner.
 #[inline]
 pub(crate) fn soft(x: f32) -> f32 {
-    if x >= 3.0 { 1.0 } else if x <= -3.0 { -1.0 } else { x * (27.0 + x * x) / (27.0 + 9.0 * x * x) }
+    if x >= 3.0 {
+        1.0
+    } else if x <= -3.0 {
+        -1.0
+    } else {
+        x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
+    }
 }
 
 /// `tanh(x)` to within about 2e-7, without the library call: a rational
@@ -132,18 +158,34 @@ pub(crate) fn fast_tanh(x: f32) -> f32 {
     const CLAMP: f32 = 7.905_311;
     let x = x.clamp(-CLAMP, CLAMP);
     let x2 = x * x;
-    let p = (((((-2.760_768_5e-16 * x2 + 2.000_188e-13) * x2 - 8.604_672e-11) * x2 + 5.122_297e-8) * x2
-        + 1.485_722_4e-5) * x2 + 6.372_619_3e-4) * x2 + 4.893_524_6e-3;
+    let p = (((((-2.760_768_5e-16 * x2 + 2.000_188e-13) * x2 - 8.604_672e-11) * x2
+        + 5.122_297e-8)
+        * x2
+        + 1.485_722_4e-5)
+        * x2
+        + 6.372_619_3e-4)
+        * x2
+        + 4.893_524_6e-3;
     let q = ((1.198_258_4e-6 * x2 + 1.185_347_1e-4) * x2 + 2.268_434_6e-3) * x2 + 4.893_525e-3;
     (x * p / q).clamp(-1.0, 1.0)
 }
 
 /// A one-pole DC blocker for one channel.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct DcBlock { r: f32, x1: f32, y1: f32 }
+pub(crate) struct DcBlock {
+    r: f32,
+    x1: f32,
+    y1: f32,
+}
 
 impl DcBlock {
-    pub(crate) fn new() -> DcBlock { DcBlock { r: 0.9995, x1: 0.0, y1: 0.0 } }
+    pub(crate) fn new() -> DcBlock {
+        DcBlock {
+            r: 0.9995,
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
     /// Sets the corner frequency.
     pub(crate) fn set(&mut self, hz: f32, rate: u32) {
         self.r = (-2.0 * std::f32::consts::PI * hz / rate as f32).exp();
@@ -155,28 +197,48 @@ impl DcBlock {
         self.y1 = flush(y);
         y
     }
-    pub(crate) fn reset(&mut self) { self.x1 = 0.0; self.y1 = 0.0; }
+    pub(crate) fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
 }
 
 /// A fixed delay of whole frames for one channel (latency matching).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FixedDelay { buf: Vec<f32>, pos: usize }
+pub(crate) struct FixedDelay {
+    buf: Vec<f32>,
+    pos: usize,
+}
 
 impl FixedDelay {
     /// Allocates for `frames` of delay (control thread).
-    pub(crate) fn new(frames: usize) -> FixedDelay { FixedDelay { buf: vec![0.0; frames], pos: 0 } }
+    pub(crate) fn new(frames: usize) -> FixedDelay {
+        FixedDelay {
+            buf: vec![0.0; frames],
+            pos: 0,
+        }
+    }
     #[cfg(test)]
-    pub(crate) fn frames(&self) -> usize { self.buf.len() }
+    pub(crate) fn frames(&self) -> usize {
+        self.buf.len()
+    }
     #[inline]
     pub(crate) fn run(&mut self, x: f32) -> f32 {
-        if self.buf.is_empty() { return x; }
+        if self.buf.is_empty() {
+            return x;
+        }
         let y = self.buf[self.pos];
         self.buf[self.pos] = x;
         self.pos += 1;
-        if self.pos == self.buf.len() { self.pos = 0; }
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
         y
     }
-    pub(crate) fn reset(&mut self) { self.buf.fill(0.0); self.pos = 0; }
+    pub(crate) fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.pos = 0;
+    }
 }
 
 /// A small, fast, deterministic random source (dither, noise).
@@ -184,7 +246,9 @@ impl FixedDelay {
 pub(crate) struct Rng(u32);
 
 impl Rng {
-    pub(crate) fn new(seed: u32) -> Rng { Rng(if seed == 0 { 0x9E37_79B9 } else { seed }) }
+    pub(crate) fn new(seed: u32) -> Rng {
+        Rng(if seed == 0 { 0x9E37_79B9 } else { seed })
+    }
     /// Uniform in [-1, 1).
     #[inline]
     pub(crate) fn bipolar(&mut self) -> f32 {
@@ -257,7 +321,10 @@ mod tests {
     #[test]
     fn fixed_delay_delays() {
         let mut d = FixedDelay::new(3);
-        let out: Vec<f32> = [1.0, 2.0, 3.0, 4.0, 5.0].iter().map(|&x| d.run(x)).collect();
+        let out: Vec<f32> = [1.0, 2.0, 3.0, 4.0, 5.0]
+            .iter()
+            .map(|&x| d.run(x))
+            .collect();
         assert_eq!(out, [0.0, 0.0, 0.0, 1.0, 2.0]);
         let mut z = FixedDelay::new(0);
         assert_eq!(z.run(7.0), 7.0);

@@ -15,8 +15,7 @@ fn main() {
     let mut args = std::env::args();
     let _exe = args.next();
     let mode = args.next();
-    if args.next().is_some()
-        || !matches!(mode.as_deref(), Some("--self-test" | "--offline-check"))
+    if args.next().is_some() || !matches!(mode.as_deref(), Some("--self-test" | "--offline-check"))
     {
         eprintln!("Usage: mpfree-session --self-test|--offline-check");
         std::process::exit(64);
@@ -51,7 +50,10 @@ fn main() {
             println!("late_starts={}", s.late_starts);
             println!("max_callback_us={}", s.max_callback_ns.div_ceil(1000));
             println!("p99_callback_us={}", s.p99_callback_ns.div_ceil(1000));
-            println!("max_start_lateness_us={}", s.max_start_lateness_ns.div_ceil(1000));
+            println!(
+                "max_start_lateness_us={}",
+                s.max_start_lateness_ns.div_ceil(1000)
+            );
             println!("total_render_us={}", s.total_render_ns.div_ceil(1000));
             println!("wall_elapsed_us={}", s.wall_elapsed_ns.div_ceil(1000));
             println!("groove_events={}", s.audio.groove_events);
