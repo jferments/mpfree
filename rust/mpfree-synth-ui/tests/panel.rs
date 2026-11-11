@@ -232,7 +232,63 @@ fn the_cards_follow_the_page_and_open_their_page() {
     r.panel.step_page(&mut r.ui, 1);
     assert_eq!(r.panel.pages()[r.panel.page()].name, "Voice");
     r.panel.step_page(&mut r.ui, 1);
+    assert_eq!(r.panel.pages()[r.panel.page()].name, "Pressure");
+    r.panel.step_page(&mut r.ui, 1);
     assert_eq!(r.panel.pages()[r.panel.page()].name, "Osc");
+}
+
+#[test]
+fn the_pressure_page_draws_the_curve_and_live_bars() {
+    let mut r = rig("Brass");
+    r.page("Pressure");
+    let titles = |r: &Rig| r.ui.get::<Visuals>(VISUALS).unwrap().cards.iter().map(|c| c.title.clone()).collect::<Vec<_>>();
+    assert_eq!(titles(&r), ["Pressure", "Voices"]);
+    // The app passes in each sounding voice's pressure.
+    sample::press_chord(&mut r.node);
+    let mut out = [0.0; 16];
+    let n = r.node.pressures(&mut out);
+    assert_eq!(n, 4);
+    r.panel.set_pressures(&mut r.ui, &out[..n]);
+    let cards = &r.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards[1].caption, "4 sounding");
+    assert!(cards[1].bars[0] > 0.8 && cards[1].bars[2] == 0.0, "{:?}", cards[1].bars);
+    // The curve is flat to the threshold, then rises to 1 at full.
+    let curve = &cards[0].traces[0].pts;
+    assert!(curve.iter().filter(|p| p.0 < 0.08).all(|p| p.1 == 0.0));
+    assert!(curve.iter().filter(|p| p.0 >= 0.85).all(|p| (p.1 - 1.0).abs() < 1e-6));
+    // Slot depths read in their targets' units.
+    let tiles = &r.ui.get::<TileGrid>(TILES).unwrap().tiles;
+    let depth = |label: &str| tiles.iter().find(|t| t.label == label).map(|t| format!("{} {}", t.value, t.unit)).unwrap();
+    assert_eq!(depth("Depth 1"), "9 dB swell");
+    assert_eq!(depth("Depth 2"), "+1.5 oct");
+    assert_eq!(depth("Depth 3"), "— ");
+    // Turning the threshold redraws the curve's flat start.
+    let (x, y) = centre(r.tile(pp::PRESS_THRESHOLD));
+    r.tap(x, y);
+    // 20 detents of half a percent each: 8 % to 18 %.
+    for _ in 0..20 {
+        if let Some(a) = r.panel.wheel(&mut r.ui, 1) {
+            r.apply(&a);
+        }
+    }
+    assert!((r.node.param(pp::PRESS_THRESHOLD) - 18.0).abs() < 1e-3);
+    let cards = &r.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert!(cards[0].traces[0].pts.iter().filter(|p| p.0 < 0.18).all(|p| p.1 == 0.0));
+    // A tap on a card stays on the Pressure page; Osc is back a step.
+    r.panel.step_page(&mut r.ui, 1);
+    assert_eq!(titles(&r), ["Osc", "Filter", "Env", "LFO"]);
+}
+
+#[test]
+fn fm_shows_its_visual_strip_on_the_pressure_page_only() {
+    let s = sample::samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == "synth-fm-pressure").unwrap();
+    assert_eq!(s.panel.layout(), LAYOUT);
+    let mut s = s;
+    let cards = &s.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards.len(), 2);
+    assert!(cards[1].bars.iter().filter(|&&b| b > 0.0).count() == 3, "{:?}", cards[1].bars);
+    s.panel.step_page(&mut s.ui, -1);
+    assert_eq!(s.panel.layout(), PLAIN_LAYOUT);
 }
 
 #[test]

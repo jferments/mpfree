@@ -29,6 +29,28 @@ pub fn value_text(p: &ParamInfo, v: f32) -> (String, &'static str) {
     }
 }
 
+/// A pressure slot's reach at full pressure, such as "+1.5 oct" or "9 dB
+/// swell": `amount` in the target's `unit` (see `mpfree_synth::pressure`).
+/// A level depth is a swell when positive and a duck when negative.
+pub fn amount_text(target: &str, amount: f32, unit: Unit) -> (String, &'static str) {
+    if target == "Level" {
+        let n = trim(amount.abs(), 1);
+        return (n, if amount < 0.0 { "dB duck" } else { "dB swell" });
+    }
+    let p = ParamInfo { id: 0, name: "", group: "", min: -1e6, max: 1e6, default: 0.0, unit, curve: Curve::Linear, readonly: false };
+    let short = |v: f32| {
+        let s = signed(v, 2, true);
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    };
+    match unit {
+        Unit::Octaves | Unit::Semitones => (short(amount), value_text(&p, amount).1),
+        // Brightness and feedback are in steps (an FM output level step is
+        // 0.75 dB).
+        Unit::None => (short((amount * 10.0).round() / 10.0), "steps"),
+        _ => value_text(&p, amount),
+    }
+}
+
 /// The value and unit on one line, as the Q-Link strip shows it.
 pub fn value_line(p: &ParamInfo, v: f32) -> String {
     let (n, u) = value_text(p, v);
