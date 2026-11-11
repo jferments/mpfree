@@ -47,8 +47,8 @@ use mpfree_seq::{Clip, ModelError, Note, Project, MAX_CLIP_TICKS, MAX_NOTES, SLO
 use mpfree_transport::time::{ceil_to, ticks_in, Meter, Tick};
 use mpfree_transport::Block;
 
-/// Note starts and ends kept in the history: about 13 minutes of 1/16
-/// notes on two pads at 120 BPM.
+/// Note starts and ends kept in the history: 8192 notes, about 8 minutes
+/// of 1/16 notes on two pads at 120 BPM.
 pub const MAX_HITS: usize = 16384;
 /// Notes one period can bring.
 pub const MAX_INPUT: usize = 256;

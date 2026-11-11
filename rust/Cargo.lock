@@ -378,6 +378,7 @@ name = "mpfree-capture"
 version = "0.1.0"
 dependencies = [
  "mpfree-play",
+ "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
 ]

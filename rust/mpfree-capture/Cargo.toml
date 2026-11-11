@@ -13,3 +13,6 @@ path = "src/lib.rs"
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
 mpfree-play = { path = "../mpfree-play" }
+
+[dev-dependencies]
+mpfree-sampler = { path = "../mpfree-sampler" }

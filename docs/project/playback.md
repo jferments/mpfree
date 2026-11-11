@@ -138,6 +138,6 @@ All the sounds are synthesised in the tool. It prints the take track bar by bar 
 
 ## Next
 
-- CAPTURE (SHIFT+REC keeps what was just played, even without recording).
+- CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - The looper (T4).
 - Device work waits for the pad player's round 5 (PR #31).
