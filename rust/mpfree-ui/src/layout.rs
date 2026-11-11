@@ -234,8 +234,8 @@ pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
         for (name, text) in &defs {
             spec = spec.replace(name.as_str(), text);
         }
-        if page.starts_with('@') {
-            if page.len() < 2 || !page[1..].bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+        if let Some(name) = page.strip_prefix('@') {
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
                 return Err(format!("layout line {}: bad name {page:?}", start + 1));
             }
             defs.retain(|(n, _)| *n != page);
