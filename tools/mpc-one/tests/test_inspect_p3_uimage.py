@@ -25,7 +25,7 @@ def make_disk(path, *, payload=b"MPFREE_TEST_PAYLOAD", bad_header_crc=False,
     struct.pack_into(">I", hdr, 20, 0x00100040)
     struct.pack_into(">I", hdr, 24, zlib.crc32(payload) ^ (1 if bad_payload_crc else 0))
     hdr[28:32] = bytes((5, 2, 2, 0))
-    hdr[32:42] = b"mpfree-test"
+    hdr[32:32 + len(b"mpfree-test")] = b"mpfree-test"
     struct.pack_into(">I", hdr, 4, zlib.crc32(hdr) ^ (1 if bad_header_crc else 0))
     with path.open("wb") as stream:
         stream.seek(audit.P3_LBA * audit.SECTOR)
