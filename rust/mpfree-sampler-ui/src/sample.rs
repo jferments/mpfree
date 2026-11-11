@@ -19,9 +19,9 @@ use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
 /// The MPC One's screen, turned.
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The app's header tabs in the samples, as the pad player's layout spec
-/// orders them (Jay, 2026-11-11), until mpfree-ui shares one list.
-pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+/// The app's header tabs, the one list mpfree-ui shares (the pad player's
+/// layout spec, approved by Jay on 2026-11-11).
+pub use mpfree_ui::widgets::APP_TABS;
 pub const EDITOR_TAB: usize = 4;
 /// The page names the samples add the Wave, Chop and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
@@ -141,8 +141,7 @@ pub fn app_ui(fonts: Fonts, p: &Project) -> Ui {
 
 pub fn app_ui_with(fonts: Fonts, p: &Project, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
-    let mut header = Header::new(&APP_TABS);
-    header.active = EDITOR_TAB;
+    let mut header = Header::app(APP_TABS[EDITOR_TAB]);
     let undo = if p.can_undo() { "Undo" } else { "Nothing to undo" };
     // Chips are laid out from the right edge.
     header.chips = vec![Chip::new(undo, Tone::Good), Chip::new(format!("{BPM:.1} BPM"), Tone::Normal),

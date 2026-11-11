@@ -571,7 +571,7 @@ fn time(rate: u32, tracks: usize) -> Case {
         let mut t = Track::new("t", i as u16);
         let mut c = Clip::new("c", 8 * ppq);
         c.notes = (0..32i64)
-            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100 }))
+            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100, chance: 100 }))
             .collect();
         if i == 1 {
             c.speed = Speed::new(3, 2).expect("speed");
