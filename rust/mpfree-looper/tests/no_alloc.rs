@@ -15,7 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_looper::{Command as L, Looper, Phase};
+use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -94,6 +94,7 @@ fn commands_and_periods_never_allocate() {
     let mut layers = 0usize;
     let mut sum = 0.0f64;
     let mut phase = 0.0f32;
+    let mut loops_used = 0u32;
     watch(true);
     t.command(0, T::Play);
     l.command(L::Record);
@@ -130,6 +131,26 @@ fn commands_and_periods_never_allocate() {
         if i >= 290 && i % 37 == 0 {
             let _ = l.command(script[(i / 37 - 8) as usize % script.len()]);
         }
+        // The last third moves between three loops (and one past the end).
+        if i >= 4000 && i % 211 == 0 {
+            let _ = l.select_loop([0, 3, 7, MAX_LOOPS][(i / 211) as usize % 4]);
+        }
+        // Each layer's controls; deletes only in the second half, so the
+        // first half fills the memory and overdubs are refused.
+        if i >= 290 && i % 53 == 0 {
+            let k = (i / 53) as usize % if i < 3000 { 4 } else { 5 };
+            let id = l
+                .layer_info(k % l.status().layers.max(1))
+                .map_or(9, |x| x.id);
+            let c = [
+                Lc::Mute(i % 2 == 0),
+                Lc::Solo(i % 3 == 0),
+                Lc::Pan(0.3),
+                Lc::Level(1.4),
+                Lc::Delete,
+            ][k];
+            let _ = l.layer_command(id, c);
+        }
         let n = sizes[(i % sizes.len() as u64) as usize];
         for k in 0..n {
             phase += 0.031;
@@ -150,6 +171,15 @@ fn commands_and_periods_never_allocate() {
             sum += w[0] as f64 * 0.0;
         }
         let _ = l.stats();
+        let m = l.memory();
+        assert!(m.used <= m.capacity);
+        for k in 0..MAX_LOOPS {
+            let s = l.loop_status(k).unwrap();
+            loops_used |= u32::from(s.phase != Phase::Empty) << k;
+            if let Some(w) = l.loop_layer(k, 0) {
+                sum += w[w.len() - 1] as f64 * 0.0;
+            }
+        }
     }
     watch(false);
     assert_eq!(
@@ -162,4 +192,5 @@ fn commands_and_periods_never_allocate() {
         "{seen_playing} {layers} {sum}"
     );
     assert!(l.stats().refused > 0, "{:?}", l.stats());
+    assert!(loops_used.count_ones() >= 3, "loops used: {loops_used:b}");
 }
