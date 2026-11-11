@@ -442,3 +442,101 @@ bootloader-independent silicon USB recovery channel. The existing
 user-area eMMC backup may omit boot0, boot1, RPMB and hardware eFuse
 configuration. Even a validated restore procedure cannot guarantee
 recovery from physical failures or irreversible fuse programming.**
+
+
+## Sixth owner ZIP (2026-11-11T223243Z-v6-3593975): Q149–Q180
+
+The private V6 ZIP contained 49 SHA256-indexed reports/logs and passed
+all index and ZIP integrity checks. Its offline static, ELF relocation,
+startup-service scan and three temporary Ghidra ELF recovery stages
+all completed successfully. No MPC was contacted.
+
+### New conclusions and corrected limits
+
+- The previously missing owner ELF application logic was at least
+  partially recovered: bootloader-sig main candidate 0x76c,
+  LoadPin main candidate 0x6c4, and az01config dispatch candidate 0x978.
+  ELF addresses are module-relative candidate virtual addresses;
+  they are NOT live kernel virtual addresses or native firmware
+  entrypoints. Ghidra printed bad-instruction/undefined-GOT warnings.
+- az01config compares a command string across **five 12-byte dispatch
+  records**, then invokes a handler function pointer. This provides
+  a static path to map commands, especially the potentially
+  irreversible program-fuses command, without running that ELF.
+  V7 locates the table using relocation-backed ELF32 pointers.
+- Bootloader-sig compares two 32-byte buffers and reaches errx(1)
+  on mismatch. This proves an error path when the CLI executes;
+  it does not prove the CLI is invoked at ordinary startup.
+  The bytes hashed and the RC4 transform still require tracing.
+- LoadPin helper opens /sys/kernel/security/loadpin/dm-verity and
+  issues ioctl 0x40044c00 with the trusted-digests file descriptor.
+  This equals the Linux UAPI LOADPIN_IOC_SET_TRUSTED_VERITY_DIGESTS
+  (_IOW('L',0,unsigned int)). This is Linux LSM policy,
+  NOT proof that BootROM/SPL verifies MPFree images.
+- Of 390 text/config files examined in the 3.10 startup scan,
+  **zero** contained the bootloader-sig and program-fuses markers.
+  The scan contains an early LoadPin systemd service and standard
+  systemd kexec units. A text-only zero hit CANNOT rule out
+  binary invocation, runtime strings, generated service files,
+  or calls from other update environments.
+- All **213** recognized SRAM SPL functions have pseudocode;
+  **1044 of 1050** recognized U-Boot functions have pseudocode,
+  with six Ghidra low-level decompilation failures. A few
+  previous summary messages counted only three, but the V6
+  report's current evidence is SIX failures.
+- P1's 19 computed call sites and P3's 167 remain key unresolved
+  indirect edges. A complete list of recognized functions
+  does NOT imply a complete reachable boot execution graph.
+
+### Q149–Q180 added, grouped by evidence needed
+
+| Questions | Research focus | Next investigation |
+| --- | --- | --- |
+| Q149–Q152 | az01config command table; program-fuses targets; partition write/fuse safety | Relocation-backed name/handler mapping and callsite triage; do not execute |
+| Q153–Q156 | bootloader-sig input ranges, RC4/SHA256 and invocation reachability | Recovered main, ELF unwind code pointers, service/binary references |
+| Q157–Q160 | LoadPin ioctl, digest source, error fallbacks, kexec interaction | Cross-reference Linux UAPI and Ghidra main; kernel state still runtime |
+| Q161–Q163 | Firmware 3.10 utilities used by other applications, OTA bootloader writes | Bounded offline ELF/text reference scan; later updater call graph |
+| Q164–Q167 | Genuine MaskROM USB, independent eMMC restore, physical USB wiring | Hardware only, with independent non-destructive recovery gates |
+| Q168–Q170 | SPL function callbacks, DDR and owner-built loader acceptance | Static edge recovery + future gated RAM-only hardware tests |
+| Q171–Q174 | SD-first boot, vendor U-Boot dependence, official update resilience | U-Boot input/path/boot-script analysis, independent boot prototype |
+| Q175–Q177 | Fastboot permission, safe RAM image size and failure/reset | Data-flow and measured runtime memory, no image execution yet |
+| Q178–Q180 | Backup coverage, recoverability fault model and release criteria | Real storage inventory and sacrificial restore rehearsal |
+
+Exact wording of all 32 questions and per-question evidence goals
+will be emitted in the private v7-evidence.json from the next run.
+
+### V7 entrypoint and evidence expectations
+
+The V7 run reuses the **verified V6 ZIP** rather than repeating
+1263 recognized bootloader decompilations and three already
+recovered ELF main routines. It adds:
+
+1. offline-bootchain-v7-elf-dispatch.py: parse ELF32/ARM relocation-backed
+   az01config command tables; record candidate command-to-handler
+   mappings without executing potentially destructive utilities.
+2. offline-bootchain-v7-unwind.py: discover extra candidate
+   stripped-function boundaries using ARM EHABI .ARM.exidx PREL31
+   records, complementing the V6 ELF RELATIVE pointer pass.
+3. offline-bootchain-v7-reference-scan.py: bounded binary/text literal
+   search to find possible external invokers of bootloader-sig,
+   program-fuses, LoadPin and kexec. This is NOT runtime proof.
+4. offline-bootchain-v7-synthesis.py: join source-backed evidence,
+   all 32 new questions, unresolved indirect calls and hardware
+   recovery gates in a private human/JSON evidence summary.
+5. run_bootchain_v7_followup.py: verify source ZIP index and stage/ELF
+   hashes, run every optional offline analysis and produce ONE indexed
+   private ZIP with logs even if optional stages fail.
+
+This audit neither enters MaskROM nor modifies eMMC, Akai Linux,
+firmware, environment, fuse or UART/USB device state.
+
+### Honest recovery boundary
+
+Until silicon ROM access and independent readback/restoration have
+actually been demonstrated on this MPC, **none** of the following
+can honestly be considered 100% recoverable: changing P1/P3,
+modifying eMMC boot configuration, a failed direct RAM kernel boot,
+or attempting an unsigned SPL. A verified user-area mmcblk0.img
+backup is not proof of recoverability from a destroyed SPL. Testing
+must preserve a separately verified restore mechanism and explicitly
+exclude electrical failures, degraded flash and irreversible OTP.
