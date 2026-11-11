@@ -1,4 +1,4 @@
-//! Poly's `process` must not allocate or free. A counting global allocator
+//! Poly's and FM's `process` must not allocate or free. A counting global allocator
 //! watches a busy session: chords past the voice limit, mono and legato,
 //! glide, bend, pressure, automation of every parameter, AllOff, reset.
 //!
@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
-use mpfree_synth::{Poly, PARAMS};
+use mpfree_synth::{Fm, Poly, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -41,6 +41,56 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static GLOBAL: Counting = Counting;
+
+/// A busy session for any instrument: random notes, pressure, bend,
+/// automation of every parameter, AllOff, and a reset half way.
+fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> usize {
+    let mut l = vec![0.0f32; 128];
+    let mut r = vec![0.0f32; 128];
+    let mut events: Vec<Timed> = Vec::with_capacity(64);
+    let mut seed = 99u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) as u32
+    };
+    let before = CALLS.load(Ordering::Relaxed);
+    watch(true);
+    for block in 0..4000u64 {
+        events.clear();
+        for _ in 0..rnd() % 6 {
+            let off = rnd() % 128;
+            let note = 24 + (rnd() % 80) as u8;
+            let ev = match rnd() % 9 {
+                0..=2 => NodeEvent::NoteOn { note, velocity: 1 + (rnd() % 127) as u8 },
+                3..=4 => NodeEvent::NoteOff { note },
+                5 => NodeEvent::Pressure { note, value: (rnd() % 128) as u8 },
+                6 => NodeEvent::Bend { value: (rnd() % 200) as f32 / 100.0 - 1.0 },
+                7 => {
+                    let p = &params[rnd() as usize % params.len()];
+                    NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0 }
+                }
+                _ => NodeEvent::AllOff,
+            };
+            events.push(Timed::new(off, ev));
+        }
+        events.sort_by_key(|e| e.offset);
+        let ctx = Ctx { rate, frame: block * 128, bpm: 120.0, beats: block as f64 * 128.0 * 2.0 / rate as f64, playing: true, sidechain: None };
+        l.fill(0.0);
+        r.fill(0.0);
+        s.process(&ctx, &events, &mut l, &mut r);
+        if block == 2000 { s.reset(); }
+    }
+    watch(false);
+    assert!(l.iter().all(|x| x.is_finite()));
+    CALLS.load(Ordering::Relaxed) - before
+}
+
+#[test]
+fn fm_process_never_allocates() {
+    let mut s = Fm::new(44_100);
+    let params = s.params();
+    assert_eq!(exercise(&mut s, params, 44_100), 0, "Fm::process allocated");
+}
 
 #[test]
 fn process_never_allocates() {

@@ -103,6 +103,9 @@ impl Widget for TitleBar {
             return;
         }
         cx.canvas.fill_round_rect(pill, 12, t.bg);
+        // Many pages (FM has eleven) make narrow tabs: a smaller font keeps
+        // names like "Kbd 1-2" whole.
+        let size = if self.tab_rect(r, 0).w < 70 { t.size_small } else { t.size_body - 1.0 };
         for (i, name) in self.tabs.iter().enumerate() {
             let c = self.tab_rect(r, i);
             let on = i == self.active;
@@ -110,7 +113,7 @@ impl Widget for TitleBar {
                 cx.canvas.fill_round_rect(c, 9, t.raised);
             }
             let font = if on { FontId::Bold } else { FontId::Sans };
-            cx.text(font, t.size_body - 1.0, c, Align::Center, if on { t.text } else { t.text_dim }, name);
+            cx.text(font, size, c, Align::Center, if on { t.text } else { t.text_dim }, name);
         }
     }
 
