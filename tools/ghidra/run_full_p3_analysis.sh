@@ -12,6 +12,24 @@ PAYLOAD="$WORKDIR/p3-uimage-payload.bin"
 SHA='b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a'
 
 find_headless() {
+    # Snap-installed Ghidra (used on ML-tower) exports a separate app.
+    # Use the Snap wrapper to preserve its Java/runtime environment.
+    if [[ -n "${MPFREE_ANALYZE_HEADLESS:-}" && -x "$MPFREE_ANALYZE_HEADLESS" ]]; then
+        printf "%s\n" "$MPFREE_ANALYZE_HEADLESS"
+        return
+    fi
+    if command -v ghidra.analyzeHeadless >/dev/null 2>&1; then
+        command -v ghidra.analyzeHeadless
+        return
+    fi
+    if [[ -x /snap/bin/ghidra.analyzeHeadless ]]; then
+        printf "%s\n" /snap/bin/ghidra.analyzeHeadless
+        return
+    fi
+    if command -v snap >/dev/null 2>&1 && snap list ghidra >/dev/null 2>&1; then
+        printf "%s\n" SNAP_RUN
+        return
+    fi
     if command -v analyzeHeadless >/dev/null 2>&1; then
         command -v analyzeHeadless
         return
@@ -45,9 +63,20 @@ find_headless() {
 }
 GHIDRA="$(find_headless)" || {
     echo "Could not locate analyzeHeadless." >&2
-    echo "Set GHIDRA_HOME=/path/to/ghidra installation and retry." >&2
+    echo "Snap installation: snap run ghidra.analyzeHeadless" >&2
+    echo "Traditional install: set GHIDRA_HOME=/path/to/ghidra." >&2
+    echo "Or set MPFREE_ANALYZE_HEADLESS=/absolute/path/to/analyzeHeadless." >&2
+    if command -v snap >/dev/null 2>&1; then snap list ghidra >&2 || true; fi
     exit 1
 }
+if [[ "$GHIDRA" == SNAP_RUN ]]; then
+    GHIDRA_CMD=(snap run ghidra.analyzeHeadless)
+else
+    GHIDRA_CMD=("$GHIDRA")
+fi
+GHIDRA_DISPLAY="${GHIDRA_CMD[*]}"
+# Snap rewrites Java user.home. Pass an absolute report destination.
+export MPFREE_REPORT_DIR="$HOME/mpfree-work"
 
 mkdir -p "$WORKDIR" "$WORKDIR/projects" "$HOME/mpfree-work"
 
@@ -84,7 +113,8 @@ PROJECT_NAME="MPFree_P3_Uboot_$(date +%Y%m%dT%H%M%S)_$$"
 LOG="$WORKDIR/$PROJECT_NAME.log"
 
 echo
-echo "Ghidra headless executable: $GHIDRA"
+echo "Ghidra headless command: $GHIDRA_DISPLAY"
+echo "MPFree report directory: $MPFREE_REPORT_DIR"
 echo "New, separately saved project: $WORKDIR/projects/$PROJECT_NAME"
 echo "Import base: 0x00100000 (passed to raw BinaryLoader as 100000)"
 echo "Prior base-zero Ghidra program will not be modified."
@@ -92,7 +122,7 @@ echo
 
 # Ghidra BinaryLoader -loader-baseAddr intentionally has NO 0x prefix.
 # Source: official analyzeHeadlessREADME.md.
-"$GHIDRA" \
+"${GHIDRA_CMD[@]}" \
     "$WORKDIR/projects" "$PROJECT_NAME" \
     -import "$PAYLOAD" \
     -loader BinaryLoader \
