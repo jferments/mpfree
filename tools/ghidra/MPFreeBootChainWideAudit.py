@@ -303,6 +303,80 @@ try:
             function_names.append({"at": str(f.getEntryPoint()), "name": name})
     result["program_statistics"]["functions_known_to_ghidra"] = count
     result["program_statistics"]["interesting_named_functions"] = function_names[:200]
+
+    # A second, automatically discovered wave: follow string xrefs into
+    # functions not known by hard-coded addresses. This is useful for
+    # board-specific bootcmd, ROM-return, storage and recovery branches.
+    already = set()
+    for by_address in result["focus_functions"].values():
+        for row in by_address.values():
+            if row["recognized_function"]:
+                already.add(int(row["address"], 16))
+    candidate_terms = ("boot_targets", "distro_bootcmd", "boot.scr", "extlinux",
+                       "recovery", "reset_bootloader", "maskrom", "brom",
+                       "rockusb", "efuse", "secure", "boot_mode", "bootloader",
+                       "mmc", "usb start", "fit", "fdt")
+    candidates = {}
+    for row in result["strings"]:
+        if not any(term in row["keywords"] or term in row["text"].lower()
+                   for term in candidate_terms):
+            continue
+        for ref in row["xrefs"][:25]:
+            try:
+                at = int(ref["from"], 16)
+                fun = fm.getFunctionContaining(A(at))
+                if fun is None: continue
+                entry = fun.getEntryPoint().getOffset()
+                if entry not in already:
+                    candidates[entry] = fun
+            except Exception:
+                continue
+    result["auto_discovered_functions"] = {}
+    for va in sorted(candidates)[:60]:
+        fun = candidates[va]
+        row = {"address": hexaddr(va), "name": str(fun.getName()),
+               "incoming": allrefs(va, 30)}
+        try:
+            dr = dec.decompileFunction(fun, 65, monitor)
+            if dr and dr.decompileCompleted() and dr.getDecompiledFunction():
+                source = str(dr.getDecompiledFunction().getC())
+                source = re.sub(r'"[^"\n]{28,}"', '"[LONG_LITERAL_REDACTED]"', source)
+                source = re.sub(r'"[^"\n]*(?:unlock|password|secret|token|serialno)[^"\n]*"',
+                                '"[SENSITIVE_LITERAL_REDACTED]"', source, flags=re.I)
+                row["pseudocode"] = source[:12000]
+                row["truncated"] = len(source) > 12000
+            else:
+                row["error"] = str(dr.getErrorMessage()) if dr else "no result"
+        except Exception as error:
+            row["error"] = str(error)
+        result["auto_discovered_functions"][hexaddr(va)] = row
+    result["auto_discovered_candidates_total"] = len(candidates)
+
+    # Program-wide Ghidra xrefs to SoC-address space. These are leads,
+    # not proof that a physical MMIO transaction occurs.
+    mmio_sites = []
+    mmio_counts = Counter()
+    instruction_count = 0
+    all_instructions = listing.getInstructions(True)
+    while all_instructions.hasNext() and instruction_count < 90000:
+        ins = all_instructions.next()
+        instruction_count += 1
+        try:
+            for ref in refs.getReferencesFrom(ins.getAddress()):
+                target = int(ref.getToAddress().getOffset())
+                if target < 0xff000000 or base <= target < base+size:
+                    continue
+                mmio_counts[hexaddr(target)] += 1
+                if len(mmio_sites) < 350:
+                    mmio_sites.append({"instruction": str(ins.getAddress()),
+                                       "target": hexaddr(target),
+                                       "asm": str(ins),
+                                       "type": str(ref.getReferenceType())})
+        except Exception:
+            continue
+    result["mmio_reference_candidates"] = mmio_sites
+    result["mmio_reference_summary"] = mmio_counts.most_common(100)
+    result["program_statistics"]["instructions_scanned_for_mmio_refs"] = instruction_count
 finally:
     dec.dispose()
 
