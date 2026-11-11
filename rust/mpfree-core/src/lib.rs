@@ -107,7 +107,7 @@ impl ClickEngine {
         }
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             if self.frame == self.next_beat_frame {
-                self.accented = self.beat % u64::from(self.config.beats_per_bar) == 0;
+                self.accented = self.beat.is_multiple_of(u64::from(self.config.beats_per_bar));
                 self.click_position = 0;
                 self.beat = self.beat.saturating_add(1);
 
