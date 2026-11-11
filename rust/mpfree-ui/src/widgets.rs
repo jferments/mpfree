@@ -26,7 +26,8 @@ impl Chip {
     }
 }
 
-/// The top bar: the MPFree name, page tabs, and status chips. A tap on a
+/// The top bar: page tabs and status chips (the MPFree name is on the
+/// startup and loading screens only, so the tabs get its room). A tap on a
 /// tab gives `Tab(i)`; a tap on a chip gives `Select(i)`, `i` its place in
 /// `chips` (chips are laid out from the right edge, so 0 is rightmost).
 pub struct Header {
@@ -38,10 +39,12 @@ pub struct Header {
     drawn_chips: RefCell<Vec<(usize, Rect)>>,
 }
 
-const BRAND_W: i32 = 170;
+/// The room left of the first tab.
+const LEFT_W: i32 = 8;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
-const TABS_W: i32 = 5 * (TAB_W + TAB_GAP);
+/// Room for six full-width tabs.
+const TABS_W: i32 = 6 * (TAB_W + TAB_GAP);
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
@@ -54,22 +57,18 @@ impl Header {
         self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
     }
 
-    /// Up to five tabs are TAB_W wide. More tabs share the same width, so the
+    /// Up to six tabs are TAB_W wide. More tabs share the same width, so the
     /// chips on the right keep their room.
-    fn tab_rect(&self, r: Rect, i: usize) -> Rect {
+    pub fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        let pitch = TABS_W / self.tabs.len().max(5) as i32;
-        Rect::new(r.x + BRAND_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
+        let pitch = TABS_W / self.tabs.len().max(6) as i32;
+        Rect::new(r.x + LEFT_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
     }
 }
 
 impl Widget for Header {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let (brand, _) = r.take_left(BRAND_W);
-        let mp = cx.measure(FontId::Bold, t.size_brand, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0), Align::Left, t.text, "MP");
-        cx.text(FontId::Bold, t.size_brand, brand.inset_xy(4, 0).take_left(mp).1, Align::Left, t.accent, "Free");
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
             let on = i == self.active;
@@ -577,7 +576,7 @@ impl Loading {
         if !title.is_empty() {
             let mid = Rect::new(r.x, r.y + r.h / 2 - 150, r.w, 120);
             let tw = cx.measure(FontId::Bold, 96.0, title);
-            // "MP" in the text colour and the rest in the accent, as in the header.
+            // "MP" in the text colour and the rest in the accent.
             let split = title.char_indices().nth(2).map(|(i, _)| i).unwrap_or(title.len());
             let (a, b) = title.split_at(split);
             let aw = cx.measure(FontId::Bold, 96.0, a);
@@ -997,8 +996,9 @@ mod tests {
         let first = ui.get::<Header>("header").unwrap().chip_rect(1).unwrap();
         assert_eq!(ev(&mut ui, first.x + 5), Some(EventKind::Select(1)));
         ui.touch(1, Touch::Up, first.x + 5, 30);
-        assert_eq!(ev(&mut ui, 170 + 20), Some(EventKind::Tab(0)));
-        ui.touch(1, Touch::Up, 190, 30);
+        // The first tab starts at the left edge: there is no name before it.
+        assert_eq!(ev(&mut ui, LEFT_W + 20), Some(EventKind::Tab(0)));
+        ui.touch(1, Touch::Up, LEFT_W + 20, 30);
         assert_eq!(ev(&mut ui, first.x - 20), None, "between the chips and the tabs");
     }
 }
