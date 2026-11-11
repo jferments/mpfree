@@ -132,6 +132,8 @@ impl ArpHost {
                 self.presses = [0; 128];
                 self.engine.panic();
             }
+            // A parameter lock is for the host's resolver, not the arp.
+            Event::Lock { .. } | Event::Unlock { .. } => {}
         }
     }
 }

@@ -1020,77 +1020,113 @@ impl Wavetable {
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let s = self.sh;
         let mode = FilterMode::from_index(f32::from(s.mode));
-        let (ta, tb) = (&*self.tables[0], &*self.tables[1]);
+        let tabs = (&*self.tables[0], &*self.tables[1]);
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
             }
-            let (wa, wb) = (v.warp[0], v.warp[1]);
-            // B is read when heard or when it frequency-modulates A; A when
-            // heard or when it modulates B.
-            let use_b = s.lvl[1] != 0.0 || matches!(wa, Warp::Fm { .. });
-            let use_a = s.lvl[0] != 0.0 || matches!(wb, Warp::Fm { .. });
-            let da = ta.levels()[v.level[0]].data();
-            let db = tb.levels()[v.level[1]].data();
-            let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
-            for k in from..to {
-                let (ra, rb) = (v.run[0], v.run[1]);
-                let mut l = 0.0;
-                let mut r = 0.0;
-                for u in 0..s.unison {
-                    let mut b = 0.0;
-                    if use_b {
-                        let ph = v.ph[1][u];
-                        b = rb.read(db, wb.apply(ph, v.last[0][u]));
-                        v.last[1][u] = b;
-                        let n = ph + v.dt[1][u];
-                        v.ph[1][u] = if n >= 1.0 { n - 1.0 } else { n };
-                    }
-                    let mut a = 0.0;
-                    if use_a {
-                        let ph = v.ph[0][u];
-                        a = ra.read(da, wa.apply(ph, b));
-                        v.last[0][u] = a;
-                        let n = ph + v.dt[0][u];
-                        v.ph[0][u] = if n >= 1.0 { n - 1.0 } else { n };
-                    }
-                    let x = a * s.lvl[0] + b * s.lvl[1];
-                    l += x * v.pan_l[u];
-                    r += x * v.pan_r[u];
-                }
-                v.run[0].t += ra.t_inc;
-                v.run[1].t += rb.t_inc;
-                let mut c = 0.0;
-                if use_sub {
-                    c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
-                }
-                if use_noise {
-                    c += self.rng.bipolar() * s.noise;
-                }
-                let l = drive(l + c, v.drive_gain, v.drive_amt);
-                let r = drive(r + c, v.drive_gain, v.drive_amt);
-                let l = v.filt[0].process(mode, &v.coefs, l);
-                let r = v.filt[1].process(mode, &v.coefs, r);
-                let mut g = v.amp.next() * v.gain;
-                v.gain += v.gain_inc;
-                if v.state == State::Kill {
-                    v.kill_gain -= v.kill_step;
-                    if v.kill_gain <= 0.0 {
-                        v.kill_gain = 0.0;
-                        v.state = State::Free;
-                    }
-                    g *= v.kill_gain;
-                }
-                left[k] += l * g * s.out_l;
-                right[k] += r * g * s.out_r;
-                if v.state == State::Free {
-                    break;
-                }
-                if v.amp.idle() && v.state != State::On {
-                    v.state = State::Free;
-                    break;
-                }
+            // Mono: every unison voice panned the same both ways and both
+            // filters in the same state, so the right side would come out
+            // equal to the left bit for bit; work it out once. Each case
+            // has its own copy of the loop, so stereo runs as before.
+            let mono = (0..s.unison).all(|u| v.pan_l[u].to_bits() == v.pan_r[u].to_bits())
+                && v.filt[0].same_as(&v.filt[1]);
+            let out = (&mut *left, &mut *right);
+            if mono {
+                run_voice::<true>(v, &s, mode, tabs, &mut self.rng, from..to, out);
+                v.filt[1] = v.filt[0];
+            } else {
+                run_voice::<false>(v, &s, mode, tabs, &mut self.rng, from..to, out);
             }
+        }
+    }
+}
+
+/// One voice over frames `span` into `out` (left, right). With `MONO` the
+/// right side is the left one (see `render`) and its filter isn't run.
+/// Kept out of line, so each copy is optimised on its own.
+#[inline(never)]
+fn run_voice<const MONO: bool>(
+    v: &mut Voice,
+    s: &Shared,
+    mode: FilterMode,
+    (ta, tb): (&Table, &Table),
+    rng: &mut Rng,
+    span: std::ops::Range<usize>,
+    (left, right): (&mut [f32], &mut [f32]),
+) {
+    let (wa, wb) = (v.warp[0], v.warp[1]);
+    // B is read when heard or when it frequency-modulates A; A when
+    // heard or when it modulates B.
+    let use_b = s.lvl[1] != 0.0 || matches!(wa, Warp::Fm { .. });
+    let use_a = s.lvl[0] != 0.0 || matches!(wb, Warp::Fm { .. });
+    let da = ta.levels()[v.level[0]].data();
+    let db = tb.levels()[v.level[1]].data();
+    let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
+    // The drive's gain root, once per run rather than per sample.
+    let (dg, dsq, damt) = (v.drive_gain, v.drive_gain.sqrt(), v.drive_amt);
+    for k in span {
+        let (ra, rb) = (v.run[0], v.run[1]);
+        let mut l = 0.0;
+        let mut r = 0.0;
+        for u in 0..s.unison {
+            let mut b = 0.0;
+            if use_b {
+                let ph = v.ph[1][u];
+                b = rb.read(db, wb.apply(ph, v.last[0][u]));
+                v.last[1][u] = b;
+                let n = ph + v.dt[1][u];
+                v.ph[1][u] = if n >= 1.0 { n - 1.0 } else { n };
+            }
+            let mut a = 0.0;
+            if use_a {
+                let ph = v.ph[0][u];
+                a = ra.read(da, wa.apply(ph, b));
+                v.last[0][u] = a;
+                let n = ph + v.dt[0][u];
+                v.ph[0][u] = if n >= 1.0 { n - 1.0 } else { n };
+            }
+            let x = a * s.lvl[0] + b * s.lvl[1];
+            l += x * v.pan_l[u];
+            if !MONO {
+                r += x * v.pan_r[u];
+            }
+        }
+        v.run[0].t += ra.t_inc;
+        v.run[1].t += rb.t_inc;
+        let mut c = 0.0;
+        if use_sub {
+            c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
+        }
+        if use_noise {
+            c += rng.bipolar() * s.noise;
+        }
+        let l = drive_sq(l + c, dg, dsq, damt);
+        let l = v.filt[0].process(mode, &v.coefs, l);
+        let r = if MONO {
+            l
+        } else {
+            let r = drive_sq(r + c, dg, dsq, damt);
+            v.filt[1].process(mode, &v.coefs, r)
+        };
+        let mut g = v.amp.next() * v.gain;
+        v.gain += v.gain_inc;
+        if v.state == State::Kill {
+            v.kill_gain -= v.kill_step;
+            if v.kill_gain <= 0.0 {
+                v.kill_gain = 0.0;
+                v.state = State::Free;
+            }
+            g *= v.kill_gain;
+        }
+        left[k] += l * g * s.out_l;
+        right[k] += r * g * s.out_r;
+        if v.state == State::Free {
+            break;
+        }
+        if v.amp.idle() && v.state != State::On {
+            v.state = State::Free;
+            break;
         }
     }
 }

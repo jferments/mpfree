@@ -24,10 +24,30 @@
 //! played from that tick on go into the new clip. The recorder follows
 //! cues the same way the player does, so the two agree on which clip
 //! plays even before the control thread's new view arrives.
+//!
+//! **Knob moves become parameter locks.** While the transport records, the
+//! host feeds the armed track's knob moves in as [`Event::Lock`] (the
+//! parameter on the armed track, and its new value). Each lands on a step,
+//! the Elektron way:
+//!
+//! - on the note being played: a pad held now, or else the note that
+//!   started less than [`LOCK_REACH`] before the move (one the clip holds,
+//!   or one just recorded), so the lock plays with that note (a sampler
+//!   pad's parameter looks only at that pad's notes). Old notes a replace
+//!   pass has erased don't count;
+//! - otherwise on the nearest step line (the clip's quantise grid, or
+//!   1/16), as a trigless lock.
+//!
+//! A recorded lock waits, like a note, until the playhead has passed where
+//! it plays, so a replace pass never erases it. A turn sends many values:
+//! a waiting lock takes each later value for its step and parameter. Then
+//! [`Recorder::taken_locks`] hands it to the control thread to put in the
+//! clip (`Takes::add_lock`), in place of a lock already there.
 
-use mpfree_seq::Note;
+use mpfree_param::ParamAddr;
+use mpfree_seq::{Lock, Note};
 use mpfree_transport::time::{Swing, Tick};
-use mpfree_transport::{Block, Mark, Marker, State};
+use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::player::Event;
 use crate::view::{ClipView, PlayView, Switches};
@@ -37,6 +57,26 @@ pub const MAX_INPUT: usize = 256;
 /// Finished notes waiting for the playhead, and notes handed over in one
 /// period.
 pub const MAX_PENDING: usize = 256;
+/// Recorded locks handed over in one period (after a turn's values are
+/// joined).
+pub const MAX_LOCKS_TAKEN: usize = 64;
+/// How long after a note starts a knob move still locks it: a 1/16 note,
+/// in the clip's ticks.
+pub const LOCK_REACH: Tick = 240;
+/// Notes the recorder remembers having recorded, for knob moves just
+/// after them.
+const RECENT: usize = 32;
+
+/// A recorded parameter lock for the control thread: put it in clip `slot`
+/// of `track`, in place of a lock of the same parameter on the same tick
+/// and row. `take` numbers the take, as in [`Taken`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakenLock {
+    pub track: usize,
+    pub slot: usize,
+    pub lock: Lock,
+    pub take: u32,
+}
 
 /// A recorded note for the control thread: add it to clip `slot` of
 /// `track`. Its tick and length are in the clip's own ticks. `take` numbers
@@ -64,11 +104,30 @@ struct Pending {
     release: Tick,
 }
 
+/// A recorded lock waiting for the playhead, as a [`Pending`] note does.
+#[derive(Clone, Copy, Debug)]
+struct PendingLock {
+    taken: TakenLock,
+    release: Tick,
+}
+
 const NOT_HELD: Held = Held {
     on: false,
     tick: 0,
     velocity: 0,
 };
+const NO_TAKEN_LOCK: TakenLock = TakenLock {
+    track: 0,
+    slot: 0,
+    lock: Lock {
+        tick: 0,
+        sound: None,
+        addr: mpfree_param::RelAddr::new(mpfree_param::OnTrack::Inst, 0),
+        value: 0.0,
+    },
+    take: 0,
+};
+
 const NO_TAKE: Taken = Taken {
     track: 0,
     slot: 0,
@@ -98,6 +157,22 @@ pub struct Recorder {
     dropped: u64,
     /// Cues started that the view does not show yet.
     switches: Switches,
+    locks: [TakenLock; MAX_LOCKS_TAKEN],
+    n_locks: usize,
+    /// Recorded locks waiting for the playhead; a turn's later values join
+    /// the waiting lock.
+    pending_locks: [PendingLock; MAX_LOCKS_TAKEN],
+    n_pending_locks: usize,
+    /// Knob moves on another track, or on no track: not recorded.
+    stray_locks: u64,
+    /// The latest notes this take recorded, a ring: knob moves just after
+    /// them lock them, whether or not the clip holds them yet.
+    recent: [Taken; RECENT],
+    n_recent: usize,
+    /// The replace pass, as the player keeps it: the old notes it has
+    /// reached are erased, so knob moves do not lock them.
+    replacing: Option<i64>,
+    replaced: bool,
 }
 
 impl Default for Recorder {
@@ -124,6 +199,18 @@ impl Recorder {
             take: 0,
             dropped: 0,
             switches: Switches::new(),
+            locks: [NO_TAKEN_LOCK; MAX_LOCKS_TAKEN],
+            n_locks: 0,
+            pending_locks: [PendingLock {
+                taken: NO_TAKEN_LOCK,
+                release: 0,
+            }; MAX_LOCKS_TAKEN],
+            n_pending_locks: 0,
+            stray_locks: 0,
+            recent: [NO_TAKE; RECENT],
+            n_recent: 0,
+            replacing: None,
+            replaced: false,
         }
     }
 
@@ -151,7 +238,19 @@ impl Recorder {
         &self.taken[..self.n_taken]
     }
 
-    /// Notes lost because a table was full. It should stay 0.
+    /// The parameter locks recorded in the last [`Recorder::process`]
+    /// call, a turn's last value for each step and parameter.
+    pub fn taken_locks(&self) -> &[TakenLock] {
+        &self.locks[..self.n_locks]
+    }
+
+    /// Knob moves not recorded because they named a parameter that is not
+    /// on the armed track.
+    pub fn stray_locks(&self) -> u64 {
+        self.stray_locks
+    }
+
+    /// Notes or locks lost because a table was full. It should stay 0.
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
@@ -173,9 +272,11 @@ impl Recorder {
     /// recorded.
     pub fn process(&mut self, view: &PlayView, block: &Block) {
         self.n_taken = 0;
+        self.n_locks = 0;
         if view.armed != self.armed {
             self.held = [NOT_HELD; 128];
             self.armed = view.armed;
+            self.n_recent = 0;
         }
         self.switches.follow(view);
         let markers = block.markers();
@@ -188,6 +289,7 @@ impl Recorder {
                 m += 1;
             }
             self.swing = span.swing;
+            self.replace_state(view, span);
             // Cues starting in this span, as the player starts them. The
             // armed track's waits for the notes played before it.
             let mut switch = None;
@@ -240,6 +342,8 @@ impl Recorder {
                         };
                     }
                     Event::AllOff => self.finish_all(view, span.swing, tick),
+                    Event::Lock { addr, value } => self.lock(view, span.swing, addr, value, tick),
+                    Event::Unlock { .. } => {}
                 }
             }
             if let Some(at) = switch {
@@ -261,9 +365,16 @@ impl Recorder {
 
     fn marker(&mut self, view: &PlayView, m: &Marker) {
         match m.mark {
-            Mark::RecordOn { .. } => self.take = self.take.wrapping_add(1),
+            Mark::RecordOn { .. } => {
+                self.take = self.take.wrapping_add(1);
+                self.replacing = None;
+                self.replaced = false;
+            }
             // The playhead goes on: notes wait for it as before.
-            Mark::RecordOff { tick } => self.finish_all(view, self.swing, tick),
+            Mark::RecordOff { tick } => {
+                self.finish_all(view, self.swing, tick);
+                self.replacing = None;
+            }
             // The playhead leaves: nothing recorded here will be reached
             // in this pass, so everything goes now.
             Mark::Looped { end: tick, .. }
@@ -271,6 +382,7 @@ impl Recorder {
             | Mark::Stopped { tick } => {
                 self.finish_all(view, self.swing, tick);
                 self.release(Tick::MAX);
+                self.replacing = None;
             }
             _ => {}
         }
@@ -280,9 +392,128 @@ impl Recorder {
     /// there, in the clip that was playing.
     fn switch(&mut self, view: &PlayView, at: Tick) {
         self.finish_all(view, self.swing, at);
+        // As in the player, a switch ends the replace pass.
+        self.replacing = None;
         if let Some(track) = self.armed {
             self.switches.start(view, track, at);
         }
+    }
+
+    /// Start or end the replace pass for this span, as the player does.
+    fn replace_state(&mut self, view: &PlayView, span: &Span) {
+        let ticks = span.ticks();
+        if ticks.is_empty() {
+            return;
+        }
+        if span.state != State::Recording || span.overdub {
+            self.replacing = None;
+            return;
+        }
+        if self.replaced {
+            return;
+        }
+        let clip = view.armed.and_then(|t| self.switches.playing(view, t));
+        if let Some((clip, origin)) = clip.filter(|(c, o)| c.song_len > 0.0 && ticks.end > *o) {
+            let from = (ticks.start - origin).max(0) as f64;
+            self.replacing = Some((from / clip.song_len).floor() as i64);
+            self.replaced = true;
+        }
+    }
+
+    /// A knob move at song tick `song`: a lock on the step it belongs to,
+    /// waiting like a note until the playhead has passed where it plays.
+    fn lock(&mut self, view: &PlayView, swing: Swing, addr: ParamAddr, value: f32, song: Tick) {
+        let Some(track) = self.armed else { return };
+        let rel = match addr.owner.split() {
+            Some((t, on)) if usize::from(t) == track => mpfree_param::RelAddr::new(on, addr.param),
+            _ => {
+                self.stray_locks += 1;
+                return;
+            }
+        };
+        if !value.is_finite() {
+            return;
+        }
+        let Some((clip, origin)) = self.switches.playing(view, track) else {
+            return;
+        };
+        let Some((at, pass)) = clip_tick(clip, origin, song) else {
+            return;
+        };
+        let scope = Lock::scope(rel);
+        let mine = |n: u8| scope.is_none_or(|p| p == n);
+        let since = |from: Tick| (at - from).rem_euclid(clip.length);
+        // The pass a clip tick at or just before the move falls in.
+        let pass_of = |t: Tick| pass - i64::from(t > at);
+        // A pad held now: the lock goes on its note.
+        let held = (0..128u8)
+            .filter(|&n| self.held[usize::from(n)].on && mine(n))
+            .filter_map(|n| clip_tick(clip, origin, self.held[usize::from(n)].tick))
+            .filter(|&(t, _)| since(t) < LOCK_REACH)
+            .min_by_key(|&(t, _)| since(t));
+        // Else the note that started last, not long ago, by the tick it
+        // was played on: one in the clip (but not an old one the replace
+        // pass has erased), or one this take recorded, which the clip may
+        // not hold yet.
+        let erased = |t: Tick| self.replacing == Some(pass_of(t));
+        let played = || {
+            let recent = self.recent[..self.n_recent.min(RECENT)]
+                .iter()
+                .filter(|k| (k.track, k.slot) == (track, clip.slot))
+                .map(|k| k.note);
+            clip.notes
+                .iter()
+                .map(|n| n.src)
+                .filter(|n| !erased(n.tick))
+                .chain(recent)
+                .filter(|n| mine(n.note) && since(n.tick) < LOCK_REACH)
+                .min_by_key(|n| since(n.tick))
+                .map(|n| (n.tick, pass_of(n.tick)))
+        };
+        let (tick, tick_pass) = held.or_else(played).unwrap_or_else(|| {
+            // Trigless, on the nearest step line.
+            let grid = clip
+                .quantise
+                .map_or(LOCK_REACH, |q| Tick::from(q.grid))
+                .max(1);
+            let line = (at + grid / 2) / grid * grid;
+            (
+                line.rem_euclid(clip.length),
+                pass + line.div_euclid(clip.length),
+            )
+        });
+        // Where the player will play it in that pass, as for a note.
+        let q = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
+        let straight = origin as f64 + tick_pass as f64 * clip.song_len + clip.speed.to_song(q);
+        let plays = clip.swing.unwrap_or(swing).apply(straight).round() as Tick;
+        let same = |k: &PendingLock| {
+            (
+                k.taken.track,
+                k.taken.slot,
+                k.taken.lock.tick,
+                k.taken.lock.sound,
+            ) == (track, clip.slot, tick, scope)
+                && k.taken.lock.addr == rel
+        };
+        let pending = &mut self.pending_locks[..self.n_pending_locks];
+        if let Some(k) = pending.iter_mut().find(|k| same(k)) {
+            k.taken.lock.value = value;
+            return;
+        }
+        if self.n_pending_locks == MAX_LOCKS_TAKEN {
+            self.dropped += 1;
+            return;
+        }
+        self.pending_locks[self.n_pending_locks] = PendingLock {
+            taken: TakenLock {
+                track,
+                slot: clip.slot,
+                lock: Lock::new(tick, scope, rel, value),
+                take: self.take,
+            },
+            release: plays + 2,
+        };
+        self.n_pending_locks += 1;
     }
 
     fn finish_all(&mut self, view: &PlayView, swing: Swing, tick: Tick) {
@@ -325,21 +556,24 @@ impl Recorder {
             velocity: h.velocity.min(127),
             chance: 100,
         };
+        let taken = Taken {
+            track,
+            slot: clip.slot,
+            note,
+            take: self.take,
+        };
+        self.recent[self.n_recent % RECENT] = taken;
+        self.n_recent += 1;
         // A tick of margin for rounding.
         self.pending[self.n_pending] = Pending {
-            taken: Taken {
-                track,
-                slot: clip.slot,
-                note,
-                take: self.take,
-            },
+            taken,
             release: plays + 2,
         };
         self.n_pending += 1;
     }
 
-    /// Hand over the waiting notes due at or before song tick `now`, by
-    /// due tick, ties in the order they finished.
+    /// Hand over the waiting notes and locks due at or before song tick
+    /// `now`, by due tick, ties in the order they finished or were made.
     fn release(&mut self, now: Tick) {
         loop {
             let mut best: Option<usize> = None;
@@ -348,7 +582,7 @@ impl Recorder {
                     best = Some(i);
                 }
             }
-            let Some(i) = best else { return };
+            let Some(i) = best else { break };
             if self.n_taken == MAX_PENDING {
                 self.dropped += 1;
             } else {
@@ -357,6 +591,29 @@ impl Recorder {
             }
             self.pending.copy_within(i + 1..self.n_pending, i);
             self.n_pending -= 1;
+        }
+        loop {
+            let mut best: Option<usize> = None;
+            for (i, p) in self.pending_locks[..self.n_pending_locks]
+                .iter()
+                .enumerate()
+            {
+                if p.release <= now
+                    && best.is_none_or(|b| p.release < self.pending_locks[b].release)
+                {
+                    best = Some(i);
+                }
+            }
+            let Some(i) = best else { return };
+            if self.n_locks == MAX_LOCKS_TAKEN {
+                self.dropped += 1;
+            } else {
+                self.locks[self.n_locks] = self.pending_locks[i].taken;
+                self.n_locks += 1;
+            }
+            self.pending_locks
+                .copy_within(i + 1..self.n_pending_locks, i);
+            self.n_pending_locks -= 1;
         }
     }
 }
