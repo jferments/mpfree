@@ -515,8 +515,15 @@ jobs:
         run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install the pinned clippy
         run: |
-          rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy
+          rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --version
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --version
+      - name: rustfmt (the code is formatted; run `cargo fmt` to fix)
+        # The same pinned toolchain, so a new rustfmt can't reformat everything at once.
+        # The job keeps its name so a required status check on it stays valid.
+        run: |
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/Cargo.toml --all --check
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-splash-gl/Cargo.toml --all --check
       - name: Clippy on the whole workspace, every target
         run: |
           # Index loops are the clearest way to write much of our DSP, and
