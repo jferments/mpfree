@@ -635,6 +635,9 @@ pub struct Pad {
     /// As a keygroup: the notes it plays (see [`Keys`]). A pad without
     /// keys only plays when it is hit.
     pub keys: Option<Keys>,
+    /// Wow and flutter, 0 to 1: the pitch wanders as on a worn tape
+    /// machine (at 1, slow wow about ±25 cents and flutter about ±5).
+    pub wow: f32,
 }
 
 /// A keygroup's notes: from `lo` to `hi` (MIDI notes), its sound played
@@ -776,6 +779,7 @@ impl Pad {
             tune_cents: 0,
             pressure: PressureRoute::default(),
             keys: None,
+            wow: 0.0,
         }
     }
 }
@@ -891,6 +895,7 @@ impl Project {
             return Err(ModelError::BadPad);
         }
         if pad.polyphony == 0
+            || !(0.0..=1.0).contains(&pad.wow)
             || pad.chokes.iter().any(|&c| c >= PADS)
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
             || !depth.is_finite()

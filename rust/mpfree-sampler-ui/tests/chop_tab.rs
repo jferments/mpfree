@@ -7,8 +7,10 @@ use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, R
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
+use mpfree_sampler_ui::SourceView;
 use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
+use std::sync::Arc;
 
 fn chop() -> ChopSample {
     let mut s = chop_sample(Fonts::embedded()).unwrap();
@@ -375,6 +377,78 @@ fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
     assert!(s.project.undo());
     assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
     assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+}
+
+#[test]
+fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
+    let mut s = chop();
+    // Every eighth on the loop's own beat grid: the region starts a
+    // sixteenth in, so the first slice is a sixteenth long.
+    method(&mut s, Method::Beat);
+    step(&mut s, Row::Amount, -1);
+    assert_eq!(s.tab.slices(), 15);
+    let list_value = |s: &ChopSample| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[5]
+            .value
+            .clone()
+    };
+    // Pads, Keys, then Pads + phrase (the loop has a tempo), round again.
+    step(&mut s, Row::Put, 1);
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads + phrase");
+    assert_eq!(buttons(&s).0[2], "Phrase on A2–A16");
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads");
+    step(&mut s, Row::Put, -1);
+    assert_eq!(list_value(&s), "Pads + phrase");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads {
+        phrase, keys_from, ..
+    } = &a
+    else {
+        panic!("{a:?}")
+    };
+    // At the loop's detected tempo, a hair off the 92 BPM it was made at.
+    assert!(
+        phrase.is_some_and(|f| (f - beat()).abs() < 0.5),
+        "{phrase:?}"
+    );
+    assert_eq!(*keys_from, None);
+    let p = a.phrase(&s.project).unwrap().unwrap();
+    assert_eq!(p.hits.len(), 15);
+    assert_eq!(p.hits[0].beat, 0.0);
+    assert!((p.hits[0].beats - 0.25).abs() < 0.01, "{:?}", p.hits[0]);
+    for (k, h) in p.hits.iter().enumerate().skip(1) {
+        assert_eq!(h.slice, k);
+        assert!((h.beat - (k as f64 * 0.5 - 0.25)).abs() < 0.01, "{h:?}");
+    }
+    assert_eq!(p.beats, 8, "7.25 beats of slices round up to 8");
+    // The pads are filled as by Chop to pads; the phrase is still there.
+    assert_eq!(apply(&mut s, &a), 1..16);
+    assert!(s.project.pads_play() == PadsPlay::Pads);
+    assert_eq!(a.phrase(&s.project).unwrap(), Some(p));
+    // Without a tempo there is no phrase to make: the row reads Pads.
+    let v = &s.state.source;
+    let plain = SourceView {
+        id: v.id,
+        peaks: v.peaks.clone(),
+        mono: v.mono.clone(),
+        tempo: None,
+        root: None,
+        root_note: None,
+        onsets: v.onsets.clone(),
+    };
+    s.state.source = Arc::new(plain);
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(list_value(&s), "Pads");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    assert!(matches!(a, ChopAction::ToPads { phrase: None, .. }));
+    assert_eq!(a.phrase(&s.project), Ok(None));
+    step(&mut s, Row::Put, -1);
+    assert_eq!(list_value(&s), "Keys from C2", "Pads, Keys only");
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads");
 }
 
 #[test]
