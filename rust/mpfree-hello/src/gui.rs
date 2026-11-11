@@ -62,6 +62,13 @@ const LOADING_HINT: &str = "Tap the screen for the console";
 /// and the pattern workspace (editing, and recording on the pads).
 pub const ARP_PAGE: &str = "Arp";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
+
+/// The Play page with the arp's slim strip at the top of its right-hand
+/// column: the kit list gives up the strip's height, and the pads, level
+/// and timing stay where they are.
+pub fn quick_layout() -> String {
+    PLAY_LAYOUT.replacen("col(kits:*", &format!("col({}:{}, kits:*", arp_view::MINI, arp_view::MINI_H), 1)
+}
 pub const PATTERN_PAGE: &str = "Pattern";
 pub const RECORD_PAGE: &str = "Pattern, recording";
 
@@ -303,7 +310,8 @@ impl Player {
         let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
         let arp = ArpState { settings: mpfree_arp::Settings::default(), pattern, patterns, pattern_index: 0,
                              pattern_changed: false, notes: Vec::new(), step: 0, latched: false, bpm: 120.0 };
-        let arp_panel = ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
+        let mut arp_panel = ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
+        arp_panel.set_quick_layout(&mut ui, &quick_layout()).expect("quick band layout");
         let workspace = PatternWorkspace::add(&mut ui, PATTERN_PAGE, RECORD_PAGE, &name, pattern)
             .expect("workspace layouts");
         ui.add("touchlab", TouchLabView::new());
@@ -1515,14 +1523,20 @@ mod tests {
         let fx = app.button(NOTE_REPEAT, true, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), QUICK_PAGE);
-        assert!(p.ui.rect_of(arp_view::RATES).is_some() && p.ui.rect_of("kits").is_none());
-        assert_eq!(p.ui.rect_of("pads").unwrap(), pads, "the band takes the kit column, the pads stay put");
-        // A rate button.
-        let rates = p.ui.rect_of(arp_view::RATES).unwrap();
-        let quarter = p.ui.get::<mpfree_arp_ui::widgets::RateBar>(arp_view::RATES).unwrap().button(rates, 0);
-        let a = p.touch(7, Touch::Down, quarter.x + 20, quarter.y + quarter.h / 2);
-        assert_eq!(a, Some(FromUi::Arp(ArpAction::Rate(mpfree_arp::Rate::Quarter))));
-        p.touch(7, Touch::Up, quarter.x + 20, quarter.y + quarter.h / 2);
+        // A slim strip at the top of the column; the pads, level and timing stay put.
+        assert_eq!(p.ui.rect_of("pads").unwrap(), pads);
+        for name in ["level", "timing", "kits"] {
+            assert!(p.ui.rect_of(name).is_some(), "{name} stays");
+        }
+        let strip = p.ui.rect_of(arp_view::MINI).unwrap();
+        assert_eq!(strip.h, arp_view::MINI_H);
+        // Its + is a faster rate.
+        let bar = p.ui.get::<mpfree_arp_ui::widgets::MiniBar>(arp_view::MINI).unwrap();
+        assert_eq!(bar.rate, "1/16");
+        let faster = bar.parts(strip)[mpfree_arp_ui::widgets::MINI_FASTER];
+        let a = p.touch(7, Touch::Down, faster.x + 10, faster.y + faster.h / 2);
+        assert_eq!(a, Some(FromUi::Arp(ArpAction::Rate(mpfree_arp::Rate::SixteenthTriplet))));
+        p.touch(7, Touch::Up, faster.x + 10, faster.y + faster.h / 2);
         let fx = app.button(NOTE_REPEAT, false, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
