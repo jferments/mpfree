@@ -231,6 +231,38 @@ pub struct PressureRoute {
     pub depth: f32,
 }
 
+/// How a warped region meets the project tempo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WarpMethod {
+    /// The length follows the tempo and the pitch stays (a stretched copy
+    /// made on a worker; until it is ready, the region repitches).
+    #[default]
+    Stretch,
+    /// Played faster or slower like tape: the pitch moves with the tempo.
+    /// The region's tune is left out, as it would pull it off the beat.
+    Repitch,
+}
+
+/// The slowest and fastest tempo a warped region may say it is at.
+pub const WARP_BPM: std::ops::RangeInclusive<f32> = 20.0..=999.0;
+
+/// A region that plays at the project tempo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Warp {
+    /// The tempo the region was played at (detected or typed).
+    pub bpm: f32,
+    pub method: WarpMethod,
+}
+
+impl Warp {
+    pub fn new(bpm: f32) -> Warp {
+        Warp {
+            bpm,
+            method: WarpMethod::Stretch,
+        }
+    }
+}
+
 /// A recipe on part of a source. The source's audio is never changed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
@@ -248,6 +280,9 @@ pub struct Region {
     /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
     /// with the region in every mode, so switching modes loses nothing.
     pub grain: GrainParams,
+    /// Plays at the project tempo (not in granular mode, whose grains have
+    /// their own tempo sync).
+    pub warp: Option<Warp>,
 }
 
 impl Region {
@@ -266,6 +301,7 @@ impl Region {
             tune_cents: 0,
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
+            warp: None,
         }
     }
 
@@ -301,6 +337,9 @@ impl Region {
         }
         if !grain_ok(&self.grain) {
             return Err(ModelError::BadRegion("grain settings"));
+        }
+        if self.warp.is_some_and(|w| !WARP_BPM.contains(&w.bpm)) {
+            return Err(ModelError::BadRegion("warp tempo"));
         }
         Ok(())
     }
@@ -593,7 +632,130 @@ pub struct Pad {
     pub tune_cents: i32,
     /// What pressure on this pad changes.
     pub pressure: PressureRoute,
+    /// As a keygroup: the notes it plays (see [`Keys`]). A pad without
+    /// keys only plays when it is hit.
+    pub keys: Option<Keys>,
 }
+
+/// A keygroup's notes: from `lo` to `hi` (MIDI notes), its sound played
+/// as recorded at `root` and a semitone higher for each note above it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keys {
+    pub lo: u8,
+    pub hi: u8,
+    pub root: u8,
+}
+
+impl Keys {
+    /// One note, played as recorded.
+    pub fn one(note: u8) -> Keys {
+        Keys {
+            lo: note,
+            hi: note,
+            root: note,
+        }
+    }
+
+    /// The whole keyboard, played as recorded at `root`.
+    pub fn all(root: u8) -> Keys {
+        Keys {
+            lo: 0,
+            hi: 127,
+            root,
+        }
+    }
+
+    pub fn contains(&self, note: u8) -> bool {
+        (self.lo..=self.hi).contains(&note)
+    }
+}
+
+/// What the kit's pads play.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadsPlay {
+    /// Each pad its own sound: a drum kit.
+    #[default]
+    Pads,
+    /// Notes: pad 1 plays note `from`, each pad after it a semitone
+    /// higher, through the kit's keygroups (pads with [`Keys`]).
+    Keys { from: u8 },
+    /// 16 Levels: every pad of a bank plays pad `pad`, pad 1 to 16 at
+    /// sixteen steps of `by` (pad 1 the lowest).
+    Levels { pad: u8, by: Levels },
+}
+
+/// What 16 Levels spreads across the pads. Pad `k` (0 to 15) plays at the
+/// step [`Levels::velocity`], [`Levels::semitones`] and so on give it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Levels {
+    /// Pad 1 the softest (velocity 8) to pad 16 the hardest (127).
+    #[default]
+    Velocity,
+    /// A semitone a pad: pad 9 as recorded, pad 1 eight below, pad 16
+    /// seven above.
+    Tune,
+    /// The filter's cutoff, 100 Hz to 20 kHz evenly in octaves (a 2-pole
+    /// low-pass when the pad's filter is off).
+    Cutoff,
+    /// The amp envelope's decay, 25 ms to about 4.5 s, falling to
+    /// silence.
+    Decay,
+    /// Where the sound starts, pad `k` at `k / 16` of the way through (a
+    /// granular pad's grain position, `k / 15`).
+    Start,
+}
+
+impl Levels {
+    pub const ALL: [Levels; 5] = [
+        Levels::Velocity,
+        Levels::Tune,
+        Levels::Cutoff,
+        Levels::Decay,
+        Levels::Start,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Levels::Velocity => "Velocity",
+            Levels::Tune => "Tune",
+            Levels::Cutoff => "Cutoff",
+            Levels::Decay => "Decay",
+            Levels::Start => "Start",
+        }
+    }
+
+    /// Pad `k`'s velocity: 8, 16, ... 127.
+    pub fn velocity(k: usize) -> u8 {
+        ((k.min(15) as u32 + 1) * 127).div_ceil(16) as u8
+    }
+
+    /// Pad `k`'s semitones from the sound as recorded: -8 to +7.
+    pub fn semitones(k: usize) -> i32 {
+        k.min(15) as i32 - 8
+    }
+
+    /// Pad `k`'s cutoff: 100 Hz to 20 kHz.
+    pub fn cutoff_hz(k: usize) -> f32 {
+        100.0 * 200f32.powf(k.min(15) as f32 / 15.0)
+    }
+
+    /// Pad `k`'s decay: 25 ms doubling every two pads.
+    pub fn decay_ms(k: usize) -> f32 {
+        25.0 * (k.min(15) as f32 / 2.0).exp2()
+    }
+
+    /// Pad `k`'s start, 0 to 15/16 of the region.
+    pub fn start(k: usize) -> f32 {
+        k.min(15) as f32 / 16.0
+    }
+}
+
+/// Where slices go on the keyboard by default: from note 36 (C2 as
+/// `note_name` writes it; C1 on keyboards that call middle C C3), as most
+/// samplers' slices to notes do.
+pub const SLICE_KEYS_FROM: u8 = 36;
+/// Voices a keygroup spread over the keyboard may hold.
+pub const KEYGROUP_POLYPHONY: u8 = 16;
 
 impl Pad {
     pub fn new(name: &str, layer: Layer) -> Pad {
@@ -613,6 +775,7 @@ impl Pad {
             pan: 0.0,
             tune_cents: 0,
             pressure: PressureRoute::default(),
+            keys: None,
         }
     }
 }
@@ -637,6 +800,10 @@ enum Undo {
     AddChop {
         set: Option<Box<ChopSet>>,
     },
+    /// What the pads play changed.
+    PadsPlay {
+        before: PadsPlay,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
 }
@@ -652,6 +819,7 @@ pub struct Project {
     pub chop_sets: Vec<ChopSet>,
     pads: Vec<Option<Pad>>,
     master: MasterFx,
+    pads_play: PadsPlay,
     undo: Vec<Undo>,
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
@@ -716,6 +884,12 @@ impl Project {
             return Err(ModelError::TooManyLayers);
         }
         let depth = pad.pressure.depth;
+        if pad
+            .keys
+            .is_some_and(|k| k.lo > k.hi || k.hi > 127 || k.root > 127)
+        {
+            return Err(ModelError::BadPad);
+        }
         if pad.polyphony == 0
             || pad.chokes.iter().any(|&c| c >= PADS)
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
@@ -870,6 +1044,8 @@ impl Project {
                     Pad {
                         name,
                         layers: vec![Layer::new(region)],
+                        // A slice is a pad; chop to keys gives it its note.
+                        keys: None,
                         ..t.clone()
                     }
                 }
@@ -879,6 +1055,192 @@ impl Project {
             pads.push(pad);
         }
         Ok(pads)
+    }
+
+    /// Puts processed audio in place of layer `layer` of pad `pad`: `s` is
+    /// that layer's region stretched (or pitch shifted) on a worker, with
+    /// `scale` output frames per input frame. The layer then plays all of
+    /// `s`, with its loop points and fades moved to match and its warp
+    /// tempo too. The old source stays, so one undo brings it all back.
+    pub fn use_processed(
+        &mut self,
+        pad: usize,
+        layer: usize,
+        s: Source,
+        scale: f64,
+    ) -> Result<SourceId, ModelError> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(ModelError::BadRegion("scale"));
+        }
+        let mut p = self.pad(pad).cloned().ok_or(ModelError::BadPad)?;
+        let r = p
+            .layers
+            .get(layer)
+            .ok_or(ModelError::BadPad)?
+            .region
+            .clone();
+        let len = s.frames();
+        let at = |x: u64| ((x.saturating_sub(r.start)) as f64 * scale).round() as u64;
+        let sustain_loop = r.sustain_loop.and_then(|l| {
+            let (a, b) = (at(l.start), at(l.end).min(len));
+            (b > a).then(|| Loop {
+                start: a,
+                end: b,
+                crossfade: ((f64::from(l.crossfade) * scale) as u64)
+                    .min((b - a) / 2)
+                    .min(a) as u32,
+                ..l
+            })
+        });
+        let fade = |f: Fade| Fade {
+            frames: (f64::from(f.frames) * scale).round() as u32,
+            ..f
+        };
+        let (mut fade_in, mut fade_out) = (fade(r.fade_in), fade(r.fade_out));
+        if u64::from(fade_in.frames) + u64::from(fade_out.frames) > len {
+            (fade_in, fade_out) = (Fade::NONE, Fade::NONE);
+        }
+        let mode = if sustain_loop.is_none() && r.mode == PlayMode::Loop {
+            PlayMode::OneShot
+        } else {
+            r.mode
+        };
+        p.layers[layer].region = Region {
+            source: s.id(),
+            start: 0,
+            end: len,
+            sustain_loop,
+            fade_in,
+            fade_out,
+            mode,
+            warp: r.warp.map(|w| Warp {
+                bpm: (f64::from(w.bpm) / scale) as f32,
+                ..w
+            }),
+            ..r
+        };
+        let id = s.id();
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&p) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.pads[pad].replace(p);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(id)
+    }
+
+    pub fn pads_play(&self) -> PadsPlay {
+        self.pads_play
+    }
+
+    /// What the pads play: their own sounds, notes through the
+    /// keygroups, or 16 Levels of one pad. One undo step.
+    pub fn set_pads_play(&mut self, play: PadsPlay) -> Result<(), ModelError> {
+        match play {
+            PadsPlay::Keys { from } if from > 127 - 15 => return Err(ModelError::BadPad),
+            PadsPlay::Levels { pad, .. } if usize::from(pad) >= PADS => {
+                return Err(ModelError::BadPad)
+            }
+            _ => {}
+        }
+        if play == self.pads_play {
+            return Ok(());
+        }
+        let before = std::mem::replace(&mut self.pads_play, play);
+        self.push_undo(Undo::PadsPlay { before });
+        Ok(())
+    }
+
+    /// Adds chop set `c` and puts its slices `first..first+count` on
+    /// consecutive pads from `to_pad` as keygroups of one note each, from
+    /// note `from_note` up, and the pads then play those notes (pad 1 the
+    /// first slice). One undo step. Each pad is as
+    /// [`Project::chop_to_pads`] makes it. Returns the chop set's index.
+    pub fn chop_to_keys(
+        &mut self,
+        c: ChopSet,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+        from_note: u8,
+        template: Option<&Pad>,
+    ) -> Result<usize, ModelError> {
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
+        if usize::from(from_note) + count > 128 || from_note > 127 - 15 {
+            return Err(ModelError::BadSlice);
+        }
+        let mut pads = self.slice_pads(&c, first, count, to_pad, template, 1)?;
+        for (k, p) in pads.iter_mut().enumerate() {
+            p.keys = Some(Keys::one(from_note + k as u8));
+        }
+        self.chop_sets.push(c);
+        let mut steps = vec![Undo::AddChop { set: None }];
+        steps.extend(self.place_pads(pads, to_pad));
+        let play = PadsPlay::Keys { from: from_note };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(self.chop_sets.len() - 1)
+    }
+
+    /// Makes pad `pad` a keygroup over the whole keyboard with its sound
+    /// as recorded at `root` (its detected root note, say), and the pads
+    /// play notes from the C at or below the root. One undo step.
+    pub fn spread_to_keys(&mut self, pad: usize, root: u8) -> Result<(), ModelError> {
+        if root > 127 {
+            return Err(ModelError::BadPad);
+        }
+        let mut p = self.pad(pad).cloned().ok_or(ModelError::BadPad)?;
+        p.keys = Some(Keys::all(root));
+        p.polyphony = p.polyphony.max(KEYGROUP_POLYPHONY);
+        self.check_pad(&p)?;
+        let before = self.pads[pad].replace(p);
+        let mut steps = vec![Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        }];
+        let play = PadsPlay::Keys {
+            from: (root - root % 12).min(127 - 15),
+        };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
+    /// The keygroups (pad indices) that play `note`, in pad order.
+    pub fn keygroups_for(&self, note: u8) -> Vec<usize> {
+        (0..PADS)
+            .filter(|&i| {
+                self.pad(i)
+                    .and_then(|p| p.keys)
+                    .is_some_and(|k| k.contains(note))
+            })
+            .collect()
     }
 
     fn place_pads(&mut self, pads: Vec<Pad>, to_pad: usize) -> Vec<Undo> {
@@ -937,6 +1299,9 @@ impl Project {
                 self.chop_sets.push(*c);
                 Undo::AddChop { set: None }
             }
+            Undo::PadsPlay { before } => Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, before),
+            },
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }

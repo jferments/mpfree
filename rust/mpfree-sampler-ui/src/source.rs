@@ -64,6 +64,8 @@ pub struct SourceView {
     pub tempo: Option<f64>,
     /// Its root note, such as "C#3", if it has a clear pitch.
     pub root: Option<String>,
+    /// The same note as a MIDI note (60 is C4), for a keygroup's root.
+    pub root_note: Option<u8>,
     /// Where its hits start, for chopping by transients (None if it
     /// couldn't be analysed).
     pub onsets: Option<Arc<OnsetAnalysis>>,
@@ -95,17 +97,19 @@ impl SourceView {
                 .filter(|l| (l / est - 1.0).abs() < 0.03);
             Some(f64::from(exact.unwrap_or(est)))
         });
-        let root = root_pitch(data, ch, s.rate(), PitchSettings::default())
+        let root_note = root_pitch(data, ch, s.rate(), PitchSettings::default())
             .ok()
             .flatten()
             .filter(|p| p.confidence >= ROOT_CONFIDENCE)
-            .map(|p| note_name(p.note));
+            .map(|p| p.note);
+        let root = root_note.map(note_name);
         SourceView {
             id: s.id(),
             peaks,
             mono,
             tempo,
             root,
+            root_note,
             onsets,
         }
     }
