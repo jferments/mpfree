@@ -548,6 +548,10 @@ impl Player {
                     "Hit a pad to chop it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   Wheel: zoom   ·   \
                      - / +: pad   ·   UNDO: undo".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
+                    "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
+                     Wheel: the row picked   ·   UNDO: undo".to_string()
+                }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
                      Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
@@ -702,6 +706,7 @@ impl Player {
                 if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
                     g.release(pad);
                 }
+                self.sample.pad_up(&mut self.ui, pad);
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
@@ -1854,6 +1859,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     empty.apply(ToUi::PadDown { pad: 1, velocity: 90 });
     empty.apply(ToUi::PadUp(1));
     out.push(("sample-no-sound", empty));
+    // The Pads tab: A5 copied onto A2, A5 picked again.
+    let mut pads = sample_sampler(fonts());
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                            kind: EventKind::Tab(mpfree_sampler_ui::pads_tab::TAB) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(), kind: EventKind::Tab(0) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::MAP.into(), kind: EventKind::Select(1) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(), kind: EventKind::Tab(1) });
+    pads.on_event(UiEvent { widget: mpfree_sampler_ui::pads_tab::MAP.into(),
+                            kind: EventKind::Select(mpfree_sampler_ui::sample::PAD) });
+    pads.take_actions();
+    out.push(("sample-pads", pads));
     // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
     let mut chop = sample_sampler(fonts());
     chop.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -2154,10 +2170,11 @@ mod tests {
         assert_eq!(p.sample.state().unwrap().region.start, start);
         assert!(events_log(&p).iter().any(|l| l.starts_with("sample: nothing to undo in kit 1")));
         assert_eq!(views(p.take_actions()).0.len(), 1);
-        // A pad without a sound shows its own page; - / + find the next sound.
+        // A pad without a sound shows the Pads tab; - / + find the next sound.
         p.apply(ToUi::PadDown { pad: 1, velocity: 90 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
-        assert!(p.ui.get::<Card>(sample_page::EMPTY).unwrap().heading.starts_with("Pad A2 has no sound in kit 1"));
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        assert_eq!(p.ui.get::<mpfree_sampler_ui::widgets::PadBar>(mpfree_sampler_ui::pads_tab::BAR).unwrap().title,
+                   "Pad A2 · no sound");
         p.apply(ToUi::SamplePad(1));
         assert_eq!((p.page(), p.sample.state().map(|s| s.pad)), (sample_page::PAGE, Some(pad)));
         // Q-Link 3 is the loop start; another kit names its bank.
@@ -2255,11 +2272,11 @@ mod tests {
         assert!(!sent[0].view.as_ref().unwrap().has_pad(0));
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
         // The Wave tab goes back to Wave; another pad stays on the tab open.
-        tap(&mut p, chop_tab::BAR, 0);
+        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
         tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
         p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
+        assert_eq!(p.page(), sample_page::PADS_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
     }
@@ -2309,12 +2326,76 @@ mod tests {
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
         // A pad without a sound shows the empty page; back on A5, Play again.
         p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
-        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
         assert_eq!(p.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().last_velocity, Some(100));
-        tap_tab(&mut p, play_tab::BAR, 0);
+        tap_tab(&mut p, play_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
+    }
+
+    #[test]
+    fn the_pads_tab_picks_copies_and_clears_pads_and_undo_takes_it_back() {
+        use mpfree_sampler_ui::pads_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{PadBar, PadMap};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| p.on_event(UiEvent { widget: widget.into(), kind });
+        // The pad bar's first tab opens Pads on the same pad.
+        ev(&mut p, mpfree_sampler_ui::wave_tab::BAR, EventKind::Tab(pads_tab::TAB));
+        assert_eq!((p.page(), p.sample.editor()), (sample_page::PADS_PAGE, sample_page::Editor::Pads));
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("Q-Links 1-4: level, pan, tune, voices"));
+        assert_eq!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().title, "Kit 1 · Breaks");
+        assert_eq!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().selected, pad);
+        // A hit lights its pad on the map until it lifts.
+        p.apply(ToUi::PadDown { pad, velocity: 90 });
+        assert!(p.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[pad]);
+        p.apply(ToUi::PadUp(pad));
+        assert!(!p.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[pad]);
+        p.take_actions();
+        // A tap on the map's A5 (picked) plays it while held.
+        let r = p.ui.rect_of(pads_tab::MAP).unwrap();
+        let a5 = p.ui.get::<PadMap>(pads_tab::MAP).unwrap().cell_rect(r, pad);
+        p.touch(4, Touch::Down, a5.x + 10, a5.y + 10);
+        p.touch(4, Touch::Up, a5.x + 10, a5.y + 10);
+        let pads: Vec<(usize, bool)> = p.take_actions().into_iter()
+            .filter_map(|a| match a { FromUi::Pad { pad, down } => Some((pad, down)), _ => None }).collect();
+        assert_eq!(pads, vec![(pad, true), (pad, false)]);
+        // Copy A5, pick A2 on the map, paste: A2 plays the loop, the Play
+        // page names it, the view goes out, and the log says so.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(0));
+        ev(&mut p, pads_tab::MAP, EventKind::Select(1));
+        assert_eq!(p.ui.get::<PadBar>(pads_tab::BAR).unwrap().title, "Pad A2 · no sound");
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().name, "Break 92");
+        assert_eq!(p.kits[0].pads[1].as_deref(), Some("Break 92"));
+        assert!(events_log(&p).iter().any(|l| l == "sample: kit 1 (Breaks) pad A2: now plays Break 92"),
+                "{:?}", events_log(&p));
+        let (sent, _) = views(p.take_actions());
+        assert!(sent[0].view.as_ref().unwrap().has_pad(1));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Q-Link 1 turns A2's level: one undo step, one log line.
+        p.apply(ToUi::SampleQLink(0, -4));
+        p.apply(ToUi::SampleLift);
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().level_db, -2.0);
+        assert_eq!(p.sample.pads().unwrap().0.row(&p.ui), Row::Level);
+        assert!(events_log(&p).iter().any(|l| l == "sample: kit 1 (Breaks) pad A2: level +0.0 dB -> -2.0 dB"),
+                "{:?}", events_log(&p));
+        // Clear it, then UNDO twice: the level back, then the copy back.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(2));
+        assert!(p.sample.project(0).unwrap().pad(1).is_none());
+        assert_eq!(p.kits[0].pads[1], None);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.project(0).unwrap().pad(1).unwrap().level_db, -2.0);
+        p.apply(ToUi::SampleUndo(false));
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(1).is_none(), "the paste is undone too");
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        // With a sound picked, the bar opens the other tabs on it.
+        ev(&mut p, pads_tab::MAP, EventKind::Select(pad));
+        ev(&mut p, pads_tab::BAR, EventKind::Tab(mpfree_sampler_ui::play_tab::TAB));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
     }
 
     #[test]
