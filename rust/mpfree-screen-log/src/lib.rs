@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-mod font;
+pub mod font;
 
 /// Each 8x8 glyph is drawn 2x2 pixels per font pixel.
 pub const SCALE: usize = 2;
