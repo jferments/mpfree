@@ -174,7 +174,7 @@ fn a_follower_opens_a_parameter_with_the_audio() {
     e.add_row(Row { source: Source::Follower(0), via: None, target: mix(), depth: -0.5 }).unwrap();
     let audio: Vec<f32> = (0..RATE as usize).map(|i| if i < RATE as usize / 2 { 0.0 } else { 0.9 }).collect();
     let log = run(&mut e, RATE as u64, 128, &[], Some(&audio));
-    let at = |f: u64| log.iter().filter(|x| x.1 == mix() && x.0 <= f).next_back().unwrap().2;
+    let at = |f: u64| log.iter().rfind(|x| x.1 == mix() && x.0 <= f).unwrap().2;
     assert_eq!(at(20_000), 50.0);
     assert!(at(47_000) < 10.0, "ducked by the loud half: {}", at(47_000));
 }
