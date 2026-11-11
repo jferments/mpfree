@@ -41,6 +41,7 @@ pub struct Header {
 const BRAND_W: i32 = 170;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
+const TABS_W: i32 = 5 * (TAB_W + TAB_GAP);
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
@@ -53,9 +54,12 @@ impl Header {
         self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
     }
 
+    /// Up to five tabs are TAB_W wide. More tabs share the same width, so the
+    /// chips on the right keep their room.
     fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        Rect::new(r.x + BRAND_W + i as i32 * (TAB_W + TAB_GAP), r.y + (r.h - h) / 2, TAB_W, h)
+        let pitch = TABS_W / self.tabs.len().max(5) as i32;
+        Rect::new(r.x + BRAND_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
     }
 }
 

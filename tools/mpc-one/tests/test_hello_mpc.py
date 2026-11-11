@@ -422,12 +422,12 @@ class HelloTests(unittest.TestCase):
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 9: Debug mode and Map controls",
+                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 10: Debug mode and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 9: Performance", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 10: Performance", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 9: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 10: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -449,10 +449,12 @@ class HelloTests(unittest.TestCase):
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
         self.add_journal([(130.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
-        answers = "\n\n" + "\n\n\n" * 9
+        answers = "\n\n" + "\n\n\n" * 10
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 9 of 9: Menus, console and STOP", res.stdout)
+        self.assertIn("Phase 7 of 10: Clips: record, overdub and undo", res.stdout)
+        self.assertIn("Phase 8 of 10: Audio looper: loop the pads", res.stdout)
+        self.assertIn("Phase 10 of 10: Menus, console and STOP", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
@@ -474,7 +476,7 @@ class HelloTests(unittest.TestCase):
                           (35.0, "mpfree-hello[211]: time: transport: Record"),
                           (40.0, "mpfree-hello[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
                           (60.0, "mpfree-hello[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
-        answers = "\n\n" + "s\n" * 9
+        answers = "\n\n" + "s\n" * 10
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
@@ -491,6 +493,75 @@ class HelloTests(unittest.TestCase):
                      "    status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us"):
             self.assertIn(text, out)
         self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
+
+    def make_acva(self):
+        """The ACVA card's procfs files as the MPC shows them while nothing records, and a card before it."""
+        r = self.root
+        write(f"{r}/proc/asound/card0/id", "rockchiphdmi\n")
+        write(f"{r}/proc/asound/card1/id", "ACVA\n")
+        write(f"{r}/proc/asound/card1/pcm0c/info", "card: 1\ndevice: 0\nstream: CAPTURE\nsubdevices_count: 1\n")
+        write(f"{r}/proc/asound/card1/pcm0c/sub0/status", "closed\n")
+        write(f"{r}/proc/asound/card1/pcm0c/sub0/hw_params", "closed\n")
+        write(f"{r}/proc/asound/card1/pcm0p/sub0/hw_params", "access: RW_INTERLEAVED\nformat: S32_LE\nrate: 44100 (44100/1)\n")
+        write(f"{r}/dev/snd/pcmC1D0c", "")
+
+    def test_line_step_reads_then_waits_for_the_word_and_follows_each_phase(self):
+        """The line step reads the capture device's state and the log; the pad player does the opening."""
+        write(self.app, "active\n")
+        self.make_acva()
+        self.add_journal([(101.0, "mpfree-hello[211]: line input: on: /dev/snd/pcmC1D0c, rate 44100, channels 2, "
+                                  "period 128 frames, buffer 256 frames"),
+                          (101.1, "mpfree-hello[211]: looper: records from line input")], at=110)
+        self.add_journal([(111.0, "mpfree-hello[211]: looper: Record: armed, the first pass starts on the next bar line "
+                                  "(2 bars)"),
+                          (115.0, "mpfree-hello[211]: looper: loop of 2 bars at 3.1.000: 176400 frames (4.00 s), playing")],
+                         at=120)
+        self.add_journal([(121.0, "mpfree-hello[211]: line input: off (2000 periods, 0 short, 0 frames dropped, "
+                                  "0 overruns, 0 errors)")], at=130)
+        answers = "LINE\n" + "\n\nmeter moved, L left\n" + "\n\nloop ok\n" + "\n\noff ok\n"
+        res = self.run_helper(answers, MPFREE_HELLO_STEPS="line")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("steps: line", "[3/3] The line input (STATE-CHANGING on the MPC, RAM only",
+                     "pad player (mpfree-test-app.service): active", "the line input before (read-only):",
+                     "    ACVA is card 1", "    --- card1/pcm0c/sub0/status", "    --- card1/pcm0p/sub0/hw_params",
+                     "Undo: Line input Off", "answer: LINE", "Phase 1 of 3: Line input on, and its meter",
+                     "line input: on: /dev/snd/pcmC1D0c, rate 44100", "the line input now (read-only):",
+                     "your answer: meter moved, L left", "Phase 2 of 3: Loop the line input",
+                     "looper: loop of 2 bars at 3.1.000", "Phase 3 of 3: Line input off", "your answer: off ok",
+                     "The line input and the looper, the whole session:", "    line input: off (2000 periods",
+                     "RESULT: all steps ran"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("ACVA is card 1"), 4, "before, and after each phase")
+        self.assertNotIn("rockchiphdmi", out)
+        # Nothing was copied, started or stopped; only reads.
+        self.assertNotIn("Copy the program", out)
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+        self.assertEqual(self.log_lines("program: "), [])
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
+        with open(self.app) as fh:
+            self.assertEqual(fh.read().strip(), "active")
+
+    def test_line_step_needs_the_word_and_the_pad_player(self):
+        write(self.app, "active\n")
+        self.make_acva()
+        res = self.run_helper("line\ns\n", MPFREE_HELLO_STEPS="line")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("Please type LINE exactly, or s, or q.", res.stdout)
+        self.assertIn("answer: s", res.stdout)
+        self.assertNotIn("Phase 1", res.stdout)
+        self.assertEqual(res.stdout.count("ACVA is card 1"), 1, "only the read-only look before")
+        # Without the pad player, after the app step, it reads and stops there; no ACVA card, it says so.
+        write(self.app, "inactive\n")
+        shutil.rmtree(f"{self.root}/proc/asound")
+        res = self.run_helper("\nit showed an error\n", MPFREE_HELLO_STEPS="line,app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        self.assertLess(out.index("[3/4] The pad player that started at power-on"), out.index("[4/4] The line input"))
+        self.assertIn("no sound card with the id ACVA", out)
+        self.assertIn("The pad player is not running, so this step is left out. Nothing was opened.", out)
+        self.assertNotIn("Type LINE", out)
+        self.assertNotIn("Copy the program", out)
 
     def test_app_step_when_the_app_is_not_running(self):
         self.add_journal([(7.0, "mpfree-hello[211]: STOP: no sound card called ACVA after 30 s")])
@@ -586,7 +657,7 @@ class StaticTests(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
-                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "REPORT", "CONTROLLER")
+                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "REPORT", "CONTROLLER", "LINE_PROBE")
         scripts = {name: getattr(mod, name) for name in names}
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
@@ -666,6 +737,8 @@ class StaticTests(unittest.TestCase):
             # the host-only preview pictures (never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))",
             # the ACVA playback device
+            "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
+            # the ACVA capture device (the line input), opened only when the owner turns Line input on
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",

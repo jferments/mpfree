@@ -65,6 +65,8 @@ mod alsa;
 mod debug_page;
 mod gui;
 mod kit;
+mod looper_page;
+mod looping;
 mod perf;
 mod sampler;
 mod synth;
@@ -1366,6 +1368,11 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+/// Seconds of stereo audio the looper keeps for all its layers (about
+/// 21 MB, allocated once at the start).
+const LOOP_SECONDS: u32 = 60;
+/// While overdubbing, the loop's waveform is redrawn about once a second.
+const LOOP_WAVE_PERIODS: u64 = 344;
 
 /// The sequencer's notes on the pads: the sampler's kit, or Poly while the
 /// synth has the pads. Each hit is noted so the screen's pads can flash.
@@ -1404,6 +1411,42 @@ impl time::Pads for SeqPads<'_> {
         match self.synth.as_mut() {
             Some(s) => s.all_off(),
             None => self.player.stop_all(),
+        }
+    }
+}
+
+/// The looper's presses and settings, and the line input switched on or
+/// off (opening the capture device; a failure leaves it off and says why).
+fn looper_action(out: &mut Out, looper: &mut looping::LoopHost, app: &mut app::App, card: u32,
+                 a: looping::LoopAction) -> Vec<app::Effect> {
+    match a {
+        looping::LoopAction::Command(c) => {
+            out.note(&looper.command(c));
+            Vec::new()
+        }
+        looping::LoopAction::Source(s) => {
+            looper.source = s;
+            out.note(&format!("looper: records from {}", s.name().to_lowercase()));
+            Vec::new()
+        }
+        looping::LoopAction::Monitor(on) => {
+            looper.monitor = on;
+            out.note(&format!("looper: monitor {}", if on { "on: the line input is heard" } else { "off" }));
+            Vec::new()
+        }
+        looping::LoopAction::LineInput(true) => match looper.line.open(card) {
+            Ok(line) => {
+                out.note(&line);
+                Vec::new()
+            }
+            Err(e) => {
+                out.note(&e);
+                app.line_input_off()
+            }
+        },
+        looping::LoopAction::LineInput(false) => {
+            out.note(&looper.line.close());
+            Vec::new()
         }
     }
 }
@@ -1498,6 +1541,11 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let mut app = app::App::new(RATE, timed);
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    // The looper follows the transport; the line input stays closed until
+    // the Prefs row "Line input" opens it.
+    let mut looper = looping::LoopHost::new(RATE, LOOP_SECONDS);
+    let mut loop_time = RenderTime::default();
+    let mut loop_shown_at = Instant::now();
     out.show(gui::ToUi::Time(Box::new(time.state())));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -1584,6 +1632,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
+                gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -1764,6 +1813,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 // What it gives back (the tempo's status line and note) is
                 // handled with the next period's effects.
                 app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
+                app::Effect::Looper(a) => later.extend(looper_action(out, &mut looper, &mut app, audio, a)),
             }
         }
         fx.append(&mut later);
@@ -1908,8 +1958,33 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         synth.render(i * PERIOD as u64, app.settings.bpm, &mut left, &mut right);
         synth_time.add(t_synth.elapsed());
         let p = sampler::master_out(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        // What the looper records from the pads: before the click.
+        looper.take_pads(&left, &right);
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
+        // The loop (and the input, with Monitor on) goes on top too.
+        let t_loop = Instant::now();
+        let (loop_peak, line_note) = looper.period(time.block(), &mut left, &mut right);
+        loop_time.add(t_loop.elapsed());
+        let p = p.max(loop_peak);
+        if let Some(note) = line_note {
+            out.note(&note);
+            // The input closed itself after errors: its row says Off again
+            // and the looper records the pads (next period's effects).
+            if !looper.line.is_open() && app.settings.line_input {
+                fx.extend(app.line_input_off());
+            }
+        }
+        for line in looper.changes(|| time.position_text()) {
+            out.note(&line);
+        }
+        if let Some(wave) = looper.wave_step(i, LOOP_WAVE_PERIODS) {
+            out.show(gui::ToUi::LoopWave(wave));
+        }
+        if app.view() == app::View::Looper && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
+            loop_shown_at = Instant::now();
+            out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+        }
         peak = peak.max(p);
         window_peak = window_peak.max(p);
         if p > 1.0 {
@@ -1965,6 +2040,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                               20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
+            out.note(&format!("status: {}; {}", looper.describe(), loop_time.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -1985,6 +2061,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 },
             }));
             window_peak = 0.0;
+            if app.view() != app::View::Looper {
+                out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+            }
             let meters = synth.meters();
             if meters != synth_meters {
                 out.show(gui::ToUi::SynthMeters(meters.clone()));
@@ -2013,6 +2092,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                      kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
     out.say(&sampler_status(&player, &render_time));
     out.say(&time.describe());
+    if looper.line.is_open() {
+        out.say(&looper.line.close());
+    }
+    out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }

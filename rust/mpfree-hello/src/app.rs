@@ -35,6 +35,8 @@ pub use mapper::{Code, MapView, Mark};
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, Recorder};
 use mpfree_controller::mpc_one::button;
+use crate::looping::{LoopAction, LoopSource};
+use mpfree_looper::Command as LoopCommand;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
 
@@ -51,6 +53,9 @@ pub enum View {
     Clips,
     /// The synth's page (mpfree-synth-ui): Poly's controls.
     Synth,
+    /// The audio looper: the loop's waveform, its buttons and the line
+    /// input's meter.
+    Looper,
     Debug,
     Console,
     Prefs,
@@ -70,7 +75,7 @@ pub enum View {
 
 /// The header's tabs: the Debug tab only in debug mode.
 pub fn tabs(debug: bool) -> Vec<View> {
-    let mut t = vec![View::Play, View::Clips, View::Synth];
+    let mut t = vec![View::Play, View::Clips, View::Synth, View::Looper];
     if debug {
         t.push(View::Debug);
     }
@@ -121,6 +126,7 @@ impl View {
             View::Play => "Play",
             View::Clips => "Clips",
             View::Synth => "Synth",
+            View::Looper => "Looper",
             View::Debug => "Debug",
             View::Console => "Console",
             View::Prefs => "Prefs",
@@ -351,13 +357,40 @@ pub struct Settings {
     /// Debug mode: the Debug tab (MIDI log, Performance, Map controls) and
     /// the `perf:` lines in the log.
     pub debug_mode: bool,
+    /// The line input (the MPC's capture device) is open. Always off at
+    /// start; nothing saves it.
+    pub line_input: bool,
+    /// The line input is heard through the outputs.
+    pub loop_monitor: bool,
+    /// What the looper records: the pads (the default) or the line input.
+    pub loop_source: LoopSource,
+    /// Bars in the looper's next first pass (None: until Record again).
+    pub loop_bars: Option<u32>,
+    /// Input latency the looper makes up for, in frames; estimated from
+    /// the audio buffer until set by hand.
+    pub loop_latency: u32,
+    pub loop_latency_set: bool,
+    pub loop_level_db: f32,
+}
+
+impl Settings {
+    /// The latency the looper makes up for: none for the pads, which are
+    /// in time with the transport.
+    pub fn loop_latency_now(&self) -> u32 {
+        match self.loop_source {
+            LoopSource::Pads => 0,
+            LoopSource::Line => self.loop_latency,
+        }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Settings {
         Settings { curve: Curve::Linear, screen_velocity: 100, rate: Rate::Sixteenth, bpm: 120.0,
                    latch_mode: LatchMode::Replace, periods: 3, show_pressure: false, midi_paused: false,
-                   console_paused: false, debug_mode: false }
+                   console_paused: false, debug_mode: false, line_input: false, loop_monitor: false,
+                   loop_source: LoopSource::Pads, loop_bars: Some(2), loop_latency: crate::looping::estimated_latency(3), loop_latency_set: false,
+                   loop_level_db: 0.0 }
     }
 }
 
@@ -381,6 +414,12 @@ pub enum Item {
     ClearLogs,
     ConsoleFollow,
     ClearConsole,
+    LineInput,
+    LoopSource,
+    LoopMonitor,
+    LoopBars,
+    LoopLatency,
+    LoopLevel,
 }
 
 /// The menu on screen: its rows (name, value), the selected row and help.
@@ -464,6 +503,8 @@ pub enum Effect {
     /// A PAD BANK button pressed: 0 = A/E to 3 = D/H, and whether SHIFT
     /// was held (E-H). The audio loop knows the bank playing, so it picks.
     Bank { button: u8, shift: bool },
+    /// For the looper and the line input.
+    Looper(LoopAction),
 }
 
 pub struct App {
@@ -517,6 +558,8 @@ pub struct App {
     /// Buttons pressed while the mapper listened: their release is kept
     /// from the rest of the app too.
     swallowed: [bool; 128],
+    /// The Looper tab's Mute.
+    loop_muted: bool,
 }
 
 impl App {
@@ -533,7 +576,7 @@ impl App {
                             tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
-                            mapper: mapper::Mapper::default(), swallowed: [false; 128] };
+                            mapper: mapper::Mapper::default(), swallowed: [false; 128], loop_muted: false };
         app.engine.set_pattern(pattern);
         app.update_engine();
         app
@@ -555,6 +598,10 @@ impl App {
                           Effect::Light(button::FULL_LEVEL, LIGHT_OFF), Effect::Patterns(self.patterns.clone()),
                           self.arp_view()];
         fx.extend(self.repeat_light());
+        let s = &self.settings;
+        fx.push(Effect::Looper(LoopAction::Source(s.loop_source)));
+        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(s.loop_bars))));
+        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
         // Buttons not known yet are found with the control mapper (Debug
         // mode), at the owner's pace: nothing asks for them at power-on.
         fx.push(Effect::Show(self.view));
@@ -710,6 +757,12 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start {
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if self.view == View::Looper && Some(note) == self.map.rec {
+            fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
+        } else if self.view == View::Looper && Some(note) == self.map.overdub {
+            fx.extend(self.looper_tap(crate::looper_page::B_OVERDUB));
+        } else if self.view == View::Looper && Some(note) == self.map.undo {
+            fx.extend(self.looper_tap(if shift { crate::looper_page::B_REDO } else { crate::looper_page::B_UNDO }));
         } else if Some(note) == self.map.rec {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
@@ -859,8 +912,8 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         if self.view != v
-            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Debug | View::Console | View::Arp
-                                   | View::Perf | View::Map)
+            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Looper | View::Debug | View::Console
+                                   | View::Arp | View::Perf | View::Map)
         {
             self.back = self.view;
         }
@@ -1058,12 +1111,70 @@ impl App {
         }
     }
 
+    // ------------------------------------------------------------ looper
+
+    /// A button on the Looper tab (or REC, OVERDUB, UNDO there).
+    pub fn looper_tap(&mut self, i: usize) -> Vec<Effect> {
+        use crate::looper_page::*;
+        let c = |c: LoopCommand| Effect::Looper(LoopAction::Command(c));
+        match i {
+            B_RECORD => vec![c(LoopCommand::Record)],
+            B_OVERDUB => vec![c(LoopCommand::Overdub)],
+            B_UNDO => vec![c(LoopCommand::Undo)],
+            B_REDO => vec![c(LoopCommand::Redo)],
+            B_CLEAR => vec![c(LoopCommand::Clear)],
+            B_MUTE => {
+                self.loop_muted = !self.loop_muted;
+                vec![c(LoopCommand::Mute(self.loop_muted))]
+            }
+            B_MONITOR if self.settings.line_input => {
+                self.settings.loop_monitor = !self.settings.loop_monitor;
+                let mut fx = vec![Effect::Looper(LoopAction::Monitor(self.settings.loop_monitor)),
+                                  Effect::Settings(self.settings.clone())];
+                if self.in_menu() {
+                    fx.push(self.menu_view());
+                }
+                fx
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The line input could not open (or closed itself): the row and the
+    /// Looper tab say Off again, and the looper records the pads.
+    pub fn line_input_off(&mut self) -> Vec<Effect> {
+        self.settings.line_input = false;
+        self.settings.loop_monitor = false;
+        let mut fx = vec![Effect::Looper(LoopAction::Monitor(false))];
+        fx.extend(self.set_loop_source(LoopSource::Pads));
+        fx.push(Effect::Settings(self.settings.clone()));
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
+        fx
+    }
+
+    /// Record from `source`, with the latency that goes with it.
+    fn set_loop_source(&mut self, source: LoopSource) -> Vec<Effect> {
+        if source == self.settings.loop_source {
+            return Vec::new();
+        }
+        self.settings.loop_source = source;
+        vec![Effect::Looper(LoopAction::Source(source)),
+             Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(self.settings.loop_latency_now())))]
+    }
+
     // ------------------------------------------------------------ menus
 
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
-            (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons,
-                               Item::DebugMode, Item::MapControls, Item::TouchLab],
+            // Line input goes after the rows the runbook names by place; the
+            // Touch lab stays last.
+            (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer,
+                               Item::FindButtons, Item::DebugMode, Item::MapControls, Item::LineInput,
+                               Item::TouchLab],
+            (_, View::Looper) => &[Item::LoopSource, Item::LineInput, Item::LoopMonitor, Item::LoopBars, Item::LoopLatency,
+                                   Item::LoopLevel],
             (_, View::Debug | View::Perf | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -1097,6 +1208,14 @@ impl App {
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
             Item::ConsoleFollow => ("Console", if s.console_paused { "Paused" } else { "Following" }.to_string()),
             Item::ClearConsole => ("Clear the console", "Clear".to_string()),
+            Item::LineInput => ("Line input", if s.line_input { "On" } else { "Off" }.to_string()),
+            Item::LoopSource => ("Record from", s.loop_source.name().to_string()),
+            Item::LoopMonitor => ("Monitor the input", if s.loop_monitor { "On" } else { "Off" }.to_string()),
+            Item::LoopBars => ("First pass length", crate::looping::bars_text(s.loop_bars)),
+            Item::LoopLatency => ("Latency to make up for", format!("{} frames, {:.1} ms{}", s.loop_latency,
+                                                                     s.loop_latency as f64 / 44.1,
+                                                                     if s.loop_latency_set { "" } else { " (estimated)" })),
+            Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
         }
     }
 
@@ -1152,6 +1271,27 @@ impl App {
             Item::ConsoleFollow => vec!["Pause the console to read it; it keeps",
                                         "collecting lines meanwhile."],
             Item::ClearConsole => vec!["Empty the console page."],
+            Item::LineInput => vec!["Opens the MPC's line input for the looper.",
+                                    "Off at every start. Which jacks it reads is",
+                                    "not checked yet (line in L and R, most",
+                                    "likely). Turning it off closes the input."],
+            Item::LoopSource => vec!["What the looper records: the pads and the",
+                                     "synth (before the click), or the line input.",
+                                     "Turning Line input on picks it; recording",
+                                     "the pads opens nothing."],
+            Item::LoopMonitor => vec!["Hear the line input through the outputs,",
+                                      "about 9 ms late. Leave it off if you hear",
+                                      "the instrument another way."],
+            Item::LoopBars => vec!["How long the looper's first pass is: 1, 2,",
+                                   "4 or 8 bars, or free: from the next bar line",
+                                   "until the bar line after Record again."],
+            Item::LoopLatency => vec!["How late your playing reaches the looper:",
+                                      "the output buffer, the input buffer and the",
+                                      "converters. Estimated from the audio buffer",
+                                      "until you set it. Measure it with a cable",
+                                      "from an output to the input."],
+            Item::LoopLevel => vec!["The loop's playback level, -24 to +6 dB.",
+                                    "0 dB plays it as it was recorded."],
         }
     }
 
@@ -1211,6 +1351,10 @@ impl App {
                 if p != s.periods {
                     s.periods = p;
                     fx.push(Effect::Audio(p));
+                    if !s.loop_latency_set {
+                        s.loop_latency = crate::looping::estimated_latency(p);
+                        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
+                    }
                 }
             }
             Item::FindButtons => {
@@ -1249,6 +1393,44 @@ impl App {
             Item::ClearLogs => fx.push(Effect::ClearLogs),
             Item::ConsoleFollow => s.console_paused = d > 0,
             Item::ClearConsole => fx.push(Effect::ClearConsole),
+            Item::LineInput => {
+                let on = d > 0;
+                if on != s.line_input {
+                    s.line_input = on;
+                    fx.push(Effect::Looper(LoopAction::LineInput(on)));
+                    if !on && s.loop_monitor {
+                        s.loop_monitor = false;
+                        fx.push(Effect::Looper(LoopAction::Monitor(false)));
+                    }
+                    // The looper follows: the line input while it is on.
+                    fx.extend(self.set_loop_source(if on { LoopSource::Line } else { LoopSource::Pads }));
+                }
+            }
+            Item::LoopSource => {
+                let source = cycle(&LoopSource::ALL, s.loop_source, d);
+                fx.extend(self.set_loop_source(source));
+            }
+            Item::LoopMonitor => {
+                let on = d > 0 && s.line_input;
+                if on != s.loop_monitor {
+                    s.loop_monitor = on;
+                    fx.push(Effect::Looper(LoopAction::Monitor(on)));
+                }
+            }
+            Item::LoopBars => {
+                const BARS: [Option<u32>; 5] = [Some(1), Some(2), Some(4), Some(8), None];
+                s.loop_bars = cycle(&BARS, s.loop_bars, d);
+                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(s.loop_bars))));
+            }
+            Item::LoopLatency => {
+                s.loop_latency = (s.loop_latency as i32 + 16 * d).clamp(0, 4096) as u32;
+                s.loop_latency_set = true;
+                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(s.loop_latency_now()))));
+            }
+            Item::LoopLevel => {
+                s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
+                fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(10f32.powf(s.loop_level_db / 20.0)))));
+            }
         }
         fx.push(Effect::Settings(self.settings.clone()));
         fx.push(self.menu_view());
@@ -1552,9 +1734,9 @@ mod tests {
         let fx = app.start();
         assert!(!fx.iter().any(|e| matches!(e, Effect::Guide(_))));
         assert_eq!(app.view(), View::Play);
-        // No Debug tab until debug mode: tab 3 is Console.
-        assert_eq!(tabs(false)[3], View::Console);
-        assert_eq!(app.tab(3), vec![Effect::Show(View::Console)]);
+        // No Debug tab until debug mode: tab 4 (after Looper) is Console.
+        assert_eq!(tabs(false)[4], View::Console);
+        assert_eq!(app.tab(4), vec![Effect::Show(View::Console)]);
         app.open_tab(View::Prefs);
         let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();
         let fx = app.step_item(row, 1);
@@ -1589,8 +1771,8 @@ mod tests {
         assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: true }]);
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[3], View::Debug);
-        app.tab(3);
+        assert_eq!(tabs(true)[4], View::Debug);
+        app.tab(4);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
@@ -1599,6 +1781,42 @@ mod tests {
         assert_eq!(app.view(), View::Map);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(app.debug_page(1), vec![Effect::Show(View::Perf)]);
+    }
+
+    /// The looper records the pads until the line input is turned on, and
+    /// goes back to them when it is turned off or fails to open.
+    #[test]
+    fn the_line_input_is_off_at_start_and_the_looper_follows_it() {
+        let mut app = ready();
+        let source = |s| Effect::Looper(LoopAction::Source(s));
+        let latency = |l| Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(l)));
+        assert!(!app.settings.line_input && app.settings.loop_source == LoopSource::Pads);
+        let fx = App::new(44_100, false).start();
+        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Looper(LoopAction::LineInput(_)))), "nothing opens at start");
+        // The Looper tab's options: Record from, then Line input.
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        assert_eq!(app.items()[..2], [Item::LoopSource, Item::LineInput]);
+        let fx = app.step_item(1, 1);
+        assert!(fx.contains(&Effect::Looper(LoopAction::LineInput(true))));
+        assert!(fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)), "{fx:?}");
+        // REC on the Looper tab is the looper's Record.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Looper);
+        assert_eq!(press(&mut app, 90), vec![Effect::Looper(LoopAction::Command(LoopCommand::Record))]);
+        // The input fails to open: Off again, and the pads.
+        let fx = app.line_input_off();
+        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
+        assert!(!app.settings.line_input);
+        // Record from can pick the line input by hand; Pads needs no latency.
+        press(&mut app, MENU);
+        let fx = app.step_item(0, 1);
+        assert!(fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)), "{fx:?}");
+        let fx = app.step_item(0, -1);
+        assert!(fx.contains(&source(LoopSource::Pads)) && fx.contains(&latency(0)), "{fx:?}");
+        assert!(app.step_item(0, -1).iter().all(|e| !matches!(e, Effect::Looper(_))), "already the pads");
     }
 
     #[test]
