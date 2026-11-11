@@ -1,10 +1,15 @@
-//! The pad player's synth: MPFree's Poly or FM (`mpfree-synth`) on the
-//! pads, edited on the Synth tab (`mpfree-synth-ui`).
+//! The pad player's synth: MPFree's Poly, FM, Drums or Pluck
+//! (`mpfree-synth`) on the pads, edited on the Synth tab (`mpfree-synth-ui`).
 //!
-//! - The kit list ends with one more entry, "Synth: Poly" or "Synth: FM".
-//!   Picking it, or opening the Synth tab, makes the pads play the synth.
-//!   The Synth tab's options (MENU) pick the engine; a note still ringing
-//!   on the other engine finishes its release.
+//! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
+//!   Pluck). Picking it, or opening the Synth tab, makes the pads play the
+//!   synth. The Synth tab's options (MENU) pick the engine; a note still
+//!   ringing on another engine finishes its release.
+//! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
+//!   Kit page knob, C2 by default) and each pad after it a semitone higher,
+//!   whatever the scale, layout, bank or octave. The pads are named by the
+//!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
+//!   of the pad hit last. Pluck plays the pad layouts as Poly and FM do.
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -16,7 +21,7 @@
 //!   notes on their exact frames. Pad pressure goes to every note its pad
 //!   plays. Two pads can share a note (two chords); the note ends when the
 //!   last pad holding it is let go.
-//! - The audio thread owns both nodes. The Synth tab (on the screen thread)
+//! - The audio thread owns every node. The Synth tab (on the screen thread)
 //!   keeps a copy of the values and sends changes, which apply from the
 //!   next period.
 //! - [`Synth::render`] adds the synth to the period after the sampler. It
@@ -34,8 +39,9 @@ use mpfree_arp::scale::pads::{
 };
 use mpfree_arp::scale::Scale;
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
+use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
-use mpfree_synth::{Fm, Poly};
+use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 use mpfree_ui::Color;
@@ -46,6 +52,8 @@ pub const KIT_PREFIX: &str = "Synth: ";
 /// The preset each engine starts with.
 pub const START_PRESET: &str = "Pluck";
 pub const FM_START_PRESET: &str = "Glass Keys";
+pub const DRUMS_START_PRESET: &str = "Init Kit";
+pub const PLUCK_START_PRESET: &str = "Steel String";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -77,6 +85,9 @@ fn black(note: u8) -> bool {
     matches!(note % 12, 1 | 3 | 6 | 8 | 10)
 }
 
+/// How many engines there are.
+const ENGINES: usize = 4;
+
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Engine {
@@ -85,15 +96,21 @@ pub enum Engine {
     Poly,
     /// The six-operator FM synth.
     Fm,
+    /// The drum synth: a sound on each pad.
+    Drums,
+    /// Plucked strings and struck mallets.
+    Pluck,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 2] = [Engine::Poly, Engine::Fm];
+    pub const ALL: [Engine; ENGINES] = [Engine::Poly, Engine::Fm, Engine::Drums, Engine::Pluck];
 
     pub fn name(self) -> &'static str {
         match self {
             Engine::Poly => "Poly",
             Engine::Fm => "FM",
+            Engine::Drums => "Drums",
+            Engine::Pluck => "Pluck",
         }
     }
 
@@ -180,11 +197,13 @@ impl Held {
 pub struct Synth {
     poly: Poly,
     fm: Fm,
+    drums: Drums,
+    pluck: Pluck,
     fm_presets: Vec<FmPreset>,
     rate: u32,
-    /// Note events for each engine (Poly, FM) this period.
-    events: [[Timed; MAX_EVENTS]; 2],
-    len: [usize; 2],
+    /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
+    events: [[Timed; MAX_EVENTS]; ENGINES],
+    len: [usize; ENGINES],
     dropped_events: u64,
     left: [f32; SCRATCH],
     right: [f32; SCRATCH],
@@ -200,7 +219,9 @@ pub struct Synth {
     /// Each pad's last pressure, 0 to 127.
     press: [u8; PADS],
     /// The preset each engine has loaded.
-    presets: [usize; 2],
+    presets: [usize; ENGINES],
+    /// Drums' pads' notes or names changed since the app last asked.
+    pads_changed: bool,
     /// Frames left in STOP's fade, while `fading`.
     fade: u32,
     fading: bool,
@@ -208,7 +229,29 @@ pub struct Synth {
     peak_voices: usize,
     resets: u64,
     /// Indices of the read-only parameters (meters), per engine.
-    meters: [Vec<usize>; 2],
+    meters: [Vec<usize>; ENGINES],
+}
+
+/// The factory presets of an engine other than FM (whose list is built).
+fn static_presets(engine: Engine) -> &'static [Preset] {
+    match engine {
+        Engine::Drums => Drums::presets(),
+        Engine::Pluck => Pluck::presets(),
+        Engine::Poly | Engine::Fm => Poly::presets(),
+    }
+}
+
+/// The index of the preset called `name`, or 0.
+fn start_preset(presets: &[Preset], name: &str) -> usize {
+    presets.iter().position(|p| p.name == name).unwrap_or(0)
+}
+
+/// Whether `id` is a Drums parameter that changes the pads' notes (the
+/// kit's Pad 1 note) or their names (a pad's sound).
+fn moves_drum_pads(id: u16) -> bool {
+    id == drum_params::BASE_NOTE
+        || (usize::from(id) < drum_params::PADS * usize::from(drum_params::STRIDE)
+            && id % drum_params::STRIDE == drum_params::field::MODEL)
 }
 
 fn meters_of(node: &dyn Node) -> Vec<usize> {
@@ -221,16 +264,23 @@ fn meters_of(node: &dyn Node) -> Vec<usize> {
 }
 
 impl Synth {
-    /// Poly and FM at `rate`, with [`START_PRESET`] and [`FM_START_PRESET`]
-    /// loaded and Poly on the pads. Allocates: call it before the sound
-    /// starts.
+    /// Every engine at `rate`, with its start preset ([`START_PRESET`] and
+    /// the ones after it) loaded and Poly on the pads. Allocates: call it
+    /// before the sound starts.
     pub fn new(rate: u32) -> Synth {
         let mut poly = Poly::new(rate);
-        let preset = Poly::presets()
-            .iter()
-            .position(|p| p.name == START_PRESET)
-            .unwrap_or(0);
+        let preset = start_preset(Poly::presets(), START_PRESET);
         poly.load_preset(&Poly::presets()[preset]);
+        let mut drums = Drums::new(rate);
+        let drums_preset = start_preset(Drums::presets(), DRUMS_START_PRESET);
+        if let Some(p) = Drums::presets().get(drums_preset) {
+            drums.load_preset(p);
+        }
+        let mut pluck = Pluck::new(rate);
+        let pluck_preset = start_preset(Pluck::presets(), PLUCK_START_PRESET);
+        if let Some(p) = Pluck::presets().get(pluck_preset) {
+            pluck.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -240,15 +290,22 @@ impl Synth {
         if let Some(p) = fm_presets.get(fm_preset) {
             fm.load_preset(p);
         }
-        let meters = [meters_of(&poly), meters_of(&fm)];
+        let meters = [
+            meters_of(&poly),
+            meters_of(&fm),
+            meters_of(&drums),
+            meters_of(&pluck),
+        ];
         let settings = PadSettings::default();
         Synth {
             poly,
             fm,
+            drums,
+            pluck,
             fm_presets,
             rate,
-            events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; 2],
-            len: [0; 2],
+            events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
+            len: [0; ENGINES],
             dropped_events: 0,
             left: [0.0; SCRATCH],
             right: [0.0; SCRATCH],
@@ -258,7 +315,8 @@ impl Synth {
             playing: [Held::default(); PADS],
             holders: [0; 128],
             press: [0; PADS],
-            presets: [preset, fm_preset],
+            presets: [preset, fm_preset, drums_preset, pluck_preset],
+            pads_changed: false,
             fade: 0,
             fading: false,
             notes: 0,
@@ -272,6 +330,8 @@ impl Synth {
         match self.settings.engine {
             Engine::Poly => &self.poly,
             Engine::Fm => &self.fm,
+            Engine::Drums => &self.drums,
+            Engine::Pluck => &self.pluck,
         }
     }
 
@@ -279,6 +339,18 @@ impl Synth {
         match self.settings.engine {
             Engine::Poly => &mut self.poly,
             Engine::Fm => &mut self.fm,
+            Engine::Drums => &mut self.drums,
+            Engine::Pluck => &mut self.pluck,
+        }
+    }
+
+    /// Voices one engine has sounding or fading.
+    fn voices_of(&self, engine: Engine) -> usize {
+        match engine {
+            Engine::Poly => self.poly.active_voices(),
+            Engine::Fm => self.fm.active_voices(),
+            Engine::Drums => self.drums.active_voices(),
+            Engine::Pluck => self.pluck.active_voices(),
         }
     }
 
@@ -308,8 +380,31 @@ impl Synth {
         }
         self.settings = settings;
         self.settings.bank %= BANKS;
-        self.pads = pads::layout(&self.setup());
+        self.relayout();
         switched
+    }
+
+    /// Works the pads' notes out again: Drums' kit notes, or the layout.
+    fn relayout(&mut self) {
+        self.pads = match self.settings.engine {
+            Engine::Drums => {
+                let base = self.drums.param(drum_params::BASE_NOTE).round() as i16;
+                std::array::from_fn(|p| Pad::single(base + p as i16))
+            }
+            _ => pads::layout(&self.setup()),
+        };
+    }
+
+    /// The sound on each of Drums' pads.
+    fn drum_names(&self) -> [&'static str; PADS] {
+        std::array::from_fn(|p| self.drums.pad_name(p))
+    }
+
+    /// Whether Drums' pads' notes or names changed (the kit's Pad 1 note, a
+    /// pad's sound, another kit) since the last call, so the app can send
+    /// the pad grid and the arp the new ones. Never allocates.
+    pub fn take_pads_changed(&mut self) -> bool {
+        std::mem::take(&mut self.pads_changed)
     }
 
     /// Every pad's notes now, for the arp ([`crate::app::App::set_pad_layout`]):
@@ -332,9 +427,16 @@ impl Synth {
     }
 
     /// "C3 to D#4" (or the lowest and highest chord roots), for the log and
-    /// the screen.
+    /// the screen. Drums: pad 1's note to pad 16's.
     pub fn range_text(&self) -> String {
-        pads::range_text(&self.setup())
+        match self.settings.engine {
+            Engine::Drums => format!(
+                "{} to {}",
+                self.root(0).map_or(String::new(), note_name),
+                self.root(PADS - 1).map_or(String::new(), note_name)
+            ),
+            _ => pads::range_text(&self.setup()),
+        }
     }
 
     #[cfg(test)]
@@ -344,18 +446,30 @@ impl Synth {
 
     /// Moves the pads by `delta` octaves, within [`MIN_OCTAVE`] and
     /// [`MAX_OCTAVE`]. Notes already held end on their own pad's note-off.
-    /// Returns whether it moved.
+    /// Returns whether it moved. Drums' pads don't move: a kit has no
+    /// octaves (its Pad 1 note is on the Kit page).
     pub fn shift_octave(&mut self, delta: i32) -> bool {
+        if self.settings.engine == Engine::Drums {
+            return false;
+        }
         let o = (self.octave + delta).clamp(MIN_OCTAVE, MAX_OCTAVE);
         let moved = o != self.octave;
         self.octave = o;
-        self.pads = pads::layout(&self.setup());
+        self.relayout();
         moved
     }
 
     /// Each pad's name, for the pad grid: the note ("C#3"), or on Chord pads
-    /// the numeral and the chord ("iv7 Dm7"). None for a pad with no notes.
+    /// the numeral and the chord ("iv7 Dm7"); with Drums, the sound
+    /// ("Kick"). None for a pad with no notes.
     pub fn pad_labels(&self) -> Vec<Option<String>> {
+        if self.settings.engine == Engine::Drums {
+            return self
+                .drum_names()
+                .iter()
+                .map(|n| Some(n.to_string()))
+                .collect();
+        }
         let setup = self.setup();
         self.pads
             .iter()
@@ -371,8 +485,12 @@ impl Synth {
     }
 
     /// The header chip: "FM · C3 to D#4", with the layout when a scale is on
-    /// ("Poly · D Dorian · In key · D3 to F5").
+    /// ("Poly · D Dorian · In key · D3 to F5"); with Drums, the kit
+    /// ("Drums · Boom Kit").
     pub fn chip(&self) -> String {
+        if self.settings.engine == Engine::Drums {
+            return format!("Drums · {}", self.preset_name());
+        }
         let setup = self.setup();
         match setup.scale {
             None => format!("{} · {}", self.engine().name(), self.range_text()),
@@ -405,11 +523,17 @@ impl Synth {
 
     /// Resting pad colours. With no scale: C, white and black keys. With a
     /// scale: the root (or the home chord), the scale's notes, and notes
-    /// outside it. A pad with no notes is dark.
+    /// outside it. Drums: the kit's colour on every pad. A pad with no notes
+    /// is dark.
     pub fn pad_colours(&self) -> [[u8; 3]; 16] {
         let mut out = [[0u8; 3]; 16];
+        let drums = self.settings.engine == Engine::Drums;
         for (c, p) in out.iter_mut().zip(&self.pads) {
             let Some(&n) = p.notes().last() else { continue };
+            if drums {
+                *c = PAD_WHITE;
+                continue;
+            }
             *c = match p.role {
                 PadRole::Plain if n.is_multiple_of(12) => PAD_C,
                 PadRole::Plain if black(n) => PAD_BLACK,
@@ -583,15 +707,13 @@ impl Synth {
     pub fn render(&mut self, frame: u64, bpm: f64, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
         let len = self.len;
-        self.len = [0; 2];
+        self.len = [0; ENGINES];
         if n == 0 {
             return;
         }
         let on = self.settings.engine.index();
-        let run = [
-            on == 0 || len[0] > 0 || self.poly.active_voices() > 0,
-            on == 1 || len[1] > 0 || self.fm.active_voices() > 0,
-        ];
+        let run: [bool; ENGINES] =
+            std::array::from_fn(|k| k == on || len[k] > 0 || self.voices_of(Engine::ALL[k]) > 0);
         // Stable insertion sort by frame (few events, no allocation); late
         // events land on the last frame.
         for (events, &len) in self.events.iter_mut().zip(&len) {
@@ -606,11 +728,11 @@ impl Synth {
                 }
             }
         }
-        let (mut start, mut e) = (0usize, [0usize; 2]);
+        let (mut start, mut e) = (0usize, [0usize; ENGINES]);
         while start < n {
             let end = (start + SCRATCH).min(n);
             let fade0 = self.fade;
-            for k in 0..2 {
+            for k in 0..ENGINES {
                 if !run[k] {
                     continue;
                 }
@@ -633,7 +755,12 @@ impl Synth {
                     playing: false,
                     sidechain: None,
                 };
-                let node: &mut dyn Node = if k == 0 { &mut self.poly } else { &mut self.fm };
+                let node: &mut dyn Node = match Engine::ALL[k] {
+                    Engine::Poly => &mut self.poly,
+                    Engine::Fm => &mut self.fm,
+                    Engine::Drums => &mut self.drums,
+                    Engine::Pluck => &mut self.pluck,
+                };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
                     node.reset();
@@ -663,6 +790,8 @@ impl Synth {
                 if self.fade == 0 {
                     self.poly.reset();
                     self.fm.reset();
+                    self.drums.reset();
+                    self.pluck.reset();
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -673,9 +802,9 @@ impl Synth {
         self.peak_voices = self.peak_voices.max(self.active_voices());
     }
 
-    /// Voices sounding or fading, on both engines.
+    /// Voices sounding or fading, on every engine.
     pub fn active_voices(&self) -> usize {
-        self.poly.active_voices() + self.fm.active_voices()
+        Engine::ALL.iter().map(|&e| self.voices_of(e)).sum()
     }
 
     pub fn counters(&self) -> Counters {
@@ -687,28 +816,49 @@ impl Synth {
         }
     }
 
-    /// The engine's voice count setting, for the status line.
+    /// The engine's voice count setting, for the status line (Drums: its
+    /// fixed pool of hits).
     pub fn polyphony(&self) -> f32 {
         match self.settings.engine {
             Engine::Poly => self.poly.param(mpfree_synth::params::POLYPHONY),
             Engine::Fm => self.fm.param(mpfree_synth::fm_params::POLYPHONY),
+            Engine::Drums => mpfree_synth::drum::POOL as f32,
+            Engine::Pluck => self.pluck.param(mpfree_synth::pluck_params::POLYPHONY),
         }
     }
 
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
-    /// bars. Returns how many it wrote.
+    /// bars. Returns how many it wrote (none for Drums and Pluck, which
+    /// don't take pressure yet).
     pub fn pressures(&self, out: &mut [f32]) -> usize {
         match self.settings.engine {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
+            Engine::Drums | Engine::Pluck => 0,
         }
     }
 
     // ------------------------------------------------------------ the Synth tab
 
     /// Sets a parameter of the engine on the pads (clamped by the node).
+    /// Drums' Pad 1 note and pad sounds move or rename the pads (see
+    /// [`Synth::take_pads_changed`]).
     pub fn set(&mut self, id: u16, value: f32) {
+        let names = self.drum_names();
         self.node_mut().set_param(id, value);
+        if self.settings.engine == Engine::Drums && moves_drum_pads(id) {
+            self.drums_moved(names);
+        }
+    }
+
+    /// Drums' values changed (its pads were called `names` before): the
+    /// pads follow, and the app hears of it if their notes or names changed.
+    fn drums_moved(&mut self, names: [&'static str; PADS]) {
+        let pads = self.pads;
+        self.relayout();
+        if (self.pads, self.drum_names()) != (pads, names) {
+            self.pads_changed = true;
+        }
     }
 
     pub fn value(&self, id: u16) -> f32 {
@@ -718,29 +868,34 @@ impl Synth {
     /// How many presets the engine on the pads has.
     pub fn preset_count(&self) -> usize {
         match self.settings.engine {
-            Engine::Poly => Poly::presets().len(),
             Engine::Fm => self.fm_presets.len(),
+            e => static_presets(e).len(),
         }
     }
 
     /// Loads preset `i` of the engine on the pads; returns its name, or None
     /// if there is no such preset. Notes keep sounding; values glide to the
-    /// preset's.
+    /// preset's. A Drums kit can move or rename the pads.
     pub fn load_preset(&mut self, i: usize) -> Option<&str> {
-        match self.settings.engine {
-            Engine::Poly => {
-                let p = Poly::presets().get(i)?;
-                self.poly.load_preset(p);
-                self.presets[0] = i;
-                Some(p.name)
-            }
-            Engine::Fm => {
-                let p = self.fm_presets.get(i)?;
-                self.fm.load_preset(p);
-                self.presets[1] = i;
-                Some(&p.name)
-            }
+        let e = self.settings.engine;
+        if e == Engine::Fm {
+            let p = self.fm_presets.get(i)?;
+            self.fm.load_preset(p);
+            self.presets[e.index()] = i;
+            return Some(&p.name);
         }
+        let p = static_presets(e).get(i)?;
+        match e {
+            Engine::Drums => {
+                let names = self.drum_names();
+                self.drums.load_preset(p);
+                self.drums_moved(names);
+            }
+            Engine::Pluck => self.pluck.load_preset(p),
+            Engine::Poly | Engine::Fm => self.poly.load_preset(p),
+        }
+        self.presets[e.index()] = i;
+        Some(p.name)
     }
 
     #[cfg(test)]
@@ -751,8 +906,8 @@ impl Synth {
     pub fn preset_name(&self) -> &str {
         let i = self.presets[self.settings.engine.index()];
         match self.settings.engine {
-            Engine::Poly => Poly::presets().get(i).map_or("", |p| p.name),
             Engine::Fm => self.fm_presets.get(i).map_or("", |p| p.name.as_str()),
+            e => static_presets(e).get(i).map_or("", |p| p.name),
         }
     }
 
@@ -775,8 +930,11 @@ impl Synth {
     /// What the Synth tab shows.
     pub fn state(&self) -> SynthState {
         let presets = match self.settings.engine {
-            Engine::Poly => Poly::presets().iter().map(|p| p.name.to_string()).collect(),
             Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
+            e => static_presets(e)
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect(),
         };
         let preset = Some(self.presets[self.settings.engine.index()]);
         SynthState::from_node(
@@ -1232,7 +1390,7 @@ mod tests {
         assert!(after.iter().all(|&x| x == 0.0), "silent after the fade");
         // A pad let go after STOP sends nothing.
         s.note_off(0, 0);
-        assert_eq!(s.len, [0, 0]);
+        assert_eq!(s.len, [0; ENGINES]);
     }
 
     #[test]
@@ -1280,7 +1438,7 @@ mod tests {
         assert!(s.counters().dropped >= 5);
         let mut frame = 0;
         run(&mut s, &mut frame, 1, 128);
-        assert_eq!(s.len, [0, 0]);
+        assert_eq!(s.len, [0; ENGINES]);
     }
 
     #[test]
@@ -1339,6 +1497,15 @@ mod tests {
                 if p % 401 == 0 {
                     s.load_preset(p / 401 % 5);
                 }
+                if p % 113 == 0 {
+                    // Drums' Pad 1 note and a pad's sound move the pads.
+                    s.set(drum_params::BASE_NOTE, 30.0 + (p % 20) as f32);
+                    s.set(
+                        drum_params::pad_id(p % 16, drum_params::field::MODEL),
+                        (p % 4) as f32,
+                    );
+                    let _ = s.take_pads_changed();
+                }
                 if p % 733 == 0 {
                     s.shift_octave(if p % 2 == 0 { 1 } else { -1 });
                 }
@@ -1346,7 +1513,7 @@ mod tests {
                     let mut set = s.settings();
                     set.scale = if p % 2 == 0 { minor } else { None };
                     set.bank = p / 211 % BANKS;
-                    set.engine = Engine::ALL[p / 300 % 2];
+                    set.engine = Engine::ALL[p / 300 % ENGINES];
                     s.set_settings(set);
                 }
                 if p % 307 == 0 {
@@ -1367,6 +1534,109 @@ mod tests {
         });
         assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
         assert!(s.counters().notes > 300);
+    }
+
+    #[test]
+    fn drums_play_the_kits_notes_whatever_the_scale_layout_or_octave() {
+        let mut s = Synth::new(44_100);
+        with(&mut s, |p| {
+            p.scale = scale("Minor", 9);
+            p.set_layout(PadLayout::Chords);
+        });
+        s.shift_octave(1);
+        with(&mut s, |p| p.engine = Engine::Drums);
+        assert!(
+            !s.take_pads_changed(),
+            "the app sends the pads on a switch itself"
+        );
+        // Pad 1 is the kit's Pad 1 note (C2), a semitone a pad.
+        for pad in 0..PADS {
+            assert_eq!(s.notes(pad), &[36 + pad as u8]);
+        }
+        assert_eq!(s.range_text(), "C2 to D#3");
+        assert!(!s.shift_octave(1), "a kit has no octaves");
+        assert_eq!(s.notes(0), &[36]);
+        // Banks and the In key switch don't move it either.
+        with(&mut s, |p| {
+            p.bank = 3;
+            p.set_layout(PadLayout::InKey);
+        });
+        assert_eq!(s.notes(15), &[51]);
+        // Named by their sounds, in the kit's colour; the chip names the kit.
+        let labels = s.pad_labels();
+        assert_eq!(labels[0].as_deref(), Some(s.drums.pad_name(0)));
+        assert_eq!(labels[0].as_deref(), Some("Kick"));
+        assert_eq!(s.pad_colours(), [PAD_WHITE; 16]);
+        assert_eq!(s.chip(), "Drums · Init Kit");
+        assert_eq!(s.kit_view().name, "Synth: Drums");
+        // A pad hit plays that pad's note on Drums.
+        s.note_on(1, 100, 0);
+        assert_eq!(
+            queued(&s),
+            [NodeEvent::NoteOn {
+                note: 37,
+                velocity: 100
+            }]
+        );
+        // The Pad 1 note moves every pad; the app hears of it once.
+        s.set(drum_params::BASE_NOTE, 48.0);
+        assert_eq!(s.notes(0), &[48]);
+        assert_eq!(s.range_text(), "C3 to D#4");
+        assert!(s.take_pads_changed());
+        assert!(!s.take_pads_changed());
+        s.set(drum_params::BASE_NOTE, 48.0);
+        assert!(!s.take_pads_changed(), "no change, no news");
+        // Pad 1 held before the move still ends its own note.
+        s.note_off(1, 0);
+        assert_eq!(queued(&s).last(), Some(&NodeEvent::NoteOff { note: 37 }));
+        // A pad's sound renames it.
+        let model = drum_params::pad_id(3, drum_params::field::MODEL);
+        s.set(model, 0.0);
+        assert_eq!(s.pad_labels()[3].as_deref(), Some("Kick"));
+        assert!(s.take_pads_changed());
+        // Other knobs don't touch the pads.
+        s.set(drum_params::pad_id(3, drum_params::field::DECAY), 300.0);
+        assert!(!s.take_pads_changed());
+        // A kit: its name, and the app hears if the pads' names changed.
+        assert_eq!(s.load_preset(1), Some("Boom Kit"));
+        assert_eq!(s.preset_name(), "Boom Kit");
+        assert_eq!(s.preset_count(), Drums::presets().len());
+        assert_eq!(s.state().presets.len(), Drums::presets().len());
+        assert!(s.take_pads_changed(), "pad 4 is back to the kit's sound");
+        // Back to Poly: the layout, the scale and the octave are as they were.
+        with(&mut s, |p| p.engine = Engine::Poly);
+        assert_eq!(s.octave(), 1);
+        assert_eq!(s.pad_layout(), pads::layout(&s.setup()));
+        assert_ne!(s.notes(0), &[48], "bank D, In key in A minor, an octave up");
+        assert!(s.shift_octave(-1));
+    }
+
+    #[test]
+    fn pluck_plays_the_pad_layouts_as_poly_does() {
+        let mut poly = Synth::new(44_100);
+        let mut pluck = Synth::new(44_100);
+        with(&mut pluck, |p| p.engine = Engine::Pluck);
+        for s in [&mut poly, &mut pluck] {
+            with(s, |p| {
+                p.scale = scale("Dorian", 2);
+                p.set_layout(PadLayout::Chords);
+            });
+            s.shift_octave(-1);
+        }
+        for pad in 0..PADS {
+            assert_eq!(poly.notes(pad), pluck.notes(pad), "pad {pad}");
+        }
+        assert_eq!(pluck.pad_labels(), poly.pad_labels());
+        assert!(pluck.chip().starts_with("Pluck · D Dorian"));
+        assert_eq!(pluck.preset_name(), PLUCK_START_PRESET);
+        assert_eq!(
+            pluck.polyphony(),
+            pluck.value(mpfree_synth::pluck_params::POLYPHONY)
+        );
+        // A chord pad: every note of it reaches Pluck.
+        pluck.note_on(0, 90, 0);
+        assert_eq!(queued(&pluck).len(), pluck.notes(0).len());
+        assert!(!pluck.take_pads_changed());
     }
 
     #[test]

@@ -2055,6 +2055,16 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// another layout: "pads: Poly synth, C3 to D#4 (pad 1 = C3; …)", with the
 /// scale and layout when a scale is on.
 fn synth_pads_note(synth: &synth::Synth) -> String {
+    if synth.engine() == synth::Engine::Drums {
+        return format!(
+            "pads: Drums, {}, {} (pad 1 = {}; Pad 1 note on the Synth tab's Kit page)",
+            synth.preset_name(),
+            synth.range_text(),
+            synth
+                .root(0)
+                .map_or("no note".to_string(), synth::note_name)
+        );
+    }
     let setup = synth.setup();
     let layout = match setup.scale {
         Some(s) => format!(
@@ -2757,6 +2767,17 @@ fn player_session(
             ));
             play = Playback::start(open_acva(out, p)?, p)?;
             pending.clear();
+        }
+        // Drums' Pad 1 note, a pad's sound or another kit: the pad grid
+        // and the arp take the pads' new names and notes.
+        if synth.take_pads_changed() {
+            out.show(gui::ToUi::KitChanged {
+                kit: synth_kit,
+                view: synth.kit_view(),
+            });
+            if synth_on {
+                app.set_pad_layout(Some(synth.pad_layout()));
+            }
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
