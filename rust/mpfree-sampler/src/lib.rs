@@ -6,6 +6,7 @@
 //!   built from the model.
 //! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
+//! - [`node`]: the sampler as an instrument node any track can hold.
 //! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
@@ -19,6 +20,7 @@ pub mod chop;
 pub mod dsp;
 pub mod engine;
 pub mod model;
+pub mod node;
 pub mod phrase;
 pub mod record;
 pub mod warp;

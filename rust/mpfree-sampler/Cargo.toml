@@ -11,6 +11,7 @@ mpfree-analysis = { path = "../mpfree-analysis" }
 mpfree-grain = { path = "../mpfree-grain" }
 mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
+mpfree-node = { path = "../mpfree-node" }
 
 [[bin]]
 name = "mpfree-sampler"
