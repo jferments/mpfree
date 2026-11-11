@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-touch-evdev"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Live MPC One touch reader: evdev without a grab, decoder seeded at open and resynced after overflow"
+
+[lib]
+name = "mpfree_touch_evdev"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-touch = { path = "../mpfree-touch" }

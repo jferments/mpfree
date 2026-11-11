@@ -1,0 +1,18 @@
+[package]
+name = "mpfree-play"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The time engine's playback engine: compiles clips into a read-only play view and, each period, plays them on the transport's spans with sample-exact timing; same output for any period size, no allocation while running"
+
+[lib]
+name = "mpfree_play"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-arp = { path = "../mpfree-arp" }
+
+[dev-dependencies]
+mpfree-sampler = { path = "../mpfree-sampler" }
