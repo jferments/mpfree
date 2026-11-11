@@ -16,7 +16,7 @@ From the bottom up:
 |---|---|---|
 | Canvas | The only code that touches pixels: rectangles, rounded rectangles (anti-aliased), outlines, glyph masks, a clip rectangle. `SoftCanvas` draws into a plain XRGB8888 buffer. | [`canvas.rs`](../../rust/mpfree-ui/src/canvas.rs) |
 | Screen output | `FbTarget` copies only the changed rectangles to `/dev/fb0`, turned to the panel's mounting (the MPC One's panel is 800×1280, mounted turned, so the UI sees 1280×800). It also handles 16-bit framebuffers. It writes at least two whole native rows at a time: a write of exactly one row gives the kernel's framebuffer emulation a zero-width damage rectangle, and that row is never shown (found in round 4). `capture` reads the framebuffer back as a picture, which the loading page uses as its backdrop. | [`fb.rs`](../../rust/mpfree-ui/src/fb.rs) |
-| Theme | Every colour, size, radius and gap in one place, plus tones (normal, dim, accent, good, warning, bad) that widgets use instead of colours. | [`theme.rs`](../../rust/mpfree-ui/src/theme.rs) |
+| Theme | Every colour, size, radius and gap in one place, plus tones (normal, dim, accent, good, warning, bad) that widgets use instead of colours. Four built-in themes and user theme files; effects (corner shape, glow, backdrop, font roles) applied under the widgets by `Styled`. See [UI themes](ui-themes.md). | [`theme.rs`](../../rust/mpfree-ui/src/theme.rs), [`style.rs`](../../rust/mpfree-ui/src/style.rs) |
 | Fonts | Three faces (sans, bold, mono), rasterised by `fontdue` and cached per size. Built in: Inter and JetBrains Mono (SIL OFL 1.1), cut down to Latin, about 1 MB in RAM. Any TTF or OTF file can replace them (`--font`, `--bold-font`, `--mono-font`). | [`text.rs`](../../rust/mpfree-ui/src/text.rs), [`fonts/`](../../rust/mpfree-ui/fonts/README.md) |
 | Widgets | Draw themselves into the rectangle they are given and turn touches into events. They never talk to hardware or the audio engine. | [`widgets.rs`](../../rust/mpfree-ui/src/widgets.rs) |
 | Layouts | A page is a one-line text spec naming widget slots in rows and columns. | [`layout.rs`](../../rust/mpfree-ui/src/layout.rs) |
@@ -82,4 +82,4 @@ Measured on the workstation (x86, one core): a full 1280×800 paint takes about 
 - A GLES canvas behind the same `Canvas` trait, once a GPU path is qualified on the test build.
 - Gestures from `mpfree-touch` (swipe between pages, long press) and lists that scroll by drag.
 - Widgets for what comes next: a step grid, a waveform, a mixer strip, a sample browser.
-- Layouts and the theme read from files, so a layout can change without a rebuild.
+- Layouts and the theme read from files, so a layout can change without a rebuild. Parsing and applying both are done (`Theme::parse`, `Ui::apply_layouts`, see [UI themes](ui-themes.md)); a picker and a folder on the stick are next.
