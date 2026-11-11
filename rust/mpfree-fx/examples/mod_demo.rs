@@ -1,5 +1,5 @@
-//! Renders a demo of the EQ and the modulation effects in a heavy 90 BPM
-//! beat and writes `~/mpfree-work/mod-demo.wav` (or the path given).
+//! Renders a demo of the EQ, the modulation effects and Lo-fi in a heavy
+//! 90 BPM beat and writes `~/mpfree-work/mod-demo.wav` (or the path given).
 //!
 //! Each effect is an insert that is always running; its Mix (or gain) is
 //! automated with sample-timed events, so it fades in and out without a
@@ -10,10 +10,12 @@
 //!   synced to the transport, 70 % feedback
 //! - bars 7-8: **Phaser** (8 stages, one sweep every 2 bars, synced) on
 //!   the fuzz bass and the chords
-//! - bars 9-10: the **EQ** on the master builds up: a 24 dB low cut sweeps
+//! - bars 9-10: **Lo-fi** ("Dusty vinyl") on the master, its Amount rising
+//!   from nothing to full: wow, crackle and hiss creep in
+//! - bars 11-12: the **EQ** on the master builds up: a 24 dB low cut sweeps
 //!   from 20 Hz to 700 Hz while a resonant bell rises at 2 kHz
-//! - bar 11: the drop: the EQ snaps open and every effect plays at once
-//! - bars 12-13: a last hit rings out through a Cloud reverb send.
+//! - bar 13: the drop: the EQ snaps open and every effect plays at once
+//! - bars 14-15: a last hit rings out through a Cloud reverb send.
 //!
 //! The mix runs hot into Master safety, as in the other demos. It prints
 //! the level of every bar, what Master safety caught and how many frames a
@@ -25,12 +27,12 @@ use std::f32::consts::TAU;
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, NodeEvent, Timed};
-use mpfree_fx::{gain_to_db, Chorus, Cloud, Drive, Eq, Flanger, MasterSafety, Phaser, CLOUD_PRESETS};
+use mpfree_fx::{gain_to_db, Chorus, Cloud, Drive, Eq, Flanger, LoFi, MasterSafety, Phaser, CLOUD_PRESETS, LOFI_PRESETS};
 
 const RATE: u32 = 48_000;
 const BPM: f64 = 90.0;
 const BLOCK: usize = 128;
-const BARS: usize = 13;
+const BARS: usize = 15;
 
 fn step(s: f64) -> usize { (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize }
 fn bar(b: usize) -> usize { step((b as f64 - 1.0) * 16.0) }
@@ -101,7 +103,7 @@ fn stems(total: usize) -> [Stem; 3] {
     let mut st: [Stem; 3] = std::array::from_fn(|_| (vec![0.0; total], vec![0.0; total]));
     let mut noise = Noise(11);
     let rate = RATE as f32;
-    for b in 1..12 {
+    for b in 1..14 {
         let s0 = (b as f64 - 1.0) * 16.0;
         for &s in &[0.0, 7.0, 10.0] { kick(&mut st[DRUMS], step(s0 + s), 0.4, 0.6); }
         for &s in &[4.0, 12.0] {
@@ -136,8 +138,8 @@ fn stems(total: usize) -> [Stem; 3] {
         let notes: [i32; 4] = match (b - 1) % 4 { 0 => [52, 59, 64, 67], 1 => [48, 55, 64, 67], 2 => [50, 55, 62, 71], _ => [50, 57, 62, 66] };
         chord(&mut st[CHORDS], step(s0), step(16.0), &notes, 0.25);
     }
-    // The last hit at bar 12, into the reverb.
-    let at = bar(12);
+    // The last hit at bar 14, into the reverb.
+    let at = bar(14);
     kick(&mut st[DRUMS], at, 0.7, 0.7);
     let mut ph = 0.0f32;
     add(&mut st[BASS], at, rate as usize, 0.0, &mut |k| {
@@ -176,11 +178,12 @@ fn main() {
     let mut phaser = Phaser::new();
     let mut phaser_chords = Phaser::new();
     let mut eq = Eq::new();
+    let mut lofi = LoFi::new();
     let mut hall = Cloud::new();
     let mut safety = MasterSafety::new();
     let mut raw = MasterSafety::new();
     let flange: &[(u16, f32)] = &[(ids::flanger::SYNC, 5.0), (ids::flanger::DEPTH, 80.0), (ids::flanger::DELAY, 1.2), (ids::flanger::FEEDBACK, 70.0), (ids::flanger::MIX, 0.0)];
-    let setups: [Setup; 10] = [
+    let setups: [Setup; 11] = [
         (&mut fuzz, &[(ids::drive::MODE, 4.0), (ids::drive::DRIVE, 20.0), (ids::drive::TONE, 4000.0), (ids::drive::MIX, 80.0)]),
         (&mut chorus, &[(ids::chorus::VOICES, 3.0), (ids::chorus::DEPTH, 60.0), (ids::chorus::RATE, 0.5), (ids::chorus::MIX, 0.0)]),
         (&mut flanger, flange),
@@ -188,6 +191,7 @@ fn main() {
         (&mut phaser, &[(ids::phaser::SYNC, 6.0), (ids::phaser::STAGES, 3.0), (ids::phaser::FEEDBACK, 60.0), (ids::phaser::CENTER, 600.0), (ids::phaser::DEPTH, 85.0), (ids::phaser::MIX, 0.0)]),
         (&mut phaser_chords, &[(ids::phaser::SYNC, 6.0), (ids::phaser::STAGES, 2.0), (ids::phaser::FEEDBACK, 40.0), (ids::phaser::CENTER, 900.0), (ids::phaser::MIX, 0.0)]),
         (&mut eq, &[(ids::eq::LOW_CUT, 20.0), (ids::eq::freq(2), 2000.0), (ids::eq::q(2), 6.0)]),
+        (&mut lofi, LOFI_PRESETS.iter().find(|p| p.name == "Dusty vinyl").expect("preset").values),
         (&mut hall, CLOUD_PRESETS.iter().find(|p| p.name == "Big hall").expect("preset").values),
         (&mut safety, &[]),
         (&mut raw, &[(ids::master::MODE, 2.0)]),
@@ -198,19 +202,26 @@ fn main() {
         node.reset();
     }
     hall.set_param(ids::cloud::MIX, 100.0);
+    lofi.set_param(ids::lofi::AMOUNT, 0.0);
+    lofi.set_param(ids::lofi::MIX, 0.0);
+    lofi.reset();
 
     // Mix automation: each effect fades in for its section and again for
     // the drop.
     let on_off = |id: u16, level: f32, spans: &[(usize, usize)]| -> Moves {
         spans.iter().flat_map(|&(a, b)| [(bar(a), id, level), (bar(b), id, 0.0)]).collect()
     };
-    let chorus_moves = on_off(ids::chorus::MIX, 55.0, &[(3, 5), (11, 13)]);
-    let flanger_moves = on_off(ids::flanger::MIX, 50.0, &[(5, 7), (11, 13)]);
-    let phaser_moves = on_off(ids::phaser::MIX, 60.0, &[(7, 9), (11, 13)]);
+    let chorus_moves = on_off(ids::chorus::MIX, 55.0, &[(3, 5), (13, 15)]);
+    let flanger_moves = on_off(ids::flanger::MIX, 50.0, &[(5, 7), (13, 15)]);
+    let phaser_moves = on_off(ids::phaser::MIX, 60.0, &[(7, 9), (13, 15)]);
     let phaser_chord_moves = on_off(ids::phaser::MIX, 50.0, &[(7, 9)]);
-    // The build: one move a block, glided by the EQ's own smoothing.
-    let mut eq_moves: Moves = vec![(bar(9), ids::eq::LOW_SLOPE, 2.0)];
+    // Lo-fi creeps in: one Amount move a block, then off at bar 11.
+    let mut lofi_moves: Moves = vec![(bar(9), ids::lofi::MIX, 100.0), (bar(11), ids::lofi::MIX, 0.0)];
     let (a, b) = (bar(9), bar(11));
+    for f in (a..b).step_by(BLOCK) { lofi_moves.push((f, ids::lofi::AMOUNT, 100.0 * ((f - a) as f32 / (b - a) as f32).sqrt())); }
+    // The build: one move a block, glided by the EQ's own smoothing.
+    let mut eq_moves: Moves = vec![(bar(11), ids::eq::LOW_SLOPE, 2.0)];
+    let (a, b) = (bar(11), bar(13));
     for f in (a..b).step_by(BLOCK) {
         let t = (f - a) as f32 / (b - a) as f32;
         eq_moves.push((f, ids::eq::LOW_CUT, 20.0 * 35f32.powf(t * t)));
@@ -246,7 +257,7 @@ fn main() {
         let mut ml: Vec<f32> = (0..len).map(|k| 1.25 * dl[k] + 1.2 * bl[k] + cl[k]).collect();
         let mut mr: Vec<f32> = (0..len).map(|k| 1.25 * dr[k] + 1.2 * br[k] + cr[k]).collect();
         // The reverb send opens for the last hit only.
-        let open = |i: usize| if i >= bar(12) { 0.8 } else { 0.0 };
+        let open = |i: usize| if i >= bar(14) { 0.8 } else { 0.0 };
         let mut sl: Vec<f32> = (0..len).map(|k| open(at + k) * (0.5 * dl[k] + cl[k])).collect();
         let mut sr: Vec<f32> = (0..len).map(|k| open(at + k) * (0.5 * dr[k] + cr[k])).collect();
         hall.process(&ctx, &[], &mut sl, &mut sr);
@@ -254,6 +265,8 @@ fn main() {
             ml[k] += sl[k];
             mr[k] += sr[k];
         }
+        events_in(&lofi_moves, at, len, &mut ev);
+        lofi.process(&ctx, &ev, &mut ml, &mut mr);
         events_in(&eq_moves, at, len, &mut ev);
         eq.process(&ctx, &ev, &mut ml, &mut mr);
         pre.0[range.clone()].copy_from_slice(&ml);
@@ -266,7 +279,7 @@ fn main() {
         at += len;
     }
 
-    let sections = ["dry", "dry", "chorus", "chorus", "flanger", "flanger", "phaser", "phaser", "eq build", "eq build", "drop, all", "last hit", "ring out"];
+    let sections = ["dry", "dry", "chorus", "chorus", "flanger", "flanger", "phaser", "phaser", "lo-fi rising", "lo-fi full", "eq build", "eq build", "drop, all", "last hit", "ring out"];
     println!("Mod FX demo: {BARS} bars at {BPM} BPM, {RATE} Hz, {BLOCK}-frame blocks\n");
     println!("  bar  {:<15} {:>9} {:>9} {:>9}", "effect", "in peak", "out peak", "out RMS");
     for (b, section) in sections.iter().enumerate() {
