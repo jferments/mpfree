@@ -13,7 +13,7 @@
 //!   total and a window the screen thread takes every few hundred ms.
 //! - [`Profiled`] wraps any [`mpfree_node::Node`] and times its `process`,
 //!   and counts allocations inside it when the program installs
-//!   [`alloc::CountingAlloc`].
+//!   `alloc::CountingAlloc` (the `counting-alloc` feature).
 //! - [`Profiler`] is a fixed set of named probes for a host's audio loop
 //!   (sampler, synth, FX, looper, the whole period), built before the stream
 //!   starts.
