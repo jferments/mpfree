@@ -104,6 +104,15 @@ enum Before {
     Slot(Option<Box<Pad>>),
 }
 
+/// What a Play page Q-Link turns on the pad hit last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadKnob {
+    /// Semitones (SHIFT: 10 cents).
+    Tune,
+    /// The amp envelope's decay to silence; at the top the sound plays out.
+    Decay,
+}
+
 /// The pad editor's tab on show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
@@ -156,6 +165,9 @@ pub struct SamplePage {
     auditioning: Option<usize>,
     last_turn: Option<Instant>,
     gesture: Option<Gesture>,
+    /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
+    /// undo id (one undo step a turn).
+    play_turn: Option<(usize, PadKnob, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
     /// Edits applied, and views sent to the audio thread.
@@ -203,6 +215,7 @@ impl SamplePage {
             auditioning: None,
             last_turn: None,
             gesture: None,
+            play_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
             edits: 0,
@@ -1015,6 +1028,81 @@ impl SamplePage {
         }
     }
 
+    /// The pad's tuning (semitones) and decay (None: it plays out) in the
+    /// playing kit, for the Play page's Q-Links. None when the kit has no
+    /// sound on the pad, or the synth has the pads.
+    pub fn pad_knobs(&self, pad: usize) -> Option<(f32, Option<f32>)> {
+        let p = self.projects.get(self.kit)?.pad(pad)?;
+        let decay = (p.amp.sustain < 0.999).then_some(p.amp.decay_ms);
+        Some((p.tune_cents as f32 / 100.0, decay))
+    }
+
+    /// A Play page Q-Link on `pad` of the playing kit: its tuning or its
+    /// decay, by `d` detents (`fine`: SHIFT held). One undo step a turn,
+    /// as on the Play tab; the kit's new view goes to the audio thread.
+    pub fn turn_pad(&mut self, pad: usize, which: PadKnob, d: i32, fine: bool) {
+        self.turned();
+        let kit = self.kit;
+        let Some(before) = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned() else {
+            return;
+        };
+        if self
+            .play_turn
+            .is_some_and(|(p, w, _)| (p, w) != (pad, which))
+        {
+            self.lift();
+        }
+        let id = match self.play_turn {
+            Some((_, _, id)) => id,
+            None => {
+                // "PLAY" and the edit count: a new undo step.
+                let id = 0x504C_4159_0000_0000 | (self.edits & 0xFFFF_FFFF);
+                self.play_turn = Some((pad, which, id));
+                self.gesture = Some(Gesture {
+                    id,
+                    kit,
+                    pad,
+                    before: Before::Pad(Box::new(before)),
+                });
+                id
+            }
+        };
+        self.last_turn = Some(Instant::now());
+        let edit = |p: &mut Pad| match which {
+            PadKnob::Tune => {
+                let step = if fine { 10 } else { 100 };
+                p.tune_cents = (p.tune_cents + d * step).clamp(-2400, 2400);
+            }
+            PadKnob::Decay => {
+                let max = crate::play_page::DECAY_MAX_MS;
+                let open = p.amp.sustain >= 0.999;
+                let ms = if open { max } else { p.amp.decay_ms.max(10.0) };
+                let per = if fine { 32.0 } else { 8.0 };
+                let to = (ms * (d as f32 / per).exp2()).round().clamp(10.0, max);
+                if to >= max && d > 0 {
+                    p.amp.sustain = 1.0;
+                    p.amp.decay_ms = 0.0;
+                } else {
+                    p.amp.sustain = 0.0;
+                    p.amp.decay_ms = to;
+                }
+            }
+        };
+        match self.projects[kit].edit_pad(pad, Some(id), edit) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(dirty) = self.dirty.get_mut(kit) {
+                    *dirty = true;
+                }
+                self.stale = true;
+            }
+            Err(e) => self.lines.push(format!(
+                "sample: pad {} not changed ({e:?})",
+                self.pad_text(kit, pad)
+            )),
+        }
+    }
+
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
         let now = Instant::now();
@@ -1150,6 +1238,7 @@ impl SamplePage {
             tab.lift();
         }
         self.last_turn = None;
+        self.play_turn = None;
         let Some(g) = self.gesture.take() else { return };
         if let Before::Slot(before) = &g.before {
             let after = self.projects.get(g.kit).and_then(|p| p.pad(g.pad));

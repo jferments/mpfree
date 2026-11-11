@@ -8,11 +8,13 @@
 //!   write to the sound card (MIDI in, the app, every engine, the mix), not
 //!   the write's own wait.
 //! - `sampler`: the pads (`render_dry`), with the master grain effect.
-//! - `synth`: Poly.
+//! - `synth`: Poly or FM.
 //! - `looper`: the audio looper and the line input.
 //! - `time`: the transport, the clips and the arp (`time.advance`,
 //!   `app.process`).
-//! - `mix`: the master out, the looper's feed and the metronome.
+//! - `mix`: the mixer (every sound summed, the Level as its master fader,
+//!   Master safety), the metronome, and the mixer panel's state while it
+//!   shows (`mixing.rs`).
 //!
 //! The FX are not in the pad player yet, so the page says so instead of
 //! showing 0.
@@ -42,10 +44,10 @@ pub const MIX: usize = 5;
 const LABELS: [&str; 6] = [
     "Whole period",
     "Sampler (pads, grains)",
-    "Synth (Poly)",
+    "Synth (Poly or FM)",
     "Looper and line input",
     "Transport, clips, arp",
-    "Mix, metronome",
+    "Mixer, metronome",
 ];
 
 /// The numbers the audio loop publishes: each stage's last window (about
@@ -68,6 +70,14 @@ impl EngineProbes {
         EngineProbes {
             prof: Profiler::new(&STAGES, MPC.ns()),
             shared: Arc::new(EngineShared::default()),
+        }
+    }
+
+    /// Probes publishing into `shared` (for the screens' samples).
+    pub fn with_shared(shared: Arc<EngineShared>) -> EngineProbes {
+        EngineProbes {
+            prof: Profiler::new(&STAGES, MPC.ns()),
+            shared,
         }
     }
 
@@ -126,6 +136,17 @@ pub fn read(shared: &EngineShared) -> Snapshot {
     s
 }
 
+/// The top bar's CPU chip: the audio thread's mean share of the period
+/// over the last window ("CPU 21 %"), coloured by its worst block against
+/// the audio thread's budget. None until the loop has published.
+pub fn cpu_chip(shared: &EngineShared) -> Option<(String, Tone)> {
+    let (w, _) = read(shared)[PERIOD];
+    let w = w.filter(|w| w.blocks > 0)?;
+    let mean = MPC.pct(w.mean_ns);
+    let t = judged(PERIOD, &w).1.map_or(Tone::Dim, tone);
+    Some((format!("CPU {mean:.0} %"), t))
+}
+
 fn tone(v: Verdict) -> Tone {
     match v {
         Verdict::Fits => Tone::Good,
@@ -135,15 +156,22 @@ fn tone(v: Verdict) -> Tone {
 }
 
 fn budget_pct(i: usize) -> f64 {
-    if i == PERIOD {
-        budget::AUDIO_THREAD_WORST_PCT
-    } else {
-        budget::for_module(STAGES[i]).map_or(100.0, |b| b.worst_pct)
+    budget::pct_for(STAGES[i]).unwrap_or(100.0)
+}
+
+/// Stage `i`'s judged block as a share of the period, and its colour, by
+/// the verdict rule (Jay, 12:29Z): an engine on its p99.9 block, the whole
+/// period on its worst. A stage with no budget is shown on its worst, dim.
+fn judged(i: usize, s: &Summary) -> (f64, Option<Verdict>) {
+    match budget::judge(STAGES[i], s, MPC) {
+        Some((pct, v)) => (pct, Some(v)),
+        None => (MPC.pct(s.max_ns as f64), None),
     }
 }
 
 /// The left panel: the last 250 ms of each stage, mean · p99 · worst in µs
-/// and the worst as a share of the period, coloured against its budget.
+/// and the judged block (p99.9 for an engine, the worst for the period) as
+/// a share of the period, coloured against its budget.
 pub fn now_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     let mut rows = vec![(
         format!("Period: {} frames at {} Hz", MPC.frames, MPC.rate),
@@ -153,15 +181,16 @@ pub fn now_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     for (i, (w, _)) in s.iter().enumerate() {
         let (value, t) = match w {
             Some(w) if w.blocks > 0 => {
-                let pct = MPC.pct(w.max_ns as f64);
+                let (pct, v) = judged(i, w);
                 (
                     format!(
-                        "{:.0} · {:.0} · {:.0} µs ({pct:.1} %)",
+                        "{:.0} · {:.0} · {:.0} µs ({} {pct:.1} %)",
                         w.mean_ns / 1e3,
                         w.p99_ns as f64 / 1e3,
-                        w.max_ns as f64 / 1e3
+                        w.max_ns as f64 / 1e3,
+                        budget::judged_word(STAGES[i])
                     ),
-                    tone(Verdict::of(pct, budget_pct(i))),
+                    v.map_or(Tone::Dim, tone),
                 )
             }
             _ => ("waiting for the audio loop".to_string(), Tone::Dim),
@@ -181,23 +210,23 @@ pub fn now_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     rows
 }
 
-/// The right panel: the worst block since the start against each stage's
-/// budget, and the real CPU each stage used.
+/// The right panel: each stage's judged block since the start against its
+/// budget ("p99.9 2.1 % of 3 %"), and the real CPU each stage used.
 pub fn session_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     let mut rows = Vec::new();
     for (i, (_, l)) in s.iter().enumerate() {
         let b = budget_pct(i);
         let (value, t) = match l {
             Some(l) if l.blocks > 0 => {
-                let pct = MPC.pct(l.max_ns as f64);
-                let v = Verdict::of(pct, b);
+                let (pct, v) = judged(i, l);
                 (
                     format!(
-                        "worst {pct:.1} % of {b:.0} % ({}), CPU {:.1} %",
-                        v.word(),
+                        "{} {pct:.1} % of {b:.0} % ({}), CPU {:.1} %",
+                        budget::judged_word(STAGES[i]),
+                        v.map_or("no budget", |v| v.word()),
                         l.realtime_pct(MPC.rate)
                     ),
-                    tone(v),
+                    v.map_or(Tone::Dim, tone),
                 )
             }
             _ => (format!("budget {b:.0} %"), Tone::Dim),
@@ -260,6 +289,17 @@ mod tests {
             session[0].1.starts_with("worst 0.") && session[0].1.contains("of 60 % (fits)"),
             "{}",
             session[0].1
+        );
+        // The engines are judged on their p99.9 block, the period on its worst.
+        assert!(
+            session[SAMPLER].1.starts_with("p99.9 ") && session[SAMPLER].2 == Tone::Good,
+            "{:?}",
+            session[SAMPLER]
+        );
+        assert!(
+            now[1 + SAMPLER].1.contains("(p99.9 "),
+            "{:?}",
+            now[1 + SAMPLER]
         );
         assert_eq!(session[6].1, "10 · 0");
         p.publish();
