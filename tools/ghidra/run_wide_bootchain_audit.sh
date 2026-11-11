@@ -321,6 +321,18 @@ if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
         --report "$REPORT_DIR/firmware-3.10-bootchain-v4-compare.json" \
         >"$REPORT_DIR/firmware-3.10-bootchain-v4-console.txt" 2>&1 ||
         echo "WARNING: deeper 3.6/3.10 executable/linkage comparison failed; see ZIP logs." >&2
+
+    if [[ "${MPFREE_V5_SKIP_ELF_GHIDRA:-0}" != "1" ]]; then
+        echo
+        echo "V5: importing three 3.10 utilities into temporary Ghidra projects..."
+        python3 "$ROOT/tools/mpc-one/offline-bootchain-v5-elf-import.py" \
+            --rootfs-310 "$ROOTFS_310" \
+            --repo "$ROOT" \
+            --report-dir "$REPORT_DIR" \
+            >"$REPORT_DIR/v5-elf-import-console.txt" 2>&1 ||
+            echo "WARNING: optional V5 ELF imports failed; archived logs contain details." >&2
+    fi
+
 else
     printf 'No verified extracted 3.10 rootfs was identified (see locator report). Skipping comparison.\n' |
         tee "$REPORT_DIR/firmware-3.10-boot-compare-skipped.txt"
