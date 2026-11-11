@@ -1506,16 +1506,19 @@ mod tests {
     fn the_quick_band_comes_with_note_repeat_and_the_chip_opens_the_panel() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
         let mut p = sample_player(Fonts::embedded());
+        let pads = p.ui.rect_of("pads").unwrap();
         let mut app = sample_app();
         let fx = app.button(NOTE_REPEAT, true, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), QUICK_PAGE);
         assert!(p.ui.rect_of(arp_view::RATES).is_some() && p.ui.rect_of("kits").is_none());
+        assert_eq!(p.ui.rect_of("pads").unwrap(), pads, "the band takes the kit column, the pads stay put");
         // A rate button.
         let rates = p.ui.rect_of(arp_view::RATES).unwrap();
-        let a = p.touch(7, Touch::Down, rates.x + 20, rates.y + rates.h / 2);
+        let quarter = p.ui.get::<mpfree_arp_ui::widgets::RateBar>(arp_view::RATES).unwrap().button(rates, 0);
+        let a = p.touch(7, Touch::Down, quarter.x + 20, quarter.y + quarter.h / 2);
         assert_eq!(a, Some(FromUi::Arp(ArpAction::Rate(mpfree_arp::Rate::Quarter))));
-        p.touch(7, Touch::Up, rates.x + 20, rates.y + rates.h / 2);
+        p.touch(7, Touch::Up, quarter.x + 20, quarter.y + quarter.h / 2);
         let fx = app.button(NOTE_REPEAT, false, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
@@ -1529,6 +1532,7 @@ mod tests {
         fx.extend(app.arp_poll());
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), ARP_PAGE);
+        assert_eq!(p.ui.rect_of("pads").unwrap(), pads, "the panel takes the kit column too");
         assert_eq!(p.ui.get::<Header>("header").unwrap().active, 0, "the panel belongs to Play");
         let modes = p.ui.rect_of(arp_view::MODES).unwrap();
         let a = p.touch(9, Touch::Down, modes.right() - 10, modes.y + modes.h / 2);
