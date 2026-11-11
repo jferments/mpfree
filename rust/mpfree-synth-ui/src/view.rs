@@ -18,6 +18,14 @@
 //! their two beside their scaling curves. A tap on a box opens that
 //! operator's page.
 //!
+//! Drums draws its kit as the pads lie (a box per pad, tagged with its
+//! sound: BD, SD, CH, coloured by what it is made of), the hit on the pad
+//! shown (its body, noise and click over time), its pitch sweep and every
+//! pad's level. A tap on a pad's box opens its page. Pluck draws, for a
+//! string, where it is picked, the harmonics a pluck gives and how fast
+//! each dies; for a mallet, its pulse, the material's modes as struck and
+//! their decays; all for middle C.
+//!
 //! An engine with pad pressure (Poly, FM) has a Pressure page: the shaper's
 //! settings and four slots, with a drawing of the curve and a live bar for
 //! each sounding voice's pressure (the app passes those in with
@@ -26,6 +34,7 @@
 
 use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
+use crate::kit_visual as kv;
 use crate::pages::{plan, qlink_targets, tile_label, Page};
 use crate::visual;
 use crate::widgets::{
@@ -166,11 +175,14 @@ impl Strip {
     }
 }
 
-/// Whether the panel draws visuals for this node on this page: Poly and FM
-/// on every page, any other engine with pressure on its Pressure page.
+/// Whether the panel draws visuals for this node on this page: Poly, FM,
+/// Drums, Pluck and Wavetable on every page, any other engine with
+/// pressure on its Pressure page.
 fn has_visuals(info: &NodeInfo, page: &str) -> bool {
-    matches!(info.id, "mpfree.poly" | "mpfree.fm" | "mpfree.wavetable")
-        || (page == "Pressure" && press_base(info).is_some())
+    matches!(
+        info.id,
+        "mpfree.poly" | "mpfree.fm" | "mpfree.drums" | "mpfree.pluck" | "mpfree.wavetable"
+    ) || (page == "Pressure" && press_base(info).is_some())
 }
 
 /// The first pressure parameter of an engine that has them, and what its
@@ -462,6 +474,8 @@ impl SynthPanel {
             let strip = match press_base(st.info) {
                 Some(base) if page.name == "Pressure" => pressure_cards(st, base),
                 _ if st.info.id == "mpfree.fm" => fm_cards(st, &page.name),
+                _ if st.info.id == "mpfree.drums" => drum_cards(st, &page.name),
+                _ if st.info.id == "mpfree.pluck" => pluck_cards(st, &page.name),
                 _ if st.info.id == "mpfree.wavetable" => wt_cards(st, &page.name),
                 _ => poly_cards(st, &page.name),
             };
@@ -721,6 +735,259 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         let title = c.title.clone();
         s.push(c, &title);
     }
+    s
+}
+
+/// Drums' families' colours: a tuned body, noise over a body, metal.
+const FAMILY: [Color; 3] = [QLINK_COLORS[1], QLINK_COLORS[2], QLINK_COLORS[0]];
+
+/// Drums' four cards: the kit (a box per pad, the pad shown ringed), the
+/// hit and the pitch sweep of the pad shown (pad 1 on the Kit page), and
+/// every pad's level.
+fn drum_cards(st: &SynthState, page: &str) -> Strip {
+    use mpfree_synth::drum_params::{pad_id, BASE_NOTE, LEVEL, PADS};
+    let v = |id: u16| st.value(id);
+    let pad = page
+        .strip_prefix("Pad ")
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| (1..=PADS).contains(n))
+        .map(|n| n - 1);
+    let shown = pad.unwrap_or(0);
+    let shape = kv::pad_hit(&v, shown);
+    let pad_page = format!("Pad {}", shown + 1);
+    let mut s = Strip::new();
+    let nodes = (0..PADS)
+        .map(|p| {
+            let model = kv::pad_model(&v, p);
+            let (x, y) = kv::pad_xy(p);
+            CardNode {
+                x,
+                y,
+                label: kv::model_tag(model).to_string(),
+                fill: FAMILY[kv::model_family(model)],
+                text: ON_BOX,
+                ring: (pad == Some(p)).then_some(WHITE),
+                dim: v(pad_id(p, mpfree_synth::drum_params::field::LEVEL)) <= -60.0,
+                feedback: None,
+            }
+        })
+        .collect();
+    s.node_pages.extend((1..=PADS).map(|n| format!("Pad {n}")));
+    s.push(
+        Card {
+            title: "Kit".into(),
+            caption: match pad {
+                Some(p) => format!("Pad {} · {}", p + 1, kv::pad_model(&v, p)),
+                None => format!("Pad 1 plays note {:.0}", v(BASE_NOTE)),
+            },
+            nodes,
+            active: page == "Kit",
+            ..Card::default()
+        },
+        "Kit",
+    );
+    let secs = kv::hit_window(&shape);
+    let [body, noise, click] = kv::hit_parts(&shape, secs);
+    let part = |pts: Vec<(f32, f32)>, color: Color, fill: bool| Trace {
+        pts,
+        color,
+        width: 2.0,
+        fill,
+        dashed: false,
+    };
+    s.push(
+        Card {
+            title: "Hit".into(),
+            caption: kv::hit_caption(&v, shown),
+            traces: [
+                (body, WHITE, true),
+                (noise, QLINK_COLORS[0], false),
+                (click, QLINK_COLORS[2], false),
+            ]
+            .into_iter()
+            .filter(|(p, _, _)| !p.is_empty())
+            .map(|(p, c, f)| part(p, c, f))
+            .collect(),
+            grid: kv::time_grid(secs),
+            active: pad.is_some(),
+            ..Card::default()
+        },
+        &pad_page,
+    );
+    let sweep = kv::sweep_curve(&shape);
+    s.push(
+        Card {
+            title: "Sweep".into(),
+            caption: kv::sweep_caption(&v, shown, &shape),
+            traces: (!sweep.is_empty())
+                .then(|| part(sweep, QLINK_COLORS[2], true))
+                .into_iter()
+                .collect(),
+            grid: kv::time_grid(kv::SWEEP_SECS),
+            active: pad.is_some(),
+            ..Card::default()
+        },
+        &pad_page,
+    );
+    let level = |p: usize| v(pad_id(p, mpfree_synth::drum_params::field::LEVEL));
+    s.push(
+        Card {
+            title: "Levels".into(),
+            caption: match pad {
+                Some(p) => format!("Pad {} at {:+.1} dB", p + 1, level(p)),
+                None => format!("kit at {:+.1} dB", v(LEVEL)),
+            },
+            bars: kv::pad_levels(&v),
+            bar_colors: (0..PADS)
+                .map(|p| {
+                    if pad == Some(p) {
+                        WHITE
+                    } else {
+                        FAMILY[kv::model_family(kv::pad_model(&v, p))]
+                    }
+                })
+                .collect(),
+            bar_labels: (1..=PADS)
+                .map(|n| {
+                    if n == 1 || n % 4 == 0 {
+                        n.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect(),
+            active: page == "Kit",
+            ..Card::default()
+        },
+        "Kit",
+    );
+    s
+}
+
+/// Pluck's three cards, for the model it plays: a string (the pick, the
+/// harmonics, their decays) or a mallet (its pulse, the modes, their
+/// decays).
+fn pluck_cards(st: &SynthState, page: &str) -> Strip {
+    let v = |id: u16| st.value(id);
+    let mallet = kv::is_mallet(&v);
+    let home = if mallet { "Mallet" } else { "String" };
+    let active = page == home;
+    let parts = kv::note_partials(&v);
+    let mut s = Strip::new();
+    if mallet {
+        let (pulse, len) = kv::mallet_pulse(&v);
+        s.push(
+            Card {
+                title: "Mallet".into(),
+                caption: format!("{:.1} ms on the bar", len * 1000.0),
+                traces: vec![Trace {
+                    pts: pulse,
+                    color: QLINK_COLORS[2],
+                    width: 2.5,
+                    fill: true,
+                    dashed: false,
+                }],
+                grid: kv::time_grid(0.008),
+                active,
+                ..Card::default()
+            },
+            home,
+        );
+        let material = mpfree_synth::pluck_params::MATERIALS
+            .get(v(mpfree_synth::pluck_params::MATERIAL) as usize)
+            .copied()
+            .unwrap_or("");
+        s.push(
+            Card {
+                title: "Modes".into(),
+                caption: format!("{material}, as struck"),
+                traces: kv::mode_stems(&parts)
+                    .into_iter()
+                    .map(|pts| Trace {
+                        pts,
+                        color: QLINK_COLORS[1],
+                        width: 3.0,
+                        fill: false,
+                        dashed: false,
+                    })
+                    .collect(),
+                grid: [1.0, 2.0, 4.0, 8.0, 16.0]
+                    .iter()
+                    .map(|&r| (kv::ratio_x(r), format!("{r}x")))
+                    .collect(),
+                active,
+                ..Card::default()
+            },
+            home,
+        );
+    } else {
+        let (string, x) = kv::pick_shape(&v);
+        s.push(
+            Card {
+                title: "Pick".into(),
+                caption: kv::pick_caption(&v),
+                traces: vec![Trace {
+                    pts: string,
+                    color: WHITE,
+                    width: 2.0,
+                    fill: false,
+                    dashed: false,
+                }],
+                dot: Some(x),
+                active,
+                ..Card::default()
+            },
+            home,
+        );
+        s.push(
+            Card {
+                title: "Harmonics".into(),
+                caption: "a pluck on average".into(),
+                bars: parts.iter().map(|p| kv::level_height(p.level)).collect(),
+                bar_color: Some(QLINK_COLORS[1]),
+                bar_labels: (1..=parts.len())
+                    .map(|n| {
+                        if n == 1 || n % 4 == 0 {
+                            n.to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect(),
+                active,
+                ..Card::default()
+            },
+            home,
+        );
+    }
+    let picked = kv::decay_partials(&parts, mallet);
+    let secs = kv::decay_window(&picked);
+    let fade = [WHITE, QLINK_COLORS[1], QLINK_COLORS[0], QLINK_COLORS[3]];
+    s.push(
+        Card {
+            title: "Decay".into(),
+            caption: format!(
+                "{} at middle C, {}",
+                kv::secs_text(picked.first().map_or(0.0, |p| p.t60)),
+                if mallet { "modes 1-4" } else { "harm. 1 2 4 8" }
+            ),
+            traces: picked
+                .iter()
+                .zip(fade)
+                .map(|(p, color)| Trace {
+                    pts: kv::decay_curve(p, secs),
+                    color,
+                    width: 2.0,
+                    fill: false,
+                    dashed: false,
+                })
+                .collect(),
+            grid: kv::time_grid(secs),
+            active,
+            ..Card::default()
+        },
+        home,
+    );
     s
 }
 
