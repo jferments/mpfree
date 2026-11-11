@@ -89,3 +89,25 @@ Without board photographs or exact-revision schematics, an electrical switch spe
 - PHYTEC RK3288 eMMC-disable switch and ROM boot-order documentation (different board): https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf
 - Rockchip secure eFuse layout and external P19 programming supply: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md
 - First-person MPC One Gen1 MaskROM-after-eMMC-failure report: https://github.com/TheKikGen/MPC-LiveXplore/issues/80
+
+
+## Newly identified schematics: stronger evidence, but board revision must be matched
+
+**InMusic AZ01 carrier-board schematic:** a publicly distributed 5-page MPC X service-manual excerpt titled "AZ01 CARRIER BOARD", PCB 9-40-0752-C, assembly 9-79-0752-C-0 (2017). It includes power/reset/recovery switch sheet 1, USB host/OTG hub and switching sheet 2, SD-slot circuitry, and debug UART/SOM interface sheet 5. This is **a carrier-board schematic for MPC X, not a verified MPC One mainboard drawing**. The carrier and SoM are distinct assemblies, and the physical eFuse P19 net is on the RK3288 SoM rather than a generic carrier switch.
+
+Source (public reference): https://communiteq-eu5.nbg1.your-objectstorage.com/uploads/db8181/original/3X/5/2/523d18e4b5cbc9ac8d00118929c78d367d4dd363.pdf .
+A documented history of MPC Live/X modules based on the Radxa Rock2 family, with uncertain exact production revisions: https://niklasnisbeth.gitlab.io/mpc-internals/ .
+
+**Radxa Rock2 SOM schematic**, 2014-09-27, sheet 4 of 11 (*INTERFACE2*): RK3288 ball P19 is labelled EFUSE_VQPS; PMU GPIO ball K27 labelled EFUSE_PWREN/PMUGPIO0_A3_u is connected to the EFUSE_PWR control net. An upper-right discrete switching network shows power switching to the VCC_EFUSE net, from a VCC_DDR supply, controlled through EFUSE_PWR. It is direct, publicly available **circuit-level evidence that at least one RK3288 module design can enable the fuse-programming voltage under GPIO control**. In this **Radxa design**, a privileged firmware component might be able to trigger OTP programming if the remaining control and voltage conditions permit it.
+
+Source: https://dl.radxa.com/rock2/docs/hw/radxa_rock2_som_140927.pdf , PDF page 4 of 11 (index 3). The same SoM connector is shown on PDF page 11.
+
+**Critical conditionality:** No evidence yet establishes that the MPC One reference device has this exact Radxa 2014 module, identical power switch population, net routing, firmware enable line, or that Akai would attempt to program secure fuses. Do not infer the device is permanently safe just because the live secure bank is blank; also do not infer Akai can fuse it without identifying the *actual* P19 rail.
+
+**Board triage priorities revised:**
+1. Acquire clear, unpowered photos and PCB/SoM silkscreen ID of *actual MPC One*; compare matching module/carrier against the two public schematics.
+2. Identify the eMMC/SOM placement, USB-B data path and signal levels for debug UART from exact board revision; confirm hardware recovery route without affecting signals during ordinary runtime.
+3. Trace P19 VCC_EFUSE / EFUSE_VQPS and any controlling PMUGPIO0_A3 (K27) only with board-specific schematic or technician-supervised unpowered continuity checks; **no energized probing, GPIO toggling or eFuse programming**.
+4. If the actual board has a controllable OTP programming supply, consider a professionally reviewed, electrically safe way of preserving owner control; any switch/design must be optional, revision-aware and must not compromise normal SoC power or EMC/signal-integrity properties.
+
+**Note**: "Recovery" button in the carrier reference may enter vendor U-Boot fastboot rather than immutable MaskROM. A schematic label alone does not establish true ROM entry. Likewise an accessible UART does not bypass silicon secure-boot constraints. The owner-built ROM SRAM loader is still a separate milestone.
