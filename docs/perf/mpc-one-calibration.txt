@@ -1,0 +1,12 @@
+# mpfree-bench calibration: reference kernel, ns per call
+# Measured on the MPC One, round 7 (head cc7f06d, 2026-11-11), default build.
+# Use with: mpfree-bench --calibration docs/perf/mpc-one-calibration.txt
+# The pad player was running during this run (its audio thread SCHED_FIFO 70,
+# isolcpus=2-3); the kernels are short, so their medians should be little
+# affected. Device numbers win over estimates made from this file.
+machine ARMv7 Processor rev 1 (v7l) (arm, 1608 MHz), build release, RUSTFLAGS -C target-feature=+crt-static -C relocation-model=static
+biquad 8624.7
+mix 6373.3
+libm 22382.3
+random_read 41115.9
+control 44967.4
