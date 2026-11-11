@@ -1,6 +1,7 @@
 //! Behaviour tests for the pluck synth through the mpfree-node interface.
 
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_synth::pluck::{partials, Partial, HARMONICS};
 use mpfree_synth::pluck_params::*;
 use mpfree_synth::Pluck;
 
@@ -348,4 +349,128 @@ fn extreme_settings_stay_finite() {
             }
         }
     }
+}
+
+/// The amplitude of the `hz` component of `x` (a Hann-windowed Goertzel).
+fn tone(x: &[f32], hz: f32) -> f32 {
+    let n = x.len();
+    let w = std::f32::consts::TAU * hz / RATE as f32;
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (i, &v) in x.iter().enumerate() {
+        let hann = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos();
+        let ph = w * i as f32;
+        re += f64::from(v * hann * ph.cos());
+        im += f64::from(v * hann * ph.sin());
+    }
+    (2.0 * (re * re + im * im).sqrt() / (n as f64 * 0.5)) as f32
+}
+
+/// The dB a partial at `hz` loses in `x` from `t0` to `t1` seconds.
+fn drop_db(x: &[f32], hz: f32, t0: f32, t1: f32) -> f32 {
+    let at = |t: f32| tone(&x[(t * RATE as f32) as usize..][..4096], hz);
+    db(at(t0)) - db(at(t1))
+}
+
+#[test]
+fn the_partials_drawn_decay_as_the_string_plays_them() {
+    let mut s = preset("Steel String");
+    let mut parts = [Partial::default(); HARMONICS];
+    assert_eq!(partials(|id| s.param(id), 48, RATE, &mut parts), HARMONICS);
+    assert_eq!(parts[0].ratio, 1.0);
+    let t60 = s.param(DECAY) * 0.001 * (261.63 / hz(48.0)).sqrt();
+    assert!((parts[0].t60 - t60).abs() < 1e-3 * t60, "{}", parts[0].t60);
+    assert!(
+        parts.windows(2).all(|w| w[1].t60 <= w[0].t60 + 1e-6),
+        "higher harmonics die sooner: {parts:?}"
+    );
+    let (l, _) = render(&mut s, RATE as usize * 2, &[(0, on(48, 127))], |_| 256);
+    for h in [1usize, 3, 6] {
+        let got = drop_db(&l, hz(48.0) * h as f32, 0.2, 0.7);
+        let want = 60.0 * 0.5 / parts[h - 1].t60;
+        assert!(
+            (got - want).abs() < 0.3 * want + 2.0,
+            "harmonic {h}: drops {got:.1} dB in 0.5 s, drawn as {want:.1}"
+        );
+    }
+}
+
+/// Each of the first harmonics' level against the fundamental's, in dB,
+/// averaged over 32 plucks of note 48 (each pluck's noise differs).
+fn average_harmonics(s: &mut Pluck, n: usize) -> Vec<f32> {
+    let gap = RATE as u64 * 3 / 10;
+    let events: Vec<(u64, NodeEvent)> = (0..32)
+        .flat_map(|i| [(i * gap, on(48, 127)), (i * gap + gap / 2, off(48))])
+        .collect();
+    let (l, _) = render(s, (32 * gap) as usize, &events, |_| 256);
+    let mut power = vec![0.0f32; n];
+    for i in 0..32 {
+        let at = (i * gap) as usize + RATE as usize / 50;
+        for (h, p) in power.iter_mut().enumerate() {
+            *p += tone(&l[at..at + 4096], hz(48.0) * (h + 1) as f32).powi(2);
+        }
+    }
+    power
+        .iter()
+        .map(|p| 10.0 * (p / power[0]).log10())
+        .collect()
+}
+
+#[test]
+fn the_harmonics_drawn_are_the_ones_plucks_play_on_average() {
+    for position in [12.0, 50.0] {
+        let mut s = preset("Steel String");
+        s.set_param(POSITION, position);
+        s.set_param(RELEASE, 10.0);
+        let mut parts = [Partial::default(); HARMONICS];
+        partials(|id| s.param(id), 48, RATE, &mut parts);
+        let got = average_harmonics(&mut s, 6);
+        for h in 1..6 {
+            let want = db(parts[h].level) - db(parts[0].level);
+            assert!(
+                (got[h] - want).abs() < 3.0,
+                "position {position}, harmonic {}: {:.1} dB on average, drawn {want:.1}",
+                h + 1,
+                got[h]
+            );
+        }
+    }
+}
+
+#[test]
+fn the_modes_drawn_ring_as_the_mallet_plays_them() {
+    let mut s = preset("Marimba");
+    let mut parts = [Partial::default(); 8];
+    let n = partials(|id| s.param(id), 60, RATE, &mut parts);
+    assert_eq!(n, 3, "the marimba's three modes");
+    assert_eq!(parts[0].level, 1.0);
+    let (l, _) = render(&mut s, RATE as usize * 2, &[(0, on(60, 127))], |_| 256);
+    // Levels: mode 2 against mode 1 at the start, as drawn.
+    let f = |k: usize| hz(60.0) * parts[k].ratio;
+    let start = |k: usize| db(tone(&l[RATE as usize / 100..][..4096], f(k)));
+    // Each mode has decayed by the middle of the window, mode 2 more.
+    let mid = (RATE as f32 / 100.0 + 2048.0) / RATE as f32;
+    let lost = |k: usize| 60.0 * mid / parts[k].t60;
+    let got = start(1) - start(0) + lost(1) - lost(0);
+    let want = db(parts[1].level);
+    assert!(
+        (got - want).abs() < 4.0,
+        "mode 2 is {got:.1} dB under mode 1, drawn {want:.1}"
+    );
+    for k in 0..2 {
+        let got = drop_db(&l, f(k), 0.1, 0.4);
+        let want = 60.0 * 0.3 / parts[k].t60;
+        assert!(
+            (got - want).abs() < 0.2 * want + 2.0,
+            "mode {}: drops {got:.1} dB in 0.3 s, drawn as {want:.1}",
+            k + 1
+        );
+    }
+    // A softer mallet reaches the upper modes less (low down, where its
+    // pulse isn't cut to a third of the note's period).
+    let mut hard = [Partial::default(); 8];
+    partials(|id| s.param(id), 36, RATE, &mut hard);
+    s.set_param(HARDNESS, 0.0);
+    let mut soft = [Partial::default(); 8];
+    partials(|id| s.param(id), 36, RATE, &mut soft);
+    assert!(soft[1].level < hard[1].level, "{soft:?} against {hard:?}");
 }
