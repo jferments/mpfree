@@ -164,5 +164,5 @@ Edits (launches, arming, takes and recorded notes) compile a new `PlayView` in t
 
 - Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
 - Move edits out of the audio loop.
-- CAPTURE (SHIFT+REC keeps what was just played, even without recording).
+- CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - The looper (T4).
