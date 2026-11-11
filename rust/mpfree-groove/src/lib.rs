@@ -111,8 +111,10 @@ impl GrooveConfig {
 
     pub fn duration_frames(&self) -> Result<u64, ConfigError> {
         self.validate()?;
-        Ok((f64::from(self.bars) * 4.0 * 60.0
-            * f64::from(self.sample_rate) / self.bpm).round() as u64)
+        Ok(
+            (f64::from(self.bars) * 4.0 * 60.0 * f64::from(self.sample_rate) / self.bpm).round()
+                as u64,
+        )
     }
 }
 
@@ -126,7 +128,8 @@ pub fn compile_pattern(pattern: &Pattern, config: GrooveConfig) -> Result<Vec<Ev
         for step in 0..STEPS_PER_BAR {
             let position = u64::from(bar) * STEPS_PER_BAR as u64 + step as u64;
             let frame = (position as f64 * 60.0 * f64::from(config.sample_rate)
-                / (config.bpm * 4.0)).round() as u64;
+                / (config.bpm * 4.0))
+                .round() as u64;
             let current = pattern.steps[step];
             for (drum, velocity) in [
                 (Drum::Kick, current.kick),
@@ -134,7 +137,11 @@ pub fn compile_pattern(pattern: &Pattern, config: GrooveConfig) -> Result<Vec<Ev
                 (Drum::Hat, current.hat),
             ] {
                 if velocity != 0 {
-                    events.push(Event { frame, drum, velocity });
+                    events.push(Event {
+                        frame,
+                        drum,
+                        velocity,
+                    });
                 }
             }
         }
@@ -206,8 +213,7 @@ impl SampleBank {
             previous = noise;
             let envelope = (-t * 35.0).exp();
             let snare_tone = (2.0 * PI * 190.0 * t).sin();
-            snare.push((envelope * (0.26 * f64::from(highpass)
-                + 0.12 * snare_tone)) as f32);
+            snare.push((envelope * (0.26 * f64::from(highpass) + 0.12 * snare_tone)) as f32);
         }
 
         previous = 0.0;
@@ -300,9 +306,7 @@ impl GrooveEngine {
 
     /// Allocation-free, lock-free bounded 16-voice mono-to-stereo rendering.
     /// Parameters and clip must be fully prepared before the audio thread.
-    pub fn render(&mut self, left: &mut [f32], right: &mut [f32])
-        -> Result<(), ConfigError>
-    {
+    pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) -> Result<(), ConfigError> {
         if left.len() != right.len() {
             return Err(ConfigError::ChannelLengthMismatch);
         }
@@ -370,8 +374,11 @@ mod tests {
         let config = GrooveConfig::default();
         let events = compile_pattern(&Pattern::basic(), config).unwrap();
         assert_eq!(events.len(), 24);
-        let kicks: Vec<_> = events.iter().filter(|e| e.drum == Drum::Kick)
-            .map(|e| e.frame).collect();
+        let kicks: Vec<_> = events
+            .iter()
+            .filter(|e| e.drum == Drum::Kick)
+            .map(|e| e.frame)
+            .collect();
         assert_eq!(kicks, vec![0, 44_100, 88_200, 132_300]);
         assert_eq!(config.duration_frames().unwrap(), 176_400);
         assert!(events.windows(2).all(|w| w[0].frame <= w[1].frame));
@@ -385,8 +392,12 @@ mod tests {
             ..GrooveConfig::default()
         };
         let events = compile_pattern(&Pattern::basic(), config).unwrap();
-        let last_bar_kick = events.iter().find(|e| e.drum == Drum::Kick
-            && e.frame > ((63.0 * 4.0 * 60.0 * 44_100.0 / 137.2) - 5.0) as u64)
+        let last_bar_kick = events
+            .iter()
+            .find(|e| {
+                e.drum == Drum::Kick
+                    && e.frame > ((63.0 * 4.0 * 60.0 * 44_100.0 / 137.2) - 5.0) as u64
+            })
             .unwrap();
         let expected = (63.0_f64 * 4.0 * 60.0 * 44_100.0 / 137.2).round() as u64;
         assert_eq!(last_bar_kick.frame, expected);
@@ -422,17 +433,34 @@ mod tests {
     #[test]
     fn rejected_configuration_and_buffer_mismatch_are_non_destructive() {
         for invalid in [
-            GrooveConfig { bpm: f64::NAN, ..GrooveConfig::default() },
-            GrooveConfig { bpm: 0.0, ..GrooveConfig::default() },
-            GrooveConfig { bars: 0, ..GrooveConfig::default() },
-            GrooveConfig { bars: MAX_BARS + 1, ..GrooveConfig::default() },
-            GrooveConfig { sample_rate: 0, ..GrooveConfig::default() },
+            GrooveConfig {
+                bpm: f64::NAN,
+                ..GrooveConfig::default()
+            },
+            GrooveConfig {
+                bpm: 0.0,
+                ..GrooveConfig::default()
+            },
+            GrooveConfig {
+                bars: 0,
+                ..GrooveConfig::default()
+            },
+            GrooveConfig {
+                bars: MAX_BARS + 1,
+                ..GrooveConfig::default()
+            },
+            GrooveConfig {
+                sample_rate: 0,
+                ..GrooveConfig::default()
+            },
         ] {
             assert!(GrooveEngine::new(&Pattern::basic(), invalid).is_err());
         }
         let mut engine = GrooveEngine::new(&Pattern::basic(), GrooveConfig::default()).unwrap();
-        assert_eq!(engine.render(&mut [0.0; 1], &mut [0.0; 2]),
-            Err(ConfigError::ChannelLengthMismatch));
+        assert_eq!(
+            engine.render(&mut [0.0; 1], &mut [0.0; 2]),
+            Err(ConfigError::ChannelLengthMismatch)
+        );
         assert_eq!(engine.rendered_frames(), 0);
         assert_eq!(engine.triggered_events(), 0);
     }
@@ -443,7 +471,11 @@ mod tests {
         // bounded voice stealing even though the default pattern is sparse.
         let mut engine = GrooveEngine::new(&Pattern::basic(), GrooveConfig::default()).unwrap();
         for _ in 0..(MAX_VOICES + 4) {
-            engine.trigger(Event { frame: 0, drum: Drum::Kick, velocity: 127 });
+            engine.trigger(Event {
+                frame: 0,
+                drum: Drum::Kick,
+                velocity: 127,
+            });
         }
         assert_eq!(engine.stolen_voices(), 4);
         let mut l = [0.0; 128];

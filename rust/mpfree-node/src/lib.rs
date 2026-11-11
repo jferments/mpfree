@@ -36,7 +36,10 @@
 
 pub mod pressure;
 
-pub use pressure::{Pressure, PressureChord, PressureCoefs, PressureCurve, PressureMode, PressureRelease, PressureShape};
+pub use pressure::{
+    Pressure, PressureChord, PressureCoefs, PressureCurve, PressureMode, PressureRelease,
+    PressureShape,
+};
 
 /// The most frames a host passes in one call.
 pub const MAX_BLOCK: usize = 8192;
@@ -45,16 +48,29 @@ pub const MAX_BLOCK: usize = 8192;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodeEvent {
     /// A note starts. `note` is a MIDI note number (60 = middle C).
-    NoteOn { note: u8, velocity: u8 },
-    NoteOff { note: u8 },
+    NoteOn {
+        note: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        note: u8,
+    },
     /// Pressure on a held note, 0 to 127 (polyphonic aftertouch).
-    Pressure { note: u8, value: u8 },
+    Pressure {
+        note: u8,
+        value: u8,
+    },
     /// Pitch bend for every note, -1 to 1 (the node's bend range scales it).
-    Bend { value: f32 },
+    Bend {
+        value: f32,
+    },
     /// Ends every note with its release. Silences nothing abruptly.
     AllOff,
     /// Sets a parameter on this frame (automation, a parameter lock).
-    Param { id: u16, value: f32 },
+    Param {
+        id: u16,
+        value: f32,
+    },
 }
 
 /// A [`NodeEvent`] at a frame offset inside the block.
@@ -65,7 +81,9 @@ pub struct Timed {
 }
 
 impl Timed {
-    pub fn new(offset: u32, ev: NodeEvent) -> Timed { Timed { offset, ev } }
+    pub fn new(offset: u32, ev: NodeEvent) -> Timed {
+        Timed { offset, ev }
+    }
 }
 
 /// What the host knows about the block being processed.
@@ -88,7 +106,14 @@ pub struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     /// A context for offline work: 120 BPM, stopped, no sidechain.
     pub fn new(rate: u32, frame: u64) -> Ctx<'static> {
-        Ctx { rate, frame, bpm: 120.0, beats: 0.0, playing: false, sidechain: None }
+        Ctx {
+            rate,
+            frame,
+            bpm: 120.0,
+            beats: 0.0,
+            playing: false,
+            sidechain: None,
+        }
     }
 }
 
@@ -162,7 +187,13 @@ impl ParamInfo {
         let v = v.clamp(self.min, self.max);
         match self.curve {
             Curve::Stepped | Curve::Choice(_) => v.round(),
-            Curve::Toggle => if v >= 0.5 { 1.0 } else { 0.0 },
+            Curve::Toggle => {
+                if v >= 0.5 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             _ => v,
         }
     }
@@ -180,7 +211,9 @@ impl ParamInfo {
     /// The control position (0 to 1) of a value, following the curve.
     pub fn to_unit(&self, v: f32) -> f32 {
         let v = self.clamp(v);
-        if self.max <= self.min { return 0.0; }
+        if self.max <= self.min {
+            return 0.0;
+        }
         match self.curve {
             Curve::Log if self.min > 0.0 => (v / self.min).ln() / (self.max / self.min).ln(),
             _ => (v - self.min) / (self.max - self.min),
@@ -190,13 +223,25 @@ impl ParamInfo {
     /// Checks the description itself: a sane range and default.
     pub fn check(&self) -> Result<(), String> {
         let bad = |why: &str| Err(format!("param {} ({}): {why}", self.id, self.name));
-        if !(self.min.is_finite() && self.max.is_finite() && self.default.is_finite()) { return bad("not finite"); }
-        if self.min > self.max { return bad("min above max"); }
-        if self.default < self.min || self.default > self.max { return bad("default out of range"); }
+        if !(self.min.is_finite() && self.max.is_finite() && self.default.is_finite()) {
+            return bad("not finite");
+        }
+        if self.min > self.max {
+            return bad("min above max");
+        }
+        if self.default < self.min || self.default > self.max {
+            return bad("default out of range");
+        }
         match self.curve {
             Curve::Log if self.min <= 0.0 => return bad("log curve needs min > 0"),
-            Curve::Choice(names) if names.is_empty() || self.min != 0.0 || self.max != (names.len() - 1) as f32 => return bad("choice range must be 0..len-1"),
-            Curve::Toggle if self.min != 0.0 || self.max != 1.0 => return bad("toggle range must be 0..1"),
+            Curve::Choice(names)
+                if names.is_empty() || self.min != 0.0 || self.max != (names.len() - 1) as f32 =>
+            {
+                return bad("choice range must be 0..len-1")
+            }
+            Curve::Toggle if self.min != 0.0 || self.max != 1.0 => {
+                return bad("toggle range must be 0..1")
+            }
             _ => {}
         }
         Ok(())
@@ -207,7 +252,9 @@ impl ParamInfo {
 pub fn check_params(params: &[ParamInfo]) -> Result<(), String> {
     for (i, p) in params.iter().enumerate() {
         p.check()?;
-        if params[..i].iter().any(|q| q.id == p.id) { return Err(format!("param id {} used twice", p.id)); }
+        if params[..i].iter().any(|q| q.id == p.id) {
+            return Err(format!("param id {} used twice", p.id));
+        }
     }
     Ok(())
 }
@@ -235,9 +282,13 @@ pub trait Node: Send {
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]);
     /// Frames the node keeps sounding after its input stops (a release, a
     /// reverb tail), so a host knows when it may stop calling it.
-    fn tail_frames(&self) -> u32 { 0 }
+    fn tail_frames(&self) -> u32 {
+        0
+    }
     /// Frames of delay the node adds (look-ahead), for compensation.
-    fn latency(&self) -> u32 { 0 }
+    fn latency(&self) -> u32 {
+        0
+    }
 }
 
 /// A one-pole smoother for a continuous parameter, stepped once per frame.
@@ -250,7 +301,13 @@ pub struct Smooth {
 
 impl Smooth {
     /// Starts settled at `v`.
-    pub fn new(v: f32) -> Smooth { Smooth { value: v, target: v, coef: 1.0 } }
+    pub fn new(v: f32) -> Smooth {
+        Smooth {
+            value: v,
+            target: v,
+            coef: 1.0,
+        }
+    }
 
     /// Sets the time constant: about `ms` milliseconds to cover 63 % of a jump.
     pub fn set_time(&mut self, rate: u32, ms: f32) {
@@ -259,24 +316,38 @@ impl Smooth {
     }
 
     /// Jumps straight to `v` (on reset, or a value with no zipper risk).
-    pub fn snap(&mut self, v: f32) { self.value = v; self.target = v; }
+    pub fn snap(&mut self, v: f32) {
+        self.value = v;
+        self.target = v;
+    }
 
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         let next = self.value + (self.target - self.value) * self.coef;
         // Snap once the step is lost in rounding or the gap is tiny.
-        self.value = if next == self.value || (self.target - next).abs() < 1e-6 { self.target } else { next };
+        self.value = if next == self.value || (self.target - next).abs() < 1e-6 {
+            self.target
+        } else {
+            next
+        };
         self.value
     }
 
-    pub fn settled(&self) -> bool { self.value == self.target }
+    pub fn settled(&self) -> bool {
+        self.value == self.target
+    }
 }
 
 /// Splits a block at its events and calls `run(from, to)` for each piece and
 /// `apply(event)` for each event, in order. The usual shape of a node's
 /// `process`, so events land on their exact frame.
-pub fn split<E: FnMut(&NodeEvent), R: FnMut(usize, usize)>(len: usize, events: &[Timed], mut apply: E, mut run: R) {
+pub fn split<E: FnMut(&NodeEvent), R: FnMut(usize, usize)>(
+    len: usize,
+    events: &[Timed],
+    mut apply: E,
+    mut run: R,
+) {
     let mut at = 0usize;
     let mut i = 0usize;
     while at < len {
@@ -285,18 +356,32 @@ pub fn split<E: FnMut(&NodeEvent), R: FnMut(usize, usize)>(len: usize, events: &
             i += 1;
         }
         let next = events.get(i).map_or(len, |e| (e.offset as usize).min(len));
-        if next > at { run(at, next); }
+        if next > at {
+            run(at, next);
+        }
         at = next;
     }
     // Events at or past the end (a host error) still apply, so no note hangs.
-    for e in &events[i..] { apply(&e.ev); }
+    for e in &events[i..] {
+        apply(&e.ev);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const P: ParamInfo = ParamInfo { id: 1, name: "Cutoff", group: "Filter", min: 20.0, max: 20000.0, default: 1000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false };
+    const P: ParamInfo = ParamInfo {
+        id: 1,
+        name: "Cutoff",
+        group: "Filter",
+        min: 20.0,
+        max: 20000.0,
+        default: 1000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    };
 
     #[test]
     fn log_curve_round_trips() {
@@ -310,14 +395,32 @@ mod tests {
 
     #[test]
     fn clamp_steps_and_choices() {
-        let s = ParamInfo { curve: Curve::Stepped, min: -2.0, max: 2.0, default: 0.0, ..P };
+        let s = ParamInfo {
+            curve: Curve::Stepped,
+            min: -2.0,
+            max: 2.0,
+            default: 0.0,
+            ..P
+        };
         assert_eq!(s.clamp(1.4), 1.0);
         assert_eq!(s.clamp(9.0), 2.0);
         assert_eq!(s.clamp(f32::NAN), 0.0);
-        let c = ParamInfo { curve: Curve::Choice(&["a", "b", "c"]), min: 0.0, max: 2.0, default: 0.0, ..P };
+        let c = ParamInfo {
+            curve: Curve::Choice(&["a", "b", "c"]),
+            min: 0.0,
+            max: 2.0,
+            default: 0.0,
+            ..P
+        };
         assert!(c.check().is_ok());
         assert_eq!(c.clamp(1.6), 2.0);
-        let t = ParamInfo { curve: Curve::Toggle, min: 0.0, max: 1.0, default: 0.0, ..P };
+        let t = ParamInfo {
+            curve: Curve::Toggle,
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            ..P
+        };
         assert_eq!(t.clamp(0.7), 1.0);
     }
 
@@ -327,16 +430,45 @@ mod tests {
         assert!(ParamInfo { default: 5.0, ..P }.check().is_err());
         assert!(ParamInfo { min: 0.0, ..P }.check().is_err());
         assert!(check_params(&[P, P]).is_err());
-        assert!(ParamInfo { curve: Curve::Choice(&["a"]), min: 0.0, max: 2.0, default: 0.0, ..P }.check().is_err());
+        assert!(ParamInfo {
+            curve: Curve::Choice(&["a"]),
+            min: 0.0,
+            max: 2.0,
+            default: 0.0,
+            ..P
+        }
+        .check()
+        .is_err());
     }
 
     #[test]
     fn split_lands_events_on_their_frames() {
-        let ev = [Timed::new(0, NodeEvent::AllOff), Timed::new(3, NodeEvent::NoteOff { note: 1 }), Timed::new(3, NodeEvent::NoteOff { note: 2 }), Timed::new(7, NodeEvent::AllOff)];
+        let ev = [
+            Timed::new(0, NodeEvent::AllOff),
+            Timed::new(3, NodeEvent::NoteOff { note: 1 }),
+            Timed::new(3, NodeEvent::NoteOff { note: 2 }),
+            Timed::new(7, NodeEvent::AllOff),
+        ];
         let mut log = Vec::new();
         let log_cell = std::cell::RefCell::new(&mut log);
-        split(10, &ev, |e| log_cell.borrow_mut().push(format!("{e:?}")), |a, b| log_cell.borrow_mut().push(format!("{a}..{b}")));
-        assert_eq!(log, ["AllOff", "0..3", "NoteOff { note: 1 }", "NoteOff { note: 2 }", "3..7", "AllOff", "7..10"]);
+        split(
+            10,
+            &ev,
+            |e| log_cell.borrow_mut().push(format!("{e:?}")),
+            |a, b| log_cell.borrow_mut().push(format!("{a}..{b}")),
+        );
+        assert_eq!(
+            log,
+            [
+                "AllOff",
+                "0..3",
+                "NoteOff { note: 1 }",
+                "NoteOff { note: 2 }",
+                "3..7",
+                "AllOff",
+                "7..10"
+            ]
+        );
     }
 
     #[test]
@@ -344,7 +476,9 @@ mod tests {
         let mut s = Smooth::new(0.0);
         s.set_time(48_000, 5.0);
         s.target = 1.0;
-        for _ in 0..48_000 { s.next(); }
+        for _ in 0..48_000 {
+            s.next();
+        }
         assert!(s.settled());
         assert_eq!(s.value, 1.0);
     }

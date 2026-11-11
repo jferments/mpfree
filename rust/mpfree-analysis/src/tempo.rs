@@ -35,21 +35,29 @@ pub fn estimate_tempo(o: &OnsetAnalysis) -> Option<Tempo> {
     let lag_of = |bpm: f32| 60.0 / bpm / hop_s;
     let max_lag = lag_of(MIN_BPM).ceil() as usize;
     let min_lag = lag_of(MAX_BPM).floor() as usize;
-    if flux.len() < 2 * max_lag { return None; }
+    if flux.len() < 2 * max_lag {
+        return None;
+    }
     // Novelty: flux above its local mean (±16 hops), half-wave rectified.
     let n = flux.len();
     let mut prefix = vec![0.0f64; n + 1];
-    for (i, f) in flux.iter().enumerate() { prefix[i + 1] = prefix[i] + f64::from(*f); }
-    let nov: Vec<f32> = (0..n).map(|i| {
-        let (a, b) = (i.saturating_sub(16), (i + 17).min(n));
-        let mean = (prefix[b] - prefix[a]) / (b - a) as f64;
-        (f64::from(flux[i]) - mean).max(0.0) as f32
-    }).collect();
+    for (i, f) in flux.iter().enumerate() {
+        prefix[i + 1] = prefix[i] + f64::from(*f);
+    }
+    let nov: Vec<f32> = (0..n)
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(16), (i + 17).min(n));
+            let mean = (prefix[b] - prefix[a]) / (b - a) as f64;
+            (f64::from(flux[i]) - mean).max(0.0) as f32
+        })
+        .collect();
     // Unbiased autocorrelation at a fractional lag (linear interpolation).
     let ac = |lag: f32| -> f32 {
         let l0 = lag.floor() as usize;
         let t = lag - l0 as f32;
-        if l0 + 1 >= n { return 0.0; }
+        if l0 + 1 >= n {
+            return 0.0;
+        }
         let mut s = 0.0f64;
         for i in 0..n - l0 - 1 {
             let other = nov[i + l0] * (1.0 - t) + nov[i + l0 + 1] * t;
@@ -58,30 +66,45 @@ pub fn estimate_tempo(o: &OnsetAnalysis) -> Option<Tempo> {
         (s / (n - l0 - 1) as f64) as f32
     };
     let zero = ac(0.0);
-    if zero <= 0.0 { return None; }
+    if zero <= 0.0 {
+        return None;
+    }
     // A period scores by itself and its multiples within the audio.
     let score = |lag: f32| -> f32 {
         let mut s = 0.0;
         let mut w = 1.0;
         let mut k = 1.0;
-        while k * lag < (n / 2) as f32 && k <= 4.0 { s += w * ac(k * lag); w *= 0.5; k += 1.0; }
+        while k * lag < (n / 2) as f32 && k <= 4.0 {
+            s += w * ac(k * lag);
+            w *= 0.5;
+            k += 1.0;
+        }
         s
     };
-    let pref = |bpm: f32| (-0.5 * ((bpm / PREFERRED_BPM).log2() / PREFERENCE_OCTAVES).powi(2)).exp();
+    let pref =
+        |bpm: f32| (-0.5 * ((bpm / PREFERRED_BPM).log2() / PREFERENCE_OCTAVES).powi(2)).exp();
     let mut best = (0.0f32, 0usize);
     for lag in min_lag.max(1)..=max_lag {
         let bpm = 60.0 / (lag as f32 * hop_s);
-        if !(MIN_BPM..=MAX_BPM).contains(&bpm) { continue; }
+        if !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+            continue;
+        }
         let v = score(lag as f32) * pref(bpm);
-        if v > best.0 { best = (v, lag); }
+        if v > best.0 {
+            best = (v, lag);
+        }
     }
-    if best.0 <= 0.0 { return None; }
+    if best.0 <= 0.0 {
+        return None;
+    }
     // Refine to 1/50 of a hop.
     let mut fine = (0.0f32, best.1 as f32);
     for step in -50..=50 {
         let lag = best.1 as f32 + step as f32 / 50.0;
         let v = score(lag);
-        if v > fine.0 { fine = (v, lag); }
+        if v > fine.0 {
+            fine = (v, lag);
+        }
     }
     let bpm = 60.0 / (fine.1 * hop_s);
     let confidence = (ac(fine.1) / zero).clamp(0.0, 1.0);
@@ -92,7 +115,9 @@ pub fn estimate_tempo(o: &OnsetAnalysis) -> Option<Tempo> {
 /// choosing the beat count whose tempo is closest to `estimate` (or to 120
 /// BPM without one). None if no common beat count gives 60-200 BPM.
 pub fn loop_tempo(frames: u64, rate: u32, estimate: Option<f32>) -> Option<f32> {
-    if frames == 0 || rate == 0 { return None; }
+    if frames == 0 || rate == 0 {
+        return None;
+    }
     let seconds = frames as f64 / f64::from(rate);
     let target = f64::from(estimate.unwrap_or(PREFERRED_BPM));
     [1u32, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128]
@@ -114,7 +139,11 @@ mod tests {
             let (audio, _) = beat(bpm, 8, 44_100.0);
             let o = OnsetAnalysis::analyse(&audio, 1, 44_100).unwrap();
             let t = estimate_tempo(&o).unwrap();
-            assert!((t.bpm - bpm).abs() < 0.5, "{bpm} BPM estimated as {}", t.bpm);
+            assert!(
+                (t.bpm - bpm).abs() < 0.5,
+                "{bpm} BPM estimated as {}",
+                t.bpm
+            );
             assert!(t.confidence > 0.2, "{bpm}: confidence {}", t.confidence);
         }
     }

@@ -21,7 +21,9 @@
 //! [`PadsTab::update`] when the project changes, and applies the
 //! [`PadsAction`]s it gets back.
 
-use mpfree_sampler::model::{ChannelPick, Fade, GrainParams, Layer, ModelError, Pad, PlayMode, Project, Region, SourceId};
+use mpfree_sampler::model::{
+    ChannelPick, Fade, GrainParams, Layer, ModelError, Pad, PlayMode, Project, Region, SourceId,
+};
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
@@ -48,7 +50,8 @@ pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, \
 pub const TAB: usize = 0;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Tap a pad to pick it, again to hear it · Copy, Paste, Clear · pick a sound, then Put it on \
+pub const HINT: &str =
+    "Tap a pad to pick it, again to hear it · Copy, Paste, Clear · pick a sound, then Put it on \
                         the pad · Q-Links: level, pan, tune, voices";
 
 /// Gesture ids the tab hands out start here, clear of other screens'.
@@ -67,7 +70,15 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 7] = [Row::Sound, Row::Mode, Row::Polyphony, Row::MuteGroup, Row::Level, Row::Pan, Row::Tune];
+    pub const ALL: [Row; 7] = [
+        Row::Sound,
+        Row::Mode,
+        Row::Polyphony,
+        Row::MuteGroup,
+        Row::Level,
+        Row::Pan,
+        Row::Tune,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -101,7 +112,13 @@ impl Row {
 /// The rows the Q-Links turn, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Level, Row::Pan, Row::Tune, Row::Polyphony];
 
-const MODES: [PlayMode; 5] = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Toggle, PlayMode::Loop, PlayMode::Granular];
+const MODES: [PlayMode; 5] = [
+    PlayMode::OneShot,
+    PlayMode::Gate,
+    PlayMode::Toggle,
+    PlayMode::Loop,
+    PlayMode::Granular,
+];
 
 /// The buttons under the map, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,18 +163,35 @@ impl PadsState {
     /// The bank of pad `pad` in `p`, and its sounds.
     pub fn from_project(p: &Project, pad: usize) -> PadsState {
         let bank = bank_of(pad);
-        let pads = bank.clone().map(|i| p.pad(i).filter(|pd| !pd.layers.is_empty()).cloned()).collect();
+        let pads = bank
+            .clone()
+            .map(|i| p.pad(i).filter(|pd| !pd.layers.is_empty()).cloned())
+            .collect();
         let sounds = p
             .sources()
             .iter()
-            .map(|s| Sound { id: s.id(), name: s.name.clone(), frames: s.frames(), rate: s.rate(), pads: p.users_of(s.id()) })
+            .map(|s| Sound {
+                id: s.id(),
+                name: s.name.clone(),
+                frames: s.frames(),
+                rate: s.rate(),
+                pads: p.users_of(s.id()),
+            })
             .collect();
-        PadsState { pad, first: bank.start, pads, sounds, clips: vec![None; bank.len()] }
+        PadsState {
+            pad,
+            first: bank.start,
+            pads,
+            sounds,
+            clips: vec![None; bank.len()],
+        }
     }
 
     /// The pad picked, if it has a sound.
     pub fn picked(&self) -> Option<&Pad> {
-        self.pads.get(self.pad - self.first).and_then(Option::as_ref)
+        self.pads
+            .get(self.pad - self.first)
+            .and_then(Option::as_ref)
     }
 
     /// The sound on the pad picked's first layer, as an index into `sounds`.
@@ -176,7 +210,11 @@ pub enum PadsAction {
     Audition { pad: usize, down: bool },
     /// Pad `pad` set to `after` (None clears it). `gesture` merges a run of
     /// changes into one undo step; None is a step of its own.
-    Set { pad: usize, after: Option<Box<Pad>>, gesture: Option<u64> },
+    Set {
+        pad: usize,
+        after: Option<Box<Pad>>,
+        gesture: Option<u64>,
+    },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -186,7 +224,11 @@ impl PadsAction {
     /// nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
         match self {
-            PadsAction::Set { pad, after, gesture } => p.set_pad(*pad, after.as_deref().cloned(), *gesture),
+            PadsAction::Set {
+                pad,
+                after,
+                gesture,
+            } => p.set_pad(*pad, after.as_deref().cloned(), *gesture),
             _ => Ok(()),
         }
     }
@@ -198,7 +240,13 @@ impl PadsAction {
 pub fn with_sound(pad: Option<&Pad>, sound: &Sound) -> Pad {
     let whole = |old: Option<&Region>| {
         let mut r = match old {
-            Some(o) => Region { source: sound.id, start: 0, end: sound.frames, sustain_loop: None, ..o.clone() },
+            Some(o) => Region {
+                source: sound.id,
+                start: 0,
+                end: sound.frames,
+                sustain_loop: None,
+                ..o.clone()
+            },
             None => Region {
                 source: sound.id,
                 start: 0,
@@ -300,7 +348,9 @@ impl PadsTab {
 
     /// The row picked in the Pad list.
     pub fn row(&self, ui: &Ui) -> Row {
-        ui.get::<SettingList>(LIST).and_then(|l| Row::ALL.get(l.selected).copied()).unwrap_or(Row::Sound)
+        ui.get::<SettingList>(LIST)
+            .and_then(|l| Row::ALL.get(l.selected).copied())
+            .unwrap_or(Row::Sound)
     }
 
     /// The sound picked in the sounds list.
@@ -316,7 +366,9 @@ impl PadsTab {
 
     /// Pad `pad` (of the project) is held down, or let go.
     pub fn set_lit(&self, ui: &mut Ui, st: &PadsState, pad: usize, down: bool) {
-        let Some(i) = pad.checked_sub(st.first).filter(|i| *i < st.pads.len()) else { return };
+        let Some(i) = pad.checked_sub(st.first).filter(|i| *i < st.pads.len()) else {
+            return;
+        };
         if let Some(m) = ui.get_mut::<PadMap>(MAP) {
             m.lit.resize(st.pads.len(), false);
             m.lit[i] = down;
@@ -342,14 +394,21 @@ impl PadsTab {
             bar.color = pad_color(st.pad);
             bar.active = TAB;
             // A pad without a sound has nothing for the other tabs to edit.
-            bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t) && (picked.is_some() || *t == TABS[TAB])).collect();
+            bar.enabled = TABS
+                .iter()
+                .map(|t| wave_tab::BUILT.contains(t) && (picked.is_some() || *t == TABS[TAB]))
+                .collect();
             bar.title = match picked {
                 Some(p) => format!("Pad {here} · {}", p.name),
                 None => format!("Pad {here} · no sound"),
             };
             let used = st.pads.iter().filter(|p| p.is_some()).count();
             let n = st.sounds.len();
-            bar.subtitle = format!("{used} of {} pads with a sound · {n} {} in the kit", st.pads.len(), if n == 1 { "sound" } else { "sounds" });
+            bar.subtitle = format!(
+                "{used} of {} pads with a sound · {n} {} in the kit",
+                st.pads.len(),
+                if n == 1 { "sound" } else { "sounds" }
+            );
         }
         let cells: Vec<PadCell> = st
             .pads
@@ -371,12 +430,21 @@ impl PadsTab {
             m.cells = cells;
             m.selected = st.pad - st.first;
         }
-        let paste = self.copied.as_ref().map(|(from, _)| format!("Paste {}", pad_text(self.bank, *from)));
+        let paste = self
+            .copied
+            .as_ref()
+            .map(|(from, _)| format!("Paste {}", pad_text(self.bank, *from)));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels[1] = paste.unwrap_or_else(|| "Paste".into());
             b.enabled = vec![picked.is_some(), self.copied.is_some(), picked.is_some()];
         }
-        let rows = Row::ALL.iter().map(|r| Setting { name: r.label().into(), value: row_text(picked, st, *r) }).collect();
+        let rows = Row::ALL
+            .iter()
+            .map(|r| Setting {
+                name: r.label().into(),
+                value: row_text(picked, st, *r),
+            })
+            .collect();
         let clip = st.clips.get(st.pad - st.first).cloned().flatten();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.title = format!("Pad {here}");
@@ -390,7 +458,11 @@ impl PadsTab {
                 text: s.name.clone(),
                 detail: match s.pads.len() {
                     0 => format!("{} · unused", duration_text(s.frames, s.rate)),
-                    1 => format!("{} · {}", duration_text(s.frames, s.rate), pad_text(self.bank, s.pads[0])),
+                    1 => format!(
+                        "{} · {}",
+                        duration_text(s.frames, s.rate),
+                        pad_text(self.bank, s.pads[0])
+                    ),
                     n => format!("{} · {n} pads", duration_text(s.frames, s.rate)),
                 },
                 color: None,
@@ -412,9 +484,14 @@ impl PadsTab {
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(PadsAction::Tab(*i)),
             (MAP, EventKind::Select(i)) => Some(PadsAction::Pick(st.first + *i)),
-            (MAP, EventKind::Pad { index, down }) => Some(PadsAction::Audition { pad: st.first + *index, down: *down }),
+            (MAP, EventKind::Pad { index, down }) => Some(PadsAction::Audition {
+                pad: st.first + *index,
+                down: *down,
+            }),
             (BUTTONS, EventKind::Tab(i)) => self.press(ui, st, *Button::ALL.get(*i)?),
-            (LIST, EventKind::Step { index, delta }) => self.step(st, *Row::ALL.get(*index)?, *delta),
+            (LIST, EventKind::Step { index, delta }) => {
+                self.step(st, *Row::ALL.get(*index)?, *delta)
+            }
             (SOUNDS, EventKind::Select(k)) => {
                 self.sound = *k;
                 None
@@ -423,7 +500,11 @@ impl PadsTab {
                 let sound = st.sounds.get(self.sound)?;
                 let after = with_sound(st.picked(), sound);
                 self.lift();
-                Some(PadsAction::Set { pad: st.pad, after: Some(Box::new(after)), gesture: None })
+                Some(PadsAction::Set {
+                    pad: st.pad,
+                    after: Some(Box::new(after)),
+                    gesture: None,
+                })
             }
             _ => None,
         }
@@ -440,18 +521,32 @@ impl PadsTab {
             }
             Button::Paste => {
                 let (_, p) = self.copied.as_ref()?;
-                (st.picked() != Some(p)).then(|| PadsAction::Set { pad: st.pad, after: Some(Box::new(p.clone())), gesture: None })
+                (st.picked() != Some(p)).then(|| PadsAction::Set {
+                    pad: st.pad,
+                    after: Some(Box::new(p.clone())),
+                    gesture: None,
+                })
             }
             Button::Clear => {
                 st.picked()?;
-                Some(PadsAction::Set { pad: st.pad, after: None, gesture: None })
+                Some(PadsAction::Set {
+                    pad: st.pad,
+                    after: None,
+                    gesture: None,
+                })
             }
         }
     }
 
     /// Q-Link `knob` (0 to 3: level, pan, tune, voices) turned by `delta`
     /// detents.
-    pub fn qlink(&mut self, ui: &mut Ui, st: &PadsState, knob: usize, delta: i32) -> Option<PadsAction> {
+    pub fn qlink(
+        &mut self,
+        ui: &mut Ui,
+        st: &PadsState,
+        knob: usize,
+        delta: i32,
+    ) -> Option<PadsAction> {
         let row = *QLINK_ROWS.get(knob)?;
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.selected = row.index();
@@ -488,7 +583,10 @@ impl PadsTab {
                 let p = picked?;
                 let now = p.layers.first()?.region.mode;
                 let i = MODES.iter().position(|m| *m == now).unwrap_or(0) as i32;
-                with_mode(p, MODES[(i + delta).rem_euclid(MODES.len() as i32) as usize])
+                with_mode(
+                    p,
+                    MODES[(i + delta).rem_euclid(MODES.len() as i32) as usize],
+                )
             }
             r => stepped(picked?, r.play_row()?, delta, false),
         };
@@ -504,7 +602,11 @@ impl PadsTab {
                 g
             }
         };
-        Some(PadsAction::Set { pad: st.pad, after: Some(Box::new(after)), gesture: Some(gesture) })
+        Some(PadsAction::Set {
+            pad: st.pad,
+            after: Some(Box::new(after)),
+            gesture: Some(gesture),
+        })
     }
 }
 
@@ -519,14 +621,29 @@ fn pad_detail(p: &Pad) -> String {
 
 fn row_text(p: Option<&Pad>, st: &PadsState, row: Row) -> String {
     let Some(p) = p else {
-        return if row == Row::Sound { "none".into() } else { "—".into() };
+        return if row == Row::Sound {
+            "none".into()
+        } else {
+            "—".into()
+        };
     };
     match row {
         Row::Sound => {
-            let name = st.sound_of_picked().map_or("?", |k| st.sounds[k].name.as_str());
-            if p.layers.len() > 1 { format!("{name} +{}", p.layers.len() - 1) } else { name.to_string() }
+            let name = st
+                .sound_of_picked()
+                .map_or("?", |k| st.sounds[k].name.as_str());
+            if p.layers.len() > 1 {
+                format!("{name} +{}", p.layers.len() - 1)
+            } else {
+                name.to_string()
+            }
         }
-        Row::Mode => p.layers.first().map_or("—".into(), |l| mode_label(l.region.mode).to_string()),
-        r => r.play_row().map_or_else(String::new, |pr| value_text(p, pr)),
+        Row::Mode => p
+            .layers
+            .first()
+            .map_or("—".into(), |l| mode_label(l.region.mode).to_string()),
+        r => r
+            .play_row()
+            .map_or_else(String::new, |pr| value_text(p, pr)),
     }
 }
