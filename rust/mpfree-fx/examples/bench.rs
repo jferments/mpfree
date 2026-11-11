@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
-use mpfree_fx::{Chain, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, MasterSafety, MultiFilter};
+use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, MasterSafety, MultiFilter, Phaser};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -56,6 +56,11 @@ fn main() {
         (ids::eq::LOW_SLOPE, 2.0), (ids::eq::HIGH_SLOPE, 2.0),
         (ids::eq::gain(0), 3.0), (ids::eq::gain(1), -4.0), (ids::eq::gain(2), 5.0), (ids::eq::gain(3), 2.0),
     ]);
+    node("Chorus (2 voices)", Box::new(Chorus::new()), &[]);
+    node("Chorus (4 voices)", Box::new(Chorus::new()), &[(ids::chorus::VOICES, 4.0)]);
+    node("Flanger", Box::new(Flanger::new()), &[]);
+    node("Phaser (4 stages)", Box::new(Phaser::new()), &[]);
+    node("Phaser (12 stages)", Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)]);
     node("Master safety", Box::new(MasterSafety::new()), &[]);
     for (k, name) in ["Cloud reverb (Plate)", "Cloud reverb (Room)", "Cloud reverb (Hall)", "Cloud reverb (Cloud)", "Cloud reverb (Echoes)"].iter().enumerate() {
         node(name, Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)]);

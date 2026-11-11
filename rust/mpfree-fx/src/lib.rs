@@ -11,6 +11,8 @@
 //!   saturation in the feedback, tape-style time changes and freeze.
 //! - [`Eq`]: four parametric bands (bell or shelf) with low and high cuts,
 //!   and the exact response curve for drawing.
+//! - [`Chorus`], [`Flanger`], [`Phaser`]: modulation effects with a free
+//!   or tempo-synced LFO and stereo width.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
@@ -45,6 +47,7 @@ mod delay;
 mod drive;
 mod eq;
 mod master;
+mod modfx;
 mod oversample;
 mod svf;
 
@@ -56,6 +59,7 @@ pub use delay::Delay;
 pub use drive::Drive;
 pub use eq::Eq;
 pub use master::{MasterSafety, MasterStats};
+pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 
@@ -71,6 +75,9 @@ pub mod ids {
     pub use crate::drive::ids as drive;
     pub use crate::eq::ids as eq;
     pub use crate::master::ids as master;
+    pub use crate::modfx::chorus;
+    pub use crate::modfx::flanger;
+    pub use crate::modfx::phaser;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
 }
