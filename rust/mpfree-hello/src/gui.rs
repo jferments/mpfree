@@ -68,6 +68,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub const CONSOLE_LAYOUT: &str = "col(header:60, log:*, hint:26)";
+/// The mixer, and the Q-Link column beside it as on the Play page.
+pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:168):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
@@ -247,6 +249,9 @@ pub enum ToUi {
     },
     /// A finger on Q-Link `0` (0 to 3) or off it: its card lights.
     QLinkTouch(usize, bool),
+    /// While the mixer is open: Q-Link `0` (or the wheel) turned by `1`
+    /// detents, for the selected strip.
+    MixerQLink(usize, i32),
     Session(String, Tone),
     Timing(Timing),
     Show(View),
@@ -384,14 +389,12 @@ pub enum FromUi {
     MapButton(usize),
     /// A button on the Looper tab (`looper_page::BUTTONS`).
     Looper(usize),
-    /// What a touch on the mixer panel meant (`mpfree_mixer_ui::take_actions`),
-    /// for the mixer on the audio thread.
-    #[allow(dead_code)] // the panel's wiring sends it
+    /// What a touch on the mixer panel (or a Q-Link while it is open)
+    /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
+    /// on the audio thread.
     Mixer(mpfree_mixer_ui::MixAction),
-    /// The mixer panel opened on a view, or closed (`None`): the audio
-    /// thread sends its state only while it is open.
-    #[allow(dead_code)] // the panel's wiring sends it
-    MixerShown(Option<mpfree_mixer_ui::MixView>),
+    /// The top bar's mixer icon: open or close the mixer (the app decides).
+    MixerIcon,
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -464,7 +467,9 @@ impl Player {
     ) -> Player {
         let mut ui = Ui::new(Theme::dark(), fonts, size.0, size.1);
         let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
-        ui.add("header", Header::new(&names));
+        let mut header = Header::new(&names);
+        header.mixer_icon = Some(false);
+        ui.add("header", header);
         let mut loading = Loading::new("MPFree", "Pad player");
         loading.set_backdrop(backdrop);
         loading.hint = LOADING_HINT.to_string();
@@ -542,6 +547,11 @@ impl Player {
         ui.add_full_page("Calibrate touch", "calibrate")
             .expect("calibrate layout");
         let sample = SamplePage::add(&mut ui).expect("sample layout");
+        // The mixer over the page, under the top bar, with the Q-Link cards
+        // beside it (they turn the selected strip).
+        mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
+        ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
+            .expect("mixer layout");
         let _ = ui.show("Loading");
         let status = Status {
             shift: false,
@@ -682,7 +692,23 @@ impl Player {
     /// sliders show); on Play, Q-Link 1 is the level.
     fn refresh_qlinks(&mut self) {
         let arp = self.view == View::Arp || (self.view == View::Play && self.band_showing());
-        let (title, cards) = if arp {
+        let (title, cards) = if self.view == View::Mixer {
+            // The selected strip's Volume, Pan, Send A and Send B.
+            let q = mpfree_mixer_ui::qlinks(&self.ui);
+            let mut cards: [QLinkCard; 4] = Default::default();
+            for (card, k) in cards.iter_mut().zip(&q.knobs).filter(|(_, k)| k.enabled()) {
+                *card = QLinkCard::new(k.label, &q.name, &k.text, k.pos);
+                card.bipolar = k.label == "Pan";
+            }
+            (
+                if q.name.is_empty() {
+                    "Q-Links · tap a strip's name"
+                } else {
+                    "Q-Links · Mixer"
+                },
+                cards,
+            )
+        } else if arp {
             let rows = self
                 .ui
                 .get::<SliderStack>(arp_view::QLINKS)
@@ -707,6 +733,19 @@ impl Player {
                 q.cards = cards;
             }
         }
+    }
+
+    /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
+    /// while the mixer is open: the selected strip's Volume, Pan, Send A or
+    /// Send B moves on the panel at once, and the mixer hears it.
+    fn mixer_qlink(&mut self, k: usize, d: i32) {
+        if self.view != View::Mixer || d == 0 {
+            return;
+        }
+        if let Some(a) = mpfree_mixer_ui::qlink_turn(&mut self.ui, k, d, self.status.shift) {
+            self.outbox.push(FromUi::Mixer(a));
+        }
+        self.refresh_qlinks();
     }
 
     /// One tap on the switch: the Play page shows view `v`.
@@ -882,6 +921,7 @@ impl Player {
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
+                View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
@@ -1133,7 +1173,13 @@ impl Player {
                     .update(&mut self.ui, &self.looper, &self.settings);
             }
             // Nothing until the panel is in the Ui (mpfree_mixer_ui::add).
-            ToUi::Mixer(st) => mpfree_mixer_ui::update(&mut self.ui, *st),
+            ToUi::Mixer(st) => {
+                mpfree_mixer_ui::update(&mut self.ui, *st);
+                if self.view == View::Mixer {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -1597,6 +1643,7 @@ impl Player {
                 "System info".to_string()
             }
             View::Prefs => "Prefs".to_string(),
+            View::Mixer => mpfree_mixer_ui::MIXER_PAGE.to_string(),
             View::Options => "Options".to_string(),
             View::Guide => "Guide".to_string(),
             View::Arp => ARP_PAGE.to_string(),
@@ -1634,8 +1681,12 @@ impl Player {
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
+        let mixer = Some(self.view == View::Mixer);
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             h.active = tab.unwrap_or(usize::MAX);
+            if h.mixer_icon != mixer {
+                h.mixer_icon = mixer;
+            }
         }
     }
 
@@ -1769,8 +1820,24 @@ impl Player {
                 None
             }
             (play_page::MASTER, EventKind::Value(v)) => Some(FromUi::Level(v)),
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Mixer => {
+                self.mixer_qlink(index, delta);
+                None
+            }
             (play_page::QLINKS, EventKind::Step { index, delta }) => {
                 Some(FromUi::QLink { knob: index, delta })
+            }
+            (mpfree_mixer_ui::MIXER, _) => {
+                let mut acts = mpfree_mixer_ui::take_actions(&mut self.ui)
+                    .into_iter()
+                    .map(FromUi::Mixer);
+                let first = acts.next();
+                self.outbox.extend(acts);
+                self.refresh_qlinks();
+                first
+            }
+            ("header", EventKind::Select(mpfree_ui::widgets::MIXER_ICON)) => {
+                Some(FromUi::MixerIcon)
             }
             (play_page::PADS_HEAD | play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
                 Some(FromUi::PadsLayout { in_key: i == 1 })
@@ -2363,7 +2430,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Bank { .. }
             | Effect::Looper(_)
             | Effect::SavePatterns(_)
-            | Effect::SynthPads(_) => {}
+            | Effect::SynthPads(_)
+            | Effect::Mixer(_) => {}
+            Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
         }
     }
 }
@@ -2642,6 +2711,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     synth.apply(ToUi::Kit(synth_kit));
     sample_loop(&mut synth);
     out.push(("play-synth-in-key", synth));
+    // The mixer over Play (TRACK MIX), a strip selected for the Q-Links.
+    let mut mixer = sample_player(fonts());
+    let mut m = mpfree_mixer_ui::sample::song_mixer();
+    mpfree_mixer_ui::sample::play(&mut m, 40);
+    let mut st = mpfree_mixer_ui::MixState::from_mixer(
+        &mut m,
+        mpfree_mixer_ui::MixView::Tracks,
+        &mpfree_mixer_ui::sample::name,
+    );
+    st.selected = Some(mpfree_fx::StripId::Track(1));
+    mixer.apply(ToUi::Show(View::Mixer));
+    mixer.apply(ToUi::Mixer(Box::new(st)));
+    out.push(("mixer", mixer));
     let mut debug = sample_player(fonts());
     debug.apply(ToUi::Show(View::Debug));
     out.push(("debug", debug));
@@ -3233,6 +3315,82 @@ mod tests {
             p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].value,
             "-6.0 dB"
         );
+    }
+
+    #[test]
+    fn track_mix_opens_the_mixer_and_the_q_links_turn_the_selected_strip() {
+        use mpfree_mixer_ui::{MixAction, MixState, MixView, MIXER_PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
+        // TRACK MIX: the mixer over Play, on Track Mix; the icon lights.
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Tracks))),
+            "{fx:?}"
+        );
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), MIXER_PAGE);
+        assert_eq!(p.ui.get::<Header>("header").unwrap().mixer_icon, Some(true));
+        assert!(
+            p.ui.rect_of(play_page::QLINKS).is_some(),
+            "the Q-Link cards stay beside the mixer"
+        );
+        // The audio thread's state, with a strip selected: the cards name it.
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let mut st = MixState::from_mixer(&mut m, MixView::Tracks, &mpfree_mixer_ui::sample::name);
+        st.selected = Some(mpfree_fx::StripId::Track(1));
+        p.apply(ToUi::Mixer(Box::new(st)));
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(
+            (q.cards[0].name.as_str(), q.cards[1].name.as_str()),
+            ("Volume", "Pan")
+        );
+        assert!(q.cards[1].bipolar && !q.cards[0].scope.is_empty());
+        // A Q-Link (or the wheel) moves the strip's volume on the panel and tells the mixer.
+        let fx = app.wheel(2);
+        apply_effects(&mut p, fx);
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Mixer(MixAction::Set {
+                    strip: mpfree_fx::StripId::Track(1),
+                    ..
+                })]
+            ),
+            "{sent:?}"
+        );
+        // TRACK MIX again closes it, back to Play; the icon goes out.
+        let fx = app.button(70, true, 0.0);
+        assert_eq!(fx.first(), Some(&crate::app::Effect::Mixer(None)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), "Play");
+        assert_eq!(
+            p.ui.get::<Header>("header").unwrap().mixer_icon,
+            Some(false)
+        );
+        // The icon in the bar asks the app.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of("header").unwrap();
+        let icon = p.ui.get::<Header>("header").unwrap().icon_rect(r).unwrap();
+        assert_eq!(
+            p.touch(4, Touch::Down, icon.x + 10, icon.y + 10),
+            Some(FromUi::MixerIcon)
+        );
+        // SHIFT + TRACK MIX: Pad Mix; a tab closes the mixer.
+        app.button(70, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let fx = app.button(70, true, 0.0);
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Pads)))
+        );
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        let fx = app.tab(2);
+        assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
     }
 
     #[test]
