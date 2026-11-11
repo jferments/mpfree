@@ -27,7 +27,7 @@ from ghidra.app.decompiler import DecompInterface
 BASE = 0x00100000
 SIZE = 363649
 SHA256 = 'b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a'
-OUTDIR = os.path.expanduser('~/mpfree-work')
+OUTDIR = os.path.abspath(os.environ.get('MPFREE_REPORT_DIR') or os.path.expanduser('~/mpfree-work'))
 # (display label, linked instruction address, emit full pseudocode?)
 # OEM pseudocode is deliberately omitted from the shareable report because
 # the firmware includes an embedded vendor token. Inspect it locally in Ghidra.
