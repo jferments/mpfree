@@ -1088,3 +1088,512 @@ Rockchip boot-source IDs (from upstream bootrom.h) include eMMC=2, SD=5 and USB=
 - Rockchip rkdeveloptool: https://github.com/rockchip-linux/rkdeveloptool
 
 **Status:** Fastboot `bootm` and legacy CRC reachability are now evidenced; real, on-chip RK3288 MaskROM USB recovery exists by design but has **not been shown accessible/recoverable on the MPC One board**. The two tracks will remain separate until board-specific evidence connects them.
+
+## 22. USB host inventory: no device enumerated in normal Linux (2026-11-10)
+
+**Owner-observed workstation output:** the Linux host ran `lsusb`, `lsusb -d 2207:`, and checked for `rkdeveloptool`. Host USB inventory included Logitech peripherals, a VIA hub, an Anker camera, Intel Bluetooth and AMI virtual devices; **there was no detectable Rockchip VID `0x2207` and no recognizable MPC One USB device** in that host snapshot. `rkdeveloptool` was **not installed**, so `rkdeveloptool ld` did not run. The owner did **not** explicitly confirm a direct data-capable USB cable from MPC USB-B to the workstation at the time; no claims about MaskROM or board-level USB routing can be concluded from the snapshot.
+
+**Interpretation by mode:** an MPC running stock Akai Linux need not enumerate as a USB peripheral unless Linux/Controller Mode has configured the gadget. Absence of USB device in this state is **not** evidence that U-Boot Fastboot or true silicon MaskROM is unavailable. Installing `rkdeveloptool` alone cannot create a missing USB enumeration event. Even a matching Rockchip VID could represent Loader rather than silicon MaskROM and must be classified separately.
+
+**Verified external sources:**
+- Akai explicitly documents the MPC One's **USB Type-B port** as its PC-facing connection, and says the shipped cable is USB 2.0; USB-A is for host peripherals: https://support.akaipro.com/en/support/solutions/articles/69000816149-akai-pro-mpc-one-frequently-asked-questions
+- Akai says the MPC can expose computer-controller mode over USB-B, when configured appropriately on the MPC: https://support.akaipro.com/en/support/solutions/articles/69000824436-akai-pro-mpc-series-transferring-content-to-and-from-the-mpc-via-a-computer
+- Rockchip project's udev rules list **RK3288 VID:PID `2207:320a`**: https://github.com/rockchip-linux/rkdeveloptool/blob/master/99-rk-rockusb.rules
+- Ubuntu 24.04 LTS (Noble) publishes `rkdeveloptool` in `universe`: https://packages.ubuntu.com/noble/rkdeveloptool
+- Reference RK3288 hardware has distinct **Loader**, **MaskRom**, **Normal** modes; board-specific recovery key procedures described for other boards are **not portable** to MPC One: https://community.t-firefly.com/en/docs/products/motherboard/Firefly-RK3288/bootmode
+
+**Safest next evidence**: confirm a standard data-capable USB-A-to-USB-B connection directly between workstation and MPC One USB-B; run host `udevadm monitor --kernel --subsystem-match=usb` in one terminal while disconnecting/reconnecting **only the cable**, with the MPC left running normally; capture any USB addition/removal events, then `lsusb` and `lsusb -d 2207:`. This does not boot, reflash or alter eMMC. Only once a Rockchip USB device is actually enumerated does `rkdeveloptool ld` add mode-classification evidence. The tool can be installed with `sudo apt install rkdeveloptool` (Noble universe must be enabled if unavailable). **Do not** issue `rkdeveloptool db/wl/ef/rd/ul`, change reboot-mode registers, short an eMMC pin, or assume unrelated RK3288 board recovery-button combinations apply.
+
+**Next hardware research requirement:** document the MPC One's actual USB-B D+/D- and VBUS routing to the RK3288 USB OTG controller, and identify any authorized, non-destructive ROM recovery selection mechanism before attempting to change boot state.
+
+## 23. Host USB diagnostics plus MPC One USB-B / DWC2 board-specific evidence (2026-11-10)
+
+**Owner's second host survey** (`Pasted markdown(9).md`): Ubuntu package installation of `rkdeveloptool` 1.32 succeeded from `resolute/universe` on the workstation. A `udevadm monitor --kernel --subsystem-match=usb` session printed *no USB events* before Ctrl+C. A subsequent `lsusb` again listed only workstation peripherals (no recognizable Akai or Rockchip device), `lsusb -d 2207:` returned no device, and `rkdeveloptool ld` printed **`No devices in rockusb mode found`**. It is not documented whether a cable was present, direct, data-capable, or reseated **while** the monitor ran. Do not infer a disconnected port, absent BootROM, bad USB cable, or disabled recovery circuit from this snapshot alone.
+
+### 23.1 Normal standalone USB inactivity is expected by design
+
+Akai's MPC X/Live/One user guide expressly says that, in **Standalone Mode**, the device is **not communicating with a computer over USB**. Controller Mode binds the USB device to the host. Therefore normal standalone non-enumeration is not an anomaly and does **not** reflect silicon BootROM availability. See Akai's guide: https://cdn.inmusicbrands.com/akai/AKMUWBYS/MPC-User-Guide-v2.7.2.pdf and its FAQ: https://support.akaipro.com/en/support/solutions/articles/69000816149-akai-pro-mpc-one-frequently-asked-questions .
+
+Another public MPC hardware note identifies an Akai MPC One MIDI USB descriptor as `09e8:0046` (this identifier is not guaranteed to enumerate on every firmware or mode). **Do not confuse Akai normal-mode USB IDs with Rockchip `2207:320a`**: https://github.com/TheKikGen/MPC-LiveXplore/blob/master/MPC/Midi-Devices.txt .
+
+### 23.2 Strong MPC One-specific external evidence ties USB-B to 0xFF580000
+
+MPC-LiveXplore issue #55 is *specifically about the MPC One*: https://github.com/TheKikGen/MPC-LiveXplore/issues/55 . The owner reports that entering Controller Mode logs `dwc2 ff580000.usb: bound driver configfs-gadget`, activates `usb-gadget.target`, and creates audio/MIDI USB gadget devices; returning to Standalone Mode disconnects the gadget. The same owner reports enabling the USB-B interface through `UDC=ff580000.usb` in Linux userspace, with live MIDI functioning. This is significant **board-specific software/operational evidence** that the MPC One's host-facing USB-B port routes to the RK3288 DWC2 OTG controller at `0xFF580000`, which is also enabled in the owner-extracted *p3 U-Boot* DTB.
+
+**Caveat:** the public report includes a `/sys/devices/platform/usb-otg-mux/state` state switch (`host`/`peripheral`) and writes to Linux ConfigFS. The board may contain a **physical/logic USB mux** whose power-on default matters during BootROM execution. The existence and exact board wiring/default were **not electrically verified** from the report. An OTG controller usable in stock Linux and U-Boot does not automatically prove ROM-level USB signals reach USB-B at reset. No mux/UDC writes are authorized; avoid copying the community gadget enabling script since it changes runtime device configuration and was reported to cause audio/CPU issues.
+
+### 23.3 Safe next observations
+
+From the workstation: if a suitable data cable is present, capture host USB events on connection/reconnection and explicitly compare the **standalone** vs (only if the user voluntarily opts into changing mode) **Controller** mode. Controller Mode can interrupt active MPC project/runtime sessions, so it is not required at this stage. No host enumeration in normal Standalone should be considered expected.
+
+From an already-established *Ethernet SSH shell on the MPC*, purely read-only inspect: `ls -l /sys/class/udc`, `cat /sys/devices/platform/usb-otg-mux/state` if present, `systemctl show -p ActiveState usb-gadget.target`, `ls -l /sys/kernel/config/usb_gadget` if present, and `journalctl -k -b --no-pager | grep -Ei 'ff580000|dwc2|usb.*otg|gadget' | tail -80`. This can distinguish whether the running Linux kernel instantiates DWC2 and a mux, without binding gadgets or rebooting. Avoid logging identifiers such as `serial#` and embedded OEM authorization strings. Kernel DTB configuration can differ between firmware revisions.
+
+**Current MaskROM readiness:** SoC support is documented, OTG-to-USB-B routing has external MPC-specific evidence, host has the Rockchip enumerator; **safe ROM entry and a board-compatible DDR/USB RAM loader are still not demonstrated**. Independent MaskROM recovery must be proven before boot-critical writes.
+
+## 24. MPC One Ethernet SSH hardware survey proves UDC registered and mux in peripheral role (2026-11-10)
+
+The owner ran the Section 23 diagnostic by SSH over the established MPC Ethernet link, **on the device itself**, rather than on ML-tower. Exact owner-observed properties:
+
+| Observation | MPC One value |
+| --- | --- |
+| Hostname | `mpc-one` |
+| Kernel | `Linux mpc-one 6.6.95-az01-2025-06-27-rt55 ... armv7l GNU/Linux` |
+| Device-tree model | `Akai Professional MPC One` |
+| UDC class | `/sys/class/udc/ff580000.usb -> ../../devices/platform/ff580000.usb/udc/ff580000.usb` |
+| Platform peripheral | `/sys/bus/platform/devices/ff580000.usb` exists |
+| USB OTG mux state | **`peripheral`** |
+| `usb-gadget.target` | `loaded`, `active`, `active` |
+| ConfigFS `/sys/kernel/config/usb_gadget` | Present but **empty** |
+| DWC2 init | `dwc2 ff580000.usb: EPs: 10, dedicated fifos, 972 entries in SPRAM` |
+| Other DWC2 controller | `ff540000.usb`: `DWC OTG Controller`, registers Linux USB bus 1 (host context) |
+| Kernel VBUS | `reg-fixed-voltage usb-otg-regulator: vcc_otg_5v supplying 5000000uV` |
+
+The read-only command's last section `head -60` failed because the MPC BusyBox `head` does not accept that option form (`head: invalid option -- '6'`); this did **not** invalidate the preceding device identity, UDC, mux, ConfigFS, or kernel-log results. Use `sed -n '1,60p'` or BusyBox-compatible `head -n 60` instead.
+
+**Interpretation:** This is board-local evidence, not merely a generic Rockchip source or forum anecdote, that the running Akai Linux exposes DWC2 at `ff580000.usb` as an ARMv7 USB Device Controller and that the platform mux currently reports the **peripheral** role. Both facts strongly support the USB-B-to-OTG research hypothesis. However, software-visible mux role in a fully initialized Linux system does **not** prove the mux's physical reset/power-on state while immutable BootROM runs. No chip-level MaskROM enumeration has occurred.
+
+The ConfigFS gadget root is empty despite `usb-gadget.target` being active. The latter is a systemd orchestration target, **not proof of a bound USB function**. The Linux kernel ConfigFS documentation explicitly requires a configured gadget to be bound to a UDC before it can enumerate on the USB host; see https://www.kernel.org/doc/html/latest/usb/gadget_configfs.html . The absence of a ConfigFS gadget is consistent with earlier normal-Standalone host-side `lsusb` and `rkdeveloptool ld` returning no MPC/Rockchip device. A non-ConfigFS gadget driver is still possible and has not been ruled out by this directory listing alone.
+
+### Next safe ROM/USB investigation (no state changes)
+
+1. From existing SSH, inspect **read-only** `/sys/class/udc/ff580000.usb/{state,function,current_speed,maximum_speed,is_otg,soft_connect}` where available. Distinguish a merely registered UDC from a bound gadget and USB connection state.
+2. Observe (but do not edit) the USB mux's `state`, the platform device and driver symlinks, and optionally `systemctl list-dependencies usb-gadget.target`. Do not invoke Linux gadget-binding scripts as a workaround for the ROM question.
+3. On a directly connected, data-capable USB-B cable, the host can monitor USB events; if no gadget is bound, absence of host enumeration may be expected. Even a successful Linux gadget test **does not establish** BootROM routing.
+4. Determine the hardware mux reset default from MPC board evidence (schematic, safe passive measurement) and seek a non-destructive BootROM entry mechanism **before** assuming silicon ROM USB can reach the USB-B connector.
+5. Continue the **parallel** offline Fastboot `bootm` research: authorization-runtime initialization, image policy and available memory. No on-device `boot`, `oem`, `flash`, `erase`, reset-mode or eMMC tests have been authorized or performed.
+
+
+
+## 25. Linux gadget unbound and USB OTG mux remains peripheral (2026-11-10)
+
+The owner ran another read-only remote SSH survey **on the actual MPC One** and supplied `mpc-usb-runtime-state.txt`. It confirms:
+
+| Field | Observed |
+| --- | --- |
+| `hostname`/`uname -m` | `mpc-one` / `armv7l` |
+| `/sys/class/udc/ff580000.usb/state` | **`not attached`** |
+| `.../function` | **empty** (no gadget function reported) |
+| `.../current_speed` | `UNKNOWN` |
+| `.../maximum_speed` | `high-speed` |
+| `.../is_otg` | `0` |
+| `.../soft_connect` | `Permission denied` when read; do not write it |
+| `/sys/devices/platform/usb-otg-mux/state` | **`peripheral`** |
+| `/sys/devices/platform/usb-otg-mux/driver` | `../../../bus/platform/drivers/of-mux` |
+| `/sys/devices/platform/usb-otg-mux/of_node` | live FDT `/usb-otg-mux` |
+| `/sys/bus/platform/devices/ff580000.usb/driver` | `../../../bus/platform/drivers/dwc2` |
+| `/sys/kernel/config/usb_gadget` | empty |
+| `usb-gadget.target` dependencies | target itself; no concrete gadget unit listed |
+| Other USB nodes | `ff500000.usb`, `ff520000.usb`, `ff540000.usb`, `ff580000.usb`, `ff770000.syscon:usbphy`, `usb-otg-regulator` |
+
+**Interpretation:** The working Linux kernel registered DWC2 at `ff580000.usb` and is currently set to peripheral routing, but there is **no reported bound gadget function, no USB attachment, and no negotiated speed**. The earlier host-side absence of MPC enumeration is expected in that state and does not indicate hardware failure or prove any MaskROM impossibility. Linux USB gadget drivers must bind before the host can enumerate; cf. https://www.kernel.org/doc/html/latest/driver-api/usb/gadget.html .
+
+**`is_otg=0` should not be used to reject MaskROM.** That Linux gadget capability bit concerns whether an OTG port supports OTG-specific behavior/descriptors, not whether DWC2 works in USB device mode or whether the immutable RK3288 ROM implements recovery. Likewise, the error when **reading** `soft_connect` does not imply controller failure; the ABI documents it as a **control for logical connect/disconnect**, which must not be written in passive research: https://kernel.org/doc/html/v5.19/admin-guide/abi-stable.html .
+
+**Highest-value next evidence:** the running Linux FDT node `/usb-otg-mux` and the exact GPIO/regulator/pinctrl or hardware-mux implementation it references. The sysfs `of-mux` driver name alone does **not** prove an external discrete analog switch; it might select a PHY role or GPIO mux. Even an established Linux role does **not** prove the default electrical path at cold power-on, before ROM code executes. A safe remote audit can read `available_states`, list and hex-dump selected nonsecret properties from `/proc/device-tree/usb-otg-mux` and `/proc/device-tree/usb@ff580000`, inspect `/sys/kernel/debug/gpio` if already mounted, and read driver symlinks. Do **not** change sysfs mux `state`, `soft_connect`, bind a gadget, reset into a new mode or write boot partitions.
+
+The concurrent **Fastboot RAM-boot** investigation remains in progress independently (§§15–21); this USB survey does not alter the bootm CRC and downloaded-image findings or establish the initial permission-gate state.
+
+## 26. MPC One live FDT identifies USB role selector as virtual-mux; physical USB-B path likely direct (2026-11-10)
+
+The owner supplied read-only SSH output from the running MPC One (`mpc-usb-mux-devicetree.txt`). **This requires a correction to prior speculation** that the `usb-otg-mux` might necessarily be a physical board switch.
+
+- `/sys/devices/platform/usb-otg-mux/state`: `peripheral`; `available_states`: `otg host peripheral`.
+- Live `/proc/device-tree/usb-otg-mux`: `compatible = "virtual-mux"`, `status="okay"`, `default-state` property, and child nodes `state-host`, `state-otg`, `state-peripheral`. The owner's BusyBox `od` lacks GNU `-t`, so this run **did not read** the `default-state` property contents.
+- Live `/proc/device-tree/usb@ff580000`: `compatible="rockchip,rk3288-usb", "rockchip,rk3066-usb", "snps,dwc2"`, `dr_mode="peripheral"`, `status="okay"`. It has a `usb2-phy` reference.
+- Live `/proc/device-tree/usb@ff540000`: same DWC2 compatible family, `dr_mode="host"`, `status="okay"`.
+- Live `/sys/kernel/debug/gpio` labels `gpio-249 (USB_MUX_CTRL)`, but **no consumer or output drive value is shown** for that line; its name does not establish a physical multiplexer or a dependency for MaskROM. `gpio-12` is separately held high by `usb-otg-regulator`, and `gpio-218` held high by `vcc-host1-regulator`.
+
+An independently published decompilation of the **RK3288 AZ01 ACVA** device tree shows this exact `virtual-mux` with `default-state = "peripheral"`, and three child `fragment@0/__overlay__` nodes updating `dr_mode` to `otg`, `host`, or `peripheral`, respectively: https://deathcamel58.github.io/denon-reverse-engineering/rk3288-az01-acva-dts.html . This is good model-family corroboration, **not proof the live runtime default-state bytes are identical**. A separate MPC One-compatible USB-audio research project reports that **MPC One and One+ connect USB device capability directly to USB-B**, unlike MPC Live II / X / Force where an external/internal hub-routing mux can intervene; reference: https://github.com/jacob-sabella/mpc-addin-usb-audio . Again, electrical routing remains unmeasured.
+
+**Updated interpretation:** the reported `usb-otg-mux` is a virtual *Linux role/configuration selector*, not evidence of a discrete USB data-path switch. It makes external mux reset-state speculation a less compelling blocker for *MPC One specifically*. MaskROM feasibility is still **not proven**, because immutable BootROM may choose a distinct PHY/USB mode and because no safe ROM entry or compatible DDR stage has been validated. No GPIOs, registers, boot partitions or USB gadget bindings were changed.
+
+Next read-only confirmation from remote SSH (BusyBox compatible):
+
+```sh
+printf 'Live default-state: '; tr '\\000' '\\n' </proc/device-tree/usb-otg-mux/default-state
+for mode in otg host peripheral; do
+  f="/proc/device-tree/usb-otg-mux/state-$mode/fragment@0/__overlay__/dr_mode"
+  [ -r "$f" ] && { printf '%s overlay dr_mode: ' "$mode"; tr '\\000' '\\n' <"$f"; }
+done
+```
+
+On the **Fastboot / Ghidra track**, full program-level analysis is *not complete*: the user's imported p3 payload was still at base `0x00000000` rather than linked base `0x00100000`, and most xrefs/decompilation were therefore unavailable. Offline Thumb disassembly has established command dispatch, download/callback flow, bootm CRC call graph, but not end-to-end Linux handoff, default runtime unlock state, safe available DRAM or ROM entry. To finish, import a **separate** correctly based p3 program, analyze functions/xrefs and document the outstanding concrete call graph; do not substitute inferred function names for confirmed dynamic behavior.
+
+
+## 27. Correcting the Ghidra p3 image base, final-pass script and live USB virtual-mux evidence (2026-11-10)
+
+**Correction to repeated earlier advice:** the existing p3 raw binary was imported into Ghidra at **`0x00000000`**. Its verified 363,649-byte content is **linked at `0x00100000`**. This mismatch explains why earlier Ghidra callback audits found no recognized Thumb instructions/xrefs despite the correct raw disassembly. Ghidra's supported API is `Program.setImageBase(Address(0x00100000), true)`, used within a program transaction; this *rebases program addresses*, not the MPC or any raw firmware bytes. The Ghidra GUI equivalent is **Window -> Memory Map -> Set Image Base**, enter `00100000`, then Auto Analyze. Ghidra documentation: https://ghidradocs.com/12.2_PUBLIC/help/Base/help/topics/MemoryMapPlugin/Memory_Map/ and API https://ghidra.re/ghidra_docs/api/ghidra/program/model/listing/Program.html .
+
+**New repo script** `tools/ghidra/MPFreeFinishBootChain.py` explicitly validates the payload SHA256 `b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`, verifies dispatch table anchor bytes, auto-rebases from 0 to `0x00100000` if necessary, seeds **Thumb mode** for bootm/Fastboot/image-check/recovery functions using Ghidra's official `DisassembleCommand`/TMode method, requests full Ghidra analysis, and exports targeted decompilation, direct call edges, table rows and state xrefs to `~/mpfree-work/mpfree-ghidra-p3-final-<timestamp>.txt`. OEM pseudocode is withheld from this shareable report to avoid leaking the embedded vendor marker. It modifies the **Ghidra project only** (function recognition and address mapping), not firmware or hardware. The script is self-validating and stops if image hash or anchors mismatch.
+
+**One-shot fresh project** `tools/ghidra/run_full_p3_analysis.sh`: validates the existing private eMMC backup's p3 payload before extracting it locally, locates `analyzeHeadless` (or accepts `GHIDRA_HOME`), creates a **new** per-run Ghidra project, imports using official `-loader BinaryLoader -loader-baseAddr 100000 -processor ARM:LE:32:v7` arguments, then runs `MPFreeFinishBootChain.py` as a post-analysis script. This approach avoids poisoning the new project with the previous base-zero analysis and leaves the original project intact. Source for CLI syntax: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/analyzeHeadlessREADME.md . The scripts have **not been executed inside the owner's Ghidra installation**, so their output should be checked for runtime/API compatibility; static code-level reverse engineering is not the same as hardware validation.
+
+**Current technical results from previous verified reports (not a new Ghidra run):** Fastboot's eight-row dispatcher, download-to-`0x00800800` path, deferred `bootm` call, FDT and legacy-uImage classification, header/data CRC callees from the bootm orchestration chain, and in-memory permission gate at `0x0014D690`. Remaining static challenges are tracing default runtime gate initialization, complete Linux DTB/entry load, U-Boot relocation/usable RAM and all possible first-stage ROM-return paths. Static analysis alone **cannot** demonstrate successful MaskROM entry or safe USB RAM boot on the MPC.
+
+**Latest running-MPC USB survey** found `compatible="virtual-mux"` with `available_states="otg host peripheral"`, current `peripheral`; `ff580000.usb` explicitly configured `dr_mode="peripheral"`, and `ff540000.usb` configured `dr_mode="host"`. The owner attempted to dump `default-state`, but **BusyBox `od` rejected `-t`** and therefore its value is **not yet verified** from this run. `gpio-249 (USB_MUX_CTRL)` appears as an unclaimed label, not evidence of an active hardware route. The ACVA public decompiled FDT is consistent with a virtual Linux role selector, not a required discrete USB data mux. No physical reset-state test or silicon ROM enumeration has been performed.
+
+**Recommended workstation invocation:**
+```bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+bash tools/ghidra/run_full_p3_analysis.sh
+```
+
+If Ghidra is installed at an unusual location, use `GHIDRA_HOME=/absolute/ghidra/installation bash tools/ghidra/run_full_p3_analysis.sh`. The only program changes are made to a new *local* Ghidra project (and the generated local payload/report), never to the original Akai eMMC. No root access is needed.
+
+### 27.1 Headless Thumb pre-analysis ordering fix
+
+The launcher now runs `-preScript MPFreeFinishBootChain.py pre` **before** Ghidra's default auto-analysis and `-postScript MPFreeFinishBootChain.py post` **after** it. This avoids auto-disassembling the raw ARM/Thumb mixed binary in the wrong instruction state before seed instructions establish Thumb context. Running the same script from GUI Script Manager without arguments performs rebase + seed + explicit auto-analysis + report in one operation. Runtime compatibility is still unverified until the owner's Ghidra executes it.
+
+### 27.2 Headless launcher failure on Snap-based ML-tower — fixed (2026-11-10)
+
+Owner ran `bash tools/ghidra/run_full_p3_analysis.sh` and it exited immediately with `Could not locate analyzeHeadless`. The existing installed Ghidra was installed as the unofficial **Snap** (`sudo snap install ghidra`), not a conventional archive under `/opt` or `~/Downloads`. This failure occurred **before firmware extraction, import, rebasing, auto-analysis or Ghidra report generation**. The original Ghidra project and MPC were unchanged.
+
+Examined the upstream Snap's actual `snap/snapcraft.yaml` in `dclane-code/ghidra-snap`. It declares a separate Snap application:
+
+```yaml
+apps:
+  analyzeHeadless:
+    command: ghidra/support/analyzeHeadless
+```
+
+Correct launcher invocation on a Snap install is **`snap run ghidra.analyzeHeadless`** (or its wrapper `/snap/bin/ghidra.analyzeHeadless` if available). The Snap wrapper is important because it sets the required Java runtime and Snap-specific user home. See `https://github.com/dclane-code/ghidra-snap/blob/master/snap/snapcraft.yaml`.
+
+The repository launcher now discovers the Snap command, supports the traditional `GHIDRA_HOME/support/analyzeHeadless` and an explicit `MPFREE_ANALYZE_HEADLESS=/path`, and exports **`MPFREE_REPORT_DIR="$HOME/mpfree-work"`** for a stable destination. `MPFreeFinishBootChain.py` now reads that report-dir variable instead of always relying on `os.path.expanduser('~')`, which the confined Snap can redirect to `~/snap/ghidra/current`.
+
+User retry after `git pull --ff-only origin main`: `bash tools/ghidra/run_full_p3_analysis.sh`. If Snap's wrappers are missing, diagnose directly with `snap list ghidra`, `snap run ghidra.analyzeHeadless`, and `ls -l /snap/bin/ghidra.analyzeHeadless`. **Do not reinstall or clear the old Ghidra project** merely because the launcher could not locate the executable. These changes have not yet been run on the user's machine; successful Ghidra analysis still requires user-host execution and report verification.
+
+## 28. Ghidra 12.2 Snap headless fix: native Java script replaces uninitialized PyGhidra runtime (2026-11-10)
+
+**Owner's supplied console log:** `MPFree_P3_Uboot_20261110T183226_3141015.console.txt` and terminal `Pasted markdown(10).md`. The backup hash verification succeeded; Ghidra Snap 12.2 imported `p3-uimage-payload.bin` as a raw 363649-byte ARMv7 binary, and **accepted the linked load address `0x00100000`** (`-loader-baseAddr 100000`). Standard Ghidra auto-analysis ran for ~25 sec and the new Ghidra project was saved, but **both** `-preScript ...py pre` and `-postScript ...py post` failed with `Ghidra was not started with PyGhidra. Python is not available`. Therefore no targeted Thumb seeding or decompiler report was generated. The Java certificate and cache-space warnings did not abort auto-analysis. The previous script erroneously printed a success summary despite the absent report.
+
+**Root cause:** Ghidra 12 switched its default Python script provider from Jython to PyGhidra, which needs to be started in PyGhidra mode. Ghidra 12.1+ makes Jython an optional extension, and a `# @runtime Jython` marker would not solve a missing extension. See official Ghidra 12 release notes: https://github.com/NationalSecurityAgency/ghidra/issues/8555 and https://github.com/NationalSecurityAgency/ghidra/blob/Ghidra_12.1_build/Ghidra/Configurations/Public_Release/src/global/docs/WhatsNew.md .
+
+**Permanent fix:** created `tools/ghidra/MPFreeFinishBootChain.java`, a **native Java `GhidraScript`** with no Python/Jython/PyGhidra requirements. It validates p3 SHA-256 and Fastboot pointer anchors, rebases a base-zero Ghidra program if deliberately run on one, seeds documented Thumb instruction targets in **pre-analysis**, and after Ghidra's native analyzer runs exports command-table rows, key globals and xrefs, call graph candidates and detailed selected decompiled functions to `~/mpfree-work/mpfree-ghidra-p3-final-<timestamp>.txt`. OEM/flash/erase decompiler text is withheld from shareable output due to embedded vendor authentication strings. It does not communicate with MPC hardware or modify eMMC.
+
+The launcher `tools/ghidra/run_full_p3_analysis.sh` now invokes `-preScript MPFreeFinishBootChain.java pre` and `-postScript MPFreeFinishBootChain.java post`, replacing the incompatible `.py` scripts, and **fails with an explicit nonzero exit** if no fresh report was written. It preserves the original Ghidra project by creating a fresh one at base `0x00100000` on each run. `MPFreeFinishBootChain.py` remains as a legacy Jython-oriented optional script, but it is not invoked by this headless launcher. This solution uses Ghidra's documented Java script support: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/analyzeHeadlessREADME.md .
+
+Run from ML-tower: `cd /home/jesse/code/mpfree-hardware-survey && git pull --ff-only origin main && bash tools/ghidra/run_full_p3_analysis.sh`. A report and its decompiler output only count as complete when the native script is executed successfully and inspected. This commit is **not** a claim that the full bootm/kernel handoff and MaskROM entry were already reverse-engineered; those remain separate verification targets. Snap installation and MPC firmware were not changed.
+
+
+## 29. Ghidra 12.2 headless audit succeeds; Python 3 follow-up introduced (2026-11-10)
+
+The owner supplied `MPFree_P3_Uboot_20261110T184325_3145972.console.txt` and the Ghidra .log for the most recent analysis. This round **did succeed**, as distinct from the earlier failed Python-run attempt (§28):
+
+- The verified backup's p3 U-Boot image loaded into a **new Ghidra project** using raw `BinaryLoader`, `ARM:LE:32:v7`, and correct `-loader-baseAddr 100000`.
+- Native Java `MPFreeFinishBootChain.java pre` executed successfully and **seeded Thumb entry points** before Ghidra's standard analyzers.
+- Ghidra's automatic analysis completed and the `post` script ran with no script exceptions.
+- **Created and saved the targeted report**: `/home/jesse/mpfree-work/mpfree-ghidra-p3-final-20261110T184355.txt`.
+- The created project is `/home/jesse/mpfree-work/ghidra/projects/MPFree_P3_Uboot_20261110T184325_3145972`.
+- A disassembly conflict near `0x0013E872` showed a disagreement between Thumb-mode and ARM-mode decoded instructions during analysis. This is not a fatal run failure, but the specific region's disassembly still warrants inspection.
+- The user uploaded *only* console and Ghidra log files, **not the exported analysis .txt**. The actual decompiler output and function-level conclusions cannot be reviewed until that local report is supplied. Successful execution does **not** prove the full kernel-handoff path or ROM-entry behavior has been comprehensively reconstructed.
+
+### 29.1 Python as the default ongoing scripting language
+
+The owner prefers Python 3 over Java for future MPFree reverse engineering. This is fully supported by **PyGhidra** (Ghidra 12.2, real CPython 3 with JPype). The earlier failure occurred because the Snap's standard `ghidra.analyzeHeadless` starts the regular Java headless runtime *without PyGhidra initialized*, so it could not execute `.py` pre/post scripts.
+
+The official `support/pyghidraRun` launcher accepts `-H` and starts the headless analyzer through PyGhidra. The installed Snap packages that wrapper as `snap run ghidra.ghidra`, so the Python-enabled command is **`snap run ghidra.ghidra -H`** (subject to one-time Python virtualenv initialization on the host). This behavior is supported by upstream code:
+- https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/pyghidraRun
+- https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/PyGhidra/support/pyghidra_launcher.py
+- https://github.com/dclane-code/ghidra-snap/blob/master/snap/snapcraft.yaml
+
+**New optional, read-only files**:
+- `tools/ghidra/MPFreePythonFollowup.py`: `# @runtime PyGhidra`; validates correct base and SHA256, obtains decompiler output/call graph for named boot-related functions, reports global xrefs, and redacts long literal strings. It does not analyze or export the OEM subcommand body. JSON output to `~/mpfree-work/mpfree-ghidra-p3-python-<timestamp>.json`.
+- `tools/ghidra/run_python_p3_followup.sh`: launches `snap run ghidra.ghidra -H` on the latest existing saved p3 Ghidra project, using `-process`, `-noanalysis`, and `-readOnly`. Requires the Snap's PyGhidra initialization and may prompt on first use; not yet executed on the owner's workstation.
+
+The successful native Java script remains available as a **fallback bootstrap** and needs no maintenance unless a new Ghidra import is required. Python should be used for subsequent iterative research by default. Avoid rewriting the working Java analyzer merely for aesthetics.
+
+Immediate next step is **reviewing the already-created `mpfree-ghidra-p3-final-20261110T184355.txt`**. The current reports and logs contain no silicon MaskROM dump or independent recovery proof; MaskROM remains a separate track.
+
+
+## 30. Post-PyGhidra forensic analysis and firmware-upgrade-resistant installer contract (2026-11-10)
+
+**New owner artifact examined:** private `mpfree-ghidra-p3-python-20261110T185330.json`, 1,350 lines, exported from a successfully analyzed Ghidra program. Program: `p3-uimage-payload.bin`, memory at linked `0x00100000`, SHA256 `b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`. These are *static decompiler observations* from one 2019 InMusic U-Boot binary, not evidence of successful boot from live USB. The previous Java report showed `Image base 00000000` but `Payload block base 00100000` and its call edges resolved; **the loaded memory block and linked address references are correctly positioned**, so do NOT blindly rebase this project again merely because the `getImageBase()` metadata remains zero. Forcing another address change could break an otherwise working analysis.
+
+### 30.1 Bootm is fully connected to image classification and several boot stages
+
+- Fastboot `boot` callback **`0x00122964`** sets USB request completion callback; `0x001226B4` runs after the protocol response. The completion callback formats the value read from linked **`0x00143E34`** as `0x%lx`, constructs `argv = {"bootm", "<formatted address>", NULL}`, calls `0x00101744` with `argc=2`, and invokes reset `0x0011622A` if `bootm` returns. This confirms a **single image-address argument**, not `bootm <kernel> - <fdt>` with a separately specified DTB.
+- `0x00101744` invokes `0x0010A6A4`, which branches on image type. Legacy U-Boot image recognition and FIT/FDT-header recognition are connected to the real boot path. Legacy header CRC call `0x0010A7A6 -> 0x0010E000` is required along the relevant legacy path. Legacy payload CRC call `0x0010A7D0 -> 0x0010E02A` is **conditional** on a verification/command context flag; do not claim the data CRC always executes. The existence of CRC32 does NOT establish authenticated/cryptographic verified boot.
+- The legacy image branch explicitly checks header byte **`ih_arch` at `+0x1D` equals `0x02`** (the legacy U-Boot ARM architecture code) and inspects **`ih_type` at `+0x1E`**, including `2` (kernel), `4` (multi-image) and `14` (kernel_noload candidate). The decompiled path tracks image OS code, compression code, data/load/entry fields and invokes type-specific helpers.
+- `0x0010B140` returns an **OS-specific boot callback** selected from the image OS byte (`ih_os` at header `+0x1C` for legacy images). The boot orchestrator then invokes that callback with stage masks `0x40`, `0x80`, and `0x100`. This strongly matches U-Boot's staged OS boot mechanism, but the exact selected ARM Linux callback, register/DTB handoff, initrd placement and machine-type semantics have not been traced. A call to `0x0010A5C0` also performs a kernel relocation/decompression-related operation, with a literal `0x800000` argument; it is not yet validated as a universal upper size bound.
+- The FDT/FIT branch calls **`0x0010F8A4`** to locate a configuration/kernel and other helpers `0x0010EDA4`, `0x0010EDCC`, `0x0010ED54`, `0x0010ED7C`, `0x0010EDF4`. We should map the constraints of this path, including any FIT hash/signature enforcement. **Header recognition is not the same as permission to boot arbitrary FIT images.**
+
+**Installer implication:** Since stock Fastboot always calls **`bootm <one address>`**, a **self-contained FIT with kernel, board-matching DTB and initramfs in one image** is the best *investigation candidate* for a USB RAM boot. A standalone legacy single-kernel uImage might not convey the FDT or initrd necessary for ARM Linux; a legacy multi-image *could* work if the stock U-Boot supports an embedded FDT third component. Prefer test vectors with explicit OS/arch/load/entry and known board DTB, and compare the two format paths OFFLINE first. Modern U-Boot bootm documentation explains the single-address FIT default-configuration behavior and the legacy multi-image caveat: https://docs.u-boot.org/en/latest/usage/cmd/bootm.html . No live Fastboot download or boot is approved by this observation.
+
+### 30.2 Fastboot authorization/global values: likely overlapped .rel.dyn / .bss
+
+The Python report identifies two runtime references to the global at **`0x0014D690`**: the gate at `0x00122834` *reads* it and the vendor OEM branch at `0x0012289E` *writes* it. The gate returns true iff its runtime value is nonzero; on zero, it transmits **`FAILpermission denied`**. `download`, `flash`, `erase`, and two OEM branches call this gate. The download command parses base-16 size, caps requests at **`0x70000000`** and copies USB payload to physical **`0x00800800`** (plus received offset). This protocol cap is NOT a safety bound and must never be used to size a production installer image.
+
+**New high-value hypothesis:** the *on-disk* value at global `0x0014D690` is `0x00000017`, and the same `0x17` appears at `0x0014D680` (received-bytes global) and `0x0014D658` (Fastboot exit-byte global). The adjacent on-disk word at `0x0014D684` is a plausible linked address `0x001304A4`. **23 decimal / `0x17` is `R_ARM_RELATIVE`** in the 32-bit ARM ELF ABI. ARM U-Boot places dynamic relocations in the copied binary's `.rel.dyn` section and historically **OVERLAYs the runtime `.bss` on that same address range**, clearing BSS after applying relocations. This pattern is a compelling explanation for the seemingly nonsensical `0x17` \"initial values\". Standard ARM U-Boot linker scripts explicitly use `.bss __rel_dyn_start (OVERLAY)`. Sources: https://github.com/ARM-software/abi-aa/blob/main/aaelf32/aaelf32.rst , https://android.googlesource.com/platform/external/u-boot/+/master/doc/README.arm-relocation , https://android.googlesource.com/platform/external/u-boot/+/refs/heads/android-tv-s-beta3/arch/arm/cpu/u-boot.lds .
+
+**Unconfirmed for InMusic's exact build:** its section boundaries, relocation sequence and the flag's runtime zero-initialization. A small verified offline pair dump is enough to prove or reject the relocation-table explanation. Decode pairs with **`r_offset = word(info_va-4)`** and **`r_info = word(info_va)`**, where `info_va` is `0x0014D658`, `0x0014D680`, `0x0014D688`, `0x0014D690`; inspect adjacent records to locate a repeating `R_ARM_RELATIVE` pattern. Also inspect `__rel_dyn_start` / `__image_copy_end` / BSS-clear flow by decompiling startup/relocation. If confirmed, the software gate would **probably start disabled (zero)**; the vendor OEM branch setting 1 is then an explicit unlock. This remains an inference until the actual runtime startup operations are traced.
+
+**No vendor-specific authentication token bytes are written to the repo or shareable reports.** MPFree installers must never ship hard-coded OEM unlock material or rely on this vendor-specific gate surviving upgrades.
+
+### 30.3 Correct host-only read-only relocation sanity check
+
+This code is intended for the owner's workstation, **never on the MPC**. It hashes the existing verified p3 payload before reporting only relocation pair words. It does not expose any sample content or device credentials.
+
+~~~python
+from pathlib import Path
+import hashlib, struct
+p = Path.home() / "mpfree-backups/mpc-one-emmc-20261109T233604Z-datprr67/mmcblk0.img"
+with p.open("rb") as f:
+    f.seek(256 * 512)
+    image = f.read(64 + 363649)
+raw = image[64:]
+expected = "b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a"
+assert len(image) == 64 + 363649 and image[:4] == bytes.fromhex("27051956")
+assert hashlib.sha256(raw).hexdigest() == expected
+def word(va):
+    return struct.unpack_from("<I", raw, va - 0x00100000)[0]
+print("INFO_VA       R_OFFSET      R_INFO        R_ARM_RELATIVE?")
+for info in range(0x0014D650, 0x0014D6B8, 8):
+    off, typ = word(info-4), word(info)
+    print(f"0x{info:08x}    0x{off:08x}    0x{typ:08x}    {typ == 0x17}")
+~~~
+
+Caveat: the scan assumes (from the repeated words) that `r_info` occurs on 8-byte boundaries; the output must be interpreted rather than forced to match.
+
+### 30.4 Permanent installer must be robust to Akai replacing boot configuration
+
+**Existing project Tier 1/2/3 gates remain controlling**: see `docs/research/recovery-and-os-strategy.md`. Tier 1 is RAM-only/test session, Tier 2 is MPFree versioned userspace on removable media or `/data`, and Tier 3 includes any boot-critical partition or environment write and requires **real MPC One MaskROM entry AND full eMMC readback matching the existing SSH backup**. No software-only bootloader modification or vendor-update patching is an acceptable replacement for the Tier 3 gate.
+
+Adopt this model for MPFree installer design:
+
+1. **Immutable, offline release package:** one signed MPFree manifest, signed file hashes, per-firmware capability profile, exact board model/PCB revision, rootfs ABI, USB/SD filesystem requirements and legal private-content import step. Boot packages must be differentiated by target CPU/DTB compatibility. Don't bundle Akai proprietary data or key material.
+2. **Host-assisted device discovery and preflight:** enumerate exact kernel build, eMMC GPT and ext-CSD boot partition config, per-partition hashes of `p1`/`p2`/`p3`/`p6` (private hashed manifests), current rootfs and `/data` upperdir layout, effective U-Boot boot script (if available), available space and power. ***Do not*** branch based on firmware version strings alone or assume `mmc0`/`mmc1` correspond to fixed physical slots across bootloaders.
+3. **Capability discovery, not offsets:** offline update package unpacker identifies and fingerprints every affected boot component, extracting p1 SPL, p3 U-Boot, p2 environment, p6 kernel/DTB/boot-script, and updater write intents *before* any official upgrade is performed. Recognize Fastboot command/bootm behavior by function/call pattern in each firmware version, not hard-coded addresses copied from 2019 binary. Treat unknown or changed behavior as unsupported.
+4. **Default no-write route:** existing tested kexec path; if used later, stock Fastboot RAM boot via a vetted, self-contained FIT or legacy multi-image only after authorization, memory and image rules are verified. Success here validates **test boot**, not independent recovery. Stock Linux/USB autorun is a convenience bootstrap that an Akai update may remove.
+5. **Persistent MPFree files:** signed versioned releases on independently removable storage (preferred) or carefully selected `/data/mpfree`, selected via atomic, checksummed release pointer. Avoid replacing p1–p6, p2 environment or rootfs overlay service definitions by default. Keep an off-device copy to survive factory reset and /data erase. Reboot should return to stock when no supported MPFree entrypoint is present.
+6. **Future independently owned boot chain (Tier 3 only):** design version-independent board-specific boot manager with **A/B OS slots, boot attempts, rollback and a stock fallback**, but do not assume Akai's existing U-Boot supports bootcount/bootlimit or that an Akai update will preserve an altered p1/p3/p2. A vendor update can overwrite our boot manager; the installer cannot promise continuous MPFree boot across arbitrary such upgrades. Instead fail closed, **preserve stock boot**, then use an approved post-update requalification/reenablement workflow on the host.
+7. **Test upgrade matrices:** stock release + each newer Akai firmware + interrupted updates + reset while selecting A/B + corrupted MPFree slot + missing USB/SD + no network + blocked autorun + changed boot_targets + missing Fastboot boot + changed DTB + /data erase + changed eMMC partition schema. Tests must assert a safe stock fallback **without** relying on MPC SSH when the kernel is absent, and show rollback on separate sacrificial compatible hardware before Tier 3.
+8. **No false guarantees:** immutable silicon ROM does not imply the USB port always reaches it, arbitrary loader acceptance, or that MaskROM recovery is operational. Security fuses, routing, DDR topology and power are independent blockers. A full verified eMMC backup alone is not a recovery mechanism.
+
+### 30.5 MaskROM: concrete RK3288 recovery-loader lead, not MPC compatibility proof
+
+Rockchip's `rkbin/RKBOOT/RK3288.ini` currently names:
+- `[CODE471_OPTION]` **`bin/rk32/rk3288_ddr_400MHz_v1.12.bin`**
+- `[CODE472_OPTION]` **`bin/rk32/rk3288_usbplug_v2.63.bin`**
+- output `rk3288_ubootloader_v1.12.bin`
+
+This documents an **RK3288-specific** two-stage USB ROM loader candidate, and is better than guessing a loader from another RK32xx chip. Source: https://github.com/rockchip-linux/rkbin/blob/master/RKBOOT/RK3288.ini . These are closed-source blobs and **not yet qualified** for the MPC One's DRAM topology or secure-boot/eFuse configuration; do not execute `rkdeveloptool db` yet or commit the blobs. Confirm available RAM-only loader behavior from original code/tool protocols and test on a dedicated recovery path once MaskROM enumeration is proven. The MPC One's Linux `virtual-mux` and `ff580000.usb` observations only support a likely USB-B data path; they do not prove ROM entry.
+
+### 30.6 Highest-value next static reverse-engineering targets
+
+**Fastboot / bootm (PyGhidra, read-only):**
+- Decompile `0x0010B140` OS boot-dispatch table, the selected Linux callback for OS code 5, and its `0x40/0x80/0x100` stages.
+- Decompile `0x0010F8A4` and FIT subimage/configuration validators `0x0010EDA4`, `0x0010EDCC`, `0x0010ED54`, `0x0010ED7C`, `0x0010EDF4`: identify FIT kernel/DTB/initrd handoff and whether signatures are optional/mandatory.
+- Inspect `0x0010A5C0` relocation/decompression bounds and `0x00143E34` writers, then map their runtime DRAM reservations against the U-Boot relocate-to-top behavior.
+- Inspect exact relocation pairs around `0x0014D650..0x0014D6B8`, and firmware startup relocator/BSS clearing to establish default authorization flag.
+- Locate the firmware storage/upgrade writer and the boot-script/env fallback behavior; never issue OEM/flash/erase commands on-device for exploration.
+
+**p1 SPL / ROM (separate Ghidra project):**
+- Reverify the SPL early-stage code around `0xFF70409C` and the ROM context handler/hook against Rockchip's optional back-to-BROM implementation, retaining the previous negative evidence.
+- Determine maskrom reset/boot-source via the RK3288 TRM and MPC board-level circuitry; identify a non-destructive entry mechanism. **Do not** short eMMC or change ROM-mapping registers without explicit owner consent and a board-level electrical safety analysis.
+- Gate recovery readiness on enumerated true MaskROM, proven compatible RAM-loaded stage, and full eMMC read-back verified off-device.
+
+**Status: Bootloader static call graph is now substantially understood; neither full Linux handoff nor independent MaskROM recovery has been proven.** The required outcome of this research is a defensible *compatibility and recovery contract* for an installer, not a brittle collection of 2019 offsets.
+
+
+### 30.7 Critical caveat: a RAM-only OS test can still change non-eMMC firmware
+
+The project's verified offline 3.6/3.10 updater investigations (`docs/hardware/akai-updater-offline.md`) identify **separate peripheral microcontroller firmware update paths**: an Ilitek ILI2117 touch-controller update via its sysfs `update_fw`, a pad/controller updater using `dfu-util` and `midifirmup` invoked from MPC application startup, and XMOS-related service logic. They report identical `ili2117.bin` payloads for 3.6 and 3.10 and conditional update logic, but **do not prove all boards or all future versions keep these payloads identical**. There is also `az01config`, which can write configuration directly to eMMC partitions, although the project has not confirmed a boot-time caller on this board.
+
+Therefore **kexec / RAM rootfs alone is not a sufficient "no persistent write" guarantee**. A new kernel's init services or MPC app can perform DFU, sysfs firmware updates or eMMC config writes even if the root filesystem itself is in RAM. A no-write test must launch only an audited minimal initramfs with an explicit service allowlist, disable all automatic peripheral firmware updaters, and inspect block-layer writes and device firmware versions before/after any approved run. The controlled proof-of-concept is not "boot 3.10 full stock userspace and hope", but "boot a minimal MPFree-owned test environment".
+
+The existing **host-only** `tools/mpc-one/offline-update-image.py` accepts the owner's saved `/home/jesse/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img` and lists all included partition records and image hashes without mounting or flashing. It should be the initial input to a version-to-version installer compatibility manifest:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+python3 tools/mpc-one/offline-update-image.py \
+  /home/jesse/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img \
+  > /home/jesse/mpfree-work/firmware-3.10-partition-inventory.txt
+~~~
+
+The report may contain vendor firmware metadata and should be reviewed before publishing; do not commit the proprietary image, serial identifiers or embedded authentication values. Static update records indicate **what the package carries**, not necessarily every partition the updater will rewrite under every conditional branch.
+
+### 30.8 Release-gate checklist (firmware upgrade resilience)
+
+| Gate | Evidence required | If absent |
+| --- | --- | --- |
+| Full backup | Verified user-area eMMC, boot0/boot1 and second off-device copy | **No persistent install** |
+| Firmware-intent audit | Signed Akai container parsed, partition write list and updater code audited | **Block Akai upgrade through MPFree workflow** |
+| Supported ABI | Board ID, PCB revision, kernel, DTB, controller firmware and userspace ABI matched | Run stock only |
+| RAM boot safety | Kernel+DTB+initramfs image verified, FIT/legacy policy and RAM overlap established | Remain on kexec stock-kernel route |
+| User data | Stock backup + independent MPFree release/data copy survives /data erasure | No upgrade |
+| Rollback | Watchdog/boot attempts + offline stock fallback demonstrated | No MPFree persistent boot selection |
+| Tier 3 | **Actual MaskROM entry, board-compatible DDR stage, full eMMC read-back** | Never change p1–p6/boot environment |
+| Update drift | Any bootloader/GPT/DTB hash differs from qualified profile | Fail closed; don't auto-repatch vendor boot |
+
+Firmware resilience must mean **stock operation survives a failed MPFree component and an unknown vendor update**. It cannot mean automatically retaining MPFree boot priority after an Akai update that intentionally rewrites our boot manager or blocks the original entrypoint.
+
+
+## 31. Highest-priority recovery research: eFuse + independent BootROM access (2026-11-11)
+
+**Owner requirement:** software updates must not be able to remove an owner's ability to install or boot an independent OS. This is a threat model, not evidence that Akai intends to interfere with MPFree. A firmware-independent entry must avoid dependence on stock SSH, autorun, kexec, Fastboot or mutable U-Boot.
+
+### New confirmed results
+- The owner's offline p3 survey found **13/13 consecutive R_ARM_RELATIVE entries** from virtual 0x0014D650 through 0x0014D6B0. The 0x17 at Fastboot runtime-global addresses in the on-disk payload is relocation data, **not an initial permission value of decimal 23**. U-Boot's exact BSS clearing still needs static confirmation.
+- The owner's 3.10.0 Gen1 AZ01 package is **rootfs-only**. It has one xz-compressed rootfs record (167084492 stored bytes) and EOF; no distinct p1/p2/p3 bootloader/env record. Package SHA256: d09b1e4c1c765d6bea0f0b93bb7ba661200fc14bd893422dcbf0e86e406a2a20. This is **only true of this specific update image**, not arbitrary future releases or unrelated updater actions.
+
+### Critical new information: RK3288 eFuse security and its programming voltage
+
+Rockchip's Secure Boot Application Note v2.2 (2020-03-19) lists RK3288 as using **1024 bits/128 bytes of secure eFuse**. The 32-bit word at byte offset 0x00 holds the security-enable flag in its low byte; words 0x08–0x0F contain the trusted public-key hash; word 0x1F is the eFuse write-lock field. **RK3288 requires a separate 1.5-V eFuse programming supply on SoC ball P19**. Rockchip describes either a board-mounted switched regulator or an external factory test fixture, and instructs builders to leave programming voltage disabled in normal operation. SOURCE: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md .
+
+We **do not yet know** whether the MPC One has burned a secure-boot key, whether it has a programming-voltage rail accessible after assembly, or whether its Linux NVMEM exposes the relevant fuse word. The upstream RK3288 rockchip-efuse Linux NVMEM provider is read-only, but that does not exclude some different privileged programming path in an update loader. SOURCE: https://kernel.googlesource.com/pub/scm/linux/kernel/git/gregkh/driver-core/+/9215310cf13bccfe777500986d562d53bdb63537/drivers/nvmem/rockchip-efuse.c .
+
+**Crucial:** MaskROM enumeration alone does not establish the right to execute unsigned owner SPL. A key-fused BootROM can reject it. The freedom-to-install gate has two independent parts: (1) enter genuine ROM download mode without the eMMC SPL; (2) make the ROM execute an owner-controlled first stage.
+
+### Prioritized owner-independence program
+
+1. P0: Read only **the first four security-flag bytes** from an explicitly matching rockchip-efuse NVMEM device, if available. Check its DT compatible/name and size first; do not dump the 128-byte NVMEM or expose key hashes/serials. A zero value alone is not proof of unsigned-ROM access because mapping/access may be restricted. Locate the eFuse programming supply via device tree and board circuitry; never apply a voltage or program fuses.
+2. P1: Document PCB with high-resolution photos and trace eMMC boot-source/clock, OTG USB-B D+/D− and RK3288 P19 fuse-supply paths **with the device unpowered**. Avoid speculative GPIO toggles or physical shorts.
+3. P2: Design an electrically reviewed, normally transparent **owner recovery switch/jumper** that temporarily makes the onboard boot source unavailable only at reset, causing silicon ROM USB fallback independently of installed firmware. Not a recommendation to ground any energized pad. Source for ROM fallback behavior: https://wiki.t-firefly.com/en/Firefly-RK3288/bootmode.html .
+4. P3: Verify actual Rockchip MaskROM enumeration over the MPC USB-B path. Qualify a board-compatible DDR initialization stage and then demonstrate execution of **owner-controlled free SPL**. The Rockchip rkbin RK3288.ini names generic DDR and usbplug blobs but they are closed-source, untested on MPC RAM, and not proof of owner-code acceptance: https://github.com/rockchip-linux/rkbin/blob/master/RKBOOT/RK3288.ini .
+5. P4: Only after compatible RAM loader is proven, read entire eMMC user area through ROM-recovered loader and compare every block/hash to the verified offline SSH backup. Boot0/boot1 readback separately as applicable. No write/erase until this Tier 3 gate passes.
+6. P5: Develop own SPL/U-Boot + MPFree kernel/DTB/rootfs and A/B rollback with stock fallback, avoiding any dependence on Akai signature/bootloader policies once truly owner bootable. Qualify upgrade scenarios that remove SSH/autorun/Fastboot, change U-Boot and rootfs, and erase data.
+7. P6: Investigate physical prevention of **new fuse provisioning** only if the fuse is currently unprogrammed and board wiring actually exposes a firmware-controllable programming supply. Any modification requires qualified circuit analysis and explicit authorization; do not promise this capability today.
+
+**Installer policy:** stock firmware update packages must be inspected offline and treated as untrusted capability changes; a single verified 3.10 rootfs-only image cannot establish that later updates are harmless. Until the independent MaskROM+owner-SPL boot and readback are proven, do not change p1/p2/p3, eMMC boot settings or any boot-critical partition. No full firmware independence guarantee is currently supported.
+
+
+### 31.6 Further offline DTB confirmation from the existing p1/p3 attachments
+
+Independently parsed the previously extracted binary DTBs in the current project research:
+- p3 embedded U-Boot DTB (35213 bytes) has an eFuse node at /efuse@ffb40000 with compatible rockchip,rk3288-efuse, register base 0xFFB40000 size 0x10000, but its **status is disabled**. This only states how the 2019 U-Boot DTB describes its driver and is **not evidence that the RK3288 silicon fuse is unprogrammed**, nor that a Linux 6.6 runtime device tree has the same status.
+- p1 embedded SPL DTB (3239 bytes) does not have a visible eFuse node.
+- U-Boot's pinctrl nodes /pinctrl/tsadc/otp-gpio and /pinctrl/tsadc/otp-out refer to the **temperature-sensor over-temperature protection** function. They are **NOT evidence of one-time-programmable eFuse power control**. Do not treat string-matches for "otp" as a fuse-programming mechanism.
+
+Next runtime test should enumerate live /sys/bus/nvmem/devices providers and /proc/device-tree/efuse@ffb40000 status/compatible, without writing to eFuse or disclosing unique hardware IDs. The secure-boot flag, if mapped, is at secure eFuse word 0 per Rockchip's 2020 guide; an absent NVMEM node or all-zero read is not proof of unsigned BootROM access. Any physical diagnosis of P19 VCC_EFUSE must be planned from board identification and schematics.
+
+
+## 32. Owner's live secure/nonsecure eFuse survey: secure enable word reads zero (2026-11-11)
+
+Owner ran the read-only eFuse script over Ethernet SSH on MPC One running `6.6.95-az01-2025-06-27-rt55`:
+
+| NVMEM provider | Live DT compatible | First four bytes |
+| --- | --- | --- |
+| `rockchip-efuse0` | `rockchip,rk3288-secure-efuse` | **00 00 00 00** |
+| `rockchip-efuse1` | `rockchip,rk3288-efuse` | **nonzero** (general eFuse) |
+
+The first four bytes of `efuse0` read as octal `000 000 000 000`. The secure provider has the **exact RK3288 secure-bank compatible**, and Rockchip Secure Boot Application Note v2.2 locates the enable flag in the low byte of 32-bit word 0 of its secure eFuse map. **This is strong evidence that the SoC's secure boot enable flag is presently unset**, provided the vendor NVMEM driver's offset zero corresponds to physical secure-bank offset zero. No secure key hash was dumped. The nonsecure bank being nonzero is expected and must not be confused with secure-boot enable status. The live `efuse@ffb40000` node compatible is rockchip,rk3288-efuse; the secure node is expected at `efuse@ffb10000` on related ACVA family DTBs.
+
+**Critical caveat:** standard mainline `drivers/nvmem/rockchip-efuse.c` handles `rockchip,rk3288-efuse` but does **not** list `rockchip,rk3288-secure-efuse` in the upstream compatible table checked. The Akai runtime apparently uses a vendor-added binding/driver or extension for its secure NVMEM provider. Therefore do **not** equate sysfs byte 0 with the raw silicon security word until that driver's actual mapping is checked, ideally against kernel source. A kernel security access filter could also hide some fuse bytes. A successful native owner SPL launch through true ROM USB/SD ultimately provides the more decisive test of unsigned acceptance.
+
+No sysfs regulator name contained `efuse` or `vqps`. This **does not establish** that the RK3288 P19 (1.5-V eFuse programming supply) is physically absent or disconnected: a factory-test-only rail might be unrepresented in the device tree, and a board LDO may have an unrelated name. A firmware upgrade's potential to burn a security key is still **UNKNOWN** until board wiring is inspected.
+
+### 32.1 Private-data-preserving read-only follow-up
+
+This command runs **on the MPC via SSH** and prints only counts of nonzero bytes in the documented secure regions. It does **not print** the public-key hash, chip identifiers, or full eFuse content. BusyBox uses `od -vb` (GNU `od -t` unavailable on the MPC); `awk` skips the byte offset column. An unexpected short read reports an error rather than silently assuming the region is blank.
+
+~~~bash
+mkdir -p ~/mpfree-work
+ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes   -i /home/jesse/.ssh/mpc_one_autorun_ed25519 -p 2222   root@10.42.0.141 'sh -s' <<'MPC_READONLY'   | tee ~/mpfree-work/mpc-secure-efuse-regions.txt
+set -eu
+S=/sys/bus/nvmem/devices/rockchip-efuse0
+echo "=== Exact secure eFuse provider ==="
+if [ ! -r "$S/of_node/compatible" ] ||
+   ! tr '\000' '\n' <"$S/of_node/compatible" |
+       grep -qx 'rockchip,rk3288-secure-efuse'; then
+    echo "STOP: secure provider compatible mismatch"
+    exit 1
+fi
+tr '\000' '\n' <"$S/of_node/compatible"
+readlink "$S/of_node" 2>/dev/null || true
+if [ -r "$S/of_node/rockchip,efuse-size" ]; then
+    echo "Declared eFuse size, big-endian DT cells (octal bytes):"
+    od -b "$S/of_node/rockchip,efuse-size"
+fi
+if [ ! -r "$S/nvmem" ]; then
+    echo "STOP: secure NVMEM unreadable"
+    exit 1
+fi
+
+region_summary() {
+    label="$1"; skip="$2"; count="$3"
+    printf '%s: ' "$label"
+    dd if="$S/nvmem" bs=1 skip="$skip" count="$count" 2>/dev/null |
+      od -vb |
+      awk -v expected="$count" '
+        NF > 1 {
+          for (i=2; i<=NF; i++) {
+            if ($i ~ /^[0-7][0-7][0-7]$/) {
+              bytes++
+              if ($i != "000") nonzero++
+            }
+          }
+        }
+        END {
+          if (bytes != expected) {
+            printf "INCOMPLETE (%d of %d bytes)\n",bytes,expected
+            exit 1
+          }
+          printf "%d/%d bytes nonzero\n",nonzero,bytes
+        }'
+}
+region_summary "Secure enable word" 0 4
+region_summary "Trusted-key hash region, bytes NOT printed" 32 32
+region_summary "Write-lock word" 124 4
+echo "=== Finished: read-only; no raw key/hash bytes disclosed ==="
+MPC_READONLY
+~~~
+
+The counts may demonstrate an unprovisioned security region (all zero) or a present trusted-key hash with the enable bit unset. They still do not alone prove BootROM accepts owner code, or that fuse programming cannot be enabled by a future update.
+
+### 32.2 A demonstrated RK3288 boot-source switch precedent (not an MPC schematic)
+
+PHYTEC's **phyCORE-RK3288 Hardware Manual L-826e_1**, pp. 33 and 129, documents the boot-order sequence eMMC -> SPI NOR -> SD/MM card -> USB and physical boot-disable controls on its own carrier board. Its S6 DIP switch disables eMMC boot via `X_nEMMC_BOOT_DIS`; S7 disables SPI flash, giving SD -> USB. This is an existing *RK3288 board manufacturer's engineering precedent* for a user-accessible recovery switch. Reference: https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf .
+
+**The signal name `X_nEMMC_BOOT_DIS` is PHYTEC's carrier-board label, not proof of an RK3288 SoC boot strap exposed on Akai MPC One.** The MPC may have a different eMMC power/clock path. We must not suggest wiring this pin from a different board or shorting powered MPC hardware. If independent MPC board tracing establishes an electrically safe eMMC first-loader bypass, the same ROM fallback could support an owner-built SD-card SPL (no host) or MaskROM USB (host) without depending on any Akai Linux or U-Boot code. Booting from independent SD is especially useful for an owner-facing free OS; MaskROM USB remains the emergency recovery route.
+
+### 32.3 Reordered project gates
+
+1. **Secure fuse mapping + programming-power audit:** confirm nonzero counts, exact DT secure provider/driver address mapping, PCB P19 rail topology; avoid programming OTP.
+2. **Physical ROM boot-source override:** documentation/PCB images; no energized probing or eMMC shorts without explicit review/authorization.
+3. **Self-built ROM-loadable RK3288 SPL:** test with intact stock eMMC isolated non-destructively, either on SD or USB; identify secure signature policy by actual execution.
+4. **Full eMMC readback** in independent environment, compared against existing verified backup; no boot-critical writes before this demonstration.
+5. **Owner boot manager and stock fallback**, independent MPFree Linux on removable SD and/or tested A/B storage; upgrade compatibility profile as previously documented.
+
+No evidence yet that Akai is planning to block alternative OS software; engineering safeguards are being developed against that possible future state.
+
+
+## 33. MPC One secure eFuse regions are all blank; external MPC One MaskROM evidence (2026-11-11)
+
+### 33.1 Owner's measured secure eFuse map
+
+The owner ran the documented read-only eFuse follow-up on the *actual MPC One*, with kernel 6.6.95-az01-2025-06-27-rt55. The resulting /sys/bus/nvmem/devices/rockchip-efuse0 node references live DT path **/efuse@ffb10000**, with exact compatible **rockchip,rk3288-secure-efuse** and DT property **rockchip,efuse-size = <0x80> (128 bytes)**. The octal probe returned:
+
+| Segment | Offset/size | Nonzero bytes |
+| --- | --- | --- |
+| secure boot enable word | 0 / 4 | **0/4** |
+| trusted RSA public-key hash | 32 / 32 | **0/32** |
+| eFuse write-lock word | 124 / 4 | **0/4** |
+
+These offsets exactly match Table 2-1 of Rockchip Secure Boot Application Note v2.2 for RK3288, as does the 128-byte device-tree declaration. The nonsecure efuse1 bank was observed nonzero in the earlier survey, establishing that nonzero hardware eFuse bytes are readable through at least the other bank. **This is strong, independent evidence that this specific unit has NOT been provisioned for manufacturer RSA secure boot**, subject to validating the vendor-specific secure-bank driver's byte-to-silicon mapping and ruling out secure-world masking. Avoid claiming ROM unsigned-code acceptance until a live owner-SPL experiment.
+
+**STOP re-reading this bank as routine diagnostics.** The useful measured security-flag, hash-presence and lock-region evidence is already collected without leaking identifiers or raw keys. Next work is *electrical* and actual ROM loader qualification.
+
+### 33.2 Crucial new model-specific field report: first-generation MPC One in real MaskROM
+
+MPC-LiveXplore **issue #80**, dated January 29, 2026, records a firsthand report of an **MPC One Gen1** with failed eMMC. The owner states the MPC was stuck in **MaskROM**, recognized by a host as a generic Rockchip USB device; after eMMC chip replacement, their Rockchip tools again recognized and communicated with the chip. They report the official update image supplied only a rootfs and no bootloader, consistent with our 3.10.0 single-PART container. Link: https://github.com/TheKikGen/MPC-LiveXplore/issues/80 .
+
+**Inference strengthened:** at least one physical MPC One Gen1 appears to have a working Rockchip BootROM-to-external-USB path *when eMMC boot is unavailable*. This is the strongest MPC-One-specific evidence to date for the ROM recovery plan; prior Linux gadget observations only demonstrated Linux USB peripheral ability. This external report **does not demonstrate an owner-built unsigned first stage**, a completed bare-eMMC recovery to working OS, or a safe method for forcing ROM while keeping the owner's eMMC intact. It does **not** prove the owner's exact motherboard revision has identical wiring, though it strongly supports the design.
+
+**New contact opportunity:** ask the issue author (without disclosing our private backup or proprietary full image) for their photos, exact maskrom VID:PID, model/revision of eMMC/RAM, Rockchip loader filename, read-only USB logs, and whether a self-built U-Boot SPL ever executed. The report is still open at the time of this research and no independent full successful recovery is documented in the issue.
+
+### 33.3 Rockchip eFuse programming power: what to verify physically
+
+Rockchip's official application note states RK3288 uses **1.5 V on P19 VCC_EFUSE**, with either a switched board LDO or a factory-only test fixture. If no programming supply exists in the assembled unit, ordinary firmware cannot newly burn a trusted signing-key hash merely by writing registers. However **our MPC One's P19 supply wiring is still unknown**. Lack of regulator names in Linux is not enough: factory-only supplies may not appear in DT. Source and pin table: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md#hardware-conditions .
+
+Prioritize **unpowered** high-resolution MPC One PCB photos and identify exact PCB revision, RK3288 SOM layout, eMMC signals (CLK/CMD/DAT), exposed native SDMMC slot, USB-B D+/D-, and P19 programming rail. The owner has not authorized opening the case, electrical probing or hardware modification. Do not extrapolate MPC Live PCB photographs or PHYTEC switch signals to this board.
+
+Once PCB mapping is established, commission/design a normally-transparent and electrically reviewed owner boot-source selection/recovery control. This should allow ROM fallback even if any Akai bootloader and Linux components are replaced, without eMMC corruption. Prefer a model-specific documented service procedure over a chip-clock short, and first demonstrate true MaskROM enumeration and owner-built first-stage code execution before boot-critical writes. A stock firmware update cannot remove a working silicon-ROM/physical path, although external fuse programming, silicon restrictions or board damage could defeat it.
+
+### 33.4 Test priorities revised
+
+**Already demonstrated on this MPC**: read-only full eMMC backup, live DWC2 ff580000.usb peripheral controller and virtual mux, secure NVMEM flag/hash/lock regions reading zero. **Demonstrated on another MPC One Gen1**: BootROM USB discovery after eMMC failure, not owner-led ROM installation.
+
+**Still missing**: confirmed secure fuse driver mapping; physical board P19 power topology; safe nondestructive forced MaskROM entry; acceptance of unsigned independently compiled SPL; compatible DRAM initialization; complete eMMC readback via RAM-only loader; automatic stock fallback.
+
+Firmware upgrades can remove userspace entrypoints but **cannot erase immutable silicon ROM**. Nevertheless until the physical and fuse risks are resolved we must not promise unconditional independent booting. Do not modify p1/p2/p3, boot arguments or eMMC until the project's Tier 3 recovery gate is actually passed.

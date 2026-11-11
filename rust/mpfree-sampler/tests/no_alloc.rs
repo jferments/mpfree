@@ -1,33 +1,50 @@
-//! The engine's real-time calls (render, apply, schedule) must not allocate
+//! The engine's real-time calls (render, apply, schedule) and the rolling
+//! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
-//! loops, layers, chokes, stealing, filters and sample-accurate events.
+//! loops, layers, chokes, stealing, filters, sample-accurate events and
+//! granular pads.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
 //! affect the library, which forbids unsafe code.
+//!
+//! Only the test's own thread is watched: the test harness's main thread
+//! can allocate at any moment (it did on a busy CI runner), and that is
+//! not the engine's doing.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
+use mpfree_sampler::record::rolling;
 
 struct Counting;
-static WATCH: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // A const-initialised Cell needs no allocation or destructor, so it is
+    // safe to read from inside the allocator.
+    static WATCH: Cell<bool> = const { Cell::new(false) };
+}
 static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn count() {
+    if WATCH.with(Cell::get) { CALLS.fetch_add(1, Ordering::Relaxed); }
+}
+fn watch(on: bool) { WATCH.with(|w| w.set(on)); }
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.realloc(p, l, n) }
     }
 }
@@ -58,31 +75,68 @@ fn render_and_events_never_allocate() {
         pad.filter_env = Ahdsr { attack_ms: 1.0, hold_ms: 0.0, decay_ms: 80.0, sustain: 0.1, release_ms: 30.0 };
         p.set_pad(i, Some(pad), None).unwrap();
     }
+    // Four granular pads: busy clouds, one reversed, one synced, so the grain
+    // budget fills and voices are stolen while grains play.
+    for i in 16..20usize {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        r.reverse = i == 17;
+        r.tune_cents = (i as i32 - 18) * 700;
+        r.grain = GrainParams { spray: 0.6, size_ms: 300.0, density: 1000.0, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        if i == 19 {
+            r.grain.window = GrainWindow::Exponential { decay: 6.0 };
+            r.grain.sync = Some(TempoSync { frames_per_beat: 22_050.0, grains_per_beat: Some(8.0), size_beats: Some(0.25) });
+        }
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 2;
+        pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 3000.0, resonance: 0.2, env_octaves: 1.0 };
+        p.set_pad(i, Some(pad), None).unwrap();
+    }
     let mut e = Engine::new(rate, 24);
     e.set_view(EngineView::build(&p, rate));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     e.render(&mut l, &mut r); // warm up outside the watch
+    // The rolling "skip back" buffer the audio thread fills every period.
+    let (mut rec, reader) = rolling(2, 44_100 * 2);
 
     // The counter itself works: one Vec is one allocation and one free.
-    WATCH.store(true, Ordering::SeqCst);
+    watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
-    WATCH.store(false, Ordering::SeqCst);
+    watch(false);
     assert_eq!(CALLS.swap(0, Ordering::SeqCst), 2);
 
-    WATCH.store(true, Ordering::SeqCst);
+    watch(true);
     for block in 0..2000u32 {
         let pad = (block * 7 % 16) as u8;
         e.apply(Event::NoteOn { pad, velocity: (block % 127 + 1) as u8 });
         e.schedule(block % 128, Event::NoteOn { pad: (pad + 3) % 16, velocity: 90 });
         e.schedule(block * 31 % 200, Event::NoteOff { pad: (pad + 5) % 16 });
+        let g = 16 + (block % 4) as u8;
+        if block % 3 == 0 { e.schedule(block % 100, Event::NoteOn { pad: g, velocity: 100 }); }
+        if block % 5 == 0 { e.schedule(block % 90, Event::NoteOff { pad: 16 + ((block + 1) % 4) as u8 }); }
         if block % 300 == 299 { e.apply(Event::AllOff); }
         e.render(&mut l, &mut r);
+        rec.push_planar(&l, &r);
     }
-    WATCH.store(false, Ordering::SeqCst);
+    // Then only the granular pads, held long enough to fill the grain budget.
+    for pad in 16..20u8 {
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+    }
+    for _ in 0..200 {
+        e.render(&mut l, &mut r);
+        rec.push_planar(&l, &r);
+    }
+    e.apply(Event::AllOff);
+    for _ in 0..100 { e.render(&mut l, &mut r); }
+    watch(false);
     // Voices that end drop their handle to the audio; the project still holds
     // it, so that is a counter decrement, not a free.
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while rendering");
     assert!(e.stats().hits > 2000);
+    assert!(e.stats().skipped_grains > 0, "the grain budget never filled; the test is not busy enough");
+    assert_eq!(reader.written(), 2200 * 128);
+    assert_eq!(e.live_grains(), 0, "every grain handed back after AllOff");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
 }

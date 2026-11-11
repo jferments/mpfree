@@ -54,6 +54,10 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-grain"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-groove"
 version = "0.1.0"
 dependencies = [
@@ -90,6 +94,16 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-play"
+version = "0.1.0"
+dependencies = [
+ "mpfree-arp",
+ "mpfree-sampler",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-render"
 version = "0.1.0"
 dependencies = [
@@ -100,12 +114,21 @@ dependencies = [
 name = "mpfree-sampler"
 version = "0.1.0"
 dependencies = [
+ "mpfree-analysis",
  "mpfree-core",
+ "mpfree-grain",
 ]
 
 [[package]]
 name = "mpfree-screen-log"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-seq"
+version = "0.1.0"
+dependencies = [
+ "mpfree-transport",
+]
 
 [[package]]
 name = "mpfree-session"
@@ -117,6 +140,20 @@ dependencies = [
 [[package]]
 name = "mpfree-touch"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-touch-evdev"
+version = "0.1.0"
+dependencies = [
+ "mpfree-touch",
+]
+
+[[package]]
+name = "mpfree-transport"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]
 
 [[package]]
 name = "mpfree-ui"
