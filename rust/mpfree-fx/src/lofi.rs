@@ -280,6 +280,10 @@ impl LoFi {
         let tau = 2.0 * std::f32::consts::PI;
         let wow_frames = WOW_DEV * fs / (tau * 0.5 * (WOW_HZ[0] + WOW_HZ[1]));
         let flutter_frames = FLUTTER_DEV * fs / (tau * 0.5 * (FLUTTER_HZ[0] + FLUTTER_HZ[1]));
+        // The saturator's gain, its inverse and the bias's own offset,
+        // worked out again only while the saturation glides (powf per
+        // sample is a library call on the MPC's ARM).
+        let (mut sat_was, mut drive, mut undrive, mut bias, mut offset) = (f32::NAN, 1.0, 1.0, 0.0, 0.0);
         for i in 0..l.len() {
             if !(self.amount.settled() && self.log_low.settled() && self.log_high.settled()) {
                 self.amount.next();
@@ -309,8 +313,13 @@ impl LoFi {
             self.env = flush(self.env + k * (level - self.env));
             let ride = (self.env / ENV_FULL).min(1.0);
             let chance = crackle * CLICKS_PER_S / fs;
-            let drive = db_to_gain(SAT_DB * sat);
-            let bias = 0.15 * sat;
+            if sat != sat_was {
+                sat_was = sat;
+                drive = db_to_gain(SAT_DB * sat);
+                undrive = 1.0 / drive;
+                bias = 0.15 * sat;
+                offset = soft(bias);
+            }
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
                 let mut s = self.tape[ch].run(x[ch], d);
@@ -318,7 +327,7 @@ impl LoFi {
                     // Asymmetric, so it adds even harmonics; the bias's own
                     // offset is taken back out, and the low cut removes the
                     // rest of the DC it leaves on a changing signal.
-                    s = (soft(drive * s + bias) - soft(bias)) / drive;
+                    s = (soft(drive * s + bias) - offset) * undrive;
                 }
                 s = self.low.run(ch, s);
                 s = self.high.run(ch, s);
