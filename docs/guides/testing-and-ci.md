@@ -97,6 +97,10 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
   `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`),
   and CI runs `mpfree-bench --check-allocs` over the profiled engines. New
   audio paths should do the same.
+- **A program gets a `tests/cli.rs`** that runs it whole through
+  `env!("CARGO_BIN_EXE_<name>")`: its arguments, exit codes and output files.
+  Tests write only under `env!("CARGO_TARGET_TMPDIR")`, never a fixed `/tmp`
+  name, so parallel tests and the self-hosted runners don't collide.
 - **No test touches a device.** Tests that need device-like input use
   fixtures, fakes (`tools/mpc-one/tests/fake_mpc_ssh.py`) or qemu.
 - **Clippy is pinned** (`MPFREE_CLIPPY_TOOLCHAIN` in the workflow), so a new
@@ -119,19 +123,20 @@ with the jobs above).
 ## Coverage today
 
 Line coverage of `cargo test` across the workspace, measured 2026-11-11 on
-`main` (`5d030ac`): **83.0%** (21,188 of 25,516 lines). It counts unit and
-integration tests only. Programs that CI runs as whole binaries (render,
-self-tests, previews) are checked by their output but not counted here.
+`main` (`59fd00d`) plus the whole-program tests: **87.3%** (37,654 of 43,113
+lines). Programs with a `tests/cli.rs` (render, session, device-smoke,
+screen-log, display) are run whole by `cargo test` through
+`CARGO_BIN_EXE_*`, and the coverage run counts those runs too.
 
 | Thinnest crates | Lines covered |
 | --- | ---: |
-| `mpfree-render` | 0% (exercised only by the WAV parity step) |
-| `mpfree-device-smoke` | 46% |
-| `mpfree-screen-log` | 52% |
-| `mpfree-session` | 57% |
-| `mpfree-hello` | 60% |
-| `mpfree-splash` | 69% |
-| `mpfree-touch-evdev`, `mpfree-display` | 71% |
+| `mpfree-bench` | 69% |
+| `mpfree-splash` | 69% (its `main.rs` drives the device framebuffer) |
+| `mpfree-touch-evdev` | 71% |
+| `mpfree-hello` | 73% |
+| `mpfree-headless` | 76% |
+| `mpfree-groove` | 80% |
+| `mpfree-touch` | 81% |
 
 The engines are well covered: `mpfree-synth`, `-fx`, `-grain`, `-analysis`,
 `-arp`, `-sampler`, `-play`, `-transport`, `-ui` are all above 90%. The
@@ -144,8 +149,10 @@ In order. Each step is its own PR.
 1. **Gates** (this PR): clippy, the orphaned ROM tool tests, coverage, no
    path filters. Then the required check on `main`, and rustfmt after the
    reformat.
-2. **Raise the thin crates** in the table above, starting with `mpfree-hello`,
-   which is the program that actually runs on the MPC.
+2. **Raise the thin crates** in the table above. Done first: whole-program
+   tests for render, session, device-smoke, screen-log and display. Next is
+   `mpfree-hello`, the program that actually runs on the MPC, once the
+   open PRs that change it have landed.
 3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
    audio and compare with stored references within a tolerance. Do the same
    for the Hello preview screens, which today are checked only as valid PNGs,
