@@ -172,7 +172,7 @@ impl Strip {
 /// Whether the panel draws visuals for this node on this page: Poly and FM
 /// on every page, any other engine with pressure on its Pressure page.
 fn has_visuals(info: &NodeInfo, page: &str) -> bool {
-    matches!(info.id, "mpfree.poly" | "mpfree.fm")
+    matches!(info.id, "mpfree.poly" | "mpfree.fm" | "mpfree.wavetable")
         || (page == "Pressure" && press_base(info).is_some())
 }
 
@@ -182,6 +182,7 @@ pub fn press_base(info: &NodeInfo) -> Option<u16> {
     match info.id {
         "mpfree.poly" => Some(pp::PRESS_BASE),
         "mpfree.fm" => Some(fp::PRESS_BASE),
+        "mpfree.wavetable" => Some(mpfree_synth::wavetable::params::PRESS_BASE),
         _ => None,
     }
 }
@@ -190,6 +191,7 @@ fn press_targets(info: &NodeInfo) -> &'static [&'static str] {
     match info.id {
         "mpfree.poly" => sp::POLY_TARGETS,
         "mpfree.fm" => sp::FM_TARGETS,
+        "mpfree.wavetable" => sp::WT_TARGETS,
         _ => &[],
     }
 }
@@ -478,6 +480,7 @@ impl SynthPanel {
             let strip = match press_base(st.info) {
                 Some(base) if page.name == "Pressure" => pressure_cards(st, base),
                 _ if st.info.id == "mpfree.fm" => fm_cards(st, &page.name),
+                _ if st.info.id == "mpfree.wavetable" => wt_cards(st, &page.name),
                 _ => poly_cards(st, &page.name),
             };
             self.card_pages = strip.pages;
@@ -733,6 +736,17 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
     ];
     let mut s = Strip::new();
     for c in cards {
+        let title = c.title.clone();
+        s.push(c, &title);
+    }
+    s
+}
+
+/// The Wavetable synth's cards ([`crate::wt_visual`]).
+fn wt_cards(st: &SynthState, page: &str) -> Strip {
+    let v = |id: u16| st.value(id);
+    let mut s = Strip::new();
+    for c in crate::wt_visual::cards(&v, page) {
         let title = c.title.clone();
         s.push(c, &title);
     }
