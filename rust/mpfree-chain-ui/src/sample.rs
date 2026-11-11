@@ -308,9 +308,15 @@ impl Widget for QLinkColumn {
                 let s = if lit { 3 } else { 2 };
                 cx.canvas.fill_round_rect(Rect::new(x - s, y - s, 2 * s, 2 * s), s, if lit { col } else { t.outline });
             }
+            // The value inside the ring: "20.0 kHz" as "20 kHz", and a
+            // smaller size when the ring is small.
             let vr = Rect::new(kx - rad as i32 + 4, ky - 12, 2 * rad as i32 - 8, 24);
-            let size = if cx.measure(FontId::Bold, 16.0, &c.text) <= vr.w { 16.0 } else { 13.0 };
-            cx.text(FontId::Bold, size, vr, Align::Center, t.text, &c.text);
+            let short = c.text.replace(".0 ", " ");
+            let (size, text) = [(16.0, &short), (13.0, &short), (11.0, &short)]
+                .into_iter()
+                .find(|(z, s)| cx.measure(FontId::Bold, *z, s) <= vr.w)
+                .unwrap_or((11.0, &short));
+            cx.text(FontId::Bold, size, vr, Align::Center, t.text, text);
         }
     }
 
@@ -342,7 +348,7 @@ pub fn screen(fonts: Fonts, song: &mut Song, place: Place, chain: Option<ChainSt
     match (&chain, &macros) {
         (Some(c), _) => {
             let (name, knobs) = c.qlinks();
-            song.bindings.set_page(&name, knobs);
+            song.bindings.set_page(crate::QLINK_PAGE, &name, knobs);
             for p in &c.params {
                 song.bindings.observe(p.addr, p.value);
             }

@@ -61,7 +61,7 @@ pub mod follow;
 pub mod lfo;
 pub mod text;
 
-pub use bind::{Bank, Binding, Bindings, QLinkCard, Write, KNOBS};
+pub use bind::{Bank, Binding, Bindings, QLinkCard, Scope, Write, KNOBS};
 pub use engine::{source_info, MacroMap, MapCurve, ModEngine, ModError, ModEvent, ModStats, ModTimed, Row, Source, DEFAULT_TICK, FOLLOWERS, HOST_SOURCES, LFOS, MACROS, MACRO_TARGETS, MAX_ROWS, MAX_TARGETS};
 pub use follow::Follower;
 pub use lfo::{Lfo, Shape};
