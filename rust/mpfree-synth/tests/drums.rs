@@ -1,6 +1,7 @@
 //! Behaviour tests for the drum synth through the mpfree-node interface.
 
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_synth::drum::hit_shape;
 use mpfree_synth::drum_params::{
     field, model, pad_id, BASE_NOTE, KITS, LEVEL, METER_VOICES, MODELS, PADS, PARAMS,
 };
@@ -363,4 +364,51 @@ fn extreme_settings_stay_finite() {
         let (l, _) = render(&mut d, 6000, &ev, |_| 128);
         assert!(l.iter().all(|x| x.is_finite()), "{name}");
     }
+}
+
+#[test]
+fn the_hit_shape_drawn_is_the_hit_played() {
+    let mut d = Drums::new(RATE);
+    // No drive, so the body's envelope is the sound's.
+    d.set_param(pad_id(0, field::DRIVE), 0.0);
+    let shape = hit_shape(|id| d.param(id), 0, RATE);
+    assert_eq!(shape.model, "Kick");
+    assert!((shape.hz - 50.0).abs() < 0.01, "{shape:?}");
+    assert!(shape.body.0 > 0.0 && shape.sweep.0 > 0.0 && shape.bursts.is_none());
+    let (l, _) = render(&mut d, RATE as usize, &[(0, hit(0, 127))], |_| 128);
+    // The body's decay: past the click and the noise, its level falls as
+    // drawn.
+    let win = |t: f32| rms(&l[(t * RATE as f32) as usize..][..RATE as usize / 25]);
+    let got = db(win(0.1)) - db(win(0.3));
+    let want = -db(shape.body.1.powf(0.2 * RATE as f32));
+    assert!(
+        (got - want).abs() < 1.5,
+        "falls {got:.1} dB, drawn {want:.1}"
+    );
+    // The sweep: the pitch 20 to 40 ms in is the drawn one, within 10 %.
+    let pitch_at =
+        |t: f32| shape.hz * (shape.sweep.0 * shape.sweep.1.powf(t * RATE as f32) / 12.0).exp2();
+    let drawn = (0..20)
+        .map(|i| pitch_at(0.02 + i as f32 * 0.001))
+        .sum::<f32>()
+        / 20.0;
+    let s = &l[RATE as usize / 50..RATE as usize / 25];
+    let crossings = s
+        .windows(2)
+        .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+        .count() as f32;
+    let played = crossings / 2.0 / 0.02;
+    assert!(
+        (played - drawn).abs() < 0.1 * drawn + 25.0,
+        "{played} Hz played, {drawn} Hz drawn"
+    );
+    // Knobs move it: twice the decay, half the fall per frame in dB.
+    d.set_param(pad_id(0, field::DECAY), 900.0);
+    let longer = hit_shape(|id| d.param(id), 0, RATE);
+    assert!((longer.body.1.ln() * 2.0 - shape.body.1.ln()).abs() < 1e-6);
+    // Hats have no body to bend; a clap has its bursts.
+    let hat = hit_shape(|id| d.param(id), 3, RATE);
+    assert_eq!((hat.model, hat.hz, hat.body.0), ("Closed hat", 0.0, 0.0));
+    let clap = hit_shape(|id| d.param(id), 2, RATE);
+    assert_eq!(clap.bursts.map(|b| b.0.len()), Some(4));
 }

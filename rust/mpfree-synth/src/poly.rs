@@ -25,6 +25,8 @@ use crate::pressure::{swell_gain, Depths, Slot};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
+/// The most frames one render pass covers (one control step).
+const SEG: usize = CTRL as usize;
 /// The most notes sounding at once (the Voices parameter's top).
 pub const MAX_POLY: usize = 16;
 /// Voice slots: the notes plus room for stolen voices to fade out.
@@ -89,7 +91,15 @@ struct Voice {
     pv: f32,
     kill_gain: f32,
     kill_step: f32,
+    /// The inputs the phase increments and the filter coefficients were
+    /// last worked out from (bit patterns), so a control step whose inputs
+    /// have not moved skips the work: the numbers would come out the same.
+    pitch_key: [u32; 6],
+    coef_key: [u32; 3],
 }
+
+/// A key no real input matches (a NaN pattern arithmetic never makes).
+const NO_KEY: u32 = u32::MAX;
 
 impl Voice {
     fn new() -> Voice {
@@ -124,6 +134,8 @@ impl Voice {
             pv: 0.0,
             kill_gain: 1.0,
             kill_step: 0.0,
+            pitch_key: [NO_KEY; 6],
+            coef_key: [NO_KEY; 3],
         }
     }
 
@@ -192,8 +204,22 @@ pub struct Poly {
     /// The pressure vibrato's phase (0 to 1) and value (-1 to 1).
     vib_phase: f32,
     vib: f32,
+    /// Each stack's pan gains for the unison count and spread in `pan_key`.
+    pans: [(f32, f32); UNISON_MAX],
+    pan_key: [u32; 2],
+    /// Work buffers for one render pass (each frame written before read).
+    scratch: Scratch,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Scratch {
+    gain: [f32; SEG],
+    stack: [f32; SEG],
+    left: [f32; SEG],
+    right: [f32; SEG],
+    extra: [f32; SEG],
 }
 
 impl Default for Poly {
@@ -243,6 +269,15 @@ impl Poly {
             chord: PressureChord::default(),
             vib_phase: 0.0,
             vib: 0.0,
+            pans: [(1.0, 1.0); UNISON_MAX],
+            pan_key: [NO_KEY; 2],
+            scratch: Scratch {
+                gain: [0.0; SEG],
+                stack: [0.0; SEG],
+                left: [0.0; SEG],
+                right: [0.0; SEG],
+                extra: [0.0; SEG],
+            },
             dropped: 0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
@@ -741,6 +776,22 @@ impl Poly {
         let cutoff = self.sm.cutoff.value;
         let res = self.sm.res.value;
         let norm = VOICE_GAIN / (unison as f32).sqrt();
+        let rate_bits = self.rate;
+        // Pan gains depend only on the stack count and the spread.
+        let pan_key = [unison as u32, spread.to_bits()];
+        if self.pan_key != pan_key {
+            for u in 0..unison {
+                let pos = if unison > 1 {
+                    u as f32 / (unison - 1) as f32 * 2.0 - 1.0
+                } else {
+                    0.0
+                };
+                let p = pos * spread;
+                self.pans[u] = ((1.0 - p).sqrt(), (1.0 + p).sqrt());
+            }
+            self.pan_key = pan_key;
+        }
+        let pans = self.pans;
 
         let v = &mut self.voices[i];
         let p = v.pv;
@@ -752,20 +803,32 @@ impl Poly {
         if d.any {
             base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
         }
-        for u in 0..unison {
-            let pos = if unison > 1 {
-                u as f32 / (unison - 1) as f32 * 2.0 - 1.0
-            } else {
-                0.0
-            };
-            let cents = pos * detune;
-            v.dt1[u] = (note_hz(base + o1 + cents) / rate).min(0.45);
-            v.dt2[u] = (note_hz(base + o2 - cents * 0.7) / rate).min(0.45);
-            let p = pos * spread;
-            v.pan_l[u] = (1.0 - p).sqrt();
-            v.pan_r[u] = (1.0 + p).sqrt();
+        let pitch_key = [
+            base.to_bits(),
+            o1.to_bits(),
+            o2.to_bits(),
+            detune.to_bits(),
+            unison as u32,
+            rate_bits,
+        ];
+        if v.pitch_key != pitch_key {
+            for u in 0..unison {
+                let pos = if unison > 1 {
+                    u as f32 / (unison - 1) as f32 * 2.0 - 1.0
+                } else {
+                    0.0
+                };
+                let cents = pos * detune;
+                v.dt1[u] = (note_hz(base + o1 + cents) / rate).min(0.45);
+                v.dt2[u] = (note_hz(base + o2 - cents * 0.7) / rate).min(0.45);
+            }
+            v.dt_sub = (note_hz(base + o1 - 12.0) / rate).min(0.45);
+            v.pitch_key = pitch_key;
         }
-        v.dt_sub = (note_hz(base + o1 - 12.0) / rate).min(0.45);
+        for (u, &(l, r)) in pans[..unison].iter().enumerate() {
+            v.pan_l[u] = l;
+            v.pan_r[u] = r;
+        }
         let pw_p = p * d.get(target::WIDTH) * 0.45;
         v.pw1 = (pw1 + pw_p).clamp(0.05, 0.95);
         v.pw2 = (pw2 + pw_p).clamp(0.05, 0.95);
@@ -777,7 +840,11 @@ impl Poly {
             + lfo_cut
             + p * d.get(target::CUTOFF) * 4.0;
         let res = (res + p * d.get(target::RESONANCE)).clamp(0.0, 1.0);
-        v.coefs = FilterCoefs::new(exp2(oct), res, rate);
+        let coef_key = [oct.to_bits(), res.to_bits(), rate_bits];
+        if v.coef_key != coef_key {
+            v.coefs = FilterCoefs::new(exp2(oct), res, rate);
+            v.coef_key = coef_key;
+        }
         let dd = d.get(target::DRIVE);
         if dd == 0.0 {
             v.drive_gain = sh_drive_gain;
@@ -797,6 +864,12 @@ impl Poly {
 
     // ---- audio rate ----
 
+    /// Renders frames `from..to` (at most one control step) of every voice.
+    /// Each voice works in passes over the frames: gains (which also find
+    /// the frame where a voice that ends here stops), oscillators, sub and
+    /// noise, drive, filter, out. Every frame gets the same arithmetic as a
+    /// frame-at-a-time loop, so the output is the same to the bit; the
+    /// passes just make each choice once per step instead of once a frame.
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let s = self.sh;
         let w1 = Wave::from_index(f32::from(s.wave1));
@@ -804,37 +877,24 @@ impl Poly {
         let mode = FilterMode::from_index(f32::from(s.mode));
         // Silent sources are skipped (their phases wait).
         let (use1, use2) = (s.lvl1 != 0.0, s.lvl2 != 0.0);
+        let n = to - from;
+        debug_assert!(n <= SEG);
+        let rng = &mut self.rng;
+        let Scratch {
+            gain: g,
+            stack: a,
+            left: l,
+            right: r,
+            extra: c,
+        } = &mut self.scratch;
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
             }
-            let (use_sub, use_noise) = (v.sub != 0.0, v.noise != 0.0);
-            for k in from..to {
-                let mut l = 0.0;
-                let mut r = 0.0;
-                for u in 0..s.unison {
-                    let mut a = 0.0;
-                    if use1 {
-                        a += osc(w1, &mut v.ph1[u], v.dt1[u], v.pw1) * s.lvl1;
-                    }
-                    if use2 {
-                        a += osc(w2, &mut v.ph2[u], v.dt2[u], v.pw2) * s.lvl2;
-                    }
-                    l += a * v.pan_l[u];
-                    r += a * v.pan_r[u];
-                }
-                let mut c = 0.0;
-                if use_sub {
-                    c += osc(Wave::Pulse, &mut v.ph_sub, v.dt_sub, 0.5) * v.sub;
-                }
-                if use_noise {
-                    c += self.rng.bipolar() * v.noise;
-                }
-                let l = drive(l + c, v.drive_gain, v.drive_amt);
-                let r = drive(r + c, v.drive_gain, v.drive_amt);
-                let l = v.filt[0].process(mode, &v.coefs, l);
-                let r = v.filt[1].process(mode, &v.coefs, r);
-                let mut g = v.amp.next() * v.gain;
+            // Gains: the envelope and fades do not depend on the sound.
+            let mut end = n;
+            for (j, gj) in g[..n].iter_mut().enumerate() {
+                let mut x = v.amp.next() * v.gain;
                 v.gain += v.gain_inc;
                 if v.state == State::Kill {
                     v.kill_gain -= v.kill_step;
@@ -842,18 +902,113 @@ impl Poly {
                         v.kill_gain = 0.0;
                         v.state = State::Free;
                     }
-                    g *= v.kill_gain;
+                    x *= v.kill_gain;
                 }
-                left[k] += l * g * s.out_l;
-                right[k] += r * g * s.out_r;
+                *gj = x;
                 if v.state == State::Free {
+                    end = j + 1;
                     break;
                 }
                 if v.amp.idle() && v.state != State::On {
                     v.state = State::Free;
+                    end = j + 1;
                     break;
                 }
             }
+            let (g, a, l, r, c) = (
+                &g[..end],
+                &mut a[..end],
+                &mut l[..end],
+                &mut r[..end],
+                &mut c[..end],
+            );
+            // A centred voice (one stack, or no spread) has the same left
+            // and right; with the same filter state both sides stay equal,
+            // so one side is worked out and used for both.
+            let mono = v.pan_l[..s.unison]
+                .iter()
+                .zip(&v.pan_r[..s.unison])
+                .all(|(x, y)| x.to_bits() == y.to_bits())
+                && v.filt[0].same_as(&v.filt[1]);
+            // Each stack: a = 0 + osc1 * level1 + osc2 * level2, then
+            // left = 0 + a * pan for the first stack and += for the rest.
+            // (Left starts at +0 and never becomes -0, so adding a silent
+            // source's +0 changes nothing and is skipped.)
+            if !use1 && !use2 {
+                l.fill(0.0);
+                r.fill(0.0);
+            }
+            for u in 0..s.unison {
+                if !use1 && !use2 {
+                    break;
+                }
+                if use1 {
+                    osc_set(w1, a, &mut v.ph1[u], v.dt1[u], v.pw1, s.lvl1);
+                    if use2 {
+                        osc_add(w2, a, &mut v.ph2[u], v.dt2[u], v.pw2, s.lvl2);
+                    }
+                } else {
+                    osc_set(w2, a, &mut v.ph2[u], v.dt2[u], v.pw2, s.lvl2);
+                }
+                let (pl, pr) = (v.pan_l[u], v.pan_r[u]);
+                mix_stack(u == 0, l, a, pl);
+                if !mono {
+                    mix_stack(u == 0, r, a, pr);
+                }
+            }
+            // Sub and noise: c = 0 + sub + noise, added to both sides.
+            let use_sub = v.sub != 0.0;
+            let use_noise = v.noise != 0.0;
+            if use_sub {
+                osc_set(Wave::Pulse, c, &mut v.ph_sub, v.dt_sub, 0.5, v.sub);
+            }
+            if use_noise {
+                for cj in c.iter_mut() {
+                    *cj = if use_sub { *cj } else { 0.0 } + rng.bipolar() * v.noise;
+                }
+            }
+            let use_c = use_sub || use_noise;
+            if use_c {
+                for (lj, cj) in l.iter_mut().zip(c.iter()) {
+                    *lj += cj;
+                }
+            }
+            drive_run(l, v.drive_gain, v.drive_amt);
+            v.filt[0].run(mode, &v.coefs, l);
+            if mono {
+                v.filt[1] = v.filt[0];
+                for j in 0..end {
+                    left[from + j] += l[j] * g[j] * s.out_l;
+                    right[from + j] += l[j] * g[j] * s.out_r;
+                }
+            } else {
+                if use_c {
+                    for (rj, cj) in r.iter_mut().zip(c.iter()) {
+                        *rj += cj;
+                    }
+                }
+                drive_run(r, v.drive_gain, v.drive_amt);
+                v.filt[1].run(mode, &v.coefs, r);
+                for j in 0..end {
+                    left[from + j] += l[j] * g[j] * s.out_l;
+                    right[from + j] += r[j] * g[j] * s.out_r;
+                }
+            }
+        }
+    }
+}
+
+/// One stack into a side: `side = 0 + a * pan` for the first stack (so the
+/// side needs no clearing), `side += a * pan` after.
+#[inline]
+fn mix_stack(first: bool, side: &mut [f32], a: &[f32], pan: f32) {
+    if first {
+        for (x, y) in side.iter_mut().zip(a) {
+            *x = 0.0 + y * pan;
+        }
+    } else {
+        for (x, y) in side.iter_mut().zip(a) {
+            *x += y * pan;
         }
     }
 }
