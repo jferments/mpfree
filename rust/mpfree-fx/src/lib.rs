@@ -6,6 +6,8 @@
 //!   off in the middle.
 //! - [`Drive`]: soft, hard, tube, foldback, fuzz and rectify shapers inside
 //!   2x or 4x oversampling, with tone, bias, mix and auto-gain.
+//! - [`Comb`]: a tuned feedback comb with damping, stereo spread and key
+//!   follow (notes play its pitch).
 //! - [`Crush`]: bit depth and sample-rate reduction (aliasing on purpose).
 //! - [`Delay`]: free or tempo-synced echo with ping-pong, a filter and
 //!   saturation in the feedback, tape-style time changes and freeze.
@@ -47,6 +49,7 @@
 
 mod chain;
 mod cloud;
+mod comb;
 mod comp;
 mod crush;
 mod delay;
@@ -62,6 +65,7 @@ mod svf;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
+pub use comb::Comb;
 pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
@@ -89,6 +93,7 @@ pub use mpfree_node;
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
     pub use crate::cloud::ids as cloud;
+    pub use crate::comb::ids as comb;
     pub use crate::comp::ids as compressor;
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
