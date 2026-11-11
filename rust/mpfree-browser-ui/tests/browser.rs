@@ -3,7 +3,9 @@
 
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{Key, Modal, SOURCES};
-use mpfree_browser_ui::{step, BrowseAction, Browser, BrowserView, Button, Filter, Input, BROWSER};
+use mpfree_browser_ui::{
+    step, BrowseAction, Browser, BrowserView, Button, Filter, Input, Pick, BROWSER,
+};
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
 use std::path::PathBuf;
@@ -358,4 +360,150 @@ fn every_sample_screen_draws() {
         let mut c = SoftCanvas::new(1280, 800);
         assert!(!x.ui.paint(&mut c).is_empty(), "{}", x.name);
     }
+}
+
+fn place_labels(b: &Browser) -> Vec<&'static str> {
+    b.screen()
+        .sources
+        .iter()
+        .map(|i| SOURCES[*i].label())
+        .collect()
+}
+
+#[test]
+fn the_preset_picker_tries_each_preset_and_cancel_puts_the_old_one_back() {
+    let (mut b, _) = browser();
+    b.open_picker(Pick::Preset {
+        engine: "FM".into(),
+    });
+    let s = b.screen();
+    assert_eq!(s.title, "FM presets");
+    assert_eq!(place_labels(&b), ["Instruments", "Recent", "Favourites"]);
+    assert!(s.filters.is_empty());
+    assert_eq!(s.list_buttons, [Button::Cancel]);
+    assert!(!s.can_go_back);
+    assert_eq!(
+        names(&b),
+        ["Glass bell.preset", "Metal bass.preset", "Soft keys.preset"]
+    );
+    // Only loading, hearing and starring: nothing is renamed or deleted.
+    assert_eq!(s.detail.buttons, [Button::Load, Button::Favourite]);
+    b.erase();
+    b.back();
+    b.go_source(src("Samples"));
+    assert_eq!(b.screen().modal, Modal::None);
+    assert_eq!(b.screen().path, "Instruments / FM");
+    // Turning the dial puts each preset on the track to play.
+    b.take_actions();
+    b.dial(1);
+    assert!(matches!(
+        &b.take_actions()[..],
+        [BrowseAction::TryPreset { engine, loc, .. }] if engine == "FM" && loc.name() == "Metal bass.preset"
+    ));
+    b.input(Input::Button(Button::Cancel));
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::RevertPreset,
+            BrowseAction::PickerClosed { loaded: false }
+        ]
+    );
+    // The full browser is back where it was.
+    let s = b.screen();
+    assert_eq!(s.pick, None);
+    assert_eq!(s.path, "Samples");
+    assert_eq!(s.sources.len(), SOURCES.len());
+    assert!(!s.filters.is_empty());
+}
+
+#[test]
+fn loading_from_the_preset_picker_closes_it() {
+    let (mut b, _) = browser();
+    b.open_picker(Pick::Preset {
+        engine: "FM".into(),
+    });
+    b.push();
+    let a = b.take_actions();
+    assert!(matches!(&a[0], BrowseAction::LoadPreset { engine, .. } if engine == "FM"));
+    assert!(matches!(&a[1], BrowseAction::SaveLists(_)));
+    assert_eq!(a[2], BrowseAction::PickerClosed { loaded: true });
+    assert!(b.picking().is_none());
+    // An engine with nothing saved yet says so, without an error.
+    b.open_picker(Pick::Preset {
+        engine: "Wavetable".into(),
+    });
+    let s = b.screen();
+    assert!(s.rows.is_empty());
+    let (msg, err) = s.status.unwrap();
+    assert!(msg.contains("No Wavetable presets yet"), "{msg}");
+    assert!(!err);
+    // Recent in a preset picker shows only that engine's presets.
+    b.go_source(src("Recent"));
+    assert!(names(&b).is_empty());
+    b.cancel_picker();
+    b.open_picker(Pick::Preset {
+        engine: "FM".into(),
+    });
+    b.go_source(src("Recent"));
+    assert_eq!(names(&b), ["Glass bell.preset"]);
+}
+
+#[test]
+fn the_sample_picker_loads_one_sound_for_the_pad() {
+    let (mut b, _) = browser();
+    b.go_source(src("Kits"));
+    b.open_picker(Pick::Sample);
+    assert_eq!(b.screen().title, "Load a sound");
+    assert_eq!(
+        place_labels(&b),
+        ["Samples", "Recordings", "Recent", "Favourites"]
+    );
+    b.go_source(src("Kits"));
+    assert_eq!(b.screen().path, "Samples");
+    select(&mut b, "Rhodes chord.wav");
+    // A sound auditions as it does in the full browser.
+    assert!(matches!(
+        &b.take_actions()[..],
+        [BrowseAction::Audition { .. }]
+    ));
+    assert!(!b.screen().detail.buttons.contains(&Button::LoadToPad));
+    assert!(!b.screen().detail.buttons.contains(&Button::Delete));
+    b.push();
+    let a = b.take_actions();
+    assert!(
+        matches!(&a[0], BrowseAction::LoadSample { loc, .. } if loc.name() == "Rhodes chord.wav")
+    );
+    assert_eq!(a.last(), Some(&BrowseAction::PickerClosed { loaded: true }));
+    assert_eq!(b.screen().path, "Kits");
+}
+
+#[test]
+fn opening_a_project_over_unsaved_work_asks_first() {
+    let (mut b, _) = browser();
+    b.open_picker(Pick::Project);
+    assert_eq!(place_labels(&b), ["Projects", "Recent", "Favourites"]);
+    assert_eq!(names(&b), ["Live set", "Night drive", "Sunday chops"]);
+    b.set_unsaved(true);
+    select(&mut b, "Night drive");
+    b.push();
+    assert!(
+        matches!(&b.screen().modal, Modal::Confirm { text, .. } if text.contains("Night drive") && text.contains("Unsaved"))
+    );
+    b.input(Input::ConfirmNo);
+    assert!(b.picking().is_some());
+    b.take_actions();
+    b.push();
+    b.push(); // the push answers yes
+    let a = b.take_actions();
+    assert!(matches!(&a[0], BrowseAction::SaveLists(_)));
+    assert!(
+        matches!(&a[1], BrowseAction::ProjectOpened { loc, .. } if loc.name() == "Night drive")
+    );
+    assert_eq!(a[2], BrowseAction::PickerClosed { loaded: true });
+    // Just opened: nothing unsaved, so the next open doesn't ask.
+    b.open_picker(Pick::Project);
+    select(&mut b, "Live set");
+    b.push();
+    assert_eq!(b.screen().modal, Modal::None);
+    assert!(b.picking().is_none());
 }

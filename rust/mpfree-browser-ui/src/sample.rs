@@ -4,9 +4,9 @@
 //! projects saved twice (so they have versions), a kit, a recording and
 //! an item in the Trash.
 
-use crate::state::{Browser, Button, Filter, Input, Key, SOURCES};
+use crate::state::{Browser, Button, Filter, Input, Key, Pick, SOURCES};
 use crate::view::BrowserView;
-use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE};
+use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE, PICKER_HINT};
 use mpfree_library::audio::{tone_wav, wav_bytes};
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::widgets::{Header, Label};
@@ -75,8 +75,16 @@ pub fn fill(data: &Path) -> Result<Library, String> {
     lib.write_new(&Loc::top(Place::Kits), "Boom bap.kit", b"mpfree-kit 1\n")
         .map_err(e)?;
     let inst = Loc::top(Place::Instruments);
-    for (engine, preset) in [("FM", "Glass bell.preset"), ("Poly", "Warm pad.preset")] {
-        let f = lib.new_folder(&inst, engine).map_err(e)?;
+    for (engine, preset) in [
+        ("FM", "Glass bell.preset"),
+        ("FM", "Soft keys.preset"),
+        ("FM", "Metal bass.preset"),
+        ("Poly", "Warm pad.preset"),
+    ] {
+        let f = inst.join(engine).map_err(e)?;
+        if lib.list(&f).is_err() {
+            lib.new_folder(&inst, engine).map_err(e)?;
+        }
         lib.write_new(&f, preset, b"mpfree-preset 1\n").map_err(e)?;
     }
     lib.write_new(
@@ -112,10 +120,10 @@ pub fn fill(data: &Path) -> Result<Library, String> {
     Ok(lib)
 }
 
-fn ui(fonts: Fonts, theme: Theme, b: &Browser) -> Result<Ui, String> {
+fn ui(fonts: Fonts, theme: Theme, tab: &str, hint: &str, b: &Browser) -> Result<Ui, String> {
     let mut ui = Ui::new(theme, fonts, W, H);
-    ui.add("header", Header::app("Sample"));
-    ui.add("hint", Label::new(BROWSER_HINT, Tone::Dim, Align::Left));
+    ui.add("header", Header::app(tab));
+    ui.add("hint", Label::new(hint, Tone::Dim, Align::Left));
     crate::add(&mut ui, b)?;
     ui.show(BROWSER_PAGE)?;
     Ok(ui)
@@ -154,7 +162,20 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
         b.load_lists(
             "recent = Projects/Night drive\nrecent = Samples/Drums/Kick 01.wav\nrecent = Samples/Loops/Break 92 bpm.wav\nfavourite = Samples/Drums/Snare tight.wav\nfavourite = Samples/Loops\n",
         );
-        let mut u = ui(fonts(), theme, &b)?;
+        // A picker is opened from its own page.
+        let tab = if name.contains("preset-picker") {
+            "Synth"
+        } else if name.contains("project-picker") {
+            "Play"
+        } else {
+            "Sample"
+        };
+        let hint = if name.contains("picker") {
+            PICKER_HINT
+        } else {
+            BROWSER_HINT
+        };
+        let mut u = ui(fonts(), theme, tab, hint, &b)?;
         b.set_visible(BrowserView::rows_in(u.rect_of(BROWSER).unwrap_or_default()));
         setup(&mut b);
         let _ = b.take_actions();
@@ -258,6 +279,37 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             b.go_source(source("Samples"));
             open(b, "Drums");
             select(b, "Hat open.wav");
+        },
+    )?;
+    shot(
+        "12-preset-picker",
+        "The preset picker from the Synth page: only FM presets; turning the dial plays each on the track; Load or Cancel (puts the old sound back)",
+        Theme::dark(),
+        &|b| {
+            b.open_picker(Pick::Preset {
+                engine: "FM".into(),
+            });
+            b.dial(1);
+        },
+    )?;
+    shot(
+        "13-sample-picker",
+        "The sample picker from a pad: Samples, Recordings, Recent, Favourites; sounds audition; Load puts it on the pad",
+        Theme::dark(),
+        &|b| {
+            b.open_picker(Pick::Sample);
+            open(b, "Loops");
+            select(b, "Break 92 bpm.wav");
+        },
+    )?;
+    shot(
+        "14-project-picker-asks",
+        "Open project over unsaved work: it asks before replacing what you have",
+        Theme::dark(),
+        &|b| {
+            b.open_picker(Pick::Project);
+            b.set_unsaved(true);
+            open(b, "Sunday chops");
         },
     )?;
     Ok(out)
