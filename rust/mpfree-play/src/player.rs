@@ -44,11 +44,13 @@ pub const MAX_ERASED: usize = 256;
 pub const ALL: u16 = u16::MAX;
 
 /// A note replace recording erased: remove it from clip `slot` of `track`.
+/// `take` numbers the take that erased it, as in [`crate::Taken`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Erased {
     pub track: usize,
     pub slot: usize,
     pub note: Note,
+    pub take: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,9 +129,11 @@ pub struct Player {
     replacing: Option<i64>,
     /// This take (since the last record-on) has had its replace pass.
     replaced: bool,
+    /// Record-ons so far: the number of the latest take.
+    take: u32,
 }
 
-const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 } };
+const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
 
 impl Default for Player {
     fn default() -> Self {
@@ -150,6 +154,7 @@ impl Player {
             n_erased: 0,
             replacing: None,
             replaced: false,
+            take: 0,
         }
     }
 
@@ -193,6 +198,7 @@ impl Player {
             Mark::RecordOn { .. } => {
                 self.replacing = None;
                 self.replaced = false;
+                self.take = self.take.wrapping_add(1);
             }
             Mark::RecordOff { .. } => self.replacing = None,
             _ => {}
@@ -341,7 +347,7 @@ impl Player {
                     if self.n_erased == MAX_ERASED {
                         self.stats.dropped += 1;
                     } else {
-                        self.erased[self.n_erased] = Erased { track: usize::from(track), slot: clip.slot, note: n.src };
+                        self.erased[self.n_erased] = Erased { track: usize::from(track), slot: clip.slot, note: n.src, take: self.take };
                         self.n_erased += 1;
                         self.stats.erased += 1;
                     }

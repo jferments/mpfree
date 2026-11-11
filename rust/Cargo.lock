@@ -433,6 +433,10 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-node"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
@@ -485,6 +489,13 @@ dependencies = [
  "mpfree-controller",
  "mpfree-screen-log",
  "ratatui",
+]
+
+[[package]]
+name = "mpfree-synth"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
 ]
 
 [[package]]
