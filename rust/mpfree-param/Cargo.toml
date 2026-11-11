@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-param"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "One way to name any parameter in MPFree (an instrument, a pad, a mixer strip, an insert, a macro): shared by parameter locks, macros, the mod matrix, morph and Q-Link bindings"
+
+[dependencies]

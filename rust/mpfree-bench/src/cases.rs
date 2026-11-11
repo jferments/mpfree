@@ -814,6 +814,7 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     v.push(measured(|| chain(rate)));
+    v.push(measured(|| modulation(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
@@ -1334,6 +1335,128 @@ fn track_host_alone(rate: u32, tracks: usize) -> Case {
                 l.len(),
                 &mut Sum { left: l, right: r },
             );
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The mod engine with a busy performance set: 8 macros moving 8
+/// parameters each, 16 matrix rows (8 LFOs, 2 followers listening to the
+/// block's audio), the morph between two scenes swept by an LFO, and a
+/// parameter lock every 16th note. Only the engine's own cost: what it
+/// sends is counted, not applied (the nodes' cost is in their cases).
+fn modulation(rate: u32) -> Case {
+    use mpfree_mod::{
+        MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK,
+    };
+    use mpfree_node::{Curve, ParamInfo, Unit};
+    use mpfree_param::{Owner, ParamAddr, Strip};
+    const P: ParamInfo = ParamInfo {
+        id: 0,
+        name: "p",
+        group: "g",
+        min: 20.0,
+        max: 20000.0,
+        default: 1000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    };
+    let mut e = ModEngine::new(rate, DEFAULT_TICK);
+    let addr = |i: usize| {
+        ParamAddr::new(
+            Owner::Insert(Strip::Track((i / 16) as u8), (i % 4) as u16),
+            (i % 16) as u16,
+        )
+    };
+    for i in 0..80 {
+        e.add_target(
+            addr(i),
+            ParamInfo {
+                id: (i % 16) as u16,
+                ..P
+            },
+            1000.0,
+        )
+        .expect("room");
+    }
+    for m in 0..8 {
+        for k in 0..8 {
+            e.map(
+                m,
+                MacroMap {
+                    target: addr(m * 8 + k),
+                    from: 0.1,
+                    to: 0.9,
+                    curve: MapCurve::S,
+                },
+            )
+            .expect("map");
+        }
+    }
+    for r in 0..16 {
+        let source = if r < 14 {
+            Source::Lfo((r % 8) as u8)
+        } else {
+            Source::Follower((r - 14) as u8)
+        };
+        e.add_row(Row {
+            source,
+            via: None,
+            target: addr(64 + r),
+            depth: 0.2,
+        })
+        .expect("row");
+    }
+    e.add_row(Row {
+        source: Source::Lfo(7),
+        via: None,
+        target: ParamAddr::morph_pos(0),
+        depth: 0.5,
+    })
+    .expect("row");
+    e.capture_scene(0);
+    for i in 0..80 {
+        let _ = e.set_scene_value(addr(i), 1, Some(5000.0));
+    }
+    let mut seed = Lcg(9);
+    let mut sent = 0u64;
+    // A 16th note at 120 BPM.
+    let step = u64::from(rate) / 8;
+    let lock = addr(70);
+    let mut events: Vec<ModTimed> = Vec::with_capacity(4);
+    Case {
+        name: "Mod: 8 macros x 8, 16 rows, morph, locks".to_string(),
+        module: "fx",
+        what: "macros, mod matrix and morph for a performance set",
+        block: Box::new(move |b, l, r| {
+            let len = l.len();
+            let f0 = b * len as u64;
+            input(rate, f0, &mut seed, l, r);
+            events.clear();
+            let next = f0.div_ceil(step) * step;
+            if next < f0 + len as u64 {
+                let n = next / step;
+                let ev = if n % 2 == 0 {
+                    ModEvent::Lock {
+                        addr: lock,
+                        value: 300.0 + (n % 7) as f32 * 100.0,
+                    }
+                } else {
+                    ModEvent::Unlock { addr: lock }
+                };
+                events.push(ModTimed::new((next - f0) as u32, ev));
+            }
+            let ctx = Ctx {
+                rate,
+                frame: f0,
+                bpm: 120.0,
+                beats: f0 as f64 * 2.0 / rate as f64,
+                playing: true,
+                sidechain: None,
+            };
+            let follow = [Some((&l[..], &r[..])), Some((&r[..], &l[..])), None, None];
+            e.process(&ctx, len, &events, &follow, &mut |_, _| sent += 1);
         }),
         mem_bytes: 0,
     }
