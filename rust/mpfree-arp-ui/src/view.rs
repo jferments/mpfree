@@ -4,12 +4,13 @@
 //! - The **Arp panel** shows every setting of one track's arp beside the
 //!   pads: mode tabs, the list the wheel moves through, the Q-Link sliders or
 //!   the pattern buttons, and the step strip while the arp is generating.
-//! - The **quick band** comes up over the pads while NOTE REPEAT is held, or
-//!   while notes are latched: big rate buttons, Latch, and the next steps.
+//! - The **quick band** comes up beside the pads while NOTE REPEAT is held,
+//!   or while notes are latched: big rate buttons, Latch, and the next steps.
 //!
 //! The arp is a way of playing the pads, not a place, so neither is a
-//! top-level tab: the app shows the panel in its Play page's right-hand
-//! column and the band over its pads, and puts [`chip`] in its header. The
+//! top-level tab: the app shows the panel and the band in its Play page's
+//! right-hand column, so the pads never move, and puts [`chip`] in its
+//! header. The
 //! design is in the arpeggiator design doc (`docs/project/arpeggiator.md`).
 //!
 //! The screens do not own the engine. The app copies what they need into an
@@ -31,20 +32,27 @@ pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
 pub const RATES: &str = "arp-rates";
 
-/// Direct: nothing is generated, so there is no step strip and the pads get
-/// the room back.
+/// Every layout keeps the pads where the Play page has them: the arp's
+/// widgets only ever take the right-hand column, [`SIDE`] pixels wide, so
+/// nothing under the player's fingers moves or resizes when the band or the
+/// panel comes up.
+///
+/// Direct: nothing is generated, so there is no step strip.
 pub const DIRECT_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, hint:26)";
 /// Repeat and Arp: the list (rates or orders) over the Q-Link sliders, and
 /// the step strip.
 pub const ARP_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, arp-steps:64, hint:26)";
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236, arp-steps:112):460):*, hint:26)";
 /// Pattern: the pattern list over the pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128):460):*, arp-steps:64, hint:26)";
-/// The quick band over the pads: the rate buttons and Latch, then the next
-/// steps. The rate row is tall enough for 76 px buttons.
-pub const QUICK_LAYOUT: &str = "col(header:60, pads:*, arp-rates:92, arp-steps:64, hint:26)";
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
+/// The quick band beside the pads: the rate buttons and Latch, then the
+/// next steps, in the column the Play page uses for its kit list.
+pub const QUICK_LAYOUT: &str = "col(header:60, row(pads:*, col(arp-rates:*, arp-steps:112):460):*, hint:26)";
+/// The width of the right-hand column every layout here shares with the
+/// app's Play page.
+pub const SIDE: i32 = 460;
 
 /// The mode tabs, in [`Mode`] order.
 pub const MODE_TABS: [&str; 4] = ["Direct", "Repeat", "Arp", "Pattern"];
@@ -296,7 +304,7 @@ pub fn chips(st: &ArpState) -> Vec<Chip> {
 /// The hint line under the panel, for each mode.
 pub fn hint(mode: Mode) -> &'static str {
     match mode {
-        Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · SHIFT+NOTE REPEAT: latch",
+        Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · press it twice: latch",
         Mode::Repeat => "Hold or latch pads · Wheel: rate · Q-Links: rate, gate, swing, octaves",
         Mode::Arp => "Hold or latch pads · Wheel: order · Q-Links: rate, gate, swing, octaves · TAP TEMPO",
         Mode::Pattern => "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern",
@@ -567,11 +575,18 @@ mod tests {
         let bar = s.ui.get::<RateBar>(RATES).unwrap();
         assert_eq!(bar.rates, ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]);
         assert_eq!((bar.active, bar.latched), (3, false));
-        for i in 0..=bar.rates.len() {
-            let b = bar.button(r, i);
+        let buttons: Vec<_> = (0..=bar.rates.len()).map(|i| bar.button(r, i)).collect();
+        for (i, b) in buttons.iter().enumerate() {
             assert!(b.w >= crate::widgets::MIN_TOUCH && b.h >= crate::widgets::MIN_TOUCH, "button {i}: {b:?}");
-            assert!(b.right() <= r.right(), "button {i}: {b:?}");
+            assert!(b.x >= r.x && b.right() <= r.right() && b.y >= r.y && b.bottom() <= r.bottom(), "button {i}: {b:?}");
+            for (j, o) in buttons.iter().enumerate().skip(i + 1) {
+                assert!(b.intersect(*o).is_empty(), "buttons {i} and {j} overlap: {b:?} {o:?}");
+            }
         }
+        // Beside the pads: straight rates on top, each triplet under its rate.
+        assert_eq!(buttons[1].x, buttons[2].x, "1/8T under 1/8");
+        assert!(buttons[2].y > buttons[1].y);
+        assert!(buttons[7].w > buttons[0].w * 3, "Latch spans the column");
         let (rate32, latch) = (bar.button(r, 5), bar.button(r, 7));
         let ev = s.ui.touch(1, Touch::Down, rate32.x + 10, rate32.y + 10).unwrap();
         assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Rate(Rate::ThirtySecond)));
@@ -726,11 +741,39 @@ mod tests {
         st.settings.mode = Mode::Arp;
         page.update(&mut ui, &st).unwrap();
         assert!(ui.rect_of(QLINKS).is_some() && ui.rect_of(ACTIONS).is_none());
-        // Direct: the strip goes, and the pads take its room.
+        // Direct: the strip goes, and the list takes its room.
         let pads = ui.rect_of("pads").unwrap();
         st.settings.mode = Mode::Direct;
         page.update(&mut ui, &st).unwrap();
         assert!(ui.rect_of(STEPS).is_none() && ui.rect_of(QLINKS).is_some());
-        assert!(ui.rect_of("pads").unwrap().h > pads.h);
+        assert_eq!(ui.rect_of("pads").unwrap(), pads);
+    }
+
+    #[test]
+    fn the_pads_never_move_between_play_the_band_and_the_panel() {
+        let st = state(Settings { mode: Mode::Arp, ..Settings::default() }, &[0, 4, 7], 3);
+        let mut ui = Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", mpfree_ui::widgets::Header::new(&["Play"]));
+        ui.add("pads", mpfree_ui::widgets::PadGrid::new(16, 4));
+        ui.add("kits", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
+        ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
+        // The pad player's Play page: pads, and a column of its own beside them.
+        ui.add_page("Play", "col(header:60, row(pads:*, kits:460):*, hint:26)").unwrap();
+        let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
+        ui.show("Play").unwrap();
+        let pads = ui.rect_of("pads").unwrap();
+        let kits = ui.rect_of("kits").unwrap();
+        assert_eq!(kits.w, SIDE);
+        ui.show("Arp quick").unwrap();
+        assert_eq!(ui.rect_of("pads").unwrap(), pads, "the quick band");
+        for name in [RATES, STEPS] {
+            let r = ui.rect_of(name).unwrap();
+            assert!(r.x >= kits.x && r.right() <= kits.right(), "{name} stays in the column: {r:?}");
+        }
+        ui.show("Arp").unwrap();
+        for mode in MODES_ALL {
+            page.update(&mut ui, &state(Settings { mode, ..Settings::default() }, &[0, 4, 7], 3)).unwrap();
+            assert_eq!(ui.rect_of("pads").unwrap(), pads, "the panel in {mode:?}");
+        }
     }
 }

@@ -156,8 +156,8 @@ impl App {
         fx
     }
 
-    /// SHIFT + NOTE REPEAT, the band's Latch button, or NOTE REPEAT alone
-    /// while latched (which lets go).
+    /// SHIFT + NOTE REPEAT, NOTE REPEAT pressed twice, the band's Latch
+    /// button, or NOTE REPEAT alone while latched (which lets go).
     pub(super) fn toggle_latch(&mut self) -> Vec<Effect> {
         self.latched = !self.latched;
         let mut fx = vec![Effect::Note(if self.latched { "Latch on" } else { "Latch off" }.to_string())];
