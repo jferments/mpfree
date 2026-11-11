@@ -3406,6 +3406,88 @@ mod tests {
     }
 
     #[test]
+    fn to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back() {
+        use mpfree_sampler::model::{Keys, PadsPlay};
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::play_tab;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        // Grid of 4 on A1-A4, as keys from C2.
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        p.apply(ToUi::SampleQLink(3, -16));
+        p.take_actions();
+        tap(&mut p, chop_tab::BUTTONS, 3);
+        let kit = p.sample.project(0).unwrap();
+        assert_eq!(kit.pad(1).unwrap().keys, Some(Keys::one(37)));
+        assert_eq!(kit.pads_play(), PadsPlay::Keys { from: 36 });
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with("sample: kit 1 (Breaks) pad A5 Break 92: chopped ")
+                && l.ends_with("into 4 slices (Grid) on keys C2 to D#2 (pads A1 to A4; the pads now play notes)")),
+            "{:?}",
+            events_log(&p)
+        );
+        // The pads play C2 up: A5 is E2, which no keygroup holds.
+        let (sent, _) = views(p.take_actions());
+        let view = sent[0].view.as_ref().unwrap();
+        assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(pad));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // On Play, A2 is picked by its hit; Pads play turns the pads back to their sounds.
+        tap(&mut p, chop_tab::BAR, play_tab::TAB);
+        p.apply(ToUi::PadDown {
+            pad: 1,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(1));
+        assert_eq!(p.sample.play().unwrap().1.pad, 1);
+        let index = play_tab::Row::ALL
+            .iter()
+            .position(|r| *r == play_tab::Row::PadsPlay)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: play_tab::LIST.into(),
+            kind: EventKind::Step { index, delta: 1 },
+        });
+        assert_eq!(p.sample.project(0).unwrap().pads_play(), PadsPlay::Pads);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks): the pads play their own sounds"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert!(sent[0].view.as_ref().unwrap().has_pad(pad));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Keys { from: 36 }
+        );
+    }
+
+    #[test]
     fn the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back() {
         use mpfree_sampler_ui::play_tab::{self, Row};
         use mpfree_sampler_ui::play_widgets::LayerMap;
