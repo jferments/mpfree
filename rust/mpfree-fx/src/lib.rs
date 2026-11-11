@@ -11,6 +11,8 @@
 //!   saturation in the feedback, tape-style time changes and freeze.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
+//! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
+//!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
 //!   look-ahead peak limiter that counts overs, and Soft clip and Raw modes.
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
@@ -34,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 mod chain;
+mod cloud;
 mod comp;
 mod crush;
 mod delay;
@@ -43,6 +46,7 @@ mod oversample;
 mod svf;
 
 pub use chain::{Chain, ChainStats, MAX_SLOT_EVENTS};
+pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
 pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
@@ -56,6 +60,7 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::cloud::ids as cloud;
     pub use crate::comp::ids as compressor;
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
@@ -63,6 +68,14 @@ pub mod ids {
     pub use crate::master::ids as master;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
+}
+
+/// A factory preset: a name and the parameter values that differ from the
+/// node's defaults (the same shape as `mpfree_synth::Preset`).
+#[derive(Clone, Copy, Debug)]
+pub struct Preset {
+    pub name: &'static str,
+    pub values: &'static [(u16, f32)],
 }
 
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,

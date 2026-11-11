@@ -1,0 +1,17 @@
+[package]
+name = "mpfree-time-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The time engine's screens for the MPC One: the transport bar, the Clips launch grid and the takes list, built on mpfree-ui"
+
+[dependencies]
+mpfree-play = { path = "../mpfree-play" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-time-preview"
+path = "src/bin/preview.rs"

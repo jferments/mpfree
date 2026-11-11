@@ -23,7 +23,7 @@ impl Lcg {
     fn range(&mut self, lo: usize, hi: usize) -> usize { lo + (self.next() as usize) % (hi - lo + 1) }
 }
 
-const NAMES: [&str; 7] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety"];
+const NAMES: [&str; 8] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety", "cloud reverb"];
 
 fn make(i: usize) -> Box<dyn Node> {
     match i {
@@ -33,7 +33,8 @@ fn make(i: usize) -> Box<dyn Node> {
         3 => Box::new(Crush::new()),
         4 => Box::new(Delay::new()),
         5 => Box::new(Compressor::new()),
-        _ => Box::new(MasterSafety::new()),
+        6 => Box::new(MasterSafety::new()),
+        _ => Box::new(Cloud::new()),
     }
 }
 
@@ -496,6 +497,7 @@ fn full_chain() -> Chain {
     c.push(Box::new(Delay::new()));
     c.push(Box::new(Compressor::new()));
     c.push(Box::new(DjFilter::new()));
+    c.push(Box::new(Cloud::new()));
     c.push(Box::new(MasterSafety::new()));
     c
 }
@@ -504,12 +506,16 @@ fn full_chain() -> Chain {
 fn chain_gives_the_same_output_for_any_block_size() {
     let frames = 96_000;
     let input = program(frames);
-    let switches = [(5_000, 3, false), (9_000, 0, false), (20_000, 3, true), (20_500, 2, false), (30_000, 0, true), (31_000, 3, false), (60_000, 3, true), (60_400, 3, false), (70_000, 2, true)];
+    let switches = [(5_000, 3, false), (9_000, 0, false), (20_000, 3, true), (20_500, 2, false), (30_000, 0, true), (31_000, 3, false), (40_000, 6, false), (60_000, 3, true), (60_400, 3, false), (70_000, 2, true), (80_000, 6, true)];
     let mut moves = Vec::new();
     let c = full_chain();
     for slot in 0..c.len() {
         // No freeze here: an endless tail turning finite is checked per block.
-        let skip: &[u16] = if slot == 3 { &[ids::delay::FREEZE] } else { &[] };
+        let skip: &[u16] = match slot {
+            3 => &[ids::delay::FREEZE],
+            6 => &[ids::cloud::FREEZE],
+            _ => &[],
+        };
         for (f, id, v) in automation(c.node(slot).unwrap().params(), frames, 40 + slot as u64, skip) { moves.push((f, slot, id, v)); }
     }
     moves.sort_by_key(|m| m.0);
