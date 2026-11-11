@@ -1942,6 +1942,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
+        // The transport runs first, so the arp can follow this period's
+        // clock (TimeHost::arp_clock); the clips play and record after.
+        time.advance(PERIOD as u32);
         app.process(PERIOD as u32, &mut events);
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
