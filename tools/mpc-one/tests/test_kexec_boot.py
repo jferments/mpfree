@@ -401,7 +401,8 @@ class KexecBootTests(unittest.TestCase):
         self.assertIn("PROBLEM: an MMC block device exists", res.stdout)
         self.assertIn("PROBLEM: /data is not a tmpfs", res.stdout)
         self.assertIn("RESULT: the test build is running, but some checks failed", res.stdout)
-        self.assertIn("NEXT: switch the MPC off with its power switch", res.stdout)
+        self.assertIn("NEXT: leave it running and do this round's steps on the test build", res.stdout)
+        self.assertIn("When they are done, switch the MPC off with its power switch", res.stdout)
 
     def test_wrapper_needs_a_terminal_and_the_opt_in(self):
         env = dict(self.env, MPC_KEY=self.key)

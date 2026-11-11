@@ -5,7 +5,8 @@
 //! It analyses the file, chops it, puts the slices on pads, plays them back
 //! through the sampler engine, and writes:
 //!
-//! - `chop-report.txt`: tempo, the slice table and the rebuild check.
+//! - `chop-report.txt`: tempo, root pitch, the slice table (with each
+//!   slice's note) and the rebuild check.
 //! - `rebuild.wav`: the pads hit in order at their slice starts. It should
 //!   sound exactly like the input; the report says how close it is.
 //! - `one-by-one.wav`: each slice alone, with a short gap after it.
@@ -19,7 +20,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use mpfree_analysis::SilenceSettings;
+use mpfree_analysis::{note_name, SilenceSettings};
 use mpfree_sampler::chop::{demo_beat, SourceAnalysis};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::{ChopSet, Project, Source};
@@ -177,7 +178,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut rep = String::new();
     let secs = |f: u64| f as f64 / f64::from(rate);
-    writeln!(rep, "MPFREE_CHOP_V1")?;
+    writeln!(rep, "MPFREE_CHOP_V2")?;
     writeln!(rep, "input={input_name}")?;
     writeln!(rep, "frames={frames} seconds={:.3} channels={} rate={rate}", secs(frames as u64), source.channels())?;
     match analysis.tempo() {
@@ -188,12 +189,17 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(b) => writeln!(rep, "loop_tempo={b:.3} (if the file is a loop cut to whole beats)")?,
         None => writeln!(rep, "loop_tempo=none")?,
     }
+    match analysis.pitch() {
+        Some(p) => writeln!(rep, "root_pitch={} cents={:+.1} hz={:.2} confidence={:.2}", note_name(p.note), p.cents, p.hz, p.confidence)?,
+        None => writeln!(rep, "root_pitch=none")?,
+    }
     writeln!(rep, "mode={} sensitivity={} slices={}", o.mode, o.sensitivity, chop.slices())?;
     if chop.slices() > n { writeln!(rep, "note=only the first {n} slices went on pads")?; }
-    writeln!(rep, "{:>4} {:>10} {:>10} {:>10} {:>9}", "pad", "start", "end", "start_s", "length_ms")?;
+    writeln!(rep, "{:>4} {:>10} {:>10} {:>10} {:>9} {:>11}", "pad", "start", "end", "start_s", "length_ms", "note")?;
     for i in 0..n {
         let (a, b) = chop.bounds(i).unwrap();
-        writeln!(rep, "{:>4} {:>10} {:>10} {:>10.4} {:>9.1}", i + 1, a, b, secs(a), secs(b - a) * 1000.0)?;
+        let note = analysis.pitch_of(a, b).map_or("-".to_string(), |p| format!("{}{:+.0}", note_name(p.note), p.cents));
+        writeln!(rep, "{:>4} {:>10} {:>10} {:>10.4} {:>9.1} {:>11}", i + 1, a, b, secs(a), secs(b - a) * 1000.0, note)?;
     }
     let pass = worst < 1e-4;
     writeln!(rep, "rebuild_max_difference={worst:.7}")?;

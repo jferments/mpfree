@@ -1,7 +1,8 @@
 //! The engine's real-time calls (render, apply, schedule) and the rolling
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
-//! loops, layers, chokes, stealing, filters and sample-accurate events.
+//! loops, layers, chokes, stealing, filters, sample-accurate events,
+//! granular pads and pad pressure.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -72,6 +73,27 @@ fn render_and_events_never_allocate() {
         pad.filter = Filter { kind: FilterKind::LowPass, poles: 4, cutoff_hz: 1000.0, resonance: 0.5, env_octaves: 3.0 };
         pad.amp = Ahdsr { attack_ms: 2.0, hold_ms: 1.0, decay_ms: 50.0, sustain: 0.6, release_ms: 30.0 };
         pad.filter_env = Ahdsr { attack_ms: 1.0, hold_ms: 0.0, decay_ms: 80.0, sustain: 0.1, release_ms: 30.0 };
+        let targets = [PressureTarget::Off, PressureTarget::Level, PressureTarget::Pitch, PressureTarget::Filter];
+        pad.pressure = PressureRoute { target: targets[i % 4], depth: if i % 2 == 0 { 0.8 } else { -0.6 } };
+        p.set_pad(i, Some(pad), None).unwrap();
+    }
+    // Four granular pads: busy clouds, one reversed, one synced, so the grain
+    // budget fills and voices are stolen while grains play.
+    for i in 16..20usize {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        r.reverse = i == 17;
+        r.tune_cents = (i as i32 - 18) * 700;
+        r.grain = GrainParams { spray: 0.6, size_ms: 300.0, density: 1000.0, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        if i == 19 {
+            r.grain.window = GrainWindow::Exponential { decay: 6.0 };
+            r.grain.sync = Some(TempoSync { frames_per_beat: 22_050.0, grains_per_beat: Some(8.0), size_beats: Some(0.25) });
+        }
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 2;
+        pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 3000.0, resonance: 0.2, env_octaves: 1.0 };
+        let targets = [PressureTarget::GrainDensity, PressureTarget::GrainSize, PressureTarget::GrainPosition, PressureTarget::GrainSpray];
+        pad.pressure = PressureRoute { target: targets[i - 16], depth: 1.0 };
         p.set_pad(i, Some(pad), None).unwrap();
     }
     let mut e = Engine::new(rate, 24);
@@ -94,15 +116,33 @@ fn render_and_events_never_allocate() {
         e.apply(Event::NoteOn { pad, velocity: (block % 127 + 1) as u8 });
         e.schedule(block % 128, Event::NoteOn { pad: (pad + 3) % 16, velocity: 90 });
         e.schedule(block * 31 % 200, Event::NoteOff { pad: (pad + 5) % 16 });
+        let g = 16 + (block % 4) as u8;
+        if block % 3 == 0 { e.schedule(block % 100, Event::NoteOn { pad: g, velocity: 100 }); }
+        if block % 5 == 0 { e.schedule(block % 90, Event::NoteOff { pad: 16 + ((block + 1) % 4) as u8 }); }
+        e.schedule(block * 17 % 128, Event::Pressure { pad: (block % 20) as u8, value: (block * 37 % 128) as u8 });
         if block % 300 == 299 { e.apply(Event::AllOff); }
         e.render(&mut l, &mut r);
         rec.push_planar(&l, &r);
     }
+    // Then only the granular pads, held long enough to fill the grain budget.
+    for pad in 16..20u8 {
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+    }
+    for block in 0..200u32 {
+        for pad in 16..20u8 { e.schedule(block % 64, Event::Pressure { pad, value: (block * 5 % 128) as u8 }); }
+        e.render(&mut l, &mut r);
+        rec.push_planar(&l, &r);
+    }
+    e.apply(Event::AllOff);
+    for _ in 0..100 { e.render(&mut l, &mut r); }
     watch(false);
     // Voices that end drop their handle to the audio; the project still holds
     // it, so that is a counter decrement, not a free.
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while rendering");
     assert!(e.stats().hits > 2000);
-    assert_eq!(reader.written(), 2000 * 128);
+    assert!(e.stats().skipped_grains > 0, "the grain budget never filled; the test is not busy enough");
+    assert_eq!(reader.written(), 2200 * 128);
+    assert_eq!(e.live_grains(), 0, "every grain handed back after AllOff");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
 }
