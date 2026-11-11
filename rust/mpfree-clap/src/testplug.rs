@@ -44,6 +44,12 @@ pub mod gain_params {
     pub const GAIN: u32 = 1;
     /// 1 makes `process` return `CLAP_PROCESS_ERROR`.
     pub const FAIL: u32 = 2;
+    /// Milliseconds `process` sleeps (a plugin that misses its deadline;
+    /// for the sandbox's tests only).
+    pub const STALL: u32 = 3;
+    /// 1 makes `process` abort the process (a crashing plugin; for the
+    /// sandbox's tests only, never in the host's own process).
+    pub const CRASH: u32 = 4;
 }
 
 unsafe extern "C" fn entry_init(_path: *const c_char) -> bool {
@@ -253,11 +259,29 @@ static SYNTH_PARAMS: [ParamDef; 6] = [
         CLAP_PARAM_IS_HIDDEN,
     ),
 ];
-static GAIN_PARAMS: [ParamDef; 2] = [
+static GAIN_PARAMS: [ParamDef; 4] = [
     (gain_params::GAIN, c"Gain", c"", 0.0, -60.0, 24.0, AUTO),
     (
         gain_params::FAIL,
         c"Fail",
+        c"Test",
+        0.0,
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED,
+    ),
+    (
+        gain_params::STALL,
+        c"Stall",
+        c"Test",
+        0.0,
+        0.0,
+        1000.0,
+        CLAP_PARAM_IS_STEPPED,
+    ),
+    (
+        gain_params::CRASH,
+        c"Crash",
         c"Test",
         0.0,
         0.0,
@@ -641,6 +665,13 @@ unsafe fn gain_process(me: &mut Plug, pr: &clap_process) -> clap_process_status 
         let g = db(me.get(gain_params::GAIN)) as f32;
         *ol.add(i as usize) = *il.add(i as usize) * g;
         *or.add(i as usize) = *ir.add(i as usize) * g;
+    }
+    let stall = me.get(gain_params::STALL);
+    if stall > 0.0 {
+        std::thread::sleep(std::time::Duration::from_millis(stall as u64));
+    }
+    if me.get(gain_params::CRASH) >= 0.5 {
+        std::process::abort();
     }
     if me.get(gain_params::FAIL) >= 0.5 {
         CLAP_PROCESS_ERROR
