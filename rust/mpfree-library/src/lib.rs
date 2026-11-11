@@ -1,4 +1,5 @@
-//! The user's library: projects, samples, kits, patterns and recordings on
+//! The user's library: projects, samples, kits, instrument presets,
+//! patterns and recordings on
 //! the test stick, and the Trash.
 //!
 //! It lives in `library/` inside the data folder the app is given with
@@ -8,7 +9,8 @@
 //!
 //! ```text
 //! library/
-//!   Projects/  Samples/  Kits/  Patterns/  Recordings/   the places
+//!   Projects/  Samples/  Kits/  Instruments/  Patterns/  Recordings/
+//!   Instruments/<engine>/<name>.preset                    user presets
 //!   .trash/<id>/<name>  .trash/<id>/origin.txt           deleted items
 //! ```
 //!
@@ -60,6 +62,10 @@ pub enum Place {
     Projects,
     Samples,
     Kits,
+    /// User presets, one folder per engine by its display name
+    /// (`Instruments/FM/Glass bell.preset`). The synth thread's
+    /// `mpfree-instruments` writes and reads the preset text.
+    Instruments,
     Patterns,
     Recordings,
     Trash,
@@ -68,10 +74,11 @@ pub enum Place {
 impl Place {
     /// The places a person keeps things in, in the order the browser lists
     /// them (the Trash is apart).
-    pub const ALL: [Place; 5] = [
+    pub const ALL: [Place; 6] = [
         Place::Projects,
         Place::Samples,
         Place::Kits,
+        Place::Instruments,
         Place::Patterns,
         Place::Recordings,
     ];
@@ -82,6 +89,7 @@ impl Place {
             Place::Projects => "Projects",
             Place::Samples => "Samples",
             Place::Kits => "Kits",
+            Place::Instruments => "Instruments",
             Place::Patterns => "Patterns",
             Place::Recordings => "Recordings",
             Place::Trash => TRASH,
@@ -201,6 +209,8 @@ pub enum Kind {
     Project,
     Audio(AudioFormat),
     Kit,
+    /// An instrument preset (`.preset`).
+    Preset,
     Pattern,
     Other,
 }
@@ -213,6 +223,7 @@ impl Kind {
         }
         match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
             Some(e) if e == "kit" => Kind::Kit,
+            Some(e) if e == "preset" => Kind::Preset,
             Some(e) if e == "pattern" || e == "arp" => Kind::Pattern,
             _ => Kind::Other,
         }
@@ -1099,6 +1110,15 @@ pub(crate) mod tests {
         assert!(lib.empty_trash().unwrap() >= 3 + 3);
         assert!(lib.trash().unwrap().is_empty());
         assert!(lib.restore("../../etc").is_err());
+    }
+
+    #[test]
+    fn kinds_come_from_the_extension() {
+        assert_eq!(Kind::of_file("Glass bell.preset"), Kind::Preset);
+        assert_eq!(Kind::of_file("Boom bap.KIT"), Kind::Kit);
+        assert_eq!(Kind::of_file("Up down.arp"), Kind::Pattern);
+        assert_eq!(Kind::of_file("notes.txt"), Kind::Other);
+        assert_eq!(Place::from_label("Instruments"), Some(Place::Instruments));
     }
 
     #[test]

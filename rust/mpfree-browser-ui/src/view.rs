@@ -654,6 +654,7 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, row: &Row, selected: bool) {
         Kind::Project => t.accent2,
         Kind::Folder => t.text_dim,
         Kind::Kit => t.good,
+        Kind::Preset => t.accent2,
         _ => t.text_faint,
     };
     kind_icon(cx, icon, row.kind, colour);
@@ -754,6 +755,12 @@ fn kind_icon(cx: &mut PaintCx, r: Rect, k: Kind, c: Color) {
                     .fill_round_rect(Rect::new(x + dx, y + dy, 10, 9), 2, c);
             }
         }
+        Kind::Preset => {
+            // A knob: a ring with its pointer.
+            cx.canvas
+                .stroke_round_rect(Rect::new(x - 10, y - 10, 20, 20), 10, 2, c);
+            cx.canvas.fill_rect(Rect::new(x - 1, y - 9, 2, 9), c);
+        }
         Kind::Pattern => {
             for i in 0..4 {
                 let h = if i % 2 == 0 { 8 } else { 14 };
@@ -773,6 +780,7 @@ fn source_icon(cx: &mut PaintCx, r: Rect, s: Source, c: Color) {
         Source::Place(Place::Projects) => kind_icon(cx, r, Kind::Project, c),
         Source::Place(Place::Samples) => kind_icon(cx, r, Kind::Audio(AudioFormat::Wav), c),
         Source::Place(Place::Kits) | Source::Factory => kind_icon(cx, r, Kind::Kit, c),
+        Source::Place(Place::Instruments) => kind_icon(cx, r, Kind::Preset, c),
         Source::Place(Place::Patterns) => kind_icon(cx, r, Kind::Pattern, c),
         Source::Place(Place::Recordings) => {
             draw::dot(cx, r.x + r.w / 2, r.y + r.h / 2, 8, c);

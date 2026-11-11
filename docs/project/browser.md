@@ -6,7 +6,7 @@
 
 BROWSE opens the browser over the current page, under the top bar, as Prefs and the mixer do. It is not a tab. BROWSE again closes it. SHIFT + BROWSE saves the project from any page.
 
-- **Places** on the left: Projects, Samples, Kits, Patterns, Recordings; Recent and Favourites; Factory (the kits made from the owner's own backup, read only); Trash.
+- **Places** on the left: Projects, Samples, Kits, Instruments, Patterns, Recordings; Recent and Favourites; Factory (the kits made from the owner's own backup, read only); Trash.
 - **The list** in the middle: folders first, then files, in natural order (`Kick 2` before `Kick 10`). Back, the path, New folder and Paste at the top. The filter chips at the bottom (All, Audio, Projects, Kits). A line under them says what just happened, or why something failed.
 - **The selected item** on the right: for a sound, its length, rate, bits and channels and a quick waveform; for a project, its tempo and when it was saved. Then its buttons: Load, Load to pad, Audition, Favourite, Rename, Copy, Cut, Delete (Open for folders and projects, Put back in the Trash).
 - **Audition** is on by default: moving the selection to a sound plays it once through the preview path. A list arriving never plays anything by itself.
@@ -32,12 +32,17 @@ Everything is written to `library/` inside the data folder the app is given with
 library/
   Projects/<name>/        project.txt, parts/<owner>.txt, samples/<hash>.<ext>, versions/<id>/
   Samples/  Kits/  Patterns/  Recordings/
+  Instruments/<engine>/<name>.preset   user presets (Jay, 2026-11-11 22:47Z)
   .trash/<id>/<name>      with origin.txt (where it was, when)
 ```
 
 - A location is a place plus checked names (`Loc`), never a typed path. Every folder on the way must be a real folder; links are never followed for reads or writes.
 - Whole or nothing: a new or copied file is written to `NAME.part`, synced and renamed; a copied folder is built under a hidden name and renamed.
 - Every file operation runs on the `mpfree-library` worker thread, never on the UI or audio thread.
+
+## Instrument presets
+
+`Instruments/` holds one folder per engine, named as the engine shows it (Poly, FM, Wavetable, Pluck, Drums), with that engine's user presets as `<name>.preset` text files. The synth thread's `mpfree-instruments` turns a node into preset text and back and does no file work of its own: it saves with `Library::write_new` (whole or nothing) and lists through the worker, so the Trash and name checks stay here. Load on a preset sends `LoadPreset { loc, path, engine }`.
 
 ## Projects
 
@@ -63,7 +68,7 @@ for a in mpfree_browser_ui::step(&mut ui, &mut browser) { /* BrowseAction */ }
 browser.save(Snapshot::from_parts(meta, &[&transport, &sampler, ...]), now_utc);
 ```
 
-`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
+`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
 
 When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_hello_mpc.py` needs `rust/mpfree-library/src` in `LINKED_SRC`, and its write sites (all in `lib.rs` and `project.rs`, all under the library folder) added to the reviewed list.
 

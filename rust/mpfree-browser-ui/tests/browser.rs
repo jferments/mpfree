@@ -118,6 +118,24 @@ fn load_and_load_to_pad_hand_the_file_to_the_sampler_and_remember_it() {
     ));
     b.go_source(src("Recent"));
     assert_eq!(names(&b), ["Rhodes chord.wav"]);
+    // A preset goes to the synth side with its engine's name.
+    b.go_source(src("Instruments"));
+    assert_eq!(names(&b), ["FM", "Poly"]);
+    select(&mut b, "FM");
+    b.push();
+    select(&mut b, "Glass bell.preset");
+    assert!(b
+        .screen()
+        .detail
+        .lines
+        .contains(&("Engine".to_string(), "FM".to_string())));
+    b.take_actions();
+    b.push();
+    assert!(matches!(
+        &b.take_actions()[0],
+        BrowseAction::LoadPreset { loc, engine, .. }
+            if engine == "FM" && loc.display() == "Instruments / FM / Glass bell.preset"
+    ));
     // Factory kits load by index.
     b.go_source(src("Factory"));
     b.dial(2);

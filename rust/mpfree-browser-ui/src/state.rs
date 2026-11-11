@@ -23,10 +23,11 @@ pub enum Source {
 
 /// The places column, top to bottom. A gap is drawn before Recent and
 /// before Trash.
-pub const SOURCES: [Source; 9] = [
+pub const SOURCES: [Source; 10] = [
     Source::Place(Place::Projects),
     Source::Place(Place::Samples),
     Source::Place(Place::Kits),
+    Source::Place(Place::Instruments),
     Source::Place(Place::Patterns),
     Source::Place(Place::Recordings),
     Source::Recent,
@@ -176,6 +177,14 @@ pub enum BrowseAction {
     LoadKit {
         loc: Loc,
         path: PathBuf,
+    },
+    /// An instrument preset from the library, for the synth thread's
+    /// `mpfree-instruments` to read. `engine` is the folder under
+    /// Instruments it is in (`FM`, `Poly` ...), empty if none.
+    LoadPreset {
+        loc: Loc,
+        path: PathBuf,
+        engine: String,
     },
     /// A kit from kits.bin, by index; `to_pad` for Load to pad.
     LoadFactoryKit {
@@ -874,7 +883,7 @@ impl Browser {
                 let Some(loc) = loc else { return };
                 match r.kind {
                     Kind::Project | Kind::Folder => self.button(Button::Open),
-                    Kind::Audio(_) | Kind::Kit => {
+                    Kind::Audio(_) | Kind::Kit | Kind::Preset => {
                         let Ok(path) = self.library().file_path(&loc) else {
                             self.status = Some((format!("{} is not there", r.name), true));
                             return;
@@ -883,6 +892,11 @@ impl Browser {
                             (Kind::Kit, _) => BrowseAction::LoadKit {
                                 loc: loc.clone(),
                                 path,
+                            },
+                            (Kind::Preset, _) => BrowseAction::LoadPreset {
+                                loc: loc.clone(),
+                                path,
+                                engine: preset_engine(&loc),
                             },
                             (_, true) => BrowseAction::LoadToPad {
                                 loc: loc.clone(),
@@ -1326,6 +1340,20 @@ impl Browser {
                     Button::Delete,
                 ];
             }
+            Kind::Preset => {
+                if let Some(e) = loc.map(preset_engine).filter(|e| !e.is_empty()) {
+                    d.lines.push(("Engine".into(), e));
+                }
+                d.lines.push(("Size".into(), r.detail.clone()));
+                d.buttons = vec![
+                    Button::Load,
+                    Button::Favourite,
+                    Button::Rename,
+                    Button::Copy,
+                    Button::Cut,
+                    Button::Delete,
+                ];
+            }
             Kind::Kit => {
                 d.lines.push(("Size".into(), r.detail.clone()));
                 d.buttons = vec![
@@ -1418,7 +1446,17 @@ pub fn kind_label(k: Kind) -> String {
             }
         ),
         Kind::Kit => "Kit".into(),
+        Kind::Preset => "Preset".into(),
         Kind::Pattern => "Pattern".into(),
         Kind::Other => "File".into(),
+    }
+}
+
+/// The engine a preset belongs to: the first folder under Instruments
+/// (`Instruments/FM/Bells/Glass.preset` is FM's), or empty.
+fn preset_engine(loc: &Loc) -> String {
+    match (loc.place, loc.names()) {
+        (Place::Instruments, [engine, _, ..]) => engine.clone(),
+        _ => String::new(),
     }
 }
