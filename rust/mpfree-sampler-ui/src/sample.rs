@@ -4,11 +4,15 @@
 
 use std::sync::Arc;
 
-use mpfree_sampler::model::{Fade, FadeCurve, Layer, Loop, LoopMode, Pad, PlayMode, Project, Region, Source};
+use mpfree_sampler::model::{
+    Ahdsr, Fade, FadeCurve, Filter, FilterKind, Layer, LayerSelect, Loop, LoopMode, Pad, PlayMode, PressureRoute,
+    PressureTarget, Project, Region, Source,
+};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::chop_tab::{self, ChopState, ChopTab};
+use crate::play_tab::{self, PlayState, PlayTab};
 use crate::source::SourceView;
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
@@ -18,9 +22,10 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
 pub const EDITOR_TAB: usize = 4;
-/// The page names the samples add the Wave and Chop tabs under.
+/// The page names the samples add the Wave, Chop and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
+pub const PLAY_PAGE: &str = "Sample · Play";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -107,12 +112,22 @@ pub struct ChopSample {
     pub state: ChopState,
 }
 
+/// One sample screen of the Play tab.
+pub struct PlaySample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: PlayTab,
+    pub project: Project,
+    pub state: PlayState,
+}
+
 /// The app's part of the screen: the header and the hint line.
 pub fn app_ui(fonts: Fonts, p: &Project) -> Ui {
     app_ui_with(fonts, p, HINT)
 }
 
-fn app_ui_with(fonts: Fonts, p: &Project, hint: &str) -> Ui {
+pub fn app_ui_with(fonts: Fonts, p: &Project, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
     let mut header = Header::app(APP_TABS[EDITOR_TAB]);
     let undo = if p.can_undo() { "Undo" } else { "Nothing to undo" };
@@ -142,6 +157,71 @@ pub fn chop_sample(fonts: Fonts) -> Result<ChopSample, String> {
     let tab = ChopTab::add(&mut ui, CHOP_PAGE, &state)?;
     ui.show(CHOP_PAGE)?;
     Ok(ChopSample { name: "chop", about: "The pad's region chopped at its hits (Transient, 50 %)", ui, tab, project, state })
+}
+
+/// The sample project with pad A5 played as three velocity layers (the
+/// loop quieter, as it is, and louder: soft, mid and hard hits), shaped by
+/// an envelope and a resonant low-pass that pressure opens.
+pub fn layered_project() -> (Project, Arc<SourceView>) {
+    let (mut p, view) = project();
+    let region = p.pad(PAD).expect("the sample pad").layers[0].region.clone();
+    let layer = |lo: u8, hi: u8, level_db: f32| Layer { vel_lo: lo, vel_hi: hi, level_db, ..Layer::new(region.clone()) };
+    p.set_pad(PAD, Some(Pad {
+        layers: vec![layer(1, 63, -9.0), layer(64, 109, 0.0), layer(110, 127, 3.0)],
+        select: LayerSelect::All,
+        polyphony: 4,
+        mute_group: Some(1),
+        amp: Ahdsr { attack_ms: 2.0, hold_ms: 0.0, decay_ms: 310.0, sustain: 0.6, release_ms: 900.0 },
+        filter: Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 2400.0, resonance: 0.35, env_octaves: 0.5 },
+        vel_to_start: 0.2,
+        pressure: PressureRoute { target: PressureTarget::Filter, depth: 0.6 },
+        ..Pad::new("Break 92", layer(1, 127, 0.0))
+    }), None).expect("the layered pad is valid");
+    (p, view)
+}
+
+/// The Play tab on `project`'s pad A5, shown.
+fn play_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<PlaySample, String> {
+    let state = PlayState::from_project(&project, PAD, |_| view.clone()).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, play_tab::HINT);
+    let tab = PlayTab::add(&mut ui, PLAY_PAGE, &state)?;
+    ui.show(PLAY_PAGE)?;
+    Ok(PlaySample { name: "play", about: "", ui, tab, project, state })
+}
+
+/// The Play tab's sample screens.
+pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String> {
+    let mut out = Vec::new();
+    let (p, view) = layered_project();
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = ("play", "Three velocity layers, the last hit at 108, an envelope over the loop, a resonant low-pass");
+    s.tab.set_velocity(&mut s.ui, Some(108));
+    out.push(s);
+
+    // The pad as the Wave tab leaves it: one layer, open envelope, no
+    // filter; the list picked down to Release, turned up by the wheel.
+    let (p, view) = project();
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = ("play-plain", "One layer, the open envelope and no filter; Release picked and turned up by the wheel");
+    let index = play_tab::Row::ALL.iter().position(|r| *r == play_tab::Row::Release).unwrap_or(0);
+    let ev = mpfree_ui::UiEvent { widget: play_tab::LIST.into(), kind: mpfree_ui::EventKind::Select(index) };
+    if let Some(list) = s.ui.get_mut::<crate::widgets::SettingList>(play_tab::LIST) {
+        list.selected = index;
+    }
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st);
+    let view = st.sounds[0].view.clone();
+    for _ in 0..3 {
+        let st = s.state.clone();
+        if let Some(a) = s.tab.wheel(&mut s.ui, &st, 1) {
+            a.apply(&mut s.project).map_err(|e| format!("{e:?}"))?;
+        }
+        s.state = PlayState::from_project(&s.project, PAD, |_| view.clone()).ok_or("no pad")?;
+        let st = s.state.clone();
+        s.tab.update(&mut s.ui, &st);
+    }
+    out.push(s);
+    Ok(out)
 }
 
 /// The Chop tab's sample screens.

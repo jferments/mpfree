@@ -44,7 +44,10 @@ const POLY: &[PlanPage] = &[
     pg("Filter", &["Filter", "Filter env"], &[]),
     pg("Env", &["Amp env"], &[]),
     pg("LFO", &["LFO"], &[]),
-    pg("Voice", &["Voice", "Output"], &[pp::GLIDE, pp::PRESSURE_CUTOFF, pp::LEVEL, pp::PAN]),
+    pg("Voice", &["Voice", "Output"], &[pp::GLIDE, pp::BEND_RANGE, pp::LEVEL, pp::PAN]),
+    // Pressure: the threshold, where it's full, and the first two slots'
+    // depths are what a player tunes while playing.
+    pg("Pressure", &["Pressure"], &[pp::PRESS_THRESHOLD, pp::PRESS_FULL_AT, pp::press_depth(0), pp::press_depth(1)]),
 ];
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
@@ -54,6 +57,7 @@ use mpfree_synth::fm_params::{self as fp, op, op_id};
 const FM: &[PlanPage] = &[
     pg("Algo", &["Algo", "Voice", "Output"], &[fp::ALGORITHM, fp::FEEDBACK, fp::TRANSPOSE, fp::LEVEL]),
     pg("Mod", &["LFO", "Pitch env"], &[fp::LFO_SPEED, fp::LFO_PMD, fp::LFO_AMD, fp::LFO_DELAY]),
+    pg("Pressure", &["Pressure"], &[fp::PRESS_THRESHOLD, fp::PRESS_FULL_AT, fp::press_depth(0), fp::press_depth(1)]),
     pg("Op 1", &["Op 1"], &FM_OP_Q[0]),
     pg("Op 2", &["Op 2"], &FM_OP_Q[1]),
     pg("Op 3", &["Op 3"], &FM_OP_Q[2]),
@@ -212,8 +216,12 @@ mod tests {
     fn poly_has_its_own_pages_and_every_param_once() {
         let pages = plan(&POLY_INFO, PARAMS);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Osc", "Filter", "Env", "LFO", "Voice"]);
+        assert_eq!(names, ["Osc", "Filter", "Env", "LFO", "Voice", "Pressure"]);
         every_param_once(&pages, PARAMS.len());
+        // Pressure: the 8 shaper settings and 4 slots fill one page.
+        assert_eq!(pages[5].params.len(), 16);
+        let q: Vec<&str> = qlink_targets(&pages[5], PARAMS).iter().map(|&i| PARAMS[i].name).collect();
+        assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
         // The Q-Links turn the filter page's first four knobs, not its Type.
         let q: Vec<&str> = qlink_targets(&pages[1], PARAMS).iter().map(|&i| PARAMS[i].name).collect();
         assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Env amount"]);
@@ -236,7 +244,10 @@ mod tests {
         let params = fm.params();
         let pages = plan(fm.info(), params);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Algo", "Mod", "Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6", "Kbd 1-2", "Kbd 3-4", "Kbd 5-6"]);
+        assert_eq!(names, ["Algo", "Mod", "Pressure", "Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6", "Kbd 1-2", "Kbd 3-4", "Kbd 5-6"]);
+        assert_eq!(pages[2].params.len(), 16);
+        let q: Vec<&str> = qlink_targets(&pages[2], params).iter().map(|&i| params[i].name).collect();
+        assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
         let mut seen = vec![0; params.len()];
         for p in &pages {
             assert!(p.params.len() <= MAX_TILES, "{}: {} tiles", p.name, p.params.len());
@@ -245,7 +256,7 @@ mod tests {
             }
         }
         assert!(seen.iter().all(|&n| n == 1), "every parameter on exactly one page");
-        for p in &pages[2..8] {
+        for p in &pages[3..9] {
             assert_eq!(p.params.len(), 16);
             let q: Vec<&str> = qlink_targets(p, params).iter().map(|&i| params[i].name).collect();
             assert_eq!(q, ["Output", "Coarse", "Fine", "Velocity"], "{}", p.name);

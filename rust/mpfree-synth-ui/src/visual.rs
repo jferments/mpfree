@@ -201,6 +201,28 @@ pub fn osc_caption(v: &impl Values) -> String {
     }
 }
 
+/// The pressure curve: shaped output (y) against raw pad pressure (x), for
+/// the shaper settings laid out from `base` (see `mpfree_node::pressure`).
+pub fn pressure_curve(v: &impl Values, base: u16) -> Vec<(f32, f32)> {
+    let shape = mpfree_node::PressureShape::from_params(base, |id| v.get(id));
+    (0..=POINTS).map(|i| i as f32 / POINTS as f32).map(|x| (x, shape.map(x))).collect()
+}
+
+/// The pressure card's caption: the curve and the live range, such as
+/// "Firm · 8-85 %".
+pub fn pressure_caption(v: &impl Values, base: u16) -> String {
+    use mpfree_node::pressure::{field, CURVES, MODES};
+    let mode = v.get(base + field::MODE).round() as usize;
+    if mode == 2 {
+        return "off".to_string();
+    }
+    let curve = CURVES.get(v.get(base + field::CURVE).round() as usize).copied().unwrap_or("");
+    let lo = v.get(base + field::THRESHOLD).round();
+    let hi = v.get(base + field::FULL_AT).round().max(lo + 1.0);
+    let highest = if mode == 1 { format!(" · {}", MODES[1].to_lowercase()) } else { String::new() };
+    format!("{curve} · {lo}-{hi} %{highest}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
