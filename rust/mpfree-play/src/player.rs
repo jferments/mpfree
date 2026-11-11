@@ -673,7 +673,7 @@ impl Player {
                     self.end_locks(ticks.start, i as u16, track.dest);
                 }
                 self.cut_hits(i as u16, ticks.start);
-                self.moves_pos[i] = None;
+                self.forget_moves(i);
             }
             if let Some((clip, origin, start)) = playing {
                 if !(track.mute && replace.is_none()) {
@@ -693,7 +693,9 @@ impl Player {
                 // The clip's moves after its locks: a step's lock on the
                 // same tick takes the parameter first, and the move's value
                 // waits under it.
-                if !track.mute {
+                if track.mute || clip.moves.is_empty() {
+                    self.forget_moves(i);
+                } else {
                     self.collect_moves(clip, origin, i, track.dest, &before);
                 }
             }
@@ -743,7 +745,11 @@ impl Player {
                     true,
                     None,
                 );
-                self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
+                if clip.moves.is_empty() {
+                    self.forget_moves(i);
+                } else {
+                    self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
+                }
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -1286,6 +1292,13 @@ impl Player {
                 }
             }
             pass += 1.0;
+        }
+    }
+
+    /// Track `i`'s moves did not play on: the next that do chase first.
+    fn forget_moves(&mut self, i: usize) {
+        if let Some(p) = self.moves_pos.get_mut(i) {
+            *p = None;
         }
     }
 
