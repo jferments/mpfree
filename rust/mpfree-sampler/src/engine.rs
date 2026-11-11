@@ -30,9 +30,11 @@
 //! does its job.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
+use mpfree_lanes::{Lane, Setup};
 
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
@@ -113,6 +115,13 @@ pub const GRAIN_BUDGET: usize = 256;
 pub const MASTER_MEMORY_S: f32 = 8.0;
 /// Granular voices render their grains in chunks of this many frames.
 const GRAIN_CHUNK: usize = 256;
+/// Split ([`Engine::split`]), the lane's voices render at most this many
+/// frames at a time, each into its own pair (longer blocks go in parts).
+pub const LANE_BLOCK: usize = 1024;
+/// Parts of a block shorter than this (between two events close together)
+/// play the lane's voices on the audio thread: handing them over would
+/// cost more than it saves.
+pub const LANE_MIN_FRAMES: usize = 16;
 /// Filter coefficients, and anything pressure moves, are recomputed every
 /// this many frames.
 const FILTER_STEP: u32 = 16;
@@ -629,6 +638,294 @@ fn picks(stereo: bool, pick: ChannelPick) -> (u8, u8) {
     }
 }
 
+/// A share of the voice pool, with their grain voices, grain budget and
+/// buffers. The engine has one; split ([`Engine::split`]), a second one
+/// renders on a lane.
+struct Pool {
+    voices: Vec<Voice>,
+    /// One grain voice per voice slot, used while that slot is granular.
+    grains: Vec<GrainVoice>,
+    budget: Budget,
+    scratch_l: Vec<f32>,
+    scratch_r: Vec<f32>,
+    /// Where the voices of a pad with no output play, so they end on time.
+    unheard_l: Vec<f32>,
+    unheard_r: Vec<f32>,
+    /// The lane's share only: each voice's sound for the part of the block
+    /// it renders ([`LANE_BLOCK`] frames a voice), and the voices that
+    /// played in it.
+    out_l: Vec<f32>,
+    out_r: Vec<f32>,
+    played: Vec<bool>,
+}
+
+/// What a playing voice costs to render, in grains (see [`Pool::cost`]).
+/// A rough figure from the workstation bench, where a sample voice (read,
+/// envelope, filter) costs about as much as 8 to 16 live grains; the
+/// device bench may move it.
+const VOICE_COST: usize = 8;
+
+impl Pool {
+    /// About what this share costs to render now: its playing voices and
+    /// their live grains. A new voice goes to the share that costs less, so
+    /// two granular clouds don't pile up on one core.
+    fn cost(&self) -> usize {
+        VOICE_COST * self.voices.iter().filter(|v| v.active).count() + self.budget.live()
+    }
+
+    /// `n` voices, the first of them slot `first` of the whole pool (it
+    /// seeds their grain voices). `lane`: with the buffers the lane's share
+    /// renders into.
+    fn new(rate: u32, first: usize, n: usize, lane: bool) -> Pool {
+        let out = if lane { n * LANE_BLOCK } else { 0 };
+        Pool {
+            voices: vec![Voice::default(); n],
+            grains: (first..first + n)
+                .map(|i| GrainVoice::new(rate, i as u64))
+                .collect(),
+            budget: Budget::new(GRAIN_BUDGET),
+            scratch_l: vec![0.0; GRAIN_CHUNK],
+            scratch_r: vec![0.0; GRAIN_CHUNK],
+            unheard_l: vec![0.0; GRAIN_CHUNK],
+            unheard_r: vec![0.0; GRAIN_CHUNK],
+            out_l: vec![0.0; out],
+            out_r: vec![0.0; out],
+            played: vec![false; if lane { n } else { 0 }],
+        }
+    }
+
+    /// Frames `a..b` of the block (`frame` its first) of every voice, each
+    /// into its pad's pair from `out`, or played unheard.
+    fn render_into(&mut self, a: usize, b: usize, frame: u64, rate: f32, out: &mut impl PadOut) {
+        let Pool {
+            voices,
+            grains,
+            budget,
+            scratch_l,
+            scratch_r,
+            unheard_l,
+            unheard_r,
+            ..
+        } = self;
+        for (v, g) in voices.iter_mut().zip(grains.iter_mut()) {
+            if !v.active {
+                continue;
+            }
+            match out.pad(usize::from(v.pad)) {
+                Some((l, r)) => play(
+                    v,
+                    g,
+                    budget,
+                    frame,
+                    rate,
+                    &mut l[a..b],
+                    &mut r[a..b],
+                    scratch_l,
+                    scratch_r,
+                ),
+                None => {
+                    let mut k = a;
+                    while k < b && v.active {
+                        let m = (b - k).min(unheard_l.len());
+                        let (ul, ur) = (&mut unheard_l[..m], &mut unheard_r[..m]);
+                        ul.fill(0.0);
+                        ur.fill(0.0);
+                        play(
+                            v,
+                            g,
+                            budget,
+                            frame + (k - a) as u64,
+                            rate,
+                            ul,
+                            ur,
+                            scratch_l,
+                            scratch_r,
+                        );
+                        k += m;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The lane's share: `frames` frames from `frame` of every voice, each
+    /// into its own pair in `out_l` and `out_r`.
+    fn render_own(&mut self, frames: usize, frame: u64, rate: f32) {
+        let Pool {
+            voices,
+            grains,
+            budget,
+            scratch_l,
+            scratch_r,
+            out_l,
+            out_r,
+            played,
+            ..
+        } = self;
+        for (k, (v, g)) in voices.iter_mut().zip(grains.iter_mut()).enumerate() {
+            played[k] = v.active;
+            if !v.active {
+                continue;
+            }
+            let at = k * LANE_BLOCK;
+            let (l, r) = (&mut out_l[at..at + frames], &mut out_r[at..at + frames]);
+            l.fill(0.0);
+            r.fill(0.0);
+            play(v, g, budget, frame, rate, l, r, scratch_l, scratch_r);
+        }
+    }
+
+    /// Adds what [`Pool::render_own`] rendered into frames `a..a + frames`
+    /// of each voice's pad pair, in slot order.
+    fn add_own(&self, a: usize, frames: usize, out: &mut impl PadOut) {
+        for (k, v) in self.voices.iter().enumerate() {
+            if !self.played[k] {
+                continue;
+            }
+            if let Some((l, r)) = out.pad(usize::from(v.pad)) {
+                let at = k * LANE_BLOCK;
+                for (o, x) in l[a..a + frames]
+                    .iter_mut()
+                    .zip(&self.out_l[at..at + frames])
+                {
+                    *o += *x;
+                }
+                for (o, x) in r[a..a + frames]
+                    .iter_mut()
+                    .zip(&self.out_r[at..at + frames])
+                {
+                    *o += *x;
+                }
+            }
+        }
+    }
+}
+
+/// The whole voice pool: slots `0..a.voices.len()` in `a`, the rest in `b`
+/// once split. `b` is away (None) while the lane renders it.
+struct Voices {
+    a: Pool,
+    b: Option<Box<Pool>>,
+    /// The lane share's grain limit when it left.
+    b_limit: usize,
+    split: bool,
+}
+
+impl Voices {
+    /// Every voice here with its grain voice, in slot order.
+    fn iter(&self) -> impl Iterator<Item = (&Voice, &GrainVoice)> + '_ {
+        let b = self.b.iter().flat_map(|p| p.voices.iter().zip(&p.grains));
+        self.a.voices.iter().zip(&self.a.grains).chain(b)
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Voice, &mut GrainVoice)> + '_ {
+        let b = self
+            .b
+            .iter_mut()
+            .flat_map(|p| p.voices.iter_mut().zip(p.grains.iter_mut()));
+        self.a
+            .voices
+            .iter_mut()
+            .zip(self.a.grains.iter_mut())
+            .chain(b)
+    }
+
+    fn voice(&self, slot: usize) -> Option<&Voice> {
+        let n = self.a.voices.len();
+        match slot.checked_sub(n) {
+            None => self.a.voices.get(slot),
+            Some(k) => self.b.as_ref()?.voices.get(k),
+        }
+    }
+
+    fn voice_mut(&mut self, slot: usize) -> Option<&mut Voice> {
+        let n = self.a.voices.len();
+        match slot.checked_sub(n) {
+            None => self.a.voices.get_mut(slot),
+            Some(k) => self.b.as_mut()?.voices.get_mut(k),
+        }
+    }
+
+    fn grain_mut(&mut self, slot: usize) -> Option<&mut GrainVoice> {
+        let n = self.a.voices.len();
+        match slot.checked_sub(n) {
+            None => self.a.grains.get_mut(slot),
+            Some(k) => self.b.as_mut()?.grains.get_mut(k),
+        }
+    }
+
+    /// Silences slot `slot`'s grains, giving them back to its budget.
+    fn kill_grain(&mut self, slot: usize) {
+        let n = self.a.voices.len();
+        match slot.checked_sub(n) {
+            None => {
+                if let Some(g) = self.a.grains.get_mut(slot) {
+                    g.kill(&mut self.a.budget);
+                }
+            }
+            Some(k) => {
+                if let Some(p) = self.b.as_mut() {
+                    let Pool { grains, budget, .. } = &mut **p;
+                    if let Some(g) = grains.get_mut(k) {
+                        g.kill(budget);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A free slot for a new voice. Split, from the share playing fewer
+    /// voices, so the two cores get about the same work.
+    fn free_slot(&self) -> Option<usize> {
+        let n = self.a.voices.len();
+        let free_a = self.a.voices.iter().position(|v| !v.active);
+        let Some(b) = self.b.as_ref() else {
+            return free_a;
+        };
+        let free_b = b.voices.iter().position(|v| !v.active).map(|k| n + k);
+        if b.cost() < self.a.cost() {
+            free_b.or(free_a)
+        } else {
+            free_a.or(free_b)
+        }
+    }
+
+    /// Shares the grain budget out before a part of a block: each share
+    /// keeps its grains and gets half of what is left, so together they
+    /// never pass [`GRAIN_BUDGET`].
+    fn share_budget(&mut self) {
+        if !self.split {
+            return;
+        }
+        match self.b.as_mut() {
+            Some(b) => {
+                let (la, lb) = (self.a.budget.live(), b.budget.live());
+                let free = GRAIN_BUDGET.saturating_sub(la + lb);
+                self.a.budget.limit = la + free.div_ceil(2);
+                b.budget.limit = lb + free / 2;
+            }
+            None => self.a.budget.limit = GRAIN_BUDGET.saturating_sub(self.b_limit),
+        }
+    }
+}
+
+/// What the lane runs: the second share of the voices, for one part of a
+/// block.
+struct Carrier {
+    pool: Option<Box<Pool>>,
+    frames: usize,
+    frame: u64,
+    rate: f32,
+}
+
+impl mpfree_lanes::Job for Carrier {
+    fn run(&mut self, _block: u64) {
+        if let Some(p) = self.pool.as_mut() {
+            p.render_own(self.frames, self.frame, self.rate);
+        }
+    }
+}
+
 /// Counters for the debug page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -638,26 +935,26 @@ pub struct Stats {
     pub peak_voices: usize,
     /// Grains refused because the grain budget was full.
     pub skipped_grains: u64,
+    /// Split: parts of blocks the lane's voices were handed over for, and
+    /// the ones it missed its deadline on (those voices are unheard for
+    /// that part, and events wait until they are back).
+    pub lane_parts: u64,
+    pub lane_late: u64,
 }
 
 pub struct Engine {
     rate: f32,
     view: EngineView,
-    voices: Vec<Voice>,
+    /// The voices, with their grain voices, grain budgets and buffers.
+    pool: Voices,
+    /// Split: the second share of the voices renders here, on another core.
+    lane: Option<Lane<Carrier>>,
     events: Vec<(u32, Event)>,
     cycle: Vec<u8>,
     rng: Rng,
     clock: u64,
     fixed_velocity: Option<u8>,
     stats: Stats,
-    /// One grain voice per voice slot, used while that slot is granular.
-    grains: Vec<GrainVoice>,
-    budget: Budget,
-    scratch_l: Vec<f32>,
-    scratch_r: Vec<f32>,
-    /// Where the voices of a pad with no output play, so they end on time.
-    unheard_l: Vec<f32>,
-    unheard_r: Vec<f32>,
     /// Frames rendered since the engine was made: the timeline synced grains use.
     frames: u64,
     master: Option<GrainFx>,
@@ -684,21 +981,19 @@ impl Engine {
         Engine {
             rate: rate as f32,
             view: EngineView::empty(),
-            voices: vec![Voice::default(); voices.max(1)],
+            pool: Voices {
+                a: Pool::new(rate, 0, voices.max(1), false),
+                b: None,
+                b_limit: 0,
+                split: false,
+            },
+            lane: None,
             events: Vec::with_capacity(MAX_EVENTS),
             cycle: vec![0; PADS],
             rng: Rng::new(0x5A4D_5052),
             clock: 0,
             fixed_velocity: None,
             stats: Stats::default(),
-            grains: (0..voices.max(1))
-                .map(|i| GrainVoice::new(rate, i as u64))
-                .collect(),
-            budget: Budget::new(GRAIN_BUDGET),
-            scratch_l: vec![0.0; GRAIN_CHUNK],
-            scratch_r: vec![0.0; GRAIN_CHUNK],
-            unheard_l: vec![0.0; GRAIN_CHUNK],
-            unheard_r: vec![0.0; GRAIN_CHUNK],
             frames: 0,
             master: None,
             tempo: 120.0,
@@ -719,7 +1014,7 @@ impl Engine {
             return;
         }
         self.tempo = bpm;
-        for v in &mut self.voices {
+        for (v, _) in self.pool.iter_mut() {
             if v.active && v.warp_bpm > 0.0 {
                 v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
                 retime(v);
@@ -747,7 +1042,7 @@ impl Engine {
     pub fn set_master_fx(&mut self, fx: Option<GrainFx>) -> Option<GrainFx> {
         let mut old = std::mem::replace(&mut self.master, fx);
         if let Some(o) = &mut old {
-            o.kill(&mut self.budget);
+            o.kill(&mut self.pool.a.budget);
         }
         self.apply_master();
         old
@@ -772,7 +1067,7 @@ impl Engine {
     }
     /// Grains playing now, across every granular voice.
     pub fn live_grains(&self) -> usize {
-        self.budget.live()
+        self.pool.a.budget.live() + self.pool.b.as_ref().map_or(0, |b| b.budget.live())
     }
 
     /// Swaps in a new view at once and hands back the old one, so the caller
@@ -795,34 +1090,31 @@ impl Engine {
 
     pub fn stats(&self) -> Stats {
         Stats {
-            skipped_grains: self.budget.skipped,
+            skipped_grains: self.pool.a.budget.skipped
+                + self.pool.b.as_ref().map_or(0, |b| b.budget.skipped),
             ..self.stats
         }
     }
     pub fn active_voices(&self) -> usize {
-        self.voices.iter().filter(|v| v.active).count()
+        self.pool.iter().filter(|(v, _)| v.active).count()
     }
     /// (pad, layer, source frame) of every playing voice, for playheads on screen.
     /// A granular voice reports its reading position (before spray); a
     /// voice playing a stretched copy, the source frame that part of the
     /// copy was made from.
     pub fn playheads(&self) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
-        self.voices
-            .iter()
-            .zip(&self.grains)
-            .filter(|(v, _)| v.active)
-            .map(|(v, g)| {
-                let at = if v.granular {
-                    v.start + (f64::from(g.playhead()) * (v.end - v.start) as f64) as i64
-                } else {
-                    let pos = v.pos >> 32;
-                    match self.copy_map(v) {
-                        Some(map) => map.source(pos as f64).round() as i64,
-                        None => pos,
-                    }
-                };
-                (v.pad, v.layer, at.max(0) as u64)
-            })
+        self.pool.iter().filter(|(v, _)| v.active).map(|(v, g)| {
+            let at = if v.granular {
+                v.start + (f64::from(g.playhead()) * (v.end - v.start) as f64) as i64
+            } else {
+                let pos = v.pos >> 32;
+                match self.copy_map(v) {
+                    Some(map) => map.source(pos as f64).round() as i64,
+                    None => pos,
+                }
+            };
+            (v.pad, v.layer, at.max(0) as u64)
+        })
     }
 
     /// The map of the stretched copy voice `v` plays, if it plays one.
@@ -838,9 +1130,9 @@ impl Engine {
         l.source_at.as_ref().filter(|_| same)
     }
     pub fn pad_voices(&self, pad: u8) -> usize {
-        self.voices
+        self.pool
             .iter()
-            .filter(|v| v.active && v.pad == pad && v.kill_left == 0)
+            .filter(|(v, _)| v.active && v.pad == pad && v.kill_left == 0)
             .count()
     }
 
@@ -851,7 +1143,7 @@ impl Engine {
     /// left out). Never allocates.
     pub fn grains_of(&self, pad: u8, layer: u8, out: &mut [GrainView]) -> usize {
         let mut n = 0;
-        for (v, g) in self.voices.iter().zip(&self.grains) {
+        for (v, g) in self.pool.iter() {
             if v.active && v.granular && v.pad == pad && v.layer == layer && n < out.len() {
                 n += g.grains(&mut out[n..]);
             }
@@ -892,14 +1184,14 @@ impl Engine {
             Event::KeyOff { note } => self.release(|v| v.note == note),
             Event::Pressure { pad, value } => {
                 let t = self.target(pad);
-                for v in &mut self.voices {
+                for (v, _) in self.pool.iter_mut() {
                     if v.active && t.played(v) && v.kill_left == 0 {
                         v.press_target = f32::from(value.min(127)) / 127.0;
                     }
                 }
             }
             Event::AllOff => {
-                for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
+                for (v, g) in self.pool.iter_mut() {
                     if v.active {
                         v.held = false;
                         v.looping = false;
@@ -960,7 +1252,7 @@ impl Engine {
         self.tape_moved = self.tape != 1.0 || self.tape != self.tape_target;
         let (tape, rate) = (self.tape, self.rate);
         let gain = (tape / TAPE_FADE).min(1.0);
-        for v in &mut self.voices {
+        for (v, _) in self.pool.iter_mut() {
             if !v.active || !(moved || v.wow > 0.0) {
                 continue;
             }
@@ -1029,7 +1321,7 @@ impl Engine {
 
     /// Lets go of the held voices `which` picks.
     fn release(&mut self, which: impl Fn(&Voice) -> bool) {
-        for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
+        for (v, g) in self.pool.iter_mut() {
             if !v.active || !which(v) || !v.held {
                 continue;
             }
@@ -1073,7 +1365,7 @@ impl Engine {
         self.stats.hits += 1;
         let vel = f32::from(velocity) / 127.0;
         let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
-        for v in &mut self.voices {
+        for (v, _) in self.pool.iter_mut() {
             if v.active && v.pad == pad {
                 Self::kill(v);
             }
@@ -1104,7 +1396,7 @@ impl Engine {
 
         // A second hit on a held toggle pad stops it instead of starting it.
         let mut toggled_off = false;
-        for v in &mut self.voices {
+        for (v, _) in self.pool.iter_mut() {
             if v.active
                 && v.pad == pad
                 && v.note == note
@@ -1124,7 +1416,7 @@ impl Engine {
 
         // Mute groups and one-way chokes.
         let group = vp.mute_group;
-        for v in &mut self.voices {
+        for (v, _) in self.pool.iter_mut() {
             if !v.active || v.pad == pad {
                 continue;
             }
@@ -1177,20 +1469,20 @@ impl Engine {
             // Polyphony: push out this pad's oldest voices past the limit.
             loop {
                 let mut n = 0;
-                let mut oldest: Option<usize> = None;
-                for (i, v) in self.voices.iter().enumerate() {
+                let mut oldest: Option<(usize, u64)> = None;
+                for (i, (v, _)) in self.pool.iter().enumerate() {
                     if v.active && v.pad == pad && v.kill_left == 0 {
                         n += 1;
-                        if oldest.is_none_or(|o| self.voices[o].age > v.age) {
-                            oldest = Some(i);
+                        if oldest.is_none_or(|(_, age)| age > v.age) {
+                            oldest = Some((i, v.age));
                         }
                     }
                 }
                 if n < polyphony {
                     break;
                 }
-                match oldest {
-                    Some(o) => Self::kill(&mut self.voices[o]),
+                match oldest.and_then(|(o, _)| self.pool.voice_mut(o)) {
+                    Some(v) => Self::kill(v),
                     None => break,
                 }
             }
@@ -1227,30 +1519,28 @@ impl Engine {
             None => None,
         };
         // A free voice, else the oldest releasing one, else the oldest.
-        let slot = self
-            .voices
-            .iter()
-            .position(|v| !v.active)
-            .unwrap_or_else(|| {
-                let mut best = 0;
-                for (i, v) in self.voices.iter().enumerate() {
-                    let b = &self.voices[best];
-                    let rel = |x: &Voice| {
-                        x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing())
-                    };
-                    if (rel(v), std::cmp::Reverse(v.age)) > (rel(b), std::cmp::Reverse(b.age)) {
-                        best = i;
-                    }
+        let slot = self.pool.free_slot().unwrap_or_else(|| {
+            let rel =
+                |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
+            let mut best: Option<(usize, (bool, std::cmp::Reverse<u64>))> = None;
+            for (i, (v, _)) in self.pool.iter().enumerate() {
+                let key = (rel(v), std::cmp::Reverse(v.age));
+                if best.is_none_or(|(_, b)| key > b) {
+                    best = Some((i, key));
                 }
-                best
-            });
-        let stolen = self.voices[slot].active;
-        if self.voices[slot].granular {
-            self.grains[slot].kill(&mut self.budget);
+            }
+            best.map_or(0, |(i, _)| i)
+        });
+        let Some(old) = self.pool.voice(slot) else {
+            return;
+        };
+        let (stolen, was_granular, last) = (old.active, old.granular, (old.last_l, old.last_r));
+        if was_granular {
+            self.pool.kill_grain(slot);
         }
         let (tail_l, tail_r) = if stolen {
             self.stats.steals += 1;
-            (self.voices[slot].last_l, self.voices[slot].last_r)
+            last
         } else {
             (0.0, 0.0)
         };
@@ -1321,7 +1611,9 @@ impl Engine {
             plain
         };
         self.clock += 1;
-        let v = &mut self.voices[slot];
+        let Some(v) = self.pool.voice_mut(slot) else {
+            return;
+        };
         *v = Voice {
             active: true,
             pad: p as u8,
@@ -1397,8 +1689,7 @@ impl Engine {
             (v.gain_l, v.gain_r) = (v.base_gain_l * gain, v.base_gain_r * gain);
             retime(v);
         }
-        if granular {
-            let g = &mut self.grains[slot];
+        if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
             g.set_params(grain);
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
@@ -1412,7 +1703,21 @@ impl Engine {
 
     /// Renders `left.len()` frames, replacing what is in the buffers.
     /// Panics if the two buffers differ in length (a programming error).
+    /// Split (see [`Engine::split`]), it waits for the lane's voices no
+    /// longer than the block lasts; [`Engine::render_until`] takes a
+    /// deadline instead.
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.render_mixed(left, right, None);
+    }
+
+    /// What [`Engine::render`] does, waiting for the lane's voices (once
+    /// split) until `deadline` at most: past it they are left out of that
+    /// part of the block and the audio thread carries on.
+    pub fn render_until(&mut self, left: &mut [f32], right: &mut [f32], deadline: Instant) {
+        self.render_mixed(left, right, Some(deadline));
+    }
+
+    fn render_mixed(&mut self, left: &mut [f32], right: &mut [f32], deadline: Option<Instant>) {
         assert_eq!(
             left.len(),
             right.len(),
@@ -1421,7 +1726,7 @@ impl Engine {
         let n = left.len();
         left.fill(0.0);
         right.fill(0.0);
-        self.run(n, &mut Mixed { left, right }, true);
+        self.run(n, &mut Mixed { left, right }, true, deadline);
     }
 
     /// Renders the next `frames` frames with each pad apart: every voice
@@ -1429,72 +1734,179 @@ impl Engine {
     /// Events, voices and grains run exactly as in [`Engine::render`], and
     /// the pads' pairs add up to what it renders. The master effect, which
     /// works on the mixed pair, doesn't run. Panics if `out` hands back a
-    /// pair shorter than `frames` (a programming error).
+    /// pair shorter than `frames` (a programming error). Split, it waits
+    /// for the lane's voices no longer than the block lasts.
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
-        self.run(frames, out, false);
+        self.run(frames, out, false, None);
+    }
+
+    /// What [`Engine::render_routed`] does, waiting for the lane's voices
+    /// (once split) until `deadline` at most: past it they are left out of
+    /// that part of the block and the audio thread carries on.
+    pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
+        self.run(frames, out, false, Some(deadline));
+    }
+
+    /// Splits the voice pool in two: the second half renders on a lane
+    /// (another core, see `mpfree-lanes`) while the audio thread renders
+    /// the first, and its sound is added in after. Events, chokes, mute
+    /// groups, polyphony and stealing still see every voice, on the audio
+    /// thread; new voices go to the half playing fewer; the grain budget is
+    /// shared between the halves before each part of a block. The output is
+    /// the same whether the lane runs on its own thread or not
+    /// (`config.threaded`), and the same as unsplit but for rounding (the
+    /// voices' order of adding) and which grains a full budget skips.
+    /// Allocates and starts a thread: call it before the sound starts.
+    /// Does nothing if already split or with fewer than 2 voices.
+    pub fn split(&mut self, config: mpfree_lanes::Config) -> Option<&Setup> {
+        let n = self.pool.a.voices.len();
+        if self.lane.is_none() && n >= 2 {
+            let keep = n.div_ceil(2);
+            let rate = self.rate as u32;
+            let mut b = Box::new(Pool::new(rate, keep, n - keep, true));
+            // The voices that move stop first (nothing should be playing).
+            for k in keep..n {
+                if self.pool.a.voices[k].granular {
+                    let a = &mut self.pool.a;
+                    a.grains[k].kill(&mut a.budget);
+                }
+            }
+            self.pool.a.voices.truncate(keep);
+            self.pool.a.grains.truncate(keep);
+            b.budget.limit = 0;
+            self.pool.b = Some(b);
+            self.pool.split = true;
+            let carrier = Carrier {
+                pool: None,
+                frames: 0,
+                frame: 0,
+                rate: self.rate,
+            };
+            self.lane = Some(Lane::new(carrier, config));
+        }
+        self.lane.as_ref().map(|l| l.setup())
+    }
+
+    /// The lane's counters, once split.
+    pub fn lane_stats(&self) -> Option<mpfree_lanes::Stats> {
+        self.lane.as_ref().map(|l| l.stats())
+    }
+
+    /// Takes the lane's share back if it came back from a late part: it
+    /// follows the tempo and the tape it missed.
+    fn fetch_lane(&mut self) {
+        if self.pool.b.is_some() {
+            return;
+        }
+        let Some(b) = self
+            .lane
+            .as_mut()
+            .and_then(|l| l.job())
+            .and_then(|c| c.pool.take())
+        else {
+            return;
+        };
+        self.pool.b = Some(b);
+        let tempo = self.tempo;
+        for (v, _) in self.pool.iter_mut() {
+            if v.active && v.warp_bpm > 0.0 {
+                v.base_step = warped_step(v.plain_step, tempo, v.warp_bpm);
+                retime(v);
+            }
+        }
+        self.tape_moved = true;
     }
 
     /// The render loop: events on their frames, then every voice into its
     /// pad's pair, then (`master`) the master effect over pad 0's pair,
-    /// which is the mixed pair when `out` is [`Mixed`].
-    fn run(&mut self, frames: usize, out: &mut impl PadOut, master: bool) {
+    /// which is the mixed pair when `out` is [`Mixed`]. Split, each part of
+    /// the block between events hands the lane's share to the lane, renders
+    /// the engine's own and adds the lane's in (waiting until `deadline`).
+    /// While the lane's share is away (late), events wait in the queue.
+    fn run(
+        &mut self,
+        frames: usize,
+        out: &mut impl PadOut,
+        master: bool,
+        deadline: Option<Instant>,
+    ) {
         let n = frames as u32;
         let mut at = 0u32;
-        while at < n {
-            // Apply every event due now.
-            while let Some(&(o, ev)) = self.events.first() {
-                if o > at {
-                    break;
-                }
-                self.events.remove(0);
-                self.apply(ev);
+        // Without a deadline, the lane gets as long as the block lasts.
+        let deadline = match (&self.lane, deadline) {
+            (Some(_), None) => {
+                let ns = u64::from(n) * 1_000_000_000 / u64::from(self.rate as u32).max(1);
+                Some(Instant::now() + Duration::from_nanos(ns))
             }
-            let next = self.events.first().map_or(n, |&(o, _)| o.min(n));
+            (_, d) => d,
+        };
+        while at < n {
+            self.fetch_lane();
+            let home = !self.pool.split || self.pool.b.is_some();
+            let mut next = n;
+            if home {
+                // Apply every event due now.
+                while let Some(&(o, ev)) = self.events.first() {
+                    if o > at {
+                        break;
+                    }
+                    self.events.remove(0);
+                    self.apply(ev);
+                }
+                next = self.events.first().map_or(n, |&(o, _)| o.min(n));
+            }
+            if self.pool.split {
+                next = next.min(at + LANE_BLOCK as u32);
+            }
             let (a, b) = (at as usize, next as usize);
             let frame = self.frames + at as u64;
             self.follow_tape(b - a);
-            for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
-                if !v.active {
-                    continue;
-                }
-                match out.pad(usize::from(v.pad)) {
-                    Some((l, r)) => play(
-                        v,
-                        g,
-                        &mut self.budget,
-                        frame,
-                        self.rate,
-                        &mut l[a..b],
-                        &mut r[a..b],
-                        &mut self.scratch_l,
-                        &mut self.scratch_r,
-                    ),
-                    None => {
-                        let mut k = a;
-                        while k < b && v.active {
-                            let m = (b - k).min(self.unheard_l.len());
-                            let (ul, ur) = (&mut self.unheard_l[..m], &mut self.unheard_r[..m]);
-                            ul.fill(0.0);
-                            ur.fill(0.0);
-                            play(
-                                v,
-                                g,
-                                &mut self.budget,
-                                frame + (k - a) as u64,
-                                self.rate,
-                                ul,
-                                ur,
-                                &mut self.scratch_l,
-                                &mut self.scratch_r,
-                            );
-                            k += m;
+            self.pool.share_budget();
+            let rate = self.rate;
+            let lane_busy = self
+                .pool
+                .b
+                .as_ref()
+                .is_some_and(|p| p.voices.iter().any(|v| v.active));
+            match (self.lane.as_mut(), deadline) {
+                (Some(lane), Some(deadline)) if lane_busy && b - a >= LANE_MIN_FRAMES => {
+                    let pool = self.pool.b.take();
+                    self.pool.b_limit = pool.as_ref().map_or(0, |p| p.budget.limit);
+                    if let Some(c) = lane.job() {
+                        (c.pool, c.frames, c.frame, c.rate) = (pool, b - a, frame, rate);
+                    }
+                    let _ = lane.post(frame);
+                    self.stats.lane_parts += 1;
+                    self.pool.a.render_into(a, b, frame, rate, out);
+                    match lane.join(deadline) {
+                        Ok(c) => {
+                            if let Some(p) = c.pool.take() {
+                                p.add_own(a, b - a, out);
+                                self.pool.b = Some(p);
+                            }
                         }
+                        Err(_) => self.stats.lane_late += 1,
+                    }
+                }
+                _ => {
+                    self.pool.a.render_into(a, b, frame, rate, out);
+                    if let Some(p) = self.pool.b.as_mut() {
+                        p.render_into(a, b, frame, rate, out);
                     }
                 }
             }
             if master {
                 if let (Some(fx), Some((l, r))) = (&mut self.master, out.pad(0)) {
-                    fx.process(&mut self.budget, frame, &mut l[a..b], &mut r[a..b]);
+                    let budget = &mut self.pool.a.budget;
+                    if self.pool.split {
+                        let others = self
+                            .pool
+                            .b
+                            .as_ref()
+                            .map_or(self.pool.b_limit, |p| p.budget.live());
+                        budget.limit = GRAIN_BUDGET.saturating_sub(others);
+                    }
+                    fx.process(budget, frame, &mut l[a..b], &mut r[a..b]);
                 }
             }
             at = next;
