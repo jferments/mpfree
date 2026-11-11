@@ -104,6 +104,11 @@ x x x x | oct 0 1 0 | vel 120 70 90 70 80     octave over 3, accents over 5, ste
 | `deg` | scale degrees (with a scale) or semitones (without), −24 to 24 |
 | `vel` | velocity 1–127; 0 = as played; an accent still wins |
 | `gate` | note length in percent; 0 = the step's or the engine's |
+| `nudge` | moves the step early (negative) or late, −50 to 50 percent of a step, on top of swing; a step never moves ahead of the one before it |
+
+**Random amounts per lane.** A lane name can carry `~N`: each time a step plays, a random number from −N to N is added to that lane's value, so `vel~20` varies velocity by up to 20, `gate~30` the length, `oct~1` the octave, `deg~2` the degree and `nudge~10` the timing. A lane with a random amount needs no values (`x x x x | vel~25` varies the played velocity). Accented steps keep their accent. The engine's seed picks the numbers, so a seed always plays the same way, and a pattern without `~` draws no random numbers at all.
+
+**Velocity ramp.** `Settings.ramp = Ramp { target, steps }` moves velocity from where it starts towards `target` over `steps` steps after the notes start, then holds it (Ableton's Decay and Target). With `retrigger` on, every new chord starts the ramp again. Accents are left alone.
 
 **Variation** that never loses the original: `Pattern::mutated(seed, amount)` returns a new pattern (the same seed gives the same variation; ties stay; at least one step plays) and `Pattern::rotated(n)` turns the steps. The app keeps the original and swaps back on "Original".
 
@@ -156,7 +161,7 @@ Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persiste
 `mpfree-arp-render` is a workstation-only program in the same crate. It runs the real engine in 128-frame periods at 44.1 kHz, the same way the pad player will, and plays its notes through a small built-in synth (two detuned saws, a low-pass filter and an envelope) or, for drum demos, 16 simple drum sounds made in code (pad 1 kick, 2 snare, 3 closed hat and so on). It needs no samples and no MPC, and its output is the same on every run.
 
 ```sh
-# Every order, every starter pattern, drums, lanes, scale, strum and mutate: 29 WAVs
+# Every order, every starter pattern, drums, lanes, scale, strum, mutate, nudge, ramp and random lanes: 32 WAVs
 cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --demo
 
 # One of your own: a chord per bar, looped
@@ -164,18 +169,18 @@ cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin
     --chords "57,60,64,67;53,57,60,64" --mode pattern --pattern "1 3 2 3 x:2 . 4 x | oct 0 0 1"
 ```
 
-It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and a hash. Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--bars`, `--seed`, `--name`.
+It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and two hashes: `events` (the notes played; the same on every computer, so it can be compared with Claude's run) and `audio` (the WAV bytes; repeats on one computer, but the synth's maths comes from the system library, so it can differ between computers). Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--ramp 30:16`, `--retrigger`, `--bars`, `--seed`, `--name`.
 
 ## Implementation plan
 
 | Step | What | Depends on | Device? |
 |---|---|---|---|
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
-| A2 (this PR) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
+| A2 (done, PR #37) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
 | B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
 | C | `StepGrid` widget and the pattern editor (tap, record on pads); pattern files | B | yes |
-| D (engine done, PR #35) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate; scales applied last. Still to do: per-step swing/nudge lane, and the UI | C for the UI | no (engine), then yes |
-| E (engine mostly done, PR #35) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count. Still to do: per-lane random amounts, velocity ramp, retrigger on beat or bar (needs a transport) | D | no, then yes |
+| D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
+| E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
 | F | Transport and MIDI: sync to the sequencer's clock and MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
