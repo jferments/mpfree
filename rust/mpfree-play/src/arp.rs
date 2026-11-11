@@ -23,12 +23,21 @@ pub struct ArpHost {
     events: Events,
     input: [(u32, Event); MAX_INPUT],
     n_input: usize,
+    /// Presses per note number not yet released, from every source.
+    presses: [u8; 128],
     dropped_input: u64,
 }
 
 impl ArpHost {
     pub fn new(engine: Engine) -> ArpHost {
-        ArpHost { engine, events: Events::new(), input: [(0, Event::AllOff); MAX_INPUT], n_input: 0, dropped_input: 0 }
+        ArpHost {
+            engine,
+            events: Events::new(),
+            input: [(0, Event::AllOff); MAX_INPUT],
+            n_input: 0,
+            presses: [0; 128],
+            dropped_input: 0,
+        }
     }
 
     /// Notes lost so far: player notes that did not fit in one period, and
@@ -37,16 +46,22 @@ impl ArpHost {
         self.dropped_input + self.events.dropped
     }
 
-    /// A note from the player for the coming [`ArpHost::process`] call, at
-    /// `offset` in the period. Call it from the player's sink, in the order
-    /// the player sends them, for every event whose destination is this
-    /// arp and for `AllOff` sent to [`crate::ALL`] (a panic).
+    /// A note for the coming [`ArpHost::process`] call, at `offset` in the
+    /// period: every event the player sends to this arp, `AllOff` sent to
+    /// [`crate::ALL`] (a panic), and live pad notes for the track. Notes
+    /// from several sources can come in any order; they are kept in offset
+    /// order, and notes on the same offset keep the order they came in.
     pub fn input(&mut self, offset: u32, event: Event) {
         if self.n_input == MAX_INPUT {
             self.dropped_input += 1;
             return;
         }
-        self.input[self.n_input] = (offset, event);
+        let mut i = self.n_input;
+        while i > 0 && self.input[i - 1].0 > offset {
+            self.input[i] = self.input[i - 1];
+            i -= 1;
+        }
+        self.input[i] = (offset, event);
         self.n_input += 1;
     }
 
@@ -84,11 +99,30 @@ impl ArpHost {
         self.n_input = 0;
     }
 
+    /// A note held by a pad and a clip at once is pressed on the engine
+    /// once, and released when the last of them lets go.
     fn apply(&mut self, e: Event) {
         match e {
-            Event::NoteOn { note, velocity } => self.engine.press(note, velocity),
-            Event::NoteOff { note } => self.engine.release(note),
-            Event::AllOff => self.engine.panic(),
+            Event::NoteOn { note, velocity } => {
+                let p = &mut self.presses[usize::from(note & 127)];
+                *p = p.saturating_add(1);
+                if *p == 1 {
+                    self.engine.press(note, velocity);
+                }
+            }
+            Event::NoteOff { note } => {
+                let p = &mut self.presses[usize::from(note & 127)];
+                if *p > 0 {
+                    *p -= 1;
+                    if *p == 0 {
+                        self.engine.release(note);
+                    }
+                }
+            }
+            Event::AllOff => {
+                self.presses = [0; 128];
+                self.engine.panic();
+            }
         }
     }
 }

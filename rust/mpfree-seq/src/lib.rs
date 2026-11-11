@@ -129,6 +129,26 @@ impl Clip {
         Clip { name: name.to_string(), length, speed: Speed::NORMAL, swing: None, quantise: None, notes: Vec::new() }
     }
 
+    /// Add one note, for example a recorded one. A note out of range, or
+    /// one more than [`MAX_NOTES`], is refused and the clip is unchanged.
+    pub fn add_note(&mut self, note: Note) -> Result<(), ModelError> {
+        if self.notes.len() >= MAX_NOTES {
+            return Err(ModelError::TooManyNotes);
+        }
+        if !self.note_ok(&note) {
+            return Err(ModelError::BadNote(self.notes.len()));
+        }
+        self.notes.push(note);
+        Ok(())
+    }
+
+    fn note_ok(&self, n: &Note) -> bool {
+        (0..self.length).contains(&n.tick)
+            && (1..=MAX_CLIP_TICKS).contains(&n.len)
+            && n.note <= 127
+            && (1..=127).contains(&n.velocity)
+    }
+
     /// Every value in range.
     pub fn check(&self) -> Result<(), ModelError> {
         if !(MIN_CLIP_TICKS..=MAX_CLIP_TICKS).contains(&self.length) {
@@ -147,11 +167,7 @@ impl Clip {
             return Err(ModelError::BadQuantise);
         }
         for (i, n) in self.notes.iter().enumerate() {
-            let ok = (0..self.length).contains(&n.tick)
-                && (1..=MAX_CLIP_TICKS).contains(&n.len)
-                && n.note <= 127
-                && (1..=127).contains(&n.velocity);
-            if !ok {
+            if !self.note_ok(n) {
                 return Err(ModelError::BadNote(i));
             }
         }
@@ -235,6 +251,18 @@ mod tests {
         c.speed = Speed { num: 8, den: 1 };
         assert_eq!(c.check(), Err(ModelError::BadSpeed));
         assert!(Speed::new(1, 8).is_some() && Speed::new(4, 1).is_some() && Speed::new(5, 4).is_none());
+    }
+
+    #[test]
+    fn recorded_notes_are_checked_as_they_are_added() {
+        let mut c = Clip::new("take", 960);
+        assert_eq!(c.add_note(Note { tick: 959, len: 2000, note: 3, velocity: 1 }), Ok(()));
+        assert_eq!(c.add_note(Note { tick: 960, len: 10, note: 3, velocity: 100 }), Err(ModelError::BadNote(1)));
+        assert_eq!(c.add_note(Note { tick: 0, len: 0, note: 3, velocity: 100 }), Err(ModelError::BadNote(1)));
+        assert_eq!(c.notes.len(), 1);
+        c.notes = vec![Note { tick: 0, len: 1, note: 0, velocity: 1 }; MAX_NOTES];
+        assert_eq!(c.add_note(Note { tick: 0, len: 1, note: 0, velocity: 1 }), Err(ModelError::TooManyNotes));
+        assert_eq!(c.check(), Ok(()));
     }
 
     #[test]
