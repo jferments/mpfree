@@ -11,7 +11,7 @@ use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::{Poly, PRESETS};
+use mpfree_synth::{Drums, Pluck, Poly, PRESETS};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_transport::time::{Swing, PPQ};
@@ -60,18 +60,64 @@ fn input(rate: u32, frame0: u64, seed: &mut Lcg, l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// One second of [`input`], made once and shared, so a case's timing is the
+/// engine's alone: making it costs a `sin` and an `exp` per frame, about
+/// 20 to 25 us a block on the MPC, which round 7 counted in every effect.
+/// (The tone and the bursts both repeat exactly every second.)
+pub struct Program {
+    l: Vec<f32>,
+    r: Vec<f32>,
+}
+
+thread_local! {
+    static PROGRAM: std::cell::RefCell<Option<(u32, std::rc::Rc<Program>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The shared program for `rate`, made on first use. [`all`] makes it before
+/// it builds any case, so no case's memory includes it.
+pub fn program(rate: u32) -> std::rc::Rc<Program> {
+    PROGRAM.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some((r, prog)) = p.as_ref() {
+            if *r == rate { return prog.clone(); }
+        }
+        let n = rate as usize;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        input(rate, 0, &mut Lcg(11), &mut l, &mut r);
+        let prog = std::rc::Rc::new(Program { l, r });
+        *p = Some((rate, prog.clone()));
+        prog
+    })
+}
+
+impl Program {
+    /// Copies the program from frame `frame0` (wrapping every second).
+    fn play(&self, frame0: u64, l: &mut [f32], r: &mut [f32]) {
+        let len = self.l.len();
+        let mut at = (frame0 % len as u64) as usize;
+        let mut done = 0;
+        while done < l.len() {
+            let k = (l.len() - done).min(len - at);
+            l[done..done + k].copy_from_slice(&self.l[at..at + k]);
+            r[done..done + k].copy_from_slice(&self.r[at..at + k]);
+            done += k;
+            at = (at + k) % len;
+        }
+    }
+}
+
 fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) -> Case {
     n.prepare(rate, MAX_BLOCK);
     for &(id, v) in params { n.set_param(id, v); }
     n.reset();
-    let mut seed = Lcg(7);
+    let prog = program(rate);
     Case {
         name: name.to_string(),
         module: "fx",
         what: "tone and noise bursts every 0.5 s",
         block: Box::new(move |b, l, r| {
             let f0 = b * l.len() as u64;
-            input(rate, f0, &mut seed, l, r);
+            prog.play(f0, l, r);
             n.process(&Ctx::new(rate, f0), &[], l, r);
         }),
         mem_bytes: 0,
@@ -103,6 +149,72 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
                 for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
                 held.clear();
                 let root = 36 + (seed.next() >> 28) as u8;
+                for k in 0..voices {
+                    let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
+                    held.push(note);
+                    events.push(Timed::new(at, NodeEvent::NoteOn { note, velocity: 64 + (seed.next() >> 26) as u8 }));
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            s.process(&Ctx::new(rate, f0), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The drum synth with a kit, hit on a random pad every `every` blocks
+/// with random velocities, so long hits overlap and choke groups work.
+fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
+    let mut d = Drums::new(rate);
+    d.prepare(rate, MAX_BLOCK);
+    let k = Drums::presets().iter().find(|k| k.name == kit).unwrap_or_else(|| panic!("kit {kit}"));
+    d.load_preset(k);
+    let mut seed = Lcg(17);
+    let mut events: Vec<Timed> = Vec::with_capacity(1);
+    Case {
+        name: name.to_string(),
+        module: "synth",
+        what: "random pads and velocities",
+        block: Box::new(move |b, l, r| {
+            events.clear();
+            if b % every == 0 {
+                let pad = (seed.next() >> 28) as u8 % 16;
+                events.push(Timed::new(0, NodeEvent::NoteOn { note: 36 + pad, velocity: 40 + (seed.next() >> 25) as u8 % 88 }));
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The pluck synth with a preset, `voices`-note chords changing every half
+/// second (re-plucks, releases and steals all in the numbers).
+fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
+    let mut s = Pluck::new(rate);
+    s.prepare(rate, MAX_BLOCK);
+    let p = Pluck::presets().iter().find(|p| p.name == preset).unwrap_or_else(|| panic!("pluck preset {preset}"));
+    s.load_preset(p);
+    s.set_param(mpfree_synth::pluck_params::POLYPHONY, voices as f32);
+    let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
+    let mut held: Vec<u8> = Vec::with_capacity(voices);
+    let mut seed = Lcg(5);
+    Case {
+        name: format!("Pluck {preset}, {voices} voices"),
+        module: "synth",
+        what: "chords changing every 0.5 s",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            let half = u64::from(rate / 2);
+            events.clear();
+            if f0 % half + len > half || f0 == 0 {
+                let at = if f0 == 0 { 0 } else { (half - f0 % half) as u32 % len as u32 };
+                for &note in held.iter() { events.push(Timed::new(at, NodeEvent::NoteOff { note })); }
+                held.clear();
+                let root = 40 + (seed.next() >> 28) as u8;
                 for k in 0..voices {
                     let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
                     held.push(note);
@@ -254,11 +366,18 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
 
 /// Every case, at `rate`.
 pub fn all(rate: u32) -> Vec<Case> {
+    // Made first, so no case's memory includes it.
+    program(rate);
     let mut v = Vec::new();
     for preset in PRESETS {
         v.push(measured(|| synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8)));
     }
     v.push(measured(|| synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16)));
+    v.push(measured(|| drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)));
+    v.push(measured(|| drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)));
+    for (name, voices) in [("Steel String", 8), ("Harp", 16), ("Marimba", 8), ("Bell", 16)] {
+        v.push(measured(|| pluck(name, rate, voices)));
+    }
     v.push(measured(|| sampler("Sampler, 20 pads", rate, false)));
     v.push(measured(|| sampler("Sampler, 20 pads + master grains", rate, true)));
     v.push(measured(|| effect("Multi filter (LP 12)", rate, Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)])));
@@ -310,7 +429,8 @@ pub struct Scaling {
 }
 
 /// Every Poly preset at 1 to 16 voices (chords changing every half second,
-/// as in the synth cases) and the sampler at 1 to 32 voices held.
+/// as in the synth cases), the sampler at 1 to 32 voices held, and the
+/// sampler's grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
     let mut v: Vec<Scaling> = PRESETS.iter().map(|p| {
         // Mono and legato presets play one voice whatever the polyphony.
@@ -327,7 +447,56 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
         module: "sampler",
         points: [1usize, 4, 8, 16, 32].iter().map(|&n| (n, held_pads(rate, n))).collect(),
     });
+    v.push(Scaling {
+        name: "Sampler grains (per grain)".to_string(),
+        module: "sampler",
+        points: [16usize, 32, 64, 128, 256].iter().map(|&n| (n, held_grains(rate, n))).collect(),
+    });
     v
+}
+
+/// Four granular pads held down, set so that about `grains` grains are alive
+/// in every block in all: 100 ms grains at `grains / 4 * 10` a second per
+/// pad. 256 is the engine's whole grain budget ([`mpfree_sampler::engine::GRAIN_BUDGET`]) and 64 a
+/// pad is its per-voice cap, so the top point is the worst a grain burst can
+/// cost. The other settings are the round 7 granular pads' (pitch spray,
+/// spread, scan).
+fn held_grains(rate: u32, grains: usize) -> Case {
+    let mut e = grain_engine(rate, grains);
+    Case {
+        name: format!("Sampler grains x{grains}"),
+        module: "sampler",
+        what: "4 granular pads held, grains alive in all",
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The engine behind [`held_grains`].
+fn grain_engine(rate: u32, grains: usize) -> Engine {
+    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
+        .expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let density = grains as f32 / 4.0 * 10.0;
+    for i in 0..4usize {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        r.grain = GrainParams { spray: 0.6, size_ms: 100.0, density, pitch_spray: 5.0, spread: 1.0, scan: 1.0, ..GrainParams::default() };
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 1;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, 4);
+    e.set_view(EngineView::build(&p, rate));
+    e
 }
 
 /// The sampler with `n` looping, filtered, stereo pads held down, so exactly
@@ -430,14 +599,14 @@ fn chain(rate: u32) -> Case {
     chain.push(Box::new(Delay::new()));
     chain.push(Box::new(Compressor::new()));
     chain.set_param(1, ids::filter::CUTOFF, 800.0);
-    let mut seed = Lcg(5);
+    let prog = program(rate);
     Case {
         name: "Chain: drive, filter, delay, comp".to_string(),
         module: "fx",
         what: "one track's inserts",
         block: Box::new(move |b, l, r| {
             let f0 = b * l.len() as u64;
-            input(rate, f0, &mut seed, l, r);
+            prog.play(f0, l, r);
             chain.process(&Ctx::new(rate, f0), l, r);
         }),
         mem_bytes: 0,
@@ -473,7 +642,7 @@ fn time(rate: u32, tracks: usize) -> Case {
         let mut t = Track::new("t", i as u16);
         let mut c = Clip::new("c", 8 * ppq);
         c.notes = (0..32i64)
-            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100 }))
+            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100, chance: 100 }))
             .collect();
         if i == 1 {
             c.speed = Speed::new(3, 2).expect("speed");
@@ -526,7 +695,7 @@ fn looper(rate: u32, seconds: u32) -> Case {
     let mut block = TBlock::new();
     let frames = MAX_BLOCK;
     let (mut line_in, mut out) = (vec![0.0f32; 2 * frames], vec![0.0f32; 2 * frames]);
-    let mut seed = Lcg(13);
+    let prog = program(rate);
     // 2 bars at 120 BPM: 4 s. Overdub from 5 s, toggled every 4 s; undo
     // every 30 s once there are layers (so it never fills up).
     let block_of = |s: f64| (s * f64::from(rate) / 128.0) as u64;
@@ -543,7 +712,7 @@ fn looper(rate: u32, seconds: u32) -> Case {
             if b > od_start && b % undo_every == 0 {
                 lp.command(LooperCommand::Undo);
             }
-            input(rate, b * n as u64, &mut seed, l, r);
+            prog.play(b * n as u64, l, r);
             for (i, (a, c)) in l.iter().zip(r.iter()).enumerate() {
                 input_frame(&mut line_in, i, *a, *c);
             }
@@ -613,6 +782,22 @@ mod tests {
         let (l, _) = run(&mut c, 100);
         assert!(l.iter().any(|v| v.abs() > 1e-4));
         assert!(scaling(44_100).iter().all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
+    }
+
+    #[test]
+    fn the_grain_points_hold_about_that_many_grains() {
+        for n in [16usize, 64, 256] {
+            let mut e = grain_engine(44_100, n);
+            for pad in 0..4 { e.apply(Event::NoteOn { pad, velocity: 100 }); }
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            let mut live = 0usize;
+            for b in 0..700 {
+                e.render(&mut l, &mut r);
+                if b >= 350 { live += e.live_grains(); }
+            }
+            let mean = live as f64 / 350.0;
+            assert!((mean - n as f64).abs() <= n as f64 * 0.25, "{n} grains asked, {mean:.1} alive");
+        }
     }
 
     #[test]

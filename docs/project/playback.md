@@ -11,16 +11,16 @@ A project holds up to 16 tracks. A track has a destination, an optional swing, a
 - a length in its own ticks (from a 1/32 note to 256 bars)
 - a speed (1/8 to 4 times)
 - an optional swing and an optional quantise
-- its notes, each with a tick, a length, a note or pad number and a velocity
+- its notes, each with a tick, a length, a note or pad number, a velocity and a chance (1 to 100 %, 100 for a recorded note)
 
 These are plain values, edited on the control thread and checked with `check()`.
 
-- **Everything is a clip.** A step pattern and a recorded phrase are the same thing. The step grid will be a view of a clip, not its own data.
+- **Everything is a clip.** A step pattern and a recorded phrase are the same thing. The step grid is a view of a clip, not its own data: see [steps.md](steps.md).
 - **Any length.** Clips of different lengths drift against each other (polymeter), and no clip is tied to 16 steps.
 - **Quantise is non-destructive.** Notes keep their recorded ticks, and quantise (grid and strength) applies on playback, so it can be changed or undone later.
 - **Swing:** the clip's own swing wins, then the track's, then the transport's.
 
-Chance, trig conditions, ratchets, parameter locks, audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
+Trig conditions, ratchets, parameter locks, audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
 
 ## Compiling (`PlayView`)
 
@@ -54,6 +54,7 @@ Each period the player walks the transport's spans and sends events in frame ord
   - STOP while stopped (panic) also sends `AllOff`.
   - If a note starts while the same note is still sounding on the same track, the old one ends first, on the same frame.
 - **Count-in and mute.** Nothing plays during a count-in, or on a muted track.
+- **Chance.** A note below 100 % rolls each time it comes round, on a hash of the note and the frame it would play on: the same for any period size, different on every pass. Notes left out are counted in `Stats::skipped`.
 - **Real-time safe.** There is no allocation, lock or panic in `process`. A full table is counted in `Stats::dropped`, never dropped silently: 256 sounding notes, 256 note starts per span.
 
 ## Through the arp (`ArpHost`)
@@ -99,14 +100,15 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 
 ## Tests
 
-- `tests/play.rs` has 12 behaviour tests:
+- `tests/play.rs` has 13 behaviour tests:
   - quarter notes on the beats, and loops
   - polymeter, speed, swing (and a clip overriding it), quantise, a launch origin
   - loop jumps ending notes, and clips restarting in place
   - locate, stop and panic, retriggering, mute and count-in, tempo changes
+  - chance: a note at 50 % is left out on some passes and not others, differently on every pass
 - `tests/period_size.rs` plays a busy session on five tracks:
   - the session has a count-in, a loop with a tempo segment inside, live tempo changes, punch in and out, locates, stop and panic, and the shortest loop
-  - the tracks cover polymeter, 3/4 speed, double speed with its own swing, quantised overlapping notes, and a muted track
+  - the tracks cover polymeter, 3/4 speed, double speed with its own swing, quantised overlapping notes with chance below 100 %, and a muted track
 
   It cuts the session into periods of 1 to 8192 frames and three random sequences, and every event must match. It also checks that each note ends before it starts again and that the final stop ends every note. With the swing look-back window removed, the test fails.
 - `tests/arp.rs` plays a held chord through the arp:
@@ -127,7 +129,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a take undoes and redoes as a whole, back to the clip exactly as it was before recording
   - a note that quantise moves past a punch out arrives after the next take has begun and erased a note, and still joins its own take. Tagging it when it is handed over instead of when it ends, or adding it to the latest take, makes the test fail.
   - a busy take (300 random notes, punch in and out, a loop, a tempo change, a locate, a stop, overdub off then on, a quantised clip at 3/4 speed) gives the same recorded notes, the same erased notes and the same clip at periods of 1 to 8192 frames and two random sequences. Placing notes by the span's start instead of their frame makes it fail.
-- `src/takes.rs` unit tests: a new take ends redo, old takes are forgotten past the limit, and missing clips and notes change nothing.
+- `src/takes.rs` unit tests: a new take ends redo, old takes are forgotten past the limit, missing clips and notes change nothing, and step edits are takes (a Q-Link turn joins one).
 - `tests/cue.rs` has 9 tests, each run at periods of 1, 64, 128, 1000 and 4096 frames, with the switch applied by the control thread at once, 3 or 40 periods later, or never. Every way must give the same events.
   - a launch waits for the bar line and starts the clip from its top; a note held over the bar line ends on it; a stop waits too
   - cues on two tracks start on the same bar line
@@ -137,7 +139,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a switch on the armed track ends the replace pass
 
   With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. It sees no allocation and no free.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance. It sees no allocation and no free.
 
 ## Listening
 
@@ -155,6 +157,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 - the end: the transport stops on the last bar line, and a kick, stab and crash ring out. The tool then undoes take 2 on a copy of the song and checks that the stab riff is back (take undo).
 
 All the sounds are synthesised in the tool. It prints the take track bar by bar from the notes the player and the pads actually sent (which steps played from the clip, which were played live, which were erased). It checks that the stabs play from the clip only in bars 2 to 6, the clanks only from bar 8, and every erased note falls in bar 7. It prints an events hash for the player's and the arp's notes, the recorded notes and the erased notes. That hash is the same on every computer, and the tool checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames. Every sound fades out at its end, so none ends with a click. The master is a plain gain with about 1.5 dB of headroom. The tool counts samples that clip at the master and warns if there are any. Drive and bit crushing inside a sound are deliberate and are not counted.
+
+`cargo run --release -p mpfree-play --example steps_demo` plays a beat programmed only through the step grid; see [steps.md](steps.md#listening).
 
 ## Screens (`mpfree-time-ui`)
 
@@ -191,5 +195,5 @@ Cues that start become launches right after the period they started in (`Started
 - Move edits out of the audio loop.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - Launching on the bar line (cues) is built. Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), scenes (a row of clips launched together), and a new clip that waits for its bar line without stopping the track's clip first.
-- The step sequencer: steps with velocity, length, nudge and chance, 16 to a page.
+- The step sequencer's model is built (steps with velocity, length, nudge and chance, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.
 - The looper (T4).
