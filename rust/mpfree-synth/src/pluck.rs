@@ -92,6 +92,197 @@ const MATERIAL_MODES: [Modes; 6] = [
     ],
 ];
 
+/// A material's modes, from the Material value.
+fn material(value: f32) -> Modes {
+    MATERIAL_MODES[(value as usize).min(MATERIAL_MODES.len() - 1)]
+}
+
+/// Materials with many modes would be louder: they share 1.5 among them.
+fn mode_share(modes: Modes) -> f32 {
+    1.5 / modes.iter().map(|m| m.1).sum::<f32>()
+}
+
+/// Decay (T60, seconds) at `hz` for a Decay of `decay_ms`: that at middle
+/// C, halving every two octaves up.
+fn decay_for(decay_ms: f32, hz: f32) -> f32 {
+    decay_ms * 0.001 * (261.63 / hz).sqrt()
+}
+
+/// The string's loop filter coefficient for a note at `hz`. Brightness
+/// (0 to 100) sets its cutoff, from 12 harmonics (dark) to 112. Never
+/// lower, or the filter alone would kill the fundamental of a high note
+/// within a few dozen periods.
+fn loop_coef(brightness: f32, hz: f32, rate: f32) -> f32 {
+    let b = brightness / 100.0;
+    let fc = (hz * (12.0 + 100.0 * b * b)).min(0.45 * rate);
+    (-std::f32::consts::TAU * fc / rate).exp()
+}
+
+/// The pick: a one-pole low-pass on white noise, 0.95 (soft) to 0, from
+/// Pick (0 to 100) and the velocity's brightness.
+fn pick_coef(pick: f32, bright: f32) -> f32 {
+    let pick = (pick / 100.0 * bright).clamp(0.0, 1.0);
+    0.95 * (1.0 - pick)
+}
+
+/// The pick position (0 to 100) as a delay into a string `period` frames
+/// long.
+fn pick_offset(position: f32, period: usize) -> usize {
+    ((position / 100.0) * period as f32).round().max(1.0) as usize
+}
+
+/// A mode's ratio with the Stretch (as a share, 0 to 1) applied.
+fn stretched(ratio: f32, stretch: f32) -> f32 {
+    1.0 + (ratio - 1.0) * (1.0 + stretch)
+}
+
+/// A mode's T60 from the note's decay, its decay ratio and High damp (as
+/// a share, 0 to 1).
+fn mode_t60(base: f32, dr: f32, damp: f32) -> f32 {
+    (base * dr.powf(0.5 + 1.5 * damp)).max(0.005)
+}
+
+/// How much mode `k` (0 first) is struck at strike position `pos` (0 to 1).
+fn strike_place(k: usize, pos: f32) -> f32 {
+    0.3 + 0.7
+        * (std::f32::consts::PI * (k + 1) as f32 * pos.max(0.02))
+            .sin()
+            .abs()
+}
+
+/// The mallet pulse's length in frames, from Hardness (0 to 100), the
+/// velocity's brightness and the note's pitch. A soft mallet is a long
+/// pulse, but never longer than a third of the note's period, so high notes
+/// still sound.
+fn pulse_len(hardness: f32, bright: f32, pitch: f32, rate: f32) -> f32 {
+    let hard = (hardness / 100.0 * bright).clamp(0.0, 1.0);
+    let period = rate / note_hz(pitch).max(1.0);
+    (rate * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard)))
+        .min(period / 3.0)
+        .max(2.0)
+}
+
+/// How long the mallet's pulse lasts on a full-velocity note `note`, in
+/// seconds, with the values `value` gives by parameter id (for drawing it).
+pub fn mallet_pulse_secs(value: impl Fn(u16) -> f32, note: u8, rate: u32) -> f32 {
+    let pitch = f32::from(note) + value(TRANSPOSE) + value(FINE) / 100.0;
+    pulse_len(value(HARDNESS), 1.0, pitch, rate as f32) / rate as f32
+}
+
+/// One partial of a note, for drawing it (`mpfree-synth-ui`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Partial {
+    /// Its frequency over the note's.
+    pub ratio: f32,
+    /// Its level at the start of a full-velocity note, the loudest 1.
+    pub level: f32,
+    /// How long it rings while held, to -60 dB, in seconds.
+    pub t60: f32,
+}
+
+/// How many harmonics [`partials`] gives for a string.
+pub const HARMONICS: usize = 16;
+
+/// The partials of a full-velocity note `note` held at `rate`, with the
+/// values `value` gives by parameter id, worked out with the same formulas
+/// the voices use:
+///
+/// - String: the first [`HARMONICS`] harmonics, each at its average level
+///   over many plucks (each pluck's noise burst gives the harmonics random
+///   levels around it), shaped by the pick's low-pass and the pick
+///   position's comb, and each with the decay the loop filter gives it
+///   (higher harmonics die sooner, more so when darker).
+/// - Mallet: the material's modes, weighed by where they are struck and by
+///   the mallet pulse's spectrum (a soft mallet barely reaches the high
+///   modes), with their own decays.
+///
+/// A partial at or over the engine's top frequency has level 0. Writes into
+/// `out` and returns how many it wrote.
+pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Partial]) -> usize {
+    use std::f32::consts::{PI, TAU};
+    let rate = rate as f32;
+    let pitch = f32::from(note) + value(TRANSPOSE) + value(FINE) / 100.0;
+    let mut n = 0;
+    if value(MODEL) < 0.5 {
+        let hz = note_hz(pitch).max(MIN_HZ).min(rate * 0.25);
+        let a = loop_coef(value(BRIGHTNESS), hz, rate);
+        let mag = |w: f32| (1.0 - a) / (1.0 - 2.0 * a * w.cos() + a * a).sqrt();
+        let per_period = 10f32.powf(-3.0 / (decay_for(value(DECAY), hz) * hz));
+        let g = (per_period / mag(TAU * hz / rate)).min(0.99999);
+        let c = pick_coef(value(PICK), 1.0);
+        // The string's length in frames, as `tune` and `pluck` work it out.
+        let w1 = TAU * hz / rate;
+        let phase_delay = (a * w1.sin()).atan2(1.0 - a * w1.cos()) / w1;
+        let period = ((rate / hz - phase_delay).max(1.5).round() as usize).max(2);
+        let m = pick_offset(value(POSITION), period).min(period);
+        let (pf, rest) = (period as f32, (period - m) as f32);
+        for (k, p) in out.iter_mut().take(HARMONICS).enumerate() {
+            let h = (k + 1) as f32;
+            let w = TAU * hz * h / rate;
+            let (level, t60) = if hz * h >= 0.45 * rate {
+                (0.0, 0.0)
+            } else {
+                let pick = (1.0 - c) / (1.0 - 2.0 * c * w.cos() + c * c).sqrt();
+                // `pluck` subtracts the burst delayed by `m` frames within
+                // the one period it writes (the first `m` frames keep
+                // theirs): for a white burst, the average power of
+                // harmonic h is P + (P - m) - 2 (P - m) cos(2 pi h m / P).
+                let comb = (pf + rest - 2.0 * rest * (TAU * h * m as f32 / pf).cos())
+                    .max(0.0)
+                    .sqrt();
+                let loss = (g * mag(w)).min(0.99999);
+                (pick * comb, -3.0 / (hz * loss.log10()))
+            };
+            *p = Partial {
+                ratio: h,
+                level,
+                t60,
+            };
+            n += 1;
+        }
+    } else {
+        let modes = material(value(MATERIAL));
+        let stretch = value(STRETCH) / 100.0;
+        let damp = value(HIGH_DAMP) / 100.0;
+        let pos = value(STRIKE) / 100.0;
+        let f0 = note_hz(pitch);
+        let base = decay_for(value(DECAY), f0);
+        let share = mode_share(modes);
+        // The half-sine pulse's spectrum, 1 at 0 Hz.
+        let t = pulse_len(value(HARDNESS), 1.0, pitch, rate) / rate;
+        let pulse = |f: f32| {
+            let d = 1.0 - (2.0 * f * t).powi(2);
+            if d.abs() < 1e-4 {
+                PI / 4.0
+            } else {
+                ((PI * f * t).cos() / d).abs()
+            }
+        };
+        for (k, (&(ratio, level, dr), p)) in modes.iter().zip(out.iter_mut()).enumerate() {
+            let r = stretched(ratio, stretch);
+            let hz = f0 * r;
+            let live = hz < 0.45 * rate && hz > 10.0;
+            *p = Partial {
+                ratio: r,
+                level: if live {
+                    level * strike_place(k, pos) * share * pulse(hz)
+                } else {
+                    0.0
+                },
+                t60: if live { mode_t60(base, dr, damp) } else { 0.0 },
+            };
+            n += 1;
+        }
+    }
+    let top = out[..n].iter().fold(0f32, |m, p| m.max(p.level));
+    if top > 0.0 {
+        for p in &mut out[..n] {
+            p.level /= top;
+        }
+    }
+    n
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum State {
     #[default]
@@ -242,7 +433,7 @@ impl Pluck {
     /// Decay (T60, seconds) at `hz`: the Decay value at middle C, halving
     /// every two octaves up.
     fn decay_at(&self, hz: f32, held: bool) -> f32 {
-        let d = self.v(DECAY) * 0.001 * (261.63 / hz).sqrt();
+        let d = decay_for(self.v(DECAY), hz);
         if held {
             d
         } else {
@@ -257,12 +448,7 @@ impl Pluck {
         if !self.mallet() {
             let hz = note_hz(pitch).max(MIN_HZ).min(rate * 0.25);
             let w = std::f32::consts::TAU * hz / rate;
-            // Brightness: the loop filter's cutoff, from 12 harmonics (dark)
-            // to 112. Never lower, or the filter alone would kill the
-            // fundamental of a high note within a few dozen periods.
-            let b = self.v(BRIGHTNESS) / 100.0;
-            let fc = (hz * (12.0 + 100.0 * b * b)).min(0.45 * rate);
-            let a = (-std::f32::consts::TAU * fc / rate).exp();
+            let a = loop_coef(self.v(BRIGHTNESS), hz, rate);
             let (s, c) = w.sin_cos();
             let phase_delay = (a * s).atan2(1.0 - a * c) / w;
             let mag = (1.0 - a) / (1.0 - 2.0 * a * c + a * a).sqrt();
@@ -273,18 +459,16 @@ impl Pluck {
             let per_period = 10f32.powf(-3.0 / (self.decay_at(hz, held) * hz));
             v.g = (per_period / mag).min(0.99999);
         } else {
-            let modes = MATERIAL_MODES[(self.v(MATERIAL) as usize).min(MATERIAL_MODES.len() - 1)];
+            let modes = material(self.v(MATERIAL));
             let stretch = self.v(STRETCH) / 100.0;
             let damp = self.v(HIGH_DAMP) / 100.0;
             let pos = self.v(STRIKE) / 100.0;
             let f0 = note_hz(pitch);
             let base = self.decay_at(f0, held);
             v.n_modes = modes.len().min(MODES);
-            // Materials with many modes would be louder: share 1.5 among them.
-            let share = 1.5 / modes.iter().map(|m| m.1).sum::<f32>();
+            let share = mode_share(modes);
             for (k, &(ratio, level, dr)) in modes.iter().take(MODES).enumerate() {
-                let r = 1.0 + (ratio - 1.0) * (1.0 + stretch);
-                let hz = f0 * r;
+                let hz = f0 * stretched(ratio, stretch);
                 if hz >= 0.45 * rate || hz <= 10.0 {
                     v.b0[k] = 0.0;
                     v.c1[k] = 0.0;
@@ -292,16 +476,11 @@ impl Pluck {
                     continue;
                 }
                 let w = std::f32::consts::TAU * hz / rate;
-                let t60 = (base * dr.powf(0.5 + 1.5 * damp)).max(0.005);
+                let t60 = mode_t60(base, dr, damp);
                 let rr = 10f32.powf(-3.0 / (t60 * rate));
                 v.c1[k] = 2.0 * rr * w.cos();
                 v.c2[k] = rr * rr;
-                let place = 0.3
-                    + 0.7
-                        * (std::f32::consts::PI * (k + 1) as f32 * pos.max(0.02))
-                            .sin()
-                            .abs();
-                v.b0[k] = w.sin() * level * place * share;
+                v.b0[k] = w.sin() * level * strike_place(k, pos) * share;
             }
         }
         v.tuned = pitch;
@@ -389,13 +568,7 @@ impl Pluck {
         let bright = 1.0 - vt * (1.0 - vel);
         let amp = 0.25 + 0.75 * vel;
         if self.mallet() {
-            let hard = (self.v(HARDNESS) / 100.0 * bright).clamp(0.0, 1.0);
-            // A soft mallet is a long pulse, but never longer than a
-            // third of the note's period, so high notes still sound.
-            let period = self.rate as f32 / note_hz(pitch).max(1.0);
-            let len = (self.rate as f32 * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard)))
-                .min(period / 3.0)
-                .max(2.0);
+            let len = pulse_len(self.v(HARDNESS), bright, pitch, self.rate as f32);
             v.pulse_len = len as u32;
             v.pulse_at = 0;
             // Unit area, so the low modes sound the same at any hardness.
@@ -410,9 +583,7 @@ impl Pluck {
     /// long, ending where the line is read next.
     fn pluck(&mut self, slot: usize, v: &Voice, amp: f32, bright: f32) {
         let period = (v.delay.round() as usize).clamp(2, self.line - 2);
-        let pick = (self.v(PICK) / 100.0 * bright).clamp(0.0, 1.0);
-        // The pick: a one-pole low-pass on white noise, 0.95 (soft) to 0.
-        let c = 0.95 * (1.0 - pick);
+        let c = pick_coef(self.v(PICK), bright);
         let mut lp = 0.0f32;
         let mut sum = 0.0f32;
         for i in 0..period {
@@ -423,9 +594,7 @@ impl Pluck {
         let mean = sum / period as f32;
         // Pick position: subtracting a copy delayed by that fraction of the
         // string cancels the harmonics with a node there.
-        let m = ((self.v(POSITION) / 100.0) * period as f32)
-            .round()
-            .max(1.0) as usize;
+        let m = pick_offset(self.v(POSITION), period);
         let mut energy = 0.0f32;
         for i in (0..period).rev() {
             let x = self.scratch[i] - mean;

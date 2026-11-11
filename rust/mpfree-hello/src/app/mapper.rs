@@ -50,6 +50,8 @@ pub enum Job {
     PlayStart,
     /// PAD BANK A/E (0) to D/H (3).
     Bank(u8),
+    /// TRACK MIX (SHIFT: PAD MIX): the mixer.
+    TrackMix,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,10 +88,10 @@ pub const CONTROLS: [Control; 35] = [
     c("MENU", Job::Menu),
     c("MAIN", Job::None),
     c("BROWSE", Job::None),
-    // For the FX thread's mixer proposal. Named after the MPC 3.6 guide's
-    // MPC One top panel (p. 348, item 17, as the FX thread cites it);
-    // not yet seen by the pad player.
-    c("TRACK MIX / PAD MIX", Job::None),
+    // Opens the mixer. Named after the MPC 3.6 guide's MPC One top panel
+    // (p. 348, item 17, as the FX thread cites it); not yet seen by the pad
+    // player, so it works once found with the mapper.
+    c("TRACK MIX / PAD MIX", Job::TrackMix),
     c("-", Job::Minus),
     c("+", Job::Plus),
     c("Q-LINK", Job::None),

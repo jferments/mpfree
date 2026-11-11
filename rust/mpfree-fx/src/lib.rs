@@ -6,6 +6,8 @@
 //!   off in the middle.
 //! - [`Drive`]: soft, hard, tube, foldback, fuzz and rectify shapers inside
 //!   2x or 4x oversampling, with tone, bias, mix and auto-gain.
+//! - [`Comb`]: a tuned feedback comb with damping, stereo spread and key
+//!   follow (notes play its pitch).
 //! - [`Crush`]: bit depth and sample-rate reduction (aliasing on purpose).
 //! - [`Delay`]: free or tempo-synced echo with ping-pong, a filter and
 //!   saturation in the feedback, tape-style time changes and freeze.
@@ -21,6 +23,12 @@
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
 //!   look-ahead peak limiter that counts overs, and Soft clip and Raw modes.
+//! - [`Perform`]: sixteen pads of performance effects (stutter, beat
+//!   repeat, reverse, half speed, tape stop, vinyl brake, pitch drop,
+//!   trance gate, filter sweeps, crush, echo throws, a noise riser) that
+//!   start on the next grid line and snap back when let go, with a DJ
+//!   filter and an echo knob for the XY pad and the DJ knob.
+//! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
 //!
@@ -43,6 +51,7 @@
 
 mod chain;
 mod cloud;
+mod comb;
 mod comp;
 mod crush;
 mod delay;
@@ -53,10 +62,13 @@ mod master;
 mod mixer;
 mod modfx;
 mod oversample;
+mod perform;
 mod svf;
+mod xy;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
+pub use comb::Comb;
 pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
@@ -71,7 +83,13 @@ pub use mixer::{
 };
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
+pub use perform::{
+    state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
+    LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
+    SLOTS as PERFORM_SLOTS,
+};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
+pub use xy::{XyAxis, XyPad};
 
 pub use mpfree_node;
 
@@ -79,6 +97,7 @@ pub use mpfree_node;
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
     pub use crate::cloud::ids as cloud;
+    pub use crate::comb::ids as comb;
     pub use crate::comp::ids as compressor;
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
@@ -90,6 +109,7 @@ pub mod ids {
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
+    pub use crate::perform::ids as perform;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
 }

@@ -2,13 +2,15 @@
 //! do, and what Chop to pads does to a real project.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{ChopMode, PlayMode};
+use mpfree_sampler::model::{ChopMode, Keys, PadsPlay, PlayMode, SLICE_KEYS_FROM};
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
+use mpfree_sampler_ui::SourceView;
 use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
+use std::sync::Arc;
 
 fn chop() -> ChopSample {
     let mut s = chop_sample(Fonts::embedded()).unwrap();
@@ -237,12 +239,27 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
             "put back"
         );
     }
-    // A tap on the wave picks the slice under it.
+    // A tap on the wave picks the slice under it and plays it.
     let ev = UiEvent {
         widget: chop_tab::WAVE.into(),
         kind: EventKind::Frame(b[3] + 10),
     };
-    s.tab.action(&mut s.ui, &ev, &st);
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(ChopAction::Audition {
+            pad: st.pad,
+            layer: st.layer,
+            start: b[3],
+            end: b[4]
+        })
+    );
+    assert_eq!(s.tab.selected(), 3);
+    // Outside the region there is no slice to play.
+    let ev = UiEvent {
+        widget: chop_tab::WAVE.into(),
+        kind: EventKind::Frame(b[b.len() - 1] + 10),
+    };
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
     assert_eq!(s.tab.selected(), 3);
     // A hand-made chop stays when the method's list is left alone, even
     // when the region's end moves (another pad chops again).
@@ -315,6 +332,126 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
 }
 
 #[test]
+fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    step(&mut s, Row::Put, 1);
+    let list = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert_eq!(list.rows[5].value, "Keys from C2");
+    assert_eq!(buttons(&s).0[2], "To keys C2–D#2");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads { keys_from, .. } = a else {
+        panic!("{a:?}")
+    };
+    assert_eq!(keys_from, Some(SLICE_KEYS_FROM));
+    assert_eq!(apply(&mut s, &a), 5..9);
+    for k in 0..4 {
+        let pad = s.project.pad(5 + k).unwrap();
+        assert_eq!(pad.keys, Some(Keys::one(36 + k as u8)), "C2 up");
+        let r = &pad.layers[0].region;
+        assert_eq!((r.start, r.end), (b[k], b[k + 1]));
+    }
+    assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 36 });
+    // Pad 1 is now the first slice's note; pad 5 (A5's own) holds no note.
+    let view = EngineView::build(&s.project, RATE);
+    assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(4));
+    let mut e = Engine::new(RATE, 32);
+    e.set_view(view);
+    e.apply(Event::Key {
+        note: 37,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    assert!(
+        l.iter().any(|x| x.abs() > 0.01),
+        "C#2 plays the second slice"
+    );
+    // One undo takes it all back, the pads playing their sounds again.
+    assert!(s.project.undo());
+    assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+}
+
+#[test]
+fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
+    let mut s = chop();
+    // Every eighth on the loop's own beat grid: the region starts a
+    // sixteenth in, so the first slice is a sixteenth long.
+    method(&mut s, Method::Beat);
+    step(&mut s, Row::Amount, -1);
+    assert_eq!(s.tab.slices(), 15);
+    let list_value = |s: &ChopSample| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[5]
+            .value
+            .clone()
+    };
+    // Pads, Keys, then Pads + phrase (the loop has a tempo), round again.
+    step(&mut s, Row::Put, 1);
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads + phrase");
+    assert_eq!(buttons(&s).0[2], "Phrase on A2–A16");
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads");
+    step(&mut s, Row::Put, -1);
+    assert_eq!(list_value(&s), "Pads + phrase");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads {
+        phrase, keys_from, ..
+    } = &a
+    else {
+        panic!("{a:?}")
+    };
+    // At the loop's detected tempo, a hair off the 92 BPM it was made at.
+    assert!(
+        phrase.is_some_and(|f| (f - beat()).abs() < 0.5),
+        "{phrase:?}"
+    );
+    assert_eq!(*keys_from, None);
+    let p = a.phrase(&s.project).unwrap().unwrap();
+    assert_eq!(p.hits.len(), 15);
+    assert_eq!(p.hits[0].beat, 0.0);
+    assert!((p.hits[0].beats - 0.25).abs() < 0.01, "{:?}", p.hits[0]);
+    for (k, h) in p.hits.iter().enumerate().skip(1) {
+        assert_eq!(h.slice, k);
+        assert!((h.beat - (k as f64 * 0.5 - 0.25)).abs() < 0.01, "{h:?}");
+    }
+    assert_eq!(p.beats, 8, "7.25 beats of slices round up to 8");
+    // The pads are filled as by Chop to pads; the phrase is still there.
+    assert_eq!(apply(&mut s, &a), 1..16);
+    assert!(s.project.pads_play() == PadsPlay::Pads);
+    assert_eq!(a.phrase(&s.project).unwrap(), Some(p));
+    // Without a tempo there is no phrase to make: the row reads Pads.
+    let v = &s.state.source;
+    let plain = SourceView {
+        id: v.id,
+        peaks: v.peaks.clone(),
+        mono: v.mono.clone(),
+        tempo: None,
+        root: None,
+        root_note: None,
+        onsets: v.onsets.clone(),
+    };
+    s.state.source = Arc::new(plain);
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(list_value(&s), "Pads");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    assert!(matches!(a, ChopAction::ToPads { phrase: None, .. }));
+    assert_eq!(a.phrase(&s.project), Ok(None));
+    step(&mut s, Row::Put, -1);
+    assert_eq!(list_value(&s), "Keys from C2", "Pads, Keys only");
+    step(&mut s, Row::Put, 1);
+    assert_eq!(list_value(&s), "Pads");
+}
+
+#[test]
 fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     let mut s = chop();
     method(&mut s, Method::Grid);
@@ -360,5 +497,73 @@ fn every_chop_sample_screen_draws() {
     for mut s in sample::chop_samples(Fonts::embedded).unwrap() {
         let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
         assert!(!s.ui.paint(&mut c).is_empty(), "{}", s.name);
+    }
+}
+
+/// Renders `frames` frames of `e` after scheduling `ev`.
+fn sound(e: &mut Engine, ev: Event, frames: usize) -> Vec<f32> {
+    assert!(e.schedule(0, ev));
+    let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    l.into_iter().zip(r).flat_map(|(a, b)| [a, b]).collect()
+}
+
+#[test]
+fn a_tapped_slice_sounds_as_the_pad_made_from_it_will() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    let ev = UiEvent {
+        widget: chop_tab::WAVE.into(),
+        kind: EventKind::Frame(b[2] + 5),
+    };
+    let st = s.state.clone();
+    let tap = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+    let ChopAction::Audition {
+        pad,
+        layer,
+        start,
+        end,
+    } = tap
+    else {
+        panic!("{tap:?}")
+    };
+    assert_eq!((pad, layer, start, end), (PAD, 0, b[2], b[3]));
+    // The tap, before anything goes on pads...
+    let frames = 4096;
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&s.project, RATE));
+    let heard = sound(
+        &mut e,
+        Event::Audition {
+            pad: pad as u8,
+            layer: layer as u8,
+            start: start as u32,
+            end: end as u32,
+            velocity: 100,
+        },
+        frames,
+    );
+    // ...sounds as the slice's pad, once it is made.
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let pads = apply(&mut s, &a);
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&s.project, RATE));
+    let made = sound(
+        &mut e,
+        Event::NoteOn {
+            pad: (pads.start + 2) as u8,
+            velocity: 100,
+        },
+        frames,
+    );
+    assert!(heard.iter().any(|x| x.abs() > 0.01), "the tap plays");
+    for (k, (h, m)) in heard.iter().zip(&made).enumerate() {
+        assert!((h - m).abs() < 1e-6, "sample {k}: {h} vs {m}");
     }
 }

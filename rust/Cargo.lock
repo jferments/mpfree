@@ -465,6 +465,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-fx-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-synth-ui",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
 dependencies = [
@@ -500,7 +510,9 @@ dependencies = [
  "mpfree-capture",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-fx",
  "mpfree-looper",
+ "mpfree-mixer-ui",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
@@ -601,6 +613,8 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-prof",
+ "mpfree-stretch",
 ]
 
 [[package]]
@@ -647,8 +661,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-startup"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "mpfree-screen-log",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-store"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-stretch"
+version = "0.1.0"
+dependencies = [
+ "mpfree-analysis",
+]
 
 [[package]]
 name = "mpfree-synth"

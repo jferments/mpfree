@@ -12,12 +12,21 @@
 //!   setting chops again; moving, splitting or merging a slice by hand turns
 //!   the method to Manual, so nothing undoes the hand edits behind the
 //!   user's back.
+//! - A **tap** on the wave picks the slice under it and plays it once, as
+//!   the pad made from it will ([`ChopAction::Audition`]).
 //! - **Split** cuts the slice picked in two, **Merge** joins it to the one
 //!   before, and **Chop to pads** puts the slices on consecutive pads of the
 //!   pad's bank as one undo step. Each new pad is the chopped pad (level,
 //!   envelopes, filter, its sound's gain, tune and channels) playing one
 //!   slice once. The button names the pads it fills; the list says how many
-//!   of them have a sound already.
+//!   of them have a sound already. With **Put on** at Keys, the button
+//!   reads **To keys** and also makes each slice a keygroup of one note,
+//!   from C2 up, and the kit's pads then play those notes, so the slices
+//!   are on the pads and on a keyboard. With **Pads + phrase** (offered
+//!   for a sound with a tempo) the button reads **Phrase on** and the app
+//!   also makes a clip of the slices in time, from the first one, at the
+//!   sound's tempo ([`ChopAction::phrase`]): played from a Clips slot, the
+//!   loop comes back whole at any tempo, every hit a note to move or swap.
 //! - **Q-Link 1** picks a slice, **Q-Link 2** moves its start (one pixel of
 //!   the current zoom per detent, snapped in the direction of the turn; with
 //!   SHIFT one frame), **Q-Link 3** turns the method's setting and **Q-Link
@@ -32,9 +41,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use mpfree_analysis::{
-    nearest_zero_crossing, previous_zero_crossing, sound_spans, SilenceSettings,
+    nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
 };
-use mpfree_sampler::model::{ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS};
+use mpfree_sampler::model::{
+    ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS, SLICE_KEYS_FROM,
+};
+use mpfree_sampler::phrase::{self, Phrase};
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{EventKind, Rect, Ui, UiEvent};
@@ -64,7 +76,7 @@ pub const LAYOUT: &str = "col(header:60, smp-chop-bar:60, smp-chop-overview:56, 
 pub const TAB: usize = 2;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Tap a slice to pick it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
+pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
                         it back) · SHIFT + Q-Link 2: one frame at a time";
 
 /// Pads in a bank: the most slices one chop can put on pads.
@@ -143,10 +155,31 @@ pub enum Row {
     Snap,
     Slice,
     Pads,
+    /// The slices go on the pads, on notes as well, or on the pads with a
+    /// phrase that plays them in time.
+    Put,
+}
+
+/// Where the Put row puts the slices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Put {
+    Pads,
+    /// Keygroups of one note each from [`SLICE_KEYS_FROM`].
+    Keys,
+    /// The pads, and a clip of the slices in time (only for a sound with
+    /// a tempo).
+    Phrase,
 }
 
 impl Row {
-    pub const ALL: [Row; 5] = [Row::Method, Row::Amount, Row::Snap, Row::Slice, Row::Pads];
+    pub const ALL: [Row; 6] = [
+        Row::Method,
+        Row::Amount,
+        Row::Snap,
+        Row::Slice,
+        Row::Pads,
+        Row::Put,
+    ];
 }
 
 /// The buttons, in order.
@@ -154,6 +187,7 @@ impl Row {
 pub enum Button {
     Split,
     Merge,
+    /// The slices on the pads (or, as the Put row says, on keys too).
     ToPads,
 }
 
@@ -242,6 +276,20 @@ pub enum ChopAction {
         mode: ChopMode,
         bounds: Vec<u64>,
         to_pad: usize,
+        /// As keygroups of one note each from this note, the pads then
+        /// playing notes ([`Project::chop_to_keys`]).
+        keys_from: Option<u8>,
+        /// Also a phrase of the slices in time, at this many frames a beat
+        /// (the sound's tempo): [`ChopAction::phrase`].
+        phrase: Option<f64>,
+    },
+    /// Play source frames `start..end` (a slice) of pad `pad`'s layer
+    /// `layer` once, as a pad made from it would: a tap on the slice.
+    Audition {
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
     },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
@@ -254,26 +302,60 @@ impl ChopAction {
         let ChopAction::ToPads {
             pad,
             layer,
-            source,
-            name,
-            mode,
-            bounds,
             to_pad,
+            keys_from,
+            ..
         } = self
         else {
             return Ok(0..0);
         };
-        if bounds.len() < 2 || bounds.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(ModelError::BadSlice);
-        }
-        let s = p.source(*source).ok_or(ModelError::UnknownSource)?.clone();
         let mut template = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
         if *layer >= template.layers.len() {
             return Err(ModelError::BadPad);
         }
         // The chopped layer's settings carry over: make it the first.
         template.layers.swap(0, *layer);
-        let c = ChopSet::from_markers(name, &s, *mode, bounds.iter().copied())?;
+        let (c, first, count) = self.slices(p)?;
+        match keys_from {
+            Some(from) => p.chop_to_keys(c, first, count, *to_pad, *from, Some(&template))?,
+            None => p.chop_to_pads(c, first, count, *to_pad, Some(&template))?,
+        };
+        Ok(*to_pad..*to_pad + count)
+    }
+
+    /// The phrase a [`ChopAction::ToPads`] asks for: its slices as hits in
+    /// beats of the sound's tempo, the first slice on the first pad. None
+    /// when it asks for none.
+    pub fn phrase(&self, p: &Project) -> Result<Option<Phrase>, ModelError> {
+        let ChopAction::ToPads {
+            phrase: Some(frames_per_beat),
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        let (c, first, count) = self.slices(p)?;
+        phrase::phrase(&c, first, count, *frames_per_beat).map(Some)
+    }
+
+    /// The chop a [`ChopAction::ToPads`] makes, and which of its slices
+    /// (from `first`, `count` of them) lie between its bounds.
+    fn slices(&self, p: &Project) -> Result<(ChopSet, usize, usize), ModelError> {
+        let ChopAction::ToPads {
+            source,
+            name,
+            mode,
+            bounds,
+            ..
+        } = self
+        else {
+            return Err(ModelError::BadSlice);
+        };
+        if bounds.len() < 2 || bounds.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(ModelError::BadSlice);
+        }
+        let s = p.source(*source).ok_or(ModelError::UnknownSource)?;
+        let c = ChopSet::from_markers(name, s, *mode, bounds.iter().copied())?;
         let first = usize::from(bounds[0] > 0);
         let count = bounds.len() - 1;
         if c.bounds(first).map(|b| b.0) != Some(bounds[0])
@@ -281,8 +363,7 @@ impl ChopAction {
         {
             return Err(ModelError::BadSlice);
         }
-        p.chop_to_pads(c, first, count, *to_pad, Some(&template))?;
-        Ok(*to_pad..*to_pad + count)
+        Ok((c, first, count))
     }
 }
 
@@ -319,6 +400,10 @@ pub struct ChopTab {
     /// The first pad chosen with Q-Link 4 or the Pads row; None takes the
     /// pads after the chopped one.
     first_pad: Option<usize>,
+    /// The Put row: the pads; also notes from [`SLICE_KEYS_FROM`], as
+    /// keygroups of a note each, the pads then playing those notes; or the
+    /// pads and a phrase of them in time.
+    put: Put,
     /// The source and region the cuts were made for: another pad, or a
     /// moved Start or End, chops again.
     made_for: Option<(SourceId, u64, u64)>,
@@ -368,6 +453,7 @@ impl ChopTab {
             cuts: Vec::new(),
             selected: 0,
             first_pad: None,
+            put: Put::Pads,
             made_for: None,
             shown: None,
             wave_w: Waveform::wave_rect(wave).w,
@@ -383,6 +469,14 @@ impl ChopTab {
     /// The slice picked, from 0.
     pub fn selected(&self) -> usize {
         self.selected
+    }
+
+    /// Where the slices go: a phrase only while the sound has a tempo.
+    fn put(&self, st: &ChopState) -> Put {
+        match self.put {
+            Put::Phrase if st.frames_per_beat().is_none() => Put::Pads,
+            p => p,
+        }
     }
 
     /// Where the slices start and end: the region's start, the cuts, its end.
@@ -577,9 +671,18 @@ impl ChopTab {
                 n > 1,
                 pads.is_some(),
             ];
-            b.labels[2] = match &range {
-                Some(t) => format!("Chop to {t}"),
-                None => format!("Max {BANK} slices"),
+            b.labels[2] = match (&range, self.put(st)) {
+                (None, _) => format!("Max {BANK} slices"),
+                (Some(t), Put::Pads) => format!("Chop to {t}"),
+                (Some(t), Put::Phrase) => format!("Phrase on {t}"),
+                (Some(_), Put::Keys) => {
+                    let k = SLICE_KEYS_FROM;
+                    format!(
+                        "To keys {}–{}",
+                        note_name(k),
+                        note_name(k.saturating_add(n as u8 - 1).min(127))
+                    )
+                }
             };
         }
         self.show_cards(ui, st);
@@ -650,6 +753,14 @@ impl ChopTab {
                     value: self
                         .pads(st)
                         .map_or_else(|| "Too many".into(), |p| self.range_text(&p)),
+                },
+                Row::Put => Setting {
+                    name: "Put on".into(),
+                    value: match self.put(st) {
+                        Put::Pads => "Pads".into(),
+                        Put::Keys => format!("Keys from {}", note_name(SLICE_KEYS_FROM)),
+                        Put::Phrase => "Pads + phrase".into(),
+                    },
                 },
             })
             .collect()
@@ -750,11 +861,15 @@ impl ChopTab {
             }
             (WAVE, EventKind::Frame(f)) => {
                 let b = self.bounds(st);
-                if let Some(i) = (0..self.slices()).find(|&i| *f >= b[i] && *f < b[i + 1]) {
-                    self.selected = i;
-                    self.show(ui, st);
-                }
-                None
+                let i = (0..self.slices()).find(|&i| *f >= b[i] && *f < b[i + 1])?;
+                self.selected = i;
+                self.show(ui, st);
+                Some(ChopAction::Audition {
+                    pad: st.pad,
+                    layer: st.layer,
+                    start: b[i],
+                    end: b[i + 1],
+                })
             }
             (OVERVIEW, EventKind::Frame(f)) => {
                 let width = self.wave_w;
@@ -814,6 +929,8 @@ impl ChopTab {
                     mode: self.method.mode(),
                     bounds,
                     to_pad: pads.start,
+                    keys_from: (self.put(st) == Put::Keys).then_some(SLICE_KEYS_FROM),
+                    phrase: st.frames_per_beat().filter(|_| self.put(st) == Put::Phrase),
                 })
             }
         }
@@ -860,6 +977,15 @@ impl ChopTab {
                 self.selected = (self.selected as i32 + d).clamp(0, self.cuts.len() as i32) as usize
             }
             Row::Pads => self.turn_first_pad(st, d),
+            Row::Put => {
+                let all: &[Put] = if st.frames_per_beat().is_some() {
+                    &[Put::Pads, Put::Keys, Put::Phrase]
+                } else {
+                    &[Put::Pads, Put::Keys]
+                };
+                let i = all.iter().position(|p| *p == self.put(st)).unwrap_or(0) as i32;
+                self.put = all[(i + d).rem_euclid(all.len() as i32) as usize];
+            }
         }
     }
 

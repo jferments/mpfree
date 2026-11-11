@@ -10,23 +10,32 @@
 //! - The **filter** shows its response on a log frequency axis, with a dot
 //!   at the cutoff to drag sideways.
 //! - The **Pad** list holds the rest: voices, mute group, how layers are
-//!   picked, level, pan, tune, what velocity does, what pressure does, the
-//!   envelope's times and the filter's type, cutoff, resonance and envelope
-//!   amount. A tap on a row picks it and its arrows step it; the **wheel**
-//!   steps the row picked.
+//!   picked, level, pan, tune, wow and flutter, the keys it plays, what
+//!   velocity does, what pressure does, the envelope's times and the
+//!   filter's type, cutoff, resonance and envelope amount. A tap on a row picks it and its arrows
+//!   step it; the **wheel** steps the row picked.
+//! - **Keys** make the pad a keygroup: it plays the notes from Low key to
+//!   High key, a semitone higher for each note above Root key (the sound's
+//!   own pitch, as heard, when Keys turn on). **Pads play** is the kit's:
+//!   each pad its own sound; notes, pad 1 the note in **Pads from** and
+//!   each pad a semitone up, played by the keygroups that hold them; or
+//!   **16 Levels** of the pad, each pad a step of what **Levels by** says
+//!   (velocity, tune, cutoff, decay or start).
 //! - **Q-Links 1 to 4** turn Attack, Decay, Cutoff and Resonance (with
 //!   SHIFT, finer). A tap on a Q-Link's card picks its row.
 //!
-//! Every change is a [`PlayAction::Pad`] for the app to apply
-//! ([`PlayAction::apply`]); a drag, a turn or a run of taps on one row is
-//! one undo step, until the app calls [`PlayTab::lift`]. The tab never
-//! changes a layer's region (that is the Wave tab's).
+//! Every change is a [`PlayAction::Pad`] (or, for the kit's rows,
+//! [`PlayAction::PadsPlay`]) for the app to apply ([`PlayAction::apply`]);
+//! a drag, a turn or a run of taps on one row is one undo step, until the
+//! app calls [`PlayTab::lift`]. The tab never changes a layer's region
+//! (that is the Wave tab's).
 
 use std::sync::Arc;
 
+use mpfree_analysis::note_name;
 use mpfree_sampler::model::{
-    Ahdsr, Filter, FilterKind, LayerSelect, ModelError, Pad, PlayMode, PressureTarget, Project,
-    Source,
+    Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
+    PressureTarget, Project, Source, KEYGROUP_POLYPHONY,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -58,6 +67,8 @@ pub const TAB: usize = 3;
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
                         row, then the wheel changes it · SHIFT + Q-Link: finer";
 
+/// The highest note pad 1 may play, so that pad 16 is a MIDI note.
+const MAX_PADS_FROM: u8 = 127 - 15;
 /// Voices a pad may hold, as the arrows step them.
 const POLYPHONY: [u8; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
 /// Envelope times the arrows step through, in ms.
@@ -93,6 +104,20 @@ pub enum Row {
     Level,
     Pan,
     Tune,
+    /// How much the pitch wanders, as on worn tape.
+    Wow,
+    /// Whether the pad is a keygroup.
+    Keys,
+    LowKey,
+    HighKey,
+    /// The note the pad plays its sound as recorded.
+    RootKey,
+    /// The kit's: what the pads play, their sounds or notes.
+    PadsPlay,
+    /// The kit's: the note pad 1 plays, when the pads play notes.
+    PadsFrom,
+    /// The kit's: what 16 Levels steps through.
+    LevelsBy,
     VelToLevel,
     VelToStart,
     Pressure,
@@ -109,13 +134,21 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 19] = [
+    pub const ALL: [Row; 27] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Layers,
         Row::Level,
         Row::Pan,
         Row::Tune,
+        Row::Wow,
+        Row::Keys,
+        Row::LowKey,
+        Row::HighKey,
+        Row::RootKey,
+        Row::PadsPlay,
+        Row::PadsFrom,
+        Row::LevelsBy,
         Row::VelToLevel,
         Row::VelToStart,
         Row::Pressure,
@@ -139,6 +172,14 @@ impl Row {
             Row::Level => "Level",
             Row::Pan => "Pan",
             Row::Tune => "Tune",
+            Row::Wow => "Wow & flutter",
+            Row::Keys => "Keys",
+            Row::LowKey => "Low key",
+            Row::HighKey => "High key",
+            Row::RootKey => "Root key",
+            Row::PadsPlay => "Pads play",
+            Row::PadsFrom => "Pads from",
+            Row::LevelsBy => "Levels by",
             Row::VelToLevel => "Vel → level",
             Row::VelToStart => "Vel → start",
             Row::Pressure => "Pressure",
@@ -157,6 +198,11 @@ impl Row {
 
     fn index(self) -> usize {
         Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    }
+
+    /// Whether the row is the kit's, not the pad's.
+    pub fn of_kit(self) -> bool {
+        matches!(self, Row::PadsPlay | Row::PadsFrom | Row::LevelsBy)
     }
 }
 
@@ -203,14 +249,15 @@ pub struct LayerSound {
     pub view: Arc<SourceView>,
 }
 
-/// Everything the tab shows: one pad, all its settings, and each layer's
-/// sound.
+/// Everything the tab shows: one pad, all its settings, each layer's
+/// sound, and what the kit's pads play.
 #[derive(Clone)]
 pub struct PlayState {
     pub pad: usize,
     pub settings: Pad,
     /// Layer k's sound, in layer order.
     pub sounds: Vec<LayerSound>,
+    pub pads_play: PadsPlay,
 }
 
 impl PlayState {
@@ -241,7 +288,74 @@ impl PlayState {
             pad,
             settings,
             sounds,
+            pads_play: p.pads_play(),
         })
+    }
+
+    /// The first layer's sound's own note, as heard, if it has a clear
+    /// pitch.
+    pub fn heard_root(&self) -> Option<u8> {
+        self.sounds.first().and_then(|s| s.view.root_note)
+    }
+
+    /// A row's value as the list shows it, the kit's rows too.
+    pub fn value_text(&self, row: Row) -> String {
+        match (row, self.pads_play) {
+            (Row::PadsPlay, PadsPlay::Pads) => "Their sounds".into(),
+            (Row::PadsPlay, PadsPlay::Keys { .. }) => "Notes".into(),
+            (Row::PadsPlay, PadsPlay::Levels { .. }) => "16 Levels".into(),
+            (Row::PadsFrom, PadsPlay::Keys { from }) => note_name(from),
+            (Row::LevelsBy, PadsPlay::Levels { by, .. }) => by.label().into(),
+            (Row::PadsFrom | Row::LevelsBy, _) => "–".into(),
+            _ => value_text(&self.settings, row),
+        }
+    }
+
+    /// What the pads play after the kit's row `row` is stepped by
+    /// `delta`: Pads play goes round their sounds, notes (from the octave
+    /// of the pad's root, or C3) and 16 Levels of this pad (by velocity);
+    /// Pads from moves an octave a step; Levels by goes round what 16
+    /// Levels can step through.
+    pub fn pads_play_stepped(&self, row: Row, delta: i32) -> PadsPlay {
+        match (row, self.pads_play) {
+            (_, now) if delta == 0 => now,
+            (Row::PadsPlay, now) => {
+                let at = match now {
+                    PadsPlay::Pads => 0,
+                    PadsPlay::Keys { .. } => 1,
+                    PadsPlay::Levels { .. } => 2,
+                };
+                match (at + delta.signum()).rem_euclid(3) {
+                    0 => PadsPlay::Pads,
+                    1 => {
+                        let root = self.settings.keys.map_or(48, |k| k.root);
+                        PadsPlay::Keys {
+                            from: (root - root % 12).min(MAX_PADS_FROM - MAX_PADS_FROM % 12),
+                        }
+                    }
+                    _ => PadsPlay::Levels {
+                        pad: self.pad.min(usize::from(u8::MAX)) as u8,
+                        by: Levels::default(),
+                    },
+                }
+            }
+            (Row::LevelsBy, PadsPlay::Levels { pad, by }) => {
+                let n = Levels::ALL.len() as i32;
+                let i = Levels::ALL.iter().position(|l| *l == by).unwrap_or(0) as i32;
+                PadsPlay::Levels {
+                    pad,
+                    by: Levels::ALL[(i + delta).rem_euclid(n) as usize],
+                }
+            }
+            (Row::PadsFrom, PadsPlay::Keys { from }) => {
+                let (lo, at) = (i32::from(from % 12), i32::from(from));
+                let hi = lo + 12 * ((i32::from(MAX_PADS_FROM) - lo) / 12);
+                PadsPlay::Keys {
+                    from: (at + 12 * delta).clamp(lo, hi) as u8,
+                }
+            }
+            (_, now) => now,
+        }
     }
 
     pub fn granular(&self) -> bool {
@@ -263,6 +377,8 @@ pub enum PlayAction {
         after: Box<Pad>,
         gesture: u64,
     },
+    /// What the kit's pads play, changed (one undo step).
+    PadsPlay(PadsPlay),
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -271,13 +387,14 @@ impl PlayAction {
     /// Applies a change to the project (one undo step per gesture), keeping
     /// the project's layer regions. Other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
-        let PlayAction::Pad {
-            pad,
-            after,
-            gesture,
-        } = self
-        else {
-            return Ok(());
+        let (pad, after, gesture) = match self {
+            PlayAction::Pad {
+                pad,
+                after,
+                gesture,
+            } => (pad, after, gesture),
+            PlayAction::PadsPlay(play) => return p.set_pads_play(*play),
+            PlayAction::Tab(_) => return Ok(()),
         };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
         if now.layers.len() != after.layers.len() {
@@ -416,6 +533,25 @@ impl PlayTab {
             if let Some(s) = st.sounds.first() {
                 about.push(format!("{} long", duration_text(first.frames(), s.rate)));
             }
+            if let Some(k) = p.keys {
+                about.push(format!(
+                    "keys {}–{}, root {}",
+                    note_name(k.lo),
+                    note_name(k.hi),
+                    note_name(k.root)
+                ));
+            }
+            match st.pads_play {
+                PadsPlay::Keys { from } => {
+                    about.push(format!("pads play notes from {}", note_name(from)))
+                }
+                PadsPlay::Levels { pad, by } => about.push(format!(
+                    "pads play 16 Levels of {} by {}",
+                    pad_text(self.bank, usize::from(pad)),
+                    by.label().to_lowercase()
+                )),
+                PadsPlay::Pads => {}
+            }
             bar.subtitle = about.join(" · ");
         }
         if let Some(m) = ui.get_mut::<LayerMap>(LAYERS) {
@@ -486,7 +622,7 @@ impl PlayTab {
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
-                value: value_text(p, *r),
+                value: st.value_text(*r),
             })
             .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
@@ -527,7 +663,7 @@ impl PlayTab {
                 }
             }
         }
-        let text = format!("{}: {}", row.label(), value_text(p, row));
+        let text = format!("{}: {}", row.label(), st.value_text(row));
         if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
             card.text = text;
         }
@@ -666,7 +802,15 @@ impl PlayTab {
         if delta == 0 {
             return None;
         }
-        let p = stepped(&st.settings, row, delta, st.granular());
+        if row.of_kit() {
+            let play = st.pads_play_stepped(row, delta);
+            return (play != st.pads_play).then_some(PlayAction::PadsPlay(play));
+        }
+        let mut p = stepped(&st.settings, row, delta, st.granular());
+        // Keys turned on play the sound as heard at its own note.
+        if let (None, Some(k)) = (st.settings.keys, p.keys.as_mut()) {
+            k.root = st.heard_root().unwrap_or(k.root);
+        }
         self.edit(st, Key::Row(row), p)
     }
 }
@@ -711,6 +855,32 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             };
             p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
         }
+        Row::Wow => p.wow = round_to(p.wow + d * 0.1, 0.1).clamp(0.0, 1.0),
+        Row::Keys => {
+            // On over the whole keyboard, at middle C until the app knows
+            // better; a keygroup plays chords, so it gets the voices for them.
+            p.keys = match p.keys {
+                Some(_) => None,
+                None => {
+                    p.polyphony = p.polyphony.max(KEYGROUP_POLYPHONY);
+                    Some(Keys::all(60))
+                }
+            };
+        }
+        Row::LowKey | Row::HighKey | Row::RootKey => {
+            if let Some(k) = p.keys.as_mut() {
+                let at = |n: u8, lo: u8, hi: u8| {
+                    (i32::from(n) + delta).clamp(lo.into(), hi.into()) as u8
+                };
+                match row {
+                    Row::LowKey => k.lo = at(k.lo, 0, k.hi),
+                    Row::HighKey => k.hi = at(k.hi, k.lo, 127),
+                    _ => k.root = at(k.root, 0, 127),
+                }
+            }
+        }
+        // The kit's rows: see [`PlayState::pads_play_stepped`].
+        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy => {}
         Row::VelToLevel => {
             p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0)
         }
@@ -846,7 +1016,8 @@ fn checked_env(e: Ahdsr) -> Ahdsr {
 
 // ---------------------------------------------------------------- text
 
-/// A row's value as the list shows it.
+/// A row's value as the list shows it. The kit's rows are
+/// [`PlayState::value_text`]'s: empty here.
 pub fn value_text(p: &Pad, row: Row) -> String {
     match row {
         Row::Polyphony => voices_text(p.polyphony),
@@ -857,6 +1028,15 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Level => format!("{:+.1} dB", p.level_db),
         Row::Pan => pan_text(p.pan),
         Row::Tune => tune_text(p.tune_cents),
+        Row::Wow => match percent(p.wow) {
+            0 => "Off".into(),
+            x => format!("{x} %"),
+        },
+        Row::Keys => if p.keys.is_some() { "On" } else { "Off" }.into(),
+        Row::LowKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.lo)),
+        Row::HighKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.hi)),
+        Row::RootKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.root)),
+        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy => String::new(),
         Row::VelToLevel => format!("{} %", percent(p.vel_to_level)),
         Row::VelToStart => format!("{} %", percent(p.vel_to_start)),
         Row::Pressure => pressure_label(p.pressure.target).into(),
@@ -1001,6 +1181,11 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Level,
         Row::Pan,
         Row::Tune,
+        Row::Wow,
+        Row::Keys,
+        Row::LowKey,
+        Row::HighKey,
+        Row::RootKey,
         Row::VelToLevel,
         Row::VelToStart,
         Row::Pressure,

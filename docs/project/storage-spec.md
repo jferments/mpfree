@@ -40,4 +40,4 @@
 - **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools. Line input is never saved and is Off at every start.
 - **The buttons found with Map controls and the guide,** so the MPC is mapped once.
 - **Touch calibration** (the touch thread).
-- **Arp patterns** (the arp thread, replacing `--patterns` / `--save-patterns`).
+- **Arp patterns** (the arp thread): `files/arp/patterns.txt`, the patterns and custom scales Save keeps. `--save-patterns` is gone; `--patterns FILE` only reads a library for one start.
