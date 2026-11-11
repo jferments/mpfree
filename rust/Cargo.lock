@@ -384,7 +384,9 @@ dependencies = [
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-looper",
+ "mpfree-mod",
  "mpfree-node",
+ "mpfree-param",
  "mpfree-play",
  "mpfree-prof",
  "mpfree-sampler",
@@ -402,6 +404,18 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-chain-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-mod",
+ "mpfree-param",
+ "mpfree-sampler-ui",
+ "mpfree-synth-ui",
+ "mpfree-ui",
 ]
 
 [[package]]
@@ -526,11 +540,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-mod"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-param",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
 name = "mpfree-node"
+version = "0.1.0"
+
+[[package]]
+name = "mpfree-param"
 version = "0.1.0"
 
 [[package]]
