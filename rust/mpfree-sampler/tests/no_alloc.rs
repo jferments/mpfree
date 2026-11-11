@@ -11,6 +11,9 @@
 //! Only the test's own thread is watched: the test harness's main thread
 //! can allocate at any moment (it did on a busy CI runner), and that is
 //! not the engine's doing.
+//!
+//! The master granular effect runs throughout: views move its mix up and
+//! back down, and freeze turns on and off on exact frames.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -103,6 +106,13 @@ fn render_and_events_never_allocate() {
     e.render(&mut l, &mut r); // warm up outside the watch
     // The rolling "skip back" buffer the audio thread fills every period.
     let (mut rec, reader) = rolling(2, 44_100 * 2);
+    // The master effect is made and put in before the watch; inside it, a
+    // second view brings its mix up and back down.
+    assert!(e.set_master_fx(Engine::make_master_fx(rate)).is_none());
+    p.set_master(MasterFx { mix: 0.7, grain: GrainParams { density: 200.0, size_ms: 150.0, spray: 0.3, pitch_spray: 2.0, ..MasterFx::default().grain } }, None).unwrap();
+    let mut wet = Some(EngineView::build(&p, rate));
+    p.set_master(MasterFx::default(), None).unwrap();
+    let dry = EngineView::build(&p, rate);
 
     // The counter itself works: one Vec is one allocation and one free.
     watch(true);
@@ -113,6 +123,8 @@ fn render_and_events_never_allocate() {
     watch(true);
     for block in 0..2000u32 {
         let pad = (block * 7 % 16) as u8;
+        if block % 200 == 10 { wet = Some(e.set_view(wet.take().unwrap())); }
+        if block % 64 == 0 { e.schedule(block % 128, Event::Freeze { on: block % 128 == 0 }); }
         e.apply(Event::NoteOn { pad, velocity: (block % 127 + 1) as u8 });
         e.schedule(block % 128, Event::NoteOn { pad: (pad + 3) % 16, velocity: 90 });
         e.schedule(block * 31 % 200, Event::NoteOff { pad: (pad + 5) % 16 });
@@ -134,6 +146,8 @@ fn render_and_events_never_allocate() {
         e.render(&mut l, &mut r);
         rec.push_planar(&l, &r);
     }
+    let spawned_before_dry = e.master_fx().unwrap().stats().spawned;
+    let _kept = e.set_view(dry); // dry again, so the master hands its grains back
     e.apply(Event::AllOff);
     for _ in 0..100 { e.render(&mut l, &mut r); }
     watch(false);
@@ -145,4 +159,5 @@ fn render_and_events_never_allocate() {
     assert_eq!(reader.written(), 2200 * 128);
     assert_eq!(e.live_grains(), 0, "every grain handed back after AllOff");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
+    assert!(spawned_before_dry > 100, "the master effect made grains: {spawned_before_dry}");
 }
