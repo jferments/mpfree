@@ -71,7 +71,7 @@ const SHIFT_HINT: &str =
 const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
 const SHIFT_SAMPLE_HINT: &str =
-    "SHIFT +   wheel: pad   ·   Q-Links: one frame a detent, no snap   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: console";
 const SHIFT_MENU_HINT: &str = "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
@@ -548,6 +548,10 @@ impl Player {
                     "Hit a pad to chop it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   Wheel: zoom   ·   \
                      - / +: pad   ·   UNDO: undo".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
+                    "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
+                     Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
+                }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
                                         Debug page   ·   MENU: options   ·   {stop}"),
@@ -691,6 +695,7 @@ impl Player {
                 }
                 // The Sample page edits the pad hit last.
                 self.sample.hit(pad);
+                self.sample.hit_velocity(&mut self.ui, pad, velocity);
                 self.sample_changed();
             }
             ToUi::PadUp(pad) => {
@@ -1856,6 +1861,20 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     chop.apply(ToUi::SampleQLink(0, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
+    // The Play tab on the same pad: hit at 100, Decay turned (Q-Link 2),
+    // the filter turned on from the list.
+    let mut play = sample_sampler(fonts());
+    play.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB) });
+    play.apply(ToUi::PadDown { pad: mpfree_sampler_ui::sample::PAD, velocity: 100 });
+    play.apply(ToUi::PadUp(mpfree_sampler_ui::sample::PAD));
+    play.apply(ToUi::SampleQLink(1, 40));
+    play.apply(ToUi::SampleLift);
+    let filter = mpfree_sampler_ui::play_tab::Row::ALL.iter()
+        .position(|r| *r == mpfree_sampler_ui::play_tab::Row::Filter).unwrap_or(0);
+    play.on_event(UiEvent { widget: mpfree_sampler_ui::play_tab::LIST.into(), kind: EventKind::Step { index: filter, delta: 1 } });
+    play.take_actions();
+    out.push(("sample-play", play));
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -2243,6 +2262,59 @@ mod tests {
         assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
+    }
+
+    #[test]
+    fn the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back() {
+        use mpfree_sampler_ui::play_tab::{self, Row};
+        use mpfree_sampler_ui::play_widgets::LayerMap;
+        use mpfree_sampler_ui::widgets::PadBar;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap_tab = |p: &mut Player, bar: &str, i: usize| {
+            let r = p.ui.rect_of(bar).unwrap();
+            let t = p.ui.get::<PadBar>(bar).unwrap().tab_rect(r, i);
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        // The pad bar's Play tab opens the Play page on the same pad.
+        tap_tab(&mut p, mpfree_sampler_ui::wave_tab::BAR, play_tab::TAB);
+        assert_eq!((p.page(), p.sample.editor()), (sample_page::PLAY_PAGE, sample_page::Editor::Play));
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("Q-Links 1-4: Attack, Decay, Cutoff, Resonance"));
+        assert_eq!(p.ui.get::<PadBar>(play_tab::BAR).unwrap().title, "Pad A5 · Break 92");
+        // A hit shows its velocity on the layer map.
+        p.apply(ToUi::PadDown { pad, velocity: 77 });
+        p.apply(ToUi::PadUp(pad));
+        assert_eq!(p.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().last_velocity, Some(77));
+        p.take_actions();
+        // Q-Link 2 turns Decay; letting go writes the log line and the view goes out.
+        p.apply(ToUi::SampleQLink(1, 8));
+        p.apply(ToUi::SampleLift);
+        let decay = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().amp.decay_ms;
+        assert_eq!(decay(&p), 8.0);
+        assert!(events_log(&p).iter().any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: decay 0 ms -> 8 ms"),
+                "{:?}", events_log(&p));
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The wheel changes the row picked (Decay, by the turn): two detents, one undo step.
+        assert_eq!(p.sample.play().unwrap().0.row(&p.ui), Row::Decay);
+        p.apply(ToUi::SampleWheel(1));
+        p.apply(ToUi::SampleWheel(1));
+        assert_eq!(decay(&p), 20.0);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(decay(&p), 8.0);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(decay(&p), 0.0);
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        // A pad without a sound shows the empty page; back on A5, Play again.
+        p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
+        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        assert_eq!(p.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().last_velocity, Some(100));
+        tap_tab(&mut p, play_tab::BAR, 0);
+        assert_eq!(p.page(), sample_page::PAGE);
     }
 
     #[test]

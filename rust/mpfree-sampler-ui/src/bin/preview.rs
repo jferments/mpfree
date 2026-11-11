@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use mpfree_sampler_ui::sample::{chop_samples, samples};
+use mpfree_sampler_ui::sample::{chop_samples, play_samples, samples};
 use mpfree_ui::{Fonts, SoftCanvas};
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -27,6 +27,7 @@ fn run() -> Result<(), String> {
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut screens: Vec<_> = samples(Fonts::embedded)?.into_iter().map(|s| (s.name, s.about, s.ui)).collect();
     screens.extend(chop_samples(Fonts::embedded)?.into_iter().map(|s| (s.name, s.about, s.ui)));
+    screens.extend(play_samples(Fonts::embedded)?.into_iter().map(|s| (s.name, s.about, s.ui)));
     for (name, about, mut ui) in screens {
         let (w, h) = ui.size();
         let mut c = SoftCanvas::new(w, h);
