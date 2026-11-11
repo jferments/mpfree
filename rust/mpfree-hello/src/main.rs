@@ -1431,12 +1431,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
-        // Hits are timed only when they sound at once (not on a repeat grid).
-        let direct = !app.repeating();
+        // Hits are timed only when they sound at once (not on the arp's grid).
+        let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             match a {
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
-                    app.pad_down(pad, app.settings.screen_velocity);
+                    fx.extend(app.pad_down(pad, app.settings.screen_velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
                     screen_hits += 1;
@@ -1460,6 +1460,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
                 gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
+                gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
+                gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
+                gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
             }
         }
         ports.show_pressure = app.settings.show_pressure;
@@ -1476,7 +1479,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
-                    app.pad_down(pad, velocity);
+                    fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
                     if direct {
@@ -1494,9 +1497,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     player.pressure(pad as usize, pressure);
                 }
                 Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
-                Some(ControlEvent::QLinkTurn { knob: 0, delta }) => {
-                    level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
-                    out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                Some(ControlEvent::QLinkTurn { knob, delta }) => {
+                    // While NOTE REPEAT is held or the Arp panel is open, Q-Links 1-4 set the arp;
+                    // otherwise Q-Link 1 is the level.
+                    let absolute = (MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3).then(|| m.bytes[2]);
+                    if let Some(e) = app.qlink(knob as usize, delta as i32, absolute) {
+                        fx.extend(e);
+                    } else if knob == 0 {
+                        level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
+                        out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                    }
                 }
                 Some(ControlEvent::Button { note, pressed }) => fx.extend(app.button(note, pressed, t)),
                 _ => {}
@@ -1531,6 +1541,11 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+                app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
+                app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
+                app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
+                app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
+                app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
             }
         }
         if let Some(p) = audio_change {
@@ -1553,6 +1568,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             out.show(gui::ToUi::Kit(k));
         }
         app.process(PERIOD as u32, &mut events);
+        if let Some(app::Effect::Arp(v)) = app.arp_poll() {
+            out.show(gui::ToUi::Arp(Box::new(v)));
+        }
         for ev in events.as_slice() {
             let (slot, velocity) = match ev.kind {
                 mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
@@ -1582,9 +1600,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
             }
         }
-        // Pad lights: lit while held, or while Note Repeat or Latch keeps them going.
+        // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
         for pad in 0..16 {
-            let want = held[pad] || (app.repeating() && app.active(pad));
+            let want = held[pad] || (app.generating() && app.active(pad));
             if want != lit[pad] {
                 lit[pad] = want;
                 let colour = if want { akai::hit_colour(rest[pad]) } else { rest[pad] };
