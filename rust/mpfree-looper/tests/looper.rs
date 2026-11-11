@@ -1,12 +1,13 @@
 //! The looper against a real transport: the first pass on the bar, sample
 //! for sample playback, latency, the loop point, overdub layers with undo
 //! and redo, fades, jumps, stop, count-in, free length, transport loops,
-//! full memory, each layer's level, pan, mute, solo and delete, and the same
-//! output for any period size.
+//! full memory, each layer's level, pan, mute, solo and delete, several
+//! loops sharing one memory, one recording at a time, and the same output
+//! for any period size.
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
-use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase, FADE};
+use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase, BLOCK, FADE, MAX_LAYERS, MAX_LOOPS};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -14,6 +15,11 @@ const BAR: usize = 22_050;
 const BAR_TICKS: i64 = 3_840;
 /// The transport starts playing here, so bar lines are at START + k * BAR.
 const START: u64 = 1_000;
+
+/// The memory `layers` one-bar layers hold: whole blocks.
+fn held(layers: usize) -> usize {
+    layers * BAR.div_ceil(BLOCK) * BLOCK
+}
 
 struct Rig {
     t: Transport,
@@ -51,6 +57,15 @@ impl Rig {
 
     fn layer(&mut self, id: u8, c: Lc) {
         assert!(self.l.layer_command(id, c));
+    }
+
+    /// The loop the commands after this act on.
+    fn select(&mut self, n: usize) {
+        assert!(self.l.select_loop(n));
+    }
+
+    fn phase(&self, n: usize) -> Phase {
+        self.l.loop_status(n).unwrap().phase
     }
 
     /// The layers' ids in play order.
@@ -286,6 +301,10 @@ fn punches_fade_and_old_audio_in_a_reused_slot_stays_silent() {
     // The player plays on while the tail fades out.
     r.run(p + 5_000 + 2 * FADE as u64, &dc(0.125));
     let layer = r.l.layer(1).unwrap();
+    assert_eq!(layer.len(), 2 * BAR);
+    // The waveform shows only what this overdub wrote, not the old audio.
+    assert_eq!((layer[2 * 2_000], layer[2 * 15_000 + 1]), (0.0, 0.0), "stale audio drawn");
+    assert!((layer[2 * 6_000] - 0.125).abs() < 1e-6);
     // Fade in and out over FADE frames: no step bigger than one fade step.
     let mut biggest = 0.0f32;
     for q in 4_001..4_000 + 5_000 + FADE {
@@ -655,7 +674,7 @@ fn a_deleted_layer_comes_back_with_undo_in_its_place() {
     assert!(r.max_step(a, r.frame) <= 0.125 / FADE as f32 + 1e-5, "delete clicked");
     let s = r.l.status();
     assert_eq!((s.layers, s.redo), (2, 0));
-    assert_eq!(s.used, 3 * BAR, "Undo can bring it back, so it holds its memory");
+    assert_eq!(s.used, held(3), "Undo can bring it back, so it holds its memory");
     // Undo brings it back in its place; Redo deletes it again.
     r.cmd(L::Undo);
     r.run(r.frame + 3 * FADE as u64, &z);
@@ -707,10 +726,10 @@ fn a_new_overdub_takes_the_memory_of_the_oldest_delete_when_full() {
     record_one_bar(&mut r, &dc(0.25));
     r.overdub(2_000, &dc(0.1));
     r.overdub(2_000, &dc(0.1));
-    assert_eq!(r.l.status().used, 3 * BAR);
+    assert_eq!(r.l.status().used, held(3));
     r.layer(1, Lc::Delete);
     r.run(r.frame + 3 * FADE as u64, &z);
-    assert_eq!(r.l.status().used, 3 * BAR, "the delete can be undone");
+    assert_eq!(r.l.status().used, held(3), "the delete can be undone");
     // Full: a new overdub takes the deleted layer's slot, and Undo can no
     // longer bring that layer back.
     r.overdub(2_000, &dc(0.2));
@@ -723,5 +742,231 @@ fn a_new_overdub_takes_the_memory_of_the_oldest_delete_when_full() {
     r.run(r.frame + 6 * FADE as u64, &z);
     assert_eq!(r.ids(), vec![0, 2]);
     let s = r.l.status();
-    assert_eq!((s.redo, s.used), (1, 3 * BAR), "Redo can bring the new overdub back");
+    assert_eq!((s.redo, s.used), (1, held(3)), "Redo can bring the new overdub back");
+}
+
+#[test]
+fn several_loops_play_together_and_commands_go_to_the_selected_one() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    // Loop 2: two bars of a sine, from the next bar line.
+    r.select(1);
+    r.cmd(L::SetBars(Some(2)));
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &sine);
+    assert_eq!((r.l.selected(), r.phase(1), r.phase(0)), (1, Phase::Armed, Phase::Playing));
+    let from = START + 2 * BAR as u64;
+    // Loop 2 at frame `f`: frame f - from of the pass, around the loop.
+    let two = |f: u64| sine(from + (f - from) % (2 * BAR as u64));
+    // Away from the loop point, where the end fades into the start.
+    let clear_of_seam = |f: u64| ((f - from) % (2 * BAR as u64)) < 2 * (BAR - FADE) as u64;
+    r.run(from + 2 * BAR as u64 + 1, &sine);
+    let (a, b) = (r.l.loop_status(0).unwrap(), r.l.status());
+    assert_eq!((a.frames, b.frames, b.ticks, b.origin), (BAR, 2 * BAR, 2 * BAR_TICKS, 2 * BAR_TICKS));
+    assert_eq!((b.phase, b.layers), (Phase::Playing, 1));
+    // Both sound, each in time with the song.
+    let end = from + 4 * BAR as u64;
+    r.run(end, &z);
+    let both = |f: u64| {
+        let s = two(f);
+        [0.25 + s[0], -0.25 + s[1]]
+    };
+    for f in (from + 2 * BAR as u64 + FADE as u64..end - FADE as u64).step_by(11) {
+        assert!(near(&r, f, both(f)), "frame {f}: {} vs {:?}", r.left(f), both(f));
+    }
+    // Mute goes to the selected loop only.
+    r.cmd(L::Mute(true));
+    r.run(r.frame + 2 * FADE as u64, &z);
+    assert!(r.l.status().muted && !r.l.loop_status(0).unwrap().muted);
+    let f = r.frame - 1;
+    assert!(near(&r, f, [0.25, -0.25]));
+    // Back to loop 1: Clear forgets it; loop 2 plays on.
+    r.cmd(L::Mute(false));
+    r.select(0);
+    r.cmd(L::Clear);
+    r.run(r.frame + 3 * FADE as u64, &z);
+    assert_eq!((r.l.selected(), r.phase(0), r.phase(1)), (0, Phase::Empty, Phase::Playing));
+    for f in (r.frame - FADE as u64..r.frame).filter(|&f| clear_of_seam(f)) {
+        assert!(near(&r, f, two(f)), "frame {f}");
+    }
+    // Past the last loop: counted, and the selection stays.
+    r.select(MAX_LOOPS);
+    r.run(r.frame + 128, &z);
+    assert_eq!((r.l.selected(), r.l.stats().no_layer), (0, 1));
+    assert!(r.l.loop_status(MAX_LOOPS).is_none() && r.l.loop_layer(MAX_LOOPS, 0).is_none());
+    // Each loop's layers are its own.
+    assert!(r.l.layer(0).is_none());
+    let w = r.l.loop_layer(1, 0).unwrap();
+    let q = 5_000;
+    assert_eq!((w.len(), w[2 * q]), (4 * BAR, sine(from + q as u64)[0]));
+}
+
+#[test]
+fn one_loop_records_at_a_time() {
+    let mut r = Rig::new(10, 128);
+    let period = 128u64;
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::Overdub);
+    r.run(r.frame + 2_000, &dc(0.1));
+    assert_eq!(r.phase(0), Phase::Overdubbing);
+    // Arming loop 2 punches loop 1's overdub out. (The overdub on loop 1
+    // below waits for its tail to fade out.)
+    r.select(1);
+    r.cmd(L::Record);
+    r.run(r.frame + period, &dc(0.1));
+    assert_eq!((r.phase(0), r.phase(1)), (Phase::Playing, Phase::Armed));
+    // An overdub on loop 1 disarms loop 2.
+    r.select(0);
+    r.cmd(L::Overdub);
+    r.run(r.frame + period, &dc(0.1));
+    assert_eq!((r.phase(0), r.phase(1)), (Phase::Playing, Phase::Armed), "waiting for the tail");
+    r.run(r.frame + FADE as u64 + period, &dc(0.1));
+    assert_eq!((r.phase(0), r.phase(1)), (Phase::Overdubbing, Phase::Empty));
+    // Loop 3 records free length; loop 1's overdub punches out.
+    r.select(2);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    let line = START + 2 * BAR as u64;
+    r.run(line + 500, &noise);
+    assert_eq!((r.phase(0), r.phase(2)), (Phase::Playing, Phase::Recording));
+    assert_eq!(r.l.loop_status(0).unwrap().layers, 3);
+    // Loop 4 arms: loop 3's pass ends on the next bar line, where loop 4's
+    // starts.
+    r.select(3);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(line + BAR as u64, &noise);
+    assert_eq!((r.phase(2), r.phase(3)), (Phase::Recording, Phase::Armed));
+    assert!(r.l.loop_status(2).unwrap().ending);
+    r.run(line + BAR as u64 + 1, &noise);
+    assert_eq!((r.phase(2), r.phase(3)), (Phase::Playing, Phase::Recording));
+    let (c, d) = (r.l.loop_status(2).unwrap(), r.l.loop_status(3).unwrap());
+    assert_eq!((c.frames, c.origin, d.origin), (BAR, 2 * BAR_TICKS, 3 * BAR_TICKS));
+    r.run(line + 2 * BAR as u64 + 1, &noise);
+    assert_eq!((r.phase(3), r.l.loop_status(3).unwrap().frames), (Phase::Playing, BAR));
+    // Each pass holds what was played in its own bar.
+    let three = r.l.loop_layer(2, 0).unwrap();
+    let four = r.l.loop_layer(3, 0).unwrap();
+    for q in (FADE..BAR - FADE).step_by(97) {
+        assert_eq!(three[2 * q], noise(line + q as u64)[0]);
+        assert_eq!(four[2 * q], noise(line + (BAR + q) as u64)[0]);
+    }
+    assert_eq!(r.l.stats().aborted, 0);
+}
+
+#[test]
+fn the_loops_share_one_memory_and_clear_gives_it_back() {
+    // 3 seconds and a block per layer: room for three one-second layers.
+    let mut r = Rig::new(3, 128);
+    let z = dc(0.0);
+    let capacity = ((3 * BAR).div_ceil(BLOCK) + MAX_LAYERS) * BLOCK;
+    assert_eq!((r.l.memory().used, r.l.memory().capacity), (0, capacity));
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.1));
+    assert_eq!(r.l.memory().used, held(2));
+    // Loop 2 takes the third second.
+    r.select(1);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(START + 4 * BAR as u64 + 1, &dc(0.125));
+    assert_eq!(r.phase(1), Phase::Playing);
+    let m = r.l.memory();
+    assert_eq!((m.used, r.l.loop_status(0).unwrap().used, r.l.status().used), (held(3), held(2), held(1)));
+    assert_eq!(r.l.status().capacity, capacity);
+    // Full: loop 2's overdub is refused.
+    r.overdub(2_000, &dc(0.1));
+    assert_eq!((r.l.stats().refused, r.l.status().layers), (2, 1));
+    // Clearing loop 1 gives its memory back once it has faded out.
+    r.select(0);
+    r.cmd(L::Clear);
+    r.run(r.frame + 128, &z);
+    assert_eq!(r.l.memory().used, held(3), "still fading out");
+    r.run(r.frame + 2 * FADE as u64, &z);
+    assert_eq!((r.phase(0), r.l.memory().used), (Phase::Empty, held(1)));
+    r.select(1);
+    r.overdub(2_000, &dc(0.1));
+    assert_eq!((r.l.stats().refused, r.l.status().layers, r.l.memory().used), (2, 2, held(2)));
+}
+
+#[test]
+fn a_first_pass_that_outgrows_the_memory_is_thrown_away() {
+    let mut r = Rig::new(3, 128);
+    record_one_bar(&mut r, &dc(0.25));
+    // Free length on loop 2: what is left runs out during its third bar.
+    r.select(1);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    r.run(START + 3 * BAR as u64 + 1, &noise);
+    assert_eq!(r.phase(1), Phase::Recording);
+    assert!(r.l.memory().used > held(1));
+    r.run(START + 6 * BAR as u64, &noise);
+    assert_eq!((r.phase(1), r.l.stats().aborted), (Phase::Empty, 1));
+    assert_eq!((r.l.memory().used, r.phase(0)), (held(1), Phase::Playing));
+    // Loop 1 played on throughout.
+    let f = r.frame - 1;
+    assert!(near(&r, f, [0.25, -0.25]));
+}
+
+fn loops_session(period: usize) -> Vec<f32> {
+    let mut r = Rig::new(8, period);
+    let input = |f: u64| {
+        let n = noise(f);
+        let s = sine(f);
+        [0.3 * n[0] + s[0], 0.3 * n[1] + s[1]]
+    };
+    r.cmd(L::SetLatency(77));
+    r.cmd(L::Record);
+    r.at(START, T::Play);
+    r.at(140_000, T::Locate(1_234));
+    r.at(150_003, T::Stop);
+    r.at(156_000, T::Play);
+    // Loop 1: two bars, going straight into an overdub.
+    r.run(25_600, &input);
+    r.cmd(L::Overdub);
+    // Loop 2, free length: loop 1's overdub punches out.
+    r.run(51_200, &input);
+    r.select(1);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    // Loop 3 arms: loop 2's pass ends on the next bar line.
+    r.run(76_800, &input);
+    r.select(2);
+    r.cmd(L::SetLevel(0.5));
+    r.cmd(L::Record);
+    // An overdub on loop 2: loop 3's pass ends on the next bar line.
+    r.run(92_160, &input);
+    r.select(1);
+    r.cmd(L::Overdub);
+    r.run(102_400, &input);
+    r.select(0);
+    r.layer(1, Lc::Pan(0.8));
+    r.run(112_640, &input);
+    r.cmd(L::Clear);
+    r.run(122_880, &input);
+    r.select(1);
+    r.cmd(L::Overdub);
+    r.cmd(L::Undo);
+    r.run(130_000, &input);
+    r.select(2);
+    r.cmd(L::Mute(true));
+    r.run(180_000, &input);
+    let phases: Vec<_> = (0..4).map(|n| r.phase(n)).collect();
+    assert_eq!(phases, [Phase::Empty, Phase::Playing, Phase::Playing, Phase::Empty]);
+    let (b, c) = (r.l.loop_status(1).unwrap(), r.l.loop_status(2).unwrap());
+    assert_eq!((b.frames, b.layers, b.redo, c.frames, c.muted), (BAR, 1, 1, BAR, true));
+    assert_eq!(r.l.stats(), Default::default());
+    assert!(r.out.iter().any(|&v| v != 0.0));
+    r.out
+}
+
+#[test]
+fn several_loops_give_the_same_output_for_any_period_size() {
+    let want = loops_session(1024);
+    for period in [64, 128, 333, 512] {
+        let got = loops_session(period);
+        assert_eq!(got.len(), want.len());
+        let first = got.iter().zip(&want).position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(first, None, "period {period} differs at sample {first:?}");
+    }
 }
