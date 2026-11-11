@@ -34,6 +34,9 @@ use std::time::{Duration, Instant};
 
 use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
+/// The lane types [`Engine::split`] takes and reports, so callers need no
+/// dependency of their own on `mpfree-lanes`.
+pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneStats};
 use mpfree_lanes::{Lane, Setup};
 
 use crate::dsp::{
