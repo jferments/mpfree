@@ -9,7 +9,7 @@
 //! - [`root_pitch`]: the note a sample plays (YIN), for tuning and keygroups.
 //! - [`nearest_zero_crossing`]: snapping markers so slices don't click.
 //!
-//! Design: `docs/project/sampler-architecture.md` (Analysis). Nothing here
+//! Design: `docs/dev/design/sampler-architecture.md` (Analysis). Nothing here
 //! runs on the audio thread; analysis allocates.
 #![forbid(unsafe_code)]
 

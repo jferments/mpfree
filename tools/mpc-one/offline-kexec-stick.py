@@ -52,7 +52,7 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     go on partition 3, which it mounts read-only. Partition 4 is mounted
     read-write (nosuid, nodev, noexec) at /run/mpfree-data and passed with
     --data; the pad player saves its settings and files only there
-    (docs/project/storage-spec.md), and if it does not mount, nothing is
+    (docs/dev/design/storage-spec.md), and if it does not mount, nothing is
     saved. If the program stops with an error, the log display starts
     instead. Besides the screen, the controller, the sound card and
     partition 4, it writes only /run/mpfree-hello (RAM)
@@ -127,7 +127,7 @@ DATA_SIZE = 64 << 20                # partition 4, the pad player's saved settin
 DATA_NAME = "mpfree-test-data"      # its GPT name; write-test-stick.py looks for it
 ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
-# 0x001cc915, Realtek RTL8211E; docs/hardware/ethernet-usb.md).
+# 0x001cc915, Realtek RTL8211E; docs/dev/hardware/ethernet-usb.md).
 PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
 PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",

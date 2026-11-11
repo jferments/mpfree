@@ -1,6 +1,6 @@
 //! The mixer: inputs, pad channels, tracks, submixes, send returns and the
 //! master, ending in Master safety. It covers the routing of the MPC 3.6
-//! mixer (see `docs/project/fx.md`, "Mixer").
+//! mixer (see `docs/dev/design/fx.md`, "Mixer").
 //!
 //! The signal runs in fixed stages, so nothing can feed back:
 //!

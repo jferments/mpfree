@@ -99,12 +99,12 @@ def check_program(out, name, path):
     """Step 1 for one build: its size, hash and ELF kind. Returns its sha256."""
     path = os.path.realpath(path)
     if not os.path.isfile(path):
-        raise Stop(f"missing {path}: build it first (see docs/project/profiling.md)")
+        raise Stop(f"missing {path}: build it first (see docs/dev/design/profiling.md)")
     with open(path, "rb") as fh:
         data = fh.read(hello.PROGRAM_MAX + 1)
     problem = hello.arm_static_problem(data)
     if problem:
-        raise Stop(f"{path} is {problem}; rebuild it as docs/project/profiling.md shows")
+        raise Stop(f"{path} is {problem}; rebuild it as docs/dev/design/profiling.md shows")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  {name}: {path}")
     out.say(f"    {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")

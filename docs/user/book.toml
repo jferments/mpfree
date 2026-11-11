@@ -1,0 +1,25 @@
+# The MPFree user manual. Build it with: python3 docs/tools/build_manual.py
+# (that script prepares the pages first; running mdbook here directly gives
+# pages without screenshots or status banners).
+[book]
+title = "MPFree User Manual"
+authors = ["The MPFree contributors"]
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/mpfree.css"]
+no-section-label = false
+git-repository-url = "https://github.com/jferments/mpfree"
+edit-url-template = "https://github.com/jferments/mpfree/edit/main/docs/user/{path}"
+
+[output.html.print]
+enable = false
+
+[output.html.search]
+enable = true
