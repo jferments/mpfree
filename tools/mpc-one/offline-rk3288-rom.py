@@ -24,6 +24,10 @@ from pathlib import Path
 SECTOR = 512
 IDBLOCK_LBA = 64
 P1_SIZE = 128 * SECTOR
+# U-Boot tools/rkcommon.h uses this default allowance when no separate boot file
+# is supplied to the image builder. A header field equal to init+allowance
+# does not prove a second stage occupies these sectors on the physical disk.
+RK_MAX_BOOT_SIZE = 512 * 1024
 RK_HEADER_MAGIC = 0x0FF0AA55
 RK32 = b"RK32"
 # Public Rockchip header-obfuscation key from upstream U-Boot.
@@ -100,6 +104,8 @@ def inspect_idblock(backup: Path, expected_p1_sha256: str | None) -> None:
         raise ValueError("Declared SPL extends beyond first-stage p1 partition")
     if init_boot_size < init_size:
         raise ValueError("init_boot_size smaller than init_size")
+    nominal_boot_bytes = (init_boot_size - init_size) * SECTOR
+    is_upstream_default_allowance = nominal_boot_bytes == RK_MAX_BOOT_SIZE
     # Rockchip's upstream tool requires a 2-KiB aligned init image.
     if init_size % 4 != 0:
         print("WARNING: Init size not 2-KiB aligned (vendor-specific image?)")
@@ -116,6 +122,15 @@ def inspect_idblock(backup: Path, expected_p1_sha256: str | None) -> None:
     print("Declared init size: %d sectors (%d bytes)" % (init_size, payload_len))
     print("Declared init+boot size: %d sectors (%d bytes)"
           % (init_boot_size, init_boot_size * SECTOR))
+    print("Nominal second-stage allowance: %d bytes (%d KiB)"
+          % (nominal_boot_bytes, nominal_boot_bytes // 1024))
+    if is_upstream_default_allowance:
+        print("Interpretation: exactly matches the 512 KiB default allowance in")
+        print("U-Boot tools/rkcommon.h; this is not proof that 512 KiB of")
+        print("second-stage data exists contiguously after p1 on disk.")
+    else:
+        print("Interpretation: nondefault second-stage size metadata; actual")
+        print("second-stage storage location still requires SPL analysis.")
     print("First-stage identifier: %s" %
           (candidate_magic.decode("ascii") if candidate_magic == RK32 else
            "nonstandard/not RK32 (raw bytes withheld)"))
@@ -128,7 +143,7 @@ def inspect_rkimage(path: Path) -> None:
     size = path.stat().st_size
     # 32 KiB RK3288 SPL envelope per U-Boot rkcommon.c, including the 4-byte RK32 header.
     if not 4 <= size <= 32768:
-        raise ValueError("Unexpected RK3288 RKIMAGE size %d (must be 4..32772 bytes)" % size)
+        raise ValueError("Unexpected RK3288 RKIMAGE size %d (must be 4..32768 bytes)" % size)
     raw = path.read_bytes()
     plain = raw[:4] == RK32
     wrapped = rc4(raw[:4]) == RK32
