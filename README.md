@@ -47,6 +47,8 @@ cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
 python3 tests/check_cpp_rust_wav_parity.py --cpp build/mpfree-render --rust rust/target/release/mpfree-render
 ~~~
 
+CI runs all of this and more (clippy, the ARMv7 cross-build tested under qemu, the device tools against fakes) on every pull request, on self-hosted runners. See [Testing and CI](docs/guides/testing-and-ci.md) for what each job checks, the rules for tests, coverage, and the plan for the regression suite.
+
 None of this touches the MPC. To work with a device, start with [developer access](docs/guides/developer-access.md) and then the [survey tools guide](docs/guides/survey-tools.md).
 
 ## Repository layout

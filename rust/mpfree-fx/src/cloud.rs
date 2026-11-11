@@ -55,12 +55,16 @@ pub mod ids {
     pub const EARLY: u16 = 11;
     pub const MIX: u16 = 12;
     pub const FREEZE: u16 = 13;
+    /// 0 Full, 1 Light: half the lines, diffuser stages and early taps,
+    /// for about half the cost (a third for the Cloud character).
+    pub const QUALITY: u16 = 14;
 }
 
 const CHARACTERS: &[&str] = &["Plate", "Room", "Hall", "Cloud", "Echoes"];
+const QUALITIES: &[&str] = &["Full", "Light"];
 
 static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.cloud", name: "Cloud reverb", kind: Kind::Effect };
-static PARAMS: [ParamInfo; 14] = [
+static PARAMS: [ParamInfo; 15] = [
     ParamInfo { id: 0, name: "Character", group: "Reverb", min: 0.0, max: 4.0, default: 2.0, unit: Unit::None, curve: Curve::Choice(CHARACTERS), readonly: false },
     ParamInfo { id: 1, name: "Size", group: "Reverb", min: 20.0, max: 1000.0, default: 120.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
     ParamInfo { id: 2, name: "Decay", group: "Reverb", min: 50.0, max: 60_000.0, default: 2500.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
@@ -75,6 +79,7 @@ static PARAMS: [ParamInfo; 14] = [
     ParamInfo { id: 11, name: "Early", group: "Output", min: 0.0, max: 100.0, default: 40.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
     ParamInfo { id: 12, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
     ParamInfo { id: 13, name: "Freeze", group: "Output", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
+    ParamInfo { id: 14, name: "Quality", group: "Reverb", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(QUALITIES), readonly: false },
 ];
 
 /// Factory presets. Mix is left alone: it depends on whether the reverb
@@ -135,6 +140,7 @@ const LATE_FB: f32 = 0.88;
 const EARLY_FB: f32 = 0.82;
 
 /// The hidden structure a Character stands for.
+#[derive(Clone, Copy)]
 struct Character {
     lines: usize,
     /// The late output is taken after each line's diffuser and EQ (dense),
@@ -162,6 +168,31 @@ struct Character {
     /// (at the default settings, steady white noise in comes out about
     /// 4 dB down).
     trim_db: f32,
+}
+
+impl Character {
+    /// The Light quality's structure: half the lines (at least 4), half the
+    /// stages in each line's diffuser (at least 1), half the early
+    /// diffuser's stages and half the early taps. The seeds, lengths, EQ
+    /// and decay stay, so it keeps the character's size, colour, level and
+    /// decay time and loses some density. The lines and the line diffusers
+    /// are most of the cost, so it runs in about half the time (a third
+    /// for the Cloud character, with the most stages).
+    fn light(self) -> Character {
+        Character {
+            lines: self.lines.div_ceil(2).max(4).min(self.lines),
+            late_stages: self.late_stages.div_ceil(2),
+            early_stages: self.early_stages / 2,
+            taps: self.taps / 2,
+            ..self
+        }
+    }
+
+    /// Character `c` at a quality (`light`).
+    fn get(c: usize, light: bool) -> Character {
+        let ch = CHARS[c.min(CHARS.len() - 1)];
+        if light { ch.light() } else { ch }
+    }
 }
 
 static CHARS: [Character; 5] = [
@@ -622,6 +653,23 @@ impl Side {
         }
     }
 
+    /// After a change of structure from `old` to `new`: whatever starts
+    /// running again (lines, diffuser stages, the early taps) starts from
+    /// silence, not from what it held when it last ran.
+    fn wake(&mut self, old: &Character, new: &Character) {
+        if old.taps == 0 && new.taps > 0 {
+            self.taps.forget();
+        }
+        for st in self.early.iter_mut().take(new.early_stages).skip(old.early_stages) { st.restart(); }
+        for (i, line) in self.lines.iter_mut().enumerate().take(new.lines) {
+            if i >= old.lines {
+                line.restart();
+            } else {
+                for st in line.stages.iter_mut().take(new.late_stages).skip(old.late_stages) { st.restart(); }
+            }
+        }
+    }
+
     fn restart(&mut self) {
         self.low_cut = 0.0;
         self.high_cut = 0.0;
@@ -721,12 +769,15 @@ struct Tick {
 /// The Cloud reverb: a port of Cloud Seed with five characters, freeze and
 /// gliding controls.
 pub struct Cloud {
-    v: [f32; 14],
+    v: [f32; 15],
     rate: u32,
-    /// The character in use, and the one asked for (they differ during the
-    /// dip that hides a change).
+    /// The character and quality in use, and the ones asked for (they
+    /// differ during the dip that hides a change), and the structure in use.
     ch: usize,
     want: usize,
+    light: bool,
+    want_light: bool,
+    c: Character,
     dip: f32,
     dip_step: f32,
     size: Smooth,
@@ -770,6 +821,9 @@ impl Cloud {
             rate: 0,
             ch,
             want: ch,
+            light: false,
+            want_light: false,
+            c: CHARS[ch.min(CHARS.len() - 1)],
             dip: 1.0,
             dip_step: 0.0,
             size: Smooth::new(v[1]),
@@ -805,6 +859,7 @@ impl Cloud {
         self.v[id as usize] = v;
         match id {
             ids::CHARACTER => self.want = v as usize,
+            ids::QUALITY => self.want_light = v >= 0.5,
             ids::SIZE => self.size.target = v,
             ids::DECAY => self.log_decay.target = v.log2(),
             ids::PRE_DELAY => self.pre.target = v,
@@ -822,15 +877,22 @@ impl Cloud {
         }
     }
 
-    /// Switches to character `c`: new seeds, taps, stages and shelves.
-    fn configure(&mut self, c: usize) {
+    /// Switches to character `c` at a quality (`light`): new seeds, taps,
+    /// stages and shelves.
+    fn configure(&mut self, c: usize, light: bool) {
         self.ch = c.min(CHARS.len() - 1);
-        let ch = &CHARS[self.ch];
+        self.light = light;
+        let old = self.c;
+        self.c = Character::get(self.ch, light);
+        let ch = &self.c;
         self.trim = crate::db_to_gain(ch.trim_db);
         self.eq = Eq::new(ch, self.rate);
         // Cloud Seed's crossSeed with full width: the left side runs the
         // `!seed` series, the right side the `seed` series.
-        for (side, cross) in self.sides.iter_mut().zip([1.0, 0.0]) { side.seed(ch, cross); }
+        for (side, cross) in self.sides.iter_mut().zip([1.0, 0.0]) {
+            side.seed(ch, cross);
+            side.wake(&old, ch);
+        }
         self.gain_for = (0.0, 0.0);
         self.update(false);
     }
@@ -838,7 +900,7 @@ impl Cloud {
     fn tick_values(&self) -> Tick {
         let fs = self.rate as f32;
         let ms = fs / 1000.0;
-        let c = &CHARS[self.ch];
+        let c = &self.c;
         let scale = self.size.value / REF_SIZE_MS;
         let m = self.modu.value;
         let tap_span = (c.tap_ms * scale).min(MAX_TAP_S * 1000.0);
@@ -865,7 +927,7 @@ impl Cloud {
         let now = (self.size.value, self.log_decay.value);
         let gains = now != self.gain_for;
         self.gain_for = now;
-        let c = &CHARS[self.ch];
+        let c = &self.c;
         for side in self.sides.iter_mut() { side.update(c, &u, step, gains); }
     }
 
@@ -894,13 +956,13 @@ impl Cloud {
         let ms = self.rate as f32 / 1000.0;
         let mut n = 0;
         while n < room.min(left.len()) {
-            if self.want != self.ch {
+            if (self.want, self.want_light) != (self.ch, self.light) {
                 let next = self.dip - self.dip_step;
                 if next <= 0.0 {
                     // The swap starts a chunk of its own.
                     if n > 0 { break; }
                     self.dip = 0.0;
-                    self.configure(self.want);
+                    self.configure(self.want, self.want_light);
                 } else {
                     self.dip = next;
                 }
@@ -933,7 +995,7 @@ impl Cloud {
         }
         self.tick = (self.tick + n as u32) % UPDATE;
 
-        let c = &CHARS[self.ch];
+        let c = &self.c;
         let cm = 0.5 * c.input_mix;
         let (mut xl, mut xr) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
         for k in 0..n {
@@ -973,7 +1035,7 @@ impl Node for Cloud {
         if rate != self.rate {
             for side in self.sides.iter_mut() { side.allocate(rate); }
             self.rate = rate;
-            self.configure(self.ch);
+            self.configure(self.ch, self.light);
             for side in self.sides.iter_mut() { side.restart(); }
         }
         for s in [&mut self.size, &mut self.pre, &mut self.log_damp, &mut self.log_low, &mut self.log_high] { s.set_time(rate, 60.0); }
@@ -992,7 +1054,7 @@ impl Node for Cloud {
         }
         self.dip = 1.0;
         self.tick = 0;
-        self.configure(self.want);
+        self.configure(self.want, self.want_light);
         for side in self.sides.iter_mut() { side.restart(); }
         self.update(false);
         self.filters();
@@ -1006,7 +1068,7 @@ impl Node for Cloud {
     }
     fn tail_frames(&self) -> u32 {
         if self.v[13] >= 0.5 { return u32::MAX; }
-        let c = &CHARS[self.want.min(CHARS.len() - 1)];
+        let c = &Character::get(self.want, self.want_light);
         let scale = self.v[1] / REF_SIZE_MS;
         // How long a diffuser rings: passes to fall 90 dB, times its
         // longest stage.
