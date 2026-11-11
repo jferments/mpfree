@@ -1129,3 +1129,36 @@ From the workstation: if a suitable data cable is present, capture host USB even
 From an already-established *Ethernet SSH shell on the MPC*, purely read-only inspect: `ls -l /sys/class/udc`, `cat /sys/devices/platform/usb-otg-mux/state` if present, `systemctl show -p ActiveState usb-gadget.target`, `ls -l /sys/kernel/config/usb_gadget` if present, and `journalctl -k -b --no-pager | grep -Ei 'ff580000|dwc2|usb.*otg|gadget' | tail -80`. This can distinguish whether the running Linux kernel instantiates DWC2 and a mux, without binding gadgets or rebooting. Avoid logging identifiers such as `serial#` and embedded OEM authorization strings. Kernel DTB configuration can differ between firmware revisions.
 
 **Current MaskROM readiness:** SoC support is documented, OTG-to-USB-B routing has external MPC-specific evidence, host has the Rockchip enumerator; **safe ROM entry and a board-compatible DDR/USB RAM loader are still not demonstrated**. Independent MaskROM recovery must be proven before boot-critical writes.
+
+## 24. MPC One Ethernet SSH hardware survey proves UDC registered and mux in peripheral role (2026-11-10)
+
+The owner ran the Section 23 diagnostic by SSH over the established MPC Ethernet link, **on the device itself**, rather than on ML-tower. Exact owner-observed properties:
+
+| Observation | MPC One value |
+| --- | --- |
+| Hostname | `mpc-one` |
+| Kernel | `Linux mpc-one 6.6.95-az01-2025-06-27-rt55 ... armv7l GNU/Linux` |
+| Device-tree model | `Akai Professional MPC One` |
+| UDC class | `/sys/class/udc/ff580000.usb -> ../../devices/platform/ff580000.usb/udc/ff580000.usb` |
+| Platform peripheral | `/sys/bus/platform/devices/ff580000.usb` exists |
+| USB OTG mux state | **`peripheral`** |
+| `usb-gadget.target` | `loaded`, `active`, `active` |
+| ConfigFS `/sys/kernel/config/usb_gadget` | Present but **empty** |
+| DWC2 init | `dwc2 ff580000.usb: EPs: 10, dedicated fifos, 972 entries in SPRAM` |
+| Other DWC2 controller | `ff540000.usb`: `DWC OTG Controller`, registers Linux USB bus 1 (host context) |
+| Kernel VBUS | `reg-fixed-voltage usb-otg-regulator: vcc_otg_5v supplying 5000000uV` |
+
+The read-only command's last section `head -60` failed because the MPC BusyBox `head` does not accept that option form (`head: invalid option -- '6'`); this did **not** invalidate the preceding device identity, UDC, mux, ConfigFS, or kernel-log results. Use `sed -n '1,60p'` or BusyBox-compatible `head -n 60` instead.
+
+**Interpretation:** This is board-local evidence, not merely a generic Rockchip source or forum anecdote, that the running Akai Linux exposes DWC2 at `ff580000.usb` as an ARMv7 USB Device Controller and that the platform mux currently reports the **peripheral** role. Both facts strongly support the USB-B-to-OTG research hypothesis. However, software-visible mux role in a fully initialized Linux system does **not** prove the mux's physical reset/power-on state while immutable BootROM runs. No chip-level MaskROM enumeration has occurred.
+
+The ConfigFS gadget root is empty despite `usb-gadget.target` being active. The latter is a systemd orchestration target, **not proof of a bound USB function**. The Linux kernel ConfigFS documentation explicitly requires a configured gadget to be bound to a UDC before it can enumerate on the USB host; see https://www.kernel.org/doc/html/latest/usb/gadget_configfs.html . The absence of a ConfigFS gadget is consistent with earlier normal-Standalone host-side `lsusb` and `rkdeveloptool ld` returning no MPC/Rockchip device. A non-ConfigFS gadget driver is still possible and has not been ruled out by this directory listing alone.
+
+### Next safe ROM/USB investigation (no state changes)
+
+1. From existing SSH, inspect **read-only** `/sys/class/udc/ff580000.usb/{state,function,current_speed,maximum_speed,is_otg,soft_connect}` where available. Distinguish a merely registered UDC from a bound gadget and USB connection state.
+2. Observe (but do not edit) the USB mux's `state`, the platform device and driver symlinks, and optionally `systemctl list-dependencies usb-gadget.target`. Do not invoke Linux gadget-binding scripts as a workaround for the ROM question.
+3. On a directly connected, data-capable USB-B cable, the host can monitor USB events; if no gadget is bound, absence of host enumeration may be expected. Even a successful Linux gadget test **does not establish** BootROM routing.
+4. Determine the hardware mux reset default from MPC board evidence (schematic, safe passive measurement) and seek a non-destructive BootROM entry mechanism **before** assuming silicon ROM USB can reach the USB-B connector.
+5. Continue the **parallel** offline Fastboot `bootm` research: authorization-runtime initialization, image policy and available memory. No on-device `boot`, `oem`, `flash`, `erase`, reset-mode or eMMC tests have been authorized or performed.
+
