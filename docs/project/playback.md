@@ -20,7 +20,7 @@ These are plain values, edited on the control thread and checked with `check()`.
 - **Quantise is non-destructive.** Notes keep their recorded ticks, and quantise (grid and strength) applies on playback, so it can be changed or undone later.
 - **Swing:** the clip's own swing wins, then the track's, then the transport's.
 
-Trig conditions, ratchets, parameter locks, audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
+Parameter locks are in the model too (`Clip.locks`, see [steps.md](steps.md#parameter-locks-lock)). Trig conditions, ratchets, audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
 
 ## Compiling (`PlayView`)
 
@@ -57,6 +57,15 @@ Each period the player walks the transport's spans and sends events in frame ord
 - **Chance.** A note below 100 % rolls each time it comes round, on a hash of the note and the frame it would play on: the same for any period size, different on every pass. Notes left out are counted in `Stats::skipped`.
 - **Real-time safe.** There is no allocation, lock or panic in `process`. A full table is counted in `Stats::dropped`, never dropped silently: 256 sounding notes, 256 note starts per span.
 
+## Parameter locks
+
+The player sends a clip's locks as `Event::Lock { addr, value }`, with `addr` the full `ParamAddr` on the clip's track, and ends them with `Event::Unlock { addr }`. The mod thread's resolver (`mpfree-mod`) applies them: a lock sets the parameter, and an unlock lets it go back to its knob, automation and modulation.
+
+- **Before the note.** A lock is sent on its tick's frame, after the note-offs there and before the note-ons, so the step's note starts with the locked value.
+- **Until the next note without one.** The lock holds until the track plays a note with no lock on that parameter on its own tick; the `Unlock` comes on that note's frame, before it. A sampler pad's parameter is only ended by that pad's notes. A trigless lock (no note on its tick) holds the same way. A note its chance leaves out ends nothing.
+- **Jumps and switches.** A stop, a locate, a transport loop jump or a panic unlock everything, after the notes end. When a cue switches a track's clip, the old clip's locks end on the switch, before the new clip's start. A muted track, or one with nothing playing, lets its locks go at once and sends none.
+- **Every Unlock follows a Lock.** The player keeps what it has locked (up to 256 held locks, 256 lock starts a span; more is counted in `Stats::dropped`). `Stats::locks` counts locks sent. A pass being replaced sends none of its locks: it erases them (see "Replace and overdub").
+
 ## Through the arp (`ArpHost`)
 
 A track whose destination is an arpeggiator plays its notes into an `mpfree-arp` engine instead of a sound. The held notes press and release keys on the arp, and the arp's own notes go on to the sampler (or any other destination).
@@ -79,6 +88,17 @@ Notes played while the transport records go into the armed track's playing clip.
 - **Period size.** Every tick comes from the span the note fell in, and waiting notes come out in a fixed order. The recorded notes are therefore the same, in the same order, for any period size. When the control thread swaps in the new view can depend on the period size.
 - **Real-time safe.** Fixed tables, with no allocation: 256 inputs a period, and 256 notes waiting or handed over. `Recorder::dropped()` counts what did not fit. It should stay 0.
 
+### Knob moves become locks
+
+While the transport records, the host passes the armed track's knob moves to `Recorder::input` as `Event::Lock { addr, value }`, in frame order with the pads. Each lands on a step, the Elektron way:
+
+- **On the note being played.** If a pad is held, the lock goes on its note. Otherwise it goes on the note that started last, less than a 1/16 (`LOCK_REACH`, 240 ticks) before the move: one the clip holds, or one this take just recorded that the clip does not hold yet. A sampler pad's parameter looks only at that pad's notes. Old notes the replace pass has erased are not locked.
+- **Otherwise trigless.** With no note that close, the lock goes on the nearest step line (the clip's quantise grid, or a 1/16).
+- **Waiting like a note.** A recorded lock waits until the playhead has passed where it plays, as a recorded note does (see "No double notes"). So a replace pass never erases it, even when quantise puts it a little ahead of the playhead.
+- **A turn is one lock.** A knob sends many values. While a lock waits, each later value for its step and parameter replaces the one it holds. Then `Recorder::taken_locks()` hands it over. The control thread puts each in with `Takes::add_lock`, in place of a lock of the same parameter on the same tick and row. A later value of a lock the same take recorded replaces it in the take too, so the take holds one lock for the whole turn, and UNDO puts back what was there before the take. The clip ends up with the same locks in the same order for any period size.
+- **Only the armed track.** A knob on another track's parameter, or a project parameter, is not recorded (`Recorder::stray_locks()` counts them). Nothing is recorded while not recording.
+- **Real-time safe.** Up to 64 recorded locks a period after joining; more are counted in `Recorder::dropped()`.
+
 ### Replace and overdub
 
 With the transport's overdub on, a take only adds notes. With overdub off (the default, like REC on an MPC), the take replaces:
@@ -86,6 +106,7 @@ With the transport's overdub on, a take only adds notes. With overdub off (the d
 - **One pass.** The first time in a take that the transport records with overdub off, the player erases the armed track's notes as the playhead reaches them, until the clip wraps. A take is everything from a punch in to the next punch out. A loop jump, a locate, a stop, a punch out or overdub turning on also ends the pass. After that the take goes on as overdub, so a looping clip never erases what was just played into it. A punch in a moment before the clip wraps erases only that moment.
 - **Erased notes.** They are not played. `Player::erased()` names them after each period with their track and slot, as the clip stores them, in the order the playhead reached them. The control thread removes each with `Takes::erase`, which calls `Clip::remove_note` (it removes one equal note), then adds the recorded ones, and compiles a new view. Naming notes by value, not by position, keeps this right when notes are added in the same period. Until the new view is swapped in, an erased note is still in the view, but the playhead has passed it for this pass.
 - **The new notes are safe.** A note recorded in the replace pass is handed over only after the playhead has passed where it plays (see "No double notes"), so the pass never erases it.
+- **Locks too.** The pass erases the old parameter locks it reaches in the same way, trigless ones included, so the new take does not play the old take's locks. `Player::erased_locks()` names them and `Takes::erase_lock` removes them; UNDO puts them back. The control thread applies erased locks before the recorded ones.
 - **Muted tracks.** A muted armed track is still replaced; nothing on it plays.
 - **Real-time safe.** Up to 256 erased notes a period; the rest are counted in `Stats::dropped`. `Stats::erased` counts erased notes.
 
@@ -116,7 +137,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - it follows the transport's swing
   - a busy session (a loop, swing, a tempo change, a locate, stop, panic and a restart) gives the same arp notes at periods of 1 to 8192 frames and two random sequences. With the span not split at the player's notes, period 8192 differs and the test fails.
 - `tests/arp.rs` also checks that live pad notes fed after the player's notes give the same arp output as notes fed in order, and that a note held by a pad and a clip waits for both.
-- `tests/record.rs` has 13 tests:
+- `tests/locks.rs` has 9 tests of how locks play: a lock comes before its note-on and ends at the track's next note without one; a trigless lock holds until the next note; a pad's lock ends only at that pad's next note; a chord keeps its lock for every note; a note its chance leaves out ends nothing; a stop and a locate unlock everything after the note-offs; a switch ends the old clip's locks before the new one's; a muted track lets its locks go and sends none; a clip locks the track it plays on.
+- `tests/record.rs` has 20 tests:
   - notes land on the ticks they were played on, with their lengths
   - clip speed, origin and length map song ticks to clip ticks
   - punch out, a loop jump and a stop end held notes, and nothing is recorded between punch out and punch in
@@ -128,7 +150,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a muted armed track is still replaced
   - a take undoes and redoes as a whole, back to the clip exactly as it was before recording
   - a note that quantise moves past a punch out arrives after the next take has begun and erased a note, and still joins its own take. Tagging it when it is handed over instead of when it ends, or adding it to the latest take, makes the test fail.
-  - a busy take (300 random notes, punch in and out, a loop, a tempo change, a locate, a stop, overdub off then on, a quantised clip at 3/4 speed) gives the same recorded notes, the same erased notes and the same clip at periods of 1 to 8192 frames and two random sequences. Placing notes by the span's start instead of their frame makes it fail.
+  - a busy take (300 random notes and 400 knob moves, punch in and out, a loop, a tempo change, a locate, a stop, overdub off then on, a quantised clip at 3/4 speed) gives the same recorded notes, the same erased notes and the same clip, locks included, at periods of 1 to 8192 frames and four random sequences. Placing notes by the span's start instead of their frame makes it fail, and so does putting a replaced lock at the end of the clip's list.
+  - knob moves: a knob turned while a pad is held locks its note, and the turn is one lock in the take, undone with its note; a turn just after a note locks it, and later on the nearest line; a pad's parameter looks only at that pad's notes; a knob on another track, a project parameter, a value that is not a number, or a move while not recording records nothing; a recorded lock replaces the one there and UNDO puts it back; a replace pass does not lock the old notes it erased; a replace pass erases the old locks (on a note, trigless, a pad's own) in the order it reaches them, plays none of them, and UNDO brings them back; a lock recorded just before its quantised note is not erased by the replace pass. Without the lock waiting for the playhead, the last of these fails, and so do two others.
 - `src/takes.rs` unit tests: a new take ends redo, old takes are forgotten past the limit, missing clips and notes change nothing, and step edits are takes (a Q-Link turn joins one).
 - `tests/cue.rs` has 9 tests, each run at periods of 1, 64, 128, 1000 and 4096 frames, with the switch applied by the control thread at once, 3 or 40 periods later, or never. Every way must give the same events.
   - a launch waits for the bar line and starts the clip from its top; a note held over the bar line ends on it; a stop waits too
@@ -139,7 +162,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a switch on the armed track ends the replace pass
 
   With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance. It sees no allocation and no free.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, and every track has locks (the instrument's, a pad's, the strip's). It sees no allocation and no free.
 
 ## Listening
 
@@ -182,8 +205,10 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets.
 2. `TimeHost::period` runs the transport and the player. The clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15.
-3. The armed track records, and the taken and erased notes go into the clips and the take history.
+3. The armed track records, and the taken and erased notes, and the recorded locks, go into the clips and the take history. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet.
 4. While counting in and recording, a click plays on each beat: 1760 Hz on the bar and 1320 Hz on the other beats, at about −12 dBFS.
+
+The player's `Lock` and `Unlock` events are ignored for now: they need the mod resolver, which the pad player does not run yet.
 
 It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
 

@@ -599,10 +599,25 @@ impl LoopHost {
                 }
             }
             (Command::SetBars(b), _) => format!("first pass length {}", bars_text(b)),
+            (Command::SetAfter(a), _) => format!("after recording: {a:?}"),
+            (Command::SetFadeOld(k), _) => format!("fade old: {:.0} % kept a pass", 100.0 * k),
             (Command::SetLatency(l), _) => {
                 format!("latency {l} frames ({:.1} ms)", l as f64 / 44.1)
             }
             (Command::SetLevel(v), _) => format!("loop level {:.1} dB", 20.0 * v.max(1e-6).log10()),
+            (Command::Edit(e), Phase::Playing) => format!("edit {e:?}"),
+            (Command::Edit(e), _) => format!("edit {e:?}: waits, or is refused while recording"),
+            (Command::Merge, Phase::Playing) => {
+                format!("merge {} layers into one, in the background", s.layers)
+            }
+            (Command::Merge, _) => "merge: refused while recording".to_string(),
+            (Command::Resample, Phase::Empty) => {
+                "Resample: armed, the first pass records the other loops".to_string()
+            }
+            (Command::Resample, Phase::Armed | Phase::Recording) if s.resampling => {
+                "Resample again: as Record".to_string()
+            }
+            (Command::Resample, _) => "Resample: only on an empty loop".to_string(),
         };
         if !self.looper.command(c) {
             return format!("looper: {what}: NOT done, the command queue is full");

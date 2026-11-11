@@ -294,3 +294,72 @@ fn a_panic_clears_every_arp_and_passes_through() {
         "nothing held after the panic"
     );
 }
+
+/// An idle arp skips its periods; the notes it plays once a pad wakes it are
+/// the same as from an arp run every period, with the transport rolling or
+/// stopped.
+#[test]
+fn an_idle_arp_that_skips_its_periods_plays_the_same_when_woken() {
+    for rolling in [true, false] {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        if rolling {
+            t.command(0, Command::Play);
+        }
+        let mut arps = TrackArps::new(44_100, 120.0);
+        let bass = 3;
+        arps.engine(bass).unwrap().set_settings(up_sixteenths());
+        let mut reference = mpfree_play::ArpHost::new(mpfree_arp::Engine::new(44_100, 120.0));
+        reference.engine.set_settings(up_sixteenths());
+        let (mut block, mut got, mut want) = (Block::new(), Log::default(), Vec::new());
+        let mut periods = 0u32;
+        while t.frame() < 66_150 {
+            let n = 100 + (periods * 37) % 300;
+            periods += 1;
+            t.process(n, &mut block);
+            let start = block.start_frame;
+            // Pressed 0.7 s in (mid-period), let go 0.4 s later.
+            for (at, e) in [
+                (
+                    30_870u64,
+                    Event::NoteOn {
+                        note: 45,
+                        velocity: 100,
+                    },
+                ),
+                (48_510, Event::NoteOff { note: 45 }),
+            ] {
+                if (start..start + u64::from(n)).contains(&at) {
+                    arps.pad(bass, (at - start) as u32, e);
+                    reference.input((at - start) as u32, e);
+                }
+            }
+            arps.through_sink();
+            arps.finish(&block, &mut got);
+            reference.process(&block, &mut |offset, kind| {
+                want.push((start + u64::from(offset), kind))
+            });
+        }
+        let got: Vec<_> = got
+            .0
+            .iter()
+            .filter(|o| usize::from(o.track) == bass)
+            .map(|o| (o.frame, o.event))
+            .collect();
+        let want: Vec<_> = want
+            .iter()
+            .map(|&(f, k)| {
+                (
+                    f,
+                    match k {
+                        mpfree_arp::EventKind::On { note, velocity } => {
+                            Event::NoteOn { note, velocity }
+                        }
+                        mpfree_arp::EventKind::Off { note } => Event::NoteOff { note },
+                    },
+                )
+            })
+            .collect();
+        assert!(want.len() >= 6, "rolling {rolling}: {want:?}");
+        assert_eq!(got, want, "rolling {rolling}");
+    }
+}
