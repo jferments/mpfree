@@ -2,9 +2,11 @@
 //! records go into the armed track's playing clip, at the clip tick they
 //! were played on.
 //!
-//! The audio thread feeds the [`Recorder`] each period's pad notes (or an
-//! arp's notes) with their offsets, then calls [`Recorder::process`] with
-//! the transport's block and the play view. A note is finished when its
+//! The control thread arms a track in the play view
+//! ([`PlayView::set_armed`]). The audio thread feeds the [`Recorder`] each
+//! period's pad notes for that track (or its arp's notes) with their
+//! offsets, then calls [`Recorder::process`] with the transport's block
+//! and the play view. A note is finished when its
 //! pad is released, or when a punch out, a loop jump, a locate or a stop
 //! ends it. It is handed over in [`Recorder::taken`] for the control thread
 //! to add to the clip (`Clip::add_note`) and compile a new view. The notes
@@ -58,6 +60,7 @@ const NOT_HELD: Held = Held { on: false, tick: 0, velocity: 0 };
 const NO_TAKE: Taken = Taken { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 } };
 
 pub struct Recorder {
+    /// The armed track in the last view, to notice a change.
     armed: Option<usize>,
     input: [(u32, Event); MAX_INPUT],
     n_input: usize,
@@ -91,19 +94,6 @@ impl Recorder {
             swing: Swing::default(),
             dropped: 0,
         }
-    }
-
-    /// Record into `track`'s playing clip, or nowhere. Notes held while the
-    /// arm changes are not recorded.
-    pub fn arm(&mut self, track: Option<usize>) {
-        if track != self.armed {
-            self.held = [NOT_HELD; 128];
-            self.armed = track;
-        }
-    }
-
-    pub fn armed(&self) -> Option<usize> {
-        self.armed
     }
 
     /// A note for the coming [`Recorder::process`] call, at `offset` in the
@@ -140,9 +130,15 @@ impl Recorder {
         self.held.iter().filter(|h| h.on).count()
     }
 
-    /// Record the period described by `block`, with `view` playing.
+    /// Record the period described by `block`, with `view` playing, into
+    /// the view's armed track. Notes held while the arm changes are not
+    /// recorded.
     pub fn process(&mut self, view: &PlayView, block: &Block) {
         self.n_taken = 0;
+        if view.armed != self.armed {
+            self.held = [NOT_HELD; 128];
+            self.armed = view.armed;
+        }
         let markers = block.markers();
         let mut m = 0;
         let mut next = 0;
