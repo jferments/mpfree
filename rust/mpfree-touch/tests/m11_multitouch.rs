@@ -318,6 +318,7 @@ fn kinds(g: &[Gesture]) -> Vec<&'static str> {
             Gesture::Drag { .. } => "drag",
             Gesture::DragEnd { cancelled: false, .. } => "drag-end",
             Gesture::DragEnd { cancelled: true, .. } => "drag-cancel",
+            Gesture::Swipe { .. } => "swipe",
             Gesture::TwoFingerStart { .. } => "2f-start",
             Gesture::TwoFinger { .. } => "2f",
             Gesture::TwoFingerEnd { cancelled: false } => "2f-end",
