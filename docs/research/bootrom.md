@@ -1634,3 +1634,39 @@ python3 tools/mpc-one/offline-rk3288-rom.py idblock   "$HOME/mpfree-backups/mpc-
 ~~~
 
 No live MaskROM entry, ROM upload, SD card formatting, GPIO change, eFuse operation, or storage modifications have been carried out during this update.
+
+
+## 35. Owner p1 full ID-block verified; 544 KiB field is U-Boot's default reserved allowance (2026-11-11)
+
+The reference MPC One's offline p1 inspector was run successfully against the exact archived eMMC. Existing six unit tests passed. Its 64-KiB p1 SHA256 was verified against the boot-map baseline **aa36e0e4033ce7386a210ad3e41f405a0d952a5b2a2c2711328450017414f1ec**. Read-only decoded header values:
+
+| Field | Value |
+| --- | --- |
+| Rockchip ID signature | 0x0ff0aa55, valid |
+| Payload RC4 flag | disable_rc4=1 (unencrypted) |
+| init_offset | 4 sectors = 2048 bytes (RK32 marker at offset 2048) |
+| init_size | 64 sectors = **32768 bytes** |
+| init_boot_size | 1088 sectors = **557056 bytes** |
+
+**Important correction:** init_boot_size is NOT the length of an SPL residing inside p1. Directly examined current U-Boot upstream tools/rkcommon.c and tools/rkcommon.h. The latter defines **RK_MAX_BOOT_SIZE = 512 << 10** (512 KiB). When the image builder is not passed a separate boot image, rkcommon_set_header0() writes **init_boot_size = init_size + RK_MAX_BOOT_SIZE**. The exact observed 544 KiB corresponds to **32 KiB SRAM init stage + default 512 KiB next-stage allowance**, and is therefore a normal *header value* even when boot image payload is not contiguously stored after the SPL. This is a format match to upstream behavior, not proof the 2019 InMusic binary was built from identical U-Boot revisions. Separately stored p3 U-Boot starts at whole-disk sector 256; don't read beyond the 64-KiB p1 trying to collect the header's 544 KiB size. Source: https://github.com/u-boot/u-boot/blob/master/tools/rkcommon.c and https://github.com/u-boot/u-boot/blob/master/tools/rkcommon.h .
+
+**Question that now matters:** Does Akai's **actual 32KiB RK32 SRAM loader** use its own MMC driver to fetch p3, or does it initialize DDR and return to BootROM for a next-stage load? The header's allowance cannot answer. A Rockchip back-to-ROM literal at 0xEF08A53C is a search lead only, not a control-flow proof.
+
+**Python 3 tooling committed:**
+- Updated tools/mpc-one/offline-rk3288-rom.py to identify the 512-KiB default allowance and correct RKIMAGE error threshold to 32768.
+- Extended tools/mpc-one/tests/test_offline_rk3288_rom.py with synthetic default-allowance, max-image-size and private-stage-export validation tests. These new tests have not yet been rerun by owner.
+- New tools/mpc-one/extract-p1-sram-for-ghidra.py: validates the original p1 64-KiB partition SHA256 and 4/64/1088 header fields, then creates a **new, owner-private 32768-byte stage file** (not committed). Refuses raw block devices, symlinks and overwrites.
+- New tools/ghidra/MPFreeSPLAudit.py: native PyGhidra CPython 3 pre/post analysis; imports stage at **0xff704000**, candidate ARM-state code entry **0xff704004**, seeds code, traces function candidates and exports a local JSON with selected decompilation, call references and any back-to-BootROM literal hits. Decompilation and ARM-vs-Thumb state are hypotheses to verify. All analysis changes are confined to the new local Ghidra project.
+- New tools/ghidra/run_p1_sram_analysis.sh: one-command new Ghidra project + JSON, using Snap `snap run ghidra.ghidra -H` or explicit GHIDRA_HOME PyGhidra launcher. It does **not** SSH into MPC, reboot it, transmit a ROM image, or write any eMMC or OTP.
+- docs/hardware/owner-rom-recovery-plan.md updated with verified full-header values and this next experiment.
+
+Run on Linux workstation:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+python3 -m unittest discover -s tools/mpc-one/tests -p 'test_offline_rk3288_rom.py' -v
+bash tools/ghidra/run_p1_sram_analysis.sh
+~~~
+
+Expected result: **~/mpfree-work/mpfree-ghidra-p1-sram-<timestamp>.json**, alongside a new private Ghidra project and console log. These new scripts are not yet validated on the owner's workstation; a completed Ghidra report must be inspected before interpreting its SPL behavior. Keep extracted proprietary code and any decompiler output out of the public repo. No physical ROM access was attempted.
