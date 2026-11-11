@@ -31,8 +31,8 @@
 
 use std::sync::Arc;
 
-pub use mpfree_grain::GrainView;
 use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
+pub use mpfree_grain::{GrainView, MAX_GRAINS};
 
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,

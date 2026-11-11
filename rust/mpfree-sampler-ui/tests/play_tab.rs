@@ -102,8 +102,8 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     assert_eq!(bar.active, play_tab::TAB);
     assert_eq!(
         bar.enabled,
-        vec![true, true, true, true, false, false],
-        "Pads, Wave, Chop and Play are built"
+        vec![true, true, true, true, true, false],
+        "Pads, Wave, Chop, Play and Grain are built"
     );
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();

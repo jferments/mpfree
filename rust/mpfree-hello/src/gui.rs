@@ -32,7 +32,7 @@ use crate::looper_page::{LooperPage, LOOPER_PAGE};
 use crate::looping::{LoopWave, LooperView};
 use crate::perf::ProcView;
 use crate::sample_page::{self, SamplePage};
-use crate::sampler::{Playheads, ViewSwap};
+use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_arp::{Mode, Pattern};
 use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
@@ -296,6 +296,9 @@ pub enum ToUi {
     SampleUndo(bool),
     /// Where the playing kit's voices are (while the Sample page shows).
     SamplePlayheads(Playheads),
+    /// The grains of the pad on the Grain tab, filled in by the audio
+    /// thread; the box goes back with the next request.
+    SampleGrains(Box<Cloud>),
     /// New pad labels for one kit (the synth's notes, after an octave change).
     KitPads {
         kit: usize,
@@ -364,6 +367,9 @@ pub enum FromUi {
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
+    /// The Grain tab asks for a pad's grains: the audio thread fills the box
+    /// and sends it back.
+    SampleGrains(Box<Cloud>),
     /// The Debug tab's strip: MIDI, Performance or Map controls.
     DebugPage(usize),
     /// A control tapped in the mapper's list (listen for it).
@@ -731,6 +737,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
                      Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
+                    "Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
+                     finer)   ·   Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
@@ -1139,6 +1149,7 @@ impl Player {
                     self.sample.set_playheads(&mut self.ui, &h);
                 }
             }
+            ToUi::SampleGrains(c) => self.sample.cloud_back(&mut self.ui, c),
             ToUi::KitPads { kit, pads } => {
                 if let Some(k) = self.kits.get_mut(kit) {
                     k.pads = pads;
@@ -1272,8 +1283,10 @@ impl Player {
 
     /// An action that found no room on its way to the audio thread.
     pub fn unsent(&mut self, a: FromUi) {
-        if let FromUi::SampleView(swap) = a {
-            self.sample.unsent(swap.kit);
+        match a {
+            FromUi::SampleView(swap) => self.sample.unsent(swap.kit),
+            FromUi::SampleGrains(c) => self.sample.cloud_unsent(c),
+            _ => {}
         }
     }
 
@@ -1399,6 +1412,11 @@ impl Player {
     pub fn take_actions(&mut self) -> Vec<FromUi> {
         if let Some(a) = self.sample.take_view() {
             self.outbox.push(a);
+        }
+        if self.view == View::Sample {
+            if let Some(a) = self.sample.take_cloud() {
+                self.outbox.push(a);
+            }
         }
         std::mem::take(&mut self.outbox)
     }
@@ -2699,6 +2717,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     play.take_actions();
     out.push(("sample-play", play));
+    // The Grain tab on the same pad, set to play grains: the engine's own
+    // cloud 1.5 s after a hit, as the audio thread sends it.
+    let mut grain = sample_sampler(fonts());
+    let (project, _) = mpfree_sampler_ui::sample::grain_project();
+    let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
+    let region = project
+        .pad(mpfree_sampler_ui::sample::PAD)
+        .and_then(|pd| pd.layers.first())
+        .map(|l| l.region.clone());
+    grain.apply(ToUi::SampleKits {
+        projects: vec![project],
+        rate: mpfree_sampler_ui::sample::RATE,
+    });
+    grain.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
+    });
+    if let Some(FromUi::SampleGrains(mut c)) = grain
+        .take_actions()
+        .into_iter()
+        .find(|a| matches!(a, FromUi::SampleGrains(_)))
+    {
+        c.len = grains.len().min(crate::sampler::CLOUD_GRAINS);
+        c.grains[..c.len].copy_from_slice(&grains[..c.len]);
+        c.head = head
+            .zip(region)
+            .map(|(h, r)| r.start + (f64::from(h) * r.frames() as f64) as u64);
+        c.live = live;
+        grain.apply(ToUi::SampleGrains(c));
+    }
+    out.push(("sample-grain", grain));
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -3411,6 +3460,159 @@ mod tests {
         );
         tap_tab(&mut p, play_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
+    }
+
+    #[test]
+    fn the_grain_tab_sets_the_grains_and_draws_the_cloud_the_audio_thread_fills() {
+        use mpfree_sampler::model::PlayMode;
+        use mpfree_sampler_ui::grain_tab::{self, Row};
+        use mpfree_sampler_ui::grain_widgets::GrainCloud;
+        use mpfree_sampler_ui::widgets::PadBar;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        // Takes the actions: the kit views (sent back at once) and the cloud.
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            let mut clouds = Vec::new();
+            for a in rest {
+                if let FromUi::SampleGrains(c) = a {
+                    clouds.push(c);
+                }
+            }
+            clouds
+        };
+        assert!(take(&mut p).is_empty(), "no cloud off the Grain tab");
+        // The pad bar's Grain tab opens the Grain page on the same pad.
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(grain_tab::TAB),
+        );
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::GRAIN_PAGE, sample_page::Editor::Grain)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Q-Links 1-4: position, size, density, pitch"));
+        assert_eq!(
+            p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
+            "Pad A5 · Break 92"
+        );
+        // Mode, stepped from the list, makes the loop play grains: one log line.
+        let mode = Row::ALL.iter().position(|r| *r == Row::Mode).unwrap();
+        ev(
+            &mut p,
+            grain_tab::LIST,
+            EventKind::Step {
+                index: mode,
+                delta: 1,
+            },
+        );
+        p.apply(ToUi::SampleLift);
+        let region = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        assert_eq!(region(&p).mode, PlayMode::Granular);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: mode Loop -> Granular"),
+            "{:?}",
+            events_log(&p)
+        );
+        // The cloud's box goes to the audio thread, naming the pad; one at a time.
+        let mut clouds = take(&mut p);
+        assert_eq!(clouds.len(), 1);
+        let mut c = clouds.pop().unwrap();
+        assert_eq!((c.kit, c.pad, c.layer), (0, pad as u8, 0));
+        assert!(take(&mut p).is_empty(), "the box is away");
+        // Filled there, it comes back and the cloud draws it.
+        let r = region(&p);
+        c.len = 3;
+        for (k, g) in c.grains[..3].iter_mut().enumerate() {
+            g.position = 0.2 * (k + 1) as f32;
+            g.level = 0.5;
+        }
+        c.head = Some(r.start + r.frames() / 2);
+        c.live = 7;
+        p.apply(ToUi::SampleGrains(c));
+        let cloud = p.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
+        assert_eq!(cloud.grains.len(), 3);
+        assert!((cloud.playhead.unwrap() - 0.5).abs() < 0.01);
+        assert_eq!(cloud.right, "7 grains on all pads");
+        assert!(
+            cloud.caption.contains("3 grains playing"),
+            "{}",
+            cloud.caption
+        );
+        // Back again for the next fill; a full channel keeps it here.
+        let mut clouds = take(&mut p);
+        assert_eq!(clouds.len(), 1);
+        p.unsent(FromUi::SampleGrains(clouds.pop().unwrap()));
+        assert_eq!(take(&mut p).len(), 1);
+        // A cloud for another pad isn't drawn (the pad changed on the way).
+        let mut other = Box::<crate::sampler::Cloud>::default();
+        other.pad = 2;
+        other.len = 1;
+        p.apply(ToUi::SampleGrains(other));
+        assert_eq!(
+            p.ui.get::<GrainCloud>(grain_tab::CLOUD)
+                .unwrap()
+                .grains
+                .len(),
+            3
+        );
+        // Q-Link 1 turns the position; letting go writes the line; undo takes it back.
+        p.apply(ToUi::SampleQLink(0, 4));
+        p.apply(ToUi::SampleLift);
+        assert!((region(&p).grain.position - 0.02).abs() < 1e-6);
+        let (tab, st) = p.sample.grain().unwrap();
+        assert_eq!(tab.row(&p.ui), Row::Position, "Q-Link 1 picks its row");
+        assert_eq!(st.region, region(&p));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: position 0.0 % -> 2.0 %"),
+            "{:?}",
+            events_log(&p)
+        );
+        // SHIFT + Q-Link 1 turns the spray instead.
+        p.status.shift = true;
+        p.apply(ToUi::SampleQLink(0, 3));
+        p.apply(ToUi::SampleLift);
+        p.status.shift = false;
+        assert!((region(&p).grain.spray - 0.03).abs() < 1e-6);
+        p.apply(ToUi::SampleUndo(false));
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(region(&p).grain.position, 0.0);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(region(&p).mode, PlayMode::Loop);
+        // Still on Grain: the tab says how to make the loop play grains.
+        assert_eq!(p.page(), sample_page::GRAIN_PAGE);
+        assert!(!p.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap().granular);
+        // Off the tab, the box stays on the screen thread.
+        ev(
+            &mut p,
+            grain_tab::BAR,
+            EventKind::Tab(mpfree_sampler_ui::wave_tab::TAB),
+        );
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!(take(&mut p).is_empty());
     }
 
     #[test]
