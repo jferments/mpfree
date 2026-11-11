@@ -10,6 +10,9 @@
 //!   its Start, End and loop markers, the region's settings and the Q-Links.
 //!   It turns touches, Q-Link turns and the wheel into [`WaveAction`]s for
 //!   the app to apply to the project, each drag or turn one undo step.
+//! - [`chop_tab`]: the pad editor's Chop tab: slices of the pad's sound by
+//!   transients, beats, a grid, silence or by hand, split, merged and put on
+//!   pads as one undo step ([`ChopAction`]).
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -17,10 +20,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chop_tab;
 pub mod sample;
 pub mod source;
 pub mod wave_tab;
 pub mod widgets;
 
+pub use chop_tab::{ChopAction, ChopState, ChopTab};
 pub use source::{PyramidPeaks, SourceView};
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

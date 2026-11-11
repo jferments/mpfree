@@ -1,6 +1,8 @@
 //! The Sample tab: the sampler's pad editor (`mpfree-sampler-ui`) on the pad
-//! player's kits. For now it has the Wave tab (Start, End, the loop, the
-//! fades and the region's settings); Chop, Play, Grain and FX come later.
+//! player's kits. It has the Wave tab (Start, End, the loop, the fades and
+//! the region's settings) and the Chop tab (slices by transients, beats, a
+//! grid, silence or by hand, put on the kit's pads); Play, Grain and FX come
+//! later. The pad bar's tabs switch between them.
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
@@ -15,7 +17,9 @@
 //! - A tap on the waveform plays the pad, as a hit would. In Gate, Loop and
 //!   Granular modes the sound keeps going until the next tap.
 //! - Each finished drag or turn writes one `sample:` line to the log, with
-//!   what changed.
+//!   what changed; so does each chop put on pads.
+//! - Chop to pads changes the kit like any edit (one undo step), and the
+//!   Play page's pad names follow ([`SamplePage::take_renamed`]).
 //! - Edits live in memory until the power goes off: nothing is saved yet.
 
 use std::collections::HashMap;
@@ -24,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{ChannelPick, Fade, LoopMode, PlayMode, Project, Region, SourceId};
+use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::wave_tab::{duration_text, mode_label, WaveAction, WaveState, WaveTab};
 use mpfree_sampler_ui::SourceView;
 use mpfree_ui::widgets::Card;
@@ -35,12 +40,16 @@ use crate::sampler::{Playheads, ViewSwap};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
+/// The Chop tab's page.
+pub const CHOP_PAGE: &str = "Sample · Chop";
 /// The page shown when the pad has no sound (or the synth has the pads).
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
 pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
-/// The Wave tab's widgets all start with this.
+/// The pad editor's widgets all start with this (the Chop tab's with
+/// `smp-chop-`).
 pub const PREFIX: &str = "smp-";
+const CHOP_PREFIX: &str = "smp-chop-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -50,6 +59,13 @@ struct Gesture {
     kit: usize,
     pad: usize,
     before: Region,
+}
+
+/// The pad editor's tab on show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Editor {
+    Wave,
+    Chop,
 }
 
 pub struct SamplePage {
@@ -63,6 +79,12 @@ pub struct SamplePage {
     pad: usize,
     tab: Option<WaveTab>,
     state: Option<WaveState>,
+    editor: Editor,
+    /// The Chop tab, added the first time it is opened.
+    chop: Option<ChopTab>,
+    chop_state: Option<ChopState>,
+    /// A kit whose pads were renamed or replaced, for the Play page.
+    renamed: Option<usize>,
     /// The kit or pad changed since the page was last built.
     stale: bool,
     /// Kits whose new view the audio thread doesn't have yet.
@@ -87,7 +109,8 @@ impl SamplePage {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
         let mut p = SamplePage { projects: Vec::new(), names: Vec::new(), rate: 44_100, sources: HashMap::new(), kit: 0,
-                                 pad: 0, tab: None, state: None, stale: true, dirty: Vec::new(), in_flight: false,
+                                 pad: 0, tab: None, state: None, editor: Editor::Wave, chop: None, chop_state: None,
+                                 renamed: None, stale: true, dirty: Vec::new(), in_flight: false,
                                  auditioning: None, last_turn: None, gesture: None, shown_heads: Vec::new(),
                                  lines: Vec::new(), edits: 0, views_sent: 0 };
         p.show_empty(ui);
@@ -168,12 +191,23 @@ impl SamplePage {
         self.projects.get(kit)
     }
 
-    /// The page to show: the Wave tab, or the one for a pad without a sound.
+    #[cfg(test)]
+    pub fn chop(&self) -> Option<(&ChopTab, &ChopState)> {
+        self.chop.as_ref().zip(self.chop_state.as_ref())
+    }
+
+    #[cfg(test)]
+    pub fn editor(&self) -> Editor {
+        self.editor
+    }
+
+    /// The page to show: the editor's tab, or the one for a pad without a
+    /// sound.
     pub fn page(&self) -> &'static str {
-        if self.state.is_some() && self.tab.is_some() {
-            PAGE
-        } else {
-            EMPTY_PAGE
+        match self.editor {
+            Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
+            Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
+            _ => EMPTY_PAGE,
         }
     }
 
@@ -207,12 +241,43 @@ impl SamplePage {
             },
             (None, _) => {}
         }
-        if self.state.is_none() {
+        self.chop_state = None;
+        if self.editor == Editor::Chop {
+            self.refresh_chop(ui, bank);
+        }
+        if self.page() == EMPTY_PAGE {
             self.show_empty(ui);
         }
         self.shown_heads.clear();
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
+        }
+        if let Some(tab) = self.chop.as_ref() {
+            tab.set_playheads(ui, &[]);
+        }
+    }
+
+    fn refresh_chop(&mut self, ui: &mut Ui, bank: Option<char>) {
+        let Some(st) = self.state.as_ref() else { return };
+        let Some(project) = self.projects.get(self.kit) else { return };
+        self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
+        let Some(cs) = self.chop_state.as_ref() else { return };
+        match self.chop.as_mut() {
+            Some(tab) => {
+                tab.bank = bank;
+                tab.update(ui, cs);
+            }
+            None => match ChopTab::add(ui, CHOP_PAGE, cs) {
+                Ok(mut tab) => {
+                    tab.bank = bank;
+                    tab.update(ui, cs);
+                    self.chop = Some(tab);
+                }
+                Err(e) => {
+                    self.lines.push(format!("sample: no Chop page ({e})"));
+                    self.chop_state = None;
+                }
+            },
         }
     }
 
@@ -225,9 +290,13 @@ impl SamplePage {
     }
 
     fn kit_text(&self) -> String {
-        match self.names.get(self.kit) {
-            Some(n) => format!("kit {} ({n})", self.kit + 1),
-            None => format!("kit {}", self.kit + 1),
+        self.kit_text_of(self.kit)
+    }
+
+    fn kit_text_of(&self, kit: usize) -> String {
+        match self.names.get(kit) {
+            Some(n) => format!("kit {} ({n})", kit + 1),
+            None => format!("kit {}", kit + 1),
         }
     }
 
@@ -253,13 +322,75 @@ impl SamplePage {
 
     // ------------------------------------------------------------ edits
 
-    /// A touch on one of the Wave tab's widgets. Taps that play the pad go
+    /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        if ev.widget.starts_with(CHOP_PREFIX) {
+            let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else { return };
+            if let Some(a) = tab.action(ui, ev, st) {
+                self.act_chop(ui, a);
+            }
+            return;
+        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else { return };
         if let Some(a) = tab.action(ui, ev, st) {
             self.act(ui, a, out);
         }
+    }
+
+    /// Opens the editor's tab `i` (Wave or Chop; the others aren't built).
+    fn open(&mut self, ui: &mut Ui, i: usize) {
+        let editor = match i {
+            0 => Editor::Wave,
+            chop_tab::TAB => Editor::Chop,
+            _ => return,
+        };
+        if editor != self.editor {
+            self.lift();
+            self.editor = editor;
+            self.refresh(ui);
+        }
+    }
+
+    fn act_chop(&mut self, ui: &mut Ui, a: ChopAction) {
+        match &a {
+            ChopAction::Tab(i) => self.open(ui, *i),
+            ChopAction::ToPads { pad, bounds, mode, .. } => {
+                let kit = self.kit;
+                let Some(project) = self.projects.get_mut(kit) else { return };
+                let name = project.pad(*pad).map_or(String::new(), |p| p.name.clone());
+                match a.apply(project) {
+                    Ok(pads) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        self.renamed = Some(kit);
+                        let n = bounds.len() - 1;
+                        let to = if n == 1 {
+                            self.pad_text(kit, pads.start)
+                        } else {
+                            format!("{} to {}", self.pad_text(kit, pads.start), self.pad_text(kit, pads.end - 1))
+                        };
+                        let s = |f: u64| format!("{:.3} s", f as f64 / f64::from(self.rate.max(1)));
+                        let span = format!("{} to {}", s(bounds[0]), s(bounds[n]));
+                        self.lines.push(format!("sample: {} pad {} {name}: chopped {span} into {n} slice{} ({mode:?}) on \
+                                                 pads {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
+                                                if n == 1 { "" } else { "s" }));
+                    }
+                    Err(e) => self.lines.push(format!("sample: chop of pad {} not made ({e:?})", self.pad_text(kit, *pad))),
+                }
+                self.refresh(ui);
+            }
+        }
+    }
+
+    /// The kit whose pads were renamed or replaced since the last call, with
+    /// its pads' names, for the Play page.
+    pub fn take_renamed(&mut self) -> Option<(usize, Vec<Option<String>>)> {
+        let kit = self.renamed.take()?;
+        let p = self.projects.get(kit)?;
+        Some((kit, (0..16).map(|i| p.pad(i).filter(|pd| !pd.layers.is_empty()).map(|pd| pd.name.clone())).collect()))
     }
 
     /// Q-Link `knob` (0-3: Start, End, Loop start, Loop end) turned by
@@ -270,16 +401,31 @@ impl SamplePage {
             self.lift();
         }
         self.last_turn = Some(now);
+        if self.editor == Editor::Chop {
+            if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
+                tab.qlink(ui, st, knob, ticks, fine);
+            }
+            return;
+        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else { return };
         if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
             self.act(ui, a, &mut Vec::new());
         }
     }
 
-    /// The data wheel: zoom round the marker last moved.
+    /// The data wheel: zoom round the marker last moved, or the slice picked.
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
-        if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
-            tab.wheel(ui, st, delta);
+        match self.editor {
+            Editor::Chop => {
+                if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
+                    tab.wheel(ui, st, delta);
+                }
+            }
+            Editor::Wave => {
+                if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+                    tab.wheel(ui, st, delta);
+                }
+            }
         }
     }
 
@@ -308,8 +454,7 @@ impl SamplePage {
                 self.refresh(ui);
             }
             WaveAction::Audition { pad } => self.audition(pad, out),
-            // Only the Wave tab works so far; the others are greyed out.
-            WaveAction::Tab(_) => {}
+            WaveAction::Tab(i) => self.open(ui, i),
         }
     }
 
@@ -341,10 +486,7 @@ impl SamplePage {
         let what = describe(&g.before, &after, self.rate);
         if !what.is_empty() {
             let name = self.projects[g.kit].pad(g.pad).map_or(String::new(), |p| p.name.clone());
-            let kit = match self.names.get(g.kit) {
-                Some(n) => format!("kit {} ({n})", g.kit + 1),
-                None => format!("kit {}", g.kit + 1),
-            };
+            let kit = self.kit_text_of(g.kit);
             self.lines.push(format!("sample: {kit} pad {} {name}: {what}", self.pad_text(g.kit, g.pad)));
         }
     }
@@ -370,6 +512,7 @@ impl SamplePage {
             if let Some(d) = self.dirty.get_mut(kit) {
                 *d = true;
             }
+            self.renamed = Some(kit);
             self.lines.push(format!("sample: {what} in {}", self.kit_text()));
             self.refresh(ui);
         } else {
@@ -411,13 +554,24 @@ impl SamplePage {
 
     /// Where the playing kit's voices are; the shown pad's are drawn.
     pub fn set_playheads(&mut self, ui: &mut Ui, heads: &Playheads) {
-        let Some(tab) = self.tab.as_ref() else { return };
         let frames: Vec<u64> =
             if usize::from(heads.kit) == self.kit && self.state.is_some() { heads.of(self.pad).collect() } else { Vec::new() };
-        if frames != self.shown_heads {
-            tab.set_playheads(ui, &frames);
-            self.shown_heads = frames;
+        if frames == self.shown_heads {
+            return;
         }
+        match self.editor {
+            Editor::Wave => {
+                if let Some(tab) = self.tab.as_ref() {
+                    tab.set_playheads(ui, &frames);
+                }
+            }
+            Editor::Chop => {
+                if let Some(tab) = self.chop.as_ref() {
+                    tab.set_playheads(ui, &frames);
+                }
+            }
+        }
+        self.shown_heads = frames;
     }
 
     /// Lines for the log since the last call.

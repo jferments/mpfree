@@ -544,6 +544,10 @@ impl Player {
                     "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
                      UNDO: undo   ·   tap the wave: play".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
+                    "Hit a pad to chop it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   Wheel: zoom   ·   \
+                     - / +: pad   ·   UNDO: undo".to_string()
+                }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
                                         Debug page   ·   MENU: options   ·   {stop}"),
@@ -835,7 +839,11 @@ impl Player {
                 self.sample.step_pad(d);
                 self.sample_changed();
             }
-            ToUi::SampleUndo(redo) => self.sample.undo(&mut self.ui, redo),
+            ToUi::SampleUndo(redo) => {
+                let before = self.sample.page();
+                self.sample.undo(&mut self.ui, redo);
+                self.sample_after(before);
+            }
             ToUi::SamplePlayheads(h) => {
                 if self.view == View::Sample {
                     self.sample.set_playheads(&mut self.ui, &h);
@@ -929,6 +937,23 @@ impl Player {
     fn sample_changed(&mut self) {
         if self.ready && self.view == View::Sample && !self.lab_open {
             self.show_view(View::Sample);
+        }
+    }
+
+    /// After an edit on the Sample page: show the page again if it changed
+    /// (Wave to Chop, or a pad without a sound), and give the Play page the
+    /// names of pads a chop filled.
+    fn sample_after(&mut self, before: &str) {
+        if let Some((kit, pads)) = self.sample.take_renamed() {
+            if let Some(k) = self.kits.get_mut(kit) {
+                k.pads = pads;
+                if kit == self.kit {
+                    self.set_kit(kit);
+                }
+            }
+        }
+        if self.sample.page() != before {
+            self.sample_changed();
         }
     }
 
@@ -1157,7 +1182,9 @@ impl Player {
             return p.event(&mut self.ui, &ev).map(FromUi::Synth);
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
+            let before = self.sample.page();
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            self.sample_after(before);
             self.print_sample_lines();
             return None;
         }
@@ -1808,7 +1835,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push((name, p));
     }
     // The Sample page: the loop on kit 1's pad 5, then zoomed round the
-    // loop start after a Q-Link 3 turn, then a pad without a sound.
+    // loop start after a Q-Link 3 turn, then a pad without a sound, then
+    // the Chop tab.
     out.push(("sample", sample_sampler(fonts())));
     let mut zoomed = sample_sampler(fonts());
     zoomed.apply(ToUi::SampleQLink(2, 3));
@@ -1821,6 +1849,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     empty.apply(ToUi::PadDown { pad: 1, velocity: 90 });
     empty.apply(ToUi::PadUp(1));
     out.push(("sample-no-sound", empty));
+    // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
+    let mut chop = sample_sampler(fonts());
+    chop.on_event(UiEvent { widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB) });
+    chop.apply(ToUi::SampleQLink(0, 2));
+    chop.take_actions();
+    out.push(("sample-chop", chop));
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -2140,6 +2175,74 @@ mod tests {
         }
         assert_eq!(p.sample.state().unwrap().region.mode, mpfree_sampler::model::PlayMode::OneShot);
         assert_eq!(tap(&mut p, 4), vec![FromUi::Pad { pad, down: true }, FromUi::Pad { pad, down: false }]);
+    }
+
+    #[test]
+    fn the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back() {
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        // The pad bar's Chop tab opens the Chop page on the same pad.
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert_eq!((p.page(), p.sample.editor()), (sample_page::CHOP_PAGE, sample_page::Editor::Chop));
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("Hit a pad to chop it"));
+        assert_eq!(p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title, "Pad A5 · Break 92");
+        // Grid of 4 from the list, then Q-Link 4 to A1: the slices go on A1-A4.
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent { widget: chop_tab::LIST.into(), kind: EventKind::Step { index, delta } });
+        };
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        p.apply(ToUi::SampleQLink(3, -16));
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!((tab.slices(), tab.pads(st)), (4, Some(0..4)));
+        let bounds = tab.bounds(st);
+        assert_eq!(p.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap().labels[2], "Chop to A1–A4");
+        assert!(views(p.take_actions()).0.is_empty(), "trying chops changes nothing");
+        tap(&mut p, chop_tab::BUTTONS, 2);
+        let kit = p.sample.project(0).unwrap();
+        assert_eq!(kit.pad(2).unwrap().name, "Break 92 3");
+        assert_eq!(kit.pad(2).unwrap().layers[0].region.start, bounds[2]);
+        assert_eq!(kit.pad(pad).unwrap().name, "Break 92", "A5 is left as it was");
+        // The kit's new view goes to the audio thread; the Play page names the pads.
+        let (sent, _) = views(p.take_actions());
+        let view = sent[0].view.as_ref().unwrap();
+        assert!((0..4).all(|i| view.has_pad(i)) && view.has_pad(pad) && !view.has_pad(5));
+        assert_eq!(p.kits[0].pads[1].as_deref(), Some("Break 92 2"));
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[3].label, "Break 92 4");
+        assert!(events_log(&p).iter().any(|l| l.starts_with("sample: kit 1 (Breaks) pad A5 Break 92: chopped ")
+                                                 && l.ends_with("into 4 slices (Grid) on pads A1 to A4")),
+                "{:?}", events_log(&p));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // UNDO takes the four pads away again, and the Play page follows.
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(0).is_none());
+        assert_eq!(p.kits[0].pads[0], None);
+        let (sent, _) = views(p.take_actions());
+        assert!(!sent[0].view.as_ref().unwrap().has_pad(0));
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        // The Wave tab goes back to Wave; another pad stays on the tab open.
+        tap(&mut p, chop_tab::BAR, 0);
+        assert_eq!(p.page(), sample_page::PAGE);
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        p.apply(ToUi::PadDown { pad: 7, velocity: 100 });
+        assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
     }
 
     #[test]

@@ -8,17 +8,19 @@ use mpfree_sampler::model::{Fade, FadeCurve, Layer, Loop, LoopMode, Pad, PlayMod
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
+use crate::chop_tab::{self, ChopState, ChopTab};
 use crate::source::SourceView;
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
 /// The MPC One's screen, turned.
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The app's header tabs in the samples. The editor's tab name is a
-/// placeholder until it is settled.
-pub const APP_TABS: [&str; 4] = ["Play", "Sample", "Debug", "Prefs"];
-pub const EDITOR_TAB: usize = 1;
-/// The page name the samples add the Wave tab under.
+/// The app's header tabs in the samples, as the pad player's layout spec
+/// orders them (Jay, 2026-11-11), until mpfree-ui shares one list.
+pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+pub const EDITOR_TAB: usize = 4;
+/// The page names the samples add the Wave and Chop tabs under.
 pub const PAGE: &str = "Sample · Wave";
+pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -95,8 +97,22 @@ pub struct Sample {
     pub state: WaveState,
 }
 
+/// One sample screen of the Chop tab.
+pub struct ChopSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: ChopTab,
+    pub project: Project,
+    pub state: ChopState,
+}
+
 /// The app's part of the screen: the header and the hint line.
 pub fn app_ui(fonts: Fonts, p: &Project) -> Ui {
+    app_ui_with(fonts, p, HINT)
+}
+
+fn app_ui_with(fonts: Fonts, p: &Project, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
     let mut header = Header::new(&APP_TABS);
     header.active = EDITOR_TAB;
@@ -105,7 +121,7 @@ pub fn app_ui(fonts: Fonts, p: &Project) -> Ui {
     header.chips = vec![Chip::new(undo, Tone::Good), Chip::new(format!("{BPM:.1} BPM"), Tone::Normal),
                         Chip::new(format!("Pad {}", pad_label(PAD)), Tone::Accent)];
     ui.add("header", header);
-    ui.add("hint", Label::new(HINT, Tone::Dim, Align::Center));
+    ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
     ui
 }
 
@@ -117,6 +133,61 @@ pub fn wave_sample(fonts: Fonts) -> Result<Sample, String> {
     let tab = WaveTab::add(&mut ui, PAGE, &state)?;
     ui.show(PAGE)?;
     Ok(Sample { name: "wave", about: "The whole loop: Start, End, the loop and the fades", ui, tab, project, state })
+}
+
+/// The Chop tab on the sample project's pad, chopped by transients.
+pub fn chop_sample(fonts: Fonts) -> Result<ChopSample, String> {
+    let (project, view) = project();
+    let state = ChopState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, chop_tab::HINT);
+    let tab = ChopTab::add(&mut ui, CHOP_PAGE, &state)?;
+    ui.show(CHOP_PAGE)?;
+    Ok(ChopSample { name: "chop", about: "The pad's region chopped at its hits (Transient, 50 %)", ui, tab, project, state })
+}
+
+/// The Chop tab's sample screens.
+pub fn chop_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<ChopSample>, String> {
+    use crate::chop_tab::{Button, Row};
+    let step = |s: &mut ChopSample, row: Row, delta: i32| {
+        let index = Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        let ev = mpfree_ui::UiEvent { widget: chop_tab::LIST.into(), kind: mpfree_ui::EventKind::Step { index, delta } };
+        let st = s.state.clone();
+        s.tab.action(&mut s.ui, &ev, &st);
+    };
+    let mut out = vec![chop_sample(fonts())?];
+
+    // Beat, a slice every 8th, the third slice picked and zoomed round.
+    let mut s = chop_sample(fonts())?;
+    (s.name, s.about) = ("chop-beat", "Beat: a slice every 8th note, slice 3 picked (Q-Link 1), zoomed round it (wheel)");
+    step(&mut s, Row::Method, 1);
+    step(&mut s, Row::Amount, -1);
+    let st = s.state.clone();
+    s.tab.qlink(&mut s.ui, &st, 0, 2, false);
+    for _ in 0..4 {
+        s.tab.wheel(&mut s.ui, &st, 1);
+    }
+    out.push(s);
+
+    // Grid of 4 put on pads, then slice 2 split by hand: Manual.
+    let mut s = chop_sample(fonts())?;
+    (s.name, s.about) = ("chop-manual", "Grid of 4 put on pads A6-A9, then slice 2 split by hand (the method turns to Manual)");
+    step(&mut s, Row::Method, 1);
+    step(&mut s, Row::Method, 1);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let st = s.state.clone();
+    if let Some(a) = s.tab.press(&mut s.ui, &st, Button::ToPads) {
+        a.apply(&mut s.project).map_err(|e| format!("{e:?}"))?;
+        s.state = ChopState::from_project(&s.project, PAD, 0, st.source.clone()).ok_or("no pad")?;
+        let st = s.state.clone();
+        s.tab.update(&mut s.ui, &st);
+    }
+    let st = s.state.clone();
+    s.tab.qlink(&mut s.ui, &st, 0, 1, false);
+    s.tab.press(&mut s.ui, &st, Button::Split);
+    out.push(s);
+    Ok(out)
 }
 
 /// The sample screens the preview draws.
