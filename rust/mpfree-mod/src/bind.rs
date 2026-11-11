@@ -16,6 +16,14 @@
 //! them. A page that sets no knobs leaves its free knobs free, and the
 //! app draws its own cards there ([`QLinkCard::target`] is `None`).
 //!
+//! **Sets.** A page can have several named sets of its own four knobs
+//! ([`Bindings::set_page_sets`]: an instrument's Tone, Shape, Motion and
+//! Mix), stepped through with [`Bindings::next_set`] without leaving the
+//! page or the bank. They belong to what the page shows (a sound saves its
+//! own with its preset), so a learn while bank 0 is shown lands in the set
+//! shown and [`Bindings::take_sets_edited`] says so; they are never in
+//! [`Bindings::save`]'s lines.
+//!
 //! **Learn:** [`Bindings::learn`] arms a parameter (the user touched it
 //! on screen); the next knob turned takes it, in the bank shown. By
 //! default ([`Scope::ThisPage`]) the knob belongs to the page it was
@@ -126,11 +134,16 @@ pub struct Bindings {
     learning: Option<(ParamAddr, ParamInfo, String, Scope)>,
     /// Knobs that belong to one page: (page key, bank, knob).
     scoped: BTreeMap<(String, usize, usize), Binding>,
-    /// The page on screen: its key, its own knobs and its name (the knobs
-    /// and name are not saved).
+    /// The page on screen: its key, its sets of its own knobs, the set
+    /// shown and its name (none of them saved here).
     page_key: String,
-    page: [Option<Binding>; KNOBS],
+    sets: Vec<Bank>,
+    set: usize,
     page_name: String,
+    /// The sets are the page's own (`set_page_sets`): a learn on bank 0
+    /// lands in the set shown.
+    own_sets: bool,
+    sets_edited: bool,
     /// The knob being touched, for lighting its card.
     pub touched: Option<usize>,
 }
@@ -177,12 +190,72 @@ impl Bindings {
     /// binding of its own. The name and knobs are not saved; set them
     /// again when the page or what it shows changes.
     pub fn set_page(&mut self, key: &str, name: &str, knobs: [Option<Binding>; KNOBS]) {
-        for b in knobs.iter().flatten() {
+        self.put_page(
+            key,
+            name,
+            vec![Bank {
+                name: String::new(),
+                knobs,
+            }],
+        );
+        self.own_sets = false;
+    }
+
+    /// The page on screen with several named sets of its own knobs (an
+    /// instrument's Tone, Shape, Motion, Mix): `name` is the page's
+    /// ("Poly"), each set has its name and four knobs. The set shown stays
+    /// when the key and the number of sets stay (a refresh), else the
+    /// first shows. A learn while bank 0 is shown binds the knob in the set
+    /// shown ([`Bindings::take_sets_edited`]).
+    pub fn set_page_sets(&mut self, key: &str, name: &str, sets: Vec<Bank>) {
+        let keep = page_key(key) == self.page_key && sets.len() == self.sets.len();
+        let set = self.set;
+        self.put_page(key, name, sets);
+        if keep {
+            self.set = set;
+        }
+        self.own_sets = true;
+    }
+
+    fn put_page(&mut self, key: &str, name: &str, sets: Vec<Bank>) {
+        for b in sets.iter().flat_map(|s| s.knobs.iter().flatten()) {
             self.values.entry(b.target).or_insert(b.info.default);
         }
-        self.page_key = page_key(key);
-        self.page = knobs;
+        let key = page_key(key);
+        if key != self.page_key {
+            self.sets_edited = false;
+        }
+        self.page_key = key;
+        self.sets = sets;
+        self.set = 0;
         self.page_name = name.to_string();
+    }
+
+    /// The page's sets of its own knobs, as they stand (with any learned
+    /// knob), and the one shown.
+    pub fn page_sets(&self) -> &[Bank] {
+        &self.sets
+    }
+
+    pub fn page_set(&self) -> usize {
+        self.set
+    }
+
+    /// Shows the page's next set (after the last, the first).
+    pub fn next_set(&mut self) {
+        let n = self.sets.len().max(1);
+        self.set = (self.set + 1) % n;
+    }
+
+    /// Shows the page's set `i` (the last if past the end).
+    pub fn show_set(&mut self, i: usize) {
+        self.set = i.min(self.sets.len().saturating_sub(1));
+    }
+
+    /// Whether a learn changed the page's own sets since the last call:
+    /// then save [`Bindings::page_sets`] with what the page shows.
+    pub fn take_sets_edited(&mut self) -> bool {
+        std::mem::take(&mut self.sets_edited)
     }
 
     /// The page on screen's key.
@@ -202,17 +275,29 @@ impl Bindings {
         self.scoped.insert((page_key(page), b, k), binding);
     }
 
-    /// The page's own knobs.
+    /// The page's own knobs (the set shown).
     pub fn page(&self) -> &[Option<Binding>; KNOBS] {
-        &self.page
+        const FREE: Option<Binding> = None;
+        static NONE: [Option<Binding>; KNOBS] = [FREE; KNOBS];
+        self.sets.get(self.set).map_or(&NONE, |s| &s.knobs)
     }
 
     /// What the column's title says: the bank's name, or the page's when
-    /// the bank has none ("Drive", "Macros 1-4").
-    pub fn title(&self) -> &str {
+    /// the bank has none ("Drive", "Macros 1-4"), with the set's when the
+    /// page has more than one ("Poly · Tone").
+    pub fn title(&self) -> String {
         match self.banks.get(self.shown) {
-            Some(b) if !b.name.is_empty() => &b.name,
-            _ => &self.page_name,
+            Some(b) if !b.name.is_empty() => b.name.clone(),
+            _ => match self.sets.get(self.set) {
+                Some(s) if self.sets.len() > 1 && !s.name.is_empty() => {
+                    if self.page_name.is_empty() {
+                        s.name.clone()
+                    } else {
+                        format!("{} · {}", self.page_name, s.name)
+                    }
+                }
+                _ => self.page_name.clone(),
+            },
         }
     }
 
@@ -285,7 +370,7 @@ impl Bindings {
                     .get(self.shown)
                     .and_then(|b| b.knobs.get(k)?.as_ref())
             })
-            .or_else(|| self.page.get(k)?.as_ref())
+            .or_else(|| self.page().get(k)?.as_ref())
     }
 
     /// Tells the bindings a parameter's value (read back from the engine
@@ -329,6 +414,15 @@ impl Bindings {
         if let Some((addr, info, label, scope)) = self.learning.take() {
             let b = self.shown;
             let binding = Binding::new(addr, info, &label);
+            // The page's own sets: the knob goes in the set shown.
+            if self.own_sets && b == 0 && scope == Scope::ThisPage {
+                if let Some(set) = self.sets.get_mut(self.set) {
+                    self.values.entry(addr).or_insert(info.default);
+                    set.knobs[k] = Some(binding);
+                    self.sets_edited = true;
+                    return None;
+                }
+            }
             match scope {
                 Scope::ThisPage => {
                     let page = self.page_key.clone();
@@ -678,7 +772,7 @@ mod tests {
         );
         assert_eq!(
             (
-                b.title(),
+                b.title().as_str(),
                 b.card(0).label.as_str(),
                 b.card(1).label.as_str()
             ),
@@ -705,7 +799,7 @@ mod tests {
         assert_eq!(b.card(2).label, "Macro 3");
         b.next_bank();
         assert_eq!(
-            (b.title(), b.card(3).label.as_str()),
+            (b.title().as_str(), b.card(3).label.as_str()),
             ("Macros 5-8", "Macro 8")
         );
         b.next_bank();
@@ -820,5 +914,60 @@ mod tests {
         assert_eq!(skipped, 2);
         assert_eq!(c.save(), text);
         assert_eq!(c.banks()[1].knobs[3].as_ref().unwrap().label, "Tone (keys)");
+    }
+
+    #[test]
+    fn a_page_steps_through_its_sets_and_a_learn_lands_in_the_set_shown() {
+        let names: Vec<String> = ["Wash", "Grit"].map(String::from).to_vec();
+        let mut b = Bindings::with_macros(&names);
+        let one = |id: u16, name: &'static str| {
+            Some(Binding::new(addr(id), ParamInfo { id, name, ..CUT }, name))
+        };
+        let sets = vec![
+            Bank {
+                name: "Tone".into(),
+                knobs: [one(3, "Cutoff"), one(4, "Reso"), None, None],
+            },
+            Bank {
+                name: "Motion".into(),
+                knobs: [one(5, "Rate"), None, None, None],
+            },
+        ];
+        b.set_page_sets("synth.2", "Poly", sets.clone());
+        assert_eq!(b.title(), "Poly · Tone");
+        assert_eq!(b.card(1).label, "Reso");
+        b.next_set();
+        assert_eq!((b.page_set(), b.title().as_str()), (1, "Poly · Motion"));
+        assert_eq!(b.card(0).label, "Rate");
+        assert!(!b.card(1).enabled());
+        // A refresh with the same sets keeps the set shown.
+        b.set_page_sets("synth.2", "Poly", sets.clone());
+        assert_eq!(b.page_set(), 1);
+        // A learn on bank 0 lands in the set shown, not in the saved lines.
+        b.learn(addr(9), CUT, "Drive");
+        assert_eq!(b.turn(2, 1, false), None);
+        assert!(b.take_sets_edited());
+        assert!(!b.take_sets_edited(), "once");
+        assert_eq!(
+            b.page_sets()[1].knobs[2].as_ref().map(|x| x.target),
+            Some(addr(9))
+        );
+        assert!(!b.save().contains("page."), "{}", b.save());
+        // The macro banks are still there, then back to the set.
+        b.next_bank();
+        assert_eq!(b.title(), "Macros 1-4");
+        assert_eq!(b.card(0).label, "Wash");
+        b.show(0);
+        assert_eq!(b.card(2).label, "Drive");
+        // Another page with one set (set_page): a learn stays on that
+        // page's own knob lines, as before.
+        b.set_page("chain", "Drive", [one(3, "Cutoff"), None, None, None]);
+        assert_eq!((b.page_sets().len(), b.title().as_str()), (1, "Drive"));
+        b.learn(addr(9), CUT, "Drive");
+        b.turn(1, 1, false);
+        assert!(!b.take_sets_edited());
+        assert!(b.save().contains("page.chain.0.1"), "{}", b.save());
+        b.show_set(7);
+        assert_eq!(b.page_set(), 0);
     }
 }

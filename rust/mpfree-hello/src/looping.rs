@@ -698,7 +698,12 @@ impl LoopHost {
         note
     }
 
-    /// The line input of the last period (silence while it is closed).
+    /// The line input of the last period: this period's only after
+    /// [`LoopHost::run`] (or [`LoopHost::period`]) has run; zeros while the
+    /// line input is closed; and a period with too little input arrived is
+    /// padded with silence at its end ([`LineStats`]' short count says
+    /// when), so a gap can reach whatever records it (the sampler's input
+    /// buffer, too).
     pub fn input(&self) -> (&[f32; PERIOD], &[f32; PERIOD]) {
         (&self.input_l, &self.input_r)
     }
