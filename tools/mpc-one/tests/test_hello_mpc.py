@@ -422,12 +422,12 @@ class HelloTests(unittest.TestCase):
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 7: Button guide",
+                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 9: Debug mode and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 7: Velocity, Full Level and Half Level", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 9: Performance", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 7: Latch", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 9: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -449,13 +449,48 @@ class HelloTests(unittest.TestCase):
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
         self.add_journal([(130.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
-        answers = "\n\n" + "\n\n\n" * 7
+        answers = "\n\n" + "\n\n\n" * 9
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 7 of 7: STOP", res.stdout)
+        self.assertIn("Phase 9 of 9: Menus, console and STOP", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
+
+    def test_app_step_summary_reads_the_whole_session(self):
+        """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""
+        write(self.app, "active\n")
+        write(f"{self.root}/proc/interrupts", " 61:        42          0  rockchip_gpio_irq   6 Edge      ili2117\n")
+        self.add_journal([(10.5, "mpfree-hello[211]: touchscreen: /dev/input/event0 (ILI2117 Touchscreen); read-only, not grabbed"),
+                          (11.0, "mpfree-hello[211]: touch-reader: seeded=yes contacts=0 events=0"),
+                          (20.0, "mpfree-hello[211]: +9.000 s Private: 99 25 40 = pad 1 down, velocity 64"),
+                          (20.5, "mpfree-hello[211]: +9.500 s Private: 90 27 7F = button 39 pressed"),
+                          (20.6, "mpfree-hello[211]: pad level: Full Level (every hit 127)"),
+                          (30.0, "mpfree-hello[211]: button guide done: MENU = button 123, REC = button 7"),
+                          (31.0, "mpfree-hello[211]: debug mode: on"),
+                          (32.0, "mpfree-hello[211]: map: PAD BANK A/E = button 35"),
+                          (33.0, "mpfree-hello[211]: bank: B (kit 2: Lo-fi)"),
+                          (34.0, "mpfree-hello[211]: perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)"),
+                          (35.0, "mpfree-hello[211]: time: transport: Record"),
+                          (40.0, "mpfree-hello[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
+                          (60.0, "mpfree-hello[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
+        answers = "\n\n" + "s\n" * 9
+        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("touch interrupts at the start: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
+                     "Session summary (the whole run since power-on",
+                     "    touch-reader: seeded=yes contacts=0 events=0", "    pad level: Full Level (every hit 127)",
+                     "    button guide done: MENU = button 123, REC = button 7", "    time: transport: Record",
+                     "    debug mode: on", "    map: PAD BANK A/E = button 35", "    bank: B (kit 2: Lo-fi)",
+                     "Debug mode's process numbers (1 perf lines; the latest):",
+                     "    perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)",
+                     "    touch-lab: step=taps result=pass downs=5 note=ok",
+                     "pad hits from the controller: 1; buttons pressed: 39",
+                     "touch interrupts now: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
+                     "    status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us"):
+            self.assertIn(text, out)
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
 
     def test_app_step_when_the_app_is_not_running(self):
         self.add_journal([(7.0, "mpfree-hello[211]: STOP: no sound card called ACVA after 30 s")])
@@ -551,7 +586,7 @@ class StaticTests(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
-                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "REPORT", "CONTROLLER")
+                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "REPORT", "CONTROLLER")
         scripts = {name: getattr(mod, name) for name in names}
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
@@ -570,7 +605,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(sorted(services), [("start", "mpfree-test-app.service"), ("start", "mpfree-test-screen.service"),
                                             ("stop", "mpfree-test-app.service"), ("stop", "mpfree-test-screen.service")])
         # The app step's scripts only read.
-        for name in ("APP_STATE", "UPTIME", "APP_LOG"):
+        for name in ("APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ"):
             self.assertIsNone(re.search(r"systemctl (?!is-active)", scripts[name]), name)
         self.assertIn("journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager", mod.APP_LOG)
         # The program's arguments are fixed in the tool; nothing from the command line reaches the MPC.
@@ -582,7 +617,8 @@ class StaticTests(unittest.TestCase):
     def program_sources(self):
         """(name, code) for every Rust file built into the program, without its test module (tests never
         reach the MPC; test code may write temporary files)."""
-        files = [(f"mpfree-hello/{n}", os.path.join(HELLO_SRC, n)) for n in sorted(os.listdir(HELLO_SRC))]
+        files = [(f"mpfree-hello/{os.path.relpath(os.path.join(d, n), HELLO_SRC)}", os.path.join(d, n))
+                 for d, _, names in sorted(os.walk(HELLO_SRC)) for n in sorted(names) if n.endswith(".rs")]
         files += [(f"mpfree-ui/{n}", os.path.join(UI_SRC, n)) for n in sorted(os.listdir(UI_SRC))]
         for d in LINKED_SRC:
             crate = os.path.basename(os.path.dirname(d))

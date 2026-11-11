@@ -136,8 +136,33 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 
 All the sounds are synthesised in the tool. It prints the take track bar by bar from the notes the player and the pads actually sent (which steps played from the clip, which were played live, which were erased). It checks that the stabs play from the clip only in bars 2 to 6, the clanks only from bar 8, and every erased note falls in bar 7. It prints an events hash for the player's and the arp's notes, the recorded notes and the erased notes. That hash is the same on every computer, and the tool checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames. Every sound fades out at its end, so none ends with a click. The master is a plain gain with about 1.5 dB of headroom. The tool counts samples that clip at the master and warns if there are any. Drive and bit crushing inside a sound are deliberate and are not counted.
 
+## Screens (`mpfree-time-ui`)
+
+The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
+
+- **The transport bar** goes under the header on the Play and Clips pages. It has Stop, Play and Rec buttons, the record mode (Overdub or Replace), bar.beat.tick, BPM, the meter, swing and the loop, and an Undo button that only answers when there is a take to undo. Chips sit on the right; the arp's chip moves here.
+- **The Clips page** is a launch grid of 8 tracks by 16 slots, 6 slots at a time. A ring shows one pass of a playing clip, amber marks a clip waiting for the next bar, and red marks recording. Tapping a clip launches it from the next bar, or stops it if it is playing. Tapping an empty slot makes a clip there and records into it. Tapping a track's name arms the track.
+- **The record settings** set the armed track, the record mode, the count-in (0 to 4 bars), the loop (off, 1, 2, 4, 8 or 16 bars from bar 1) and the tempo.
+- **The takes list** shows the newest take first and dims undone takes, with Undo and Redo.
+
+`TimeState::from_engine` reads what they show from the transport, the project, the launches and the takes, and `action()` turns touches into `TimeAction`s. `mpfree-time-preview` draws sample screens from a real transport, player, recorder and take undo as PNG files.
+
+## In the pad player (`TimeHost`)
+
+`mpfree-hello`'s [`time.rs`](../../rust/mpfree-hello/src/time.rs) runs the engine in the audio loop:
+
+1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets.
+2. `TimeHost::period` runs the transport and the player. The clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15.
+3. The armed track records, and the taken and erased notes go into the clips and the take history.
+4. While counting in and recording, a click plays on each beat: 1760 Hz on the bar and 1320 Hz on the other beats, at about −12 dBFS.
+
+It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
+
+Edits (launches, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
+
 ## Next
 
-- CAPTURE (SHIFT+REC keeps what was just played, even without recording).
+- Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
+- Move edits out of the audio loop.
+- CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - The looper (T4).
-- Device work waits for the pad player's round 5 (PR #31).

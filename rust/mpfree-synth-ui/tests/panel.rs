@@ -6,7 +6,7 @@ use mpfree_synth::params as pp;
 use mpfree_synth::Poly;
 use mpfree_synth_ui::sample::{self, app_ui, poly, poly_presets, preset, Example, PAGE};
 use mpfree_synth_ui::view::{LAYOUT, PLAIN_LAYOUT, PRESETS, QLINKS, TILES, TITLE, VISUALS};
-use mpfree_synth_ui::widgets::{QLinkStrip, TileGrid, TileKind, TitleBar, Visuals};
+use mpfree_synth_ui::widgets::{node_rect, QLinkStrip, TileGrid, TileKind, TitleBar, Visuals};
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_ui::{Color, Fonts, Rect, SoftCanvas, Touch, Ui};
 
@@ -232,7 +232,116 @@ fn the_cards_follow_the_page_and_open_their_page() {
     r.panel.step_page(&mut r.ui, 1);
     assert_eq!(r.panel.pages()[r.panel.page()].name, "Voice");
     r.panel.step_page(&mut r.ui, 1);
+    assert_eq!(r.panel.pages()[r.panel.page()].name, "Pressure");
+    r.panel.step_page(&mut r.ui, 1);
     assert_eq!(r.panel.pages()[r.panel.page()].name, "Osc");
+}
+
+#[test]
+fn the_pressure_page_draws_the_curve_and_live_bars() {
+    let mut r = rig("Brass");
+    r.page("Pressure");
+    let titles = |r: &Rig| r.ui.get::<Visuals>(VISUALS).unwrap().cards.iter().map(|c| c.title.clone()).collect::<Vec<_>>();
+    assert_eq!(titles(&r), ["Pressure", "Voices"]);
+    // The app passes in each sounding voice's pressure.
+    sample::press_chord(&mut r.node);
+    let mut out = [0.0; 16];
+    let n = r.node.pressures(&mut out);
+    assert_eq!(n, 4);
+    r.panel.set_pressures(&mut r.ui, &out[..n]);
+    let cards = &r.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards[1].caption, "4 sounding");
+    assert!(cards[1].bars[0] > 0.8 && cards[1].bars[2] == 0.0, "{:?}", cards[1].bars);
+    // The curve is flat to the threshold, then rises to 1 at full.
+    let curve = &cards[0].traces[0].pts;
+    assert!(curve.iter().filter(|p| p.0 < 0.08).all(|p| p.1 == 0.0));
+    assert!(curve.iter().filter(|p| p.0 >= 0.85).all(|p| (p.1 - 1.0).abs() < 1e-6));
+    // Slot depths read in their targets' units.
+    let tiles = &r.ui.get::<TileGrid>(TILES).unwrap().tiles;
+    let depth = |label: &str| tiles.iter().find(|t| t.label == label).map(|t| format!("{} {}", t.value, t.unit)).unwrap();
+    assert_eq!(depth("Depth 1"), "9 dB swell");
+    assert_eq!(depth("Depth 2"), "+1.5 oct");
+    assert_eq!(depth("Depth 3"), "— ");
+    // Turning the threshold redraws the curve's flat start.
+    let (x, y) = centre(r.tile(pp::PRESS_THRESHOLD));
+    r.tap(x, y);
+    // 20 detents of half a percent each: 8 % to 18 %.
+    for _ in 0..20 {
+        if let Some(a) = r.panel.wheel(&mut r.ui, 1) {
+            r.apply(&a);
+        }
+    }
+    assert!((r.node.param(pp::PRESS_THRESHOLD) - 18.0).abs() < 1e-3);
+    let cards = &r.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert!(cards[0].traces[0].pts.iter().filter(|p| p.0 < 0.18).all(|p| p.1 == 0.0));
+    // A tap on a card stays on the Pressure page; Osc is back a step.
+    r.panel.step_page(&mut r.ui, 1);
+    assert_eq!(titles(&r), ["Osc", "Filter", "Env", "LFO"]);
+}
+
+#[test]
+fn fm_draws_its_algorithm_and_a_tap_on_a_box_opens_that_operator() {
+    let s = sample::samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == "synth-fm-algo").unwrap();
+    let mut s = s;
+    assert_eq!(s.panel.layout(), LAYOUT);
+    let titles = |s: &sample::Sample| s.ui.get::<Visuals>(VISUALS).unwrap().cards.iter().map(|c| c.title.clone()).collect::<Vec<_>>();
+    assert_eq!(titles(&s), ["Algorithm", "Levels"]);
+    // Brass Section: algorithm 22, feedback 7 on operator 6. Carriers 1, 3,
+    // 4 and 5 sit on the bottom row; 6 sits over 4.
+    let cards = s.ui.get::<Visuals>(VISUALS).unwrap().cards.clone();
+    let nodes = &cards[0].nodes;
+    assert_eq!(nodes.len(), 6);
+    assert_eq!(cards[0].caption, "22 · feedback 7 on 6");
+    assert_eq!(nodes[5].feedback, Some(5));
+    assert!(nodes.iter().all(|n| n.ring.is_none()));
+    let bottom = nodes.iter().map(|n| n.y).fold(1.0, f32::min);
+    let on_bottom: Vec<&str> = nodes.iter().filter(|n| (n.y - bottom).abs() < 1e-4).map(|n| n.label.as_str()).collect();
+    assert_eq!(on_bottom, ["1", "3", "4", "5"]);
+    assert!((nodes[5].x - nodes[3].x).abs() < 1e-4);
+    assert_eq!(cards[1].bars.len(), 6);
+    assert_eq!(cards[1].bar_labels, ["1", "2", "3", "4", "5", "6"]);
+    // A tap on box 3 opens Op 3, which rings box 3 beside its envelope.
+    let strip = s.ui.rect_of(VISUALS).unwrap();
+    let w = s.ui.get::<Visuals>(VISUALS).unwrap();
+    let plot = Visuals::plot_rect(w.card_rect(strip, 0));
+    let (x, y) = centre(node_rect(plot, &nodes[2]));
+    let ev = s.ui.touch(1, Touch::Down, x, y).expect("the strip takes the touch");
+    assert!(s.panel.event(&mut s.ui, &ev).is_none());
+    s.ui.touch(1, Touch::Up, x, y);
+    assert_eq!(s.panel.pages()[s.panel.page()].name, "Op 3");
+    assert_eq!(titles(&s), ["Algorithm", "Op 3 env"]);
+    let cards = &s.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards[0].nodes.iter().filter(|n| n.ring.is_some()).map(|n| n.label.as_str()).collect::<Vec<_>>(), ["3"]);
+    assert!(cards[1].caption.starts_with("carrier · output "), "{}", cards[1].caption);
+    // A tap on the card away from the boxes goes back to the Algo page.
+    let card = s.ui.get::<Visuals>(VISUALS).unwrap().card_rect(strip, 0);
+    let ev = s.ui.touch(2, Touch::Down, card.x + 6, card.y + 6).unwrap();
+    s.panel.event(&mut s.ui, &ev);
+    s.ui.touch(2, Touch::Up, card.x + 6, card.y + 6);
+    assert_eq!(s.panel.pages()[s.panel.page()].name, "Algo");
+    // Every FM page has its strip: Mod, Pressure, the operators, the keyboard.
+    for k in 0..s.panel.pages().len() {
+        s.panel.show_page(&mut s.ui, k);
+        assert_eq!(s.panel.layout(), LAYOUT, "{}", s.panel.pages()[k].name);
+        assert_eq!(s.ui.get::<Visuals>(VISUALS).unwrap().cards.len(), 2);
+    }
+    s.panel.show_page(&mut s.ui, 1);
+    assert_eq!(titles(&s), ["Pitch env", "LFO"]);
+    let kbd = s.panel.pages().iter().position(|p| p.name == "Kbd 3-4").unwrap();
+    s.panel.show_page(&mut s.ui, kbd);
+    assert_eq!(titles(&s), ["Algorithm", "Scaling"]);
+    let cards = &s.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards[0].nodes.iter().filter(|n| n.ring.is_some()).map(|n| n.label.as_str()).collect::<Vec<_>>(), ["3", "4"]);
+    assert_eq!(cards[1].traces.len(), 2);
+}
+
+#[test]
+fn fm_pressure_page_shows_live_bars() {
+    let s = sample::samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == "synth-fm-pressure").unwrap();
+    assert_eq!(s.panel.layout(), LAYOUT);
+    let cards = &s.ui.get::<Visuals>(VISUALS).unwrap().cards;
+    assert_eq!(cards.len(), 2);
+    assert!(cards[1].bars.iter().filter(|&&b| b > 0.0).count() == 3, "{:?}", cards[1].bars);
 }
 
 #[test]

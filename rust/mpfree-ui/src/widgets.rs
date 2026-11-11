@@ -26,25 +26,42 @@ impl Chip {
     }
 }
 
-/// The top bar: the MPFree name, page tabs, and status chips.
+/// The top bar: the MPFree name, page tabs, and status chips. A tap on a
+/// tab gives `Tab(i)`; a tap on a chip gives `Select(i)`, `i` its place in
+/// `chips` (chips are laid out from the right edge, so 0 is rightmost).
 pub struct Header {
     pub tabs: Vec<String>,
     pub active: usize,
     pub chips: Vec<Chip>,
+    /// Where each chip was last drawn (chip index, rect), for taps: a chip's
+    /// width depends on its text, which only painting can measure.
+    drawn_chips: RefCell<Vec<(usize, Rect)>>,
 }
 
 const BRAND_W: i32 = 170;
 const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
+/// Up to this many tabs are TAB_W wide; more share the same room, so the
+/// chips keep theirs, down to MIN_TAB_W.
+const FULL_TABS: i32 = 5;
+const MIN_TAB_W: i32 = 84;
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
-        Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new() }
+        Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new(),
+                 drawn_chips: RefCell::new(Vec::new()) }
+    }
+
+    /// Where chip `i` was last drawn, if it fitted.
+    pub fn chip_rect(&self, i: usize) -> Option<Rect> {
+        self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
     }
 
     fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        Rect::new(r.x + BRAND_W + i as i32 * (TAB_W + TAB_GAP), r.y + (r.h - h) / 2, TAB_W, h)
+        let n = self.tabs.len() as i32;
+        let w = if n <= FULL_TABS { TAB_W } else { (FULL_TABS * (TAB_W + TAB_GAP) / n - TAB_GAP).max(MIN_TAB_W) };
+        Rect::new(r.x + BRAND_W + i as i32 * (w + TAB_GAP), r.y + (r.h - h) / 2, w, h)
     }
 }
 
@@ -70,13 +87,16 @@ impl Widget for Header {
         let limit = self.tab_rect(r, self.tabs.len()).x;
         let mut right = r.right();
         let h = 34.min(r.h);
-        for chip in &self.chips {
+        let mut drawn = self.drawn_chips.borrow_mut();
+        drawn.clear();
+        for (i, chip) in self.chips.iter().enumerate() {
             let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
             let w = tw + 40;
             if right - w < limit {
                 break;
             }
             let cr = Rect::new(right - w, r.y + (r.h - h) / 2, w, h);
+            drawn.push((i, cr));
             cx.canvas.fill_round_rect(cr, h / 2, t.surface);
             let dot = Rect::new(cr.x + 14, cr.y + h / 2 - 4, 8, 8);
             cx.canvas.fill_round_rect(dot, 4, t.tone(chip.tone));
@@ -90,9 +110,12 @@ impl Widget for Header {
         if phase != Touch::Down {
             return None;
         }
-        let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
-        self.active = i;
-        Some(EventKind::Tab(i))
+        if let Some(i) = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y)) {
+            self.active = i;
+            return Some(EventKind::Tab(i));
+        }
+        let drawn = self.drawn_chips.borrow();
+        drawn.iter().find(|(_, cr)| cr.contains(x, y)).map(|(i, _)| EventKind::Select(*i))
     }
 }
 
@@ -958,5 +981,26 @@ mod tests {
             assert_eq!(c.pixel(x, 2), bg, "top margin at x {x}");
             assert_eq!(c.pixel(x, 397), bg, "bottom margin at x {x}");
         }
+    }
+
+    #[test]
+    fn a_tap_on_a_chip_names_it() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::new(&["Play", "Debug"]);
+        h.chips = vec![Chip::new("Akai session", Tone::Good), Chip::new("Arp off", Tone::Dim)];
+        ui.add("header", h);
+        ui.add_full_page("p", "col(header:60)").unwrap();
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        // Chip 0 sits at the right edge, chip 1 to its left.
+        let ev = |ui: &mut Ui, x| ui.touch(1, Touch::Down, x, 30).map(|e| e.kind);
+        assert_eq!(ev(&mut ui, 1270), Some(EventKind::Select(0)));
+        ui.touch(1, Touch::Up, 1270, 30);
+        let first = ui.get::<Header>("header").unwrap().chip_rect(1).unwrap();
+        assert_eq!(ev(&mut ui, first.x + 5), Some(EventKind::Select(1)));
+        ui.touch(1, Touch::Up, first.x + 5, 30);
+        assert_eq!(ev(&mut ui, 170 + 20), Some(EventKind::Tab(0)));
+        ui.touch(1, Touch::Up, 190, 30);
+        assert_eq!(ev(&mut ui, first.x - 20), None, "between the chips and the tabs");
     }
 }

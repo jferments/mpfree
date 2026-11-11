@@ -122,31 +122,28 @@ All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-arch
 
 **Built (on the workstation): `rust/mpfree-arp-ui`.** The panel and the band as `mpfree-ui` widgets: mode tabs (Direct, Repeat, Arp, Pattern), the rate, order or pattern list (wheel), the Q-Link sliders (rate, gate, swing, octaves), the pattern buttons (Edit pattern, Record on pads, Mutate, Original), the band's rate buttons (at least 76 px) and Latch, the arp chip for the header, and the step strip, which shows the order's notes (with their octaves) or the pattern's steps (picks, octaves, ratchets, chance, accents) and marks the step playing. The strip shows only while the arp is generating. The panel reads an `ArpState` taken from the engine and turns touches into `ArpAction`s; the pad player keeps the pads, the header and the hint line, so the panel drops into its Play page's right-hand column. The **pattern workspace** (`workspace` module) is drawn too: a grid with a column per step and rows for the step (rest, note, tie, accent), the note pick, octave, ratchet, chance and gate; a tap cycles rest, note and accent, and a drag or the wheel changes a value; Rotate, Mutate, Original (back to the pattern it opened with), length, Save and Back; and recording on the pads, with the pads named for what each writes and the grid at 8 steps beside them. Its `Editor` is plain logic with tests. The pattern's lanes are kept as they are; editing them on screen comes later. `mpfree-arp-preview` draws sample screens, each with a real engine behind it, as PNG files.
 
-**Buttons** (only SHIFT, FULL LEVEL, PLAY, STOP and TAP TEMPO are measured; the Hello MPC round 5 guide will capture the rest. That Latch is Shift+NOTE REPEAT and Half Level is Shift+FULL LEVEL is a guess from the panel print, not verified):
+**In the pad player (`rust/mpfree-hello`, for round 6).** The pad player plays the pads through one engine. Its buttons were measured in round 5: MENU 123, NOTE REPEAT 11, TAP TEMPO 53, - 55 and + 54, besides SHIFT 49, FULL LEVEL 39, STOP 81 and PLAY 82 (`mpfree_controller::mpc_one::button`). Latch as SHIFT + NOTE REPEAT worked in round 5. Everything works from the buttons, so touch is optional:
 
-| Control | Action |
-|---|---|
-| NOTE REPEAT (hold) | Repeat while held, as on an MPC. |
-| NOTE REPEAT (double press, proposed) | Repeat stays on. |
-| SHIFT + NOTE REPEAT (Latch, unverified) | Latch on/off; its light shows the state. Pressing it while on with notes latched clears them first (proposed). |
-| TAP TEMPO | Sets the tempo the arp follows. |
-| Q-Links 1–4 on the Arp page | Rate, gate, swing, octaves. |
-| Data wheel | Order (Arp mode) or pattern (Pattern mode). |
-| Pads | Hold notes; in pattern record mode, play steps in. |
-| MENU on the Arp page | The page's options (latch mode, velocity, restart). |
+| Control | Play page | NOTE REPEAT held | Arp panel | Pattern workspace |
+|---|---|---|---|---|
+| NOTE REPEAT | Hold: the arp in the panel's mode (Repeat until the panel picks another; Repeat if it picks Direct). Press while latched: let go | Let go: back to playing as pressed, unless latched | Same | Same |
+| SHIFT + NOTE REPEAT | Latch on or off | Same | Same | Same |
+| MENU | Play options | Opens the Arp panel | The options; MENU again comes back | Nothing yet |
+| NOTE REPEAT + MENU | | Opens or closes the panel | Closes it | Back to the panel |
+| - / + | Kit | Mode: Repeat, Arp, Pattern | Mode tabs, Direct included | Kit |
+| Data wheel | Kit | Rate, order (Arp) or pattern (Pattern) | Same | Turns the selected cell |
+| Q-Links 1-4 | Q-Link 1: level | Rate, gate, swing, octaves | Same | Q-Link 1: level |
+| TAP TEMPO | Tempo | Same | Same | Same |
+| STOP | Every sound stops, latched pads are let go | Same | Same | Same |
+| Pads | Play as pressed | Play through the arp | Play through the arp in the panel's mode | Sound as pressed; while recording, each press writes the next step |
+| Arp chip (header, touch) | Opens the panel | Same | Closes it | Back to the panel |
 
-**Arp page** (proposed layout, same style as the Play page):
-
-```text
-col(header:60, row(pads:*, col(mode:60, order:*, knobs:180):420):*, steps:150, hint:26)
-```
-
-- **mode**: Direct · Repeat · Arp · Pattern tabs.
-- **order** or **patterns**: a list, chosen by the wheel or a tap.
-- **knobs**: rate, gate, swing, octaves, each a fader that mirrors its Q-Link.
-- **pads**: the pad grid, with latched pads outlined and the pad the arp is playing lit.
-- **steps** (new widget, `StepGrid`): the pattern's steps in a row, the playing step marked. Tap a step to cycle rest → note → accent; drag up and down for the note pick and octave; long-press for ratchet, chance and gate. Each lane can be shown on its own row when the pattern editor opens full-screen.
-- The **Debug** page already shows MIDI; it will also list the engine's generated events with their frame offsets.
+- The **quick band** takes over the Play page while NOTE REPEAT is held or pads are latched: the pads at full width, with the rate buttons, Latch and the next steps under them. Let go (or unlatch) and the kits, level and timing come back.
+- The **Arp panel** takes the Play page's right-hand column. With it open the pads play through its mode, so the NOTE REPEAT light is on; closing it, or picking Direct, plays them as pressed again.
+- The **pattern workspace** opens from the panel's Edit pattern and Record on pads (Pattern mode). Recording writes one step per press (Step mode, no clock), at least 8 steps, and stops when they are full; the pads sound as pressed meanwhile and are named for what they write. Save keeps the pattern in the list until the power goes off (the test build has no storage).
+- The button guide no longer opens at power-on for these buttons. It asks only for buttons nobody has pressed yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. Prefs > Find the buttons again asks for all nine.
+- On drum pads an octave is 12 pads: with Octaves at 2, pad 1's octave up plays pad 13, and anything past pad 16 is skipped. Octave steps in patterns (`1+`) work the same way.
+- Q-Link turns arrive as steps of 1 or 2. Rate and octaves change every 3 and 4 units, so one detent does not skip values. Without Akai's session the Q-Links send positions (0-127), and those set the value directly.
 
 ## Making custom patterns
 
@@ -186,8 +183,8 @@ It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a
 |---|---|---|---|
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
 | A2 (done, PR #37) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
-| B (panel and band drawn, `mpfree-arp-ui`) | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; the Arp panel and quick band (built and previewed on the workstation) | PR #31 merged; round 5 button capture | yes, paced round |
-| C (engine side done; screens drawn) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Done too: the step strip and the pattern workspace with its record screen (`mpfree-arp-ui`). Still to do: wire them to the pads and the library on the device; edit lanes on screen | B | yes |
+| B (wired into the pad player, for round 6) | Done: NOTE REPEAT, Latch, TAP TEMPO, hits on their frame (`Mixer::hit_at`), the measured buttons, the quick band, the Arp panel, the arp chip and the pattern workspace in the pad player. Still to do: try it on the MPC | #48 (`mpfree-arp-ui`) | yes, paced round 6 |
+| C (engine side done; screens drawn) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Done too: the step strip and the pattern workspace with its record screen (`mpfree-arp-ui`). Wired into the pad player with B (recording in Step mode). Still to do: Free time recording on the device, pattern library files on the device, edit lanes on screen | B | yes |
 | D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
 | E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
 | F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`, waits for the transport crate to drive it), MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |

@@ -90,14 +90,16 @@ with `--quick`) at 128 frames and 44.1 kHz:
 - **sampler:** a pad hit every 4 blocks over 20 pads with 24 voices, with
   and without the master grain effect.
 - **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
-  noise bursts.
+  noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing
   16th-note chords (one at 3:2 speed, one swung and quantised), the first
   through the arp at 32nds over 2 octaves.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
-- **mix** has no case: the summing, meters and output copy live in the pad
-  player, so its "CPU by engine" page measures them on the device.
+- **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
+  pads, and 16 tracks and 32 pads, with no inserts. The pad player's own
+  summing, meters and output copy are measured on the device by its "CPU by
+  engine" page.
 
 It prints mean, p99 and worst per block as microseconds and as a share of
 the period, and **mem MB**: what the engine holds once built (its buffers,
