@@ -18,9 +18,21 @@
 //! chain is touched.
 //!
 //! Building the chain ([`Chain::push`], [`Chain::prepare`]) allocates and
-//! belongs on the control thread; everything else is real-time safe.
+//! belongs on the control thread; everything else is real-time safe. To
+//! change a chain while it plays, build an [`Insert`] on the control thread
+//! and hand it over: [`Chain::insert`], [`Chain::replace`],
+//! [`Chain::remove`] and [`Chain::move_slot`] never allocate as long as
+//! the chain has room ([`Chain::with_capacity`]), and what they take out
+//! comes back as an `Insert` to be dropped off the audio thread. They do
+//! not fade by themselves: the mixer ducks a strip around them.
+//!
+//! Each slot can listen to its own sidechain ([`Chain::set_key`] and
+//! [`Chain::process_keyed`]), and, while profiling is on
+//! ([`Chain::set_profiling`]), times its block into an `mpfree_prof`
+//! probe that moves with it.
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_prof::{Probe, Span};
 
 use crate::FixedDelay;
 
@@ -49,13 +61,55 @@ struct Slot {
     dry: [FixedDelay; 2],
     fade_delay: FixedDelay,
     events: Vec<Timed>,
+    /// Which sidechain this slot listens to, a tag only the chain's owner
+    /// understands (see [`Chain::process_keyed`]).
+    key: Option<u16>,
+    /// The slot's time per block while the chain is profiling; it moves
+    /// with the slot.
+    probe: Box<Probe>,
 }
 
 impl Slot {
     fn new(node: Box<dyn Node>) -> Slot {
         let lat = node.latency() as usize;
-        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS) }
+        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS), key: None, probe: Box::new(Probe::new(u64::MAX)) }
     }
+}
+
+/// A node wrapped and prepared as a chain slot, with its delay lines and
+/// event queue, so a playing chain can take it without allocating. Build
+/// it on the control thread.
+pub struct Insert {
+    slot: Slot,
+    rate: u32,
+    max_block: usize,
+}
+
+impl Insert {
+    /// Prepares `node` for a chain running at `rate` with blocks of up to
+    /// `max_block` frames. Allocates.
+    pub fn new(mut node: Box<dyn Node>, rate: u32, max_block: usize) -> Insert {
+        let (rate, max_block) = (rate.max(1), max_block.max(1));
+        node.prepare(rate, max_block);
+        Insert { slot: Slot::new(node), rate, max_block }
+    }
+
+    pub fn node(&self) -> &dyn Node { self.slot.node.as_ref() }
+    pub fn node_mut(&mut self) -> &mut (dyn Node + 'static) { self.slot.node.as_mut() }
+    pub fn is_on(&self) -> bool { self.slot.on }
+
+    /// Starts the slot bypassed (it rests until switched on).
+    pub fn off(mut self) -> Insert {
+        let lat = self.slot.node.latency();
+        self.slot.on = false;
+        self.slot.fade = 0.0;
+        for _ in 0..lat { self.slot.fade_delay.run(0.0); }
+        self.slot.resting = true;
+        self
+    }
+
+    /// The node back, to drop or to wrap again elsewhere.
+    pub fn into_node(self) -> Box<dyn Node> { self.slot.node }
 }
 
 fn fade_line(lat: usize) -> FixedDelay {
@@ -74,6 +128,7 @@ pub struct Chain {
     /// Events of a part of a block, re-timed (capacity `MAX_SLOT_EVENTS`).
     part: Vec<Timed>,
     stats: ChainStats,
+    profiling: bool,
 }
 
 impl Default for Chain {
@@ -82,10 +137,77 @@ impl Default for Chain {
 
 impl Chain {
     pub fn new() -> Chain {
-        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default() };
+        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default(), profiling: false };
         c.prepare(48_000, mpfree_node::MAX_BLOCK);
         c
     }
+
+    /// An empty chain with room for `slots` inserts, so [`Chain::insert`]
+    /// never needs to allocate below that.
+    pub fn with_capacity(slots: usize) -> Chain {
+        let mut c = Chain::new();
+        c.slots.reserve_exact(slots);
+        c
+    }
+
+    /// How many slots the chain holds without allocating.
+    pub fn capacity(&self) -> usize { self.slots.capacity() }
+    pub fn rate(&self) -> u32 { self.rate }
+    pub fn max_block(&self) -> usize { self.max_block }
+
+    /// Puts a prepared insert in at `at` (0 to `len`), shifting the later
+    /// slots along. Real-time safe. Hands the insert back if the chain is
+    /// full, `at` is past the end, or it was prepared for another rate or
+    /// block size.
+    // Handing the value back, to be dropped off the audio thread, is the point.
+    #[allow(clippy::result_large_err)]
+    pub fn insert(&mut self, at: usize, ins: Insert) -> Result<(), Insert> {
+        if at > self.slots.len() || self.slots.len() >= self.slots.capacity() || !self.fits(&ins) {
+            return Err(ins);
+        }
+        self.slots.insert(at, ins.slot);
+        Ok(())
+    }
+
+    /// Swaps the insert at `at` for `ins` and hands the old one back.
+    /// Real-time safe. Hands `ins` back if `at` is not a slot or it does
+    /// not fit.
+    // Handing the value back, to be dropped off the audio thread, is the point.
+    #[allow(clippy::result_large_err)]
+    pub fn replace(&mut self, at: usize, ins: Insert) -> Result<Insert, Insert> {
+        if at >= self.slots.len() || !self.fits(&ins) {
+            return Err(ins);
+        }
+        let (rate, max_block) = (self.rate, self.max_block);
+        let old = std::mem::replace(&mut self.slots[at], ins.slot);
+        Ok(Insert { slot: old, rate, max_block })
+    }
+
+    /// Takes the insert at `at` out and hands it back. Real-time safe.
+    pub fn remove(&mut self, at: usize) -> Option<Insert> {
+        if at >= self.slots.len() {
+            return None;
+        }
+        let slot = self.slots.remove(at);
+        Some(Insert { slot, rate: self.rate, max_block: self.max_block })
+    }
+
+    /// Moves the insert at `from` to `to`, with its state and queued
+    /// events. Real-time safe. False if either is not a slot.
+    pub fn move_slot(&mut self, from: usize, to: usize) -> bool {
+        let n = self.slots.len();
+        if from >= n || to >= n {
+            return false;
+        }
+        if from < to {
+            self.slots[from..=to].rotate_left(1);
+        } else {
+            self.slots[to..=from].rotate_right(1);
+        }
+        true
+    }
+
+    fn fits(&self, ins: &Insert) -> bool { ins.rate == self.rate && ins.max_block == self.max_block }
 
     /// Adds a node at the end, prepared for the chain's rate (control
     /// thread). Returns its slot index.
@@ -118,6 +240,29 @@ impl Chain {
     pub fn node_mut(&mut self, slot: usize) -> Option<&mut (dyn Node + 'static)> { self.slots.get_mut(slot).map(|s| s.node.as_mut()) }
     pub fn stats(&self) -> ChainStats { self.stats }
     pub fn is_on(&self, slot: usize) -> bool { self.slots.get(slot).is_some_and(|s| s.on) }
+
+    /// Times every slot's block into its probe (two clock reads per slot
+    /// per block), for the Dev pages and the bench. Off by default.
+    pub fn set_profiling(&mut self, on: bool) { self.profiling = on; }
+    pub fn profiling(&self) -> bool { self.profiling }
+
+    /// A slot's timing (blocks it ran, mean, percentiles, worst), recorded
+    /// while profiling is on. The probe moves with its insert.
+    pub fn probe(&self, slot: usize) -> Option<&Probe> { self.slots.get(slot).map(|s| &*s.probe) }
+
+    /// A slot's timing, to take its window ([`Probe::take_window`]).
+    pub fn probe_mut(&mut self, slot: usize) -> Option<&mut Probe> { self.slots.get_mut(slot).map(|s| &mut *s.probe) }
+
+    /// The sidechain tag of a slot (see [`Chain::process_keyed`]).
+    pub fn key(&self, slot: usize) -> Option<u16> { self.slots.get(slot).and_then(|s| s.key) }
+
+    /// Sets the sidechain tag a slot listens to; it moves with the slot.
+    /// False if there is no such slot.
+    pub fn set_key(&mut self, slot: usize, key: Option<u16>) -> bool {
+        let Some(s) = self.slots.get_mut(slot) else { return false };
+        s.key = key;
+        true
+    }
 
     /// Total latency in frames; the same whichever slots are bypassed.
     pub fn latency(&self) -> u32 { self.slots.iter().map(|s| s.node.latency()).sum() }
@@ -160,8 +305,18 @@ impl Chain {
         true
     }
 
-    /// Runs the chain in place on one block.
-    pub fn process(&mut self, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
+    /// Runs the chain in place on one block. Every slot gets `ctx`'s
+    /// sidechain.
+    pub fn process(&mut self, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) { self.process_keyed(ctx, |_| None, left, right) }
+
+    /// Runs the chain in place on one block, giving each slot that has a
+    /// sidechain tag ([`Chain::set_key`]) the signal `key` returns for it,
+    /// and every other slot `ctx`'s sidechain. Keys must be at least as
+    /// long as the block.
+    pub fn process_keyed<'k, F>(&mut self, ctx: &Ctx<'k>, key: F, left: &mut [f32], right: &mut [f32])
+    where
+        F: Fn(u16) -> Option<(&'k [f32], &'k [f32])>,
+    {
         let len = left.len().min(right.len()).min(self.max_block);
         if len == 0 {
             return;
@@ -171,7 +326,11 @@ impl Chain {
         let [da, db, fa, fb] = &mut self.scratch;
         let (da, db, fa, fb) = (&mut da[..len], &mut db[..len], &mut fa[..len], &mut fb[..len]);
         let part = &mut self.part;
+        let profiling = self.profiling;
         for s in &mut self.slots {
+            let span = profiling.then(Span::start);
+            let keyed = Ctx { sidechain: s.key.and_then(&key).or(ctx.sidechain), ..*ctx };
+            let ctx = &keyed;
             // The dry path, delayed by the slot's latency, and the fade ramp
             // with its own delayed copy for the dry side.
             let target = if s.on { 1.0 } else { 0.0 };
@@ -275,6 +434,7 @@ impl Chain {
                 }
             }
             s.events.clear();
+            if let Some(span) = span { s.probe.stop(span, len as u32); }
         }
     }
 }
