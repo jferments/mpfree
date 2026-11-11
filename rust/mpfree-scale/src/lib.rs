@@ -13,10 +13,16 @@
 //!   exists only when the owner makes a project with one; parts then follow
 //!   it unless switched back to their own.
 //!
+//! - [`pads`] lays the 16 pads out from a scale for a synth on the pads:
+//!   Chromatic with the scale lit, In key, or Chord pads.
+//!
 //! Notes are MIDI note numbers (60 = middle C) as `i16`, so steps below 0
 //! and above 127 can be computed and skipped by the caller. Nothing here
 //! allocates except [`steps_text`] and the parse error text.
 #![forbid(unsafe_code)]
+
+pub mod pads;
+pub use pads::{InKeyRows, Pad, PadLayout, PadRole, PadSetup};
 
 /// A 12-bit set from semitones above the root (each 0..=11).
 pub const fn mask(intervals: &[u8]) -> u16 {
