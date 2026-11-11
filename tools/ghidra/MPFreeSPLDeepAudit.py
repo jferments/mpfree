@@ -24,7 +24,7 @@ CHIP_MARKER = b"RK32"
 OUT_DIR = Path(os.environ.get("MPFREE_REPORT_DIR", str(Path.home() / "mpfree-work")))
 STARTUP = [BASE + x for x in (0x04, 0x20, 0x60, 0x64, 0x68, 0x94, 0x98,
                                0x9c, 0xa0, 0xb4, 0xb8, 0x118, 0x1e4, 0x1e8,
-                               0x208, 0x5208, 0x5350, 0x54a4)]
+                               0x208, 0x1208, 0x1350, 0x14a4)]
 # SOC register families (addresses must be independently confirmed against TRM).
 MMIO_HINTS = {
     0xFF0C0000: "RK3288 SDMMC controller (candidate)",
@@ -90,11 +90,15 @@ def describe_at(va):
             "targets": [str(x) for x in inst.getFlows()],
             "fallthrough": str(inst.getFallThrough()) if inst.getFallThrough() else None,
         })
-    if refs:
-        ins["inbound_refs"] = [
-            {"from": str(ref.getFromAddress()), "type": str(ref.getReferenceType())}
-            for ref in list(refs)[:35]
-        ]
+    inbound = []
+    while refs.hasNext() and len(inbound) < 35:
+        ref = refs.next()
+        inbound.append({
+            "from": str(ref.getFromAddress()),
+            "type": str(ref.getReferenceType()),
+        })
+    if inbound:
+        ins["inbound_refs"] = inbound
     return ins
 
 report = {
@@ -181,7 +185,7 @@ for va, f in all_functions.items():
 # Syntactic reachability in the already-decoded Ghidra graph. Do not equate it
 # to dynamic execution, especially until correct ARM/Thumb states are verified.
 queue = deque(va for va in (BASE + 0x04, BASE + 0x60,
-                            BASE + 0x208, BASE + 0x5208) if va in all_functions)
+                            BASE + 0x1208, BASE + 0x1208) if va in all_functions)
 seen = set()
 while queue and len(seen) < 500:
     va = queue.popleft()
@@ -194,8 +198,8 @@ report["startup_reachable"] = ["0x%08x" % x for x in sorted(seen)]
 # Prioritize startup, then likely MMC / SoC / ROM call-heavy routines.
 priorities = [BASE + off for off in (0x04, 0x60, 0xb8, 0x118,
                                      0x164, 0x1a8, 0x1e4, 0x1e8,
-                                     0x208, 0x5208, 0x5350, 0x54a4,
-                                     0x61c0, 0x6a4c)]
+                                     0x208, 0x1208, 0x1350, 0x14a4,
+                                     0x21c0, 0x2a4c)]
 # Include functions containing suspicious exact MMIO base constants, if any.
 for item in report["mmio_exact_literals"]:
     f = fm.getFunctionContaining(addr(int(item["location"], 16)))
