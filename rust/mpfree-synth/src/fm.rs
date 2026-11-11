@@ -327,6 +327,69 @@ impl DxEnv {
     pub fn gain(level: f32) -> f32 {
         if level <= FLOOR { 0.0 } else { ((level - FULL) / 256.0).exp2() }
     }
+
+    /// Frames (at 44.1 kHz) the current stage takes from here, once
+    /// [`DxEnv::aim`] has run.
+    fn stage_frames(&self) -> f32 {
+        if self.inc <= 0.0 {
+            return 0.0;
+        }
+        if !self.rising {
+            return (self.level - self.target).max(0.0) / self.inc;
+        }
+        // The attack runs at a slope that steps down every 256 units.
+        let mut lv = self.level.max(JUMP);
+        let mut frames = 0.0;
+        while lv < self.target {
+            let slope = (17.0 - lv / 256.0).floor().max(1.0);
+            let top = ((lv / 256.0).floor() + 1.0) * 256.0;
+            let top = top.min(self.target);
+            frames += (top - lv) / (slope * self.inc);
+            lv = top;
+        }
+        frames
+    }
+}
+
+/// An operator envelope's four stages for drawing, as the engine runs them
+/// at full output level with no keyboard rate scaling: each stage's points as
+/// (seconds since the stage began, level), level 0 to 1 on the envelope's
+/// own scale (1.0 is full, 0.5 about 45 dB down). The note starts from L4,
+/// holds once stage 3 reaches L3, and stage 4 is the release.
+pub fn env_stages(rates: &[u8; 4], levels: &[u8; 4]) -> [Vec<(f32, f32)>; 4] {
+    // Output 99 and no scaling: the stage targets are the levels alone.
+    let out = (scale_level(99) << 5) as f32;
+    let mut e = DxEnv::default();
+    let rest = ((scale_level(levels[3]) >> 1) << 6) as f32 + out - 4256.0;
+    e.level = rest.max(FLOOR);
+    e.key_on();
+    let norm = |l: f32| if l <= FLOOR { 0.0 } else { (l / FULL).clamp(0.0, 1.0) };
+    let mut stages: [Vec<(f32, f32)>; 4] = Default::default();
+    for (k, pts) in stages.iter_mut().enumerate() {
+        if k == 3 {
+            e.key_off();
+        }
+        e.aim(rates, levels, out, 0);
+        let frames = e.stage_frames();
+        // About 40 points a stage, so the attack's bends show.
+        let chunk = (frames / 40.0).max(1.0);
+        pts.push((0.0, norm(e.level)));
+        let mut t = 0.0;
+        for _ in 0..200 {
+            if usize::from(e.stage) != k {
+                break;
+            }
+            e.run(chunk, rates, levels, out, 0);
+            t += chunk;
+            pts.push((t / EG_RATE, norm(e.level)));
+        }
+        // Equal levels take no time: one point is enough.
+        if frames == 0.0 {
+            pts.truncate(1);
+            e.stage = k as u8 + 1;
+        }
+    }
+    stages
 }
 
 /// The pitch envelope, in octaves. It starts at L4, moves to L1, L2, L3,
