@@ -26,13 +26,19 @@ pub struct Message {
 
 impl Message {
     pub fn note_on(offset: u32, channel: u8, note: u8, velocity: u8) -> Self {
-        Self { offset, bytes: [0x90 | (channel & 0x0F), note & 0x7F, velocity.clamp(1, 127)] }
+        Self {
+            offset,
+            bytes: [0x90 | (channel & 0x0F), note & 0x7F, velocity.clamp(1, 127)],
+        }
     }
 
     /// A note-off with release velocity 64, the value the MIDI standard
     /// gives for keyboards that do not sense it.
     pub fn note_off(offset: u32, channel: u8, note: u8) -> Self {
-        Self { offset, bytes: [0x80 | (channel & 0x0F), note & 0x7F, 64] }
+        Self {
+            offset,
+            bytes: [0x80 | (channel & 0x0F), note & 0x7F, 64],
+        }
     }
 }
 
@@ -78,7 +84,11 @@ pub struct MidiOut {
 impl MidiOut {
     /// `channel` is 0..=15 (channel 1 is 0).
     pub fn new(channel: u8, map: NoteMap) -> Self {
-        Self { channel: channel & 0x0F, map, sounding: [0; 128] }
+        Self {
+            channel: channel & 0x0F,
+            map,
+            sounding: [0; 128],
+        }
     }
 
     pub fn channel(&self) -> u8 {
@@ -214,21 +224,54 @@ mod tests {
     use crate::notes::LatchMode;
 
     fn on(offset: u32, note: u8, velocity: u8) -> Event {
-        Event { offset, kind: EventKind::On { note, velocity } }
+        Event {
+            offset,
+            kind: EventKind::On { note, velocity },
+        }
     }
 
     fn off(offset: u32, note: u8) -> Event {
-        Event { offset, kind: EventKind::Off { note } }
+        Event {
+            offset,
+            kind: EventKind::Off { note },
+        }
     }
 
     #[test]
     fn pads_send_notes_from_c1_on_their_channel() {
         let mut m = MidiOut::new(9, NoteMap::PADS);
-        assert_eq!(m.event(&on(5, 0, 100)), Some(Message { offset: 5, bytes: [0x99, 36, 100] }));
-        assert_eq!(m.event(&on(6, 15, 0)), Some(Message { offset: 6, bytes: [0x99, 51, 1] }), "velocity 0 would be an off");
-        assert_eq!(m.event(&off(7, 0)), Some(Message { offset: 7, bytes: [0x89, 36, 64] }));
-        assert_eq!(m.event(&off(8, 0)), None, "no off for a note that is not sounding");
-        assert_eq!(NoteMap::Chromatic { base: 120 }.note(8), None, "past 127 is not sent");
+        assert_eq!(
+            m.event(&on(5, 0, 100)),
+            Some(Message {
+                offset: 5,
+                bytes: [0x99, 36, 100]
+            })
+        );
+        assert_eq!(
+            m.event(&on(6, 15, 0)),
+            Some(Message {
+                offset: 6,
+                bytes: [0x99, 51, 1]
+            }),
+            "velocity 0 would be an off"
+        );
+        assert_eq!(
+            m.event(&off(7, 0)),
+            Some(Message {
+                offset: 7,
+                bytes: [0x89, 36, 64]
+            })
+        );
+        assert_eq!(
+            m.event(&off(8, 0)),
+            None,
+            "no off for a note that is not sounding"
+        );
+        assert_eq!(
+            NoteMap::Chromatic { base: 120 }.note(8),
+            None,
+            "past 127 is not sent"
+        );
         assert_eq!(NoteMap::Same.note(60), Some(60));
         let mut t = [0u8; 16];
         t[1] = 38;
@@ -255,7 +298,11 @@ mod tests {
         }
         let mut sent = Vec::new();
         m.set_channel(1, 3, |msg| sent.push(msg));
-        assert_eq!(sent, [60, 64, 67].map(|n| Message::note_off(3, 0, n)), "offs go out on the old channel");
+        assert_eq!(
+            sent,
+            [60, 64, 67].map(|n| Message::note_off(3, 0, n)),
+            "offs go out on the old channel"
+        );
         assert_eq!(m.event(&off(4, 64)), None, "already ended");
         m.event(&on(5, 62, 100));
         sent.clear();
@@ -270,7 +317,12 @@ mod tests {
     #[test]
     fn every_note_on_from_the_engine_gets_one_note_off() {
         let mut e = Engine::new(44_100, 140.0);
-        e.set_settings(Settings { mode: Mode::Arp, octaves: 2, gate: 100, ..Settings::default() });
+        e.set_settings(Settings {
+            mode: Mode::Arp,
+            octaves: 2,
+            gate: 100,
+            ..Settings::default()
+        });
         e.set_latch(LatchMode::Replace);
         for n in [60, 64, 67] {
             e.press(n, 100);
@@ -302,9 +354,31 @@ mod tests {
     #[test]
     fn the_midi_file_has_the_header_tempo_and_ticks() {
         // 120 BPM at 48 kHz: a quarter note is 24000 frames, PPQ ticks.
-        let msgs = [(0, [0x90, 60, 100]), (24_000, [0x80, 60, 64]), (24_000 + 12_000, [0x90, 62, 90])];
+        let msgs = [
+            (0, [0x90, 60, 100]),
+            (24_000, [0x80, 60, 64]),
+            (24_000 + 12_000, [0x90, 62, 90]),
+        ];
         let f = midi_file(&msgs, 48_000, 120.0, "arp");
-        assert_eq!(&f[..14], &[b'M', b'T', b'h', b'd', 0, 0, 0, 6, 0, 0, 0, 1, (PPQ >> 8) as u8, PPQ as u8]);
+        assert_eq!(
+            &f[..14],
+            &[
+                b'M',
+                b'T',
+                b'h',
+                b'd',
+                0,
+                0,
+                0,
+                6,
+                0,
+                0,
+                0,
+                1,
+                (PPQ >> 8) as u8,
+                PPQ as u8
+            ]
+        );
         assert_eq!(&f[14..18], b"MTrk");
         let len = u32::from_be_bytes(f[18..22].try_into().unwrap()) as usize;
         let t = &f[22..];
@@ -326,8 +400,13 @@ mod tests {
 
     #[test]
     fn variable_length_numbers() {
-        for (v, want) in [(0u32, vec![0x00]), (0x7F, vec![0x7F]), (0x80, vec![0x81, 0x00]), (960, vec![0x87, 0x40]),
-                          (0x0FFF_FFFF, vec![0xFF, 0xFF, 0xFF, 0x7F])] {
+        for (v, want) in [
+            (0u32, vec![0x00]),
+            (0x7F, vec![0x7F]),
+            (0x80, vec![0x81, 0x00]),
+            (960, vec![0x87, 0x40]),
+            (0x0FFF_FFFF, vec![0xFF, 0xFF, 0xFF, 0x7F]),
+        ] {
             let mut out = Vec::new();
             var_len(&mut out, v);
             assert_eq!(out, want, "{v}");

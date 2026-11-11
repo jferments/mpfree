@@ -35,11 +35,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_sampler::engine::EngineView;
-use mpfree_sampler::model::{ChannelPick, Fade, LoopMode, Pad, PlayMode, Project, Region, SourceId};
+use mpfree_sampler::model::{
+    ChannelPick, Fade, LoopMode, Pad, PlayMode, Project, Region, SourceId,
+};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
-use mpfree_sampler_ui::wave_tab::{self, duration_text, mode_label, WaveAction, WaveState, WaveTab};
+use mpfree_sampler_ui::wave_tab::{
+    self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
+};
 use mpfree_sampler_ui::SourceView;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{Tone, Ui, UiEvent};
@@ -142,12 +146,35 @@ impl SamplePage {
     pub fn add(ui: &mut Ui) -> Result<SamplePage, String> {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
-        let mut p = SamplePage { projects: Vec::new(), names: Vec::new(), rate: 44_100, sources: HashMap::new(), kit: 0,
-                                 pad: 0, tab: None, state: None, editor: Editor::Wave, chop: None, chop_state: None,
-                                 play: None, play_state: None, velocity: None, pads: None, pads_state: None,
-                                 renamed: None, stale: true, dirty: Vec::new(), in_flight: false,
-                                 auditioning: None, last_turn: None, gesture: None, shown_heads: Vec::new(),
-                                 lines: Vec::new(), edits: 0, views_sent: 0 };
+        let mut p = SamplePage {
+            projects: Vec::new(),
+            names: Vec::new(),
+            rate: 44_100,
+            sources: HashMap::new(),
+            kit: 0,
+            pad: 0,
+            tab: None,
+            state: None,
+            editor: Editor::Wave,
+            chop: None,
+            chop_state: None,
+            play: None,
+            play_state: None,
+            velocity: None,
+            pads: None,
+            pads_state: None,
+            renamed: None,
+            stale: true,
+            dirty: Vec::new(),
+            in_flight: false,
+            auditioning: None,
+            last_turn: None,
+            gesture: None,
+            shown_heads: Vec::new(),
+            lines: Vec::new(),
+            edits: 0,
+            views_sent: 0,
+        };
         p.show_empty(ui);
         Ok(p)
     }
@@ -229,7 +256,9 @@ impl SamplePage {
     fn with_sound(&self, from: usize, dir: i32) -> Option<usize> {
         let p = self.projects.get(self.kit)?;
         let dir = if dir < 0 { 15 } else { 1 };
-        (0..16).map(|i| (from + i * dir) % 16).find(|&pad| p.pad(pad).is_some_and(|pd| !pd.layers.is_empty()))
+        (0..16)
+            .map(|i| (from + i * dir) % 16)
+            .find(|&pad| p.pad(pad).is_some_and(|pd| !pd.layers.is_empty()))
     }
 
     #[cfg(test)]
@@ -341,10 +370,16 @@ impl SamplePage {
     }
 
     fn refresh_chop(&mut self, ui: &mut Ui, bank: Option<char>) {
-        let Some(st) = self.state.as_ref() else { return };
-        let Some(project) = self.projects.get(self.kit) else { return };
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        let Some(project) = self.projects.get(self.kit) else {
+            return;
+        };
         self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
-        let Some(cs) = self.chop_state.as_ref() else { return };
+        let Some(cs) = self.chop_state.as_ref() else {
+            return;
+        };
         match self.chop.as_mut() {
             Some(tab) => {
                 tab.bank = bank;
@@ -365,7 +400,9 @@ impl SamplePage {
     }
 
     fn refresh_pads(&mut self, ui: &mut Ui, bank: Option<char>) {
-        let Some(project) = self.projects.get(self.kit) else { return };
+        let Some(project) = self.projects.get(self.kit) else {
+            return;
+        };
         let st = PadsState::from_project(project, self.pad);
         let kit = match self.names.get(self.kit) {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
@@ -395,12 +432,19 @@ impl SamplePage {
         if self.state.is_none() {
             return;
         }
-        let Some(project) = self.projects.get(self.kit) else { return };
+        let Some(project) = self.projects.get(self.kit) else {
+            return;
+        };
         let sources = &mut self.sources;
         self.play_state = PlayState::from_project(project, self.pad, |s| {
-            sources.entry(s.id()).or_insert_with(|| Arc::new(SourceView::analyse(s))).clone()
+            sources
+                .entry(s.id())
+                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
+                .clone()
         });
-        let Some(ps) = self.play_state.as_ref() else { return };
+        let Some(ps) = self.play_state.as_ref() else {
+            return;
+        };
         match self.play.as_mut() {
             Some(tab) => {
                 tab.bank = bank;
@@ -426,7 +470,11 @@ impl SamplePage {
         let p = self.projects.get(self.kit)?;
         let region = &p.pad(self.pad)?.layers.first()?.region;
         let source = p.source(region.source)?;
-        let view = self.sources.entry(source.id()).or_insert_with(|| Arc::new(SourceView::analyse(source))).clone();
+        let view = self
+            .sources
+            .entry(source.id())
+            .or_insert_with(|| Arc::new(SourceView::analyse(source)))
+            .clone();
         WaveState::from_project(p, self.pad, 0, view)
     }
 
@@ -447,17 +495,34 @@ impl SamplePage {
 
     fn show_empty(&mut self, ui: &mut Ui) {
         let (heading, lines): (String, Vec<&str>) = if self.projects.is_empty() {
-            ("The kits are still loading".into(), vec!["Their sounds show here once they are in."])
+            (
+                "The kits are still loading".into(),
+                vec!["Their sounds show here once they are in."],
+            )
         } else if self.kit >= self.projects.len() {
-            ("The pads play the synth".into(),
-             vec!["Pick a drum kit on Play (the wheel or a tap) to edit its sounds here."])
+            (
+                "The pads play the synth".into(),
+                vec!["Pick a drum kit on Play (the wheel or a tap) to edit its sounds here."],
+            )
         } else {
-            (format!("Pad {} has no sound in {}", self.pad_text(self.kit, self.pad), self.kit_text()),
-             vec!["Hit a pad with a sound to edit it,", "or turn SHIFT + wheel or press - / + for the next one."])
+            (
+                format!(
+                    "Pad {} has no sound in {}",
+                    self.pad_text(self.kit, self.pad),
+                    self.kit_text()
+                ),
+                vec![
+                    "Hit a pad with a sound to edit it,",
+                    "or turn SHIFT + wheel or press - / + for the next one.",
+                ],
+            )
         };
         if let Some(c) = ui.get_mut::<Card>(EMPTY) {
             c.heading = heading;
-            c.lines = lines.into_iter().map(|l| (l.to_string(), Tone::Dim)).collect();
+            c.lines = lines
+                .into_iter()
+                .map(|l| (l.to_string(), Tone::Dim))
+                .collect();
         }
     }
 
@@ -467,27 +532,35 @@ impl SamplePage {
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
         if ev.widget.starts_with(CHOP_PREFIX) {
-            let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.action(ui, ev, st) {
                 self.act_chop(ui, a);
             }
             return;
         }
         if ev.widget.starts_with(PLAY_PREFIX) {
-            let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.action(ui, ev, st) {
                 self.act_play(ui, a);
             }
             return;
         }
         if ev.widget.starts_with(PADS_PREFIX) {
-            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.action(ui, ev, st) {
                 self.act_pads(ui, a, out);
             }
             return;
         }
-        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else { return };
+        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
+            return;
+        };
         if let Some(a) = tab.action(ui, ev, st) {
             self.act(ui, a, out);
         }
@@ -513,9 +586,13 @@ impl SamplePage {
     fn act_chop(&mut self, ui: &mut Ui, a: ChopAction) {
         match &a {
             ChopAction::Tab(i) => self.open(ui, *i),
-            ChopAction::ToPads { pad, bounds, mode, .. } => {
+            ChopAction::ToPads {
+                pad, bounds, mode, ..
+            } => {
                 let kit = self.kit;
-                let Some(project) = self.projects.get_mut(kit) else { return };
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
                 let name = project.pad(*pad).map_or(String::new(), |p| p.name.clone());
                 match a.apply(project) {
                     Ok(pads) => {
@@ -528,7 +605,11 @@ impl SamplePage {
                         let to = if n == 1 {
                             self.pad_text(kit, pads.start)
                         } else {
-                            format!("{} to {}", self.pad_text(kit, pads.start), self.pad_text(kit, pads.end - 1))
+                            format!(
+                                "{} to {}",
+                                self.pad_text(kit, pads.start),
+                                self.pad_text(kit, pads.end - 1)
+                            )
                         };
                         let s = |f: u64| format!("{:.3} s", f as f64 / f64::from(self.rate.max(1)));
                         let span = format!("{} to {}", s(bounds[0]), s(bounds[n]));
@@ -536,7 +617,10 @@ impl SamplePage {
                                                  pads {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
                                                 if n == 1 { "" } else { "s" }));
                     }
-                    Err(e) => self.lines.push(format!("sample: chop of pad {} not made ({e:?})", self.pad_text(kit, *pad))),
+                    Err(e) => self.lines.push(format!(
+                        "sample: chop of pad {} not made ({e:?})",
+                        self.pad_text(kit, *pad)
+                    )),
                 }
                 self.refresh(ui);
             }
@@ -555,18 +639,33 @@ impl SamplePage {
                 self.hit(*pad);
                 self.refresh(ui);
             }
-            PadsAction::Audition { pad, down } => out.push(FromUi::Pad { pad: *pad, down: *down }),
+            PadsAction::Audition { pad, down } => out.push(FromUi::Pad {
+                pad: *pad,
+                down: *down,
+            }),
             PadsAction::Set { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
-                let before = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned().map(Box::new);
+                let before = self
+                    .projects
+                    .get(kit)
+                    .and_then(|p| p.pad(pad))
+                    .cloned()
+                    .map(Box::new);
                 if self.gesture.as_ref().is_some_and(|g| Some(g.id) != gesture) {
                     self.lift();
                 }
                 let one_step = gesture.is_none();
                 if self.gesture.is_none() {
-                    self.gesture = Some(Gesture { id: gesture.unwrap_or(u64::MAX), kit, pad, before: Before::Slot(before) });
+                    self.gesture = Some(Gesture {
+                        id: gesture.unwrap_or(u64::MAX),
+                        kit,
+                        pad,
+                        before: Before::Slot(before),
+                    });
                 }
-                let Some(project) = self.projects.get_mut(kit) else { return };
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
                 match a.apply(project) {
                     Ok(()) => {
                         self.edits += 1;
@@ -575,7 +674,10 @@ impl SamplePage {
                         }
                         self.renamed = Some(kit);
                     }
-                    Err(e) => self.lines.push(format!("sample: edit of pad {} not made ({e:?})", self.pad_text(kit, pad))),
+                    Err(e) => self.lines.push(format!(
+                        "sample: edit of pad {} not made ({e:?})",
+                        self.pad_text(kit, pad)
+                    )),
                 }
                 if one_step {
                     // Copy, paste, clear and put are a step each: log it now.
@@ -596,10 +698,17 @@ impl SamplePage {
                 }
                 if self.gesture.is_none() {
                     if let Some(st) = self.play_state.as_ref() {
-                        self.gesture = Some(Gesture { id: gesture, kit, pad, before: Before::Pad(Box::new(st.settings.clone())) });
+                        self.gesture = Some(Gesture {
+                            id: gesture,
+                            kit,
+                            pad,
+                            before: Before::Pad(Box::new(st.settings.clone())),
+                        });
                     }
                 }
-                let Some(project) = self.projects.get_mut(kit) else { return };
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
                 match a.apply(project) {
                     Ok(()) => {
                         self.edits += 1;
@@ -607,7 +716,10 @@ impl SamplePage {
                             *d = true;
                         }
                     }
-                    Err(e) => self.lines.push(format!("sample: edit of pad {} not made ({e:?})", self.pad_text(kit, pad))),
+                    Err(e) => self.lines.push(format!(
+                        "sample: edit of pad {} not made ({e:?})",
+                        self.pad_text(kit, pad)
+                    )),
                 }
                 self.refresh(ui);
             }
@@ -619,7 +731,16 @@ impl SamplePage {
     pub fn take_renamed(&mut self) -> Option<(usize, Vec<Option<String>>)> {
         let kit = self.renamed.take()?;
         let p = self.projects.get(kit)?;
-        Some((kit, (0..16).map(|i| p.pad(i).filter(|pd| !pd.layers.is_empty()).map(|pd| pd.name.clone())).collect()))
+        Some((
+            kit,
+            (0..16)
+                .map(|i| {
+                    p.pad(i)
+                        .filter(|pd| !pd.layers.is_empty())
+                        .map(|pd| pd.name.clone())
+                })
+                .collect(),
+        ))
     }
 
     /// Q-Link `knob` (0-3) turned by `ticks` detents; `fine` (SHIFT held)
@@ -630,14 +751,18 @@ impl SamplePage {
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
         if self.page() == PADS_PAGE {
-            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.qlink(ui, st, knob, ticks) {
                 self.act_pads(ui, a, &mut Vec::new());
             }
             return;
         }
         if self.editor == Editor::Play {
-            let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
                 self.act_play(ui, a);
             }
@@ -649,7 +774,9 @@ impl SamplePage {
             }
             return;
         }
-        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else { return };
+        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
+            return;
+        };
         if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
             self.act(ui, a, &mut Vec::new());
         }
@@ -658,7 +785,10 @@ impl SamplePage {
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
         let now = Instant::now();
-        if self.last_turn.is_some_and(|t| now.duration_since(t) >= TURN_REST) {
+        if self
+            .last_turn
+            .is_some_and(|t| now.duration_since(t) >= TURN_REST)
+        {
             self.lift();
         }
         self.last_turn = Some(now);
@@ -669,7 +799,9 @@ impl SamplePage {
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
         if self.page() == PADS_PAGE {
             self.turned();
-            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else { return };
+            let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
+                return;
+            };
             if let Some(a) = tab.wheel(ui, st, delta) {
                 self.act_pads(ui, a, &mut Vec::new());
             }
@@ -679,7 +811,9 @@ impl SamplePage {
             Editor::Pads => {}
             Editor::Play => {
                 self.turned();
-                let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else { return };
+                let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else {
+                    return;
+                };
                 if let Some(a) = tab.wheel(ui, st, delta) {
                     self.act_play(ui, a);
                 }
@@ -706,10 +840,17 @@ impl SamplePage {
                 }
                 if self.gesture.is_none() {
                     if let Some(st) = self.state.as_ref() {
-                        self.gesture = Some(Gesture { id: gesture, kit, pad, before: Before::Region(st.region.clone()) });
+                        self.gesture = Some(Gesture {
+                            id: gesture,
+                            kit,
+                            pad,
+                            before: Before::Region(st.region.clone()),
+                        });
                     }
                 }
-                let Some(project) = self.projects.get_mut(kit) else { return };
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
                 match a.apply(project) {
                     Ok(()) => {
                         self.edits += 1;
@@ -717,7 +858,10 @@ impl SamplePage {
                             *d = true;
                         }
                     }
-                    Err(e) => self.lines.push(format!("sample: edit of pad {} not made ({e:?})", self.pad_text(kit, pad))),
+                    Err(e) => self.lines.push(format!(
+                        "sample: edit of pad {} not made ({e:?})",
+                        self.pad_text(kit, pad)
+                    )),
                 }
                 self.refresh(ui);
             }
@@ -728,11 +872,18 @@ impl SamplePage {
 
     fn audition(&mut self, pad: usize, out: &mut Vec<FromUi>) {
         if let Some(held) = self.auditioning.take() {
-            out.push(FromUi::Pad { pad: held, down: false });
+            out.push(FromUi::Pad {
+                pad: held,
+                down: false,
+            });
             return;
         }
-        let held = self.state.as_ref().is_some_and(|st| matches!(st.region.mode, PlayMode::Gate | PlayMode::Loop
-                                                                                 | PlayMode::Granular));
+        let held = self.state.as_ref().is_some_and(|st| {
+            matches!(
+                st.region.mode,
+                PlayMode::Gate | PlayMode::Loop | PlayMode::Granular
+            )
+        });
         out.push(FromUi::Pad { pad, down: true });
         if held {
             self.auditioning = Some(pad);
@@ -760,23 +911,35 @@ impl SamplePage {
             let what = describe_slot(before.as_deref(), after);
             if !what.is_empty() {
                 let kit = self.kit_text_of(g.kit);
-                self.lines.push(format!("sample: {kit} pad {}: {what}", self.pad_text(g.kit, g.pad)));
+                self.lines.push(format!(
+                    "sample: {kit} pad {}: {what}",
+                    self.pad_text(g.kit, g.pad)
+                ));
             }
             return;
         }
-        let Some(after) = self.projects.get(g.kit).and_then(|p| p.pad(g.pad)) else { return };
+        let Some(after) = self.projects.get(g.kit).and_then(|p| p.pad(g.pad)) else {
+            return;
+        };
         let what = match &g.before {
             Before::Region(before) => {
-                let Some(l) = after.layers.first() else { return };
+                let Some(l) = after.layers.first() else {
+                    return;
+                };
                 describe(before, &l.region, self.rate)
             }
             Before::Pad(before) => play_tab::describe(before, after),
             Before::Slot(_) => String::new(),
         };
         if !what.is_empty() {
-            let name = self.projects[g.kit].pad(g.pad).map_or(String::new(), |p| p.name.clone());
+            let name = self.projects[g.kit]
+                .pad(g.pad)
+                .map_or(String::new(), |p| p.name.clone());
             let kit = self.kit_text_of(g.kit);
-            self.lines.push(format!("sample: {kit} pad {} {name}: {what}", self.pad_text(g.kit, g.pad)));
+            self.lines.push(format!(
+                "sample: {kit} pad {} {name}: {what}",
+                self.pad_text(g.kit, g.pad)
+            ));
         }
     }
 
@@ -794,7 +957,9 @@ impl SamplePage {
         let kit = self.kit;
         let what = if redo { "redo" } else { "undo" };
         let Some(p) = self.projects.get_mut(kit) else {
-            self.lines.push(format!("sample: nothing to {what} (the synth has the pads)"));
+            self.lines.push(format!(
+                "sample: nothing to {what} (the synth has the pads)"
+            ));
             return;
         };
         if if redo { p.redo() } else { p.undo() } {
@@ -802,10 +967,12 @@ impl SamplePage {
                 *d = true;
             }
             self.renamed = Some(kit);
-            self.lines.push(format!("sample: {what} in {}", self.kit_text()));
+            self.lines
+                .push(format!("sample: {what} in {}", self.kit_text()));
             self.refresh(ui);
         } else {
-            self.lines.push(format!("sample: nothing to {what} in {}", self.kit_text()));
+            self.lines
+                .push(format!("sample: nothing to {what} in {}", self.kit_text()));
         }
     }
 
@@ -822,7 +989,10 @@ impl SamplePage {
         self.in_flight = true;
         self.views_sent += 1;
         let view = EngineView::build(&self.projects[kit], self.rate);
-        Some(FromUi::SampleView(Box::new(ViewSwap { kit, view: Some(view) })))
+        Some(FromUi::SampleView(Box::new(ViewSwap {
+            kit,
+            view: Some(view),
+        })))
     }
 
     /// The audio thread is done with a view: the box holds the one it
@@ -843,8 +1013,11 @@ impl SamplePage {
 
     /// Where the playing kit's voices are; the shown pad's are drawn.
     pub fn set_playheads(&mut self, ui: &mut Ui, heads: &Playheads) {
-        let frames: Vec<u64> =
-            if usize::from(heads.kit) == self.kit && self.state.is_some() { heads.of(self.pad).collect() } else { Vec::new() };
+        let frames: Vec<u64> = if usize::from(heads.kit) == self.kit && self.state.is_some() {
+            heads.of(self.pad).collect()
+        } else {
+            Vec::new()
+        };
         if frames == self.shown_heads {
             return;
         }
@@ -879,7 +1052,10 @@ pub fn describe_slot(before: Option<&Pad>, after: Option<&Pad>) -> String {
         (None, None) => String::new(),
         (None, Some(a)) => format!("now plays {}", a.name),
         (Some(b), None) => format!("cleared (was {})", b.name),
-        (Some(b), Some(a)) if b.layers.first().map(|l| l.region.source) != a.layers.first().map(|l| l.region.source) => {
+        (Some(b), Some(a))
+            if b.layers.first().map(|l| l.region.source)
+                != a.layers.first().map(|l| l.region.source) =>
+        {
             format!("{} -> {}", b.name, a.name)
         }
         (Some(b), Some(a)) => {
@@ -913,7 +1089,11 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
     };
     let mut out = Vec::new();
     if a.mode != b.mode {
-        out.push(format!("mode {} -> {}", mode_label(a.mode), mode_label(b.mode)));
+        out.push(format!(
+            "mode {} -> {}",
+            mode_label(a.mode),
+            mode_label(b.mode)
+        ));
     }
     if a.start != b.start {
         out.push(format!("Start {} -> {}", s(a.start), s(b.start)));
@@ -932,33 +1112,64 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
                 out.push(format!("Loop end {} -> {}", s(x.end), s(y.end)));
             }
             if x.mode != y.mode {
-                let m = |l: LoopMode| if l == LoopMode::PingPong { "ping-pong" } else { "forward" };
+                let m = |l: LoopMode| {
+                    if l == LoopMode::PingPong {
+                        "ping-pong"
+                    } else {
+                        "forward"
+                    }
+                };
                 out.push(format!("loop {} -> {}", m(x.mode), m(y.mode)));
             }
             if x.crossfade != y.crossfade {
-                out.push(format!("crossfade {} -> {}", duration_text(u64::from(x.crossfade), rate),
-                                 duration_text(u64::from(y.crossfade), rate)));
+                out.push(format!(
+                    "crossfade {} -> {}",
+                    duration_text(u64::from(x.crossfade), rate),
+                    duration_text(u64::from(y.crossfade), rate)
+                ));
             }
         }
         (None, None) => {}
     }
     if a.fade_in != b.fade_in {
-        out.push(format!("fade in {} -> {}", fade(&a.fade_in), fade(&b.fade_in)));
+        out.push(format!(
+            "fade in {} -> {}",
+            fade(&a.fade_in),
+            fade(&b.fade_in)
+        ));
     }
     if a.fade_out != b.fade_out {
-        out.push(format!("fade out {} -> {}", fade(&a.fade_out), fade(&b.fade_out)));
+        out.push(format!(
+            "fade out {} -> {}",
+            fade(&a.fade_out),
+            fade(&b.fade_out)
+        ));
     }
     if a.gain_db != b.gain_db {
         out.push(format!("gain {:+.1} -> {:+.1} dB", a.gain_db, b.gain_db));
     }
     if a.tune_cents != b.tune_cents {
-        out.push(format!("tune {:+} -> {:+} cents", a.tune_cents, b.tune_cents));
+        out.push(format!(
+            "tune {:+} -> {:+} cents",
+            a.tune_cents, b.tune_cents
+        ));
     }
     if a.reverse != b.reverse {
-        out.push(if b.reverse { "reverse on" } else { "reverse off" }.to_string());
+        out.push(
+            if b.reverse {
+                "reverse on"
+            } else {
+                "reverse off"
+            }
+            .to_string(),
+        );
     }
     if a.channels != b.channels {
-        out.push(format!("channels {} -> {}", channels(a.channels), channels(b.channels)));
+        out.push(format!(
+            "channels {} -> {}",
+            channels(a.channels),
+            channels(b.channels)
+        ));
     }
     out.join(", ")
 }

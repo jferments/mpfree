@@ -35,9 +35,13 @@ const BLOCK: usize = 128;
 /// Pressure messages arrive every 10 ms while a pad is held.
 const PRESS_EVERY: u64 = 480;
 
-fn frames_per_beat() -> f64 { 60.0 / BPM * f64::from(RATE) }
+fn frames_per_beat() -> f64 {
+    60.0 / BPM * f64::from(RATE)
+}
 /// The frame of a 16th step from the start (bar 1 = steps 0..16).
-fn step(s: f64) -> u64 { (s * frames_per_beat() / 4.0).round() as u64 }
+fn step(s: f64) -> u64 {
+    (s * frames_per_beat() / 4.0).round() as u64
+}
 
 struct Part {
     name: &'static str,
@@ -59,22 +63,56 @@ struct Part {
 
 fn make_poly(name: &str) -> Box<dyn Node> {
     let mut s = Poly::new(RATE);
-    s.load_preset(Poly::presets().iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no Poly preset {name}")));
+    s.load_preset(
+        Poly::presets()
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no Poly preset {name}")),
+    );
     Box::new(s)
 }
 
 fn make_fm(name: &str) -> Box<dyn Node> {
     let mut s = Fm::new(RATE);
-    s.load_preset(&Fm::presets().into_iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no FM preset {name}")));
+    s.load_preset(
+        &Fm::presets()
+            .into_iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no FM preset {name}")),
+    );
     Box::new(s)
 }
 
 fn poly(name: &'static str, gain: f32, pan: f32, held: (f64, f64), probe: Option<u8>) -> Part {
-    Part { name, make: make_poly, synth: make_poly(name), probe, mode_id: pp::PRESS_MODE, events: Vec::new(), gain, pan, held, left: Vec::new(), right: Vec::new() }
+    Part {
+        name,
+        make: make_poly,
+        synth: make_poly(name),
+        probe,
+        mode_id: pp::PRESS_MODE,
+        events: Vec::new(),
+        gain,
+        pan,
+        held,
+        left: Vec::new(),
+        right: Vec::new(),
+    }
 }
 
 fn fm(name: &'static str, gain: f32, pan: f32, held: (f64, f64), probe: Option<u8>) -> Part {
-    Part { name, make: make_fm, synth: make_fm(name), probe, mode_id: fp::PRESS_MODE, events: Vec::new(), gain, pan, held, left: Vec::new(), right: Vec::new() }
+    Part {
+        name,
+        make: make_fm,
+        synth: make_fm(name),
+        probe,
+        mode_id: fp::PRESS_MODE,
+        events: Vec::new(),
+        gain,
+        pan,
+        held,
+        left: Vec::new(),
+        right: Vec::new(),
+    }
 }
 
 /// Renders `events` on `synth` in 128-frame blocks, as the audio thread does.
@@ -88,7 +126,14 @@ fn run(synth: &mut dyn Node, events: &[(u64, NodeEvent)], total: usize) -> (Vec<
             buf.push(Timed::new((events[e].0 - at as u64) as u32, events[e].1));
             e += 1;
         }
-        let ctx = mpfree_node::Ctx { rate: RATE, frame: at as u64, bpm: BPM, beats: at as f64 / frames_per_beat(), playing: true, sidechain: None };
+        let ctx = mpfree_node::Ctx {
+            rate: RATE,
+            frame: at as u64,
+            bpm: BPM,
+            beats: at as f64 / frames_per_beat(),
+            playing: true,
+            sidechain: None,
+        };
         synth.process(&ctx, &buf, &mut l[at..at + BLOCK], &mut r[at..at + BLOCK]);
     }
     (l, r)
@@ -96,8 +141,15 @@ fn run(synth: &mut dyn Node, events: &[(u64, NodeEvent)], total: usize) -> (Vec<
 
 /// A note from step `at` lasting `len` steps.
 fn note(p: &mut Part, at: f64, len: f64, n: u8, vel: u8) {
-    p.events.push((step(at), NodeEvent::NoteOn { note: n, velocity: vel }));
-    p.events.push((step(at + len), NodeEvent::NoteOff { note: n }));
+    p.events.push((
+        step(at),
+        NodeEvent::NoteOn {
+            note: n,
+            velocity: vel,
+        },
+    ));
+    p.events
+        .push((step(at + len), NodeEvent::NoteOff { note: n }));
 }
 
 /// Pressure on note `n` from step `from` to `to`, every 10 ms, following
@@ -105,12 +157,19 @@ fn note(p: &mut Part, at: f64, len: f64, n: u8, vel: u8) {
 /// spike to full, as a pad does when it's struck.
 fn press(p: &mut Part, from: f64, to: f64, n: u8, curve: impl Fn(f64) -> f64) {
     let (a, b) = (step(from), step(to));
-    p.events.push((a, NodeEvent::Pressure { note: n, value: 127 }));
+    p.events.push((
+        a,
+        NodeEvent::Pressure {
+            note: n,
+            value: 127,
+        },
+    ));
     let mut f = a + PRESS_EVERY;
     while f < b {
         let t = (f - a) as f64 / (b - a) as f64;
         let v = (curve(t).clamp(0.0, 1.0) * 127.0).round() as u8;
-        p.events.push((f, NodeEvent::Pressure { note: n, value: v }));
+        p.events
+            .push((f, NodeEvent::Pressure { note: n, value: v }));
         f += PRESS_EVERY;
     }
 }
@@ -129,15 +188,36 @@ fn shape(pts: &'static [(f64, f64)]) -> impl Fn(f64) -> f64 {
 }
 
 /// Two swells on one held note, lifting before the note-off.
-const SWELLS: &[(f64, f64)] = &[(0.0, 0.0), (0.08, 0.05), (0.25, 1.0), (0.42, 0.15), (0.68, 1.0), (0.84, 1.0), (0.97, 0.0), (1.0, 0.0)];
+const SWELLS: &[(f64, f64)] = &[
+    (0.0, 0.0),
+    (0.08, 0.05),
+    (0.25, 1.0),
+    (0.42, 0.15),
+    (0.68, 1.0),
+    (0.84, 1.0),
+    (0.97, 0.0),
+    (1.0, 0.0),
+];
 /// One long swell across two bars.
-const SWELL: &[(f64, f64)] = &[(0.0, 0.0), (0.1, 0.0), (0.55, 1.0), (0.85, 1.0), (0.97, 0.0), (1.0, 0.0)];
+const SWELL: &[(f64, f64)] = &[
+    (0.0, 0.0),
+    (0.1, 0.0),
+    (0.55, 1.0),
+    (0.85, 1.0),
+    (0.97, 0.0),
+    (1.0, 0.0),
+];
 
 fn main() {
-    let out = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        std::path::Path::new(&home).join("mpfree-work").join("pressure-demo.wav")
-    });
+    let out = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::Path::new(&home)
+                .join("mpfree-work")
+                .join("pressure-demo.wav")
+        });
     let bars = 9.0;
     let tail = 3.0;
     let total = (step(bars * 16.0) as f64 + tail * f64::from(RATE)) as usize;
@@ -156,9 +236,26 @@ fn main() {
         }
         press(&mut brass, o, o + 31.0, 63, shape(SWELLS));
         // Acid: a 16th line; pressure builds across the phrase.
-        let riff: [(f64, f64, u8); 10] = [(0.0, 1.0, 36), (2.0, 1.0, 36), (3.0, 1.0, 48), (4.0, 2.0, 39), (6.0, 1.0, 36),
-                                          (8.0, 1.0, 43), (9.0, 1.0, 36), (11.0, 1.0, 46), (12.0, 2.0, 48), (14.0, 1.5, 34)];
-        let build = shape(&[(0.0, 0.0), (0.12, 0.05), (0.45, 1.0), (0.7, 0.75), (0.82, 1.0), (1.0, 0.1)]);
+        let riff: [(f64, f64, u8); 10] = [
+            (0.0, 1.0, 36),
+            (2.0, 1.0, 36),
+            (3.0, 1.0, 48),
+            (4.0, 2.0, 39),
+            (6.0, 1.0, 36),
+            (8.0, 1.0, 43),
+            (9.0, 1.0, 36),
+            (11.0, 1.0, 46),
+            (12.0, 2.0, 48),
+            (14.0, 1.5, 34),
+        ];
+        let build = shape(&[
+            (0.0, 0.0),
+            (0.12, 0.05),
+            (0.45, 1.0),
+            (0.7, 0.75),
+            (0.82, 1.0),
+            (1.0, 0.1),
+        ]);
         for bar in 0..4 {
             for &(at, len, n) in &riff {
                 let s = o + bar as f64 * 16.0 + at;
@@ -178,18 +275,42 @@ fn main() {
         for &n in &[63u8, 67, 70, 82] {
             note(&mut pad, o + 48.0, 15.0, n, 100);
         }
-        press(&mut pad, o + 48.0, o + 63.0, 82, shape(&[(0.0, 0.0), (0.25, 0.0), (0.4, 1.0), (0.9, 1.0), (1.0, 0.7)]));
+        press(
+            &mut pad,
+            o + 48.0,
+            o + 63.0,
+            82,
+            shape(&[(0.0, 0.0), (0.25, 0.0), (0.4, 1.0), (0.9, 1.0), (1.0, 0.7)]),
+        );
     }
     // Bar 9: a last Brass chord, every note pressed, rings out.
     for &n in &[48u8, 55, 60, 63, 67] {
         note(&mut brass, 128.0, 14.0, n, 110);
-        press(&mut brass, 128.0, 142.0, n, shape(&[(0.0, 0.0), (0.1, 0.0), (0.6, 1.0), (1.0, 1.0)]));
+        press(
+            &mut brass,
+            128.0,
+            142.0,
+            n,
+            shape(&[(0.0, 0.0), (0.1, 0.0), (0.6, 1.0), (1.0, 1.0)]),
+        );
     }
     let mut parts = vec![brass, acid, fm_brass, pad];
     // Pressure Off for the before pass, on from bar 5.
     for p in &mut parts {
-        p.events.push((0, NodeEvent::Param { id: p.mode_id, value: 2.0 }));
-        p.events.push((step(64.0), NodeEvent::Param { id: p.mode_id, value: 0.0 }));
+        p.events.push((
+            0,
+            NodeEvent::Param {
+                id: p.mode_id,
+                value: 2.0,
+            },
+        ));
+        p.events.push((
+            step(64.0),
+            NodeEvent::Param {
+                id: p.mode_id,
+                value: 0.0,
+            },
+        ));
     }
 
     // ---- render every part through the node interface ----
@@ -197,7 +318,11 @@ fn main() {
     for p in &mut parts {
         p.events.sort_by_key(|e| e.0);
         (p.left, p.right) = run(&mut *p.synth, &p.events, total);
-        assert!(p.left.iter().chain(&p.right).all(|x| x.is_finite()), "{}: non-finite output", p.name);
+        assert!(
+            p.left.iter().chain(&p.right).all(|x| x.is_finite()),
+            "{}: non-finite output",
+            p.name
+        );
     }
     let render_secs = started.elapsed().as_secs_f64();
 
@@ -222,14 +347,21 @@ fn main() {
     let db = |x: f32| 20.0 * x.max(1e-9).log10();
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
     // Brightness: the share of energy in the sample-to-sample change.
-    let bright = |x: &[f32]| x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>().max(1e-12);
+    let bright = |x: &[f32]| {
+        x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>()
+            / x.iter().map(|v| v * v).sum::<f32>().max(1e-12)
+    };
     // What pressure does to the level: the same notes play in both passes,
     // so the difference between them, 100 ms at a time, is pressure's doing
     // alone (envelopes and LFOs cancel out). Its range is the swell.
     let swell = |a: &[f32], b: &[f32]| {
         let mut lo = f32::MAX;
         let mut hi = f32::MIN;
-        for (ca, cb) in a.chunks(4_800).zip(b.chunks(4_800)).filter(|(c, _)| c.len() == 4_800) {
+        for (ca, cb) in a
+            .chunks(4_800)
+            .zip(b.chunks(4_800))
+            .filter(|(c, _)| c.len() == 4_800)
+        {
             let (la, lb) = (db(rms(ca)), db(rms(cb)));
             // Gaps between notes say nothing.
             if la > -60.0 && lb > -60.0 {
@@ -237,26 +369,46 @@ fn main() {
                 hi = hi.max(lb - la);
             }
         }
-        if hi >= lo { hi - lo } else { 0.0 }
+        if hi >= lo {
+            hi - lo
+        } else {
+            0.0
+        }
     };
     let secs = total as f64 / f64::from(RATE);
-    println!("Pressure demo: {BPM} BPM, 9 bars + {tail} s tail, {secs:.1} s, master trim {:+.1} dB", db(trim));
-    println!("rendered {} parts in {render_secs:.2} s on this computer", parts.len());
+    println!(
+        "Pressure demo: {BPM} BPM, 9 bars + {tail} s tail, {secs:.1} s, master trim {:+.1} dB",
+        db(trim)
+    );
+    println!(
+        "rendered {} parts in {render_secs:.2} s on this computer",
+        parts.len()
+    );
     println!("timeline:");
     println!("  bars 1-4  BEFORE (pressure off): Brass chord (bars 1-2), Acid line, FM Brass Section (bar 3), Dust Pad (bar 4)");
     println!("  bars 5-8  AFTER (pressure on, same notes and pressure): Brass top note swells twice (5-6), Acid opens,");
     println!("            FM brass swells and brightens (7), the pad's top note gets vibrato and swells (8)");
     println!("  bar  9    a last Brass chord swells under pressure and rings out");
-    println!("  {:<24} {:>12} {:>10} {:>10}", "part (A before, B after)", "swell B-A", "bright A", "bright B");
+    println!(
+        "  {:<24} {:>12} {:>10} {:>10}",
+        "part (A before, B after)", "swell B-A", "bright A", "bright B"
+    );
     let mut ok = true;
     for p in &parts {
         // The pressed note alone, where only one is pressed.
         let (l, r) = match p.probe {
             Some(n) => {
-                let only: Vec<(u64, NodeEvent)> = p.events.iter().copied().filter(|(_, e)| match *e {
-                    NodeEvent::NoteOn { note, .. } | NodeEvent::NoteOff { note } | NodeEvent::Pressure { note, .. } => note == n,
-                    _ => true,
-                }).collect();
+                let only: Vec<(u64, NodeEvent)> = p
+                    .events
+                    .iter()
+                    .copied()
+                    .filter(|(_, e)| match *e {
+                        NodeEvent::NoteOn { note, .. }
+                        | NodeEvent::NoteOff { note }
+                        | NodeEvent::Pressure { note, .. } => note == n,
+                        _ => true,
+                    })
+                    .collect();
                 run(&mut *(p.make)(p.name), &only, total)
             }
             None => (p.left.clone(), p.right.clone()),
@@ -278,8 +430,15 @@ fn main() {
         }
     }
     let final_peak = l.iter().chain(&r).fold(0.0f32, |m, x| m.max(x.abs()));
-    let last = l[total - 4800..].iter().chain(&r[total - 4800..]).fold(0.0f32, |m, x| m.max(x.abs()));
-    println!("peak {:.2} dBFS, last 100 ms peak {:.1} dBFS", db(final_peak), db(last));
+    let last = l[total - 4800..]
+        .iter()
+        .chain(&r[total - 4800..])
+        .fold(0.0f32, |m, x| m.max(x.abs()));
+    println!(
+        "peak {:.2} dBFS, last 100 ms peak {:.1} dBFS",
+        db(final_peak),
+        db(last)
+    );
     if final_peak > 1.0 {
         println!("WARNING: master clips");
         ok = false;
@@ -300,7 +459,12 @@ fn main() {
         std::fs::create_dir_all(dir).expect("create output dir");
     }
     std::fs::write(&out, wav(&pcm)).expect("write wav");
-    println!("wrote {} ({} frames), PCM hash {:016x}", out.display(), total, fnv(&pcm));
+    println!(
+        "wrote {} ({} frames), PCM hash {:016x}",
+        out.display(),
+        total,
+        fnv(&pcm)
+    );
     println!("(the PCM hash repeats on the same computer; other computers' maths libraries can differ in the last bit)");
     if !ok {
         eprintln!("self-check FAILED");
@@ -316,11 +480,18 @@ fn drums(total: usize, bars: u32) -> (Vec<f32>, Vec<f32>) {
     let mut r = vec![0.0f32; total];
     let mut seed = 11u64;
     let mut noise = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((seed >> 40) as f32 / (1u64 << 23) as f32) - 1.0
     };
     let rate = RATE as f32;
-    let add = |l: &mut Vec<f32>, r: &mut Vec<f32>, at: u64, len: usize, pan: f32, f: &mut dyn FnMut(usize) -> f32| {
+    let add = |l: &mut Vec<f32>,
+               r: &mut Vec<f32>,
+               at: u64,
+               len: usize,
+               pan: f32,
+               f: &mut dyn FnMut(usize) -> f32| {
         for k in 0..len {
             let i = at as usize + k;
             if i >= total {
@@ -349,27 +520,42 @@ fn drums(total: usize, bars: u32) -> (Vec<f32>, Vec<f32>) {
         for &s in &[4.0, 12.0] {
             let mut ph = 0.0f32;
             let mut held = 0.0f32;
-            add(&mut l, &mut r, step(b + s), (0.3 * rate) as usize, 0.05, &mut |k| {
-                let t = k as f32 / rate;
-                ph += 180.0 / rate;
-                if k % 4 == 0 {
-                    held = noise();
-                }
-                let x = held * (-t * 13.0).exp() * 0.8 + (ph * std::f32::consts::TAU).sin() * (-t * 30.0).exp() * 0.5;
-                ((x * 8.0).round() / 8.0) * 0.3
-            });
+            add(
+                &mut l,
+                &mut r,
+                step(b + s),
+                (0.3 * rate) as usize,
+                0.05,
+                &mut |k| {
+                    let t = k as f32 / rate;
+                    ph += 180.0 / rate;
+                    if k % 4 == 0 {
+                        held = noise();
+                    }
+                    let x = held * (-t * 13.0).exp() * 0.8
+                        + (ph * std::f32::consts::TAU).sin() * (-t * 30.0).exp() * 0.5;
+                    ((x * 8.0).round() / 8.0) * 0.3
+                },
+            );
         }
         for h in 0..8 {
             let s = h as f64 * 2.0 + if h % 2 == 1 { 0.33 } else { 0.0 };
             let mut prev = 0.0f32;
             let vel = if h % 2 == 0 { 0.1 } else { 0.06 };
-            add(&mut l, &mut r, step(b + s), (0.05 * rate) as usize, -0.3, &mut |k| {
-                let t = k as f32 / rate;
-                let n = noise();
-                let hp = n - prev;
-                prev = n;
-                hp * (-t * 90.0).exp() * vel
-            });
+            add(
+                &mut l,
+                &mut r,
+                step(b + s),
+                (0.05 * rate) as usize,
+                -0.3,
+                &mut |k| {
+                    let t = k as f32 / rate;
+                    let n = noise();
+                    let hp = n - prev;
+                    prev = n;
+                    hp * (-t * 90.0).exp() * vel
+                },
+            );
         }
     }
     kick(&mut l, &mut r, step(f64::from(bars) * 16.0));
@@ -410,5 +596,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

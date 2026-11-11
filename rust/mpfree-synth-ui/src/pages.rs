@@ -31,8 +31,16 @@ struct PlanPage {
     qlinks: &'static [u16],
 }
 
-const fn pg(name: &'static str, groups: &'static [&'static str], qlinks: &'static [u16]) -> PlanPage {
-    PlanPage { name, groups, qlinks }
+const fn pg(
+    name: &'static str,
+    groups: &'static [&'static str],
+    qlinks: &'static [u16],
+) -> PlanPage {
+    PlanPage {
+        name,
+        groups,
+        qlinks,
+    }
 }
 
 use mpfree_synth::params as pp;
@@ -40,14 +48,36 @@ use mpfree_synth::params as pp;
 const POLY: &[PlanPage] = &[
     // Osc: the detune, the second oscillator's level, the sub and the unison
     // spread are what players reach for; octaves and waves are set once.
-    pg("Osc", &["Osc 1", "Osc 2", "Mix", "Unison"], &[pp::OSC2_FINE, pp::OSC2_LEVEL, pp::SUB_LEVEL, pp::UNISON_DETUNE]),
+    pg(
+        "Osc",
+        &["Osc 1", "Osc 2", "Mix", "Unison"],
+        &[
+            pp::OSC2_FINE,
+            pp::OSC2_LEVEL,
+            pp::SUB_LEVEL,
+            pp::UNISON_DETUNE,
+        ],
+    ),
     pg("Filter", &["Filter", "Filter env"], &[]),
     pg("Env", &["Amp env"], &[]),
     pg("LFO", &["LFO"], &[]),
-    pg("Voice", &["Voice", "Output"], &[pp::GLIDE, pp::BEND_RANGE, pp::LEVEL, pp::PAN]),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[pp::GLIDE, pp::BEND_RANGE, pp::LEVEL, pp::PAN],
+    ),
     // Pressure: the threshold, where it's full, and the first two slots'
     // depths are what a player tunes while playing.
-    pg("Pressure", &["Pressure"], &[pp::PRESS_THRESHOLD, pp::PRESS_FULL_AT, pp::press_depth(0), pp::press_depth(1)]),
+    pg(
+        "Pressure",
+        &["Pressure"],
+        &[
+            pp::PRESS_THRESHOLD,
+            pp::PRESS_FULL_AT,
+            pp::press_depth(0),
+            pp::press_depth(1),
+        ],
+    ),
 ];
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
@@ -55,9 +85,26 @@ use mpfree_synth::fm_params::{self as fp, op, op_id};
 /// FM: the algorithm and voice, the modulation (pitch envelope and LFO), a
 /// page per operator, and the operators' keyboard scaling two to a page.
 const FM: &[PlanPage] = &[
-    pg("Algo", &["Algo", "Voice", "Output"], &[fp::ALGORITHM, fp::FEEDBACK, fp::TRANSPOSE, fp::LEVEL]),
-    pg("Mod", &["LFO", "Pitch env"], &[fp::LFO_SPEED, fp::LFO_PMD, fp::LFO_AMD, fp::LFO_DELAY]),
-    pg("Pressure", &["Pressure"], &[fp::PRESS_THRESHOLD, fp::PRESS_FULL_AT, fp::press_depth(0), fp::press_depth(1)]),
+    pg(
+        "Algo",
+        &["Algo", "Voice", "Output"],
+        &[fp::ALGORITHM, fp::FEEDBACK, fp::TRANSPOSE, fp::LEVEL],
+    ),
+    pg(
+        "Mod",
+        &["LFO", "Pitch env"],
+        &[fp::LFO_SPEED, fp::LFO_PMD, fp::LFO_AMD, fp::LFO_DELAY],
+    ),
+    pg(
+        "Pressure",
+        &["Pressure"],
+        &[
+            fp::PRESS_THRESHOLD,
+            fp::PRESS_FULL_AT,
+            fp::press_depth(0),
+            fp::press_depth(1),
+        ],
+    ),
     pg("Op 1", &["Op 1"], &FM_OP_Q[0]),
     pg("Op 2", &["Op 2"], &FM_OP_Q[1]),
     pg("Op 3", &["Op 3"], &FM_OP_Q[2]),
@@ -74,16 +121,28 @@ const FM_OP_Q: [[u16; 4]; 6] = {
     let mut q = [[0u16; 4]; 6];
     let mut n = 0;
     while n < 6 {
-        q[n] = [op_id(n + 1, op::LEVEL), op_id(n + 1, op::COARSE), op_id(n + 1, op::FINE), op_id(n + 1, op::VEL_SENS)];
+        q[n] = [
+            op_id(n + 1, op::LEVEL),
+            op_id(n + 1, op::COARSE),
+            op_id(n + 1, op::FINE),
+            op_id(n + 1, op::VEL_SENS),
+        ];
         n += 1;
     }
     q
 };
 
-use mpfree_synth::drum_params::{field as df, pad_id, LEVEL as DRUM_LEVEL, BASE_NOTE};
+use mpfree_synth::drum_params::{field as df, pad_id, BASE_NOTE, LEVEL as DRUM_LEVEL};
 
 /// The drum synth's Q-Links on pad `n`'s page: tune, decay, tone, snap.
-const fn drum_q(n: usize) -> [u16; 4] { [pad_id(n, df::TUNE), pad_id(n, df::DECAY), pad_id(n, df::TONE), pad_id(n, df::SNAP)] }
+const fn drum_q(n: usize) -> [u16; 4] {
+    [
+        pad_id(n, df::TUNE),
+        pad_id(n, df::DECAY),
+        pad_id(n, df::TONE),
+        pad_id(n, df::SNAP),
+    ]
+}
 const DRUM_Q: [[u16; 4]; 16] = {
     let mut q = [[0u16; 4]; 16];
     let mut n = 0;
@@ -96,25 +155,51 @@ const DRUM_Q: [[u16; 4]; 16] = {
 
 /// Drums: a page per pad (its 14 knobs), then the kit.
 const DRUMS: &[PlanPage] = &[
-    pg("Pad 1", &["Pad 1"], &DRUM_Q[0]), pg("Pad 2", &["Pad 2"], &DRUM_Q[1]), pg("Pad 3", &["Pad 3"], &DRUM_Q[2]), pg("Pad 4", &["Pad 4"], &DRUM_Q[3]),
-    pg("Pad 5", &["Pad 5"], &DRUM_Q[4]), pg("Pad 6", &["Pad 6"], &DRUM_Q[5]), pg("Pad 7", &["Pad 7"], &DRUM_Q[6]), pg("Pad 8", &["Pad 8"], &DRUM_Q[7]),
-    pg("Pad 9", &["Pad 9"], &DRUM_Q[8]), pg("Pad 10", &["Pad 10"], &DRUM_Q[9]), pg("Pad 11", &["Pad 11"], &DRUM_Q[10]), pg("Pad 12", &["Pad 12"], &DRUM_Q[11]),
-    pg("Pad 13", &["Pad 13"], &DRUM_Q[12]), pg("Pad 14", &["Pad 14"], &DRUM_Q[13]), pg("Pad 15", &["Pad 15"], &DRUM_Q[14]), pg("Pad 16", &["Pad 16"], &DRUM_Q[15]),
+    pg("Pad 1", &["Pad 1"], &DRUM_Q[0]),
+    pg("Pad 2", &["Pad 2"], &DRUM_Q[1]),
+    pg("Pad 3", &["Pad 3"], &DRUM_Q[2]),
+    pg("Pad 4", &["Pad 4"], &DRUM_Q[3]),
+    pg("Pad 5", &["Pad 5"], &DRUM_Q[4]),
+    pg("Pad 6", &["Pad 6"], &DRUM_Q[5]),
+    pg("Pad 7", &["Pad 7"], &DRUM_Q[6]),
+    pg("Pad 8", &["Pad 8"], &DRUM_Q[7]),
+    pg("Pad 9", &["Pad 9"], &DRUM_Q[8]),
+    pg("Pad 10", &["Pad 10"], &DRUM_Q[9]),
+    pg("Pad 11", &["Pad 11"], &DRUM_Q[10]),
+    pg("Pad 12", &["Pad 12"], &DRUM_Q[11]),
+    pg("Pad 13", &["Pad 13"], &DRUM_Q[12]),
+    pg("Pad 14", &["Pad 14"], &DRUM_Q[13]),
+    pg("Pad 15", &["Pad 15"], &DRUM_Q[14]),
+    pg("Pad 16", &["Pad 16"], &DRUM_Q[15]),
     pg("Kit", &["Kit"], &[DRUM_LEVEL, BASE_NOTE]),
 ];
 
 /// The page that holds pad `pad`'s knobs (0 to 15), so an app can follow
 /// the last pad hit.
-pub fn drum_page(pad: usize) -> usize { pad.min(15) }
+pub fn drum_page(pad: usize) -> usize {
+    pad.min(15)
+}
 
 use mpfree_synth::pluck_params as kp;
 
 /// Pluck: the string (with the model, decay and release), the mallet, and
 /// the voice.
 const PLUCK: &[PlanPage] = &[
-    pg("String", &["Model", "String"], &[kp::DECAY, kp::BRIGHTNESS, kp::PICK, kp::POSITION]),
-    pg("Mallet", &["Mallet"], &[kp::HARDNESS, kp::STRIKE, kp::STRETCH, kp::HIGH_DAMP]),
-    pg("Voice", &["Voice", "Output"], &[kp::VEL_TONE, kp::BEND_RANGE, kp::LEVEL, kp::SPREAD]),
+    pg(
+        "String",
+        &["Model", "String"],
+        &[kp::DECAY, kp::BRIGHTNESS, kp::PICK, kp::POSITION],
+    ),
+    pg(
+        "Mallet",
+        &["Mallet"],
+        &[kp::HARDNESS, kp::STRIKE, kp::STRETCH, kp::HIGH_DAMP],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[kp::VEL_TONE, kp::BEND_RANGE, kp::LEVEL, kp::SPREAD],
+    ),
 ];
 
 fn known(id: &str) -> Option<&'static [PlanPage]> {
@@ -133,7 +218,12 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
     let mut placed = vec![false; params.len()];
     let mut pages = Vec::new();
     if let Some(plan) = known(info.id) {
-        for PlanPage { name, groups, qlinks } in plan {
+        for PlanPage {
+            name,
+            groups,
+            qlinks,
+        } in plan
+        {
             let idx: Vec<usize> = groups
                 .iter()
                 .flat_map(|g| (0..params.len()).filter(move |&i| params[i].group == *g))
@@ -143,13 +233,21 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
                 placed[i] = true;
             }
             for (k, chunk) in idx.chunks(MAX_TILES).enumerate() {
-                let name = if k == 0 { name.to_string() } else { format!("{name} {}", k + 1) };
+                let name = if k == 0 {
+                    name.to_string()
+                } else {
+                    format!("{name} {}", k + 1)
+                };
                 let q = qlinks
                     .iter()
                     .filter_map(|id| chunk.iter().copied().find(|&i| params[i].id == *id))
                     .take(4)
                     .collect();
-                pages.push(Page { name, params: chunk.to_vec(), qlinks: q });
+                pages.push(Page {
+                    name,
+                    params: chunk.to_vec(),
+                    qlinks: q,
+                });
             }
         }
     }
@@ -172,14 +270,24 @@ fn generic(params: &[ParamInfo], placed: &[bool]) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
     for (group, idx) in groups {
         let name = if group.is_empty() { "Main" } else { group };
-        let fits = pages.last().is_some_and(|p| p.params.len() + idx.len() <= SOFT_TILES);
+        let fits = pages
+            .last()
+            .is_some_and(|p| p.params.len() + idx.len() <= SOFT_TILES);
         if fits {
             pages.last_mut().unwrap().params.extend(idx);
             continue;
         }
         for (k, chunk) in idx.chunks(MAX_TILES).enumerate() {
-            let name = if k == 0 { name.to_string() } else { format!("{name} {}", k + 1) };
-            pages.push(Page { name, params: chunk.to_vec(), qlinks: Vec::new() });
+            let name = if k == 0 {
+                name.to_string()
+            } else {
+                format!("{name} {}", k + 1)
+            };
+            pages.push(Page {
+                name,
+                params: chunk.to_vec(),
+                qlinks: Vec::new(),
+            });
         }
     }
     pages
@@ -194,7 +302,9 @@ pub fn tile_label(page: &str, p: &ParamInfo) -> String {
     // "Filter env" on the Filter page is the page's env; "Osc 2" on the Osc
     // page is its own thing and keeps its whole name.
     match p.group.strip_prefix(page).and_then(|r| r.strip_prefix(' ')) {
-        Some(rest) if rest.starts_with(|c: char| c.is_alphabetic()) => format!("{} · {}", cap(rest), p.name),
+        Some(rest) if rest.starts_with(|c: char| c.is_alphabetic()) => {
+            format!("{} · {}", cap(rest), p.name)
+        }
         _ => format!("{} · {}", p.group, p.name),
     }
 }
@@ -208,7 +318,11 @@ pub fn qlink_targets(page: &Page, params: &[ParamInfo]) -> Vec<usize> {
     }
     let knob = |i: &usize| {
         let p = &params[*i];
-        !p.readonly && !matches!(p.curve, mpfree_node::Curve::Choice(_) | mpfree_node::Curve::Toggle)
+        !p.readonly
+            && !matches!(
+                p.curve,
+                mpfree_node::Curve::Choice(_) | mpfree_node::Curve::Toggle
+            )
     };
     let mut v: Vec<usize> = page.params.iter().copied().filter(knob).take(4).collect();
     for &i in &page.params {
@@ -236,14 +350,27 @@ mod tests {
     use mpfree_node::{Curve, Kind, Unit};
     use mpfree_synth::params::PARAMS;
 
-    static POLY_INFO: NodeInfo = NodeInfo { id: "mpfree.poly", name: "Poly", kind: Kind::Instrument };
-    static OTHER: NodeInfo = NodeInfo { id: "test.other", name: "Other", kind: Kind::Effect };
+    static POLY_INFO: NodeInfo = NodeInfo {
+        id: "mpfree.poly",
+        name: "Poly",
+        kind: Kind::Instrument,
+    };
+    static OTHER: NodeInfo = NodeInfo {
+        id: "test.other",
+        name: "Other",
+        kind: Kind::Effect,
+    };
 
     fn every_param_once(pages: &[Page], n: usize) {
         let mut seen = vec![0; n];
         for p in pages {
             assert!(!p.params.is_empty(), "page {} is empty", p.name);
-            assert!(p.params.len() <= MAX_TILES, "page {} has {} tiles", p.name, p.params.len());
+            assert!(
+                p.params.len() <= MAX_TILES,
+                "page {} has {} tiles",
+                p.name,
+                p.params.len()
+            );
             for &i in &p.params {
                 seen[i] += 1;
             }
@@ -259,20 +386,33 @@ mod tests {
         every_param_once(&pages, PARAMS.len());
         // Pressure: the 8 shaper settings and 4 slots fill one page.
         assert_eq!(pages[5].params.len(), 16);
-        let q: Vec<&str> = qlink_targets(&pages[5], PARAMS).iter().map(|&i| PARAMS[i].name).collect();
+        let q: Vec<&str> = qlink_targets(&pages[5], PARAMS)
+            .iter()
+            .map(|&i| PARAMS[i].name)
+            .collect();
         assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
         // The Q-Links turn the filter page's first four knobs, not its Type.
-        let q: Vec<&str> = qlink_targets(&pages[1], PARAMS).iter().map(|&i| PARAMS[i].name).collect();
+        let q: Vec<&str> = qlink_targets(&pages[1], PARAMS)
+            .iter()
+            .map(|&i| PARAMS[i].name)
+            .collect();
         assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Env amount"]);
         // A page of choices still gets four.
         let lfo = qlink_targets(&pages[3], PARAMS);
         assert_eq!(lfo.len(), 4);
         assert!(lfo.iter().all(|&i| !PARAMS[i].readonly));
         // The engine's own choice, where it made one.
-        let osc: Vec<&str> = qlink_targets(&pages[0], PARAMS).iter().map(|&i| PARAMS[i].name).collect();
+        let osc: Vec<&str> = qlink_targets(&pages[0], PARAMS)
+            .iter()
+            .map(|&i| PARAMS[i].name)
+            .collect();
         assert_eq!(osc, ["Fine", "Level", "Sub", "Detune"]);
         for page in &pages {
-            assert!(page.qlinks.iter().all(|i| page.params.contains(i)), "{}", page.name);
+            assert!(
+                page.qlinks.iter().all(|i| page.params.contains(i)),
+                "{}",
+                page.name
+            );
         }
     }
 
@@ -283,21 +423,41 @@ mod tests {
         let params = fm.params();
         let pages = plan(fm.info(), params);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Algo", "Mod", "Pressure", "Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6", "Kbd 1-2", "Kbd 3-4", "Kbd 5-6"]);
+        assert_eq!(
+            names,
+            [
+                "Algo", "Mod", "Pressure", "Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6",
+                "Kbd 1-2", "Kbd 3-4", "Kbd 5-6"
+            ]
+        );
         assert_eq!(pages[2].params.len(), 16);
-        let q: Vec<&str> = qlink_targets(&pages[2], params).iter().map(|&i| params[i].name).collect();
+        let q: Vec<&str> = qlink_targets(&pages[2], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
         assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
         let mut seen = vec![0; params.len()];
         for p in &pages {
-            assert!(p.params.len() <= MAX_TILES, "{}: {} tiles", p.name, p.params.len());
+            assert!(
+                p.params.len() <= MAX_TILES,
+                "{}: {} tiles",
+                p.name,
+                p.params.len()
+            );
             for &i in &p.params {
                 seen[i] += 1;
             }
         }
-        assert!(seen.iter().all(|&n| n == 1), "every parameter on exactly one page");
+        assert!(
+            seen.iter().all(|&n| n == 1),
+            "every parameter on exactly one page"
+        );
         for p in &pages[3..9] {
             assert_eq!(p.params.len(), 16);
-            let q: Vec<&str> = qlink_targets(p, params).iter().map(|&i| params[i].name).collect();
+            let q: Vec<&str> = qlink_targets(p, params)
+                .iter()
+                .map(|&i| params[i].name)
+                .collect();
             assert_eq!(q, ["Output", "Coarse", "Fine", "Velocity"], "{}", p.name);
         }
         // Labels stay short enough for a tile.
@@ -322,7 +482,10 @@ mod tests {
         every_param_once(&pages, params.len());
         for (n, p) in pages[..16].iter().enumerate() {
             assert_eq!(p.params.len(), 14);
-            let q: Vec<&str> = qlink_targets(p, params).iter().map(|&i| params[i].name).collect();
+            let q: Vec<&str> = qlink_targets(p, params)
+                .iter()
+                .map(|&i| params[i].name)
+                .collect();
             assert_eq!(q, ["Tune", "Decay", "Tone", "Snap"], "{}", p.name);
             assert_eq!(drum_page(n), n);
             for &i in &p.params {
@@ -340,9 +503,15 @@ mod tests {
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["String", "Mallet", "Voice"]);
         every_param_once(&pages, params.len());
-        let q: Vec<&str> = qlink_targets(&pages[0], params).iter().map(|&i| params[i].name).collect();
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
         assert_eq!(q, ["Decay", "Brightness", "Pick", "Position"]);
-        let q: Vec<&str> = qlink_targets(&pages[1], params).iter().map(|&i| params[i].name).collect();
+        let q: Vec<&str> = qlink_targets(&pages[1], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
         assert_eq!(q, ["Hardness", "Strike", "Stretch", "High damp"]);
     }
 
@@ -356,8 +525,17 @@ mod tests {
     #[test]
     fn a_big_group_is_split() {
         const fn q(id: u16) -> ParamInfo {
-            ParamInfo { id, name: "P", group: "Big", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None,
-                        curve: Curve::Linear, readonly: false }
+            ParamInfo {
+                id,
+                name: "P",
+                group: "Big",
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                unit: Unit::None,
+                curve: Curve::Linear,
+                readonly: false,
+            }
         }
         let params: Vec<ParamInfo> = (0..40).map(q).collect();
         let pages = plan(&OTHER, &params);
@@ -369,11 +547,21 @@ mod tests {
     #[test]
     fn labels_name_the_group_when_it_is_not_the_page() {
         let p = |g: &'static str, n: &'static str| ParamInfo {
-            id: 0, name: n, group: g, min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Linear,
+            id: 0,
+            name: n,
+            group: g,
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            unit: Unit::None,
+            curve: Curve::Linear,
             readonly: false,
         };
         assert_eq!(tile_label("Filter", &p("Filter", "Cutoff")), "Cutoff");
-        assert_eq!(tile_label("Filter", &p("Filter env", "Attack")), "Env · Attack");
+        assert_eq!(
+            tile_label("Filter", &p("Filter env", "Attack")),
+            "Env · Attack"
+        );
         assert_eq!(tile_label("Osc", &p("Osc 2", "Wave")), "Osc 2 · Wave");
         assert_eq!(tile_label("Osc", &p("Mix", "Sub")), "Mix · Sub");
         assert_eq!(tile_label("Osc", &p("Unison", "Unison")), "Unison");

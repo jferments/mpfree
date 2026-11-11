@@ -27,7 +27,9 @@
 use std::sync::Arc;
 
 use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing};
-use mpfree_sampler::model::{ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId};
+use mpfree_sampler::model::{
+    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId,
+};
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
@@ -46,7 +48,8 @@ pub const WHEEL: &str = "smp-wheel";
 /// The tab's page: the app's header, the pad bar, the overview, the
 /// waveform beside the Region list, the Q-Link cards and the wheel card,
 /// and the app's hint line.
-pub const LAYOUT: &str = "col(header:60, smp-bar:60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
+pub const LAYOUT: &str =
+    "col(header:60, smp-bar:60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
                           row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:26)";
 
 /// The pad editor's tabs: Pads (the kit's pads, to pick one and set it
@@ -160,7 +163,12 @@ pub struct WaveState {
 impl WaveState {
     /// Layer `layer` of pad `pad`, if there is one and `source` is its
     /// source.
-    pub fn from_project(p: &Project, pad: usize, layer: usize, source: Arc<SourceView>) -> Option<WaveState> {
+    pub fn from_project(
+        p: &Project,
+        pad: usize,
+        layer: usize,
+        source: Arc<SourceView>,
+    ) -> Option<WaveState> {
         let pd = p.pad(pad)?;
         let region = pd.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
@@ -180,12 +188,19 @@ impl WaveState {
     }
 
     fn frames_per_beat(&self) -> Option<f64> {
-        self.source.tempo.filter(|b| b.is_finite() && *b > 0.0).map(|bpm| f64::from(self.rate) * 60.0 / bpm)
+        self.source
+            .tempo
+            .filter(|b| b.is_finite() && *b > 0.0)
+            .map(|bpm| f64::from(self.rate) * 60.0 / bpm)
     }
 
     /// Bar and beat lines, in 4/4 from the source's first frame.
     pub fn beats(&self) -> Option<Beats> {
-        self.frames_per_beat().map(|fpb| Beats { first: 0.0, frames_per_beat: fpb, per_bar: 4 })
+        self.frames_per_beat().map(|fpb| Beats {
+            first: 0.0,
+            frames_per_beat: fpb,
+            per_bar: 4,
+        })
     }
 }
 
@@ -195,7 +210,12 @@ pub enum WaveAction {
     /// The layer's region, changed. `gesture` is the same for every change
     /// of one drag or turn, so [`Project::edit_pad`] merges them into one
     /// undo step.
-    Region { pad: usize, layer: usize, region: Region, gesture: u64 },
+    Region {
+        pad: usize,
+        layer: usize,
+        region: Region,
+        gesture: u64,
+    },
     /// Play the pad, as a hit at full velocity would.
     Audition { pad: usize },
     /// Open the editor's tab `i` of [`TABS`].
@@ -207,12 +227,19 @@ impl WaveAction {
     /// Other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
         match self {
-            WaveAction::Region { pad, layer, region, gesture } => {
+            WaveAction::Region {
+                pad,
+                layer,
+                region,
+                gesture,
+            } => {
                 let (layer, region) = (*layer, region.clone());
                 if p.pad(*pad).is_none_or(|pd| layer >= pd.layers.len()) {
                     return Err(ModelError::BadPad);
                 }
-                p.edit_pad(*pad, Some(*gesture), move |pd| pd.layers[layer].region = region)
+                p.edit_pad(*pad, Some(*gesture), move |pd| {
+                    pd.layers[layer].region = region
+                })
             }
             _ => Ok(()),
         }
@@ -235,8 +262,18 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 10] = [Row::Mode, Row::Loop, Row::Crossfade, Row::Gain, Row::Tune, Row::Reverse, Row::Channels,
-                                Row::FadeIn, Row::FadeOut, Row::Snap];
+    pub const ALL: [Row; 10] = [
+        Row::Mode,
+        Row::Loop,
+        Row::Crossfade,
+        Row::Gain,
+        Row::Tune,
+        Row::Reverse,
+        Row::Channels,
+        Row::FadeIn,
+        Row::FadeOut,
+        Row::Snap,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -254,12 +291,25 @@ impl Row {
     }
 }
 
-const MODES: [PlayMode; 5] = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Toggle, PlayMode::Loop, PlayMode::Granular];
-const CHANNELS: [ChannelPick; 4] = [ChannelPick::Stereo, ChannelPick::MonoSum, ChannelPick::Left, ChannelPick::Right];
+const MODES: [PlayMode; 5] = [
+    PlayMode::OneShot,
+    PlayMode::Gate,
+    PlayMode::Toggle,
+    PlayMode::Loop,
+    PlayMode::Granular,
+];
+const CHANNELS: [ChannelPick; 4] = [
+    ChannelPick::Stereo,
+    ChannelPick::MonoSum,
+    ChannelPick::Left,
+    ChannelPick::Right,
+];
 /// Loop crossfade lengths the arrows step through, in ms.
 const CROSSFADE_MS: [f64; 8] = [0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0];
 /// Fade lengths the arrows step through, in ms.
-const FADE_MS: [f64; 13] = [0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0];
+const FADE_MS: [f64; 13] = [
+    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
+];
 const GAIN_STEP_DB: f32 = 0.5;
 const GAIN_RANGE_DB: (f32, f32) = (-48.0, 24.0);
 const TUNE_LIMIT_CENTS: i32 = 4800;
@@ -349,7 +399,11 @@ pub fn moved(r: &Region, m: Mark, to: u64, frames: u64) -> Region {
         (Mark::End, None) => r.end = within(to, r.start + MIN_FRAMES, frames),
         (Mark::LoopStart, Some(mut l)) => {
             let span = MIN_FRAMES.max(2 * u64::from(l.crossfade));
-            l.start = within(to, r.start + u64::from(l.crossfade), l.end.saturating_sub(span));
+            l.start = within(
+                to,
+                r.start + u64::from(l.crossfade),
+                l.end.saturating_sub(span),
+            );
             r.sustain_loop = Some(l);
         }
         (Mark::LoopEnd, Some(mut l)) => {
@@ -366,8 +420,15 @@ pub fn moved(r: &Region, m: Mark, to: u64, frames: u64) -> Region {
 /// The next zero crossing at or after `at`, within `ahead` frames.
 pub(crate) fn next_zero_crossing(x: &[f32], at: usize, ahead: usize) -> Option<usize> {
     let end = x.len().min(at.saturating_add(ahead).saturating_add(1));
-    (at.max(1)..end).find(|&i| x[i] == 0.0 || (x[i - 1] < 0.0) != (x[i] < 0.0))
-        .map(|i| if x[i - 1].abs() < x[i].abs() { i - 1 } else { i })
+    (at.max(1)..end)
+        .find(|&i| x[i] == 0.0 || (x[i - 1] < 0.0) != (x[i] < 0.0))
+        .map(|i| {
+            if x[i - 1].abs() < x[i].abs() {
+                i - 1
+            } else {
+                i
+            }
+        })
 }
 
 /// Which edit an undo step belongs to.
@@ -409,9 +470,17 @@ impl WaveTab {
         ui.add(WAVE, Waveform::new());
         ui.add(REGION, SettingList::new("Region"));
         let t = ui.theme.clone();
-        let colors = [t.accent, t.accent.mix(t.bad, 0.55), t.good, t.good.mix(t.warn, 0.5)];
+        let colors = [
+            t.accent,
+            t.accent.mix(t.bad, 0.55),
+            t.good,
+            t.good.mix(t.warn, 0.5),
+        ];
         for (k, m) in Mark::ALL.iter().enumerate() {
-            ui.add(QLINKS[k], KnobCard::new(&format!("Q-Link {} · {}", k + 1, m.label()), colors[k]));
+            ui.add(
+                QLINKS[k],
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, m.label()), colors[k]),
+            );
         }
         ui.add(WHEEL, InfoCard::new("Wheel · zoom"));
         ui.add_page(name, LAYOUT)?;
@@ -471,7 +540,11 @@ impl WaveTab {
         let pad_color = pad_color(st.pad);
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color;
-            let layer = if st.layers > 1 { format!(" · layer {} of {}", st.layer + 1, st.layers) } else { String::new() };
+            let layer = if st.layers > 1 {
+                format!(" · layer {} of {}", st.layer + 1, st.layers)
+            } else {
+                String::new()
+            };
             let pad = match self.bank {
                 Some(b) => format!("{b}{}", st.pad % 16 + 1),
                 None => pad_label(st.pad),
@@ -485,14 +558,22 @@ impl WaveTab {
             if let (Some(bpm), Some(fpb)) = (src.tempo, st.frames_per_beat()) {
                 let bars = st.frames as f64 / fpb / 4.0;
                 if (bars - bars.round()).abs() < 0.02 && bars.round() >= 1.0 {
-                    about.push(format!("{} bar{}", bars.round(), if bars.round() == 1.0 { "" } else { "s" }));
+                    about.push(format!(
+                        "{} bar{}",
+                        bars.round(),
+                        if bars.round() == 1.0 { "" } else { "s" }
+                    ));
                 }
                 about.push(format!("{bpm:.1} BPM"));
             }
             if let Some(root) = &src.root {
                 about.push(format!("root {root}"));
             }
-            about.push(if st.channels == 2 { "stereo".into() } else { "mono".into() });
+            about.push(if st.channels == 2 {
+                "stereo".into()
+            } else {
+                "mono".into()
+            });
             about.push(duration_text(st.frames, st.rate));
             if st.used_by > 1 {
                 about.push(format!("used by {} pads", st.used_by));
@@ -541,7 +622,10 @@ impl WaveTab {
 
     fn rows(&self, st: &WaveState) -> Vec<Setting> {
         let r = &st.region;
-        let row = |k: Row, value: String| Setting { name: k.name().to_string(), value };
+        let row = |k: Row, value: String| Setting {
+            name: k.name().to_string(),
+            value,
+        };
         Row::ALL
             .iter()
             .map(|k| {
@@ -553,12 +637,20 @@ impl WaveTab {
                         Some(_) => "Ping-pong".into(),
                     },
                     Row::Crossfade => match r.sustain_loop {
-                        Some(l) if l.mode == LoopMode::Forward => duration_text(u64::from(l.crossfade), st.rate),
+                        Some(l) if l.mode == LoopMode::Forward => {
+                            duration_text(u64::from(l.crossfade), st.rate)
+                        }
                         _ => "—".into(),
                     },
                     Row::Gain => format!("{:+.1} dB", r.gain_db).replace("+0.0", "0.0"),
                     Row::Tune => tune_text(r.tune_cents),
-                    Row::Reverse => if r.reverse { "On".into() } else { "Off".into() },
+                    Row::Reverse => {
+                        if r.reverse {
+                            "On".into()
+                        } else {
+                            "Off".into()
+                        }
+                    }
                     Row::Channels if st.channels == 1 => "Mono".into(),
                     Row::Channels => match r.channels {
                         ChannelPick::Stereo => "Stereo".into(),
@@ -627,7 +719,9 @@ impl WaveTab {
                 self.sync_overview(ui);
                 None
             }
-            (REGION, EventKind::Step { index, delta }) => self.step(ui, st, *Row::ALL.get(*index)?, *delta),
+            (REGION, EventKind::Step { index, delta }) => {
+                self.step(ui, st, *Row::ALL.get(*index)?, *delta)
+            }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
                 self.focus = Mark::ALL[k];
@@ -642,7 +736,14 @@ impl WaveTab {
     /// A Q-Link turned: `knob` 0 to 3 moves Start, End, Loop start or Loop
     /// end by `delta` detents; `fine` (SHIFT held) moves one frame per
     /// detent, unsnapped.
-    pub fn qlink(&mut self, ui: &mut Ui, st: &WaveState, knob: usize, delta: i32, fine: bool) -> Option<WaveAction> {
+    pub fn qlink(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        knob: usize,
+        delta: i32,
+        fine: bool,
+    ) -> Option<WaveAction> {
         let m = *Mark::ALL.get(knob)?;
         let now = m.frame(&st.region)?;
         self.focus = m;
@@ -696,7 +797,9 @@ impl WaveTab {
         match self.snap {
             Snap::Off => to,
             Snap::Sixteenths => {
-                let Some(fpb) = st.frames_per_beat() else { return to };
+                let Some(fpb) = st.frames_per_beat() else {
+                    return to;
+                };
                 let grid = fpb / 4.0;
                 let k = to as f64 / grid;
                 let k = match dir {
@@ -741,7 +844,12 @@ impl WaveTab {
                 g
             }
         };
-        Some(WaveAction::Region { pad: st.pad, layer: st.layer, region: r, gesture })
+        Some(WaveAction::Region {
+            pad: st.pad,
+            layer: st.layer,
+            region: r,
+            gesture,
+        })
     }
 
     /// An arrow on a Region row.
@@ -760,27 +868,44 @@ impl WaveTab {
             Row::Loop => {
                 // Off, Forward, Ping-pong; Loop mode can't be without one.
                 let states = [None, Some(LoopMode::Forward), Some(LoopMode::PingPong)];
-                let now = states.iter().position(|s| *s == r.sustain_loop.map(|l| l.mode)).unwrap_or(0) as i32;
+                let now = states
+                    .iter()
+                    .position(|s| *s == r.sustain_loop.map(|l| l.mode))
+                    .unwrap_or(0) as i32;
                 let mut next = (now + d).rem_euclid(3) as usize;
                 if states[next].is_none() && r.mode == PlayMode::Loop {
                     next = (next as i32 + d).rem_euclid(3) as usize;
                 }
                 r.sustain_loop = states[next].map(|mode| match r.sustain_loop {
-                    Some(l) => Loop { mode, crossfade: if mode == LoopMode::Forward { l.crossfade } else { 0 }, ..l },
-                    None => Loop { mode, ..default_loop(&r) },
+                    Some(l) => Loop {
+                        mode,
+                        crossfade: if mode == LoopMode::Forward {
+                            l.crossfade
+                        } else {
+                            0
+                        },
+                        ..l
+                    },
+                    None => Loop {
+                        mode,
+                        ..default_loop(&r)
+                    },
                 });
             }
             Row::Crossfade => {
                 let mut l = r.sustain_loop.filter(|l| l.mode == LoopMode::Forward)?;
                 let max = ((l.end - l.start) / 2).min(l.start - r.start);
-                l.crossfade = step_ms(&CROSSFADE_MS, u64::from(l.crossfade), st.rate, d).min(max) as u32;
+                l.crossfade =
+                    step_ms(&CROSSFADE_MS, u64::from(l.crossfade), st.rate, d).min(max) as u32;
                 r.sustain_loop = Some(l);
             }
             Row::Gain => {
                 let g = ((r.gain_db / GAIN_STEP_DB).round() + d as f32) * GAIN_STEP_DB;
                 r.gain_db = g.clamp(GAIN_RANGE_DB.0, GAIN_RANGE_DB.1);
             }
-            Row::Tune => r.tune_cents = (r.tune_cents + 100 * d).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS),
+            Row::Tune => {
+                r.tune_cents = (r.tune_cents + 100 * d).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS)
+            }
             Row::Reverse => r.reverse = !r.reverse,
             Row::Channels => {
                 if st.channels == 1 {
@@ -791,11 +916,19 @@ impl WaveTab {
             }
             Row::FadeIn => {
                 let max = len - u64::from(r.fade_out.frames);
-                r.fade_in = Fade { frames: step_ms(&FADE_MS, u64::from(r.fade_in.frames), st.rate, d).min(max) as u32, ..r.fade_in };
+                r.fade_in = Fade {
+                    frames: step_ms(&FADE_MS, u64::from(r.fade_in.frames), st.rate, d).min(max)
+                        as u32,
+                    ..r.fade_in
+                };
             }
             Row::FadeOut => {
                 let max = len - u64::from(r.fade_in.frames);
-                r.fade_out = Fade { frames: step_ms(&FADE_MS, u64::from(r.fade_out.frames), st.rate, d).min(max) as u32, ..r.fade_out };
+                r.fade_out = Fade {
+                    frames: step_ms(&FADE_MS, u64::from(r.fade_out.frames), st.rate, d).min(max)
+                        as u32,
+                    ..r.fade_out
+                };
             }
             Row::Snap => {
                 let all: &[Snap] = if st.source.tempo.is_some() {
@@ -819,7 +952,12 @@ impl WaveTab {
 /// A loop over the middle half of `r`, for a region turned to Loop mode.
 pub fn default_loop(r: &Region) -> Loop {
     let q = r.frames() / 4;
-    Loop { start: r.start + q, end: r.end - q, crossfade: 0, mode: LoopMode::Forward }
+    Loop {
+        start: r.start + q,
+        end: r.end - q,
+        crossfade: 0,
+        mode: LoopMode::Forward,
+    }
 }
 
 fn tune_text(cents: i32) -> String {
@@ -840,14 +978,22 @@ fn short_id(id: SourceId) -> String {
 
 /// The markers in the waveform's order: Start and End, then the loop's.
 fn markers_order(r: &Region) -> Vec<Mark> {
-    Mark::ALL.iter().copied().filter(|m| m.frame(r).is_some()).collect()
+    Mark::ALL
+        .iter()
+        .copied()
+        .filter(|m| m.frame(r).is_some())
+        .collect()
 }
 
 fn markers(r: &Region) -> Vec<Marker> {
     markers_order(r)
         .into_iter()
         .filter_map(|m| {
-            let kind = if m.is_loop() { MarkerKind::Loop } else { MarkerKind::Edge };
+            let kind = if m.is_loop() {
+                MarkerKind::Loop
+            } else {
+                MarkerKind::Edge
+            };
             m.frame(r).map(|f| Marker::new(f, m.tab(), kind))
         })
         .collect()
@@ -856,7 +1002,9 @@ fn markers(r: &Region) -> Vec<Marker> {
 /// A pad's colour on the screen, by its place in the bank (the pads' own
 /// colours are set elsewhere; this only tells pads apart).
 pub fn pad_color(pad: usize) -> Color {
-    const COLORS: [u32; 8] = [0xFF8A3D, 0x6EA8FE, 0x3DDC97, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048];
+    const COLORS: [u32; 8] = [
+        0xFF8A3D, 0x6EA8FE, 0x3DDC97, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048,
+    ];
     Color::rgb(COLORS[pad % COLORS.len()])
 }
 
@@ -865,5 +1013,8 @@ fn slot(ui: &Ui, name: &str) -> Option<Rect> {
     let node = layout::parse(LAYOUT).ok()?;
     let (w, h) = ui.size();
     let g = ui.theme.gap;
-    layout::solve(&node, Rect::new(0, 0, w, h).inset(g), g).into_iter().find(|(n, _)| n == name).map(|(_, r)| r)
+    layout::solve(&node, Rect::new(0, 0, w, h).inset(g), g)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, r)| r)
 }

@@ -77,7 +77,15 @@ fn playing_never_allocates() {
     for i in 0..5usize {
         let mut t = Track::new("t", i as u16);
         let mut c = Clip::new("c", 960 * (i as i64 + 2));
-        c.notes = (0..(8 * (i as i64 + 2))).map(|k| Note { tick: k * 120 + (k % 3) * 7, len: 100 + 300 * (k % 4), note: (k % 16) as u8, velocity: 100, chance: if k % 5 == 0 { 50 } else { 100 } }).collect();
+        c.notes = (0..(8 * (i as i64 + 2)))
+            .map(|k| Note {
+                tick: k * 120 + (k % 3) * 7,
+                len: 100 + 300 * (k % 4),
+                note: (k % 16) as u8,
+                velocity: 100,
+                chance: if k % 5 == 0 { 50 } else { 100 },
+            })
+            .collect();
         if i == 1 {
             c.speed = Speed::new(3, 2).unwrap();
         }
@@ -90,19 +98,41 @@ fn playing_never_allocates() {
         }
         t.slots[i] = Some(c);
         p.tracks.push(t);
-        launches.push(Launch { track: i, slot: i, origin: (i as i64 - 2) * 480 });
+        launches.push(Launch {
+            track: i,
+            slot: i,
+            origin: (i as i64 - 2) * 480,
+        });
     }
     // Cues start on the first bar line, and the player carries them on its
     // own: this view is never compiled again.
-    let cues = [Cue { track: 0, slot: Some(9) }, Cue { track: 4, slot: None }];
+    let cues = [
+        Cue {
+            track: 0,
+            slot: Some(9),
+        },
+        Cue {
+            track: 4,
+            slot: None,
+        },
+    ];
     let mut view = PlayView::compile_cued(&p, &launches, &cues).unwrap();
     view.set_armed(Some(3));
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
     let mut block = Block::new();
     let mut engine = Engine::new(44_100, 120.0);
-    engine.set_settings(Settings { mode: Mode::Arp, rate: Rate::ThirtySecond, octaves: 2, ..Settings::default() });
-    let mut sink = Counter { events: 0, last: 0, arp: ArpHost::new(engine) };
+    engine.set_settings(Settings {
+        mode: Mode::Arp,
+        rate: Rate::ThirtySecond,
+        octaves: 2,
+        ..Settings::default()
+    });
+    let mut sink = Counter {
+        events: 0,
+        last: 0,
+        arp: ArpHost::new(engine),
+    };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
     let mut recorded = 0usize;
@@ -148,13 +178,28 @@ fn playing_never_allocates() {
         sink.arp.process(&block, &mut |_, _| arp_notes += 1);
         // Pads on the recording track: notes held a few periods, some overlapping.
         let note = (i % 7) as u8;
-        rec.input((i as u32 * 31) % n, Event::NoteOn { note, velocity: 100 });
-        rec.input((i as u32 * 17) % n, Event::NoteOff { note: ((i + 4) % 7) as u8 });
+        rec.input(
+            (i as u32 * 31) % n,
+            Event::NoteOn {
+                note,
+                velocity: 100,
+            },
+        );
+        rec.input(
+            (i as u32 * 17) % n,
+            Event::NoteOff {
+                note: ((i + 4) % 7) as u8,
+            },
+        );
         rec.process(&view, &block);
         recorded += rec.taken().len();
     }
     watch(false);
-    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while playing");
+    assert_eq!(
+        CALLS.load(Ordering::SeqCst),
+        0,
+        "allocations or frees while playing"
+    );
     assert!(sink.events > 2000, "{}", sink.events);
     assert_eq!(player.stats().dropped, 0);
     assert!(player.stats().erased > 20, "{:?}", player.stats());

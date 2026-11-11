@@ -72,18 +72,27 @@ impl ArpHost {
         let markers = block.markers();
         let mut next = 0;
         for span in block.spans() {
-            let jumped = markers
-                .iter()
-                .any(|m| m.offset == span.offset && matches!(m.mark, Mark::Looped { .. } | Mark::Located { .. }));
+            let jumped = markers.iter().any(|m| {
+                m.offset == span.offset
+                    && matches!(m.mark, Mark::Looped { .. } | Mark::Located { .. })
+            });
             let end = span.offset + span.len;
             let mut at = span.offset;
             while at < end {
-                self.engine.sync(&clock(span, block.start_frame + u64::from(at), jumped && at == span.offset));
+                self.engine.sync(&clock(
+                    span,
+                    block.start_frame + u64::from(at),
+                    jumped && at == span.offset,
+                ));
                 while next < self.n_input && self.input[next].0 <= at {
                     self.apply(self.input[next].1);
                     next += 1;
                 }
-                let stop = if next < self.n_input { self.input[next].0.min(end) } else { end };
+                let stop = if next < self.n_input {
+                    self.input[next].0.min(end)
+                } else {
+                    end
+                };
                 self.engine.process(stop - at, &mut self.events);
                 for e in self.events.as_slice() {
                     out(at + e.offset, e.kind);

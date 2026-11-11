@@ -21,16 +21,27 @@ pub struct Dx7Voice {
 
 impl Dx7Voice {
     pub fn preset(&self) -> FmPreset {
-        FmPreset { name: self.name.clone(), values: self.values.clone() }
+        FmPreset {
+            name: self.name.clone(),
+            values: self.values.clone(),
+        }
     }
 
     pub fn from_preset(p: &FmPreset) -> Dx7Voice {
-        Dx7Voice { name: p.name.clone(), values: p.values.clone() }
+        Dx7Voice {
+            name: p.name.clone(),
+            values: p.values.clone(),
+        }
     }
 
     /// A parameter's value: the last one given for it, else its default.
     pub fn value(&self, id: u16) -> f32 {
-        self.values.iter().rev().find(|v| v.0 == id).map(|v| v.1).unwrap_or_else(|| info(id).map_or(0.0, |p| p.default))
+        self.values
+            .iter()
+            .rev()
+            .find(|v| v.0 == id)
+            .map(|v| v.1)
+            .unwrap_or_else(|| info(id).map_or(0.0, |p| p.default))
     }
 }
 
@@ -55,7 +66,10 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Dx7Voice>, String> {
             if checksum(data) != bytes[6 + 4096] || bytes[BANK_LEN - 1] != 0xF7 {
                 return Err("bank checksum or end byte is wrong".to_string());
             }
-            Ok(data.chunks(128).map(|v| unpack_voice(v.try_into().expect("128 bytes"))).collect())
+            Ok(data
+                .chunks(128)
+                .map(|v| unpack_voice(v.try_into().expect("128 bytes")))
+                .collect())
         }
         (0x00, VOICE_LEN) => {
             let data = &bytes[6..6 + 155];
@@ -64,7 +78,9 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Dx7Voice>, String> {
             }
             Ok(vec![from_unpacked(data.try_into().expect("155 bytes"))])
         }
-        (f, n) => Err(format!("format {f:#04x} with {n} bytes is not a DX7 bank (4104) or voice (163)")),
+        (f, n) => Err(format!(
+            "format {f:#04x} with {n} bytes is not a DX7 bank (4104) or voice (163)"
+        )),
     }
 }
 
@@ -155,16 +171,41 @@ pub fn from_unpacked(u: &[u8; 155]) -> Dx7Voice {
     }
     let g = |i: usize| f32::from(u[i]);
     values.extend_from_slice(&[
-        (PEG_R1, g(126)), (PEG_R2, g(127)), (PEG_R3, g(128)), (PEG_R4, g(129)),
-        (PEG_L1, g(130)), (PEG_L2, g(131)), (PEG_L3, g(132)), (PEG_L4, g(133)),
-        (ALGORITHM, g(134) + 1.0), (FEEDBACK, g(135)), (OSC_SYNC, g(136)),
-        (LFO_SPEED, g(137)), (LFO_DELAY, g(138)), (LFO_PMD, g(139)), (LFO_AMD, g(140)),
-        (LFO_SYNC, g(141)), (LFO_WAVE, g(142)), (LFO_PMS, g(143)),
+        (PEG_R1, g(126)),
+        (PEG_R2, g(127)),
+        (PEG_R3, g(128)),
+        (PEG_R4, g(129)),
+        (PEG_L1, g(130)),
+        (PEG_L2, g(131)),
+        (PEG_L3, g(132)),
+        (PEG_L4, g(133)),
+        (ALGORITHM, g(134) + 1.0),
+        (FEEDBACK, g(135)),
+        (OSC_SYNC, g(136)),
+        (LFO_SPEED, g(137)),
+        (LFO_DELAY, g(138)),
+        (LFO_PMD, g(139)),
+        (LFO_AMD, g(140)),
+        (LFO_SYNC, g(141)),
+        (LFO_WAVE, g(142)),
+        (LFO_PMS, g(143)),
         // DX7 transpose 0 to 48, with 24 at C3: no transpose.
         (TRANSPOSE, g(144) - 24.0),
     ]);
-    let name: String = u[145..155].iter().map(|&b| if (32..127).contains(&b) { b as char } else { ' ' }).collect();
-    Dx7Voice { name: name.trim_end().to_string(), values }
+    let name: String = u[145..155]
+        .iter()
+        .map(|&b| {
+            if (32..127).contains(&b) {
+                b as char
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    Dx7Voice {
+        name: name.trim_end().to_string(),
+        values,
+    }
 }
 
 /// The 155-byte unpacked form of a voice.
@@ -190,13 +231,19 @@ pub fn to_unpacked(voice: &Dx7Voice) -> [u8; 155] {
         s[14] = b(f(op::AMS), 3);
         s[15] = b(f(op::VEL_SENS), 7);
         // An operator switched off is stored at output level 0.
-        s[16] = if f(op::ON) >= 0.5 { b(f(op::LEVEL), 99) } else { 0 };
+        s[16] = if f(op::ON) >= 0.5 {
+            b(f(op::LEVEL), 99)
+        } else {
+            0
+        };
         s[17] = b(f(op::MODE), 1);
         s[18] = b(f(op::COARSE), 31);
         s[19] = b(f(op::FINE), 99);
         s[20] = b(f(op::DETUNE) + 7.0, 14);
     }
-    let pegs = [PEG_R1, PEG_R2, PEG_R3, PEG_R4, PEG_L1, PEG_L2, PEG_L3, PEG_L4];
+    let pegs = [
+        PEG_R1, PEG_R2, PEG_R3, PEG_R4, PEG_L1, PEG_L2, PEG_L3, PEG_L4,
+    ];
     for (i, id) in pegs.iter().enumerate() {
         u[126 + i] = b(value(*id), 99);
     }
@@ -211,7 +258,10 @@ pub fn to_unpacked(voice: &Dx7Voice) -> [u8; 155] {
     u[142] = b(value(LFO_WAVE), 5);
     u[143] = b(value(LFO_PMS), 7);
     u[144] = b(value(TRANSPOSE) + 24.0, 48);
-    let mut chars = name.bytes().filter(|c| (32..127).contains(c)).chain(std::iter::repeat(b' '));
+    let mut chars = name
+        .bytes()
+        .filter(|c| (32..127).contains(c))
+        .chain(std::iter::repeat(b' '));
     for c in &mut u[145..155] {
         *c = chars.next().unwrap_or(b' ');
     }
@@ -221,7 +271,10 @@ pub fn to_unpacked(voice: &Dx7Voice) -> [u8; 155] {
 /// A 32-voice bank file from up to 32 voices; empty slots are the init
 /// voice.
 pub fn bank(voices: &[Dx7Voice]) -> Vec<u8> {
-    let init = Dx7Voice { name: "INIT VOICE".to_string(), values: Vec::new() };
+    let init = Dx7Voice {
+        name: "INIT VOICE".to_string(),
+        values: Vec::new(),
+    };
     let mut data = Vec::with_capacity(4096);
     for k in 0..32 {
         data.extend_from_slice(&pack(&to_unpacked(voices.get(k).unwrap_or(&init))));
@@ -237,17 +290,27 @@ pub fn bank(voices: &[Dx7Voice]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-
     #[test]
     fn packing_round_trips_every_byte_in_range() {
         // Every byte a varied value inside its field's range.
-        const OP: [u8; 21] = [99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 3, 3, 7, 3, 7, 99, 1, 31, 99, 14];
-        const GLOBAL: [u8; 19] = [99, 99, 99, 99, 99, 99, 99, 99, 31, 7, 1, 99, 99, 99, 99, 1, 5, 7, 48];
+        const OP: [u8; 21] = [
+            99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 3, 3, 7, 3, 7, 99, 1, 31, 99, 14,
+        ];
+        const GLOBAL: [u8; 19] = [
+            99, 99, 99, 99, 99, 99, 99, 99, 31, 7, 1, 99, 99, 99, 99, 1, 5, 7, 48,
+        ];
         for seed in 1..20usize {
             let mut u = [0u8; 155];
             for (i, b) in u.iter_mut().enumerate() {
-                let max = if i < 126 { OP[i % 21] } else if i < 145 { GLOBAL[i - 126] } else { 94 };
-                *b = ((i * 37 + seed * 11) % (usize::from(max) + 1)) as u8 + if i >= 145 { 32 } else { 0 };
+                let max = if i < 126 {
+                    OP[i % 21]
+                } else if i < 145 {
+                    GLOBAL[i - 126]
+                } else {
+                    94
+                };
+                *b = ((i * 37 + seed * 11) % (usize::from(max) + 1)) as u8
+                    + if i >= 145 { 32 } else { 0 };
             }
             assert_eq!(unpack(&pack(&u)), u, "seed {seed}");
         }
@@ -256,14 +319,27 @@ mod tests {
     #[test]
     fn presets_survive_a_bank_round_trip() {
         let presets = presets();
-        let voices: Vec<Dx7Voice> =
-            presets.iter().map(|p| Dx7Voice { name: p.name.to_uppercase(), values: p.values.clone() }).collect();
+        let voices: Vec<Dx7Voice> = presets
+            .iter()
+            .map(|p| Dx7Voice {
+                name: p.name.to_uppercase(),
+                values: p.values.clone(),
+            })
+            .collect();
         let file = bank(&voices);
         assert_eq!(file.len(), BANK_LEN);
         let back = parse(&file).unwrap();
         assert_eq!(back.len(), 32);
         for (p, v) in presets.iter().zip(&back) {
-            assert_eq!(v.name, p.name.to_uppercase().chars().take(10).collect::<String>().trim_end());
+            assert_eq!(
+                v.name,
+                p.name
+                    .to_uppercase()
+                    .chars()
+                    .take(10)
+                    .collect::<String>()
+                    .trim_end()
+            );
             let want = Dx7Voice::from_preset(p);
             for &(id, value) in &v.values {
                 assert_eq!(value, want.value(id), "{}: param {id}", p.name);

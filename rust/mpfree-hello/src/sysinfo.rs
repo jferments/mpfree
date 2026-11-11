@@ -18,23 +18,36 @@ pub const COMMIT: &str = env!("MPFREE_COMMIT");
 /// Read everything under `root` ("/" on the MPC; a fixture folder in tests).
 pub fn read(root: &Path) -> SystemInfo {
     let text = |p: &str| fs::read_to_string(root.join(p)).ok();
-    let mut software = vec![("MPFree".to_string(), format!("pad player {}, commit {COMMIT}", env!("CARGO_PKG_VERSION")))];
-    let os = text("etc/os-release").or_else(|| text("usr/lib/os-release")).map(|t| os_name(&t));
-    software.push(("Operating system".into(), os.flatten().unwrap_or_else(|| "not found".into())));
+    let mut software = vec![(
+        "MPFree".to_string(),
+        format!("pad player {}, commit {COMMIT}", env!("CARGO_PKG_VERSION")),
+    )];
+    let os = text("etc/os-release")
+        .or_else(|| text("usr/lib/os-release"))
+        .map(|t| os_name(&t));
+    software.push((
+        "Operating system".into(),
+        os.flatten().unwrap_or_else(|| "not found".into()),
+    ));
     let release = text("proc/sys/kernel/osrelease").map(|s| s.trim().to_string());
     let rt = text("proc/version").is_some_and(|v| v.contains("PREEMPT_RT"));
-    software.push(("Kernel".into(), match release {
-        Some(r) if rt => format!("Linux {r} (real-time)"),
-        Some(r) => format!("Linux {r}"),
-        None => "not found".into(),
-    }));
+    software.push((
+        "Kernel".into(),
+        match release {
+            Some(r) if rt => format!("Linux {r} (real-time)"),
+            Some(r) => format!("Linux {r}"),
+            None => "not found".into(),
+        },
+    ));
     if let Some(m) = text("proc/mounts").and_then(|m| root_device(&m)) {
         software.push(("Root file system".into(), m));
     }
     if let Some(h) = text("proc/sys/kernel/hostname") {
         software.push(("Host name".into(), h.trim().to_string()));
     }
-    if let Some(s) = text("proc/uptime").and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok()) {
+    if let Some(s) =
+        text("proc/uptime").and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok())
+    {
         software.push(("Running for".into(), duration(s)));
     }
 
@@ -53,10 +66,15 @@ pub fn read(root: &Path) -> SystemInfo {
     if let Some(m) = text("proc/meminfo").and_then(|m| memory(&m)) {
         hardware.push(("Memory".into(), m));
     }
-    if let Some(t) = text("sys/class/thermal/thermal_zone0/temp").and_then(|t| t.trim().parse::<f64>().ok()) {
+    if let Some(t) =
+        text("sys/class/thermal/thermal_zone0/temp").and_then(|t| t.trim().parse::<f64>().ok())
+    {
         hardware.push(("Temperature".into(), format!("{:.1} °C", t / 1000.0)));
     }
-    for (n, name) in text("proc/asound/cards").map(|c| sound_cards(&c)).unwrap_or_default() {
+    for (n, name) in text("proc/asound/cards")
+        .map(|c| sound_cards(&c))
+        .unwrap_or_default()
+    {
         hardware.push((format!("Sound card {n}"), name));
     }
     SystemInfo { software, hardware }
@@ -65,7 +83,9 @@ pub fn read(root: &Path) -> SystemInfo {
 /// PRETTY_NAME, or NAME and VERSION, from os-release.
 fn os_name(t: &str) -> Option<String> {
     let field = |k: &str| {
-        t.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')).map(|v| v.trim().trim_matches('"').to_string())
+        t.lines()
+            .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"').to_string())
     };
     field("PRETTY_NAME").filter(|s| !s.is_empty()).or_else(|| {
         let name = field("NAME")?;
@@ -83,12 +103,16 @@ fn root_device(m: &str) -> Option<String> {
         (f.len() >= 4 && f[1] == "/").then(|| (f[0], f[2], f[3]))
     })?;
     let ro = opts.split(',').any(|o| o == "ro");
-    Some(format!("{dev}, {fs_type}, {}", if ro { "read-only" } else { "read-write" }))
+    Some(format!(
+        "{dev}, {fs_type}, {}",
+        if ro { "read-only" } else { "read-write" }
+    ))
 }
 
 /// "4 × ARMv7 Processor rev 1 (v7l)".
 fn cpu(c: &str) -> Option<String> {
-    let names: Vec<&str> = c.lines()
+    let names: Vec<&str> = c
+        .lines()
         .filter_map(|l| {
             let (k, v) = l.split_once(':')?;
             (k.trim() == "model name").then(|| v.trim())
@@ -101,7 +125,14 @@ fn cpu(c: &str) -> Option<String> {
 /// "2042 MB, 1610 MB available".
 fn memory(m: &str) -> Option<String> {
     let kb = |k: &str| {
-        m.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(':')?.split_whitespace().next()?.parse::<u64>().ok())
+        m.lines().find_map(|l| {
+            l.strip_prefix(k)?
+                .strip_prefix(':')?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
     };
     let total = kb("MemTotal")?;
     Some(match kb("MemAvailable") {
@@ -116,9 +147,24 @@ fn sound_cards(c: &str) -> Vec<(u32, String)> {
         .filter_map(|l| {
             let (n, rest) = l.trim_start().split_once(' ')?;
             let n = n.parse::<u32>().ok()?;
-            let id = rest.trim_start().strip_prefix('[')?.split_once(']')?.0.trim();
-            let name = rest.rsplit_once(" - ").map(|(_, name)| name.trim()).unwrap_or(id);
-            Some((n, if name == id { id.to_string() } else { format!("{id}: {name}") }))
+            let id = rest
+                .trim_start()
+                .strip_prefix('[')?
+                .split_once(']')?
+                .0
+                .trim();
+            let name = rest
+                .rsplit_once(" - ")
+                .map(|(_, name)| name.trim())
+                .unwrap_or(id);
+            Some((
+                n,
+                if name == id {
+                    id.to_string()
+                } else {
+                    format!("{id}: {name}")
+                },
+            ))
         })
         .collect()
 }
@@ -136,15 +182,29 @@ fn duration(s: f64) -> String {
 
 /// What the preview shows (fixed, so the picture is the same on any computer).
 pub fn sample() -> SystemInfo {
-    let rows = |r: &[(&str, &str)]| r.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let rows = |r: &[(&str, &str)]| {
+        r.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
     SystemInfo {
-        software: rows(&[("MPFree", "pad player 0.1.0, commit caf5309"), ("Operating system", "Akai MPC OS (sample)"),
-                         ("Kernel", "Linux 6.18.44-az01-2026-08-10-rt6 (real-time)"),
-                         ("Root file system", "/dev/root, ext4, read-only"), ("Host name", "mpc-one"),
-                         ("Running for", "12 min 40 s")]),
-        hardware: rows(&[("Board", "Akai Professional MPC One"), ("Processor", "4 × ARMv7 Processor rev 1 (v7l)"),
-                         ("Clock", "1608 MHz"), ("Memory", "2042 MB, 1610 MB available"), ("Temperature", "47.8 °C"),
-                         ("Sound card 0", "Live: MPC Studio Live"), ("Sound card 1", "ACVA: ACVA")]),
+        software: rows(&[
+            ("MPFree", "pad player 0.1.0, commit caf5309"),
+            ("Operating system", "Akai MPC OS (sample)"),
+            ("Kernel", "Linux 6.18.44-az01-2026-08-10-rt6 (real-time)"),
+            ("Root file system", "/dev/root, ext4, read-only"),
+            ("Host name", "mpc-one"),
+            ("Running for", "12 min 40 s"),
+        ]),
+        hardware: rows(&[
+            ("Board", "Akai Professional MPC One"),
+            ("Processor", "4 × ARMv7 Processor rev 1 (v7l)"),
+            ("Clock", "1608 MHz"),
+            ("Memory", "2042 MB, 1610 MB available"),
+            ("Temperature", "47.8 °C"),
+            ("Sound card 0", "Live: MPC Studio Live"),
+            ("Sound card 1", "ACVA: ACVA"),
+        ]),
     }
 }
 
@@ -160,31 +220,74 @@ mod tests {
             fs::create_dir_all(f.parent().unwrap()).unwrap();
             fs::write(f, s).unwrap();
         };
-        put("etc/os-release", "NAME=\"Poky\"\nVERSION=\"5.0 (scarthgap)\"\n");
+        put(
+            "etc/os-release",
+            "NAME=\"Poky\"\nVERSION=\"5.0 (scarthgap)\"\n",
+        );
         put("proc/sys/kernel/osrelease", "6.18.44-az01-2026-08-10-rt6\n");
-        put("proc/version", "Linux version 6.18.44 #1 SMP PREEMPT_RT Mon Aug 10\n");
-        put("proc/mounts", "tmpfs /run tmpfs rw 0 0\n/dev/root / ext4 ro,relatime 0 0\n");
+        put(
+            "proc/version",
+            "Linux version 6.18.44 #1 SMP PREEMPT_RT Mon Aug 10\n",
+        );
+        put(
+            "proc/mounts",
+            "tmpfs /run tmpfs rw 0 0\n/dev/root / ext4 ro,relatime 0 0\n",
+        );
         put("proc/uptime", "760.25 2900.00\n");
         put("proc/device-tree/model", "Akai Professional MPC One\0");
-        put("proc/cpuinfo", "processor\t: 0\nmodel name\t: ARMv7 Processor rev 1 (v7l)\n\nprocessor\t: 1\n\
-                             model name\t: ARMv7 Processor rev 1 (v7l)\n");
-        put("proc/meminfo", "MemTotal:        2091008 kB\nMemFree:  100 kB\nMemAvailable:    1648640 kB\n");
+        put(
+            "proc/cpuinfo",
+            "processor\t: 0\nmodel name\t: ARMv7 Processor rev 1 (v7l)\n\nprocessor\t: 1\n\
+                             model name\t: ARMv7 Processor rev 1 (v7l)\n",
+        );
+        put(
+            "proc/meminfo",
+            "MemTotal:        2091008 kB\nMemFree:  100 kB\nMemAvailable:    1648640 kB\n",
+        );
         put("proc/asound/cards", " 0 [Live           ]: USB-Audio - MPC Studio Live\n                      \
                                   Akai Professional MPC Studio Live at usb-ff500000.usb-1.1, high speed\n \
                                   1 [ACVA           ]: simple-card - ACVA\n                      ACVA\n");
         let info = read(&dir);
-        let get = |rows: &[(String, String)], k: &str| rows.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-        assert_eq!(get(&info.software, "Operating system").as_deref(), Some("Poky 5.0 (scarthgap)"));
-        assert_eq!(get(&info.software, "Kernel").as_deref(), Some("Linux 6.18.44-az01-2026-08-10-rt6 (real-time)"));
-        assert_eq!(get(&info.software, "Root file system").as_deref(), Some("/dev/root, ext4, read-only"));
-        assert_eq!(get(&info.software, "Running for").as_deref(), Some("12 min 40 s"));
+        let get = |rows: &[(String, String)], k: &str| {
+            rows.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            get(&info.software, "Operating system").as_deref(),
+            Some("Poky 5.0 (scarthgap)")
+        );
+        assert_eq!(
+            get(&info.software, "Kernel").as_deref(),
+            Some("Linux 6.18.44-az01-2026-08-10-rt6 (real-time)")
+        );
+        assert_eq!(
+            get(&info.software, "Root file system").as_deref(),
+            Some("/dev/root, ext4, read-only")
+        );
+        assert_eq!(
+            get(&info.software, "Running for").as_deref(),
+            Some("12 min 40 s")
+        );
         assert_eq!(get(&info.software, "Host name"), None);
-        assert!(get(&info.software, "MPFree").unwrap().starts_with("pad player 0.1.0, commit "));
-        assert_eq!(get(&info.hardware, "Board").as_deref(), Some("Akai Professional MPC One"));
-        assert_eq!(get(&info.hardware, "Processor").as_deref(), Some("2 × ARMv7 Processor rev 1 (v7l)"));
-        assert_eq!(get(&info.hardware, "Memory").as_deref(), Some("2042 MB, 1610 MB available"));
+        assert!(get(&info.software, "MPFree")
+            .unwrap()
+            .starts_with("pad player 0.1.0, commit "));
+        assert_eq!(
+            get(&info.hardware, "Board").as_deref(),
+            Some("Akai Professional MPC One")
+        );
+        assert_eq!(
+            get(&info.hardware, "Processor").as_deref(),
+            Some("2 × ARMv7 Processor rev 1 (v7l)")
+        );
+        assert_eq!(
+            get(&info.hardware, "Memory").as_deref(),
+            Some("2042 MB, 1610 MB available")
+        );
         assert_eq!(get(&info.hardware, "Clock"), None);
-        assert_eq!(get(&info.hardware, "Sound card 0").as_deref(), Some("Live: MPC Studio Live"));
+        assert_eq!(
+            get(&info.hardware, "Sound card 0").as_deref(),
+            Some("Live: MPC Studio Live")
+        );
         assert_eq!(get(&info.hardware, "Sound card 1").as_deref(), Some("ACVA"));
         assert_eq!(info.hardware.len(), 5);
         let _ = fs::remove_dir_all(&dir);
@@ -194,9 +297,15 @@ mod tests {
     fn an_empty_tree_still_names_the_program() {
         let info = read(Path::new("/nonexistent-mpfree-root"));
         assert_eq!(info.software[0].0, "MPFree");
-        assert_eq!(info.software[1], ("Operating system".to_string(), "not found".to_string()));
+        assert_eq!(
+            info.software[1],
+            ("Operating system".to_string(), "not found".to_string())
+        );
         assert!(info.hardware.is_empty());
         assert_eq!(duration(7500.0), "2 h 05 min");
-        assert_eq!(os_name("PRETTY_NAME=\"Akai OS 3.10\"\nNAME=x\n").as_deref(), Some("Akai OS 3.10"));
+        assert_eq!(
+            os_name("PRETTY_NAME=\"Akai OS 3.10\"\nNAME=x\n").as_deref(),
+            Some("Akai OS 3.10")
+        );
     }
 }
