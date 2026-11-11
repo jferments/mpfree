@@ -18,7 +18,12 @@
 //!
 //! Edits (launches, takes, arming, a capture) compile a new play view in
 //! the loop. That allocates, but only on an edit, not every period; moving
-//! it to a control thread is a later step. Every track plays the current
+//! it to a control thread is a later step. Recording is not an edit of
+//! that kind: each recorded or erased note or lock goes into the clip and
+//! into the play view in place, in room set aside when the view was
+//! compiled ([`RECORD_ROOM`]), so a recording period neither compiles nor
+//! allocates. The screens hear about those notes at most four times a
+//! second ([`TimeHost::take_changed`]). Every track plays the current
 //! kit.
 
 use mpfree_capture::{keep, Capture, Now, Pending};
@@ -34,6 +39,10 @@ pub const TRACKS: usize = 8;
 pub const NEW_CLIP_BARS: i64 = 2;
 /// Notes the sequencer can start or stop in one period.
 const MAX_OUT: usize = 512;
+/// Notes, and locks, the armed track's clips can take while recording
+/// before the view is compiled again (which allocates): room set aside
+/// in the clip and in the play view each time it compiles.
+pub const RECORD_ROOM: usize = 1024;
 
 /// Where the sequencer's notes go: the sampler's pads.
 pub trait Pads {
@@ -157,6 +166,12 @@ pub struct TimeHost {
     pub metronome: bool,
     /// The clips, launches or takes changed since [`TimeHost::take_changed`].
     changed: bool,
+    /// Recording changed the clips and takes since the screens last heard.
+    recorded: bool,
+    /// Frames since `changed` was last set for a recording.
+    since_told: u64,
+    /// Recorded changes are told this often, in frames (a quarter second).
+    tell_every: u64,
     /// [`TimeHost::advance`] ran the transport for the coming period (and
     /// whether it could).
     advanced: Option<bool>,
@@ -205,6 +220,9 @@ impl TimeHost {
             click: Click::new(rate),
             metronome: true,
             changed: true,
+            recorded: false,
+            since_told: 0,
+            tell_every: u64::from(rate / 4),
             advanced: None,
             jump_pending: false,
         };
@@ -224,8 +242,34 @@ impl TimeHost {
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
+        // Room to record into the armed track's clips without allocating.
+        v.make_room(RECORD_ROOM, RECORD_ROOM);
+        if let Some(t) = self.armed {
+            let slots = self
+                .launches
+                .iter()
+                .filter(|l| l.track == t)
+                .map(|l| l.slot);
+            let cued = self
+                .cues
+                .iter()
+                .filter(|c| c.track == t)
+                .filter_map(|c| c.slot);
+            for slot in slots.chain(cued) {
+                if let Some(Some(c)) = self
+                    .project
+                    .tracks
+                    .get_mut(t)
+                    .and_then(|t| t.slots.get_mut(slot))
+                {
+                    c.notes.reserve(RECORD_ROOM);
+                    c.locks.reserve(RECORD_ROOM);
+                }
+            }
+        }
         self.view = v;
         self.changed = true;
+        self.recorded = false;
         Ok(())
     }
 
@@ -479,32 +523,56 @@ impl TimeHost {
             }
         }
         self.recorder.process(&self.view, &self.block);
-        let mut edited = false;
-        // Cues that started on a bar line become the tracks' launches.
+        // Cues that started on a bar line become the tracks' launches: the
+        // view is compiled again.
+        let mut compile = false;
         for i in 0..self.player.started().len() {
             self.player.started()[i].apply(&mut self.launches, &mut self.cues);
-            edited = true;
+            compile = true;
         }
+        // Recorded and erased notes and locks go into the clips and, in
+        // place, into the view, unless it has no room left.
+        let mut recorded = false;
         for i in 0..self.player.erased().len() {
             let e = self.player.erased()[i];
-            edited |= self.takes.erase(&mut self.project, &e);
+            if self.takes.erase(&mut self.project, &e) {
+                recorded = true;
+                compile |= !self.view.remove_note(e.track, e.slot, &e.note);
+            }
         }
         for i in 0..self.player.erased_locks().len() {
             let e = self.player.erased_locks()[i];
-            edited |= self.takes.erase_lock(&mut self.project, &e);
+            if self.takes.erase_lock(&mut self.project, &e) {
+                recorded = true;
+                compile |= !self.view.remove_lock(e.track, e.slot, &e.lock);
+            }
         }
         for i in 0..self.recorder.taken().len() {
             let k = self.recorder.taken()[i];
-            edited |= self.takes.add(&mut self.project, &k).is_ok();
+            if self.takes.add(&mut self.project, &k).is_ok() {
+                recorded = true;
+                compile |= !self.view.add_note(k.track, k.slot, &k.note);
+            }
         }
         for i in 0..self.recorder.taken_locks().len() {
             let k = self.recorder.taken_locks()[i];
-            edited |= self.takes.add_lock(&mut self.project, &k).is_ok();
+            if let Ok(old) = self.takes.add_lock(&mut self.project, &k) {
+                recorded = true;
+                compile |= !self.view.add_lock(k.track, k.slot, &k.lock, old.as_ref());
+            }
         }
-        if edited {
+        if compile {
             // The clips only gained or lost notes and locks, and cues became
             // launches of clips they had compiled with, so this compiles.
             let _ = self.compile();
+        } else {
+            self.recorded |= recorded;
+            self.since_told += u64::from(frames);
+            if self.recorded && self.since_told >= self.tell_every {
+                self.changed = true;
+                self.recorded = false;
+                self.since_told = 0;
+            }
         }
         if self.metronome {
             for span in self.block.spans() {
@@ -538,7 +606,8 @@ impl TimeHost {
         TransportInfo::of(&self.transport)
     }
 
-    /// True once after the clips, launches or takes changed.
+    /// True once after the clips, launches or takes changed. Notes and
+    /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
@@ -900,6 +969,47 @@ mod tests {
         );
         assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Recording puts each note into the clip and the play view in place:
+    /// once the take has begun, recording periods (a new pass replacing the
+    /// last one, sixteen notes a second) neither compile nor allocate, the
+    /// view is what compiling again would give, and the screens hear about
+    /// the notes at most four times a second.
+    #[test]
+    fn recording_neither_compiles_nor_allocates_on_every_note() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake {
+            hits: Vec::with_capacity(100_000),
+            ..Fake::default()
+        };
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let presses: Vec<(u64, u8, u8, u64)> = (0..200u64)
+            .map(|i| (1000 + i * 2756, (i % 16) as u8, 60 + (i % 60) as u8, 1000))
+            .collect();
+        // The first notes begin the take (its entry in the history).
+        run(&mut h, &mut pads, BAR / 2, &presses);
+        assert_eq!(h.info().state, State::Recording);
+        h.take_changed();
+        let mut told = 0;
+        let ((), allocs) = crate::sys::alloc_count::calls(|| {
+            while pads.frame < 6 * BAR {
+                let to = pads.frame + u64::from(PERIOD);
+                run(&mut h, &mut pads, to, &presses);
+                told += usize::from(h.take_changed());
+            }
+        });
+        assert_eq!(allocs, 0, "allocations or frees while recording");
+        let notes = h.state().clip(2, 0).map(|c| c.notes).unwrap();
+        assert!(notes > 40, "{notes} notes in the clip");
+        assert!(!pads.hits.is_empty(), "the clip plays what it recorded");
+        let mut fresh = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
+        fresh.set_armed(h.armed);
+        assert_eq!(h.view, fresh, "the view in place is what compiling gives");
+        // 5.5 bars of 2 s: the notes at most 4 times a second (44), and the
+        // Capture button once a bar; one each note would be 176.
+        assert!((10..=52).contains(&told), "told the screens {told} times");
     }
 
     #[test]

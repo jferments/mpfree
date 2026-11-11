@@ -33,7 +33,12 @@
 //! a lock of the same parameter on the same tick and row, and a turn that
 //! spans many periods stays one lock in the take.
 //!
-//! This allocates; it never runs on the audio thread.
+//! Most of this allocates. Recording does not, once a take has begun:
+//! a new take's lists start with room for [`TAKE_ROOM`] notes and locks
+//! each, so [`Takes::add`], [`Takes::erase`] and the lock versions only
+//! allocate after that many (and the clip's own list, unless the host
+//! reserved room in it; see `PlayView::make_room`). A take beginning
+//! allocates its lists, and can free the oldest take and the undone ones.
 //!
 //! [`Player::erased`]: crate::Player::erased
 //! [`Player::erased_locks`]: crate::Player::erased_locks
@@ -48,6 +53,10 @@ use crate::{Erased, ErasedLock, Taken, TakenLock};
 
 /// Takes kept for undo when no limit is given.
 pub const DEFAULT_LIMIT: usize = 32;
+
+/// Notes and locks a recorded take has room for in each of its lists
+/// before adding one allocates.
+pub const TAKE_ROOM: usize = 256;
 
 /// What one take changed. Each note is (track, slot, note).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -119,8 +128,13 @@ impl Takes {
     /// A later value of a lock this take recorded replaces it in the take
     /// too, so undo puts back what was there before the take. `BadSlot` if
     /// the clip is gone; the clip's own refusals as they are; nothing
-    /// changes on an error.
-    pub fn add_lock(&mut self, project: &mut Project, k: &TakenLock) -> Result<(), ModelError> {
+    /// changes on an error. The lock it replaced, if any (the new one took
+    /// its place in the clip's list; otherwise it went on the end).
+    pub fn add_lock(
+        &mut self,
+        project: &mut Project,
+        k: &TakenLock,
+    ) -> Result<Option<Lock>, ModelError> {
         let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
         let new = k.lock;
         let key = |x: &Lock| (x.tick, x.sound, x.addr) == (new.tick, new.sound, new.addr);
@@ -153,7 +167,7 @@ impl Takes {
             }
             (None, None) => take.locks_added.push((k.track, k.slot, new)),
         }
-        Ok(())
+        Ok(old)
     }
 
     /// Remove an erased note from its clip and remember it with its take.
@@ -461,6 +475,10 @@ impl Takes {
         }
         self.push(Take {
             number,
+            added: Vec::with_capacity(TAKE_ROOM),
+            erased: Vec::with_capacity(TAKE_ROOM),
+            locks_added: Vec::with_capacity(TAKE_ROOM),
+            locks_erased: Vec::with_capacity(TAKE_ROOM),
             ..Take::default()
         })
     }
