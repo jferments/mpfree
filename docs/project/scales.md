@@ -45,7 +45,19 @@ Classical min  = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10
 
 A set with a `b` or `#`, or with `1` and no `0`, is read as degrees. The root is always included. A custom scale may not take a built-in name. In the pad player they follow the built-in scales in the arp's Scale row, and Save writes them back with the patterns (only with `--save-patterns`).
 
+## The pads (`mpfree_scale::pads`)
+
+For a synth on the pads, as the owner decided on 2026-11-11 (09:55Z). `layout(&PadSetup)` gives the 16 pads, each with its notes (a chord's root last, so a mono synth that plays the last note plays the root), its role for colour (`Root`, `InScale`, `OutOfScale`, or `Plain` with no scale) and, on chord pads, its scale degree. `pad_name` gives a tile's text and `range_text` the chip's range. Nothing is decided per audio block: the layout is worked out when a setting changes.
+
+| `PadLayout` | Pads |
+|---|---|
+| `Chromatic` (default) | Pad 1 = C3, a semitone each, as in round 6. With a scale, only the colours change. |
+| `InKey` | Only scale notes, pad 1 = the root in octave 3. `InKeyRows::Sequence` (default) climbs 16 scale notes; `Fourths` starts each row three scale notes higher. |
+| `Chords` | Triads on the bottom two rows (I to VII, then I an octave up), sevenths on the top two. Tiles: numeral and name (iv7, Dm7) in seven-note scales, else the degree and the notes. |
+
+`PadLayout::toggled` is the one quick switch between Chromatic and In key; which button or touch does it is the Hello MPC thread's proposal. `DEFAULT_BANKS`: A Chromatic, B In key, C Chord pads, D In key an octave up, E to H copies of A to D (approved for now, to be discussed again). With no scale every layout is plain Chromatic.
+
 ## Next
 
 - Arp: done (chord on each pad, scale run, chords taking turns; see [arpeggiator.md](arpeggiator.md)).
-- Synth pads (owner approved 2026-11-11 09:55Z): chromatic by default with the scale lit, one quick action to switch to In key (the Hello MPC thread proposes which), In key rows in sequence (or a fourth apart), chord pads (triads on the bottom two rows, sevenths on the top two), and each pad bank holding its own layout while the synth is on the pads. This crate gives each layout's notes, colour roles and names; the synth thread plays them and the Hello MPC thread draws them.
+- Synth pads (owner approved 2026-11-11 09:55Z): chromatic by default with the scale lit, one quick action to switch to In key (the Hello MPC thread proposes which), In key rows in sequence (or a fourth apart), chord pads (triads on the bottom two rows, sevenths on the top two), and each pad bank holding its own layout while the synth is on the pads. This crate's `pads` module gives each layout's notes, colour roles and names (above); the synth thread plays them and the Hello MPC thread draws them.
