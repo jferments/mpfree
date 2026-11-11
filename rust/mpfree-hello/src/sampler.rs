@@ -355,6 +355,12 @@ impl Player {
 
     /// Fades every sound out (over a few milliseconds; a Grains pad over its
     /// release).
+    /// The project tempo, for warped pads (cheap when it hasn't moved:
+    /// call it every period).
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.engine.set_tempo(bpm);
+    }
+
     pub fn stop_all(&mut self) {
         self.engine.apply(Event::AllOff);
     }

@@ -38,6 +38,7 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PlayMode, Project, Region, SourceId,
 };
+use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
@@ -138,6 +139,12 @@ pub struct SamplePage {
     /// Edits applied, and views sent to the audio thread.
     pub edits: u64,
     pub views_sent: u64,
+    /// The project tempo and the stretched copies warped pads play.
+    warps: Warps,
+    /// The thread that makes them, started the first time one is wanted.
+    stretcher: Option<Worker>,
+    /// Copies asked of it and not back yet.
+    stretching: Vec<CopyKey>,
 }
 
 impl SamplePage {
@@ -174,6 +181,9 @@ impl SamplePage {
             lines: Vec::new(),
             edits: 0,
             views_sent: 0,
+            warps: Warps::default(),
+            stretcher: None,
+            stretching: Vec::new(),
         };
         p.show_empty(ui);
         Ok(p)
@@ -192,6 +202,12 @@ impl SamplePage {
         self.projects = projects;
         self.rate = rate;
         self.sources.clear();
+        self.warps.clear();
+        self.cancel_stretching();
+        // Kits with warped pads get their views at the project tempo.
+        for k in 0..self.projects.len() {
+            self.dirty[k] = self.warped(k);
+        }
         self.pad = self.with_sound(self.pad, 1).unwrap_or(self.pad);
         self.refresh(ui);
     }
@@ -976,11 +992,122 @@ impl SamplePage {
         }
     }
 
+    // ------------------------------------------------------------ warp
+
+    /// The project tempo (the transport's). Kits with warped pads get new
+    /// views, and their copies for the old tempo stop being made.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        if !self.warps.set_tempo(bpm) {
+            return;
+        }
+        self.cancel_stretching();
+        for k in 0..self.projects.len() {
+            if self.warped(k) {
+                self.dirty[k] = true;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn tempo(&self) -> f64 {
+        self.warps.tempo()
+    }
+
+    /// Whether kit `kit` has a warped pad.
+    fn warped(&self, kit: usize) -> bool {
+        self.projects.get(kit).is_some_and(|p| {
+            (0..mpfree_sampler::model::PADS).any(|i| {
+                p.pad(i)
+                    .is_some_and(|pad| pad.layers.iter().any(|l| l.region.warp.is_some()))
+            })
+        })
+    }
+
+    fn cancel_stretching(&mut self) {
+        if let Some(w) = &self.stretcher {
+            w.cancel();
+        }
+        self.stretching.clear();
+    }
+
+    /// Copies kit `kit` needs at the tempo go to the stretch thread.
+    fn ask_for_copies(&mut self, kit: usize) {
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let missing: Vec<CopyKey> = self
+            .warps
+            .missing(project)
+            .into_iter()
+            .filter(|k| !self.stretching.contains(k))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        if self.stretcher.is_none() {
+            match Worker::spawn() {
+                Ok(w) => self.stretcher = Some(w),
+                Err(e) => {
+                    self.lines.push(format!("sample: no stretch thread: {e}"));
+                    return;
+                }
+            }
+        }
+        let Some(w) = &self.stretcher else { return };
+        for k in missing {
+            match Warps::spec(project, &k) {
+                Ok(spec) => {
+                    if w.send(k, spec) {
+                        self.stretching.push(k);
+                    }
+                }
+                Err(e) => self.lines.push(format!("sample: can't stretch: {e}")),
+            }
+        }
+    }
+
+    /// Takes in the copies the stretch thread has finished; the kits that
+    /// play them get new views.
+    fn take_copies(&mut self) {
+        let Some(w) = &self.stretcher else { return };
+        let mut done = Vec::new();
+        while let Some(d) = w.try_recv() {
+            done.push(d);
+        }
+        for d in done {
+            match d {
+                Done::Copy(key, data, took) => {
+                    self.stretching.retain(|k| *k != key);
+                    self.warps.insert_for(key, data, &self.projects);
+                    for k in 0..self.projects.len() {
+                        if self.warps.wanted(&self.projects[k]).contains(&key) {
+                            self.dirty[k] = true;
+                        }
+                    }
+                    self.lines.push(format!(
+                        "sample: stretched {:.2} s to {:.0} BPM in {:.0} ms ({:.1} MB of copies)",
+                        key.frames as f64 / f64::from(self.rate.max(1)),
+                        self.warps.tempo(),
+                        took.as_secs_f64() * 1000.0,
+                        self.warps.bytes() as f64 / 1e6
+                    ));
+                }
+                Done::Failed(key, e) => {
+                    self.stretching.retain(|k| *k != key);
+                    self.lines.push(format!("sample: stretch failed: {e}"));
+                }
+                Done::Cancelled(key) => self.stretching.retain(|k| *k != key),
+            }
+        }
+    }
+
     // ------------------------------------------------------------ the audio thread
 
-    /// The next kit view for the audio thread, if a kit was edited and no
-    /// view is on its way already. Built here, off the audio thread.
+    /// The next kit view for the audio thread, if a kit was edited (or a
+    /// stretched copy came in) and no view is on its way already. Built
+    /// here, off the audio thread, with warped pads at the project tempo.
     pub fn take_view(&mut self) -> Option<FromUi> {
+        self.take_copies();
         if self.in_flight {
             return None;
         }
@@ -988,7 +1115,8 @@ impl SamplePage {
         self.dirty[kit] = false;
         self.in_flight = true;
         self.views_sent += 1;
-        let view = EngineView::build(&self.projects[kit], self.rate);
+        let view = EngineView::build_warped(&self.projects[kit], self.rate, &mut self.warps);
+        self.ask_for_copies(kit);
         Some(FromUi::SampleView(Box::new(ViewSwap {
             kit,
             view: Some(view),

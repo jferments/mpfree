@@ -1194,10 +1194,12 @@ impl Player {
             }
             ToUi::Time(st) => {
                 self.time = *st;
+                self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
             }
             ToUi::Transport(info) => {
                 self.time.transport = info;
+                self.sample.set_tempo(info.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
             }
             ToUi::ClipsWheel {
@@ -1400,6 +1402,8 @@ impl Player {
         if let Some(a) = self.sample.take_view() {
             self.outbox.push(a);
         }
+        // A stretched copy coming in says so.
+        self.print_sample_lines();
         std::mem::take(&mut self.outbox)
     }
 
@@ -3047,6 +3051,76 @@ mod tests {
             }
         }
         (v, rest)
+    }
+
+    #[test]
+    fn a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let warp_row = Row::ALL.iter().position(|r| *r == Row::Warp).unwrap();
+        p.on_event(UiEvent {
+            widget: REGION.into(),
+            kind: EventKind::Step {
+                index: warp_row,
+                delta: 1,
+            },
+        });
+        let region = p.sample.state().unwrap().region.clone();
+        let w = region.warp.expect("warped");
+        assert_eq!(w.method, mpfree_sampler::model::WarpMethod::Stretch);
+        // The first view repitches (no copy yet) and asks for the copy.
+        let (sent, _) = views(p.take_actions());
+        let layer = sent[0].view.as_ref().unwrap().layer(pad, 0).unwrap();
+        assert_eq!(layer.stretched_frames(), None);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The copy comes back from the stretch thread: a new view plays it.
+        let t = Instant::now();
+        let sent = loop {
+            let (sent, _) = views(p.take_actions());
+            if !sent.is_empty() {
+                break sent;
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "no copy");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let len = sent[0]
+            .view
+            .as_ref()
+            .unwrap()
+            .layer(pad, 0)
+            .unwrap()
+            .stretched_frames()
+            .expect("the copy");
+        let want = region.frames() as f64 * f64::from(w.bpm) / 120.0;
+        assert!((len as f64 - want).abs() <= 1.0, "{len} vs {want}");
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l.starts_with("sample: stretched")),
+            "{:?}",
+            events_log(&p)
+        );
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // A new tempo: a view at once (repitching), then its own copy.
+        let info = TransportInfo {
+            bpm: 100.0,
+            ..TransportInfo::default()
+        };
+        p.apply(ToUi::Transport(info));
+        assert_eq!(p.sample.tempo(), 100.0);
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0]
+                .view
+                .as_ref()
+                .unwrap()
+                .layer(pad, 0)
+                .unwrap()
+                .stretched_frames(),
+            None
+        );
     }
 
     fn events_log(p: &Player) -> Vec<String> {
