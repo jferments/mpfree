@@ -211,6 +211,12 @@ impl Default for Delay {
 }
 
 impl Delay {
+    /// The delay time in ms for the settings and a tempo (`bpm`), as the
+    /// echo will play it. For drawing.
+    pub fn time_ms(&self, bpm: f64) -> f32 {
+        self.target_frames(bpm) * 1000.0 / self.rate as f32
+    }
+
     /// Allocates for 48 kHz; [`Node::prepare`] reallocates for other rates.
     pub fn new() -> Delay {
         let v = defaults(&PARAMS);

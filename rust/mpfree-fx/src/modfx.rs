@@ -294,6 +294,17 @@ impl Default for Chorus {
 }
 
 impl Chorus {
+    /// Voice `voice`'s delay in ms at LFO phase `phase` (0 to 1 a cycle),
+    /// for the settings set; `None` for a voice not in use. For drawing.
+    pub fn delay_ms(&self, voice: usize, phase: f32) -> Option<f32> {
+        if voice >= self.v[chorus::VOICES as usize] as usize || voice >= 4 {
+            return None;
+        }
+        let base = self.v[chorus::DELAY as usize];
+        let swing = 0.5 * self.v[chorus::DEPTH as usize] / 100.0 * base;
+        Some(base + swing * sine(wrap(phase + VOICE_PHASE[voice])))
+    }
+
     pub fn new() -> Chorus {
         let v = defaults(&CHORUS_PARAMS);
         let mut c = Chorus {
@@ -589,6 +600,29 @@ impl Default for Flanger {
 }
 
 impl Flanger {
+    /// The delay in ms at LFO phase `phase` (0 to 1 a cycle), for the
+    /// settings set. For drawing.
+    pub fn delay_ms(&self, phase: f32) -> f32 {
+        let depth = FLANGE_OCTAVES * self.v[flanger::DEPTH as usize] / 100.0;
+        self.v[flanger::DELAY as usize] * (depth * sine(wrap(phase))).exp2()
+    }
+
+    /// The response in dB at `hz` with the sweep held at `phase`, for the
+    /// settings set: the comb the flanger makes there. For drawing.
+    pub fn response_db(&self, hz: f32, phase: f32) -> f32 {
+        let fs = self.rate as f64;
+        let d = f64::from(self.delay_ms(phase)) * 0.001 * fs;
+        let fb = f64::from(self.v[flanger::FEEDBACK as usize]) / 100.0;
+        let mix = f64::from(self.v[flanger::MIX as usize]) / 100.0;
+        let w = 2.0 * std::f64::consts::PI * f64::from(hz) / fs;
+        // wet = z^-d / (1 - fb z^-d); out = (1 - mix) + mix wet.
+        let (zr, zi) = ((w * d).cos(), -(w * d).sin());
+        let (dr, di) = (1.0 - fb * zr, -fb * zi);
+        let den = dr * dr + di * di;
+        let (wr, wi) = ((zr * dr + zi * di) / den, (zi * dr - zr * di) / den);
+        crate::svf::power_db((1.0 - mix + mix * wr, mix * wi))
+    }
+
     pub fn new() -> Flanger {
         let v = defaults(&FLANGER_PARAMS);
         let mut f = Flanger {
@@ -883,6 +917,43 @@ impl Default for Phaser {
 }
 
 impl Phaser {
+    /// The all-pass corner in Hz at LFO phase `phase` (0 to 1 a cycle),
+    /// for the settings set. For drawing.
+    pub fn center_hz(&self, phase: f32) -> f32 {
+        let depth = PHASE_OCTAVES * self.v[phaser::DEPTH as usize] / 100.0;
+        let center = self.v[phaser::CENTER as usize].log2();
+        (center + depth * sine(wrap(phase)))
+            .exp2()
+            .min(0.45 * self.rate as f32)
+    }
+
+    /// The response in dB at `hz` with the sweep held at `phase`, for the
+    /// settings set: the notches the phaser makes there. For drawing.
+    pub fn response_db(&self, hz: f32, phase: f32) -> f32 {
+        let fs = self.rate as f64;
+        let g = (std::f64::consts::PI * f64::from(self.center_hz(phase)) / fs).tan();
+        // Each stage is the all-pass (a + z^-1) / (1 + a z^-1).
+        let a = 2.0 * g / (1.0 + g) - 1.0;
+        let n = STAGE_COUNTS[(self.v[phaser::STAGES as usize] as usize).min(4)];
+        let fb = f64::from(self.v[phaser::FEEDBACK as usize]) / 100.0;
+        let mix = f64::from(self.v[phaser::MIX as usize]) / 100.0;
+        let w = 2.0 * std::f64::consts::PI * f64::from(hz) / fs;
+        let z = (w.cos(), -w.sin()); // z^-1
+        let cdiv = |a: (f64, f64), b: (f64, f64)| {
+            let den = b.0 * b.0 + b.1 * b.1;
+            ((a.0 * b.0 + a.1 * b.1) / den, (a.1 * b.0 - a.0 * b.1) / den)
+        };
+        let stage = cdiv((a + z.0, z.1), (1.0 + a * z.0, a * z.1));
+        let mut chain = (1.0, 0.0);
+        for _ in 0..n {
+            chain = crate::svf::cmul(chain, stage);
+        }
+        // out = A^n x / (1 - fb z^-1 A^n): the feedback is one frame late.
+        let loop_ = crate::svf::cmul(z, chain);
+        let wet = cdiv(chain, (1.0 - fb * loop_.0, -fb * loop_.1));
+        crate::svf::power_db((1.0 - mix + mix * wet.0, mix * wet.1))
+    }
+
     pub fn new() -> Phaser {
         let v = defaults(&PHASER_PARAMS);
         let mut p = Phaser {
