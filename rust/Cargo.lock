@@ -584,6 +584,8 @@ version = "0.1.0"
 name = "mpfree-perform"
 version = "0.1.0"
 dependencies = [
+ "mpfree-mod",
+ "mpfree-node",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",
