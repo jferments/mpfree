@@ -1274,3 +1274,33 @@ User retry after `git pull --ff-only origin main`: `bash tools/ghidra/run_full_p
 The launcher `tools/ghidra/run_full_p3_analysis.sh` now invokes `-preScript MPFreeFinishBootChain.java pre` and `-postScript MPFreeFinishBootChain.java post`, replacing the incompatible `.py` scripts, and **fails with an explicit nonzero exit** if no fresh report was written. It preserves the original Ghidra project by creating a fresh one at base `0x00100000` on each run. `MPFreeFinishBootChain.py` remains as a legacy Jython-oriented optional script, but it is not invoked by this headless launcher. This solution uses Ghidra's documented Java script support: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/analyzeHeadlessREADME.md .
 
 Run from ML-tower: `cd /home/jesse/code/mpfree-hardware-survey && git pull --ff-only origin main && bash tools/ghidra/run_full_p3_analysis.sh`. A report and its decompiler output only count as complete when the native script is executed successfully and inspected. This commit is **not** a claim that the full bootm/kernel handoff and MaskROM entry were already reverse-engineered; those remain separate verification targets. Snap installation and MPC firmware were not changed.
+
+
+## 29. Ghidra 12.2 headless audit succeeds; Python 3 follow-up introduced (2026-11-10)
+
+The owner supplied `MPFree_P3_Uboot_20261110T184325_3145972.console.txt` and the Ghidra .log for the most recent analysis. This round **did succeed**, as distinct from the earlier failed Python-run attempt (§28):
+
+- The verified backup's p3 U-Boot image loaded into a **new Ghidra project** using raw `BinaryLoader`, `ARM:LE:32:v7`, and correct `-loader-baseAddr 100000`.
+- Native Java `MPFreeFinishBootChain.java pre` executed successfully and **seeded Thumb entry points** before Ghidra's standard analyzers.
+- Ghidra's automatic analysis completed and the `post` script ran with no script exceptions.
+- **Created and saved the targeted report**: `/home/jesse/mpfree-work/mpfree-ghidra-p3-final-20261110T184355.txt`.
+- The created project is `/home/jesse/mpfree-work/ghidra/projects/MPFree_P3_Uboot_20261110T184325_3145972`.
+- A disassembly conflict near `0x0013E872` showed a disagreement between Thumb-mode and ARM-mode decoded instructions during analysis. This is not a fatal run failure, but the specific region's disassembly still warrants inspection.
+- The user uploaded *only* console and Ghidra log files, **not the exported analysis .txt**. The actual decompiler output and function-level conclusions cannot be reviewed until that local report is supplied. Successful execution does **not** prove the full kernel-handoff path or ROM-entry behavior has been comprehensively reconstructed.
+
+### 29.1 Python as the default ongoing scripting language
+
+The owner prefers Python 3 over Java for future MPFree reverse engineering. This is fully supported by **PyGhidra** (Ghidra 12.2, real CPython 3 with JPype). The earlier failure occurred because the Snap's standard `ghidra.analyzeHeadless` starts the regular Java headless runtime *without PyGhidra initialized*, so it could not execute `.py` pre/post scripts.
+
+The official `support/pyghidraRun` launcher accepts `-H` and starts the headless analyzer through PyGhidra. The installed Snap packages that wrapper as `snap run ghidra.ghidra`, so the Python-enabled command is **`snap run ghidra.ghidra -H`** (subject to one-time Python virtualenv initialization on the host). This behavior is supported by upstream code:
+- https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/pyghidraRun
+- https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/PyGhidra/support/pyghidra_launcher.py
+- https://github.com/dclane-code/ghidra-snap/blob/master/snap/snapcraft.yaml
+
+**New optional, read-only files**:
+- `tools/ghidra/MPFreePythonFollowup.py`: `# @runtime PyGhidra`; validates correct base and SHA256, obtains decompiler output/call graph for named boot-related functions, reports global xrefs, and redacts long literal strings. It does not analyze or export the OEM subcommand body. JSON output to `~/mpfree-work/mpfree-ghidra-p3-python-<timestamp>.json`.
+- `tools/ghidra/run_python_p3_followup.sh`: launches `snap run ghidra.ghidra -H` on the latest existing saved p3 Ghidra project, using `-process`, `-noanalysis`, and `-readOnly`. Requires the Snap's PyGhidra initialization and may prompt on first use; not yet executed on the owner's workstation.
+
+The successful native Java script remains available as a **fallback bootstrap** and needs no maintenance unless a new Ghidra import is required. Python should be used for subsequent iterative research by default. Avoid rewriting the working Java analyzer merely for aesthetics.
+
+Immediate next step is **reviewing the already-created `mpfree-ghidra-p3-final-20261110T184355.txt`**. The current reports and logs contain no silicon MaskROM dump or independent recovery proof; MaskROM remains a separate track.
