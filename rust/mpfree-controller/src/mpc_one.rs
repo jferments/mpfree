@@ -2,7 +2,7 @@
 //!
 //! Every constant here was measured on the owner's unit with
 //! `collect-over-ssh.sh --midi-capture` while the factory app was running.
-//! See `docs/hardware/MPC_ONE_3_6_0_CONTROLLER_PROTOCOL_20261109.md`.
+//! See `docs/hardware/controller-protocol.md`.
 
 use crate::midi::Message;
 

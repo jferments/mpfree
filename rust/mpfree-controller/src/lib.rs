@@ -1,5 +1,5 @@
 //! MPC One internal controller protocol, as observed on firmware 3.6.0
-//! (`docs/hardware/MPC_ONE_3_6_0_CONTROLLER_PROTOCOL_20261109.md`).
+//! (`docs/hardware/controller-protocol.md`).
 //!
 //! Two pure layers, no system calls and no heap allocation:
 //! - [`midi`]: a MIDI 1.0 byte-stream parser (running status, real-time
