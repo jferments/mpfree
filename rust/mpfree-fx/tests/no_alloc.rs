@@ -226,6 +226,15 @@ fn effects_and_the_chain_never_allocate() {
 
 #[test]
 fn the_mixer_never_allocates() {
+    mixer_never_allocates(false);
+}
+
+#[test]
+fn the_mixer_with_inserts_on_a_second_core_never_allocates() {
+    mixer_never_allocates(true);
+}
+
+fn mixer_never_allocates(lane: bool) {
     let rate = 48_000;
     let max = 512;
     let mut m = Mixer::new(MixerConfig::default(), rate, max);
@@ -273,6 +282,12 @@ fn the_mixer_never_allocates() {
         })
         .collect();
     let mut back: Vec<Insert> = Vec::with_capacity(64);
+    if lane {
+        m.set_lane(
+            Some(mpfree_lanes::Config::default()),
+            std::time::Duration::from_secs(1),
+        );
+    }
     let strips: Vec<StripId> = m.strips().collect();
     let tracks = [
         StripId::Track(0),
@@ -444,6 +459,9 @@ fn the_mixer_never_allocates() {
     assert!(m.stats().nan_resets > 0, "the NaN guard ran");
     assert!(l.iter().chain(&r).all(|v| v.is_finite()));
     assert!(m.probe().lifetime().blocks > 0, "profiling recorded blocks");
+    if lane {
+        assert!(m.stats().lane_posts > 0, "the lane had inserts");
+    }
     drop(back);
 }
 
