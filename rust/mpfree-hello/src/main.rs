@@ -2464,6 +2464,9 @@ fn player_session(
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
                 gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
+                gui::FromUi::SamplePhrase(clip) => match time.put_clip(*clip) {
+                    Ok(line) | Err(line) => out.note(&format!("time: {line}")),
+                },
                 gui::FromUi::LoopLayer { id, command } => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
                 }

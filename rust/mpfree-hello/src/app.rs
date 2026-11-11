@@ -1058,8 +1058,10 @@ impl App {
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
         } else if note == button::PLAY {
+            self.engine.resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start {
+            self.engine.resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
@@ -1148,8 +1150,25 @@ impl App {
         fx
     }
 
-    /// STOP in the app: every sound stops, latched pads are let go.
+    /// STOP in the app, with the transport stopped: every sound stops. A
+    /// latched arp still playing is silenced and keeps its latch (design
+    /// decision 5); STOP again, or STOP with nothing latched, lets go of
+    /// the latched pads too. PLAY or a pad press plays the kept latch again.
     fn stop(&mut self) -> Vec<Effect> {
+        if self.latched
+            && self.generating()
+            && !self.engine.hushed()
+            && !self.engine.active().is_empty()
+        {
+            self.engine.hush();
+            let mut fx = vec![
+                Effect::StopSounds,
+                Effect::Note("STOP: arp silenced, latch kept (STOP again clears it)".to_string()),
+                self.status(),
+            ];
+            fx.extend(self.repeat_light());
+            return fx;
+        }
         self.latched = false;
         self.engine.panic();
         self.update_engine();
@@ -2374,6 +2393,9 @@ mod tests {
             "keeps repeating after release"
         );
         assert!(app.active(4));
+        // STOP silences it and keeps the latch; STOP again lets go.
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::StopSounds) && app.repeating());
         let fx = press(&mut app, button::STOP);
         assert!(fx.contains(&Effect::StopSounds) && !app.repeating());
         assert!(ons(&mut app, 20_000).is_empty());
@@ -2932,6 +2954,56 @@ mod tests {
     }
 
     #[test]
+    fn stop_silences_a_latched_arp_and_keeps_the_latch_until_stop_again() {
+        let mut app = ready();
+        held(&mut app, button::SHIFT, |a| press(a, REPEAT));
+        assert!(app.latched, "SHIFT + NOTE REPEAT latches");
+        app.pad_down(2, 100);
+        app.pad_up(2);
+        assert!(!notes(&mut app, 4 * 5513).is_empty(), "latched, it repeats");
+        // First STOP: silence, latch kept.
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::StopSounds));
+        assert!(fx.contains(&Effect::Note(
+            "STOP: arp silenced, latch kept (STOP again clears it)".into()
+        )));
+        assert!(app.latched && app.engine.hushed() && app.active(2));
+        assert!(notes(&mut app, 4 * 5513).is_empty(), "silent");
+        // PLAY carries on with the same latch.
+        press(&mut app, button::PLAY);
+        assert!(!app.engine.hushed());
+        assert!(notes(&mut app, 4 * 5513).contains(&2));
+        // STOP, then STOP again: the latch goes.
+        press(&mut app, button::STOP);
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::Note("STOP: all sounds stopped".into())));
+        assert!(!app.latched && !app.active(2));
+    }
+
+    #[test]
+    fn turning_swing_takes_it_from_the_transport() {
+        let mut app = ready();
+        assert!(app.swing_from_transport, "follows the transport at first");
+        app.button(REPEAT, true, 0.0);
+        let mut fx = Vec::new();
+        for _ in 0..8 {
+            fx.extend(app.qlink(2, 1, None).unwrap());
+        }
+        assert!(!app.swing_from_transport, "turned: the arp's own swing");
+        assert!(app.arp.swing > 50);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.starts_with("arp swing from: arp"))));
+        // Other knobs leave it alone.
+        let mut fresh = ready();
+        fresh.button(REPEAT, true, 0.0);
+        for _ in 0..8 {
+            fresh.qlink(1, 1, None);
+        }
+        assert!(fresh.swing_from_transport);
+    }
+
+    #[test]
     fn note_repeat_turns_on_the_arp_mode_the_panel_picked() {
         let mut app = ready();
         assert_eq!(app.engine.settings().mode, Mode::Direct);
@@ -3306,6 +3378,8 @@ mod tests {
         assert_eq!(app.arp_poll(), None);
         let _ = ons(&mut app, 5513);
         assert!(app.arp_poll().is_some(), "a new step");
+        press(&mut app, button::STOP);
+        assert!(app.latched, "the first STOP keeps the latch");
         press(&mut app, button::STOP);
         assert!(!app.latched);
     }

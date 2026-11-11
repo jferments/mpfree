@@ -94,6 +94,10 @@ a 3D stack of frames with the frame its Position reads drawn bright and
 bent by its warp (`wt_visual`), next to Poly's filter and envelope views.
 Preview screens: `mpfree-synth-preview` (synth-wt-*.png).
 
+In the pad player (round 8) Wavetable is the fifth Engine choice in the
+Synth tab's options (MENU), after Poly, FM, Drums and Pluck, and plays the
+pad layouts as Poly and FM do ([synths.md](synths.md#in-the-pad-player-rustmpfree-hello)).
+
 ## Demo
 
 `cargo run --release -p mpfree-synth --example wt_render` renders a 90 BPM
@@ -104,8 +108,6 @@ and checks the ending is silent and nothing clips.
 
 ## Next
 
-- Wire it into the pad player's Engine choice, after Poly and FM (the synth
-  thread owns `mpfree-hello/src/synth.rs`).
 - The Sample tab: "Make a wavetable" from a pad's sample, then pick it in
   Osc A or B.
 - Load WAV tables from the USB stick's library (storage spec).
