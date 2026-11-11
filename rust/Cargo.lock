@@ -409,6 +409,7 @@ name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
  "mpfree-node",
+ "mpfree-prof",
 ]
 
 [[package]]
