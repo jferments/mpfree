@@ -778,8 +778,9 @@ class StaticTests(unittest.TestCase):
         patterns file."""
         with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
             starts = [ln for ln in fh.read().splitlines() if "mpfree-hello app" in ln]
-        self.assertEqual(len(starts), 1, starts)
-        self.assertNotIn("--save-patterns", starts[0])
+        self.assertEqual(len(starts), 2, starts)   # with the data partition mounted, and without
+        for start in starts:
+            self.assertNotIn("--save-patterns", start)
 
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""

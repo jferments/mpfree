@@ -11,6 +11,10 @@ from ~/mpfree-work and writes one new private folder there:
                   modified COPY of the version's root filesystem, partition 2
                   is an empty log partition the test boot writes its logs to;
                   only with --app, partition 3 holds the drum kits (read-only)
+                  and partition 4 ("mpfree-test-data", MPFREE-DATA) is an
+                  empty journaled ext4 where the pad player saves its
+                  settings and files; write-test-stick.py carries the old
+                  stick's partition 4 over
     zImage        the version's kernel, unchanged
     kexec.dtb     its device tree for this unit: Akai's board file plus what
                   U-Boot adds at boot, with the eMMC and SD card controllers
@@ -45,9 +49,13 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     beforehand) runs `app`: a loading screen (over the galaxy, with --splash)
     with a progress bar, then the pad player. SHIFT + STOP shows the system
     log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
-    go on partition 3, which it mounts read-only. If the program stops with
-    an error, the log display starts instead. Besides the screen, the
-    controller and the sound card, it writes only /run/mpfree-hello (RAM)
+    go on partition 3, which it mounts read-only. Partition 4 is mounted
+    read-write (nosuid, nodev, noexec) at /run/mpfree-data and passed with
+    --data; the pad player saves its settings and files only there
+    (docs/project/storage-spec.md), and if it does not mount, nothing is
+    saved. If the program stops with an error, the log display starts
+    instead. Besides the screen, the controller, the sound card and
+    partition 4, it writes only /run/mpfree-hello (RAM)
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
     starts and after, and if eth0 failed to start, starts it again at 20, 45
@@ -115,6 +123,8 @@ LINUX_FS_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 SECTOR = 512
 ALIGN = 2048                        # 1 MiB, in sectors
 LOG_SIZE = 32 << 20
+DATA_SIZE = 64 << 20                # partition 4, the pad player's saved settings and files
+DATA_NAME = "mpfree-test-data"      # its GPT name; write-test-stick.py looks for it
 ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
 # 0x001cc915, Realtek RTL8211E; docs/hardware/ethernet-usb.md).
@@ -278,6 +288,7 @@ WantedBy=sysinit.target
 # its progress on a loading screen.
 APP_SCRIPT = """#!/bin/sh
 # MPFree test boot: start the pad player. Its drum kits are on the stick's partition 3, mounted read-only.
+# Partition 4 holds its saved settings and files, mounted read-write; it saves nothing anywhere else.
 dev=/dev/disk/by-partuuid/{kits_uuid}
 i=0
 while [ ! -e "$dev" ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
@@ -286,6 +297,15 @@ if ! grep -q ' /run/mpfree-kits ' /proc/mounts; then
   mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||
     echo "mpfree-test-app: the kit partition did not mount" > /dev/kmsg
 fi
+data=/dev/disk/by-partuuid/{data_uuid}
+i=0
+while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
+mkdir -p /run/mpfree-data
+if grep -q ' /run/mpfree-data ' /proc/mounts ||
+    mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
+  exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+fi
+echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
 exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep}
 """
 APP_UNIT = """[Unit]
@@ -597,6 +617,26 @@ def make_kits_fs(kits, scratch):
     return path
 
 
+def make_data_fs(scratch):
+    """Partition 4: an empty ext4 with a journal (the pad player writes it, and the MPC is switched off
+    without unmounting it), labelled MPFREE-DATA, owned by root. Returns its path."""
+    path = os.path.join(scratch, "data.img")
+    res = run(["mke2fs", "-q", "-F", "-t", "ext4", "-L", "MPFREE-DATA", "-E", "root_owner=0:0", path,
+               f"{DATA_SIZE // 1024}k"])
+    if res.returncode != 0:
+        raise Stop("mke2fs failed for the data partition:\n" + res.stdout)
+    with open(path, "rb") as fh:
+        fh.seek(1024)
+        sb = fh.read(1024)
+    if os.path.getsize(path) != DATA_SIZE or sb[0x38:0x3A] != b"\x53\xef" or \
+            sb[0x78:0x88].rstrip(b"\0") != b"MPFREE-DATA" or not struct.unpack_from("<I", sb, 0x5C)[0] & 0x4:
+        raise Stop("the data partition is not the empty journaled ext4 asked for")
+    fsck = run(["e2fsck", "-fn", path])
+    if fsck.returncode != 0:
+        raise Stop("e2fsck found problems in the data partition:\n" + fsck.stdout)
+    return path
+
+
 def static_arm_program(path):
     """The file's bytes, checked to be a static ARM EABI5 hard-float executable."""
     with open(path, "rb") as fh:
@@ -700,13 +740,13 @@ def running_release(pre, work, target_release):
 
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
-                 app=None, kits_uuid=None):
+                 app=None, kits_uuid=None, data_uuid=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
-    With `app` (the pad player's bytes) and `kits_uuid` (partition 3), the pad player starts at
-    power-on in place of the log display, which stays installed for when the app fails."""
-    if (app is None) != (kits_uuid is None):
-        raise Stop("the pad player needs its kits partition, and the other way round")
+    With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
+    pad player starts at power-on in place of the log display, which stays installed for when the app fails."""
+    if not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
+        raise Stop("the pad player needs its kits and data partitions, and the other way round")
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
         if kind not in ("symlink", None) or (kind == "symlink" and img.link(top) not in (f"usr{top}", f"/usr{top}")):
@@ -768,7 +808,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if app is not None:
         add("/etc/mpfree-test/mpfree-hello", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
-            APP_SCRIPT.format(kits_uuid=kits_uuid, keep=" --keep-screen" if splash_program else ""), 0o755)
+            APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid,
+                              keep=" --keep-screen" if splash_program else ""), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
     with open(ETHERNET_DETAILS, "rb") as fh:
@@ -866,7 +907,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     return root_note, stubbed, absent, sorted(links), sorted(files)
 
 
-def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None, kits_uuid=None):
+def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None, kits_uuid=None,
+               data_image=None, data_uuid=None):
     fs_bytes = os.path.getsize(fs_image)
     if fs_bytes % SECTOR:
         raise Stop("the rootfs image size is not a whole number of sectors")
@@ -880,7 +922,11 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
     root_start, log_start = ALIGN, ALIGN + root_sectors
     kits_start = log_start + log_sectors
     kits_sectors = -(-os.path.getsize(kits_image) // SECTOR // ALIGN) * ALIGN if kits_image else 0
-    total = kits_start + kits_sectors + ALIGN
+    if (kits_image is None) != (data_image is None):
+        raise Stop("the kits and data partitions come together (with --app)")
+    data_start = kits_start + kits_sectors
+    data_sectors = DATA_SIZE // SECTOR if data_image else 0
+    total = data_start + data_sectors + ALIGN
     with open(out_path, "xb") as fh:
         fh.truncate(total * SECTOR)
     table = (f"label: gpt\nunit: sectors\nfirst-lba: {ALIGN}\n"
@@ -890,12 +936,15 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
              f"name=\"mpfree-test-log\"\n")
     if kits_image:
         table += (f"start={kits_start}, size={kits_sectors}, type={LINUX_FS_TYPE}, uuid={kits_uuid}, "
-                  f"name=\"mpfree-test-kits\"\n")
+                  f"name=\"mpfree-test-kits\"\n"
+                  f"start={data_start}, size={data_sectors}, type={LINUX_FS_TYPE}, uuid={data_uuid}, "
+                  f"name=\"{DATA_NAME}\"\n")
     res = subprocess.run(["sfdisk", "-q", "--no-reread", "--no-tell-kernel", out_path], input=table,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if res.returncode != 0:
         raise Stop("sfdisk failed on the image file:\n" + res.stdout)
-    copies = [(fs_image, root_start), (log_img, log_start)] + ([(kits_image, kits_start)] if kits_image else [])
+    copies = [(fs_image, root_start), (log_img, log_start)] + \
+        ([(kits_image, kits_start), (data_image, data_start)] if kits_image else [])
     for src, start in copies:
         with open(src, "rb") as fin, open(out_path, "r+b") as fout:
             fout.seek(start * SECTOR)
@@ -904,7 +953,7 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
     parts = json.loads(res.stdout)["partitiontable"]["partitions"] if res.returncode == 0 else []
     want = [(root_start, root_sectors, root_uuid), (log_start, log_sectors, log_uuid)]
     if kits_image:
-        want.append((kits_start, kits_sectors, kits_uuid))
+        want += [(kits_start, kits_sectors, kits_uuid), (data_start, data_sectors, data_uuid)]
     got = [(p["start"], p["size"], p["uuid"].lower()) for p in parts]
     if got != want or any(p["type"].upper() != LINUX_FS_TYPE for p in parts):
         raise Stop(f"the stick image's partition table is not what was asked for: {got}")
@@ -914,6 +963,9 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
         raise Stop("partition 2 of the stick image does not match the log filesystem")
     if kits_image and sha256(out_path, kits_start * SECTOR, os.path.getsize(kits_image)) != sha256(kits_image):
         raise Stop("partition 3 of the stick image does not match the kits filesystem")
+    if data_image and (parts[3].get("name") != DATA_NAME or
+                       sha256(out_path, data_start * SECTOR, DATA_SIZE) != sha256(data_image)):
+        raise Stop("partition 4 of the stick image does not match the data filesystem")
     return total * SECTOR
 
 
@@ -1029,16 +1081,20 @@ def main(argv):
         else:
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if app else None
+        data_uuid = str(uuid.uuid4()) if app else None
         if app:
             OUT.say(f"pad player: {app_path} ({len(app)} bytes, sha256 {hashlib.sha256(app).hexdigest()}, "
                     "static ARM EABI5 hard-float), started at power-on in place of the log display"
                     + (", over the startup screen" if splash[0] else ""))
             OUT.say(f"drum kits: {kits_path} ({struct.unpack_from('<I', kits, 8)[0]} kits, {len(kits)} bytes, "
                     f"sha256 {hashlib.sha256(kits).hexdigest()}), on partition 3, mounted read-only")
+            OUT.say(f"saved settings and files: partition 4 ({DATA_SIZE >> 20} MiB, empty here), mounted "
+                    "read-write at /run/mpfree-data; write-test-stick.py carries the old stick's over")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
-                                                                  screen_log, rotation, splash, app, kits_uuid)
+                                                                  screen_log, rotation, splash, app, kits_uuid,
+                                                                  data_uuid)
         for path in links:
             OUT.say(f"link     {path} -> {img.link(path)}")
         for path in written:
@@ -1053,12 +1109,15 @@ def main(argv):
         OUT.say("=== Stick image ===")
         stick = os.path.join(outdir, "stick.img")
         kits_image = make_kits_fs(kits, scratch) if app else None
-        size = make_stick(copy, stick, root_uuid, log_uuid, scratch, kits_image, kits_uuid)
+        data_image = make_data_fs(scratch) if app else None
+        size = make_stick(copy, stick, root_uuid, log_uuid, scratch, kits_image, kits_uuid, data_image, data_uuid)
         OUT.say(f"stick.img: {size} bytes ({-(-size // (1 << 20))} MiB); partition 1 root PARTUUID {root_uuid}, "
                 f"partition 2 logs PARTUUID {log_uuid}")
         if kits_image:
             OUT.say(f"partition 3 kits PARTUUID {kits_uuid} (ext4 without a journal, only /kits.bin, "
                     f"sha256 {sha256(kits_image)})")
+            OUT.say(f"partition 4 data PARTUUID {data_uuid} ({DATA_NAME}, ext4 with a journal, label "
+                    f"MPFREE-DATA, {DATA_SIZE >> 20} MiB, empty)")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
         cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
                    "sysctl.kernel.kexec_load_disabled=1")

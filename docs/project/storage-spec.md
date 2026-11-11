@@ -1,0 +1,43 @@
+# MPFree storage: where settings and user files are saved
+
+**Status:** APPROVED by Jay on 2026-11-11 at 09:30Z ("Yes, kept across rounds"). Built in round 7; until a stick with partition 4 is written, nothing is saved.
+**Owner:** the Hello MPC thread, which owns the app shell. The touch thread (calibration) and the arp thread (patterns) use this; nothing else picks its own place.
+
+## Where (rule zero)
+
+- **On the test stick, never on the MPC.** The eMMC (p1–p6, the U-Boot environment, the rootfs) and the SD card are never written. On the test boot, the eMMC and SD controllers are disabled in the device tree anyway.
+- **Root file system:** the stick's partition 1 stays read-only, and /data is RAM.
+- **A new partition 4, "MPFREE-DATA":** ext4 with a journal, 64 MiB, built by `offline-kexec-stick.py`.
+  - `start-app.sh` mounts it read-write at `/run/mpfree-data` (nosuid, nodev, noexec) and passes `--data /run/mpfree-data` to the pad player.
+  - If the mount fails, the app runs without saving and logs why.
+- **Kept across rounds:** `write-test-stick.py` reads partition 4 off the old stick first (read-only), puts it into the new image, then writes the image as now. `--fresh-data` starts empty.
+- **Undo:** rewrite the stick with `--fresh-data`, or delete files on partition 4 from the workstation.
+- **If a write is cut off:** each file is written whole to `NAME.part`, synced, then renamed over the old one. A cut-off write leaves the old file.
+
+## Layout of the partition
+
+```
+/run/mpfree-data/
+  FORMAT                 "mpfree-data 1"
+  settings/<owner>.conf  key = value lines, one file per owner: app, touch, arp, synth, sampler, looper ...
+  files/<owner>/<name>   whole files: arp/patterns.txt, touch/calibration.txt ...
+```
+
+## API: crate `mpfree-store`
+
+- `Store::at(dir)` on the MPC; `Store::none()` in tests and previews (nothing is written).
+- `store.settings(owner) -> Settings`: ordered `key = value`, with `get_*` / `set_*` helpers. `store.save_settings(owner, &settings)`.
+- `store.read(owner, name) -> Option<Vec<u8>>`, `store.write(owner, name, bytes)`.
+- **Rules:**
+  - Owner and file names are `[a-z0-9._-]` only, so there are no paths and no `..`.
+  - 1 MiB per file, and the partition's size caps the total.
+  - Reads happen at start only.
+  - Saves never happen on the audio thread. They go to one `mpfree-store` writer thread, which logs `saved: arp/patterns.txt (812 bytes)` or why it failed.
+- **Static test:** `mpfree-store` is the only code that writes files, and only under the folder it was given. `start-app.sh` is the only place that names that folder.
+
+## What is saved (first version)
+
+- **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools. Line input is never saved and is Off at every start.
+- **The buttons found with Map controls and the guide,** so the MPC is mapped once.
+- **Touch calibration** (the touch thread).
+- **Arp patterns** (the arp thread, replacing `--patterns` / `--save-patterns`).
