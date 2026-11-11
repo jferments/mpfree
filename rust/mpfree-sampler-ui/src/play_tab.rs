@@ -51,7 +51,7 @@ pub const LAYOUT: &str = "col(header:60, smp-play-bar:60, \
                           row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 2;
+pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
@@ -192,7 +192,7 @@ impl PlayState {
         Some(PlayState { pad, settings, sounds })
     }
 
-    fn granular(&self) -> bool {
+    pub fn granular(&self) -> bool {
         self.settings.layers.iter().any(|l| l.region.mode == PlayMode::Granular)
     }
 }
@@ -551,81 +551,88 @@ impl PlayTab {
         if delta == 0 {
             return None;
         }
-        let mut p = st.settings.clone();
-        let d = delta as f32;
-        match row {
-            Row::Polyphony => {
-                let i = nearest(POLYPHONY.iter().map(|&v| f32::from(v)), f32::from(p.polyphony));
-                p.polyphony = POLYPHONY[shift(i, delta, POLYPHONY.len())];
-            }
-            Row::MuteGroup => {
-                let g = i32::from(p.mute_group.unwrap_or(0)) + delta;
-                p.mute_group = match g.clamp(0, 16) {
-                    0 => None,
-                    g => Some(g as u8),
-                };
-            }
-            Row::Layers => {
-                let all = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random];
-                let i = all.iter().position(|s| *s == p.select).unwrap_or(0);
-                p.select = all[(i as i32 + delta).rem_euclid(3) as usize];
-            }
-            Row::Level => {
-                let (lo, hi) = LEVEL_RANGE_DB;
-                p.level_db = round_to(p.level_db + d * LEVEL_STEP_DB, LEVEL_STEP_DB).clamp(lo, hi);
-            }
-            Row::Pan => p.pan = round_to(p.pan + d * 0.05, 0.05).clamp(-1.0, 1.0),
-            Row::Tune => {
-                // Whole semitones: a tune between them goes to the next one.
-                let below = p.tune_cents.div_euclid(100);
-                let semis = match (p.tune_cents.rem_euclid(100), delta > 0) {
-                    (0, _) => below + delta,
-                    (_, true) => below + delta,
-                    (_, false) => below + 1 + delta,
-                };
-                p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
-            }
-            Row::VelToLevel => p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0),
-            Row::VelToStart => p.vel_to_start = round_to(p.vel_to_start + d * 0.05, 0.05).clamp(0.0, 1.0),
-            Row::Pressure => {
-                let all: Vec<PressureTarget> = PRESSURE
-                    .iter()
-                    .copied()
-                    .filter(|t| !is_grain(*t) || st.granular() || *t == p.pressure.target)
-                    .collect();
-                let i = all.iter().position(|t| *t == p.pressure.target).unwrap_or(0) as i32;
-                p.pressure.target = all[(i + delta).rem_euclid(all.len() as i32) as usize];
-                if p.pressure.target != PressureTarget::Off && p.pressure.depth == 0.0 {
-                    p.pressure.depth = 0.5;
-                }
-            }
-            Row::Depth => p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0),
-            Row::Attack => p.amp.attack_ms = step_time(p.amp.attack_ms, delta, 0.0),
-            Row::Hold => p.amp.hold_ms = step_time(p.amp.hold_ms, delta, 0.0),
-            Row::Decay => p.amp.decay_ms = step_time(p.amp.decay_ms, delta, 0.0),
-            Row::Sustain => p.amp.sustain = round_to(p.amp.sustain + d * 0.05, 0.05).clamp(0.0, 1.0),
-            Row::Release => p.amp.release_ms = step_time(p.amp.release_ms, delta, MIN_RELEASE_MS),
-            Row::Filter => {
-                let now = (p.filter.kind, if p.filter.poles >= 4 { 4 } else { 2 });
-                let i = FILTERS.iter().position(|f| *f == now).unwrap_or(0);
-                (p.filter.kind, p.filter.poles) = FILTERS[shift(i, delta, FILTERS.len())];
-                if now.0 == FilterKind::Off && p.filter.kind != FilterKind::Off && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1 {
-                    // A low-pass at 20 kHz does nothing: start it where it is heard.
-                    p.filter.cutoff_hz = if p.filter.kind == FilterKind::HighPass { 200.0 } else { 2000.0 };
-                }
-            }
-            Row::Cutoff => {
-                // A third of an octave a step.
-                let hz = p.filter.cutoff_hz * (d / 3.0).exp2();
-                p.filter.cutoff_hz = hz.round().clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
-            }
-            Row::Resonance => p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0),
-            Row::FilterEnv => {
-                p.filter.env_octaves = round_to(p.filter.env_octaves + d * 0.25, 0.25).clamp(-ENV_OCTAVES, ENV_OCTAVES);
-            }
-        }
+        let p = stepped(&st.settings, row, delta, st.granular());
         self.edit(st, Key::Row(row), p)
     }
+}
+
+/// `p` with row `row` stepped by `delta` steps, within its limits.
+/// `granular` offers the grain pressure targets.
+pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
+    let mut p = p.clone();
+    let d = delta as f32;
+    match row {
+        Row::Polyphony => {
+            let i = nearest(POLYPHONY.iter().map(|&v| f32::from(v)), f32::from(p.polyphony));
+            p.polyphony = POLYPHONY[shift(i, delta, POLYPHONY.len())];
+        }
+        Row::MuteGroup => {
+            let g = i32::from(p.mute_group.unwrap_or(0)) + delta;
+            p.mute_group = match g.clamp(0, 16) {
+                0 => None,
+                g => Some(g as u8),
+            };
+        }
+        Row::Layers => {
+            let all = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random];
+            let i = all.iter().position(|s| *s == p.select).unwrap_or(0);
+            p.select = all[(i as i32 + delta).rem_euclid(3) as usize];
+        }
+        Row::Level => {
+            let (lo, hi) = LEVEL_RANGE_DB;
+            p.level_db = round_to(p.level_db + d * LEVEL_STEP_DB, LEVEL_STEP_DB).clamp(lo, hi);
+        }
+        Row::Pan => p.pan = round_to(p.pan + d * 0.05, 0.05).clamp(-1.0, 1.0),
+        Row::Tune => {
+            // Whole semitones: a tune between them goes to the next one.
+            let below = p.tune_cents.div_euclid(100);
+            let semis = match (p.tune_cents.rem_euclid(100), delta > 0) {
+                (0, _) => below + delta,
+                (_, true) => below + delta,
+                (_, false) => below + 1 + delta,
+            };
+            p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
+        }
+        Row::VelToLevel => p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::VelToStart => p.vel_to_start = round_to(p.vel_to_start + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::Pressure => {
+            let all: Vec<PressureTarget> = PRESSURE
+                .iter()
+                .copied()
+                .filter(|t| !is_grain(*t) || granular || *t == p.pressure.target)
+                .collect();
+            let i = all.iter().position(|t| *t == p.pressure.target).unwrap_or(0) as i32;
+            p.pressure.target = all[(i + delta).rem_euclid(all.len() as i32) as usize];
+            if p.pressure.target != PressureTarget::Off && p.pressure.depth == 0.0 {
+                p.pressure.depth = 0.5;
+            }
+        }
+        Row::Depth => p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0),
+        Row::Attack => p.amp.attack_ms = step_time(p.amp.attack_ms, delta, 0.0),
+        Row::Hold => p.amp.hold_ms = step_time(p.amp.hold_ms, delta, 0.0),
+        Row::Decay => p.amp.decay_ms = step_time(p.amp.decay_ms, delta, 0.0),
+        Row::Sustain => p.amp.sustain = round_to(p.amp.sustain + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::Release => p.amp.release_ms = step_time(p.amp.release_ms, delta, MIN_RELEASE_MS),
+        Row::Filter => {
+            let now = (p.filter.kind, if p.filter.poles >= 4 { 4 } else { 2 });
+            let i = FILTERS.iter().position(|f| *f == now).unwrap_or(0);
+            (p.filter.kind, p.filter.poles) = FILTERS[shift(i, delta, FILTERS.len())];
+            if now.0 == FilterKind::Off && p.filter.kind != FilterKind::Off && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1 {
+                // A low-pass at 20 kHz does nothing: start it where it is heard.
+                p.filter.cutoff_hz = if p.filter.kind == FilterKind::HighPass { 200.0 } else { 2000.0 };
+            }
+        }
+        Row::Cutoff => {
+            // A third of an octave a step.
+            let hz = p.filter.cutoff_hz * (d / 3.0).exp2();
+            p.filter.cutoff_hz = hz.round().clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
+        }
+        Row::Resonance => p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::FilterEnv => {
+            p.filter.env_octaves = round_to(p.filter.env_octaves + d * 0.25, 0.25).clamp(-ENV_OCTAVES, ENV_OCTAVES);
+        }
+    }
+    p
 }
 
 /// The index of the entry of `list` nearest `now`.

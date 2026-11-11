@@ -5,11 +5,15 @@
 //!   mono mix for snapping to zero crossings, its tempo and its root note.
 //! - [`widgets`]: the widgets the sampler adds: the pad bar with the editor's
 //!   tabs ([`widgets::PadBar`]), the Q-Link cards ([`widgets::KnobCard`]) and
-//!   the wheel card ([`widgets::InfoCard`]).
+//!   the wheel card ([`widgets::InfoCard`]) and the pad map
+//!   ([`widgets::PadMap`]).
 //! - [`wave_tab`]: the pad editor's Wave tab: the overview, the waveform with
 //!   its Start, End and loop markers, the region's settings and the Q-Links.
 //!   It turns touches, Q-Link turns and the wheel into [`WaveAction`]s for
 //!   the app to apply to the project, each drag or turn one undo step.
+//! - [`pads_tab`]: the pad editor's Pads tab, first in its bar: the kit's
+//!   pads on a compact map to pick one, copy, paste and clear it, its main
+//!   settings, and the kit's sounds to put on it ([`PadsAction`]).
 //! - [`chop_tab`]: the pad editor's Chop tab: slices of the pad's sound by
 //!   transients, beats, a grid, silence or by hand, split, merged and put on
 //!   pads as one undo step ([`ChopAction`]).
@@ -25,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod chop_tab;
+pub mod pads_tab;
 pub mod play_tab;
 pub mod play_widgets;
 pub mod sample;
@@ -33,6 +38,7 @@ pub mod wave_tab;
 pub mod widgets;
 
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
+pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
 pub use source::{PyramidPeaks, SourceView};
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

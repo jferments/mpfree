@@ -612,6 +612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-track"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-play",
+ "mpfree-prof",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-transport"
 version = "0.1.0"
 dependencies = [
