@@ -4,7 +4,7 @@
 //! a song's routing behind each one, so the screens can be looked at
 //! before they go on the MPC. Opens no device.
 //!
-//! Options: `--out DIR` (default ~/mpfree-work/mixer-preview-<UTC>; must be a
+//! Options: `--out DIR` (default `~/mpfree-work/mixer-preview-<UTC>`; must be a
 //! new or empty folder), `--font FILE`, `--bold-font FILE`, `--mono-font FILE`.
 
 #![forbid(unsafe_code)]
