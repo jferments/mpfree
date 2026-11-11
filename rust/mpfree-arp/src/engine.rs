@@ -18,7 +18,9 @@ use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
 /// Events one `process` call can return; more are dropped and counted.
-pub const MAX_EVENTS: usize = 128;
+/// As many as can be pending, so a panic's 128 note-offs and the notes
+/// pressed right after it fit in one call.
+pub const MAX_EVENTS: usize = MAX_PENDING;
 /// Notes waiting to start or stop.
 const MAX_PENDING: usize = 256;
 
