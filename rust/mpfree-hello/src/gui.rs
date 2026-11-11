@@ -364,6 +364,15 @@ pub enum FromUi {
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
+    /// A tap on a slice on the Chop page: play source frames `start..end`
+    /// of pad `pad`'s layer `layer` once, if kit `kit` is still playing.
+    Slice {
+        kit: usize,
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+    },
     /// The Debug tab's strip: MIDI, Performance or Map controls.
     DebugPage(usize),
     /// A control tapped in the mapper's list (listen for it).
@@ -721,8 +730,8 @@ impl Player {
                      UNDO: undo   ·   tap the wave: play".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
-                    "Hit a pad to chop it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   Wheel: zoom   ·   \
-                     - / +: pad   ·   UNDO: undo".to_string()
+                    "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
+                     Wheel: zoom   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
                     "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
@@ -3454,6 +3463,27 @@ mod tests {
         assert!(
             views(p.take_actions()).0.is_empty(),
             "trying chops changes nothing"
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("tap a slice: hear it"));
+        // A tap on the wave plays the slice under it, once.
+        p.on_event(UiEvent {
+            widget: chop_tab::WAVE.into(),
+            kind: EventKind::Frame(bounds[1] + 5),
+        });
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Slice {
+                kit: 0,
+                pad,
+                layer: 0,
+                start: bounds[1],
+                end: bounds[2]
+            }]
         );
         tap(&mut p, chop_tab::BUTTONS, 2);
         let kit = p.sample.project(0).unwrap();
