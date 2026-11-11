@@ -141,8 +141,10 @@ fn unpack_voice(p: &[u8; 128]) -> Dx7Voice {
     from_unpacked(&unpack(p))
 }
 
-/// FM parameters from the 155-byte unpacked form. Out-of-range bytes are
-/// clamped by the parameters' ranges when loaded.
+/// FM parameters from the 155-byte unpacked form. A damaged voice's
+/// out-of-range bytes (a rate of 128, algorithm 40) are clamped to their
+/// parameters' ranges here, so a stored preset only ever holds values the
+/// Synth tab can show and the engine plays as stored.
 pub fn from_unpacked(u: &[u8; 155]) -> Dx7Voice {
     let mut values = Vec::with_capacity(N_PARAMS);
     for k in 0..6 {
@@ -192,6 +194,11 @@ pub fn from_unpacked(u: &[u8; 155]) -> Dx7Voice {
         // DX7 transpose 0 to 48, with 24 at C3: no transpose.
         (TRANSPOSE, g(144) - 24.0),
     ]);
+    for (id, v) in &mut values {
+        if let Some(p) = info(*id) {
+            *v = p.clamp(*v);
+        }
+    }
     let name: String = u[145..155]
         .iter()
         .map(|&b| {
@@ -359,6 +366,45 @@ mod tests {
         let v = parse(&file).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "Glass Keys");
+    }
+
+    #[test]
+    fn damaged_bytes_are_clamped_as_a_voice_is_read() {
+        // Every byte at its largest: most fields are past their range.
+        let v = from_unpacked(&[0xFF; 155]);
+        for &(id, value) in &v.values {
+            let p = info(id).unwrap_or_else(|| panic!("param {id} is an FM parameter"));
+            assert!(
+                value.is_finite() && (p.min..=p.max).contains(&value),
+                "{}: {value} outside {} to {}",
+                p.name,
+                p.min,
+                p.max
+            );
+        }
+        assert_eq!(v.value(op_id(1, op::R1)), 99.0);
+        assert_eq!(v.value(ALGORITHM), 32.0);
+        // A bank with damaged voices still parses, clamped.
+        let mut data = [0xFFu8; 4096];
+        data[118..128].copy_from_slice(b"BROKEN    ");
+        let mut file = vec![0xF0, 0x43, 0x00, 0x09, 0x20, 0x00];
+        file.extend_from_slice(&data);
+        file.push(checksum(&data));
+        file.push(0xF7);
+        let voices = parse(&file).unwrap();
+        assert_eq!(voices[0].name, "BROKEN");
+        for v in &voices {
+            for &(id, value) in &v.values {
+                let p = info(id).unwrap();
+                assert!((p.min..=p.max).contains(&value), "{}: {value}", p.name);
+            }
+        }
+        // In-range voices are unchanged (the round trip test covers them).
+        let glass = Dx7Voice::from_preset(&presets()[1]);
+        let back = from_unpacked(&to_unpacked(&glass));
+        for &(id, value) in &back.values {
+            assert_eq!(value, glass.value(id));
+        }
     }
 
     #[test]

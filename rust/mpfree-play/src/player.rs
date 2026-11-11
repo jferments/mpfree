@@ -22,6 +22,9 @@
 //! the transport jumps, recording stops or overdub turns on. Then the take
 //! goes on as overdub. Erased notes are not played; [`Player::erased`]
 //! names them for the control thread to remove (`Clip::remove_note`).
+//! The pass's parameter locks are erased the same way
+//! ([`Player::erased_locks`]), trigless ones too, so the new take does not
+//! play the old take's locks.
 //!
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
 //! round. The roll is a hash of the note and the absolute frame it would
@@ -35,12 +38,28 @@
 //! A switch on the armed track ends a replace pass (the take goes on as
 //! overdub).
 //!
+//! **Parameter locks** (the Elektron way). A clip's lock plays on its
+//! tick as [`Event::Lock`], before any note-on on the same frame (and
+//! after the note-offs there), so the step's note starts with the locked
+//! value. The lock holds until the track plays a note that has no lock on
+//! that parameter on its own tick: [`Event::Unlock`] comes on that note's
+//! frame, just before its note-on. A sampler pad's parameter is ended only
+//! by that pad's notes; any other (the instrument, the strip, an insert)
+//! by any note of the track. A note its chance leaves out ends nothing. A
+//! lock with no note on its tick (trigless) holds until the next note in
+//! the same way. A stop, a locate or a transport loop jump unlocks
+//! everything, after the note-offs; a track whose clip stops or switches
+//! unlocks its locks on the switch, before the new clip's; a muted track,
+//! or one with nothing playing, unlocks at once and sends no locks. The
+//! player keeps what it has locked, so every Unlock follows a Lock.
+//!
 //! **No allocation, locks or panics** in `process`: fixed tables only. Full
 //! tables are counted in [`Stats`], never silently dropped.
 
 use std::ops::Range;
 
-use mpfree_seq::{DestId, Note, MAX_TRACKS};
+use mpfree_param::ParamAddr;
+use mpfree_seq::{DestId, Lock, Note, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -52,8 +71,22 @@ pub const MAX_ACTIVE: usize = 256;
 pub const MAX_STARTS: usize = 256;
 /// Notes replace recording can erase in one period.
 pub const MAX_ERASED: usize = 256;
+/// Parameter locks starting in one span, all tracks.
+pub const MAX_LOCK_STARTS: usize = 256;
+/// Parameter locks held at once, all tracks.
+pub const MAX_LOCKED: usize = 256;
 /// `dest` and `track` of an event meant for every destination.
 pub const ALL: u16 = u16::MAX;
+
+/// A parameter lock replace recording erased: remove it from clip `slot`
+/// of `track`, as for [`Erased`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErasedLock {
+    pub track: usize,
+    pub slot: usize,
+    pub lock: Lock,
+    pub take: u32,
+}
 
 /// A note replace recording erased: remove it from clip `slot` of `track`.
 /// `take` numbers the take that erased it, as in [`crate::Taken`].
@@ -65,7 +98,7 @@ pub struct Erased {
     pub take: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     NoteOn {
         note: u8,
@@ -76,7 +109,21 @@ pub enum Event {
     },
     /// Cut every sound (panic).
     AllOff,
+    /// A parameter lock from a step: hold `addr` at `value` (in the
+    /// parameter's own units) until [`Event::Unlock`]. For the resolver in
+    /// `mpfree-mod` (`ModEvent::Lock`).
+    Lock {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// The lock on `addr` ends: the parameter goes back to its own value.
+    Unlock {
+        addr: ParamAddr,
+    },
 }
+
+// A lock's value comes from a clip, which holds only finite values.
+impl Eq for Event {}
 
 /// One event for a destination, on an exact frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,10 +153,13 @@ pub struct Stats {
     pub dropped: u64,
     /// Note-offs that came after their tick (should stay 0).
     pub late_offs: u64,
-    /// Notes replace recording erased.
+    /// Notes and locks replace recording erased.
     pub erased: u64,
     /// Notes their chance left out.
     pub skipped: u64,
+    /// Parameter locks sent (each lock, not each unlock). Locks a full
+    /// table left out count in `dropped`.
+    pub locks: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +184,47 @@ struct Start {
     chance: u8,
     key: u64,
 }
+
+/// A parameter lock to send in a span, or (`addr` None) every lock of
+/// `track` to end: its clip stopped or switched, or it went quiet.
+#[derive(Clone, Copy, Debug)]
+struct LockStart {
+    tick: Tick,
+    track: u16,
+    dest: DestId,
+    addr: Option<ParamAddr>,
+    value: f32,
+    /// The pad whose notes end it (see [`Lock::scope`]).
+    scope: Option<u8>,
+}
+
+/// A parameter lock held: since `at`, until a note of `track` (of the
+/// pad `scope`, for a pad's parameter) with no lock on its own tick.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    track: u16,
+    dest: DestId,
+    addr: ParamAddr,
+    scope: Option<u8>,
+    at: Tick,
+}
+
+const NO_ADDR: ParamAddr = ParamAddr::new(mpfree_param::Owner::Macro(0), 0);
+const NO_LOCK_START: LockStart = LockStart {
+    tick: 0,
+    track: 0,
+    dest: 0,
+    addr: None,
+    value: 0.0,
+    scope: None,
+};
+const NO_HELD: Held = Held {
+    track: 0,
+    dest: 0,
+    addr: NO_ADDR,
+    scope: None,
+    at: 0,
+};
 
 const NO_SOUND: Sounding = Sounding {
     track: 0,
@@ -162,6 +253,8 @@ pub struct Player {
     stats: Stats,
     erased: [Erased; MAX_ERASED],
     n_erased: usize,
+    erased_locks: [ErasedLock; MAX_ERASED],
+    n_erased_locks: usize,
     /// Replace recording: the armed clip's pass being replaced.
     replacing: Option<i64>,
     /// This take (since the last record-on) has had its replace pass.
@@ -172,7 +265,23 @@ pub struct Player {
     switches: Switches,
     started: [Started; MAX_TRACKS],
     n_started: usize,
+    lock_starts: [LockStart; MAX_LOCK_STARTS],
+    n_lock_starts: usize,
+    held: [Held; MAX_LOCKED],
+    n_held: usize,
 }
+
+const NO_ERASED_LOCK: ErasedLock = ErasedLock {
+    track: 0,
+    slot: 0,
+    lock: Lock {
+        tick: 0,
+        sound: None,
+        addr: mpfree_param::RelAddr::new(mpfree_param::OnTrack::Inst, 0),
+        value: 0.0,
+    },
+    take: 0,
+};
 
 const NO_ERASED: Erased = Erased {
     track: 0,
@@ -204,6 +313,8 @@ impl Player {
             stats: Stats::default(),
             erased: [NO_ERASED; MAX_ERASED],
             n_erased: 0,
+            erased_locks: [NO_ERASED_LOCK; MAX_ERASED],
+            n_erased_locks: 0,
             replacing: None,
             replaced: false,
             take: 0,
@@ -215,6 +326,10 @@ impl Player {
                 origin: 0,
             }; MAX_TRACKS],
             n_started: 0,
+            lock_starts: [NO_LOCK_START; MAX_LOCK_STARTS],
+            n_lock_starts: 0,
+            held: [NO_HELD; MAX_LOCKED],
+            n_held: 0,
         }
     }
 
@@ -231,6 +346,13 @@ impl Player {
         &self.erased[..self.n_erased]
     }
 
+    /// The parameter locks replace recording erased in the last
+    /// [`Player::process`] call, in the order the playhead reached them:
+    /// the old notes' locks and trigless locks of the pass being replaced.
+    pub fn erased_locks(&self) -> &[ErasedLock] {
+        &self.erased_locks[..self.n_erased_locks]
+    }
+
     pub fn stats(&self) -> Stats {
         self.stats
     }
@@ -240,9 +362,15 @@ impl Player {
         self.n_sounding
     }
 
+    /// Parameter locks held now (sent, not yet unlocked).
+    pub fn locked(&self) -> usize {
+        self.n_held
+    }
+
     /// Play one period: the transport's `block` for it, the clips in `view`.
     pub fn process(&mut self, view: &PlayView, block: &Block, out: &mut impl Sink) {
         self.n_erased = 0;
+        self.n_erased_locks = 0;
         self.n_started = 0;
         self.switches.follow(view);
         let markers = block.markers();
@@ -280,10 +408,12 @@ impl Player {
         }
         match m.mark {
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => {
-                self.end_all(m.offset, m.frame, out)
+                self.end_all(m.offset, m.frame, out);
+                self.unlock_where(m.offset, m.frame, out, |_| true);
             }
             Mark::Panic => {
                 self.end_all(m.offset, m.frame, out);
+                self.unlock_where(m.offset, m.frame, out, |_| true);
                 out.send(Out {
                     offset: m.offset,
                     frame: m.frame,
@@ -317,6 +447,7 @@ impl Player {
         }
         self.replace_state(view, span, &ticks);
         self.n_starts = 0;
+        self.n_lock_starts = 0;
         let bar = span.meter.bar_ticks();
         for (i, track) in view.tracks.iter().enumerate() {
             let replace = if view.armed == Some(i) {
@@ -327,6 +458,14 @@ impl Player {
             // A cue starting in this span: the clip so far plays up to it.
             let switch = self.switches.due(view, i, &ticks, bar);
             let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
+            // A track gone quiet lets its locks go at once.
+            if (track.mute || self.switches.playing(view, i).is_none())
+                && self.held[..self.n_held]
+                    .iter()
+                    .any(|h| usize::from(h.track) == i)
+            {
+                self.end_locks(ticks.start, i as u16, track.dest);
+            }
             if let Some((clip, origin)) = self.switches.playing(view, i) {
                 if !(track.mute && replace.is_none()) {
                     self.collect(
@@ -357,6 +496,8 @@ impl Player {
                     s.off = s.off.min(at);
                 }
             }
+            // The old clip's locks end on the switch, before the new one's.
+            self.end_locks(at, i as u16, track.dest);
             if view.armed == Some(i) {
                 self.replacing = None;
             }
@@ -386,9 +527,27 @@ impl Player {
             }
             self.starts[j] = s;
         }
+        for i in 1..self.n_lock_starts {
+            let s = self.lock_starts[i];
+            let mut j = i;
+            while j > 0 && self.lock_starts[j - 1].tick > s.tick {
+                self.lock_starts[j] = self.lock_starts[j - 1];
+                j -= 1;
+            }
+            self.lock_starts[j] = s;
+        }
         let first = ticks.start;
+        let mut k = 0;
         for i in 0..self.n_starts {
             let s = self.starts[i];
+            // Locks on or before this tick go first (after the note-offs
+            // before them), so a note starts with its step's locks.
+            while k < self.n_lock_starts && self.lock_starts[k].tick <= s.tick {
+                let l = self.lock_starts[k];
+                self.end_until(l.tick, first, span, out);
+                self.lock(l, span, out);
+                k += 1;
+            }
             // Notes ending on or before this tick end first.
             self.end_until(s.tick, first, span, out);
             let (offset, frame) = place(span, s.tick);
@@ -410,6 +569,11 @@ impl Player {
                 self.stats.dropped += 1;
                 continue;
             }
+            // The track's locks without a lock on this note's tick end.
+            let (track, note, tick) = (s.track, s.note, s.tick);
+            self.unlock_where(offset, frame, out, |h| {
+                h.track == track && h.at != tick && h.scope.is_none_or(|p| p == note)
+            });
             out.send(Out {
                 offset,
                 frame,
@@ -431,7 +595,101 @@ impl Player {
             self.seq += 1;
             self.stats.notes += 1;
         }
+        while k < self.n_lock_starts {
+            let l = self.lock_starts[k];
+            self.end_until(l.tick, first, span, out);
+            self.lock(l, span, out);
+            k += 1;
+        }
         self.end_until(ticks.end - 1, first, span, out);
+    }
+
+    /// Queue the end of every lock `track` holds, on `tick`.
+    fn end_locks(&mut self, tick: Tick, track: u16, dest: DestId) {
+        self.push_lock(LockStart {
+            tick,
+            track,
+            dest,
+            addr: None,
+            value: 0.0,
+            scope: None,
+        });
+    }
+
+    fn push_lock(&mut self, l: LockStart) {
+        if self.n_lock_starts == MAX_LOCK_STARTS {
+            self.stats.dropped += 1;
+            return;
+        }
+        self.lock_starts[self.n_lock_starts] = l;
+        self.n_lock_starts += 1;
+    }
+
+    /// Send a lock and hold it, or end a track's locks.
+    fn lock(&mut self, l: LockStart, span: &Span, out: &mut impl Sink) {
+        let (offset, frame) = place(span, l.tick);
+        let Some(addr) = l.addr else {
+            self.unlock_where(offset, frame, out, |h| h.track == l.track);
+            return;
+        };
+        let held = self.held[..self.n_held]
+            .iter()
+            .position(|h| h.track == l.track && h.addr == addr);
+        match held {
+            Some(j) => self.held[j].at = l.tick,
+            None if self.n_held == MAX_LOCKED => {
+                self.stats.dropped += 1;
+                return;
+            }
+            None => {
+                self.held[self.n_held] = Held {
+                    track: l.track,
+                    dest: l.dest,
+                    addr,
+                    scope: l.scope,
+                    at: l.tick,
+                };
+                self.n_held += 1;
+            }
+        }
+        out.send(Out {
+            offset,
+            frame,
+            track: l.track,
+            dest: l.dest,
+            event: Event::Lock {
+                addr,
+                value: l.value,
+            },
+        });
+        self.stats.locks += 1;
+    }
+
+    /// Unlock the held locks `f` picks, in the order they were locked.
+    fn unlock_where(
+        &mut self,
+        offset: u32,
+        frame: u64,
+        out: &mut impl Sink,
+        f: impl Fn(&Held) -> bool,
+    ) {
+        let mut kept = 0;
+        for j in 0..self.n_held {
+            let h = self.held[j];
+            if f(&h) {
+                out.send(Out {
+                    offset,
+                    frame,
+                    track: h.track,
+                    dest: h.dest,
+                    event: Event::Unlock { addr: h.addr },
+                });
+            } else {
+                self.held[kept] = h;
+                kept += 1;
+            }
+        }
+        self.n_held = kept;
     }
 
     /// Start or end the replace pass for this span.
@@ -468,7 +726,10 @@ impl Player {
         sound: bool,
         cut: Option<Tick>,
     ) {
-        if clip.notes.is_empty() || clip.song_len <= 0.0 || ticks.is_empty() {
+        if (clip.notes.is_empty() && clip.locks.is_empty())
+            || clip.song_len <= 0.0
+            || ticks.is_empty()
+        {
             return;
         }
         let swing = clip.swing.unwrap_or(transport_swing);
@@ -535,6 +796,44 @@ impl Player {
                     key,
                 };
                 self.n_starts += 1;
+            }
+            // The pass's locks, placed as its notes are. A pass being
+            // replaced erases them; a muted track sends none.
+            if sound || replace == Some(pass as i64) {
+                let first = clip.locks.partition_point(|l| l.local < from);
+                for l in &clip.locks[first..] {
+                    if l.local > to {
+                        break;
+                    }
+                    let straight = start + clip.speed.to_song(l.local);
+                    let tick = swing.apply(straight).round() as Tick;
+                    if !ticks.contains(&tick) {
+                        continue;
+                    }
+                    if replace == Some(pass as i64) {
+                        if self.n_erased_locks == MAX_ERASED {
+                            self.stats.dropped += 1;
+                        } else {
+                            self.erased_locks[self.n_erased_locks] = ErasedLock {
+                                track: usize::from(track),
+                                slot: clip.slot,
+                                lock: l.src,
+                                take: self.take,
+                            };
+                            self.n_erased_locks += 1;
+                            self.stats.erased += 1;
+                        }
+                    } else {
+                        self.push_lock(LockStart {
+                            tick,
+                            track,
+                            dest,
+                            addr: Some(l.addr.on(track as u8)),
+                            value: l.value,
+                            scope: Lock::scope(l.addr),
+                        });
+                    }
+                }
             }
             pass += 1.0;
         }
