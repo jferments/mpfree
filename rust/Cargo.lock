@@ -473,6 +473,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-fx-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-synth-ui",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
 dependencies = [

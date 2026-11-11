@@ -43,6 +43,7 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, SourceId,
 };
+use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
@@ -52,6 +53,8 @@ use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
 use mpfree_sampler_ui::SourceView;
+use mpfree_seq::{Clip, Note};
+use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{Tone, Ui, UiEvent};
 
@@ -745,6 +748,8 @@ impl SamplePage {
                     return;
                 };
                 let name = project.pad(*pad).map_or(String::new(), |p| p.name.clone());
+                // Worked out before the pads change: the chop's source stays.
+                let phrase = a.phrase(project);
                 match a.apply(project) {
                     Ok(pads) => {
                         self.edits += 1;
@@ -775,6 +780,22 @@ impl SamplePage {
                         self.lines.push(format!("sample: {} pad {} {name}: chopped {span} into {n} slice{} ({mode:?}) on \
                                                  {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
                                                 if n == 1 { "" } else { "s" }));
+                        match phrase.map(|p| p.map(|p| phrase_clip(&name, &p, pads.start))) {
+                            Ok(None) => {}
+                            Ok(Some(Ok(clip))) => {
+                                self.lines.push(format!(
+                                    "sample: phrase {:?}: {} hits over {} beats, for the armed track",
+                                    clip.name,
+                                    clip.notes.len(),
+                                    clip.length / i64::from(PPQ)
+                                ));
+                                out.push(FromUi::SamplePhrase(Box::new(clip)));
+                            }
+                            Ok(Some(Err(why))) => {
+                                self.lines.push(format!("sample: phrase not made: {why}"))
+                            }
+                            Err(e) => self.lines.push(format!("sample: phrase not made ({e:?})")),
+                        }
                     }
                     Err(e) => self.lines.push(format!(
                         "sample: chop of pad {} not made ({e:?})",
@@ -1667,4 +1688,56 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
         ));
     }
     out.join(", ")
+}
+
+/// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note
+/// for pad `first_pad + k` at full velocity, the clip as long as the
+/// phrase's whole beats. The Clips tracks play pads 1 to 16 of the kit, so
+/// a phrase on pads past those is refused.
+fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String> {
+    let ppq = i64::from(PPQ);
+    let mut clip = Clip::new(&format!("{name} phrase"), i64::from(p.beats) * ppq);
+    for h in &p.hits {
+        let pad = first_pad + h.slice;
+        let note = u8::try_from(pad)
+            .ok()
+            .filter(|n| *n < 16)
+            .ok_or("the clips play pads 1 to 16 only")?;
+        let at = i64::try_from(h.tick(PPQ)).map_err(|_| "too long")?;
+        let len = i64::try_from(h.ticks(PPQ)).map_err(|_| "too long")?;
+        clip.add_note(Note::new(at, len, note, 127))
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    clip.check().map_err(|e| format!("{e:?}"))?;
+    Ok(clip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpfree_sampler::phrase::Hit;
+
+    #[test]
+    fn a_phrase_is_a_note_per_slice_on_its_pad_and_only_on_pads_1_to_16() {
+        let hit = |slice, beat, beats| Hit { slice, beat, beats };
+        let p = Phrase {
+            hits: vec![hit(0, 0.0, 0.25), hit(1, 0.25, 0.5), hit(2, 2.75, 1.0)],
+            beats: 4,
+        };
+        let c = phrase_clip("Break", &p, 12).unwrap();
+        assert_eq!((c.name.as_str(), c.length), ("Break phrase", 4 * 960));
+        let notes: Vec<_> = c
+            .notes
+            .iter()
+            .map(|n| (n.tick, n.len, n.note, n.velocity))
+            .collect();
+        assert_eq!(
+            notes,
+            [(0, 240, 12, 127), (240, 480, 13, 127), (2640, 960, 14, 127)]
+        );
+        assert_eq!(
+            phrase_clip("Break", &p, 14).unwrap_err(),
+            "the clips play pads 1 to 16 only"
+        );
+    }
 }
