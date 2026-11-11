@@ -189,6 +189,49 @@ def inspect_rootfs(backup_path, out):
                     if any(k.encode() in x.lower() for k in DTB_HINTS)
                 ][:120]
             rootfs["device_trees"][name] = dt
+        # User-space transition and updater code: read from the same temporary
+        # P6 copy and collect small, redacted keyword contexts. Vendor ELF
+        # programs are NEVER executed or written into the repository.
+        rootfs["startup_and_update_binaries"] = {}
+        programs = (
+            "/usr/sbin/az01-update",
+            "/usr/bin/az01-launch-MPC",
+            "/usr/bin/az01-script-runner",
+            "/usr/lib/libaz01-prog.so.1.3",
+            "/usr/bin/az01-bootloader-sig",
+            "/usr/sbin/az01config",
+            "/etc/fw_env.config",
+        )
+        patterns = ("bootloader", "maskrom", "brom", "rockusb", "fastboot",
+                    "reboot", "kexec", "update", "factory-reset",
+                    "dorecovery", "loader", "rootfs", "signature",
+                    "verify", "efuse", "secureboot", "sdcard", "usb",
+                    "mmcblk", "firmware", "fw_env", "u-boot")
+        for path in programs:
+            binary, error = debugfs_cat(p6, path)
+            if not binary:
+                rootfs["startup_and_update_binaries"][path] = {"present": False}
+                continue
+            leads = []
+            for match in re.finditer(rb"[\x20-\x7e]{5,}", binary):
+                literal = match.group().decode("ascii", "replace")
+                if not any(k in literal.lower() for k in patterns):
+                    continue
+                if SENSITIVE.search(literal):
+                    display = "[sensitive literal redacted]"
+                else:
+                    display = literal[:160]
+                leads.append({"offset": match.start(), "text": display})
+                if len(leads) >= 100:
+                    break
+            rootfs["startup_and_update_binaries"][path] = {
+                "present": True, "bytes": len(binary),
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "is_elf": binary.startswith(b"\x7fELF"),
+                "interesting_string_leads": leads,
+                "leads_truncated": len(leads) >= 100,
+                "warning": "Strings are hints, not a proven executable path.",
+            }
         out["rootfs"] = rootfs
 
 def main():
