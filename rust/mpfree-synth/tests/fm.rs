@@ -414,3 +414,37 @@ fn a_dx7_bank_loads_and_plays() {
         assert!(peak(&l) > 0.01 && l.iter().all(|x| x.is_finite()), "voice {k} ({})", v.name);
     }
 }
+
+#[test]
+fn the_drawn_envelope_matches_the_engine() {
+    use mpfree_synth::fm::env_stages;
+    // Init: one carrier, no keyboard or velocity scaling. Decay at rate 40
+    // from full to silence, held down.
+    let rates = [99u8, 40, 99, 99];
+    let levels = [99u8, 0, 0, 0];
+    let stages = env_stages(&rates, &levels);
+    let decay = stages[1].last().unwrap().0;
+    assert!(stages[0].last().unwrap().0 < 0.01, "a rate 99 attack is near instant");
+    assert!((stages[0].last().unwrap().1 - 1.0).abs() < 1e-4 && stages[1].last().unwrap().1 == 0.0);
+    // Equal levels take no time.
+    assert_eq!(stages[2].len(), 1);
+    // The engine's output falls 60 dB in two thirds of the drawn decay (the
+    // envelope is linear in dB, 90 dB from full to its floor).
+    let mut s = Fm::new(RATE);
+    s.load_preset(&Fm::presets()[0]);
+    for (k, f) in [op::R1, op::R2, op::R3, op::R4].into_iter().enumerate() {
+        s.set_param(op_id(1, f), f32::from(rates[k]));
+    }
+    for (k, f) in [op::L1, op::L2, op::L3, op::L4].into_iter().enumerate() {
+        s.set_param(op_id(1, f), f32::from(levels[k]));
+    }
+    let frames = ((decay * 1.2 + 0.2) * RATE as f32) as usize;
+    let (l, _) = render(&mut s, frames, &[(0, on(60, 127))], |_| 256);
+    let win = RATE as usize / 100;
+    let rms: Vec<f32> = l.chunks(win).map(|c| (c.iter().map(|x| x * x).sum::<f32>() / c.len() as f32).sqrt()).collect();
+    let top = rms.iter().copied().fold(0.0, f32::max);
+    let at = rms.iter().position(|&r| r < top * 1e-3).expect("it decays 60 dB") as f32 * 0.01;
+    let want = decay * 60.0 / (6.02 * (3840.0 - 16.0) / 256.0);
+    println!("drawn decay {decay:.3} s; -60 dB at {at:.3} s, want {want:.3} s");
+    assert!((at / want - 1.0).abs() < 0.1, "{at} vs {want}");
+}

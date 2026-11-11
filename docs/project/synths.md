@@ -50,7 +50,17 @@ A six-operator FM synth in the DX7's mould. It is DX7-style, not a bit-exact clo
 
 Timing: operators run every frame. Envelopes, pitch and the LFO run once every 16 frames, on frames divisible by 16, with operator gains ramped across each step.
 
-**On the Synth tab** FM has its own pages: Algo (algorithm, feedback, transpose, level, voices), Mod (LFO and pitch envelope), Pressure (see below), Op 1 to Op 6 (each operator's frequency, level, envelope and velocity; the Q-Links turn output, coarse, fine and velocity) and Kbd 1-2, 3-4 and 5-6 (keyboard scaling, two operators a page). Every FM parameter is on exactly one page. `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the samples `synth-fm-algo`, `synth-fm-op`, `synth-fm-kbd` and `synth-fm-pressure`. FM isn't in the pad player yet; Poly is the pads' synth for round 6.
+**On the Synth tab** FM has its own pages: Algo (algorithm, feedback, transpose, level, voices), Mod (LFO and pitch envelope), Pressure (see below), Op 1 to Op 6 (each operator's frequency, level, envelope and velocity; the Q-Links turn output, coarse, fine and velocity) and Kbd 1-2, 3-4 and 5-6 (keyboard scaling, two operators a page). Every FM parameter is on exactly one page.
+
+Every FM page has a visual strip, drawn from the values:
+
+- **The algorithm** as six boxes: carriers (green) along the bottom over the output line, each modulator (blue) a row above what it modulates, joined by down-across-down lines like the DX7's panel, and the feedback loop on the right when feedback is above 0. A switched-off or silent operator is faded. The layout is worked out from the algorithm's wiring, so all 32 draw the same way (`fm_visual::algorithm_layout`).
+- **Algo page:** the algorithm and the six output levels as bars, carriers green.
+- **Op pages:** the algorithm with that operator ringed, and its envelope as the engine runs it (L4 up through L1, L2 and L3, held, then the release), with its role in the caption ("modulates 1 · output 58").
+- **Kbd pages:** the algorithm with the two operators ringed in their curves' colours, and their keyboard level scaling across A-1 to C7 in dB (the card's scale is the smallest of ±12, 24, 48 or 96 dB that holds both).
+- **Mod page:** the pitch envelope (on a ±2, 12, 24 or 48 semitone scale, so a small scoop still shows) and the LFO's wave after its delay.
+
+A tap on a box opens that operator's page; a tap elsewhere on the algorithm card opens Algo. `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the samples `synth-fm-algo`, `synth-fm-mod`, `synth-fm-op`, `synth-fm-kbd` and `synth-fm-pressure`. FM isn't in the pad player yet; Poly is the pads' synth for round 6.
 
 ## Pad pressure (poly aftertouch)
 
@@ -104,7 +114,7 @@ A swell preset at rest (a pad not pressed, a keyboard without aftertouch) plays 
 
 **Ids.** Poly's pressure block is ids 100 to 115 and Vib rate is 75; FM's block is ids 224 to 239. The old fixed amounts (Poly 74, pressure to cutoff; FM 22, pressure to vibrato) are retired, and slot 1 does their job by default.
 
-**On the Synth tab** both engines have a Pressure page: the 8 settings and 4 slots, a drawing of the curve with the threshold and full-at points marked, and a live bar for each sounding voice's pressure. The app passes those values in with `SynthPanel::set_pressures`, from `Poly::pressures` or `Fm::pressures`. Q-Links 1 to 4 turn the threshold, full at, depth 1 and depth 2. FM shows its visual strip on this page only. With twelve pages, FM's tabs get room by the length of their names.
+**On the Synth tab** both engines have a Pressure page: the 8 settings and 4 slots, a drawing of the curve with the threshold and full-at points marked, and a live bar for each sounding voice's pressure. The app passes those values in with `SynthPanel::set_pressures`, from `Poly::pressures` or `Fm::pressures`. Q-Links 1 to 4 turn the threshold, full at, depth 1 and depth 2. With twelve pages, FM's tabs get room by the length of their names.
 
 **What other parts own.** Per-pad calibration is the app's: it scales each pad's raw value before the event reaches a node. Recording pressure into clips, Note Repeat and the sampler pads adopting the shaper belong to the time engine, the arp and the sampler. How the One's pads actually send pressure (rate, a spike on the strike, a 0 before the note-off, evenness) still needs a read-only measurement round before the defaults are final.
 
@@ -161,7 +171,7 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
 
 - **Pages.** A native engine names its pages and what its Q-Links turn (Poly: Osc, Filter, Env, LFO, Voice, Pressure; FM: see above). Any other node gets pages from its `ParamInfo` groups: consecutive groups share a page up to 12 tiles, and a group bigger than 16 is split. Every parameter is on exactly one page.
 - **Tiles.** Continuous and whole-number parameters are knobs; a bipolar one fills from the top. Choices of up to four show as buttons when they fit, otherwise as the chosen name with arrows. Toggles are switches. Read-only parameters are live meters. A tile's label carries its group when the group isn't the page's ("Env · Attack" on the Filter page).
-- **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. On the Pressure page (Poly and FM) the strip shows the pressure curve and the live bars instead. Other nodes get the plain layout without cards.
+- **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. FM gets the algorithm diagram and a card for each page (see above). On the Pressure page (Poly and FM) the strip shows the pressure curve and the live bars instead. Other nodes get the plain layout without cards.
 - **Control.**
   - A finger dragged up or down a knob turns it; 320 px is the whole range.
   - A tap selects a tile, and the wheel then turns it.
@@ -170,8 +180,8 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
 - **The app's part.** The app owns the node on the audio thread. It builds a `SynthState` from the node (`SynthState::from_node`) and adds the panel with `SynthPanel::add(ui, "Synth", state)` after its own `header` and `hint` widgets. It passes touches (`SynthPanel::event`), Q-Link turns (`qlink`) and wheel turns (`wheel`, `step_page`) to the panel, and applies each `SynthAction` it gets back: `Set { id, value }` becomes `Node::set_param`, and `Preset(i)` loads the preset, after which the app calls `SynthPanel::load` with the node's new state. The panel updates its own copy of a value at once, so the screen keeps up with a finger.
 - **Preview.** `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the sample screens to PNG files in a new folder `~/mpfree-work/synth-preview-<UTC>`. It opens no device.
 - **Tests.**
-  - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum).
-  - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that the Pressure page draws the curve and live bars and reads depths in their targets' units, that FM shows its strip on the Pressure page only, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
+  - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum). All 32 algorithms lay out with no boxes overlapping, carriers on the bottom row and every modulator above what it modulates.
+  - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that the Pressure page draws the curve and live bars and reads depths in their targets' units, that FM draws its algorithm, rings the page's operators and opens an operator's page from a tap on its box, that every FM page has its strip, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
 
 ## In the pad player (`rust/mpfree-hello`, round 6)
 
@@ -187,6 +197,6 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 ## Next
 
 - A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
-- FM on the pads: an FM choice next to Poly in the pad player, and an algorithm diagram card on its Algo page.
+- FM on the pads: an FM choice next to Poly in the pad player.
 - A drum synth for the pads.
 - Plugin hosting: CLAP first, in a sandbox process.
