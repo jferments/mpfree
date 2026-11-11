@@ -92,6 +92,7 @@ fn open_drains_then_seeds_from_the_snapshot() {
     fake.reads.push_back(chunk(&[slot(5), id(1), x(1), y(1), SYN])); // older than the snapshot
     fake.snapshots.push_back(Ok(snap(3, &[(5, 1, 1, 1)])));
     let mut r = reader(fake);
+    assert!(r.stats().seeded && r.seed_error().is_none());
     assert_eq!(r.source().log, vec!["read", "snapshot"]);
     assert_eq!(r.stats().slot_at_open, 3);
     assert_eq!(r.stats().fingers_at_open, 1);
@@ -106,10 +107,16 @@ fn open_drains_then_seeds_from_the_snapshot() {
 }
 
 #[test]
-fn open_fails_if_the_snapshot_cannot_be_read() {
+fn a_failed_snapshot_at_open_still_gives_touch_unseeded() {
     let mut fake = Fake::default();
     fake.snapshots.push_back(Err(io::ErrorKind::PermissionDenied.into()));
-    assert!(TouchReader::new(fake, &MPC_ONE, 1280, 800).is_err());
+    let mut r = TouchReader::new(fake, &MPC_ONE, 1280, 800).unwrap();
+    assert!(!r.stats().seeded);
+    assert!(r.seed_error().unwrap().contains("unseeded"));
+    // Old behaviour: no ABS_MT_SLOT yet, so slot 0 is assumed.
+    r.source_mut().reads.push_back(chunk(&[id(9), x(10), y(10), SYN]));
+    assert_eq!(phases(&r.read().unwrap()), vec![Phase::Down]);
+    assert_eq!(r.decoder().contacts()[0].slot, 0);
 }
 
 #[test]

@@ -6,7 +6,9 @@
 //! and [`gesture`] (toolkit-neutral recognizer). M12 adds [`calibrate`],
 //! host-side analysis of a recorded capture. M13 adds [`profile`], the measured
 //! MPC One profile as constants checked against its JSON. M14 adds swipes,
-//! release velocity and [`gesture::Fling`], and [`jitter`] for hold analysis. None of them read
+//! release velocity and [`gesture::Fling`], [`route`] (a recognizer per
+//! on-screen owner) and [`jitter`] for hold analysis. M15 adds [`touchlab`],
+//! the owner-paced Touch lab steps and their journal lines. None of them read
 //! devices; the live reader is the separate `mpfree-touch-evdev` crate.
 #![forbid(unsafe_code)]
 
@@ -16,6 +18,8 @@ pub mod jitter;
 pub mod mt;
 pub mod pointer;
 pub mod profile;
+pub mod route;
+pub mod touchlab;
 
 pub const ABS_X: u8 = 0;
 pub const ABS_Y: u8 = 1;

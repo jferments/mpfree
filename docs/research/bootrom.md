@@ -1427,3 +1427,42 @@ The report may contain vendor firmware metadata and should be reviewed before pu
 | Update drift | Any bootloader/GPT/DTB hash differs from qualified profile | Fail closed; don't auto-repatch vendor boot |
 
 Firmware resilience must mean **stock operation survives a failed MPFree component and an unknown vendor update**. It cannot mean automatically retaining MPFree boot priority after an Akai update that intentionally rewrites our boot manager or blocks the original entrypoint.
+
+
+## 31. Highest-priority recovery research: eFuse + independent BootROM access (2026-11-11)
+
+**Owner requirement:** software updates must not be able to remove an owner's ability to install or boot an independent OS. This is a threat model, not evidence that Akai intends to interfere with MPFree. A firmware-independent entry must avoid dependence on stock SSH, autorun, kexec, Fastboot or mutable U-Boot.
+
+### New confirmed results
+- The owner's offline p3 survey found **13/13 consecutive R_ARM_RELATIVE entries** from virtual 0x0014D650 through 0x0014D6B0. The 0x17 at Fastboot runtime-global addresses in the on-disk payload is relocation data, **not an initial permission value of decimal 23**. U-Boot's exact BSS clearing still needs static confirmation.
+- The owner's 3.10.0 Gen1 AZ01 package is **rootfs-only**. It has one xz-compressed rootfs record (167084492 stored bytes) and EOF; no distinct p1/p2/p3 bootloader/env record. Package SHA256: d09b1e4c1c765d6bea0f0b93bb7ba661200fc14bd893422dcbf0e86e406a2a20. This is **only true of this specific update image**, not arbitrary future releases or unrelated updater actions.
+
+### Critical new information: RK3288 eFuse security and its programming voltage
+
+Rockchip's Secure Boot Application Note v2.2 (2020-03-19) lists RK3288 as using **1024 bits/128 bytes of secure eFuse**. The 32-bit word at byte offset 0x00 holds the security-enable flag in its low byte; words 0x08–0x0F contain the trusted public-key hash; word 0x1F is the eFuse write-lock field. **RK3288 requires a separate 1.5-V eFuse programming supply on SoC ball P19**. Rockchip describes either a board-mounted switched regulator or an external factory test fixture, and instructs builders to leave programming voltage disabled in normal operation. SOURCE: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md .
+
+We **do not yet know** whether the MPC One has burned a secure-boot key, whether it has a programming-voltage rail accessible after assembly, or whether its Linux NVMEM exposes the relevant fuse word. The upstream RK3288 rockchip-efuse Linux NVMEM provider is read-only, but that does not exclude some different privileged programming path in an update loader. SOURCE: https://kernel.googlesource.com/pub/scm/linux/kernel/git/gregkh/driver-core/+/9215310cf13bccfe777500986d562d53bdb63537/drivers/nvmem/rockchip-efuse.c .
+
+**Crucial:** MaskROM enumeration alone does not establish the right to execute unsigned owner SPL. A key-fused BootROM can reject it. The freedom-to-install gate has two independent parts: (1) enter genuine ROM download mode without the eMMC SPL; (2) make the ROM execute an owner-controlled first stage.
+
+### Prioritized owner-independence program
+
+1. P0: Read only **the first four security-flag bytes** from an explicitly matching rockchip-efuse NVMEM device, if available. Check its DT compatible/name and size first; do not dump the 128-byte NVMEM or expose key hashes/serials. A zero value alone is not proof of unsigned-ROM access because mapping/access may be restricted. Locate the eFuse programming supply via device tree and board circuitry; never apply a voltage or program fuses.
+2. P1: Document PCB with high-resolution photos and trace eMMC boot-source/clock, OTG USB-B D+/D− and RK3288 P19 fuse-supply paths **with the device unpowered**. Avoid speculative GPIO toggles or physical shorts.
+3. P2: Design an electrically reviewed, normally transparent **owner recovery switch/jumper** that temporarily makes the onboard boot source unavailable only at reset, causing silicon ROM USB fallback independently of installed firmware. Not a recommendation to ground any energized pad. Source for ROM fallback behavior: https://wiki.t-firefly.com/en/Firefly-RK3288/bootmode.html .
+4. P3: Verify actual Rockchip MaskROM enumeration over the MPC USB-B path. Qualify a board-compatible DDR initialization stage and then demonstrate execution of **owner-controlled free SPL**. The Rockchip rkbin RK3288.ini names generic DDR and usbplug blobs but they are closed-source, untested on MPC RAM, and not proof of owner-code acceptance: https://github.com/rockchip-linux/rkbin/blob/master/RKBOOT/RK3288.ini .
+5. P4: Only after compatible RAM loader is proven, read entire eMMC user area through ROM-recovered loader and compare every block/hash to the verified offline SSH backup. Boot0/boot1 readback separately as applicable. No write/erase until this Tier 3 gate passes.
+6. P5: Develop own SPL/U-Boot + MPFree kernel/DTB/rootfs and A/B rollback with stock fallback, avoiding any dependence on Akai signature/bootloader policies once truly owner bootable. Qualify upgrade scenarios that remove SSH/autorun/Fastboot, change U-Boot and rootfs, and erase data.
+7. P6: Investigate physical prevention of **new fuse provisioning** only if the fuse is currently unprogrammed and board wiring actually exposes a firmware-controllable programming supply. Any modification requires qualified circuit analysis and explicit authorization; do not promise this capability today.
+
+**Installer policy:** stock firmware update packages must be inspected offline and treated as untrusted capability changes; a single verified 3.10 rootfs-only image cannot establish that later updates are harmless. Until the independent MaskROM+owner-SPL boot and readback are proven, do not change p1/p2/p3, eMMC boot settings or any boot-critical partition. No full firmware independence guarantee is currently supported.
+
+
+### 31.6 Further offline DTB confirmation from the existing p1/p3 attachments
+
+Independently parsed the previously extracted binary DTBs in the current project research:
+- p3 embedded U-Boot DTB (35213 bytes) has an eFuse node at /efuse@ffb40000 with compatible rockchip,rk3288-efuse, register base 0xFFB40000 size 0x10000, but its **status is disabled**. This only states how the 2019 U-Boot DTB describes its driver and is **not evidence that the RK3288 silicon fuse is unprogrammed**, nor that a Linux 6.6 runtime device tree has the same status.
+- p1 embedded SPL DTB (3239 bytes) does not have a visible eFuse node.
+- U-Boot's pinctrl nodes /pinctrl/tsadc/otp-gpio and /pinctrl/tsadc/otp-out refer to the **temperature-sensor over-temperature protection** function. They are **NOT evidence of one-time-programmable eFuse power control**. Do not treat string-matches for "otp" as a fuse-programming mechanism.
+
+Next runtime test should enumerate live /sys/bus/nvmem/devices providers and /proc/device-tree/efuse@ffb40000 status/compatible, without writing to eFuse or disclosing unique hardware IDs. The secure-boot flag, if mapped, is at secure eFuse word 0 per Rockchip's 2020 guide; an absent NVMEM node or all-zero read is not proof of unsigned BootROM access. Any physical diagnosis of P19 VCC_EFUSE must be planned from board identification and schematics.
