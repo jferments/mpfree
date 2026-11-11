@@ -563,6 +563,13 @@ pub struct App {
     arp: mpfree_arp::Settings,
     /// The scale's root (0 = C), kept while the scale is Off.
     scale_root: u8,
+    /// The owner's own scales from the patterns file: name, notes going up
+    /// and coming down. They follow the built-in ones in the Scale row.
+    custom_scales: Vec<(String, u16, u16)>,
+    /// The Scale row's choice: 0 is Off, then the built-in scales, then the
+    /// owner's (kept as a place, since an owner's scale may have the same
+    /// notes as a built-in one).
+    scale_pick: usize,
     /// The transport's clock for the next period ([`App::set_clock`]).
     clock: Option<mpfree_arp::Clock>,
     /// While the transport plays: its swing (true) or the arp's own.
@@ -611,7 +618,7 @@ impl App {
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, clock: None, swing_from_transport: true, patterns,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, custom_scales: Vec::new(), scale_pick: 0, clock: None, swing_from_transport: true, patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
@@ -2063,15 +2070,18 @@ mod tests {
 
     #[test]
     fn menu_on_the_arp_panel_sets_accent_scale_strum_and_restart() {
-        use mpfree_arp::scale::{Scale, DORIAN, MINOR};
+        use mpfree_arp::scale::{Scale, Snap, DORIAN, PHRYGIAN};
         let mut app = ready();
         app.toggle_panel();
         let fx = press(&mut app, MENU);
         let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else { panic!("no menu") };
         assert_eq!(m.title, "Arp options");
         assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
-                   ["Tempo", "Accent level", "Scale", "Scale root", "Strum", "New notes restart", "Swing from"]);
-        assert_eq!(m.rows[6].1, "Transport");
+                   ["Tempo", "Accent level", "Scale", "Scale root", "Out-of-key notes", "Chord on each pad", "Scale run",
+                    "Strum", "New notes restart", "Swing from"]);
+        assert_eq!(m.rows[9].1, "Transport");
+        assert_eq!((m.rows[5].1.as_str(), m.rows[6].1.as_str()), ("Off", "Off"));
+        assert_eq!(m.rows[4].1, "Note below");
         assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
         assert!(app.generating(), "the arp plays on under its options");
         let row = |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
@@ -2082,17 +2092,46 @@ mod tests {
         // Scale: Off, then the named scales; the root moves it.
         app.step_item(row(&app, ArpItem::Scale), 1);
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, MINOR)));
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, DORIAN)));
         app.step_item(row(&app, ArpItem::Root), 1);
         let fx = app.step_item(row(&app, ArpItem::Root), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, MINOR)));
-        assert!(fx.contains(&Effect::Note("arp scale: D Minor".to_string())));
-        assert!(matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Minor"));
-        app.step_item(row(&app, ArpItem::Scale), 1);
-        app.step_item(row(&app, ArpItem::Scale), 1);
         assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
-        // Off keeps the root for next time.
+        assert!(fx.contains(&Effect::Note("arp scale: D Dorian".to_string())));
+        assert!(matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Dorian"));
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, PHRYGIAN)));
+        // A scale with other notes coming down keeps them when the root moves.
+        let classical = mpfree_arp::scale::SCALES.iter().position(|d| d.name == "Mel. minor classical").unwrap();
+        for _ in 3..classical {
+            app.step_item(row(&app, ArpItem::Scale), 1);
+        }
+        app.step_item(row(&app, ArpItem::Root), 1);
+        let s = app.engine.settings().scale.unwrap();
+        assert_eq!((s.root, s.mask, s.down), (3, mpfree_arp::scale::MELODIC_MINOR, mpfree_arp::scale::MINOR));
+        app.step_item(row(&app, ArpItem::Root), -1);
+        // Out-of-key notes: below, above, nearest, not played.
+        let fx = app.step_item(row(&app, ArpItem::Snap), 1);
+        assert_eq!(app.engine.settings().snap, Snap::Up);
+        assert!(fx.contains(&Effect::Note("arp out-of-key notes: note above".to_string())));
         for _ in 0..5 {
+            app.step_item(row(&app, ArpItem::Snap), 1);
+        }
+        assert_eq!(app.engine.settings().snap, Snap::Skip);
+        // A chord on each pad, and a scale run.
+        app.step_item(row(&app, ArpItem::Chord), 1);
+        let fx = app.step_item(row(&app, ArpItem::Chord), 1);
+        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Triad);
+        assert!(fx.contains(&Effect::Note(
+            "arp chord on each pad: triad (1 3 5)".to_string()
+        )));
+        app.step_item(row(&app, ArpItem::Run), 1);
+        assert!(app.engine.settings().run);
+        app.step_item(row(&app, ArpItem::Run), -1);
+        app.step_item(row(&app, ArpItem::Chord), -5);
+        app.step_item(row(&app, ArpItem::Chord), -1);
+        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Off);
+        // Off keeps the root for next time.
+        for _ in 0..classical {
             app.step_item(row(&app, ArpItem::Scale), -1);
         }
         assert_eq!(app.engine.settings().scale, None);
@@ -2289,8 +2328,9 @@ mod tests {
     #[test]
     fn a_patterns_file_adds_and_replaces_and_save_writes_only_the_owners() {
         let mut app = ready();
-        let fx = app.load_patterns("# mine\nSkip = 1 . 3 2\nstraight = x x .\n");
-        assert!(fx.contains(&Effect::Note("arp patterns file: 1 added, 1 built-in ones replaced".into())), "{fx:?}");
+        let fx = app.load_patterns("# mine\nSkip = 1 . 3 2\nstraight = x x .\n[scales]\nBright minor = 1 2 b3 4 5 6 7\n");
+        assert!(fx.contains(&Effect::Note("arp patterns file: 1 added, 1 built-in ones replaced, 1 scales of your own"
+            .into())), "{fx:?}");
         assert_eq!(app.patterns.last().unwrap().0, "Skip");
         assert_eq!(app.patterns[0], ("Straight".to_string(), Pattern::parse("x x .").unwrap()), "keeps its place");
         assert_eq!(*app.engine.pattern(), Pattern::parse("x x .").unwrap(), "the pattern in use is reloaded");
@@ -2314,6 +2354,18 @@ mod tests {
         let fx = app.workspace_action(WsAction::Save(p));
         let saved = fx.iter().find_map(|e| match e { Effect::SavePatterns(t) => Some(t.clone()), _ => None }).unwrap();
         assert!(saved.contains("Straight = 1 2 . 3\n") && saved.contains("Skip     = 1 . 3 2\n"), "{saved}");
+        assert!(saved.contains("[scales]\nBright minor = 0 2 3 5 7 9 11\n"), "{saved}");
+        // The owner's scale comes after the built-in ones in the Scale row.
+        app.workspace_action(WsAction::Back);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        let row = app.items().iter().position(|&i| i == Item::Arp(ArpItem::Scale)).unwrap();
+        for _ in 1..mpfree_arp::scale::SCALES.len() {
+            app.step_item(row, 1);
+        }
+        let fx = app.step_item(row, 1);
+        assert_eq!(app.engine.settings().scale, Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MELODIC_MINOR)));
+        assert!(fx.contains(&Effect::Note("arp scale: C Bright minor".into())), "{fx:?}");
     }
 
     #[test]

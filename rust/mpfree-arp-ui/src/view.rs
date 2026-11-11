@@ -112,11 +112,16 @@ impl ArpState {
         }
     }
 
+    /// The notes the steps work from: the held notes, sorted, grown into
+    /// chords and scale runs as the engine grows them.
     fn sorted(&self) -> Vec<Held> {
         let mut v = self.notes.clone();
         v.sort_by_key(|h| h.note);
         v.truncate(MAX_NOTES);
-        v
+        let mut list = [Held::default(); MAX_NOTES];
+        list[..v.len()].copy_from_slice(&v);
+        let n = mpfree_arp::step_notes(&self.settings, &mut list, v.len());
+        list[..n].to_vec()
     }
 }
 
@@ -218,7 +223,9 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
         let playing = (st.step > 0).then_some(0);
         return (vec![all(&label)], 0, playing);
     }
-    let base: Vec<Held> = if s.order == Order::Played { st.notes.iter().take(MAX_NOTES).copied().collect() } else { sorted };
+    let grown = s.chord != mpfree_arp::Chord::Off || s.run;
+    let base: Vec<Held> =
+        if s.order == Order::Played && !grown { st.notes.iter().take(MAX_NOTES).copied().collect() } else { sorted };
     let total = n * usize::from(s.octaves);
     let Some(cycle) = s.order.cycle(total) else {
         // The random orders: as many cells as notes, none known ahead.
@@ -691,6 +698,34 @@ mod tests {
         assert!(arp_cells(&state(Settings::default(), &[1], 3)).0.is_empty());
         // MIDI notes above the pads are named.
         assert_eq!(note_label(60), "C4");
+        // A chord from one note, and a scale run: the strip shows what plays.
+        let c_major = Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MAJOR));
+        let s = Settings {
+            mode: Mode::Arp,
+            scale: c_major,
+            chord: mpfree_arp::Chord::Triad,
+            ..Settings::default()
+        };
+        let labels = |st: ArpState| {
+            arp_cells(&st)
+                .0
+                .iter()
+                .map(|c| c.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(state(s, &[62], 0)), ["D4", "F4", "A4"]);
+        let s = Settings {
+            mode: Mode::Arp,
+            scale: c_major,
+            run: true,
+            order: Order::Played,
+            ..Settings::default()
+        };
+        assert_eq!(
+            labels(state(s, &[64, 60], 0)),
+            ["C4", "D4", "E4"],
+            "a run goes up, whatever the press order"
+        );
     }
 
     #[test]
