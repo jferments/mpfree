@@ -3,8 +3,9 @@
 //! compressor on 6 tracks, one keyed by track 1's kick, drive and glue on
 //! submixes, Cloud reverb and delay on returns, master EQ), runs it with
 //! profiling on and prints every insert's mean and p99 per 128-frame block,
-//! dearest first, with its share of a period. Run with `--release`;
-//! `-- light` runs the reverb at its Light quality. Desktop numbers;
+//! dearest first, with its share of a period. Run with `--release`; the
+//! reverb runs at Full (as the bench case), or `-- light` / `-- eco` at
+//! its Light or Eco (default) quality. Desktop numbers;
 //! `mpfree-bench` has the MPC model.
 
 use mpfree_fx::ids::mixer::{self as mx, output};
@@ -16,7 +17,13 @@ const BLOCK: usize = 128;
 const BLOCKS: u64 = 20_000;
 
 fn main() {
-    let light = std::env::args().any(|a| a == "light");
+    let quality = if std::env::args().any(|a| a == "eco") {
+        2.0
+    } else if std::env::args().any(|a| a == "light") {
+        1.0
+    } else {
+        0.0
+    };
     let (tracks, pads) = (12, 8);
     let mut m = Mixer::new(MixerConfig::default(), RATE, 1024);
     for p in 0..pads {
@@ -40,9 +47,7 @@ fn main() {
     m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
     m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
     m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
-    if light {
-        m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
-    }
+    m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, quality);
     m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
     m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
     m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);

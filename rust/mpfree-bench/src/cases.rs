@@ -171,20 +171,22 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
     }
 }
 
-/// The mixer at its default size (2 inputs, 32 pad channels, 16 tracks, 8
-/// submixes, 4 returns), fed `tracks` tracks and `pads` pad channels of
-/// program material, with a typical song's routing: pads into the drum
-/// track, drums and bass into submixes, sends to two returns. With
-/// [`Inserts::Song`], the strips carry a song's worth of effects too
-/// (with the reverb at its Light quality: [`Inserts::SongLight`]).
-/// The inserts a [`mixer`] case carries.
+/// The inserts a [`mixer`] case carries: none, or a song's worth of
+/// effects with the Cloud reverb at its Full quality (the worst case),
+/// at Light, or at Eco (the reverb's default).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Inserts {
     None,
     Song,
     SongLight,
+    SongEco,
 }
 
+/// The mixer at its default size (2 inputs, 32 pad channels, 16 tracks, 8
+/// submixes, 4 returns), fed `tracks` tracks and `pads` pad channels of
+/// program material, with a typical song's routing: pads into the drum
+/// track, drums and bass into submixes, sends to two returns, and the
+/// inserts `with` names.
 fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Case {
     let inserts = with != Inserts::None;
     use ids::mixer::{self as mx, output};
@@ -211,9 +213,12 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Ca
         m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
         m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
         m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
-        if with == Inserts::SongLight {
-            m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
-        }
+        let quality = match with {
+            Inserts::SongLight => 1.0,
+            Inserts::SongEco => 2.0,
+            _ => 0.0,
+        };
+        m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, quality);
         m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
         m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
         m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
@@ -281,9 +286,15 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| effect("Phaser (12 stages)", rate, Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)])));
     v.push(measured(|| effect("Lo-fi", rate, Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)])));
     v.push(measured(|| effect("Master safety", rate, Box::new(MasterSafety::new()), &[])));
+    // The reverb at Full (its cost before Eco, the worst case) and at
+    // Eco, its default.
     for (k, c) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
         v.push(measured(|| effect(&format!("Cloud reverb ({c})"), rate, Box::new(Cloud::new()),
-                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)])));
+                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0), (ids::cloud::QUALITY, 0.0)])));
+    }
+    for (k, c) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
+        v.push(measured(|| effect(&format!("Cloud reverb ({c}, Eco)"), rate, Box::new(Cloud::new()),
+                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0), (ids::cloud::QUALITY, 2.0)])));
     }
     v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
                   &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
@@ -293,6 +304,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, Inserts::None)));
     v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, Inserts::Song)));
     v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb", rate, 12, 8, Inserts::SongLight)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb", rate, 12, 8, Inserts::SongEco)));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
