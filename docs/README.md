@@ -43,6 +43,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 | M10 | [Guarded touch-axis test](milestones/m10-guarded-touch-axes.md), [validation record](milestones/m10-validation-record.md) | MPC One |
 | M11 | [Multitouch decoder and gestures](milestones/m11-multitouch-decoder.md) | Workstation, CI |
 | M12 | [Live touch capture and orientation calibration](milestones/m12-touch-capture.md) | MPC One |
+| M13 | [Live touch reader: seeded at open, resync after overflow](milestones/m13-live-touch-reader.md) | Workstation, CI (device check pending) |
 | GPU | [Panfrost offscreen GLES qualification](milestones/gpu-panfrost-offscreen.md), [kit](../tools/mpc-one/gpu-qualification/README.md) | MPC One |
 
 M4 was host-only safety tooling and the [handoff state-machine simulator](../rust/mpfree-handoff-model/src/lib.rs); it has no separate report. See the [roadmap](project/roadmap.md).

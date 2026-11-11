@@ -4,13 +4,16 @@
 //! M11 adds three pure, host-only layers over already-read events:
 //! [`mt`] (Type-B multitouch decoder), [`pointer`] (raw-to-logical mapping)
 //! and [`gesture`] (toolkit-neutral recognizer). M12 adds [`calibrate`],
-//! host-side analysis of a recorded capture. None of them read devices.
+//! host-side analysis of a recorded capture. M13 adds [`profile`], the measured
+//! MPC One profile as constants checked against its JSON. None of them read
+//! devices; the live reader is the separate `mpfree-touch-evdev` crate.
 #![forbid(unsafe_code)]
 
 pub mod calibrate;
 pub mod gesture;
 pub mod mt;
 pub mod pointer;
+pub mod profile;
 
 pub const ABS_X: u8 = 0;
 pub const ABS_Y: u8 = 1;
