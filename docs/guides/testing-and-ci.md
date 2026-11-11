@@ -93,6 +93,13 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 - **New behaviour comes with tests** in the crate that owns it. Engine code
   gets unit tests. Audio output gets a fixed-output or golden check. A parser
   gets tests on bad input as well as good.
+- **A sound that changes on purpose gets new golden references** in the
+  same PR, with the reason in the commit:
+  `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-bench golden`. The golden
+  test fingerprints each bench case per eighth of its render and channel
+  (level in dB, zero crossings) and allows 0.5 dB and 3 % of crossings, so
+  another CPU or libm passes and a changed preset, tuning or filter fails.
+  A new bench case needs a reference too.
 - **Audio-thread code doesn't allocate or block.** `mpfree-fx` and
   `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`),
   and CI runs `mpfree-bench --check-allocs` over the profiled engines. New
@@ -154,10 +161,12 @@ In order. Each step is its own PR.
 2. **Raise the thin crates** in the table above. Done first: whole-program
    tests for render, session, device-smoke, screen-log and display. Next is
    `mpfree-hello`, the program that actually runs on the MPC.
-3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
-   audio and compare with stored references within a tolerance. Do the same
-   for the Hello preview screens, which today are checked only as valid PNGs,
-   compared with stored images.
+3. **Golden regressions.** Audio is done: `mpfree-bench`'s golden test
+   renders every bench case (each Poly preset, the drum kits, the plucks,
+   every effect and reverb, the sampler, the mixer, the time engine and arp,
+   the looper, a whole song) and compares a fingerprint with
+   `rust/mpfree-bench/golden/cases.txt`. Next: the Hello preview screens,
+   which today are checked only as valid PNGs, compared with stored images.
 4. **Real-time safety everywhere.** No-allocation and deadline tests for every
    audio path (synth, sampler, play, arp), not only FX and grain. The `rust`
    job already runs `mpfree-bench --quick --check-allocs`, which fails if any
