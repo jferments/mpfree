@@ -600,6 +600,8 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-prof",
+ "mpfree-stretch",
 ]
 
 [[package]]
@@ -647,6 +649,13 @@ dependencies = [
 [[package]]
 name = "mpfree-store"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-stretch"
+version = "0.1.0"
+dependencies = [
+ "mpfree-analysis",
+]
 
 [[package]]
 name = "mpfree-synth"
