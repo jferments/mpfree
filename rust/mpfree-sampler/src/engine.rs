@@ -38,9 +38,10 @@ use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
 };
 use crate::model::{
-    ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, MasterFx, PlayMode, PressureRoute,
-    PressureTarget, Project, PADS,
+    ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx, PadsPlay,
+    PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
+use crate::warp::Warps;
 
 /// Fade length when a voice is choked, muted by its group, or pushed out by
 /// the pad's polyphony limit.
@@ -49,6 +50,59 @@ pub const KILL_FRAMES: u16 = 64;
 pub const STEAL_FRAMES: u16 = 32;
 /// Events that can wait for the next render.
 pub const MAX_EVENTS: usize = 256;
+/// What a hit on a pad plays.
+#[derive(Clone, Copy)]
+enum Target {
+    /// The pad's own sound.
+    Own(u8),
+    /// A note, through the keygroups.
+    Key(u8),
+    /// Pad `pad` at 16 Levels step `k` of `by`.
+    Level { pad: u8, by: Levels, k: u8 },
+}
+
+impl Target {
+    /// Whether voice `v` was started by a hit of this pad.
+    fn played(&self, v: &Voice) -> bool {
+        match *self {
+            Target::Own(pad) => v.pad == pad && v.note == NO_NOTE,
+            Target::Key(note) => v.note == note,
+            Target::Level { pad, k, .. } => v.pad == pad && v.note == LEVEL_NOTE + k,
+        }
+    }
+}
+
+/// What a hit changes in the voices it starts: a keygroup's semitones, or
+/// a 16 Levels step.
+#[derive(Clone, Copy, Default)]
+struct Vary {
+    semis: i32,
+    velocity: Option<u8>,
+    /// From 0 to 1 of the region (a granular voice's grain position).
+    start: Option<f32>,
+    cutoff_hz: Option<f32>,
+    decay_ms: Option<f32>,
+}
+
+impl Vary {
+    fn level(by: Levels, k: u8) -> Vary {
+        let k = usize::from(k);
+        let mut v = Vary::default();
+        match by {
+            Levels::Velocity => v.velocity = Some(Levels::velocity(k)),
+            Levels::Tune => v.semis = Levels::semitones(k),
+            Levels::Cutoff => v.cutoff_hz = Some(Levels::cutoff_hz(k)),
+            Levels::Decay => v.decay_ms = Some(Levels::decay_ms(k)),
+            Levels::Start => v.start = Some(Levels::start(k)),
+        }
+        v
+    }
+}
+
+/// A voice's note when its pad was hit, not played as a keygroup.
+const NO_NOTE: u8 = 255;
+/// A 16 Levels voice's note: this plus the pad (0 to 15) that played it.
+const LEVEL_NOTE: u8 = 128;
 /// Grains alive at once across every granular voice. Past it, new grains
 /// are skipped. A first guess, to be set by measurement on the MPC.
 pub const GRAIN_BUDGET: usize = 256;
@@ -117,6 +171,18 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
+    /// The tempo the layer's audio is at, when it is warped (0 if not):
+    /// the voice plays it `tempo / warp_bpm` times as fast.
+    warp_bpm: f64,
+    /// It plays a stretched copy, not the source.
+    copy: bool,
+}
+
+impl ViewLayer {
+    /// Whether the layer plays a stretched copy (and how long it is).
+    pub fn stretched_frames(&self) -> Option<i64> {
+        (self.warp_bpm > 0.0 && self.copy).then_some(self.end - self.start)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +198,7 @@ pub struct ViewPad {
     vel_to_level: f32,
     vel_to_start: f32,
     pressure: PressureRoute,
+    keys: Option<Keys>,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -140,14 +207,39 @@ pub struct EngineView {
     pub revision: u64,
     pads: Vec<Option<ViewPad>>,
     master: MasterFx,
+    pads_play: PadsPlay,
 }
 
 impl EngineView {
-    /// Whether pad `i` has something to play.
+    /// Whether a hit on pad `i` plays something.
     pub fn has_pad(&self, i: usize) -> bool {
-        self.pads
-            .get(i)
-            .is_some_and(|p| p.as_ref().is_some_and(|p| !p.layers.is_empty()))
+        let sounds = |p: &Option<ViewPad>| p.as_ref().is_some_and(|p| !p.layers.is_empty());
+        match self.pads_play {
+            PadsPlay::Pads => self.pads.get(i).is_some_and(sounds),
+            // With the pads playing notes: a keygroup holds its note.
+            PadsPlay::Keys { from } => {
+                let note = usize::from(from) + i;
+                note < 128
+                    && self.pads.iter().any(|p| {
+                        sounds(p)
+                            && p.as_ref()
+                                .and_then(|p| p.keys)
+                                .is_some_and(|k| k.contains(note as u8))
+                    })
+            }
+            // With 16 Levels: every pad plays the one pad.
+            PadsPlay::Levels { pad, .. } => self.pads.get(usize::from(pad)).is_some_and(sounds),
+        }
+    }
+
+    /// What the pads play.
+    pub fn pads_play(&self) -> PadsPlay {
+        self.pads_play
+    }
+
+    /// Layer `layer` of pad `pad`, as resolved.
+    pub fn layer(&self, pad: usize, layer: usize) -> Option<&ViewLayer> {
+        self.pads.get(pad)?.as_ref()?.layers.get(layer)
     }
 
     pub fn empty() -> EngineView {
@@ -155,12 +247,28 @@ impl EngineView {
             revision: 0,
             pads: vec![None; PADS],
             master: MasterFx::default(),
+            pads_play: PadsPlay::Pads,
         }
     }
 
     /// Resolves every pad of a project for an engine running at `rate`.
-    /// Call this off the audio thread; it allocates.
+    /// Call this off the audio thread; it allocates. Warped regions play
+    /// as they were recorded; [`EngineView::build_warped`] plays them at
+    /// the project tempo.
     pub fn build(project: &Project, rate: u32) -> EngineView {
+        Self::resolve(project, rate, None)
+    }
+
+    /// As [`EngineView::build`], with warped regions at the tempo of
+    /// `warps`: a region warped to stretch plays its stretched copy when
+    /// `warps` holds it, and repitches to the tempo until then; one warped
+    /// to repitch always repitches. The engine needs the same tempo
+    /// ([`Engine::set_tempo`]).
+    pub fn build_warped(project: &Project, rate: u32, warps: &mut Warps) -> EngineView {
+        Self::resolve(project, rate, Some(warps))
+    }
+
+    fn resolve(project: &Project, rate: u32, mut warps: Option<&mut Warps>) -> EngineView {
         let mut pads = Vec::with_capacity(PADS);
         for i in 0..PADS {
             pads.push(project.pad(i).map(|p| {
@@ -180,7 +288,7 @@ impl EngineView {
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
-                        Some(ViewLayer {
+                        let mut v = ViewLayer {
                             data: s.data().clone(),
                             stereo: s.channels() == 2,
                             pick: r.channels,
@@ -203,7 +311,56 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
-                        })
+                            warp_bpm: 0.0,
+                            copy: false,
+                        };
+                        let warp = r.warp.filter(|_| r.mode != PlayMode::Granular);
+                        if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
+                            // Tune is in the copy, or left out (repitch):
+                            // the tempo alone sets the speed.
+                            let plain = f64::from(s.rate()) / f64::from(rate);
+                            v.step = ((plain * ONE as f64).round() as i64).max(1);
+                            v.warp_bpm = f64::from(w.bpm);
+                            let copy = match w.method {
+                                WarpMethod::Stretch => ws
+                                    .key_for(r, l.tune_cents + p.tune_cents)
+                                    .and_then(|k| ws.copy(&k).map(|d| (k, d))),
+                                WarpMethod::Repitch => None,
+                            };
+                            if let Some((k, data)) = copy {
+                                let scale = k.scale();
+                                let at = |x: u64| ((x - r.start) as f64 * scale).round() as i64;
+                                let len = k.frames as i64;
+                                v.data = data;
+                                v.start = 0;
+                                v.end = len;
+                                v.sustain_loop = r.sustain_loop.map(|lp| {
+                                    let (a, b) = (at(lp.start), at(lp.end).min(len));
+                                    ViewLoop {
+                                        start: a,
+                                        end: b.max(a + 1),
+                                        crossfade: ((f64::from(lp.crossfade) * scale) as i64)
+                                            .min((b - a) / 2)
+                                            .min(a),
+                                        ping_pong: lp.mode == LoopMode::PingPong,
+                                    }
+                                });
+                                let fade = |f: Fade| Fade {
+                                    frames: (f64::from(f.frames) * scale).round() as u32,
+                                    ..f
+                                };
+                                v.fade_in = fade(r.fade_in);
+                                v.fade_out = fade(r.fade_out);
+                                if i64::from(v.fade_in.frames) + i64::from(v.fade_out.frames) > len
+                                {
+                                    (v.fade_in, v.fade_out) = (r.fade_in, r.fade_out);
+                                }
+                                // The copy is at the tempo it was made for.
+                                v.warp_bpm *= (r.frames() as f64) / (len as f64);
+                                v.copy = true;
+                            }
+                        }
+                        Some(v)
                     })
                     .collect();
                 ViewPad {
@@ -218,6 +375,7 @@ impl EngineView {
                     vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
                     vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
                     pressure: p.pressure,
+                    keys: p.keys,
                 }
             }));
         }
@@ -225,6 +383,7 @@ impl EngineView {
             revision: project.revision(),
             pads,
             master: *project.master(),
+            pads_play: project.pads_play(),
         }
     }
 }
@@ -243,6 +402,15 @@ pub enum Event {
     Pressure {
         pad: u8,
         value: u8,
+    },
+    /// A note through the keygroups: every pad whose [`Keys`] hold it
+    /// plays, a semitone higher for each note above its root.
+    Key {
+        note: u8,
+        velocity: u8,
+    },
+    KeyOff {
+        note: u8,
     },
     /// Releases every voice (gate-style), e.g. on STOP.
     AllOff,
@@ -286,6 +454,9 @@ struct Voice {
     filter: Option<Filter>,
     svf: [Svf; 2],
     filter_count: u32,
+    /// The envelope level and pressure factor (as bits) the filter was
+    /// last set for.
+    filter_key: Option<(u32, u32)>,
     kill_left: u16,
     tail_left: u16,
     tail_l: f32,
@@ -309,6 +480,12 @@ struct Voice {
     press_gain_inc: f32,
     press_fc: f32,
     press_count: u32,
+    /// The layer's tempo when warped (0 if not), and its step before the
+    /// tempo moves it.
+    warp_bpm: f64,
+    plain_step: i64,
+    /// The note a keygroup voice plays ([`NO_NOTE`] for a pad hit).
+    note: u8,
 }
 
 impl Voice {
@@ -322,11 +499,13 @@ impl Voice {
         }
     }
 
-    /// One channel at a fixed-point position, Hermite-interpolated.
-    #[inline]
+    /// One channel at a fixed-point position, Hermite-interpolated, with
+    /// every neighbour clamped to the region: the edge case of [`Voice::read2`].
+    #[cold]
+    #[inline(never)]
     fn read(&self, data: &[f32], pos: i64, pick: u8) -> f32 {
         let i = pos >> 32;
-        let t = (pos & (ONE - 1)) as f32 / ONE as f32;
+        let t = frac(pos);
         let ch = |k: i64| -> f32 {
             match pick {
                 0 => self.at(data, k, 0),
@@ -339,6 +518,62 @@ impl Voice {
         }
         hermite(ch(i - 1), ch(i), ch(i + 1), ch(i + 2), t)
     }
+
+    /// Both output channels at a fixed-point position, Hermite-interpolated:
+    /// what [`Voice::read`] gives for `pick_l` and `pick_r`, bit for bit.
+    /// Away from the region's edges (nearly always) the four neighbours are
+    /// read straight from the data, once for both channels, with no clamps.
+    #[inline(always)]
+    fn read2(&self, data: &[f32], pos: i64) -> (f32, f32) {
+        let i = pos >> 32;
+        if i - 1 < self.start || i + 2 >= self.end {
+            return (
+                self.read(data, pos, self.pick_l),
+                self.read(data, pos, self.pick_r),
+            );
+        }
+        let t = frac(pos);
+        let k = (i - 1) as usize;
+        if !self.stereo {
+            // Mono plays the same on both sides.
+            let w: &[f32; 4] = data[k..k + 4].try_into().expect("four frames");
+            let x = if t == 0.0 {
+                w[1]
+            } else {
+                hermite(w[0], w[1], w[2], w[3], t)
+            };
+            return (x, x);
+        }
+        let w: &[f32; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let side = |pick: u8| -> [f32; 4] {
+            match pick {
+                0 => [w[0], w[2], w[4], w[6]],
+                1 => [w[1], w[3], w[5], w[7]],
+                _ => [
+                    0.5 * (w[0] + w[1]),
+                    0.5 * (w[2] + w[3]),
+                    0.5 * (w[4] + w[5]),
+                    0.5 * (w[6] + w[7]),
+                ],
+            }
+        };
+        let (a, b) = (side(self.pick_l), side(self.pick_r));
+        if t == 0.0 {
+            return (a[1], b[1]);
+        }
+        (
+            hermite(a[0], a[1], a[2], a[3], t),
+            hermite(b[0], b[1], b[2], b[3], t),
+        )
+    }
+}
+
+/// The fraction of a 32.32 fixed-point position, 0 to 1. Converted from
+/// its low 32 bits as a `u32`, which ARMv7 does in one instruction (a
+/// 64-bit integer needs a library call); exact either way.
+#[inline(always)]
+fn frac(pos: i64) -> f32 {
+    (pos as u32) as f32 * (1.0 / ONE as f32)
 }
 
 fn picks(stereo: bool, pick: ChannelPick) -> (u8, u8) {
@@ -385,6 +620,8 @@ pub struct Engine {
     /// Frames rendered since the engine was made: the timeline synced grains use.
     frames: u64,
     master: Option<GrainFx>,
+    /// The project tempo, for warped layers.
+    tempo: f64,
 }
 
 impl Engine {
@@ -410,7 +647,33 @@ impl Engine {
             unheard_r: vec![0.0; GRAIN_CHUNK],
             frames: 0,
             master: None,
+            tempo: 120.0,
         }
+    }
+
+    /// The project tempo, in BPM, for warped layers: they play `tempo /
+    /// their tempo` times as fast. Voices already playing follow at once
+    /// (a stretched copy made for another tempo repitches until the next
+    /// hit plays the new one). Cheap when nothing changes; call it every
+    /// period with the transport's tempo.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        if !bpm.is_finite() || bpm <= 0.0 || bpm == self.tempo {
+            return;
+        }
+        self.tempo = bpm;
+        for v in &mut self.voices {
+            if v.active && v.warp_bpm > 0.0 {
+                v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
+                v.step = v.base_step;
+                if v.route.target == PressureTarget::Pitch {
+                    pressure_step(v);
+                }
+            }
+        }
+    }
+
+    pub fn tempo(&self) -> f64 {
+        self.tempo
     }
 
     /// A master effect for an engine at `rate`, holding [`MASTER_MEMORY_S`]
@@ -538,11 +801,25 @@ impl Engine {
     /// Applies an event now (before the next rendered frame).
     pub fn apply(&mut self, ev: Event) {
         match ev {
-            Event::NoteOn { pad, velocity } => self.note_on(pad, velocity),
-            Event::NoteOff { pad } => self.note_off(pad),
+            // With the pads playing notes, a pad is the note it plays;
+            // with 16 Levels, the one pad at its level.
+            Event::NoteOn { pad, velocity } => match self.target(pad) {
+                Target::Own(_) => self.note_on(pad, velocity, NO_NOTE, Vary::default()),
+                Target::Key(note) => self.key(note, velocity),
+                Target::Level { pad: p, by, k } => {
+                    self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
+                }
+            },
+            Event::NoteOff { pad } => {
+                let t = self.target(pad);
+                self.release(|v| t.played(v));
+            }
+            Event::Key { note, velocity } => self.key(note.min(127), velocity),
+            Event::KeyOff { note } => self.release(|v| v.note == note),
             Event::Pressure { pad, value } => {
+                let t = self.target(pad);
                 for v in &mut self.voices {
-                    if v.active && v.pad == pad && v.kill_left == 0 {
+                    if v.active && t.played(v) && v.kill_left == 0 {
                         v.press_target = f32::from(value.min(127)) / 127.0;
                     }
                 }
@@ -575,9 +852,48 @@ impl Engine {
         }
     }
 
-    fn note_off(&mut self, pad: u8) {
+    /// What a hit on pad `pad` plays.
+    fn target(&self, pad: u8) -> Target {
+        match self.view.pads_play {
+            PadsPlay::Pads => Target::Own(pad),
+            PadsPlay::Keys { from } => Target::Key(from.saturating_add(pad).min(127)),
+            PadsPlay::Levels { pad: p, by } => Target::Level {
+                pad: p,
+                by,
+                k: pad % 16,
+            },
+        }
+    }
+
+    /// Every keygroup holding `note` plays it.
+    fn key(&mut self, note: u8, velocity: u8) {
+        if velocity == 0 {
+            self.release(|v| v.note == note);
+            return;
+        }
+        for p in 0..self.view.pads.len() {
+            let Some(k) = self.view.pads[p].as_ref().and_then(|vp| vp.keys) else {
+                continue;
+            };
+            if k.contains(note) {
+                let semis = i32::from(note) - i32::from(k.root);
+                self.note_on(
+                    p as u8,
+                    velocity,
+                    note,
+                    Vary {
+                        semis,
+                        ..Vary::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Lets go of the held voices `which` picks.
+    fn release(&mut self, which: impl Fn(&Voice) -> bool) {
         for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
-            if !v.active || v.pad != pad || !v.held {
+            if !v.active || !which(v) || !v.held {
                 continue;
             }
             match v.mode {
@@ -604,12 +920,17 @@ impl Engine {
         }
     }
 
-    fn note_on(&mut self, pad: u8, velocity: u8) {
+    /// Pad `pad` plays: hit (`note` is [`NO_NOTE`]), as the keygroup for
+    /// `note`, or at a 16 Levels step, with what `vary` changes.
+    fn note_on(&mut self, pad: u8, velocity: u8, note: u8, vary: Vary) {
         if velocity == 0 {
-            self.note_off(pad);
+            self.release(|v| v.pad == pad && v.note == note);
             return;
         }
-        let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
+        // 16 Levels of velocity are the pads' own, whatever Full Level says.
+        let velocity = vary
+            .velocity
+            .unwrap_or(self.fixed_velocity.unwrap_or(velocity.min(127)));
         let p = usize::from(pad);
         let Some(Some(vp)) = self.view.pads.get(p) else {
             return;
@@ -619,7 +940,12 @@ impl Engine {
         // A second hit on a held toggle pad stops it instead of starting it.
         let mut toggled_off = false;
         for v in &mut self.voices {
-            if v.active && v.pad == pad && v.held && v.mode == Some(PlayMode::Toggle) {
+            if v.active
+                && v.pad == pad
+                && v.note == note
+                && v.held
+                && v.mode == Some(PlayMode::Toggle)
+            {
                 v.held = false;
                 if let Some(a) = &mut v.amp {
                     a.release();
@@ -703,11 +1029,12 @@ impl Engine {
                     None => break,
                 }
             }
-            self.start_voice(p, li, level, vel);
+            self.start_voice(p, li, level, vel, note, vary);
         }
     }
 
-    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32) {
+    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, vary: Vary) {
+        let semis = vary.semis;
         let Some(vp) = self.view.pads[p].as_ref() else {
             return;
         };
@@ -745,7 +1072,8 @@ impl Engine {
         let skip = if l.reverse {
             0
         } else {
-            ((vp.vel_to_start * (1.0 - vel)) as f64 * frames as f64) as i64
+            let from = vary.start.unwrap_or(vp.vel_to_start * (1.0 - vel));
+            (from as f64 * frames as f64) as i64
         };
         let start_frame = if l.reverse {
             l.end - 1
@@ -754,6 +1082,40 @@ impl Engine {
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
         let lp = l.sustain_loop.as_ref();
+        let mut amp = vp.amp;
+        if let Some(ms) = vary.decay_ms {
+            (amp.decay_ms, amp.sustain) = (ms, 0.0);
+        }
+        let filter = match vary.cutoff_hz {
+            Some(hz) if vp.filter.kind == FilterKind::Off => Some(Filter {
+                kind: FilterKind::LowPass,
+                poles: 2,
+                cutoff_hz: hz,
+                resonance: 0.0,
+                env_octaves: 0.0,
+            }),
+            Some(hz) => Some(Filter {
+                cutoff_hz: hz,
+                ..vp.filter
+            }),
+            None => (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
+        };
+        let mut grain = l.grain;
+        grain.pitch += semis as f32;
+        if let Some(at) = vary.start {
+            grain.position = (at * 16.0 / 15.0).min(1.0);
+        }
+        // A keygroup a few semitones from its root reads that much faster.
+        let plain = if semis == 0 {
+            l.step
+        } else {
+            ((l.step as f64 * (f64::from(semis) / 12.0).exp2()).round() as i64).max(1)
+        };
+        let step = if l.warp_bpm > 0.0 {
+            warped_step(plain, self.tempo, l.warp_bpm)
+        } else {
+            plain
+        };
         self.clock += 1;
         let v = &mut self.voices[slot];
         *v = Voice {
@@ -765,7 +1127,7 @@ impl Engine {
             pick_l,
             pick_r,
             pos: start_frame << 32,
-            step: l.step,
+            step,
             backwards: l.reverse,
             reverse: l.reverse,
             start: l.start,
@@ -785,12 +1147,12 @@ impl Engine {
             mode: Some(l.mode),
             held: true,
             age: self.clock,
-            amp: Some(Envelope::start(&vp.amp, self.rate)),
-            fenv: (vp.filter.kind != FilterKind::Off)
-                .then(|| Envelope::start(&vp.filter_env, self.rate)),
-            filter: (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
+            amp: Some(Envelope::start(&amp, self.rate)),
+            fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
+            filter,
             svf: [Svf::default(); 2],
             filter_count: 0,
+            filter_key: None,
             kill_left: 0,
             tail_left: if stolen { STEAL_FRAMES } else { 0 },
             tail_l,
@@ -799,20 +1161,23 @@ impl Engine {
             last_r: 0.0,
             granular,
             src_rate: l.src_rate,
-            grain_base: l.grain,
+            grain_base: grain,
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
             press_coef: 1.0 - (-1.0 / (PRESSURE_SMOOTH_S * self.rate)).exp(),
-            base_step: l.step,
+            base_step: step,
             press_gain: 1.0,
             press_gain_inc: 0.0,
             press_fc: 1.0,
             press_count: 0,
+            warp_bpm: l.warp_bpm,
+            plain_step: plain,
+            note,
         };
         if granular {
             let g = &mut self.grains[slot];
-            g.set_params(l.grain);
+            g.set_params(grain);
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -1011,29 +1376,59 @@ fn pressed_grain(mut g: GrainParams, route: PressureRoute, p: f32) -> GrainParam
 fn follow_pressure(v: &mut Voice) {
     v.press += (v.press_target - v.press) * v.press_coef;
     if v.press_count == 0 {
-        let d = v.route.depth * v.press;
-        match v.route.target {
-            PressureTarget::Level => {
-                v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32
-            }
-            PressureTarget::Pitch if !v.granular => {
-                v.step = ((v.base_step as f64) * f64::from(d).exp2())
-                    .round()
-                    .max(1.0) as i64
-            }
-            PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
-            _ => {}
-        }
+        pressure_step(v);
     }
     v.press_gain += v.press_gain_inc;
     v.press_count = (v.press_count + 1) % FILTER_STEP;
+}
+
+/// A warped layer's step at `tempo`: `tempo / warp_bpm` times its own.
+fn warped_step(step: i64, tempo: f64, warp_bpm: f64) -> i64 {
+    ((step as f64 * tempo / warp_bpm).round() as i64).max(1)
+}
+
+/// [`follow_pressure`]'s update every [`FILTER_STEP`] frames, kept out of
+/// the per-frame loop.
+#[inline(never)]
+fn pressure_step(v: &mut Voice) {
+    let d = v.route.depth * v.press;
+    match v.route.target {
+        PressureTarget::Level => {
+            v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32
+        }
+        PressureTarget::Pitch if !v.granular => {
+            v.step = ((v.base_step as f64) * f64::from(d).exp2())
+                .round()
+                .max(1.0) as i64
+        }
+        PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
+        _ => {}
+    }
+}
+
+/// Sets the voice's filter for envelope level `e`. The coefficients only
+/// depend on `e` and pressure's cutoff factor, so while neither moves (a
+/// held sustain, no pressure) this skips the `exp2` and `tan`; the second
+/// stage is only set for a 4-pole filter, the only one that uses it.
+#[inline(never)]
+fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
+    let key = (e.to_bits(), v.press_fc.to_bits());
+    if v.filter_key == Some(key) {
+        return;
+    }
+    v.filter_key = Some(key);
+    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
+    v.svf[0].set(fc, f.resonance, rate);
+    if f.poles >= 4 {
+        v.svf[1].set(fc, f.resonance * 0.5, rate);
+    }
 }
 
 /// Everything after the source read, for one frame: amp envelope, kill
 /// fade, gain and pan, filter, the stolen voice's tail. `g` is the gain
 /// from the region's fades. Marks the voice done when its kill fade or
 /// envelope ends.
-#[inline]
+#[inline(always)]
 fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32, f32) {
     if v.route.target != PressureTarget::Off {
         follow_pressure(v);
@@ -1052,9 +1447,7 @@ fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32,
     if let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) {
         let e = fe.next();
         if v.filter_count == 0 {
-            let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
-            v.svf[0].set(fc, f.resonance, rate);
-            v.svf[1].set(fc, f.resonance * 0.5, rate);
+            retune(v, f, e, rate);
         }
         v.filter_count = (v.filter_count + 1) % FILTER_STEP;
         l = v.svf[0].process(0, l, f.kind);
@@ -1098,16 +1491,16 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
             break;
         }
 
-        let mut l = v.read(&data, v.pos, v.pick_l);
-        let mut r = v.read(&data, v.pos, v.pick_r);
+        let (mut l, mut r) = v.read2(&data, v.pos);
 
         // Forward-loop crossfade: blend in the audio before the loop start.
         if v.looping && !v.ping_pong && v.crossfade > 0 && i >= v.loop_end - v.crossfade {
             let x = (i - (v.loop_end - v.crossfade)) as f32 / v.crossfade as f32;
             let (out, inn) = equal_power(x);
             let back = v.pos - ((v.loop_end - v.loop_start) << 32);
-            l = l * out + v.read(&data, back, v.pick_l) * inn;
-            r = r * out + v.read(&data, back, v.pick_r) * inn;
+            let (bl, br) = v.read2(&data, back);
+            l = l * out + bl * inn;
+            r = r * out + br * inn;
         }
 
         let mut g = 1.0f32;
@@ -1162,5 +1555,70 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
     }
     if !v.active {
         v.data = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The direct read gives what the clamped one does, bit for bit, at
+    /// every kind of position: whole and fractional frames, the region's
+    /// first and last frames and just outside them, for mono and stereo
+    /// and every channel pick.
+    #[test]
+    fn the_direct_read_matches_the_clamped_one() {
+        let frames = 64usize;
+        let stereo: Vec<f32> = (0..frames * 2)
+            .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+            .collect();
+        let mono: Vec<f32> = (0..frames)
+            .map(|i| ((i * 104_729) % 977) as f32 / 488.5 - 1.0)
+            .collect();
+        let fracs = [0u64, 1, 1 << 31, 0x1234_5678, u64::from(u32::MAX)];
+        for (data, is_stereo) in [(&stereo, true), (&mono, false)] {
+            for pick in [
+                ChannelPick::Stereo,
+                ChannelPick::MonoSum,
+                ChannelPick::Left,
+                ChannelPick::Right,
+            ] {
+                let (pick_l, pick_r) = picks(is_stereo, pick);
+                let v = Voice {
+                    stereo: is_stereo,
+                    pick_l,
+                    pick_r,
+                    start: 5,
+                    end: 40,
+                    ..Voice::default()
+                };
+                for i in 0..frames as i64 {
+                    for &t in &fracs {
+                        let pos = (i << 32) | t as i64;
+                        let (l, r) = v.read2(data, pos);
+                        let (wl, wr) = (v.read(data, pos, pick_l), v.read(data, pos, pick_r));
+                        assert_eq!(
+                            (l.to_bits(), r.to_bits()),
+                            (wl.to_bits(), wr.to_bits()),
+                            "{pick:?} stereo {is_stereo} at {i} + {t:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_fraction_is_the_low_half_over_two_to_the_32() {
+        for pos in [
+            0i64,
+            1,
+            (7 << 32) | 0x8000_0000,
+            -1,
+            (3 << 32) | 0xFFFF_FFFF,
+            i64::MIN + 12345,
+        ] {
+            assert_eq!(frac(pos), (pos & (ONE - 1)) as f32 / ONE as f32, "{pos:#x}");
+        }
     }
 }

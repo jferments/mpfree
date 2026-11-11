@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use mpfree_sampler::model::{LoopMode, PlayMode, Project, Region, Source};
+use mpfree_sampler::model::{LoopMode, PlayMode, Project, Region, Source, WarpMethod};
 use mpfree_sampler_ui::sample::{self, wave_sample, Sample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
@@ -539,4 +539,43 @@ fn tabs_taps_and_the_sample_screens() {
         let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
         assert!(!s.ui.paint(&mut c).is_empty(), "{}", s.name);
     }
+}
+
+#[test]
+fn warp_turns_on_at_the_regions_own_tempo_and_steps_through_its_methods() {
+    let mut s = sample();
+    let st = s.state.clone();
+    assert_eq!(row_value(&s, Row::Warp), "Off");
+    assert_eq!(row_value(&s, Row::WarpTempo), "—");
+    assert!(
+        step(&mut s, Row::WarpTempo, 1).is_none(),
+        "no tempo to set while off"
+    );
+    let a = step(&mut s, Row::Warp, 1).unwrap();
+    apply(&mut s, &a);
+    let w = region(&s).warp.unwrap();
+    assert_eq!(w.method, WarpMethod::Stretch);
+    // The test loop is whole bars at its tempo, so warp starts there.
+    let want = wave_tab::region_tempo(&st, &region(&s));
+    assert_eq!(w.bpm, want);
+    assert!((f64::from(w.bpm) - BPM).abs() < 0.5, "{} vs {BPM}", w.bpm);
+    assert_eq!(row_value(&s, Row::Warp), "Stretch");
+    assert_eq!(row_value(&s, Row::WarpTempo), format!("{:.1} BPM", w.bpm));
+    let a = step(&mut s, Row::WarpTempo, 1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(region(&s).warp.unwrap().bpm, w.bpm + 1.0);
+    let a = step(&mut s, Row::Warp, 1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(region(&s).warp.unwrap().method, WarpMethod::Repitch);
+    assert_eq!(region(&s).warp.unwrap().bpm, w.bpm + 1.0, "the tempo stays");
+    let a = step(&mut s, Row::Warp, 1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(region(&s).warp, None);
+}
+
+fn row_value(s: &Sample, row: Row) -> String {
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    list.rows[Row::ALL.iter().position(|r| *r == row).unwrap()]
+        .value
+        .clone()
 }

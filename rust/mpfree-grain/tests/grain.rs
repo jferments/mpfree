@@ -506,6 +506,73 @@ fn live_buffer_keeps_the_recent_past_and_freezes() {
 }
 
 #[test]
+fn live_buffer_finds_every_held_frame_after_wrapping_and_clearing() {
+    // Each frame holds its own number (left) and its negative (right; mono
+    // gets the number on both sides, so its average is the number too), so
+    // a read from the wrong place shows. Writes come in uneven chunks, both
+    // interleaved and planar, wrap many times, then start over after clear.
+    for (channels, capacity) in [(1, 1), (2, 7), (1, 64), (2, 1000)] {
+        let mut lb = LiveBuffer::new(channels, RATE, capacity).unwrap();
+        for round in 0..2 {
+            let mut written = 0i64;
+            for chunk in [1usize, 5, 13, 128, 333, 999] {
+                let left: Vec<f32> = (0..chunk).map(|i| (written + i as i64) as f32).collect();
+                let right: Vec<f32> = if channels == 2 {
+                    left.iter().map(|x| -x).collect()
+                } else {
+                    left.clone()
+                };
+                if chunk % 2 == 1 {
+                    lb.write_planar(&left, &right);
+                } else if channels == 2 {
+                    lb.write(
+                        &left
+                            .iter()
+                            .zip(&right)
+                            .flat_map(|(l, r)| [*l, *r])
+                            .collect::<Vec<f32>>(),
+                    );
+                } else {
+                    lb.write(&left);
+                }
+                written += chunk as i64;
+                let (from, to) = ((written - capacity as i64).max(0), written);
+                assert_eq!(lb.written(), written as u64);
+                assert_eq!(
+                    lb.sample(0, from - 1),
+                    0.0,
+                    "{channels} ch, {capacity} frames: frame {} is gone",
+                    from - 1
+                );
+                for f in from..to {
+                    assert_eq!(
+                        lb.sample(0, f),
+                        f as f32,
+                        "{channels} ch, {capacity} frames, round {round}: frame {f}"
+                    );
+                    assert_eq!(
+                        lb.sample(1, f),
+                        if channels == 2 { -(f as f32) } else { f as f32 }
+                    );
+                }
+                // A read between frames interpolates the four around it.
+                let (lo, hi) = lb.span();
+                for f in lo + 1..hi - 2 {
+                    let w = |k: i64| lb.sample(0, k);
+                    assert_eq!(
+                        lb.read(f, 0.25)[0],
+                        hermite(w(f - 1), w(f), w(f + 1), w(f + 2), 0.25),
+                        "frame {f}"
+                    );
+                }
+            }
+            lb.clear();
+            assert_eq!((lb.written(), lb.span()), (0, (0, 0)));
+        }
+    }
+}
+
+#[test]
 fn granular_effect_on_a_live_signal_survives_freeze() {
     // A 440 Hz sine arrives in periods; the effect reads it back as grains.
     let mut lb = LiveBuffer::new(1, RATE, RATE as usize * 4).unwrap();

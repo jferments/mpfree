@@ -8,7 +8,9 @@
 //!   tempo, and the Start, End and loop markers as tabs to drag. Dragging
 //!   the wave scrolls it, pinching zooms, and a tap plays the pad.
 //! - The **Region** list holds the settings: play mode, loop, crossfade,
-//!   gain, tune, reverse, channels, fades, and how markers snap.
+//!   gain, tune, warp (to the project tempo by stretching or repitching,
+//!   from the region's own tempo), reverse, channels, fades, and how
+//!   markers snap.
 //! - **Q-Links 1 to 4** move Start, End, Loop start and Loop end: one pixel
 //!   of the current zoom per detent (so zooming in makes them finer), snapped
 //!   in the direction of the turn; with SHIFT, one frame per detent, never
@@ -28,7 +30,8 @@ use std::sync::Arc;
 
 use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId,
+    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId, Warp,
+    WarpMethod, WARP_BPM,
 };
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
@@ -254,6 +257,8 @@ pub enum Row {
     Crossfade,
     Gain,
     Tune,
+    Warp,
+    WarpTempo,
     Reverse,
     Channels,
     FadeIn,
@@ -262,12 +267,14 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 10] = [
+    pub const ALL: [Row; 12] = [
         Row::Mode,
         Row::Loop,
         Row::Crossfade,
         Row::Gain,
         Row::Tune,
+        Row::Warp,
+        Row::WarpTempo,
         Row::Reverse,
         Row::Channels,
         Row::FadeIn,
@@ -282,6 +289,8 @@ impl Row {
             Row::Crossfade => "Crossfade",
             Row::Gain => "Gain",
             Row::Tune => "Tune",
+            Row::Warp => "Warp",
+            Row::WarpTempo => "Warp tempo",
             Row::Reverse => "Reverse",
             Row::Channels => "Channels",
             Row::FadeIn => "Fade in",
@@ -644,6 +653,11 @@ impl WaveTab {
                     },
                     Row::Gain => format!("{:+.1} dB", r.gain_db).replace("+0.0", "0.0"),
                     Row::Tune => tune_text(r.tune_cents),
+                    Row::Warp => warp_label(r.warp).into(),
+                    Row::WarpTempo => match r.warp {
+                        Some(w) => format!("{:.1} BPM", w.bpm),
+                        None => "—".into(),
+                    },
                     Row::Reverse => {
                         if r.reverse {
                             "On".into()
@@ -906,6 +920,25 @@ impl WaveTab {
             Row::Tune => {
                 r.tune_cents = (r.tune_cents + 100 * d).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS)
             }
+            Row::Warp => {
+                // Off, Stretch, Repitch.
+                let states = [None, Some(WarpMethod::Stretch), Some(WarpMethod::Repitch)];
+                let now = states
+                    .iter()
+                    .position(|m| *m == r.warp.map(|w| w.method))
+                    .unwrap_or(0) as i32;
+                let next = states[(now + d).rem_euclid(3) as usize];
+                r.warp = next.map(|method| Warp {
+                    method,
+                    ..r.warp.unwrap_or_else(|| Warp::new(region_tempo(st, &r)))
+                });
+            }
+            Row::WarpTempo => {
+                let mut w = r.warp?;
+                // A BPM at a time, keeping the tenths a detected tempo has.
+                w.bpm = (w.bpm + d as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end());
+                r.warp = Some(w);
+            }
             Row::Reverse => r.reverse = !r.reverse,
             Row::Channels => {
                 if st.channels == 1 {
@@ -947,6 +980,28 @@ impl WaveTab {
         }
         self.edit(st, Key::Row(row), r)
     }
+}
+
+fn warp_label(w: Option<Warp>) -> &'static str {
+    match w.map(|w| w.method) {
+        None => "Off",
+        Some(WarpMethod::Stretch) => "Stretch",
+        Some(WarpMethod::Repitch) => "Repitch",
+    }
+}
+
+/// The tempo a region turned to warp starts at: the source's detected
+/// tempo, made exact when the region is whole beats of it (within 2 %);
+/// with no tempo detected, whole beats near 120 BPM.
+pub fn region_tempo(st: &WaveState, r: &Region) -> f32 {
+    let hint = st.source.tempo.map(|t| t as f32);
+    let exact = mpfree_analysis::loop_tempo(r.frames(), st.rate, hint);
+    let bpm = match (hint, exact) {
+        (Some(h), Some(e)) if (e / h - 1.0).abs() < 0.02 => e,
+        (Some(h), _) => h,
+        (None, e) => e.unwrap_or(120.0),
+    };
+    (bpm * 10.0).round() / 10.0
 }
 
 /// A loop over the middle half of `r`, for a region turned to Loop mode.

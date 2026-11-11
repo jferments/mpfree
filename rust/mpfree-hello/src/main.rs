@@ -2896,6 +2896,8 @@ fn player_session(
         }
         voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
+        // Warped pads play at the transport's tempo.
+        player.set_tempo(time.info().bpm);
         player.render_dry(&mut left, &mut right);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
