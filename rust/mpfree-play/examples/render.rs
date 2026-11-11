@@ -55,6 +55,8 @@ const BAR: i64 = 3840;
 const S: i64 = 240;
 /// Frames in a bar: exactly 126000 at 84 BPM.
 const BAR_FRAMES: f64 = BAR as f64 * 60.0 * RATE as f64 / (BPM * 960.0);
+/// The master gain: the mix peaks about 1.5 dB below full scale.
+const MASTER: f32 = 0.6;
 /// Passes of the four-bar loop before the final hit.
 const PASSES: u64 = 3;
 /// Seconds the final hit rings out.
@@ -132,16 +134,18 @@ fn main() {
     let mut right = vec![0.0f32; 8192];
     let mut pcm = Vec::with_capacity(frames as usize * 4);
     let mut peak = 0.0f32;
+    let mut clipped = 0usize;
     play(frames, period, |n, block| {
         session.period(block, Some(&mut engine));
         let (l, r) = (&mut left[..n as usize], &mut right[..n as usize]);
         engine.render(l, r);
         for (a, b) in l.iter().zip(r.iter()) {
             for s in [a, b] {
-                // A soft-clipping master: some glue, and it never clips.
-                let v = (s * 0.75).tanh();
+                // A plain master gain with headroom: no saturation here.
+                let v = s * MASTER;
                 peak = peak.max(v.abs());
-                let v = (v * 32767.0).round() as i16;
+                clipped += usize::from(v.abs() > 1.0);
+                let v = (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
                 pcm.extend_from_slice(&v.to_le_bytes());
             }
         }
@@ -158,7 +162,7 @@ fn main() {
 
     println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
     println!(
-        "notes played: {}  recorded: {}  erased: {}  dropped by the sampler: {}  peak: {:.1} dBFS",
+        "notes played: {}  recorded: {}  erased: {}  dropped by the sampler: {}  peak: {:.1} dBFS  clipped samples: {clipped}",
         log.notes,
         log.recorded,
         log.erased,
@@ -174,6 +178,9 @@ fn main() {
     println!("same events for every period size: {}", if same && log.hash() == hashes[0].1 { "yes" } else { "NO" });
     if !same || log.hash() != hashes[0].1 {
         std::process::exit(1);
+    }
+    if clipped > 0 {
+        fail(&format!("{clipped} samples clipped"));
     }
 }
 
@@ -662,11 +669,15 @@ fn crush(x: f32, bits: u32) -> f32 {
     (x * q).round() / q
 }
 
-/// `secs` seconds of `f(t)`, as stereo frames.
+/// `secs` seconds of `f(t)`, as stereo frames. The last 20 ms fade out,
+/// so no sound ends with a click.
 fn make(secs: f32, mut f: impl FnMut(f32) -> f32) -> Vec<f32> {
     let n = (secs * RATE as f32) as usize;
+    let fade = (RATE as usize / 50).min(n);
     (0..n).flat_map(|i| {
-        let s = f(i as f32 / RATE as f32);
+        let left = n - i;
+        let gain = if left < fade { 0.5 - 0.5 * (std::f32::consts::PI * left as f32 / fade as f32).cos() } else { 1.0 };
+        let s = gain * f(i as f32 / RATE as f32);
         [s, s]
     }).collect()
 }
@@ -690,12 +701,12 @@ fn saw(hz: f32, t: f32, harmonics: usize) -> f32 {
 fn sounds() -> SProject {
     let mut n = Noise(0x1234_5678);
     let mut phase = 0.0f32;
-    let kick = make(0.7, |t| {
+    let kick = make(0.9, |t| {
         let f = 40.0 + 120.0 * (-t * 25.0).exp();
         phase += TAU * f / RATE as f32;
         let body = phase.sin() * (-t * 4.5).exp();
         let click = n.next() * (-t * 400.0).exp() * 0.5;
-        0.85 * drive(1.3 * body + click, 2.5)
+        0.75 * drive(1.3 * body + click, 2.5)
     });
     let mut lp = Lp::new(1500.0);
     let snare = hold(make(0.4, |t| {
@@ -718,7 +729,7 @@ fn sounds() -> SProject {
         make(2.0, move |t| {
             let x = lp.run(0.5 * (saw(hz, t, 10) + saw(hz * 1.007, t, 10)));
             let sub = 0.5 * (TAU * hz * 0.5 * t).sin();
-            0.45 * lp2.run(drive(1.8 * x + sub, 3.5)) * (-t * 0.6).exp()
+            0.38 * lp2.run(drive(1.8 * x + sub, 3.5)) * (-t * 0.6).exp()
         })
     };
     let glitch = |hz: f32| make(0.22, |t| 0.22 * crush((TAU * hz * t).sin() * (TAU * hz * 1.414 * t).sin() * (-t * 20.0).exp(), 5));
@@ -729,14 +740,15 @@ fn sounds() -> SProject {
             0.16 * drive(lp.run(0.6 * square), 2.0) * (-t * 1.2).exp()
         })
     };
-    // A D minor chord (D3 F3 A3 D4) of sawtooths through a closing filter, driven hard.
+    // A D minor chord (D3 F3 A3 D4) of sawtooths through a closing filter,
+    // driven, with the envelope after the drive so the tail dies away.
     let mut y = 0.0f32;
-    let stab = make(0.55, |t| {
+    let stab = make(0.8, |t| {
         let s: f32 = [146.83, 174.61, 220.0, 293.66].iter().map(|&hz| saw(hz, t, 8)).sum();
         let cutoff = 500.0 + 4000.0 * (-t * 8.0).exp();
         y += (1.0 - (-TAU * cutoff / RATE as f32).exp()) * (0.25 * s - y);
         let env = (t / 0.003).min(1.0) * (-t * 4.5).exp();
-        0.9 * crush(drive(1.5 * y * env, 5.0), 7)
+        0.95 * crush(drive(1.5 * y, 2.5) * env, 8)
     });
     // Metal: inharmonic partials and a click.
     let clank = make(0.4, |t| {
