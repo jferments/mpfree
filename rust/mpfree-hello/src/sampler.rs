@@ -313,8 +313,9 @@ impl Player {
         master_out(left, right, master)
     }
 
-    /// The engine's sound alone, before the level: the Drums track of the
-    /// pad player's mixer (`mixing.rs`).
+    /// The engine's sound alone, every pad in one pair, before the level
+    /// (the tests; the pad player renders with [`Player::render_routed`]).
+    #[cfg(test)]
     pub fn render_dry(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -324,8 +325,6 @@ impl Player {
     /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
     /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
     /// [`Player::render_dry`] renders.
-    // The mixer's wiring (round 8) calls it; until then only the tests do.
-    #[allow(dead_code)]
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
