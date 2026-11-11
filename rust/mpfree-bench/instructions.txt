@@ -24,60 +24,60 @@
 77742	Delay
 154587	Drive (Eco 2x)
 272347	Drive (HQ 4x)
-572111	Drums Boom Kit, a hit every block
-417000	Drums Init Kit, a hit every 4 blocks
+572112	Drums Boom Kit, a hit every block
+417001	Drums Init Kit, a hit every 4 blocks
 102872	EQ (4 bands and both cuts)
 55126	Flanger
 434564	Grains FX (dense)
 116998	Lo-fi
-298507	Looper (60 s), 8 loops of 3 layers playing
-412072	Looper (60 s), 8 loops of 3 layers playing, half edited
-25519	Looper (60 s), overdubbing
+298475	Looper (60 s), 8 loops of 3 layers playing
+412030	Looper (60 s), 8 loops of 3 layers playing, half edited
+25533	Looper (60 s), overdubbing
 28961	Master safety
-210166	Mixer, 12 tracks and 8 pads, routing only
-1418939	Mixer, 12 tracks and 8 pads, with a song's inserts
-953956	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+210177	Mixer, 12 tracks and 8 pads, routing only
+1418967	Mixer, 12 tracks and 8 pads, with a song's inserts
+953961	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
 1030769	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
-369154	Mixer, 16 tracks and 32 pads, routing only
-53154	Mixer, idle (63 strips, nothing playing)
-107891	Mod: 8 macros x 8, 16 rows, morph, locks
+369221	Mixer, 16 tracks and 32 pads, routing only
+53202	Mixer, idle (63 strips, nothing playing)
+108014	Mod: 8 macros x 8, 16 rows, morph, locks
 11308	Multi filter (LP 12)
 33708	Multi filter (LP 24, drive)
-213255	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
+213252	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 3629	Perform FX, idle
 34489	Perform FX, the 16 pads in turn
 100523	Phaser (12 stages)
 61610	Phaser (4 stages)
-305358	Pluck Bell, 16 voices
-247521	Pluck Harp, 16 voices
-126604	Pluck Marimba, 8 voices
-162757	Pluck Steel String, 8 voices
-45712	Poly Acid, 8 voices
-199990	Poly Brass, 8 voices
-372781	Poly Dust Pad, 8 voices
-57205	Poly Grit Bass, 8 voices
-655794	Poly Init, 16 voices, unison 4
-190142	Poly Init, 8 voices
-52401	Poly Lead, 8 voices
-207779	Poly Pluck, 8 voices
-33349	Poly Sub Bass, 8 voices
-373063	Poly Supersaw, 8 voices
-930769	Sampler, 20 pads
-1450400	Sampler, 20 pads + master grains
+307019	Pluck Bell, 16 voices
+249183	Pluck Harp, 16 voices
+127636	Pluck Marimba, 8 voices
+163789	Pluck Steel String, 8 voices
+45911	Poly Acid, 8 voices
+201662	Poly Brass, 8 voices
+374389	Poly Dust Pad, 8 voices
+57376	Poly Grit Bass, 8 voices
+658315	Poly Init, 16 voices, unison 4
+191750	Poly Init, 8 voices
+52602	Poly Lead, 8 voices
+209421	Poly Pluck, 8 voices
+33542	Poly Sub Bass, 8 voices
+374672	Poly Supersaw, 8 voices
+930755	Sampler, 20 pads
+1450386	Sampler, 20 pads + master grains
 721322	Sampler, the 16 sample pads alone
 235221	Sampler, the 4 granular pads alone
-3312175	Song: sampler, 2 synths, mixer+FX, time, looper
+3313880	Song: sampler, 2 synths, mixer+FX, time, looper
 7422	Time: transport, 8 clips, arp
-53633	Track host alone, 16 tracks, 8 events each per block
-402985	Track host, 4 Poly tracks of 4 voices
-475447	Wavetable Digital Bell, 8 voices
-477917	Wavetable FM Keys, 8 voices
-77627	Wavetable Growl Bass, 8 voices
-361545	Wavetable Harmonic Pluck, 8 voices
-2715493	Wavetable Init, 16 voices, both osc, unison 8
-360819	Wavetable Init, 8 voices
-1033414	Wavetable Init, 8 voices, both osc, unison 4
-857392	Wavetable Morph Pad, 8 voices
-361704	Wavetable Organ, 8 voices
-552685	Wavetable Sync Sweep, 8 voices
-60462	Wavetable Vowel Lead, 8 voices
+53635	Track host alone, 16 tracks, 8 events each per block
+406148	Track host, 4 Poly tracks of 4 voices
+476604	Wavetable Digital Bell, 8 voices
+479074	Wavetable FM Keys, 8 voices
+77780	Wavetable Growl Bass, 8 voices
+362702	Wavetable Harmonic Pluck, 8 voices
+2715709	Wavetable Init, 16 voices, both osc, unison 8
+361976	Wavetable Init, 8 voices
+1034427	Wavetable Init, 8 voices, both osc, unison 4
+858613	Wavetable Morph Pad, 8 voices
+362861	Wavetable Organ, 8 voices
+553843	Wavetable Sync Sweep, 8 voices
+60600	Wavetable Vowel Lead, 8 voices
