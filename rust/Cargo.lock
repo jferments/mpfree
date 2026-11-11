@@ -377,12 +377,17 @@ dependencies = [
 name = "mpfree-bench"
 version = "0.1.0"
 dependencies = [
+ "mpfree-arp",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-looper",
  "mpfree-node",
+ "mpfree-play",
  "mpfree-prof",
  "mpfree-sampler",
+ "mpfree-seq",
  "mpfree-synth",
+ "mpfree-transport",
 ]
 
 [[package]]
