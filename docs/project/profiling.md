@@ -15,14 +15,14 @@ device, in the same units, against one budget. This page is how.
 | `Profiled<N>` | `mpfree-prof` | Wraps any `mpfree_node::Node` (synth, effect, Grains) and times its `process`. It is a node itself, so it drops into a chain slot. |
 | `Profiler` | `mpfree-prof` | A fixed set of named probes for a host's audio loop (`period`, `sampler`, `synth`, `fx`, `looper`, `time`, `mix`, or `module/detail`). |
 | `SharedSummary` | `mpfree-prof` | Hands a summary from the audio thread to the screen with no lock (a sequence lock over atomics). |
-| `alloc::CountingAlloc` | `mpfree-prof`, feature `counting-alloc` | A pass-through global allocator that counts per thread. Install it in a program and every `Span` and `Profiled` also reports allocator calls made inside the block (there should be none). It is the crate's only unsafe code, so it compiles only with the feature: mpfree-bench turns it on, the pad player does not. |
+| `alloc::CountingAlloc` | `mpfree-prof`, feature `counting-alloc` | A pass-through global allocator that counts calls and bytes per thread. Install it in a program and every `Span` and `Profiled` also reports allocator calls made inside the block (there should be none), and `alloc::bytes_in` tells what an engine holds once built. It is the crate's only unsafe code, so it compiles only with the feature: mpfree-bench turns it on, the pad player does not. |
 | `budget` | `mpfree-prof` | The period and the per-module budget table below. |
 | `model` | `mpfree-prof` | Reference kernels that turn a desktop time into an MPC estimate. |
 | `procs` | `mpfree-prof` | Every process on the machine from `/proc`: CPU, memory, threads, real-time policy. The data for the Dev tools process page. Read-only. |
 | `report` | `mpfree-prof` | Probe summaries as "CPU by engine" rows and a log line, each with its budget verdict. |
 | `mpfree-bench` | `rust/mpfree-bench` | Runs every engine at the MPC's period against its budget. Builds for the desktop and for the MPC. |
 
-## Budgets (proposal for Jay, 2026-11-11)
+## Budgets (agreed with Jay, 2026-11-11)
 
 The budget is the **worst block**, not the mean: one slow block in ten
 thousand is an audible click. The whole audio thread stays under **60 %** of
@@ -82,13 +82,37 @@ or per sample.
 cargo run --release -p mpfree-bench -- --quick --check-allocs
 ```
 
-Each case plays an engine the way a busy song would (chords changing every
-half second, a pad hit every 4 blocks over 20 pads with 24 voices, effects on
-a tone under noise bursts) for 20 s of audio (2 s with `--quick`) at 128
-frames and 44.1 kHz, and prints mean, p99 and worst per block as microseconds
-and as a share of the period. `--check-allocs` fails if any engine
-allocated inside a block. `--json FILE` writes the results; `--filter TEXT`
-picks cases.
+Each case plays an engine the way a busy song would for 20 s of audio (2 s
+with `--quick`) at 128 frames and 44.1 kHz:
+
+- **synth:** every Poly preset with 8-note chords changing every half
+  second, and Init at 16 voices with unison 4.
+- **sampler:** a pad hit every 4 blocks over 20 pads with 24 voices, with
+  and without the master grain effect.
+- **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
+  noise bursts, and the mixer with a song's inserts.
+- **time:** the transport looping 4 bars at 128 BPM with 8 clips playing
+  16th-note chords (one at 3:2 speed, one swung and quantised), the first
+  through the arp at 32nds over 2 octaves.
+- **looper:** 60 s of looper memory, recording a 2-bar first pass from the
+  input, then overdubbing layer after layer with an undo every 30 s.
+- **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
+  pads, and 16 tracks and 32 pads, with no inserts. The pad player's own
+  summing, meters and output copy are measured on the device by its "CPU by
+  engine" page.
+
+It prints mean, p99 and worst per block as microseconds and as a share of
+the period, and **mem MB**: what the engine holds once built (its buffers,
+delay lines and sample memory, counted by the allocator). `--check-allocs`
+fails if any engine allocated inside a block. `--json FILE` writes the
+results (each case has `mem_bytes`); `--filter TEXT` picks cases by name or
+module.
+
+On the desktop, the biggest holders are the looper (20 MB for 60 s of
+stereo), the Cloud reverb (9.4 MB per instance), the master grain effect and
+Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
+period; memory is per instance, so an engine that is cheap to run can still
+be costly to have many of.
 
 On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
@@ -167,11 +191,11 @@ data side is here:
   every 30 s with the existing `perf:` line, so test-round results carry
   them.
 
-## CI (proposal to the CI thread)
+## CI
 
-- `cargo run --release -p mpfree-bench -- --quick --check-allocs` as a gate:
-  allocation on the audio path fails the build. It is deterministic, so
-  it is safe on shared runners.
+- `cargo run --release -p mpfree-bench -- --quick --check-allocs` is a gate
+  in the rust job (the CI thread's gates PR): allocation on the audio path
+  fails the build. It is deterministic, so it is safe on shared runners.
 - Timing gates on shared CI runners are noisy. A stable regression gate is
   an instruction count: run the armv7 bench under `qemu-arm` with an
   instruction-counting plugin and compare per case against a stored
