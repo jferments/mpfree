@@ -475,11 +475,12 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (pads_tab_r, chop_tab_r, play_tab_r, grain_tab_r) = (
+    let (pads_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
         pb.tab_rect(bar, 0),
         pb.tab_rect(bar, 2),
         pb.tab_rect(bar, 3),
         pb.tab_rect(bar, 4),
+        pb.tab_rect(bar, 5),
     );
     assert_eq!(pb.active, wave_tab::TAB);
     let st = s.state.clone();
@@ -510,12 +511,21 @@ fn tabs_taps_and_the_sample_screens() {
         "Play opens"
     );
     s.ui.touch(4, Touch::Up, 0, 0);
+    let ev =
+        s.ui.touch(5, Touch::Down, grain_tab_r.x + 5, grain_tab_r.y + 5)
+            .unwrap();
     assert_eq!(
-        s.ui.touch(5, Touch::Down, grain_tab_r.x + 5, grain_tab_r.y + 5),
-        None,
-        "Grain isn't built yet"
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Tab(4)),
+        "Grain opens"
     );
     s.ui.touch(5, Touch::Up, 0, 0);
+    assert_eq!(
+        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5),
+        None,
+        "FX isn't built yet"
+    );
+    s.ui.touch(6, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
     let w = Waveform::wave_rect(s.ui.rect_of(wave_tab::WAVE).unwrap());
     s.ui.touch(3, Touch::Down, w.x + 300, w.y + 100);
