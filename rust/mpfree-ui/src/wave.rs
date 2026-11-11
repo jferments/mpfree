@@ -54,7 +54,7 @@ pub struct RawPeaks {
 impl RawPeaks {
     /// `None` if `channels` is 0 or the data isn't whole frames.
     pub fn new(data: Arc<[f32]>, channels: usize) -> Option<RawPeaks> {
-        (channels > 0 && data.len() % channels == 0).then_some(RawPeaks { data, channels })
+        (channels > 0 && data.len().is_multiple_of(channels)).then_some(RawPeaks { data, channels })
     }
 }
 

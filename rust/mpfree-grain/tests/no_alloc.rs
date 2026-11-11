@@ -79,13 +79,13 @@ fn grains_never_allocate() {
                     density: 40.0 + (k % 5) as f32 * 80.0,
                     pitch: (k % 9) as f32 - 4.0,
                     pitch_spray: 5.0,
-                    scale: if k % 2 == 0 { 0b1010_1011_0101 } else { 0 },
+                    scale: if k.is_multiple_of(2) { 0b1010_1011_0101 } else { 0 },
                     scan: (k % 5) as f32 - 2.0,
                     window: windows[k % 4],
                     reverse: 0.3,
                     spread: 1.0,
                     gain: 0.5,
-                    sync: (k % 3 == 0).then_some(TempoSync { frames_per_beat: 24_000.0, grains_per_beat: Some(8.0), size_beats: Some(0.125) }),
+                    sync: k.is_multiple_of(3).then_some(TempoSync { frames_per_beat: 24_000.0, grains_per_beat: Some(8.0), size_beats: Some(0.125) }),
                 });
                 if k % 4 == 3 { v.stop() } else { v.start() }
             }
