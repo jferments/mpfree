@@ -420,6 +420,15 @@ impl Moves {
         Ok(())
     }
 
+    /// Whether [`Moves::put_saving`] of `points` points into the lane for
+    /// `target` would go without allocating: the lane exists and has room
+    /// for them and the up to three points a write adds. (A write never
+    /// frees: it never removes a lane or shrinks one.)
+    pub fn fits(&self, target: Target, points: usize) -> bool {
+        self.lane(target)
+            .is_some_and(|l| l.points.capacity() - l.points.len() >= points + 3)
+    }
+
     fn lane_index(&mut self, target: Target, map: Map) -> Result<usize, MovesError> {
         if let Some(k) = self.lanes.iter().position(|l| l.target == target) {
             return Ok(k);

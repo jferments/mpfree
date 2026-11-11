@@ -141,6 +141,7 @@ fn playing_logging_and_writing_with_room_never_allocate() {
         }
         if period == 10_000 {
             // A gesture into a lane with room, keeping what it replaces.
+            assert!(moves.fits(Target::Fixed(addr(0)), gesture.len()));
             moves
                 .put_saving(
                     Target::Fixed(addr(0)),
