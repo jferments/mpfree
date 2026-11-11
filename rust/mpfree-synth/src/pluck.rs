@@ -665,12 +665,18 @@ impl Pluck {
     fn control(&mut self) {
         self.bend.next();
         for i in 0..POOL {
-            let mut v = self.voices[i];
-            if v.state == State::Free {
+            // Look before copying: a voice is a few hundred bytes, and
+            // most steps retune nothing.
+            let (state, note, tuned) = {
+                let v = &self.voices[i];
+                (v.state, v.note, v.tuned)
+            };
+            if state == State::Free {
                 continue;
             }
-            let p = self.pitch(v.note);
-            if v.tuned.is_nan() || (p - v.tuned).abs() > 1e-4 {
+            let p = self.pitch(note);
+            if tuned.is_nan() || (p - tuned).abs() > 1e-4 {
+                let mut v = self.voices[i];
                 self.tune(&mut v, p);
                 self.voices[i] = v;
             }

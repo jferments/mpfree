@@ -779,7 +779,7 @@ impl Poly {
         let rate_bits = self.rate;
         // Pan gains depend only on the stack count and the spread.
         let pan_key = [unison as u32, spread.to_bits()];
-        if self.pan_key != pan_key {
+        if !same_key(&self.pan_key, &pan_key) {
             for u in 0..unison {
                 let pos = if unison > 1 {
                     u as f32 / (unison - 1) as f32 * 2.0 - 1.0
@@ -811,7 +811,7 @@ impl Poly {
             unison as u32,
             rate_bits,
         ];
-        if v.pitch_key != pitch_key {
+        if !same_key(&v.pitch_key, &pitch_key) {
             for u in 0..unison {
                 let pos = if unison > 1 {
                     u as f32 / (unison - 1) as f32 * 2.0 - 1.0
@@ -841,7 +841,7 @@ impl Poly {
             + p * d.get(target::CUTOFF) * 4.0;
         let res = (res + p * d.get(target::RESONANCE)).clamp(0.0, 1.0);
         let coef_key = [oct.to_bits(), res.to_bits(), rate_bits];
-        if v.coef_key != coef_key {
+        if !same_key(&v.coef_key, &coef_key) {
             v.coefs = FilterCoefs::new(exp2(oct), res, rate);
             v.coef_key = coef_key;
         }

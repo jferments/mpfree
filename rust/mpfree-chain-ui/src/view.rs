@@ -53,7 +53,9 @@ pub enum ChainAction {
     Group(usize),
     /// A knob was touched: the modulation column works on it.
     Focus(ParamAddr),
-    /// Set a parameter: send it to the mod engine as `ModEvent::Set`.
+    /// Set a parameter: send it to the mod engine as `ModEvent::hand`
+    /// gives (a `Set` unless it has a move lane or its track is
+    /// recording; then `Untouch` when the finger lifts).
     Set {
         addr: ParamAddr,
         value: f32,
