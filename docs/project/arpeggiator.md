@@ -149,8 +149,10 @@ col(header:60, row(pads:*, col(mode:60, order:*, knobs:180):420):*, steps:150, h
 Three ways, all producing the same `Pattern`:
 
 1. **Tap on the step grid** (above).
-2. **Record on the pads** ("live mode", after Logic's): with a pattern armed, each pad press writes the next step. Pad 1 = "1st held note", pad 2 = "2nd" and so on; hitting several pads at once writes a chord step; a press of the rest pad (proposed: pad 16) writes a rest, and hold means tie. The step's velocity is the pad's velocity.
-3. **Text**, in a file or typed in Prefs, as above.
+2. **Record on the pads** (`mpfree_arp::Recorder`, engine side done): pads 1-9 write the 1st to 9th held note, several of them pressed together a chord (`*`), 13 the next note (`x`), 14 random (`?`), 15 a tie, 16 a rest; pads 10-12 do nothing yet. A hit at or above the accent velocity (110 by default) writes an accent. Two modes, as in the record mockup:
+   - **Step**: each press writes the next step, with no clock; Undo removes the last one; it stops when the pattern is full.
+   - **Free time**: the pattern keeps playing and each press lands on the nearest step (`Engine::position()` gives where the pattern is), overwriting what was there; holding a pad past the middle of the next step writes ties.
+3. **Text**, typed in Prefs or kept in a **pattern library file** (`mpfree_arp::Library`): one `Name = pattern` line each, `#` comments, written in any editor. Every bad line is reported with its line number, token and reason. [`rust/mpfree-arp/patterns/example.txt`](../../rust/mpfree-arp/patterns/example.txt) has eight original patterns and a summary of the syntax. Hear a whole file on the workstation with `mpfree-arp-render --patterns FILE`.
 
 Later: import a MIDI file the owner made (notes become note picks by their rank in the file's chord); export what the arp played as a MIDI file or to a sequencer track.
 
@@ -163,6 +165,9 @@ Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persiste
 ```sh
 # Every order, every starter pattern, drums, lanes, scale, strum, mutate, nudge, ramp and random lanes: 32 WAVs
 cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --demo
+
+# Every pattern in a library file of your own (copy rust/mpfree-arp/patterns/example.txt to start)
+cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --patterns rust/mpfree-arp/patterns/example.txt
 
 # One of your own: a chord per bar, looped
 cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- \
@@ -178,7 +183,7 @@ It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
 | A2 (done, PR #37) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
 | B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
-| C | `StepGrid` widget and the pattern editor (tap, record on pads); pattern files | B | yes |
+| C (engine side done, this PR) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Still to do: the `StepGrid` widget, the pattern editor and record screens | B | yes |
 | D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
 | E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
 | F | Transport and MIDI: sync to the sequencer's clock and MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |

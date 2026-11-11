@@ -394,6 +394,16 @@ impl Engine {
         self.step
     }
 
+    /// Where the generator is now, in steps since the notes started,
+    /// including the fraction of the current step (swing not counted).
+    /// Free-time recording uses it to place pad presses. 0 when stopped.
+    pub fn position(&self) -> f64 {
+        if !self.running {
+            return 0.0;
+        }
+        self.step as f64 - (self.next_step - self.now as f64) / self.step_frames()
+    }
+
     pub fn set_seed(&mut self, seed: u32) {
         self.rng = seed.max(1);
     }
@@ -1277,5 +1287,17 @@ mod tests {
         assert_eq!(Ramp { target: 127, steps: 2 }.apply(27, 1), 77);
         let s = Settings { ramp: Ramp { target: 0, steps: 8 }, ..Settings::default() }.clamped();
         assert_eq!(s.ramp.target, 1);
+    }
+    #[test]
+    fn position_counts_steps_since_the_start() {
+        let mut e = engine(Mode::Repeat);
+        assert_eq!(e.position(), 0.0);
+        e.press(60, 100);
+        run(&mut e, STEP * 5 / 2, 100);
+        assert_eq!(e.position(), 2.5);
+        run(&mut e, STEP / 2, 100);
+        assert_eq!(e.position(), 3.0);
+        e.release(60);
+        assert_eq!(e.position(), 0.0);
     }
 }
