@@ -6,10 +6,10 @@ Each `mpfree-ui` theme names its startup screen; this crate draws three:
 | Theme | Scene |
 | --- | --- |
 | Console | A chaotic swirl of green characters settles into "MPFree" and "OS v0.1" drawn in characters with the VT323 terminal font, shaded by density and colour; a prompt types out. Scanlines and bloom. |
-| Synthwave | A striped sun rises over wavy neon hills and a racing grid; "MPFree" in Permanent Marker is slashed on over the sun, then "OS v0.1" flickers on. |
-| Spaceship | The view from a ship's bridge: a purple galaxy fades up through the windshield while the dashboard boots (radar, boot log, spectrum, LEDs) and the HUD locks on; "MPFree" is wiped onto the glass. |
+| Synthwave | A striped sun rises over wavy neon hills and a racing grid; "MPFree OS" in Permanent Marker, stretched, leaning and torn into sharp points, is slashed on over the sun, then "v0.1" flickers on. The default theme's startup screen. |
+| Spaceship | A purple galaxy in open space under a sci-fi overlay: scanner, spectrum, nav and target panels, a scan line tagging stars, a reticle locking on; then "MPFree OS" in the brush face, white to violet. |
 
-The default theme's galaxy is [`mpfree-splash`](../mpfree-splash).
+The spiral galaxy is [`mpfree-splash`](../mpfree-splash).
 
 Everything that never moves is drawn once into layers; a frame copies them
 and draws only what moves. Scenes are deterministic: the same time gives the
@@ -29,3 +29,5 @@ prints the set-up time and the time per frame. Neither opens any device.
 Fonts: the built-in Inter and JetBrains Mono from `mpfree-ui` (SIL OFL 1.1).
 
 Fonts: VT323 (SIL OFL 1.1) and Permanent Marker (Apache 2.0) are bundled unmodified in `fonts/` with their licences, for the startup screens only.
+
+On the MPC One, `mpfree-startup --framebuffer` plays the default theme's screen on `/dev/fb0` and leaves its last frame showing. It writes only to the framebuffer and its sysfs `pan` file, never to storage.

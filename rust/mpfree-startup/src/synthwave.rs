@@ -1,17 +1,18 @@
 //! The synthwave theme's startup screen: a striped sun rising over rolling
-//! neon wireframe hills, with "MPFree" slashed across the sun in a brush
-//! marker face.
+//! neon wireframe hills, with "MPFree OS" slashed across the sun in a brush
+//! marker face, stretched and leaning, its strokes torn into sharp points.
+//! It is the default theme's startup screen.
 //!
 //! Made once: the sky with its stars, the sun's halo, and the title layers
-//! (outline, glow, the letters with their pink-to-yellow fill and slash
-//! cuts, the streaks beside them, the subtitle). A frame copies the sky,
+//! (outline, glow, the letters with their pink-to-yellow fill, the streaks
+//! beside them, the version below). A frame copies the sky,
 //! places the sun, and draws the hills: rows of a height field from near to
 //! far, each row filling only what nothing nearer already covers (a
 //! "floating horizon"), with glowing lines along and across the rows.
 //!
 //! - 0.0 s: the sun rises behind the hills while they start rolling in.
 //! - 1.3 s: the title is slashed on from the left, then its glow strikes.
-//! - 2.0 s: the subtitle flickers on.
+//! - 2.0 s: the version flickers on.
 //! - 3.0 s: settled; the hills keep rolling and the stars twinkle.
 
 use crate::gfx::{self, add, hex, mix3, over, pack, smoothstep, Mask, Rng, Sprite};
@@ -33,6 +34,7 @@ pub struct Synthwave {
     title_glow: Sprite,
     title_edge: Sprite,
     title: Sprite,
+    title_h: i32,
     streaks: Sprite,
     sub: Sprite,
     sub_edge: Sprite,
@@ -88,27 +90,22 @@ impl Synthwave {
         disc(&mut halo, hs as f32 / 2.0, hs as f32 / 2.0, sun_r * 0.95);
         let halo = halo.blurred((sun_r * 0.28) as usize, 3);
 
-        // The title: Permanent Marker, leaning forward, with slash cuts
-        // through its lower half.
+        // The title: "MPFree OS" in Permanent Marker, stretched, leaning
+        // hard forward and wavering, with torn, pointed ends on the strokes.
         let marker = gfx::font_marker();
-        let raw = gfx::text_mask(&marker, 210.0 * s, 2.0, crate::TITLE).padded(8);
-        let lean = 0.24;
-        let extra = (raw.h as f32 * lean).ceil() as usize;
-        let mut tm = Mask::new(raw.w + extra, raw.h);
-        for y in 0..raw.h {
-            let shift = ((raw.h - y) as f32 * lean) as usize;
-            for x in 0..raw.w {
-                tm.a[y * tm.w + x + shift] = raw.at(x, y);
-            }
+        let text = format!("{} OS", crate::TITLE);
+        let max_w = w as f32 * 0.80;
+        let mut size = 168.0 * s;
+        let mut raw = gfx::text_mask(&marker, size, 2.0, &text);
+        let (stretch, lean) = (1.14, 0.34);
+        let wide = raw.w as f32 * stretch + raw.h as f32 * lean;
+        if wide > max_w {
+            size *= max_w / wide;
+            raw = gfx::text_mask(&marker, size, 2.0, &text);
         }
+        let tm = gfx::slash_letters(&raw, stretch, lean, s);
         let th = tm.h as f32;
         let cuts: Vec<(f32, f32)> = vec![(0.58, 0.022), (0.68, 0.03), (0.77, 0.036), (0.86, 0.04)];
-        for y in 0..tm.h {
-            let v = y as f32 / th;
-            if cuts.iter().any(|&(at, wd)| (v - at).abs() < wd / 2.0) {
-                tm.a[y * tm.w..(y + 1) * tm.w].fill(0);
-            }
-        }
         let tx = (w as i32 - tm.w as i32) / 2;
         let ty = (horizon as f32 - sun_r * 0.45 - th * 0.95) as i32;
         let title = Sprite::from(tx, ty, &tm, |_, y| {
@@ -140,7 +137,7 @@ impl Synthwave {
         let streaks = Sprite::from(0, ty, &sm, |_, y| pack(mix3(hex(0xFF2EB4), hex(0xFFB03D), y as f32 / th)));
 
         let sans = gfx::font_sans();
-        let sub_m = gfx::text_mask(&sans, 40.0 * s, 14.0 * s, &format!("OS {}", crate::VERSION));
+        let sub_m = gfx::text_mask(&sans, 30.0 * s, 10.0 * s, crate::VERSION);
         let sx = (w as i32 - sub_m.w as i32) / 2;
         let sy = ty + tm.h as i32 + (6.0 * s) as i32;
         let sh = sub_m.h as f32;
@@ -148,7 +145,7 @@ impl Synthwave {
         let sub_edge = Sprite::from(sx - 12, sy - 12, &sub_m.padded(12).dilated(3), |_, _| 0x12052A);
         let sg = sub_m.padded(12).blurred(5, 3);
         let sub_glow = Sprite::from(sx - 12, sy - 12, &sg, |_, _| CYAN);
-        Synthwave { w, h, horizon, sky, stars, sun_r, halo, hor: vec![0.0; w], title_glow, title_edge, title, streaks, sub, sub_edge, sub_glow }
+        Synthwave { w, h, horizon, sky, stars, sun_r, halo, hor: vec![0.0; w], title_glow, title_edge, title, title_h: tm.h as i32, streaks, sub, sub_edge, sub_glow }
     }
 
     fn sun(&self, px: &mut [u32], t: f32) {
@@ -335,7 +332,7 @@ impl Scene for Synthwave {
             self.title.draw_upto(&mut px, w, 256, false, upto - 24);
             if wipe < 1.0 {
                 let x = (self.title_glow.x + upto) as f32;
-                let (y0, y1) = (self.title.y as f32 - 10.0, self.title.y as f32 + 220.0);
+                let (y0, y1) = (self.title.y as f32 - 10.0, (self.title.y + self.title_h) as f32 + 10.0);
                 for dx in -3i32..=3 {
                     let k = [40, 90, 180, 256, 180, 90, 40][(dx + 3) as usize];
                     gfx::light_line(&mut px, w, (x + dx as f32 + 40.0, y0), (x + dx as f32 - 30.0, y1), 0xFFF0FA, k, k);

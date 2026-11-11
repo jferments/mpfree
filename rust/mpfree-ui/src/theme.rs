@@ -61,11 +61,12 @@ pub enum Backdrop {
 pub enum Startup {
     /// The spiral galaxy (mpfree-splash).
     Galaxy,
-    /// Green ASCII chaos that resolves into the name.
+    /// A swirl of green characters that settles into the name.
     Console,
-    /// A neon sunset with palm trees over a moving grid.
+    /// A striped sun over rolling neon hills, the name slashed across it.
+    /// The default theme's startup screen (Jay, 2026-11-11, for round 8).
     Synthwave,
-    /// A ship's bridge dropping out of warp in front of a purple galaxy.
+    /// A purple galaxy seen from a ship's bridge while its controls boot.
     Spaceship,
 }
 
@@ -164,7 +165,7 @@ impl Theme {
             backdrop_step: 40,
             face_body: FontId::Sans,
             face_title: FontId::Bold,
-            startup: Startup::Galaxy,
+            startup: Startup::Synthwave,
             tint: 0,
         }
     }

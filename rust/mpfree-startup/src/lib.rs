@@ -1,8 +1,8 @@
 //! MPFree's themed startup screens.
 //!
 //! Each theme in `mpfree-ui` names a startup screen ([`Startup`]). This crate
-//! draws three of them; the fourth, the spiral galaxy of the default theme,
-//! is `mpfree-splash`.
+//! draws three of them (synthwave is the default theme's); the fourth, the
+//! spiral galaxy, is `mpfree-splash`.
 //!
 //! - [`console::Console`]: a chaotic swirl of green characters that settles
 //!   into "MPFree OS" drawn in characters (VT323 terminal font), shaded by

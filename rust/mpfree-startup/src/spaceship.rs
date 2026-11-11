@@ -1,23 +1,25 @@
-//! The spaceship theme's startup screen: the view from a ship's bridge, a
-//! purple spiral galaxy through the windshield while the controls boot.
+//! The spaceship theme's startup screen: a purple spiral galaxy in open
+//! space, with a sci-fi computer overlay analysing it. There is no ship in
+//! the picture, only the data laid over the view.
 //!
 //! - 0.0 s: the galaxy fades up out of the dark, turning slowly (inner stars
-//!   faster than outer ones); the bridge is a dark frame round it.
-//! - 0.5 s: a light runs out along the dashboard's rim, the LED rows and
-//!   sliders come on from the middle, and three screens power up: a radar
-//!   sweep, a boot log with a progress bar, a spectrum with a waveform.
-//! - 1.7 s: the windshield HUD comes up: corner brackets, a heading tape, a
-//!   reticle that closes on the galaxy's core with a target label, readouts.
-//! - 2.6 s: "MPFree" is wiped onto the glass by a scan line, then "OS v0.1";
-//!   the centre screen reads SYSTEMS ONLINE.
+//!   faster than outer ones).
+//! - 0.6 s: a heading tape and corner brackets come up; four translucent
+//!   panels open: a radar scanner, a spectrum with a waveform, navigation
+//!   readouts and a target panel.
+//! - 1.0 s: a scan line sweeps across the galaxy, tagging stars with small
+//!   callouts as it passes; a status bar fills along the bottom.
+//! - 1.8 s: a reticle closes on the galaxy's core and a leader line runs to
+//!   the target panel, which types out what it found.
+//! - 2.4 s: "MPFree OS" is slashed on in a brush face, white to violet, then
+//!   "v0.1" flickers on and the status bar reads ALL SYSTEMS ONLINE.
 //!
 //! Made once: the star field and the galaxy's glow (with and without it, to
-//! fade between), the bridge with its bezels and sockets drawn over both,
-//! ~11,000 galaxy particles and the text. A frame copies the background,
-//! adds the particles that are not behind the bridge, and draws the lights,
-//! the screens' contents and the HUD, which are all small.
+//! fade between), ~11,000 galaxy particles and all the text. A frame copies
+//! the background, adds the particles, then draws the panels (small
+//! translucent rectangles) and the overlay's thin lines.
 
-use crate::gfx::{self, add, hash, hex, light_line, mix3, over, pack, scale, smoothstep, Mask, Rng, Sprite};
+use crate::gfx::{self, add, hex, light_line, mix3, over, pack, scale, smoothstep, Mask, Rng, Sprite};
 use crate::Scene;
 use mpfree_ui::SoftCanvas;
 use std::f32::consts::{PI, TAU};
@@ -49,39 +51,31 @@ struct Rect {
 
 impl Rect {
     fn frac(sw: f32, sh: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect { x: (sw * x) as i32, y: (sh * y) as i32, w: (sw * w).max(4.0) as i32, h: (sh * h).max(4.0) as i32 }
+        Rect { x: (sw * x) as i32, y: (sh * y) as i32, w: (sw * w).max(8.0) as i32, h: (sh * h).max(8.0) as i32 }
     }
 }
 
-struct Led {
-    x: i32,
-    y: i32,
-    color: u32,
-    on: f32,
+/// A translucent panel of the overlay: when it opens, its header and what
+/// it shows.
+struct Panel {
+    r: Rect,
+    open: f32,
+    header: Sprite,
+    kind: Kind,
 }
 
-/// The bridge's outline: where the glass ends.
-struct Shape {
-    w: f32,
-    h: f32,
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Radar,
+    Spectrum,
+    Nav,
+    Target,
 }
 
-impl Shape {
-    fn dx(&self, x: f32) -> f32 {
-        (x - self.w / 2.0) / (self.w / 2.0)
-    }
-    /// The bottom edge of the canopy frame.
-    fn top(&self, x: f32) -> f32 {
-        self.h * (0.05 + 0.035 * self.dx(x).powi(2))
-    }
-    /// The dashboard's rim, higher in the middle.
-    fn dash(&self, x: f32) -> f32 {
-        self.h * (0.70 + 0.07 * self.dx(x).powi(2))
-    }
-    /// The inner edge of the left pillar (the right one mirrors it).
-    fn pillar(&self, y: f32) -> f32 {
-        self.w * (0.13 - 0.11 * y / self.h)
-    }
+/// A star the scan line tags: which particle, and its label.
+struct Callout {
+    particle: usize,
+    label: Sprite,
 }
 
 /// Signed distance inside a rectangle with cut corners (positive inside).
@@ -103,67 +97,35 @@ fn light_rect(px: &mut [u32], w: usize, x0: i32, y0: i32, x1: i32, y1: i32, c: u
     }
 }
 
-fn dash_colour(d: f32, dx: f32, s: f32) -> [f32; 3] {
-    let (rim, surf) = (5.0 * s, 46.0 * s);
-    let side = 1.0 - 0.55 * dx.abs().powi(3);
-    let c = if d < 1.5 {
-        hex(0x6E5CAE)
-    } else if d < rim {
-        mix3(hex(0x3A2E5C), hex(0x1A1430), (d - 1.5) / (rim - 1.5).max(0.1))
-    } else if d < surf {
-        // The sloping top of the dashboard catches the galaxy's light.
-        let f = (d - rim) / (surf - rim);
-        let mut c = mix3(hex(0x1C1630), hex(0x0E0B17), f);
-        let sheen = (1.0 - f).powi(2) * (1.0 - dx.abs()).max(0.0) * 30.0;
-        c[0] += sheen * 0.55;
-        c[1] += sheen * 0.35;
-        c[2] += sheen;
-        c
-    } else if d < surf + 2.0 * s {
-        hex(0x040307)
-    } else if d < surf + 3.0 * s {
-        hex(0x2A2140)
-    } else {
-        mix3(hex(0x0D0B15), hex(0x060509), ((d - surf) / (140.0 * s)).min(1.0))
-    };
-    [c[0] * side, c[1] * side, c[2] * side]
-}
-
-/// Pillars and the canopy frame: a lit inner edge, a seam, dark metal.
-fn frame_colour(e: f32, s: f32) -> [f32; 3] {
-    if e < 2.0 * s {
-        hex(0x4C3F7A)
-    } else if e < 4.0 * s {
-        hex(0x09070F)
-    } else if (e - 26.0 * s).abs() < s {
-        hex(0x050409)
-    } else if (e - 27.8 * s).abs() < 0.6 * s {
-        hex(0x241C36)
-    } else {
-        mix3(hex(0x1B1529), hex(0x07060B), ((e - 4.0 * s) / (70.0 * s)).min(1.0))
+/// A neon tube striking: on, off, on, flickering, then on for good.
+fn neon(t: f32, start: f32) -> u32 {
+    let d = t - start;
+    if d < 0.0 {
+        return 0;
     }
+    const STEPS: [(f32, u32); 8] = [(0.05, 200), (0.1, 0), (0.16, 256), (0.22, 40), (0.3, 256), (0.34, 90), (0.42, 256), (9e9, 256)];
+    STEPS.iter().find(|s| d < s.0).map(|s| s.1).unwrap_or(256)
 }
 
 pub struct Spaceship {
     w: usize,
     h: usize,
     s: f32,
-    shape: Shape,
     dark: Vec<u32>,
     lit: Vec<u32>,
-    cover: Vec<u8>,
     center: (f32, f32),
     particles: Vec<Particle>,
-    screens: [Rect; 3],
-    leds: Vec<Led>,
-    sliders: Vec<Rect>,
+    panels: Vec<Panel>,
+    callouts: Vec<Callout>,
     title: Sprite,
+    title_h: i32,
+    title_edge: Sprite,
     title_glow: Sprite,
     sub: Sprite,
-    log: Vec<Sprite>,
-    online: Sprite,
+    sub_glow: Sprite,
     readouts: Vec<Sprite>,
     target: Vec<Sprite>,
+    online: Sprite,
     ticks: Vec<(i32, Sprite)>,
 }
 
@@ -172,9 +134,8 @@ impl Spaceship {
         let (w, h) = (w.max(16) as usize, h.max(16) as usize);
         let (sw, sh) = (w as f32, h as f32);
         let s = sh / 800.0;
-        let shape = Shape { w: sw, h: sh };
-        let center = (sw / 2.0, sh * 0.30);
-        let radius = sh * 0.36;
+        let center = (sw / 2.0, sh * 0.40);
+        let radius = sh * 0.40;
         let mut rng = Rng(0x0BA1_7E57);
 
         // Space: black with a faint violet haze and a vignette, and stars.
@@ -198,7 +159,7 @@ impl Spaceship {
         for y in 0..h {
             for x in 0..w {
                 let hv = haze.at((x / 8).min(bw - 1), (y / 8).min(bh - 1)) as f32;
-                let (dx, dy) = (x as f32 / sw - 0.5, y as f32 / sh - 0.35);
+                let (dx, dy) = (x as f32 / sw - 0.5, y as f32 / sh - 0.42);
                 let vig = (1.0 - (dx * dx + dy * dy) * 1.6).clamp(0.0, 1.0);
                 let c = mix3(hex(0x030208), hex(0x2A1450), hv / 80.0);
                 space[y * w + x] = pack([c[0] * vig, c[1] * vig, c[2] * vig]);
@@ -236,121 +197,7 @@ impl Spaceship {
                 lit[i] = add(lit[i], 0xFFF4FF, (core * 255.0) as u32);
             }
         }
-
-        // The bridge: canopy frame, pillars and dashboard, mitred where they
-        // meet, with soft edges against the glass.
-        let mut cover = vec![0u8; w * h];
-        let mut bridge = vec![0u32; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                let (xf, yf) = (x as f32 + 0.5, y as f32 + 0.5);
-                let pl = shape.pillar(yf);
-                let into_dash = yf - shape.dash(xf);
-                let into_top = shape.top(xf) - yf;
-                let into_pillar = (pl - xf).max(xf - (sw - pl));
-                let e = into_dash.max(into_top).max(into_pillar);
-                let cov = (e + 0.5).clamp(0.0, 1.0);
-                let i = y * w + x;
-                if cov <= 0.0 {
-                    // Glass: a faint diagonal reflection.
-                    let u = (xf + yf * 0.6) / sw;
-                    let band = (-((u - 0.30) / 0.05).powi(2)).exp() * 7.0 + (-((u - 0.38) / 0.012).powi(2)).exp() * 5.0;
-                    if band > 0.5 {
-                        space[i] = add(space[i], 0x8070C0, band as u32);
-                        lit[i] = add(lit[i], 0x8070C0, band as u32);
-                    }
-                    continue;
-                }
-                let col = if into_dash >= into_top && into_dash >= into_pillar {
-                    dash_colour(into_dash, shape.dx(xf), s)
-                } else {
-                    frame_colour(e, s)
-                };
-                cover[i] = (cov * 255.0) as u8;
-                bridge[i] = pack(col);
-            }
-        }
-
-        // Screens with cut-corner bezels.
-        let screens = [
-            Rect::frac(sw, sh, 0.135, 0.80, 0.19, 0.15),
-            Rect::frac(sw, sh, 0.375, 0.785, 0.25, 0.175),
-            Rect::frac(sw, sh, 0.675, 0.80, 0.19, 0.15),
-        ];
-        let bez = 10.0 * s;
-        for r in &screens {
-            let (x0, y0, x1, y1) = (r.x as f32, r.y as f32, (r.x + r.w) as f32, (r.y + r.h) as f32);
-            let (bx0, by0, bx1, by1) = (x0 - bez, y0 - bez, x1 + bez, y1 + bez);
-            for y in (by0.max(0.0) as usize)..(by1.ceil() as usize).min(h) {
-                for x in (bx0.max(0.0) as usize)..(bx1.ceil() as usize).min(w) {
-                    let (xf, yf) = (x as f32 + 0.5, y as f32 + 0.5);
-                    let db = chamfer_in(xf, yf, bx0, by0, bx1, by1, 14.0 * s);
-                    if db <= -0.5 {
-                        continue;
-                    }
-                    let ds = chamfer_in(xf, yf, x0, y0, x1, y1, 7.0 * s);
-                    let c = if ds > 1.0 {
-                        0x07050D
-                    } else if ds > 0.0 {
-                        0x1A1428
-                    } else if db < 1.5 * s {
-                        0x2F2547
-                    } else {
-                        0x050409
-                    };
-                    let i = y * w + x;
-                    bridge[i] = over(bridge[i], c, ((db + 0.5).clamp(0.0, 1.0) * 256.0) as u32);
-                }
-            }
-        }
-
-        // LED rows along the dashboard's top, in groups of six.
-        let mut leds = Vec::new();
-        let step = (10.0 * s).max(3.0);
-        let (lw, lh) = ((6.0 * s).max(1.0) as i32, (3.0 * s).max(1.0) as i32);
-        let mut i = 0;
-        let mut x = sw * 0.07;
-        while x < sw * 0.93 {
-            if i % 8 < 6 {
-                let y = (shape.dash(x) + 24.0 * s) as i32;
-                let color = if i % 7 == 3 { WHITE } else if i % 11 == 5 { PINK } else { LILAC };
-                let on = 0.75 + shape.dx(x).abs() * 0.55;
-                leds.push(Led { x: x as i32, y, color, on });
-                for yy in (y - 1).max(0)..(y + lh + 1).min(h as i32) {
-                    for xx in (x as i32 - 1).max(0)..(x as i32 + lw + 1).min(w as i32) {
-                        bridge[yy as usize * w + xx as usize] = 0x08060E;
-                    }
-                }
-            }
-            i += 1;
-            x += step;
-        }
-
-        // Three slider slots at each end of the dashboard.
-        let mut sliders = Vec::new();
-        for k in 0..3 {
-            let x = sw * 0.04 + k as f32 * 18.0 * s;
-            for sx in [x, sw - x - 4.0 * s] {
-                sliders.push(Rect { x: sx as i32, y: (sh * 0.85) as i32, w: (4.0 * s).max(1.0) as i32, h: (sh * 0.11) as i32 });
-            }
-        }
-        for r in &sliders {
-            for yy in (r.y - 1).max(0)..(r.y + r.h + 1).min(h as i32) {
-                for xx in (r.x - 1).max(0)..(r.x + r.w + 1).min(w as i32) {
-                    let edge = yy < r.y || yy >= r.y + r.h || xx < r.x || xx >= r.x + r.w;
-                    bridge[yy as usize * w + xx as usize] = if edge { 0x241C36 } else { 0x030206 };
-                }
-            }
-        }
-
-        let mut dark = space;
-        for i in 0..w * h {
-            if cover[i] > 0 {
-                let a = cover[i] as u32 + 1;
-                dark[i] = over(dark[i], bridge[i], a);
-                lit[i] = over(lit[i], bridge[i], a);
-            }
-        }
+        let dark = space;
 
         // Particles in two main arms, two faint ones, a bulge and a halo.
         let mut particles = Vec::new();
@@ -382,156 +229,157 @@ impl Spaceship {
             particles.push(Particle { r: rn * radius, theta, omega: 0.16 / (0.3 + rn * 2.0), color, k });
         }
 
-        // Text: the title on the glass, the boot log on the centre screen,
-        // readouts and a target label on the HUD.
         let sans = gfx::font_sans();
         let mono = gfx::font_mono();
-        let tm = gfx::text_mask(&sans, 88.0 * s, 24.0 * s, crate::TITLE);
-        let tx = (w as i32 - tm.w as i32) / 2;
-        let ty = (sh * 0.545) as i32;
-        let title = Sprite::from(tx, ty, &tm, |_, _| 0xFFFFFF);
-        let tg = tm.padded(16).blurred(6, 3);
-        let title_glow = Sprite::from(tx - 16, ty - 16, &tg, |_, _| VIOLET);
-        let sm = gfx::text_mask(&mono, 18.0 * s, 8.0 * s, &format!("OS {}", crate::VERSION));
-        let sub = Sprite::from((w as i32 - sm.w as i32) / 2, ty + tm.h as i32 + (12.0 * s) as i32, &sm, |_, _| LILAC);
+        let small = |text: &str, c: u32, x: i32, y: i32| {
+            let m = gfx::text_mask(&mono, 13.0 * s, 1.5 * s, text);
+            Sprite::from(x, y, &m, |_, _| c)
+        };
 
-        let c = screens[1];
-        let log_lines = [format!("MPFREE OS {}", crate::VERSION), "NAV ........ OK".into(), "AUDIO ...... OK".into(), "PADS ....... OK".into()];
-        let log = log_lines.iter().enumerate().map(|(i, l)| {
-            let m = gfx::text_mask(&mono, 13.0 * s, 1.0 * s, l);
-            let x = c.x + (12.0 * s) as i32;
-            let y = c.y + (10.0 * s) as i32 + (i as f32 * 17.0 * s) as i32;
-            Sprite::from(x, y, &m, |_, _| if i == 0 { WHITE } else { SOFT })
+        // The overlay's panels.
+        let specs = [
+            (Kind::Radar, "SCAN", (0.03, 0.30, 0.17, 0.27), 0.8),
+            (Kind::Spectrum, "SPECTRUM", (0.80, 0.30, 0.17, 0.27), 0.95),
+            (Kind::Nav, "NAV", (0.03, 0.05, 0.19, 0.17), 1.1),
+            (Kind::Target, "TARGET", (0.78, 0.05, 0.19, 0.17), 1.25),
+        ];
+        let pad = (10.0 * s) as i32;
+        let panels: Vec<Panel> = specs.iter().map(|&(kind, name, (x, y, pw, ph), open)| {
+            let r = Rect::frac(sw, sh, x, y, pw, ph);
+            Panel { r, open, header: small(name, WHITE, r.x + pad, r.y + (7.0 * s) as i32), kind }
         }).collect();
-        let om = gfx::text_mask(&mono, 15.0 * s, 3.0 * s, "SYSTEMS ONLINE");
-        let online = Sprite::from(c.x + (c.w - om.w as i32) / 2, c.y + c.h - (34.0 * s) as i32, &om, |_, _| WHITE);
-
-        let lines = ["NAV      LOCKED", "SECTOR   MPC-1", "DRIVE    IDLE", "COMMS    QUIET"];
-        let readouts = lines.iter().enumerate().map(|(i, l)| {
-            let m = gfx::text_mask(&mono, 14.0 * s, 1.5 * s, l);
-            Sprite::from((sw * 0.15) as i32, (sh * 0.20 + i as f32 * 24.0 * s) as i32, &m, |_, _| SOFT)
-        }).collect();
-        let lines = ["TARGET  GALAXY 01", "RANGE   2.4 KLY", "LOCK    OK"];
-        let target = lines.iter().enumerate().map(|(i, l)| {
-            let m = gfx::text_mask(&mono, 14.0 * s, 1.5 * s, l);
-            Sprite::from((sw * 0.72) as i32, (sh * 0.15 + i as f32 * 24.0 * s) as i32, &m, |_, _| if i == 2 { PINK } else { SOFT })
-        }).collect();
+        let body = |k: Kind| {
+            let p = panels.iter().find(|p| p.kind == k).expect("panel");
+            (p.r.x + pad, p.r.y + (30.0 * s) as i32)
+        };
+        let (nx, ny) = body(Kind::Nav);
+        let readouts = ["NAV      LOCKED", "SECTOR   MPC-1", "DRIVE    IDLE", "COMMS    QUIET"].iter().enumerate()
+            .map(|(i, l)| small(l, SOFT, nx, ny + (i as f32 * 19.0 * s) as i32)).collect();
+        let (tx0, ty0) = body(Kind::Target);
+        let target = ["CLASS    SPIRAL SBc", "RANGE    2.4 KLY", "STARS    4.1E11", "LOCK     OK"].iter().enumerate()
+            .map(|(i, l)| small(l, if i == 3 { PINK } else { SOFT }, tx0, ty0 + (i as f32 * 19.0 * s) as i32)).collect();
+        let om = gfx::text_mask(&mono, 14.0 * s, 4.0 * s, "ALL SYSTEMS ONLINE");
+        let online = Sprite::from((w as i32 - om.w as i32) / 2, (sh * 0.935) as i32, &om, |_, _| WHITE);
         let ticks = (0..36).map(|i| {
             let m = gfx::text_mask(&mono, 12.0 * s, 1.0, &format!("{:03}", i * 10));
             (i * 10, Sprite::from(0, 0, &m, |_, _| 0x9D8CD6))
         }).collect();
 
+        // Stars the scan line tags: bright particles out in the arms, spread
+        // round the disc.
+        let names = ["HII-07", "CL 0x3F", "SNR 12", "V 2.41", "OB-221", "PSR 0.8"];
+        let mut callouts = Vec::new();
+        for (n, name) in names.iter().enumerate() {
+            let want = n as f32 / names.len() as f32 * TAU + 0.4;
+            let near = |p: &Particle| {
+                let d = (p.theta - want).rem_euclid(TAU);
+                d.min(TAU - d) < 0.35
+            };
+            let found = particles.iter().enumerate().position(|(_, p)| {
+                let rn = p.r / radius;
+                p.k > 95 && (0.32 + 0.08 * (n % 3) as f32..0.8).contains(&rn) && near(p)
+            });
+            if let Some(i) = found {
+                callouts.push(Callout { particle: i, label: small(name, WHITE, 0, 0) });
+            }
+        }
+
+        // The title: "MPFree OS" in the synthwave brush face, white to violet.
+        let marker = gfx::font_marker();
+        let text = format!("{} OS", crate::TITLE);
+        let max_w = sw * 0.72;
+        let mut size = 132.0 * s;
+        let (stretch, lean) = (1.14, 0.34);
+        let mut raw = gfx::text_mask(&marker, size, 2.0, &text);
+        let wide = raw.w as f32 * stretch + raw.h as f32 * lean;
+        if wide > max_w {
+            size *= max_w / wide;
+            raw = gfx::text_mask(&marker, size, 2.0, &text);
+        }
+        let tm = gfx::slash_letters(&raw, stretch, lean, s * 0.8);
+        let th = tm.h as f32;
+        let tx = (w as i32 - tm.w as i32) / 2;
+        let ty = (sh * 0.685) as i32;
+        let title = Sprite::from(tx, ty, &tm, |_, y| {
+            let v = y as f32 / th;
+            pack(if v < 0.45 { mix3(hex(0xFFFFFF), hex(0xE2D6FF), v / 0.45) } else { mix3(hex(0xE2D6FF), hex(0x9B6BFF), (v - 0.45) / 0.55) })
+        });
+        let pad = 24;
+        let edge = tm.padded(pad).dilated(3);
+        let title_edge = Sprite::from(tx - pad as i32, ty - pad as i32, &edge, |_, _| 0x0E0620);
+        let glow = edge.blurred(9, 3);
+        let title_glow = Sprite::from(tx - pad as i32, ty - pad as i32, &glow, |_, _| VIOLET);
+        let sm = gfx::text_mask(&sans, 26.0 * s, 9.0 * s, crate::VERSION);
+        let (sx, sy) = ((w as i32 - sm.w as i32) / 2, ty + tm.h as i32 + (8.0 * s) as i32);
+        let sub = Sprite::from(sx, sy, &sm, |_, _| WHITE);
+        let sub_glow = Sprite::from(sx - 12, sy - 12, &sm.padded(12).blurred(5, 3), |_, _| LILAC);
+
         Spaceship {
-            w, h, s, shape, dark, lit, cover, center, particles, screens, leds, sliders,
-            title, title_glow, sub, log, online, readouts, target, ticks,
+            w, h, s, dark, lit, center, particles, panels, callouts,
+            title, title_h: tm.h as i32, title_edge, title_glow, sub, sub_glow,
+            readouts, target, online, ticks,
         }
     }
 
-    /// The dashboard's rim lighting up from the middle outwards.
-    fn rim(&self, px: &mut [u32], t: f32) {
-        let sweep = smoothstep(0.5, 1.1, t) * 1.02;
-        if sweep <= 0.0 {
-            return;
-        }
-        let w = self.w;
-        let seg = 8.0;
-        let mut x = 0.0;
-        while x < self.w as f32 {
-            let x2 = x + seg;
-            let d = self.shape.dx(x + seg / 2.0).abs();
-            if d < sweep {
-                let front = (1.0 - (sweep - d) / 0.08).clamp(0.0, 1.0) * if sweep < 1.0 { 1.0 } else { 0.0 };
-                let k = (190.0 + 66.0 * front) as u32;
-                let (y1, y2) = (self.shape.dash(x), self.shape.dash(x2));
-                light_line(px, w, (x, y1 + 1.0), (x2, y2 + 1.0), LILAC, k, k);
-                light_line(px, w, (x, y1 + 2.0), (x2, y2 + 2.0), VIOLET, k / 2, k / 2);
-                light_line(px, w, (x, y1 - 1.0), (x2, y2 - 1.0), VIOLET, k / 4 + (front * 120.0) as u32, k / 4);
-            }
-            x = x2;
-        }
+    /// Where particle `p` is on screen at time `t`.
+    fn place(&self, p: &Particle, t: f32) -> (f32, f32) {
+        let (cx, cy) = self.center;
+        let (cr, sr) = (ROLL.cos(), ROLL.sin());
+        let a = p.theta + p.omega * t;
+        let (u, v) = (a.cos() * p.r, a.sin() * p.r * TILT);
+        (cx + u * cr - v * sr, cy + u * sr + v * cr)
     }
 
-    fn panel(&self, px: &mut [u32], t: f32) {
+    /// A panel: it unfolds sideways from its middle, a dark translucent body
+    /// with a cut-corner outline, a header and a rule under it.
+    fn panel(&self, px: &mut [u32], p: &Panel, t: f32) -> f32 {
         let (w, s) = (self.w, self.s);
-        let (lw, lh) = ((6.0 * s).max(1.0) as i32, (3.0 * s).max(1.0) as i32);
-        // LEDs, with a few blinking.
-        for (i, l) in self.leds.iter().enumerate() {
-            if t < l.on {
-                continue;
-            }
-            let mut k = (smoothstep(l.on, l.on + 0.08, t) * 230.0) as u32;
-            if t > 2.0 && hash(i as u32, (t * 5.0) as u32).is_multiple_of(9) {
-                k /= 5;
-            }
-            light_rect(px, w, l.x, l.y, l.x + lw, l.y + lh, l.color, k);
-            light_rect(px, w, l.x - 1, l.y - 1, l.x + lw + 1, l.y + lh + 1, l.color, k / 6);
+        let o = smoothstep(p.open, p.open + 0.22, t);
+        if o <= 0.0 {
+            return 0.0;
         }
-        // Sliders: settle to their levels once the panel is on.
-        let on = smoothstep(0.9, 1.2, t);
-        if on > 0.0 {
-            for (i, r) in self.sliders.iter().enumerate() {
-                let target = [0.72, 0.45, 0.6, 0.3, 0.85, 0.55][i % 6];
-                let wobble = (1.0 - smoothstep(0.9, 2.4, t)) * 0.3 * (t * 5.0 + i as f32).sin();
-                let lv = (target + wobble).clamp(0.05, 0.95);
-                let ky = r.y + r.h - (lv * r.h as f32) as i32;
-                light_rect(px, w, r.x, ky, r.x + r.w, r.y + r.h, VIOLET, (110.0 * on) as u32);
-                let kw = (6.0 * s) as i32;
-                light_rect(px, w, r.x - kw, ky - (2.0 * s) as i32, r.x + r.w + kw, ky + (3.0 * s) as i32, WHITE, (210.0 * on) as u32);
-            }
-        }
-        for (j, r) in self.screens.iter().enumerate() {
-            let start = [1.0, 0.85, 1.15][j];
-            let p = smoothstep(start, start + 0.18, t);
-            if p <= 0.0 {
-                continue;
-            }
-            self.screen_on(px, *r, p);
-            let ck = smoothstep(start + 0.15, start + 0.35, t);
-            if ck <= 0.0 {
-                continue;
-            }
-            match j {
-                0 => self.radar(px, *r, t, ck),
-                1 => self.boot_log(px, *r, t, start),
-                _ => self.spectrum(px, *r, t, ck),
+        let r = p.r;
+        let half = r.w as f32 / 2.0 * o;
+        let mid = r.x as f32 + r.w as f32 / 2.0;
+        let (x0, x1, y0, y1) = (mid - half, mid + half, r.y as f32, (r.y + r.h) as f32);
+        let cut = 10.0 * s;
+        let h = px.len() / w;
+        for y in (y0.max(0.0) as usize)..(y1 as usize).min(h) {
+            for x in (x0.max(0.0) as usize)..(x1.ceil() as usize).min(w) {
+                let (xf, yf) = (x as f32 + 0.5, y as f32 + 0.5);
+                let d = chamfer_in(xf, yf, x0, y0, x1, y1, cut);
+                if d <= -0.5 {
+                    continue;
+                }
+                let i = y * w + x;
+                let a = if d < 1.0 { 0 } else { 150 };
+                px[i] = over(px[i], 0x0A0616, a);
+                if d < 1.2 {
+                    px[i] = add(px[i], LILAC, (((1.2 - d.abs()).clamp(0.0, 1.0)) * 200.0) as u32);
+                }
             }
         }
-    }
-
-    /// A screen opening like an old tube: a bright line that grows to fill it.
-    fn screen_on(&self, px: &mut [u32], r: Rect, p: f32) {
-        let (w, s) = (self.w, self.s);
-        let cy = r.y as f32 + r.h as f32 / 2.0;
-        let half = (r.h as f32 / 2.0 * p).max(1.0);
-        let cut = (7.0 * s) as i32;
-        let h = (px.len() / w) as i32;
-        for y in ((cy - half) as i32).max(r.y).max(0)..((cy + half) as i32).min(r.y + r.h).min(h) {
-            let edge = (y - r.y).min(r.y + r.h - 1 - y);
-            let inset = (cut - edge).max(0) + 1;
-            let c = if (y - r.y) % 3 == 0 { 0x0C0718 } else { 0x140B2A };
-            for x in (r.x + inset).max(0)..(r.x + r.w - inset).min(w as i32) {
-                px[y as usize * w + x as usize] = c;
-            }
+        // Scanlines over the body, faint.
+        let mut y = r.y + 2;
+        while y < r.y + r.h - 2 {
+            light_line(px, w, (x0 + 3.0, y as f32), (x1 - 3.0, y as f32), VIOLET, 10, 10);
+            y += (3.0 * s).max(2.0) as i32;
         }
-        if p < 1.0 {
-            let k = ((1.0 - p) * 256.0) as u32;
-            light_line(px, w, (r.x as f32 + 4.0, cy), ((r.x + r.w) as f32 - 4.0, cy), WHITE, k, k);
+        let ck = smoothstep(p.open + 0.15, p.open + 0.35, t);
+        if ck > 0.0 {
+            p.header.draw(px, w, (ck * 256.0) as u32, true);
+            let ry = r.y as f32 + 24.0 * s;
+            light_line(px, w, (x0 + 8.0 * s, ry), (x1 - 8.0 * s, ry), LILAC, (90.0 * ck) as u32, (20.0 * ck) as u32);
         }
+        ck
     }
 
     fn radar(&self, px: &mut [u32], r: Rect, t: f32, ck: f32) {
         let (w, s) = (self.w, self.s);
-        let rad = (r.h as f32 / 2.0 - 8.0 * s).max(3.0);
-        let (cx, cy) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
+        let top = r.y as f32 + 28.0 * s;
+        let rad = ((r.h as f32 - 28.0 * s) / 2.0 - 8.0 * s).min(r.w as f32 / 2.0 - 10.0 * s).max(3.0);
+        let (cx, cy) = (r.x as f32 + r.w as f32 / 2.0, top + (r.y as f32 + r.h as f32 - top) / 2.0);
         let kk = |k: f32| (k * ck) as u32;
-        // A faint grid behind.
-        let g = (16.0 * s).max(4.0) as i32;
-        for x in (r.x + g..r.x + r.w - 2).step_by(g as usize) {
-            light_line(px, w, (x as f32, r.y as f32 + 3.0), (x as f32, (r.y + r.h) as f32 - 3.0), VIOLET, kk(22.0), kk(22.0));
-        }
-        for y in (r.y + g..r.y + r.h - 2).step_by(g as usize) {
-            light_line(px, w, (r.x as f32 + 3.0, y as f32), ((r.x + r.w) as f32 - 3.0, y as f32), VIOLET, kk(22.0), kk(22.0));
-        }
         for ring in [1.0, 0.66, 0.33] {
             let rr = rad * ring;
             let n = (TAU * rr) as usize + 1;
@@ -561,46 +409,13 @@ impl Spaceship {
         }
     }
 
-    fn boot_log(&self, px: &mut [u32], r: Rect, t: f32, start: f32) {
-        let (w, s) = (self.w, self.s);
-        for (i, l) in self.log.iter().enumerate() {
-            let at = start + 0.3 + i as f32 * 0.22;
-            if t > at {
-                l.draw_upto(px, w, 256, true, ((t - at) * 900.0 * s) as i32);
-            }
-        }
-        let done = 2.7;
-        let (x0, x1) = (r.x as f32 + 12.0 * s, (r.x + r.w) as f32 - 12.0 * s);
-        let y = (r.y + r.h) as f32 - 30.0 * s;
-        let bh = (8.0 * s).max(2.0);
-        if t < done {
-            let p = smoothstep(1.6, 2.6, t);
-            let k = (smoothstep(1.3, 1.5, t) * 256.0) as u32;
-            if k == 0 {
-                return;
-            }
-            for (a, b) in [((x0, y), (x1, y)), ((x0, y + bh), (x1, y + bh)), ((x0, y), (x0, y + bh)), ((x1, y), (x1, y + bh))] {
-                light_line(px, w, a, b, LILAC, (k * 150) >> 8, (k * 150) >> 8);
-            }
-            // Filled in blocks.
-            let block = (8.0 * s).max(3.0);
-            let mut x = x0 + 2.0;
-            while x + block - 2.0 < x0 + 2.0 + (x1 - x0 - 4.0) * p {
-                light_rect(px, w, x as i32, (y + 2.0) as i32, (x + block - 2.0) as i32, (y + bh - 1.0) as i32, LILAC, (k * 230) >> 8);
-                x += block;
-            }
-        } else if t < 3.0 || (t * 1.6).fract() < 0.8 {
-            self.online.draw(px, w, 256, true);
-        }
-    }
-
     fn spectrum(&self, px: &mut [u32], r: Rect, t: f32, ck: f32) {
         let (w, s) = (self.w, self.s);
-        let n = 20;
-        let pad = 8.0 * s;
+        let n = 16;
+        let pad = 10.0 * s;
         let bw = (r.w as f32 - 2.0 * pad) / n as f32;
         let base = (r.y + r.h) as f32 - pad;
-        let top = r.y as f32 + r.h as f32 * 0.4;
+        let top = r.y as f32 + r.h as f32 * 0.45;
         let row = (4.0 * s).max(2.0) as i32;
         for i in 0..n {
             let f = i as f32;
@@ -616,9 +431,9 @@ impl Spaceship {
                 y -= row;
             }
         }
-        // A waveform along the top.
-        let wy = r.y as f32 + r.h as f32 * 0.2;
-        let amp = r.h as f32 * 0.13;
+        // A waveform above the bars.
+        let wy = r.y as f32 + r.h as f32 * 0.3;
+        let amp = r.h as f32 * 0.09;
         let mut prev: Option<(f32, f32)> = None;
         let mut x = r.x as f32 + pad;
         while x < (r.x + r.w) as f32 - pad {
@@ -631,28 +446,77 @@ impl Spaceship {
         }
     }
 
+    fn type_lines(&self, px: &mut [u32], lines: &[Sprite], t: f32, start: f32) {
+        for (i, l) in lines.iter().enumerate() {
+            let at = start + i as f32 * 0.15;
+            if t > at {
+                l.draw_upto(px, self.w, 256, true, ((t - at) * 900.0 * self.s) as i32);
+            }
+        }
+    }
+
+    /// The scan line sweeping the galaxy, and the stars it tags.
+    fn scan(&self, px: &mut [u32], t: f32) {
+        let (w, s) = (self.w, self.s);
+        let (x0, x1) = (w as f32 * 0.24, w as f32 * 0.76);
+        let (y0, y1) = (self.h as f32 * 0.12, self.h as f32 * 0.66);
+        let p = smoothstep(1.0, 2.0, t);
+        let at = x0 + (x1 - x0) * p;
+        if p > 0.0 && p < 1.0 {
+            for d in 0..(60.0 * s) as i32 {
+                let k = (120.0 * (1.0 - d as f32 / (60.0 * s))).powf(1.0) as u32 / 3;
+                let x = at - d as f32;
+                light_line(px, w, (x, y0), (x, y1), VIOLET, k / 3, k);
+            }
+            light_line(px, w, (at, y0), (at, y1), WHITE, 120, 220);
+        }
+        for c in &self.callouts {
+            let (x, y) = self.place(&self.particles[c.particle], t);
+            // The time the line passed it.
+            let hit = 1.0 + (((x - x0) / (x1 - x0)).clamp(0.0, 1.0)) * 1.0;
+            if t < hit || x < x0 || x > x1 {
+                continue;
+            }
+            let age = t - hit;
+            let k = if age < 0.12 { 256.0 } else { 120.0 + 136.0 * (-(age - 0.12) * 2.0).exp() };
+            let kk = k as u32;
+            let b = 6.0 * s * (1.0 + 1.5 * (1.0 - smoothstep(0.0, 0.15, age)));
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let (cx, cy) = (x + dx * b, y + dy * b);
+                light_line(px, w, (cx, cy), (cx - dx * b * 0.6, cy), WHITE, kk, kk);
+                light_line(px, w, (cx, cy), (cx, cy - dy * b * 0.6), WHITE, kk, kk);
+            }
+            let lx = x + 16.0 * s;
+            let ly = y - 16.0 * s;
+            light_line(px, w, (x + b, y - b), (lx, ly), LILAC, kk / 2, kk / 2);
+            light_line(px, w, (lx, ly), (lx + c.label.w as f32 + 4.0, ly), LILAC, kk / 2, kk / 3);
+            let upto = (age * 900.0 * s) as i32;
+            c.label.draw_upto_at(px, w, lx as i32 + 2, ly as i32 - c.label.h() as i32 - 2, kk, upto);
+        }
+    }
+
     fn hud(&self, px: &mut [u32], t: f32) {
         let (w, s) = (self.w, self.s);
         let sw = w as f32;
-        let k = smoothstep(1.7, 2.1, t);
+        let k = smoothstep(0.6, 1.0, t);
         if k <= 0.0 {
             return;
         }
         let kk = (k * 256.0) as u32;
         let hk = |a: u32| (a * kk) >> 8;
-        // Corner brackets that slide in to frame the view.
+        // Corner brackets that slide in to frame the galaxy.
         let out = (1.0 - k) * 30.0 * s;
-        let (bx0, bx1) = (sw * 0.2 - out, sw * 0.8 + out);
-        let (by0, by1) = (self.shape.top(sw * 0.2) + 24.0 * s - out, self.shape.dash(sw * 0.8) - 26.0 * s + out);
+        let (bx0, bx1) = (sw * 0.24 - out, sw * 0.76 + out);
+        let (by0, by1) = (self.h as f32 * 0.12 - out, self.h as f32 * 0.66 + out);
         let arm = 26.0 * s;
         for (x, y, dx, dy) in [(bx0, by0, 1.0, 1.0), (bx1, by0, -1.0, 1.0), (bx0, by1, 1.0, -1.0), (bx1, by1, -1.0, -1.0)] {
             light_line(px, w, (x, y), (x + dx * arm, y), LILAC, hk(170), hk(60));
             light_line(px, w, (x, y), (x, y + dy * arm), LILAC, hk(170), hk(60));
         }
         // Heading tape along the top, drifting slowly.
-        let (y0, x0, x1) = (self.shape.top(sw / 2.0) + 30.0 * s, sw * 0.36, sw * 0.64);
+        let (y0, x0, x1) = (self.h as f32 * 0.05, sw * 0.36, sw * 0.64);
         light_line(px, w, (x0, y0), (x1, y0), LILAC, hk(90), hk(90));
-        let heading = 172.0 + (t - 1.7).max(0.0) * 1.5;
+        let heading = 172.0 + (t - 0.6).max(0.0) * 1.5;
         let spacing = 8.0 * s;
         let first = (heading - (x1 - x0) / spacing / 2.0).floor() as i32;
         for d in first..first + ((x1 - x0) / spacing) as i32 + 2 {
@@ -676,56 +540,76 @@ impl Spaceship {
         light_line(px, w, (cx + 6.0 * s, y0 - 10.0 * s), (cx, y0 - 2.0 * s), WHITE, hk(220), hk(220));
 
         // A reticle that closes on the galaxy's core, turning.
+        let rk = smoothstep(1.7, 1.9, t);
+        if rk <= 0.0 {
+            return;
+        }
         let (gx, gy) = self.center;
-        let close = smoothstep(1.9, 2.6, t);
+        let close = smoothstep(1.8, 2.4, t);
         let rr = 54.0 * s * (1.0 + 1.4 * (1.0 - close));
         let spin = t * 0.25;
+        let k2 = (200.0 * rk) as u32;
         for q in 0..4 {
             let a = spin + q as f32 * PI / 2.0 + PI / 4.0;
             let (ca, sa) = (a.cos(), a.sin());
             let p = (gx + ca * rr, gy + sa * rr);
             let arm = 14.0 * s;
             let (t1, t2) = ((-sa, ca), (-ca, -sa));
-            let k2 = hk(200);
             light_line(px, w, p, (p.0 + t1.0 * arm, p.1 + t1.1 * arm), WHITE, k2, k2);
             light_line(px, w, p, (p.0 - t1.0 * arm, p.1 - t1.1 * arm), WHITE, k2, k2);
             light_line(px, w, p, (p.0 + t2.0 * arm * 0.7, p.1 + t2.1 * arm * 0.7), WHITE, k2, k2);
         }
-        // Once locked: a leader line out to the target label.
-        let lk = smoothstep(2.5, 2.7, t);
+        // Once locked: a leader line out to the target panel.
+        let lk = smoothstep(2.3, 2.5, t);
         if lk > 0.0 {
-            let from = (gx + rr * 0.8, gy - rr * 0.8);
-            let elbow = (sw * 0.71, self.target[0].y as f32 + 7.0 * s);
-            let end = (from.0 + (elbow.0 - from.0) * lk, from.1 + (elbow.1 - from.1) * lk);
-            light_line(px, w, from, end, LILAC, (160.0 * lk) as u32, (160.0 * lk) as u32);
-            for (i, l) in self.target.iter().enumerate() {
-                let at = 2.6 + i as f32 * 0.15;
-                if t > at {
-                    l.draw_upto(px, w, 256, true, ((t - at) * 900.0 * s) as i32);
-                }
+            if let Some(p) = self.panels.iter().find(|p| p.kind == Kind::Target) {
+                let from = (gx + rr * 0.8, gy - rr * 0.8);
+                let to = (p.r.x as f32, (p.r.y + p.r.h) as f32 - 10.0 * s);
+                let end = (from.0 + (to.0 - from.0) * lk, from.1 + (to.1 - from.1) * lk);
+                light_line(px, w, from, end, LILAC, (160.0 * lk) as u32, (160.0 * lk) as u32);
             }
         }
-        for (i, r) in self.readouts.iter().enumerate() {
-            let at = 2.0 + i as f32 * 0.15;
-            if t > at {
-                r.draw_upto(px, w, 256, true, ((t - at) * 900.0 * s) as i32);
+    }
+
+    /// The status bar along the bottom: fills in blocks, then reads ALL
+    /// SYSTEMS ONLINE.
+    fn status(&self, px: &mut [u32], t: f32) {
+        let (w, s) = (self.w, self.s);
+        let k = (smoothstep(1.0, 1.2, t) * 256.0) as u32;
+        if k == 0 {
+            return;
+        }
+        let (x0, x1) = (w as f32 * 0.38, w as f32 * 0.62);
+        let y = self.h as f32 * 0.94;
+        let bh = (8.0 * s).max(2.0);
+        if t < 2.6 {
+            let p = smoothstep(1.2, 2.5, t);
+            for (a, b) in [((x0, y), (x1, y)), ((x0, y + bh), (x1, y + bh)), ((x0, y), (x0, y + bh)), ((x1, y), (x1, y + bh))] {
+                light_line(px, w, a, b, LILAC, (k * 150) >> 8, (k * 150) >> 8);
             }
+            let block = (8.0 * s).max(3.0);
+            let mut x = x0 + 2.0;
+            while x + block - 2.0 < x0 + 2.0 + (x1 - x0 - 4.0) * p {
+                light_rect(px, w, x as i32, (y + 2.0) as i32, (x + block - 2.0) as i32, (y + bh - 1.0) as i32, LILAC, (k * 230) >> 8);
+                x += block;
+            }
+        } else {
+            self.online.draw(px, w, neon(t, 2.6), true);
         }
     }
 }
 
 impl Scene for Spaceship {
     fn length(&self) -> f32 {
-        3.8
+        3.6
     }
 
     fn draw(&mut self, t: f32, out: &mut SoftCanvas) {
-        let w = self.w;
-        let h = self.h;
+        let (w, h) = (self.w, self.h);
         let px = &mut out.px;
         // The view fades up out of the dark and the galaxy's glow with it.
-        let glow = smoothstep(0.0, 1.4, t);
-        let bright = smoothstep(0.0, 0.6, t);
+        let glow = smoothstep(0.0, 1.2, t);
+        let bright = smoothstep(0.0, 0.5, t);
         if glow >= 1.0 {
             px.copy_from_slice(&self.lit);
         } else {
@@ -735,22 +619,14 @@ impl Scene for Spaceship {
             }
         }
 
-        // The galaxy, turning, hidden where the bridge is in front.
-        let (cx, cy) = self.center;
-        let (cr, sr) = (ROLL.cos(), ROLL.sin());
-        let kf = (smoothstep(0.0, 1.2, t) * 256.0) as u32;
+        // The galaxy, turning.
+        let kf = (smoothstep(0.0, 1.0, t) * 256.0) as u32;
         for p in &self.particles {
-            let a = p.theta + p.omega * t;
-            let (u, v) = (a.cos() * p.r, a.sin() * p.r * TILT);
-            let x = cx + u * cr - v * sr;
-            let y = cy + u * sr + v * cr;
+            let (x, y) = self.place(p, t);
             if x < 1.0 || y < 1.0 || x >= (w - 2) as f32 || y >= (h - 2) as f32 {
                 continue;
             }
             let i = y as usize * w + x as usize;
-            if self.cover[i] > 0 {
-                continue;
-            }
             let k = (p.k * kf) >> 8;
             px[i] = add(px[i], p.color, k);
             if p.k > 150 {
@@ -760,28 +636,50 @@ impl Scene for Spaceship {
             }
         }
 
-        self.rim(px, t);
-        self.panel(px, t);
         self.hud(px, t);
-
-        // Title: wiped onto the glass by a scan line, then the subtitle.
-        if t > 2.6 {
-            let wipe = smoothstep(2.6, 3.2, t);
-            let upto = (wipe * (self.title_glow.w as f32 + 40.0)) as i32;
-            self.title_glow.draw_upto(px, w, 230, true, upto);
-            self.title.draw_upto(px, w, 256, false, upto - 16);
-            if wipe < 1.0 {
-                let x = (self.title_glow.x + upto) as f32;
-                let (y0, y1) = (self.title.y as f32 - 20.0 * self.s, self.title.y as f32 + 100.0 * self.s);
-                for dx in -2i32..=2 {
-                    let k = [60, 140, 256, 140, 60][(dx + 2) as usize];
-                    light_line(px, w, (x + dx as f32, y0), (x + dx as f32, y1), WHITE, k, k);
+        self.scan(px, t);
+        for p in &self.panels {
+            let ck = self.panel(px, p, t);
+            if ck <= 0.0 {
+                continue;
+            }
+            match p.kind {
+                Kind::Radar => self.radar(px, p.r, t, ck),
+                Kind::Spectrum => self.spectrum(px, p.r, t, ck),
+                Kind::Nav => self.type_lines(px, &self.readouts, t, p.open + 0.3),
+                Kind::Target => {
+                    if t > 2.5 {
+                        self.type_lines(px, &self.target, t, 2.5);
+                    }
                 }
             }
         }
-        if t > 3.1 {
-            let upto = ((t - 3.1) * 1400.0 * self.s) as i32;
-            self.sub.draw_upto(px, w, 256, true, upto);
+        self.status(px, t);
+
+        // The title: slashed on from the left with a hot edge, then its glow
+        // strikes; then the version.
+        if t > 2.4 {
+            let wipe = smoothstep(2.4, 2.75, t);
+            let upto = (wipe * (self.title_glow.w as f32 + 80.0)) as i32;
+            let g = neon(t, 2.7);
+            if g > 0 {
+                self.title_glow.draw(px, w, (g * 210) >> 8, true);
+            }
+            self.title_edge.draw_upto(px, w, 256, false, upto);
+            self.title.draw_upto(px, w, 256, false, upto - 24);
+            if wipe < 1.0 {
+                let x = (self.title_glow.x + upto) as f32;
+                let (y0, y1) = (self.title.y as f32 - 10.0, (self.title.y + self.title_h) as f32 + 10.0);
+                for dx in -3i32..=3 {
+                    let k = [40, 90, 180, 256, 180, 90, 40][(dx + 3) as usize];
+                    light_line(px, w, (x + dx as f32 + 30.0, y0), (x + dx as f32 - 20.0, y1), WHITE, k, k);
+                }
+            }
+        }
+        let k = neon(t, 3.0);
+        if k > 0 {
+            self.sub_glow.draw(px, w, (k * 220) >> 8, true);
+            self.sub.draw(px, w, k, true);
         }
     }
 }
