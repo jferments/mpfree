@@ -118,6 +118,8 @@ Ten original starter patterns are built in (Straight, Gallop, Bounce, Climb, Pul
 
 All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-architecture.md`, in PR #31), so the page can be rearranged later.
 
+**Built (on the workstation): `rust/mpfree-arp-ui`.** The Arp page as `mpfree-ui` widgets: mode tabs (Direct, Repeat, Arp, Pattern), the rate, order or pattern list (wheel), the Q-Link sliders (rate, gate, swing, octaves), the pattern buttons (Edit pattern, Record on pads, Mutate, Original), and the step strip, which shows the order's notes (with their octaves) or the pattern's steps (picks, octaves, ratchets, chance, accents) and marks the step playing. The page reads an `ArpState` taken from the engine and turns touches into `ArpAction`s; the pad player keeps the pads, the header and the hint line, so the page drops into its UI. `mpfree-arp-preview` draws sample pages, each with a real engine behind it, as PNG files.
+
 **Buttons** (only SHIFT, FULL LEVEL, PLAY, STOP and TAP TEMPO are measured; the Hello MPC round 5 guide will capture the rest. That Latch is Shift+NOTE REPEAT and Half Level is Shift+FULL LEVEL is a guess from the panel print, not verified):
 
 | Control | Action |
@@ -182,8 +184,8 @@ It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a
 |---|---|---|---|
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
 | A2 (done, PR #37) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
-| B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
-| C (engine side done, this PR) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Still to do: the `StepGrid` widget, the pattern editor and record screens | B | yes |
+| B (Arp page drawn, `mpfree-arp-ui`) | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; the Arp page (built and previewed on the workstation) | PR #31 merged; round 5 button capture | yes, paced round |
+| C (engine side done, this PR) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Done too: the step strip (`mpfree-arp-ui`). Still to do: the pattern editor and record screens | B | yes |
 | D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
 | E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
 | F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`, waits for the transport crate to drive it), MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
