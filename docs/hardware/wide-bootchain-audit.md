@@ -105,3 +105,68 @@ erase, flash, eFuse, GPIO, reboot, SSH, or hardware access.
 
 Related: boot-map.md, owner-rom-recovery-plan.md, maskrom-usb.md,
 akai-updater-offline.md.
+
+
+## November 11 owner-run results and second-pass targets
+
+The first owner run (bootchain-wide-20261111T115602Z_3382362)
+confirmed **P1 213 functions / 79 relevant ASCII strings** and
+**P3 1050 functions / 550 strings** (P3 reached the string cap).
+The P2 environment checksum is valid.
+
+**New grounded signals in the owner's uploaded reports:**
+
+- The device tree has PMU reboot-mode register FF730094 with normal
+  5242C300, loader 5242C301, recovery 5242C303, bootloader 5242C309.
+  U-Boot instructions 00100E4A, 00100EE2, 0010107E, 001010A0
+  reference the same register. This DOES NOT prove MaskROM entry.
+- U-Boot at 00100FE4 recognizes mode bytes 01 and 09 and sets the
+  recovery flag; the board also reads a recovery button ADC channel.
+  Full GPIO/ADC mapping and behavior remain unproven.
+- U-Boot near 001011E0 constructs the board's fdtfile and publishes
+  dorecovery; it also detects the PCB revision.
+- Saved P2 boot_targets is mmc0 mmc1, bootdelay 0, scriptaddr 0,
+  loadaddr 00800800, kernel_addr_r 02000000, fdt_addr_r 01F00000,
+  ramdisk_addr_r 04000000. Investigate U-Boot relocation/overlap
+  and scriptaddr 0 before attempting alternative boot.
+- P3 U-Boot's legacy uImage header has load 00100000, entry 00000000,
+  a 363649-byte payload, and valid CRC32. Investigate how SPL treats
+  the zero entry address rather than guessing.
+- The P1  ff705208 -> ff705274 Thumb pointer -> ff705350 chain
+  is a static connection to a boot-device search loop. ff705310
+  executes an indirect device callback and is NOT a proven final
+  handoff to U-Boot.
+- Fastboot download checks a permission flag; boot queues a bootm
+  callback. Runtime authorization state and safe RAM bounds are unknown.
+- The MPC 3.10.0 Gen1 update contains rootfs only, with no P1 or P3.
+  New boot-related userspace should be compared to the 3.6 baseline.
+- The Rockchip BootROM literal EF08A53C is absent from the scanned
+  P1/P3 payloads; this is not proof that ROM reentry is impossible.
+
+### Next comprehensive owner run
+
+The runner now invokes MPFreeBootChainForensicsPass2.py against both
+saved Ghidra projects. Its targets cover SPL-to-U-Boot, reset mode,
+recovery ADC, board revision, U-Boot boot policy, Fastboot permission,
+image validation, UART, USB/MMC, memory and SoC-security candidates.
+
+If the extracted 3.10 rootfs exists at
+~/mpfree-work/firmware-analysis/MPC-3.10.0-Gen1-update/rootfs.ext4
+the runner also runs offline-boot-version-compare.py and includes
+differences in boot scripts, DTBs, binaries and services. Set
+MPFREE_310_ROOTFS=/absolute/regular-file.ext4 to override.
+
+**Single ZIP output on every run:** the runner calls
+package-private-boot-audit.py at exit, gathering all completed JSON,
+TXT, LOG, MD, CSV and TSV results into
+
+    ~/mpfree-work/bootchain-wide-<timestamp>.zip
+
+The ZIP contains ZIP_INDEX.json with sizes and SHA-256 for each entry.
+The packager verifies the ZIP, then emits a ZIP.sha256 sidecar checksum.
+If any optional pass fails, the successful reports and failure logs
+are still packaged. No whole-disk backups, firmware binaries, Ghidra
+projects, symlinks or unrelated files are included. Keep private.
+
+No static analysis can prove true MaskROM access, a reliable
+independent eMMC restore route, or owner-SPL acceptance.
