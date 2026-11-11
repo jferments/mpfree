@@ -100,6 +100,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   pads, and 16 tracks and 32 pads, with no inserts. The pad player's own
   summing, meters and output copy are measured on the device by its "CPU by
   engine" page.
+- **period (the whole audio thread, 60 %):** "Song" runs a busy song's
+  engines one after another in every block: the sampler with the master
+  grains, an 8-voice Supersaw and a 4-voice Sub Bass, the mixer with a
+  song's inserts, the time engine and the looper. It answers "does a whole
+  song fit", including what the engines cost each other in the caches.
 
 It prints mean, p99 and worst per block as microseconds and as a share of
 the period, and **mem MB**: what the engine holds once built (its buffers,
@@ -113,6 +118,11 @@ stereo), the Cloud reverb (9.4 MB per instance), the master grain effect and
 Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
 period; memory is per instance, so an engine that is cheap to run can still
 be costly to have many of.
+
+`--compare A.json B.json` puts two reports side by side, case by case:
+B's p99 and worst as a share of A's, and any change in memory. Use it for
+the default against the cortex-a17 build from the same MPC run (is NEON
+worth it?), or for a change against main on the same machine.
 
 On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
