@@ -460,10 +460,13 @@ APP_PHASES = (
       "saving line. They should come back after the second boot. Line input is never kept."],
      "Did System info fill in? Which pad velocity curve did you leave it on?"),
     ("Touch lab",
-     ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch lab, and press +.",
-      "Follow the screen through all 9 steps (Start, a countdown, then do what it says; Next after",
-      "each), about 3 minutes. Then press Exit at the top right."],
-     "Did the Touch lab open, and did the steps see your touches?"),
+     ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch screen, and press +. Turn the",
+      "wheel to Touch lab and press +. Follow the screen through all 9 steps (Start, a countdown, then",
+      "do what it says; Next after each), about 3 minutes. Then press Exit at the top right: you are",
+      "back in the Touch screen list. Turn the wheel up one row to Calibrate touch and press +, then tap",
+      "each corner's target as it asks. It only reports whether the screen matches; nothing is saved",
+      "or changed. Exit is in the middle of the screen."],
+     "Did the Touch lab open and see your touches? What did Calibrate touch say (match or differs)?"),
     ("Menus, console and STOP",
      ["Press MENU (the page's options) and MENU again to close. SHIFT + STOP shows the system log;",
       "SHIFT + STOP again goes back. Tap a few pads on the screen and a kit in the list.",
@@ -477,7 +480,8 @@ SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "b
                     "storage: ", "capture", "sample: ",
                     "map: ", "map summary: ", "bank", "pad level: ", "kit ", "synth: ", "pads: ", "Latch ",
                     "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
-                    "touch-lab-open", "touch-lab: ", "touch-lab-exit", "STOP: ")
+                    "touch-lab-open", "touch-lab: ", "touch-lab-exit", "touch-calibrate", "touch-orientation: ",
+                    "STOP: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
 SHOWN_PER_PHASE = 60

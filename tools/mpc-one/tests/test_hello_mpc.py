@@ -485,6 +485,7 @@ class HelloTests(unittest.TestCase):
                           (34.0, "mpfree-hello[211]: perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)"),
                           (35.0, "mpfree-hello[211]: time: transport: Record"),
                           (40.0, "mpfree-hello[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
+                          (45.0, "mpfree-hello[211]: touch-calibrate: result=match"),
                           (60.0, "mpfree-hello[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
         answers = "\n\n" + "s\n" * 12
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
@@ -501,6 +502,7 @@ class HelloTests(unittest.TestCase):
                      "The developer tools' process numbers (1 perf lines; the latest):",
                      "    perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)",
                      "    touch-lab: step=taps result=pass downs=5 note=ok",
+                     "    touch-calibrate: result=match",
                      "pad hits from the controller: 1; buttons pressed: 39",
                      "touch interrupts now: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
                      "    status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us"):
