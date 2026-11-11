@@ -4,14 +4,13 @@
 //! draws three of them; the fourth, the spiral galaxy of the default theme,
 //! is `mpfree-splash`.
 //!
-//! - [`console::Console`]: green ASCII rain and noise on black that resolves,
-//!   cell by cell, into "MPFree OS" in ASCII art, then a boot log types out.
-//!   Drawn at half resolution and doubled, for chunky pixels and scanlines.
-//! - [`synthwave::Synthwave`]: a striped sun rising over neon mountains, palm
-//!   trees, and a glowing grid racing towards the viewer, with a chrome title
-//!   that flickers on like a neon tube.
-//! - [`spaceship::Spaceship`]: a ship's bridge drops out of warp in front of a
-//!   purple spiral galaxy while the HUD boots around it.
+//! - [`console::Console`]: a chaotic swirl of green characters that settles
+//!   into "MPFree OS" drawn in characters (VT323 terminal font), shaded by
+//!   character density and colour, then a prompt types out.
+//! - [`synthwave::Synthwave`]: a striped sun rising over wavy neon hills and
+//!   a racing grid, with a slashed brush-marker title over the sun.
+//! - [`spaceship::Spaceship`]: the view from a ship's bridge, a purple spiral
+//!   galaxy through the windshield while the dashboard and HUD boot.
 //!
 //! A [`Scene`] draws the whole screen for a time in seconds. Everything that
 //! never moves is drawn once into layers when the scene is made; a frame

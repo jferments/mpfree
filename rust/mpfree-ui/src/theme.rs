@@ -169,7 +169,7 @@ impl Theme {
         }
     }
 
-    /// Green on black, mono everywhere, glowing like a phosphor screen.
+    /// Green on black, glowing like a phosphor screen.
     pub fn console() -> Theme {
         Theme {
             name: "Console".into(),
@@ -202,8 +202,8 @@ impl Theme {
             backdrop_to: Color::rgb(0x031208),
             backdrop_line: Color::rgb(0x000000),
             backdrop_step: 3,
-            face_body: FontId::Mono,
-            face_title: FontId::Mono,
+            face_body: FontId::Sans,
+            face_title: FontId::Bold,
             startup: Startup::Console,
             tint: 170,
         }

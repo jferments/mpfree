@@ -5,9 +5,9 @@ Each `mpfree-ui` theme names its startup screen; this crate draws three:
 
 | Theme | Scene |
 | --- | --- |
-| Console | Green ASCII rain and noise resolve, cell by cell, into "MPFree" in ASCII art; a short log types out. Half resolution doubled, with scanlines and bloom. |
-| Synthwave | A striped sun rises behind neon mountains and palm trees over a racing grid; a chrome "MPFree" flickers on like a neon tube. |
-| Spaceship | The ship drops out of warp in front of a purple spiral galaxy; the HUD boots and the title is wiped on by a scan line. |
+| Console | A chaotic swirl of green characters settles into "MPFree" and "OS v0.1" drawn in characters with the VT323 terminal font, shaded by density and colour; a prompt types out. Scanlines and bloom. |
+| Synthwave | A striped sun rises over wavy neon hills and a racing grid; "MPFree" in Permanent Marker is slashed on over the sun, then "OS v0.1" flickers on. |
+| Spaceship | The view from a ship's bridge: a purple galaxy fades up through the windshield while the dashboard boots (radar, boot log, spectrum, LEDs) and the HUD locks on; "MPFree" is wiped onto the glass. |
 
 The default theme's galaxy is [`mpfree-splash`](../mpfree-splash).
 
@@ -27,3 +27,5 @@ or empty), one folder per theme, or one theme with `--theme NAME`. `--bench`
 prints the set-up time and the time per frame. Neither opens any device.
 
 Fonts: the built-in Inter and JetBrains Mono from `mpfree-ui` (SIL OFL 1.1).
+
+Fonts: VT323 (SIL OFL 1.1) and Permanent Marker (Apache 2.0) are bundled unmodified in `fonts/` with their licences, for the startup screens only.

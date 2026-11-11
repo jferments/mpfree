@@ -76,6 +76,26 @@ impl Mask {
         m
     }
 
+    /// Thicker: each pixel takes the largest value within `r` (a square).
+    pub fn dilated(&self, r: usize) -> Mask {
+        let (w, h) = (self.w, self.h);
+        let mut tmp = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let (lo, hi) = (x.saturating_sub(r), (x + r).min(w - 1));
+                tmp[y * w + x] = *self.a[y * w + lo..=y * w + hi].iter().max().unwrap();
+            }
+        }
+        let mut out = Mask::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (lo, hi) = (y.saturating_sub(r), (y + r).min(h - 1));
+                out.a[y * w + x] = (lo..=hi).map(|k| tmp[k * w + x]).max().unwrap();
+            }
+        }
+        out
+    }
+
     /// A box blur of radius `r`, run `passes` times (3 passes look Gaussian).
     pub fn blurred(&self, r: usize, passes: usize) -> Mask {
         let mut v: Vec<u32> = self.a.iter().map(|&x| x as u32).collect();
@@ -339,3 +359,19 @@ impl Sprite {
     }
 }
 
+
+/// VT323, a terminal face (SIL OFL 1.1, see fonts/README.md).
+pub const VT323: &[u8] = include_bytes!("../fonts/VT323-Regular.ttf");
+/// Permanent Marker, a brush marker face (Apache 2.0, see fonts/README.md).
+pub const PERMANENT_MARKER: &[u8] = include_bytes!("../fonts/PermanentMarker-Regular.ttf");
+
+pub fn font_terminal() -> Font {
+    Font::from_bytes(VT323, FontSettings::default()).expect("built-in VT323")
+}
+
+pub fn font_marker() -> Font {
+    Font::from_bytes(PERMANENT_MARKER, FontSettings::default()).expect("built-in Permanent Marker")
+}
+
+/// Colours the console swirl flickers through.
+pub const SHADES_CHAOS: [u32; 6] = [0x14806A, 0x1FBF5A, 0x39FF6A, 0xB8FF6A, 0x2DE2C0, 0x0E5E4A];
