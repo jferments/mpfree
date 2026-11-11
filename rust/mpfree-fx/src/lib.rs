@@ -63,6 +63,7 @@ mod mixer;
 mod modfx;
 mod oversample;
 mod perform;
+mod presets;
 pub mod print;
 mod svf;
 mod xy;
@@ -89,6 +90,7 @@ pub use perform::{
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
     SLOTS as PERFORM_SLOTS,
 };
+pub use presets::presets;
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use xy::{XyAxis, XyPad};
