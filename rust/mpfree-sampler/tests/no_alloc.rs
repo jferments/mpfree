@@ -14,14 +14,16 @@
 //! not the engine's doing.
 //!
 //! The master granular effect runs throughout: views move its mix up and
-//! back down, and freeze turns on and off on exact frames.
+//! back down, and freeze turns on and off on exact frames. Every fourth
+//! block renders routed instead, each pad into its own pair (pads 12 and
+//! up, the granular ones among them, have none and play unheard).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
 use mpfree_sampler::model::*;
 use mpfree_sampler::record::rolling;
 
@@ -55,6 +57,16 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static GLOBAL: Counting = Counting;
+
+/// Twelve pad channels, made before the watch.
+struct Channels(Vec<[Vec<f32>; 2]>);
+
+impl PadOut for Channels {
+    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+        let [l, r] = self.0.get_mut(pad)?;
+        Some((&mut l[..], &mut r[..]))
+    }
+}
 
 #[test]
 fn render_and_events_never_allocate() {
@@ -114,6 +126,7 @@ fn render_and_events_never_allocate() {
     let mut spare = Some(EngineView::build(&q, rate));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
+    let mut ch = Channels((0..12).map(|_| [vec![0.0f32; 128], vec![0.0f32; 128]]).collect());
     e.render(&mut l, &mut r); // warm up outside the watch
     // The rolling "skip back" buffer the audio thread fills every period.
     let (mut rec, reader) = rolling(2, 44_100 * 2);
@@ -145,7 +158,12 @@ fn render_and_events_never_allocate() {
         e.schedule(block * 17 % 128, Event::Pressure { pad: (block % 20) as u8, value: (block * 37 % 128) as u8 });
         if block % 300 == 299 { e.apply(Event::AllOff); }
         if block % 50 == 25 { spare = Some(e.set_view(spare.take().unwrap())); }
-        e.render(&mut l, &mut r);
+        if block % 4 == 1 {
+            e.render_routed(128, &mut ch);
+            for [cl, cr] in &mut ch.0 { cl.fill(0.0); cr.fill(0.0); }
+        } else {
+            e.render(&mut l, &mut r);
+        }
         rec.push_planar(&l, &r);
     }
     // Then only the granular pads, held long enough to fill the grain budget.
@@ -155,7 +173,7 @@ fn render_and_events_never_allocate() {
     }
     for block in 0..200u32 {
         for pad in 16..20u8 { e.schedule(block % 64, Event::Pressure { pad, value: (block * 5 % 128) as u8 }); }
-        e.render(&mut l, &mut r);
+        if block % 4 == 1 { e.render_routed(128, &mut ch); } else { e.render(&mut l, &mut r); }
         rec.push_planar(&l, &r);
     }
     let spawned_before_dry = e.master_fx().unwrap().stats().spawned;
