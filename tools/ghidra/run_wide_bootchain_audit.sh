@@ -95,6 +95,19 @@ OPT=()
 if [[ "${MPFREE_SKIP_ROOTFS:-0}" == "1" ]]; then OPT=(--skip-rootfs); fi
 python3 "$ARTIFACTS" --backup "$BACKUP" --report "$REPORT_ART" "${OPT[@]}"
 
+# Preserve the ROM-image header interpretation and inspect SPL's
+# embedded boot-critical device tree (especially SDRAM/DDR parameters).
+echo
+echo "[supplement] RK3288 ID block and embedded SPL FDT/DDR scan..."
+python3 "$ROOT/tools/mpc-one/offline-rk3288-rom.py" idblock "$BACKUP" \
+    >"$REPORT_DIR/p1-rockchip-idblock.txt" 2>&1 ||
+    echo "WARNING: RK3288 ID block inspection failed; see ZIP output." >&2
+python3 "$ROOT/tools/mpc-one/offline-spl-fdt.py" \
+    --backup "$BACKUP" --report "$REPORT_DIR/p1-embedded-spl-dtb.json" \
+    >"$REPORT_DIR/p1-embedded-spl-dtb-console.txt" 2>&1 ||
+    echo "WARNING: embedded SPL FDT inspection failed; see ZIP output." >&2
+
+
 run_ghidra() {
     local kind="$1" project="$2" filename="$3" report="$4"
     local logfile="$REPORT_DIR/$kind-ghidra.log"
