@@ -82,3 +82,10 @@ dependencies = [
 [[package]]
 name = "mpfree-touch"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-touch-evdev"
+version = "0.1.0"
+dependencies = [
+ "mpfree-touch",
+]

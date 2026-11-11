@@ -416,3 +416,93 @@ fn sync_loss_cancels_gestures_instead_of_completing_them() {
     r.g.frame(&frame, &mut out);
     assert_eq!(kinds(&out), ["drag-cancel"], "the pending contact must not tap");
 }
+
+// ---- M13: seeding a decoder that opens mid-stream ---------------------------
+
+fn snapshot(current_slot: i32, live: &[(usize, i32, i32, i32)]) -> MtSnapshot {
+    let mut slots = vec![SlotSnapshot { tracking_id: -1, raw_x: 0, raw_y: 0 }; 10];
+    for &(s, tracking_id, raw_x, raw_y) in live {
+        slots[s] = SlotSnapshot { tracking_id, raw_x, raw_y };
+    }
+    MtSnapshot { current_slot, slots }
+}
+
+#[test]
+fn unseeded_reader_files_a_contact_under_the_wrong_slot() {
+    // The gap M13 fixes. The kernel last selected slot 3 before we opened, so
+    // a new contact there arrives without ABS_MT_SLOT. An unseeded decoder
+    // assumes slot 0.
+    let mut d = decoder();
+    let f = feed(&mut d, S::new().id(7).xy(100, 200).syn());
+    assert_eq!(d.contacts()[0].slot, 0);
+    assert_eq!(f[0].1, vec![(Down, 7, 100, 200)]);
+}
+
+#[test]
+fn seeded_reader_uses_the_kernels_current_slot() {
+    let mut d = decoder();
+    assert_eq!(d.seed(&snapshot(3, &[]), 0), Step::Pending);
+    assert!(d.events().is_empty());
+    let f = feed(&mut d, S::new().id(7).xy(100, 200).syn());
+    assert_eq!(d.contacts()[0].slot, 3);
+    assert_eq!(f[0].1, vec![(Down, 7, 100, 200)]);
+    // A second finger in another slot, then the first lifts: both land right.
+    feed(&mut d, S::new().slot(4).id(8).xy(5, 6).syn());
+    let f = feed(&mut d, S::new().slot(3).id(-1).syn());
+    assert_eq!(f[0].1, vec![(Up, 7, 100, 200)]);
+    assert_eq!(d.contacts()[0].slot, 4);
+}
+
+#[test]
+fn seeded_positions_cover_values_the_kernel_will_not_resend() {
+    // The kernel filters repeats per slot: a new contact at the same X as the
+    // slot's last contact sends only Y. Without the seeded X the decoder would
+    // hold the contact back.
+    let mut d = decoder();
+    d.seed(&MtSnapshot {
+        current_slot: 0,
+        slots: vec![SlotSnapshot { tracking_id: -1, raw_x: 640, raw_y: 10 }; 10],
+    }, 0);
+    let f = feed(&mut d, S::new().id(9).y(400).syn());
+    assert_eq!(f[0].1, vec![(Down, 9, 640, 400)]);
+}
+
+#[test]
+fn fingers_already_down_at_open_are_ignored_until_they_lift() {
+    let mut d = decoder();
+    assert_eq!(d.seed(&snapshot(2, &[(2, 40, 300, 300)]), 0), Step::Pending);
+    assert!(d.contacts().is_empty());
+    // The resting finger moves: nothing is published.
+    let f = feed(&mut d, S::new().x(310).syn().y(320).syn());
+    assert!(f.iter().all(|x| x.1.is_empty()));
+    assert!(d.contacts().is_empty());
+    // It lifts, silently.
+    let f = feed(&mut d, S::new().id(-1).syn());
+    assert_eq!(f[0].1, vec![]);
+    // A fresh touch in the same slot at the same Y: the kernel sends only X,
+    // and the Y the stale finger last reported fills in.
+    let f = feed(&mut d, S::new().id(41).x(500).syn());
+    assert_eq!(f[0].1, vec![(Down, 41, 500, 320)]);
+}
+
+#[test]
+fn seeding_a_running_decoder_cancels_what_it_had_published() {
+    let mut d = decoder();
+    feed(&mut d, S::new().slot(1).id(5).xy(1, 2).syn());
+    assert_eq!(d.seed(&snapshot(1, &[(1, 5, 1, 2)]), 77), Step::Frame);
+    let got: Vec<_> = d.events().iter().map(|e| (e.phase, e.contact.tracking_id, e.time_us)).collect();
+    assert_eq!(got, vec![(Cancel, 5, 77)]);
+    assert!(d.contacts().is_empty());
+    // The next frame does not repeat the cancel.
+    let f = feed(&mut d, S::new().slot(0).id(6).xy(3, 4).syn());
+    assert_eq!(f[0].1, vec![(Down, 6, 3, 4)]);
+}
+
+#[test]
+fn seed_with_a_bad_current_slot_ignores_updates_until_a_slot_arrives() {
+    let mut d = decoder();
+    d.seed(&snapshot(-1, &[]), 0);
+    let f = feed(&mut d, S::new().id(1).xy(1, 1).syn().slot(0).id(2).xy(2, 2).syn());
+    assert_eq!(f[0].1, vec![]);
+    assert_eq!(f[1].1, vec![(Down, 2, 2, 2)]);
+}
