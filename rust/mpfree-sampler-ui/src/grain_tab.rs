@@ -57,7 +57,7 @@ pub const LAYOUT: &str = "col(header:60, smp-grain-bar:60, \
                           row(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4, smp-grain-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 4;
+pub const TAB: usize = 5;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for the position, on the pad for position and \
