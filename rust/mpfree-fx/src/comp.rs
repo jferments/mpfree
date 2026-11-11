@@ -7,7 +7,7 @@
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
 use crate::svf::Segs;
-use crate::{db_to_gain, defaults, gain_to_db};
+use crate::{defaults, fast_db_to_gain, fast_level_db};
 
 /// [`Compressor`] parameter ids.
 pub mod ids {
@@ -215,11 +215,13 @@ impl Compressor {
                 Some((kl, kr)) => kl[i].abs().max(kr[i].abs()),
                 None => l[i].abs().max(r[i].abs()),
             };
-            let x = gain_to_db(lvl).max(-120.0);
+            // dB in and out without log10 and powf: on the MPC's ARM those
+            // library calls were most of the compressor's time.
+            let x = fast_level_db(lvl);
             let want = x - curve(x, t, ratio, knee); // reduction wanted, >= 0
             let k = if want > self.env { self.att } else { self.rel };
             self.env = crate::flush(k * self.env + (1.0 - k) * want);
-            let g = db_to_gain(makeup - self.env);
+            let g = fast_db_to_gain(makeup - self.env);
             let wet = 1.0 + mix * (g - 1.0);
             l[i] *= wet;
             r[i] *= wet;

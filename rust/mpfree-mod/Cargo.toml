@@ -1,0 +1,10 @@
+[package]
+name = "mpfree-mod"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Macros, a mod matrix, A/B morph, parameter-lock resolving and Q-Link bindings for MPFree; real-time safe, control rate, block-size independent"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-param = { path = "../mpfree-param" }

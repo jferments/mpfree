@@ -2165,6 +2165,9 @@ fn player_session(
     let mut views_swapped = 0u64;
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
+    // The Grain tab's cloud box, while the audio thread holds it: filled and
+    // sent back with the playheads (never freed on this thread).
+    let mut cloud: Option<Box<sampler::Cloud>> = None;
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -2398,6 +2401,15 @@ fn player_session(
                         out.note(&line);
                     }
                 }
+                gui::FromUi::Slice {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                } => {
+                    player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
+                }
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
@@ -2411,6 +2423,13 @@ fn player_session(
                         out.note("sample: two kit views waiting to go back; one freed on the audio thread");
                     }
                     view_back = Some(gui::ToUi::SampleViewBack(swap));
+                }
+                gui::FromUi::SampleGrains(c) => {
+                    // Only one box exists, so this is not expected; the
+                    // older one is freed here.
+                    if cloud.replace(c).is_some() {
+                        out.note("sample: two grain clouds on the audio thread; one freed here");
+                    }
                 }
                 gui::FromUi::Synth(SynthAction::Preset(k)) => {
                     if let Some(line) = param_log.flush(&synth) {
@@ -2819,6 +2838,14 @@ fn player_session(
                 out.show(gui::ToUi::SamplePlayheads(heads));
                 shown_heads = heads;
             }
+            // The Grain tab's cloud, if the screen sent its box. A full
+            // channel hands the box back, to keep for the next time.
+            if let Some(mut c) = cloud.take() {
+                player.fill_cloud(&mut c);
+                if let Err(gui::ToUi::SampleGrains(c)) = out.try_show(gui::ToUi::SampleGrains(c)) {
+                    cloud = Some(c);
+                }
+            }
             heads_at = Instant::now();
         }
         if time.take_changed() {
@@ -2880,6 +2907,8 @@ fn player_session(
         }
         voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
+        // Warped pads play at the transport's tempo.
+        player.set_tempo(time.info().bpm);
         player.render_dry(&mut left, &mut right);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
