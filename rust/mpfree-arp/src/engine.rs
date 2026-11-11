@@ -250,31 +250,15 @@ impl Order {
             Order::UpDown if total == 1 => 0,
             Order::UpDown => {
                 let p = c % (2 * total - 2);
-                if p < total {
-                    p
-                } else {
-                    2 * total - 2 - p
-                }
+                if p < total { p } else { 2 * total - 2 - p }
             }
             Order::UpDownInclusive => {
                 let p = c % (2 * total);
-                if p < total {
-                    p
-                } else {
-                    2 * total - 1 - p
-                }
+                if p < total { p } else { 2 * total - 1 - p }
             }
             Order::Converge | Order::Diverge => {
-                let k = if matches!(self, Order::Converge) {
-                    c % total
-                } else {
-                    total - 1 - c % total
-                };
-                if k % 2 == 0 {
-                    total - 1 - k / 2
-                } else {
-                    k / 2
-                }
+                let k = if matches!(self, Order::Converge) { c % total } else { total - 1 - c % total };
+                if k % 2 == 0 { total - 1 - k / 2 } else { k / 2 }
             }
             Order::Random | Order::RandomOther | Order::RandomOnce => return None,
         })
@@ -418,10 +402,7 @@ pub struct Ramp {
 }
 
 impl Ramp {
-    pub const OFF: Ramp = Ramp {
-        target: 127,
-        steps: 0,
-    };
+    pub const OFF: Ramp = Ramp { target: 127, steps: 0 };
 
     /// `velocity` after `step` steps of the ramp.
     pub fn apply(self, velocity: u8, step: u64) -> u8 {
@@ -541,14 +522,7 @@ impl Default for Events {
 
 impl Events {
     pub const fn new() -> Self {
-        Self {
-            buf: [Event {
-                offset: 0,
-                kind: EventKind::Off { note: 0 },
-            }; MAX_EVENTS],
-            len: 0,
-            dropped: 0,
-        }
+        Self { buf: [Event { offset: 0, kind: EventKind::Off { note: 0 } }; MAX_EVENTS], len: 0, dropped: 0 }
     }
 
     pub fn as_slice(&self) -> &[Event] {
@@ -586,16 +560,7 @@ struct Hit {
 
 impl Hit {
     fn plain(gate: u8) -> Self {
-        Self {
-            octave: 0,
-            degree: 0,
-            velocity: None,
-            accent: false,
-            jitter: 0,
-            ratchet: 1,
-            gate,
-            delay: 0.0,
-        }
+        Self { octave: 0, degree: 0, velocity: None, accent: false, jitter: 0, ratchet: 1, gate, delay: 0.0 }
     }
 }
 
@@ -659,10 +624,7 @@ impl Engine {
             next_step: 0.0,
             step: 0,
             arp_counter: 0,
-            queue: [Pending {
-                at: 0.0,
-                kind: EventKind::Off { note: 0 },
-            }; MAX_PENDING],
+            queue: [Pending { at: 0.0, kind: EventKind::Off { note: 0 } }; MAX_PENDING],
             queued: 0,
             tied: 0.0,
             rng: 0x2545_f491,
@@ -743,9 +705,7 @@ impl Engine {
         self.sync = Some(Synced {
             anchor_frame: self.now as f64 - clock.frames_since_anchor as f64,
             anchor_tick: clock.anchor_tick,
-            swing: clock
-                .swing
-                .map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
+            swing: clock.swing.map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
             bar_ticks: clock.bar_ticks.max(1),
         });
         if self.running {
@@ -881,18 +841,14 @@ impl Engine {
     /// The engine frame of tick `t`, rounded as the transport rounds it.
     /// Only called while synced.
     fn frame_of(&self, t: f64) -> f64 {
-        let Some(s) = self.sync else {
-            return self.next_step;
-        };
+        let Some(s) = self.sync else { return self.next_step };
         s.anchor_frame + ((t - s.anchor_tick as f64) * self.frames_per_tick()).round()
     }
 
     /// The first multiple of `unit` ticks that falls on or after the
     /// current frame. Only called while synced.
     fn grid_after(&self, unit: i64) -> i64 {
-        let Some(s) = self.sync else {
-            return self.next_tick;
-        };
+        let Some(s) = self.sync else { return self.next_tick };
         let unit = unit.max(1);
         let now = self.now as f64;
         let tick = s.anchor_tick as f64 + (now - s.anchor_frame) / self.frames_per_tick();
@@ -923,11 +879,7 @@ impl Engine {
         let base = t.div_euclid(pair) * pair;
         let p = (t - base) as f64;
         let g = grid as f64;
-        let moved = if p < g {
-            p * (1.0 + s)
-        } else {
-            g * (1.0 + s) + (p - g) * (1.0 - s)
-        };
+        let moved = if p < g { p * (1.0 + s) } else { g * (1.0 + s) + (p - g) * (1.0 - s) };
         base as f64 + moved
     }
 
@@ -943,8 +895,7 @@ impl Engine {
                 return n;
             }
         }
-        let n = (i16::from(lane.at(self.step).unwrap_or(0)) + self.jitter(lane.random()))
-            .clamp(-50, 50);
+        let n = (i16::from(lane.at(self.step).unwrap_or(0)) + self.jitter(lane.random())).clamp(-50, 50);
         self.nudge = Some((self.step, n));
         n
     }
@@ -968,16 +919,8 @@ impl Engine {
     }
 
     fn after_change(&mut self, before: &NoteSet) {
-        let added = self
-            .notes
-            .active()
-            .as_slice()
-            .iter()
-            .any(|h| !before.contains(h.note));
-        let removed = before
-            .as_slice()
-            .iter()
-            .any(|h| !self.notes.active().contains(h.note));
+        let added = self.notes.active().as_slice().iter().any(|h| !before.contains(h.note));
+        let removed = before.as_slice().iter().any(|h| !self.notes.active().contains(h.note));
         if added || removed {
             self.once_len = 0;
             self.bag = 0;
@@ -1003,13 +946,7 @@ impl Engine {
                 }
             }
             for h in &added[..n] {
-                self.queue_at(
-                    at,
-                    EventKind::On {
-                        note: h.note,
-                        velocity: self.velocity_of(h.velocity),
-                    },
-                );
+                self.queue_at(at, EventKind::On { note: h.note, velocity: self.velocity_of(h.velocity) });
             }
         }
         self.update_running();
@@ -1078,17 +1015,7 @@ impl Engine {
                 let step = self.pattern.steps()[(self.step % self.pattern.len() as u64) as usize];
                 // A tie was already added to the notes of the step before it,
                 // when they were scheduled.
-                let Step::Play {
-                    pick,
-                    octave,
-                    accent,
-                    gate: g,
-                    ratchet,
-                    chance,
-                } = step
-                else {
-                    return;
-                };
+                let Step::Play { pick, octave, accent, gate: g, ratchet, chance } = step else { return };
                 self.tied = self.ties_after(self.step) as f64 * len;
                 if chance < 100 && self.random(100) >= usize::from(chance) {
                     return;
@@ -1101,13 +1028,8 @@ impl Engine {
                     octave: i16::from(octave)
                         + i16::from(lanes.octave.at(self.step).unwrap_or(0))
                         + self.jitter(lanes.octave.random()),
-                    degree: i16::from(lanes.degree.at(self.step).unwrap_or(0))
-                        + self.jitter(lanes.degree.random()),
-                    velocity: if accent {
-                        Some(self.settings.accent)
-                    } else {
-                        lane_vel
-                    },
+                    degree: i16::from(lanes.degree.at(self.step).unwrap_or(0)) + self.jitter(lanes.degree.random()),
+                    velocity: if accent { Some(self.settings.accent) } else { lane_vel },
                     accent,
                     jitter: self.jitter(lanes.velocity.random()),
                     ratchet,
@@ -1117,9 +1039,7 @@ impl Engine {
                 match pick {
                     Pick::Next => self.play_next(&sorted[..n], hit, at, len),
                     Pick::All => self.chord(&sorted[..n], hit, at, len),
-                    Pick::Index(i) => {
-                        self.play(sorted[(usize::from(i.max(1)) - 1) % n], hit, at, len)
-                    }
+                    Pick::Index(i) => self.play(sorted[(usize::from(i.max(1)) - 1) % n], hit, at, len),
                     Pick::Random => {
                         let h = sorted[self.random(n)];
                         self.play(h, hit, at, len)
@@ -1135,15 +1055,7 @@ impl Engine {
     fn chord(&mut self, notes: &[Held], hit: Hit, at: f64, len: f64) {
         let spread = len * f64::from(self.settings.strum) / 100.0 / notes.len() as f64;
         for (k, h) in notes.iter().enumerate() {
-            self.play(
-                *h,
-                Hit {
-                    delay: hit.delay + spread * k as f64,
-                    ..hit
-                },
-                at,
-                len,
-            );
+            self.play(*h, Hit { delay: hit.delay + spread * k as f64, ..hit }, at, len);
         }
     }
 
@@ -1171,11 +1083,7 @@ impl Engine {
             Some(i) => i,
             None if order == Order::Random => self.random(total),
             None if order == Order::RandomOther => {
-                let full = if total == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << total) - 1
-                };
+                let full = if total == 128 { u128::MAX } else { (1u128 << total) - 1 };
                 if self.bag & full == full {
                     self.bag = 0;
                 }
@@ -1210,15 +1118,7 @@ impl Engine {
             }
         };
         let h = base[i % n];
-        self.play(
-            h,
-            Hit {
-                octave: hit.octave + (i / n) as i16,
-                ..hit
-            },
-            at,
-            len,
-        );
+        self.play(h, Hit { octave: hit.octave + (i / n) as i16, ..hit }, at, len);
     }
 
     /// Works out the pitch and queues the note; notes outside 0..=127, and
@@ -1238,14 +1138,7 @@ impl Engine {
                 v = self.settings.ramp.apply(v, self.step);
                 v = (i16::from(v) + hit.jitter).clamp(1, 127) as u8;
             }
-            self.hit(
-                note as u8,
-                v,
-                at + hit.delay,
-                len - hit.delay,
-                hit.ratchet,
-                hit.gate,
-            );
+            self.hit(note as u8, v, at + hit.delay, len - hit.delay, hit.ratchet, hit.gate);
         }
     }
 
@@ -1268,9 +1161,7 @@ impl Engine {
         let steps = self.pattern.steps();
         let len = steps.len();
         let i = (step % len as u64) as usize;
-        (1..len)
-            .take_while(|k| steps[(i + k) % len] == Step::Tie)
-            .count()
+        (1..len).take_while(|k| steps[(i + k) % len] == Step::Tie).count()
     }
 
     fn queue_at(&mut self, at: f64, kind: EventKind) {
@@ -1321,10 +1212,7 @@ impl Engine {
             self.queued -= 1;
             self.queue[b] = self.queue[self.queued];
             let offset = (p.at - start).max(0.0).floor() as u32;
-            out.push(Event {
-                offset,
-                kind: p.kind,
-            });
+            out.push(Event { offset, kind: p.kind });
         }
     }
 }
@@ -1347,11 +1235,7 @@ mod tests {
             let n = block.min((frames - done) as u32);
             let base = e.now;
             e.process(n, &mut out);
-            got.extend(
-                out.as_slice()
-                    .iter()
-                    .map(|ev| (base + u64::from(ev.offset), ev.kind)),
-            );
+            got.extend(out.as_slice().iter().map(|ev| (base + u64::from(ev.offset), ev.kind)));
             done += u64::from(n);
         }
         got
@@ -1369,10 +1253,7 @@ mod tests {
 
     fn engine(mode: Mode) -> Engine {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode, ..Settings::default() });
         e
     }
 
@@ -1388,16 +1269,7 @@ mod tests {
     fn direct_mode_passes_notes_through_and_latch_holds_them() {
         let mut e = engine(Mode::Direct);
         e.press(5, 90);
-        assert_eq!(
-            run(&mut e, 128, 128),
-            [(
-                0,
-                EventKind::On {
-                    note: 5,
-                    velocity: 90
-                }
-            )]
-        );
+        assert_eq!(run(&mut e, 128, 128), [(0, EventKind::On { note: 5, velocity: 90 })]);
         e.release(5);
         assert_eq!(run(&mut e, 128, 128), [(128, EventKind::Off { note: 5 })]);
         e.set_latch(LatchMode::Replace);
@@ -1406,19 +1278,7 @@ mod tests {
         assert_eq!(ons(&run(&mut e, 128, 128)), [(256, 5)]);
         e.press(6, 80); // a fresh press replaces the latched note
         let got = run(&mut e, 128, 128);
-        assert_eq!(
-            got,
-            [
-                (384, EventKind::Off { note: 5 }),
-                (
-                    384,
-                    EventKind::On {
-                        note: 6,
-                        velocity: 80
-                    }
-                )
-            ]
-        );
+        assert_eq!(got, [(384, EventKind::Off { note: 5 }), (384, EventKind::On { note: 6, velocity: 80 })]);
         e.set_latch(LatchMode::Off); // 6 is still held, so it keeps sounding
         assert!(run(&mut e, 128, 128).is_empty());
     }
@@ -1429,11 +1289,7 @@ mod tests {
         e.press(3, 100);
         let got = run(&mut e, STEP * 3, 128);
         assert_eq!(ons(&got), [(0, 3), (STEP, 3), (2 * STEP, 3)]);
-        let offs: Vec<u64> = got
-            .iter()
-            .filter(|(_, k)| matches!(k, EventKind::Off { .. }))
-            .map(|(t, _)| *t)
-            .collect();
+        let offs: Vec<u64> = got.iter().filter(|(_, k)| matches!(k, EventKind::Off { .. })).map(|(t, _)| *t).collect();
         assert_eq!(offs, [STEP / 2, STEP + STEP / 2, 2 * STEP + STEP / 2]);
         e.release(3);
         let after = run(&mut e, STEP * 2, 128);
@@ -1447,30 +1303,16 @@ mod tests {
         run(&mut e, STEP, 128);
         e.pressure(3, 30);
         let got = run(&mut e, STEP, 128);
-        assert!(got.contains(&(
-            STEP,
-            EventKind::On {
-                note: 3,
-                velocity: 30
-            }
-        )));
+        assert!(got.contains(&(STEP, EventKind::On { note: 3, velocity: 30 })));
     }
 
     #[test]
     fn timing_does_not_depend_on_the_period_size() {
-        for text in [
-            "x x:3 . x",
-            "x x:3 . x | nudge~20 -10 10 | vel~30 | gate~40",
-        ] {
+        for text in ["x x:3 . x", "x x:3 . x | nudge~20 -10 10 | vel~30 | gate~40"] {
             let mk = || {
                 let mut e = engine(Mode::Pattern);
                 e.set_pattern(Pattern::parse(text).unwrap());
-                e.set_settings(Settings {
-                    mode: Mode::Pattern,
-                    swing: 62,
-                    rate: Rate::SixteenthTriplet,
-                    ..Settings::default()
-                });
+                e.set_settings(Settings { mode: Mode::Pattern, swing: 62, rate: Rate::SixteenthTriplet, ..Settings::default() });
                 e.press(1, 100);
                 e.press(2, 100);
                 e
@@ -1486,22 +1328,10 @@ mod tests {
     #[test]
     fn swing_moves_every_second_step_later() {
         let mut e = engine(Mode::Repeat);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            swing: 66,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Repeat, swing: 66, ..Settings::default() });
         e.press(1, 100);
         let delay = STEP * 16 / 50; // (66 - 50) / 50 of a step
-        assert_eq!(
-            ons(&run(&mut e, STEP * 4, 128)),
-            [
-                (0, 1),
-                (STEP + delay, 1),
-                (2 * STEP, 1),
-                (3 * STEP + delay, 1)
-            ]
-        );
+        assert_eq!(ons(&run(&mut e, STEP * 4, 128)), [(0, 1), (STEP + delay, 1), (2 * STEP, 1), (3 * STEP + delay, 1)]);
     }
 
     #[test]
@@ -1525,19 +1355,11 @@ mod tests {
 
     fn arp_notes(order: Order, octaves: u8, steps: u64) -> Vec<u8> {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            order,
-            octaves,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, order, octaves, ..Settings::default() });
         for n in [64, 60, 67] {
             e.press(n, 100);
         }
-        ons(&run(&mut e, STEP * steps, 128))
-            .into_iter()
-            .map(|(_, n)| n)
-            .collect()
+        ons(&run(&mut e, STEP * steps, 128)).into_iter().map(|(_, n)| n).collect()
     }
 
     #[test]
@@ -1545,10 +1367,7 @@ mod tests {
         assert_eq!(arp_notes(Order::Up, 1, 4), [60, 64, 67, 60]);
         assert_eq!(arp_notes(Order::Down, 1, 4), [67, 64, 60, 67]);
         assert_eq!(arp_notes(Order::UpDown, 1, 6), [60, 64, 67, 64, 60, 64]);
-        assert_eq!(
-            arp_notes(Order::UpDownInclusive, 1, 7),
-            [60, 64, 67, 67, 64, 60, 60]
-        );
+        assert_eq!(arp_notes(Order::UpDownInclusive, 1, 7), [60, 64, 67, 67, 64, 60, 60]);
         assert_eq!(arp_notes(Order::Played, 1, 4), [64, 60, 67, 64]);
         assert_eq!(arp_notes(Order::Converge, 1, 4), [67, 60, 64, 67]);
         assert_eq!(arp_notes(Order::Diverge, 1, 4), [64, 60, 67, 64]);
@@ -1564,16 +1383,9 @@ mod tests {
     #[test]
     fn notes_out_of_range_are_skipped() {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            octaves: 3,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, octaves: 3, ..Settings::default() });
         e.press(110, 100);
-        let n: Vec<u8> = ons(&run(&mut e, STEP * 3, 128))
-            .into_iter()
-            .map(|(_, n)| n)
-            .collect();
+        let n: Vec<u8> = ons(&run(&mut e, STEP * 3, 128)).into_iter().map(|(_, n)| n).collect();
         assert_eq!(n, [110, 122]); // 134 is past 127: that step is silent
     }
 
@@ -1601,30 +1413,12 @@ mod tests {
         assert_eq!(
             got,
             [
-                (
-                    0,
-                    EventKind::On {
-                        note: 60,
-                        velocity: 127
-                    }
-                ),
+                (0, EventKind::On { note: 60, velocity: 127 }),
                 // gate 50% plus one tied step
                 (STEP + STEP / 2, EventKind::Off { note: 60 }),
-                (
-                    3 * STEP,
-                    EventKind::On {
-                        note: 64,
-                        velocity: 90
-                    }
-                ),
+                (3 * STEP, EventKind::On { note: 64, velocity: 90 }),
                 (3 * STEP + STEP / 4, EventKind::Off { note: 64 }),
-                (
-                    3 * STEP + STEP / 2,
-                    EventKind::On {
-                        note: 64,
-                        velocity: 90
-                    }
-                ),
+                (3 * STEP + STEP / 2, EventKind::On { note: 64, velocity: 90 }),
                 (3 * STEP + 3 * STEP / 4, EventKind::Off { note: 64 }),
             ]
         );
@@ -1641,18 +1435,9 @@ mod tests {
             let got = run(&mut e, STEP * 16, 128);
             assert!(!ons(&got).is_empty(), "{name}");
             for n in 0..=127u8 {
-                let on = got
-                    .iter()
-                    .filter(|(_, k)| matches!(k, EventKind::On { note, .. } if *note == n))
-                    .count();
-                let off = got
-                    .iter()
-                    .filter(|(_, k)| *k == EventKind::Off { note: n })
-                    .count();
-                assert!(
-                    off <= on && on <= off + 1,
-                    "{name}: note {n} has {on} ons and {off} offs"
-                );
+                let on = got.iter().filter(|(_, k)| matches!(k, EventKind::On { note, .. } if *note == n)).count();
+                let off = got.iter().filter(|(_, k)| *k == EventKind::Off { note: n }).count();
+                assert!(off <= on && on <= off + 1, "{name}: note {n} has {on} ons and {off} offs");
             }
         }
     }
@@ -1662,22 +1447,10 @@ mod tests {
         let mut e = engine(Mode::Direct);
         e.press(9, 100);
         run(&mut e, 128, 128);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Repeat, ..Settings::default() });
         let got = run(&mut e, 128, 128);
         assert_eq!(got[0], (128, EventKind::Off { note: 9 }));
-        assert_eq!(
-            got[1],
-            (
-                128,
-                EventKind::On {
-                    note: 9,
-                    velocity: 100
-                }
-            )
-        );
+        assert_eq!(got[1], (128, EventKind::On { note: 9, velocity: 100 }));
         e.release(9);
         let got = run(&mut e, STEP * 2, 128);
         assert_eq!(got, [(128 + STEP / 2, EventKind::Off { note: 9 })]);
@@ -1692,20 +1465,14 @@ mod tests {
         e.panic();
         let got = run(&mut e, STEP * 2, 128);
         assert_eq!(got.len(), 128);
-        assert!(got
-            .iter()
-            .all(|(t, k)| *t == 128 && matches!(k, EventKind::Off { .. })));
+        assert!(got.iter().all(|(t, k)| *t == 128 && matches!(k, EventKind::Off { .. })));
         assert!(e.active().is_empty());
     }
 
     #[test]
     fn too_many_events_are_counted_not_lost_silently() {
         let mut e = engine(Mode::Repeat);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            rate: Rate::ThirtySecondTriplet,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Repeat, rate: Rate::ThirtySecondTriplet, ..Settings::default() });
         for n in 0..32 {
             e.press(n, 100);
         }
@@ -1716,21 +1483,13 @@ mod tests {
     }
 
     fn notes_of(e: &mut Engine, steps: u64) -> Vec<u8> {
-        ons(&run(e, STEP * steps, 128))
-            .into_iter()
-            .map(|(_, n)| n)
-            .collect()
+        ons(&run(e, STEP * steps, 128)).into_iter().map(|(_, n)| n).collect()
     }
 
     #[test]
     fn random_without_repeats_plays_every_note_once_per_round() {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            order: Order::RandomOther,
-            octaves: 2,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::RandomOther, octaves: 2, ..Settings::default() });
         for n in [60, 64, 67] {
             e.press(n, 100);
         }
@@ -1745,11 +1504,7 @@ mod tests {
     #[test]
     fn random_once_repeats_one_order_until_the_notes_change() {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            order: Order::RandomOnce,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::RandomOnce, ..Settings::default() });
         e.set_seed(99);
         for n in [60, 62, 64, 65, 67] {
             e.press(n, 100);
@@ -1775,17 +1530,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            on,
-            [
-                (60, 100),
-                (72, 50),
-                (60, 100),
-                (60, 50),
-                (72, 100),
-                (60, 50)
-            ]
-        );
+        assert_eq!(on, [(60, 100), (72, 50), (60, 100), (60, 50), (72, 100), (60, 50)]);
     }
 
     #[test]
@@ -1911,12 +1656,8 @@ mod tests {
     fn out_of_key_notes_go_up_to_the_nearest_or_are_skipped() {
         let run_with = |snap: Snap, held: &[u8]| {
             let mut e = engine(Mode::Arp);
-            e.set_settings(Settings {
-                mode: Mode::Arp,
-                scale: Some(Scale::new(0, crate::scale::MAJOR)),
-                snap,
-                ..Settings::default()
-            });
+            e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap,
+                                      ..Settings::default() });
             for &n in held {
                 e.press(n, 100);
             }
@@ -1925,38 +1666,22 @@ mod tests {
         // C, D# and G held in C major, played up.
         assert_eq!(run_with(Snap::Down, &[60, 63, 67]), [60, 62, 67, 60]);
         assert_eq!(run_with(Snap::Up, &[60, 63, 67]), [60, 64, 67, 60]);
-        assert_eq!(
-            run_with(Snap::Nearest, &[60, 63, 66, 67]),
-            [60, 62, 65, 67],
-            "D# and F# are halfway: down"
-        );
+        assert_eq!(run_with(Snap::Nearest, &[60, 63, 66, 67]), [60, 62, 65, 67], "D# and F# are halfway: down");
         // Skip: D# is not played, so its step is silent.
         let mut e = engine(Mode::Arp);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            scale: Some(Scale::new(0, crate::scale::MAJOR)),
-            snap: Snap::Skip,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap: Snap::Skip,
+                                  ..Settings::default() });
         for n in [60, 63, 67] {
             e.press(n, 100);
         }
-        let got: Vec<u8> = ons(&run(&mut e, 3 * STEP, 128))
-            .into_iter()
-            .map(|(_, n)| n)
-            .collect();
+        let got: Vec<u8> = ons(&run(&mut e, 3 * STEP, 128)).into_iter().map(|(_, n)| n).collect();
         assert_eq!(got, [60, 67]);
     }
 
     #[test]
     fn strum_spreads_a_chord_across_the_step() {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            order: Order::Chord,
-            strum: 60,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::Chord, strum: 60, ..Settings::default() });
         for n in [60, 64, 67] {
             e.press(n, 100);
         }
@@ -1968,11 +1693,7 @@ mod tests {
     #[test]
     fn retrigger_restarts_the_order_and_repeats_stop_after_n_steps() {
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            retrigger: true,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, retrigger: true, ..Settings::default() });
         e.press(60, 100);
         e.press(64, 100);
         e.press(67, 100);
@@ -1981,11 +1702,7 @@ mod tests {
         assert_eq!(notes_of(&mut e, 2), [55, 60]);
 
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Arp,
-            repeats: 3,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Arp, repeats: 3, ..Settings::default() });
         e.press(60, 100);
         e.press(64, 100);
         assert_eq!(notes_of(&mut e, 6), [60, 64, 60]);
@@ -1993,21 +1710,10 @@ mod tests {
 
     #[test]
     fn settings_are_clamped() {
-        let s = Settings {
-            octaves: 9,
-            gate: 0,
-            swing: 99,
-            accent: 0,
-            velocity: Velocity::Fixed(0),
-            strum: 200,
-            ..Settings::default()
-        }
-        .clamped();
+        let s = Settings { octaves: 9, gate: 0, swing: 99, accent: 0, velocity: Velocity::Fixed(0), strum: 200, ..Settings::default() }
+            .clamped();
         assert_eq!(s.strum, 100);
-        assert_eq!(
-            (s.octaves, s.gate, s.swing, s.accent, s.velocity),
-            (4, 1, 75, 1, Velocity::Fixed(1))
-        );
+        assert_eq!((s.octaves, s.gate, s.swing, s.accent, s.velocity), (4, 1, 75, 1, Velocity::Fixed(1)));
     }
     #[test]
     fn nudge_moves_single_steps_and_never_reorders_them() {
@@ -2015,26 +1721,16 @@ mod tests {
         e.set_pattern(Pattern::parse("x x x x x | nudge 0 20 0 -10").unwrap());
         e.press(60, 100);
         let n = STEP / 10;
-        let got: Vec<u64> = ons(&run(&mut e, STEP * 5, 128))
-            .iter()
-            .map(|&(t, _)| t)
-            .collect();
+        let got: Vec<u64> = ons(&run(&mut e, STEP * 5, 128)).iter().map(|&(t, _)| t).collect();
         assert_eq!(got, [0, STEP + 2 * n, 2 * STEP, 3 * STEP - n, 4 * STEP]);
 
         // Swing 75 and a late nudge on step 1, an early one on step 2: step 2
         // waits for step 1 instead of jumping ahead of it.
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Pattern,
-            swing: 75,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Pattern, swing: 75, ..Settings::default() });
         e.set_pattern(Pattern::parse("x x x | nudge 0 50 -50").unwrap());
         e.press(60, 100);
-        let got: Vec<u64> = ons(&run(&mut e, STEP * 3, 128))
-            .iter()
-            .map(|&(t, _)| t)
-            .collect();
+        let got: Vec<u64> = ons(&run(&mut e, STEP * 3, 128)).iter().map(|&(t, _)| t).collect();
         assert_eq!(got, [0, 2 * STEP, 2 * STEP]);
 
         // Other modes have no lanes, so no nudge.
@@ -2083,10 +1779,7 @@ mod tests {
                 }
                 EventKind::Off { note } => {
                     let len = *t - on_at[usize::from(note)];
-                    assert!(
-                        (STEP / 5..=STEP * 4 / 5).contains(&len),
-                        "gate 50 +/- 30: {len}"
-                    );
+                    assert!((STEP / 5..=STEP * 4 / 5).contains(&len), "gate 50 +/- 30: {len}");
                 }
             }
         }
@@ -2111,31 +1804,14 @@ mod tests {
         e.set_settings(Settings {
             mode: Mode::Repeat,
             velocity: Velocity::Fixed(100),
-            ramp: Ramp {
-                target: 20,
-                steps: 4,
-            },
+            ramp: Ramp { target: 20, steps: 4 },
             ..Settings::default()
         });
         e.press(60, 90);
         assert_eq!(velocities(&mut e, STEP * 6), [100, 80, 60, 40, 20, 20]);
         assert_eq!(Ramp::OFF.apply(55, 1000), 55);
-        assert_eq!(
-            Ramp {
-                target: 127,
-                steps: 2
-            }
-            .apply(27, 1),
-            77
-        );
-        let s = Settings {
-            ramp: Ramp {
-                target: 0,
-                steps: 8,
-            },
-            ..Settings::default()
-        }
-        .clamped();
+        assert_eq!(Ramp { target: 127, steps: 2 }.apply(27, 1), 77);
+        let s = Settings { ramp: Ramp { target: 0, steps: 8 }, ..Settings::default() }.clamped();
         assert_eq!(s.ramp.target, 1);
     }
     #[test]
@@ -2164,27 +1840,14 @@ mod tests {
     }
 
     fn span(from: u64, tick: i64, bpm: f64) -> Span {
-        Span {
-            from,
-            tick,
-            bpm,
-            playing: true,
-            jumped: false,
-            swing: None,
-        }
+        Span { from, tick, bpm, playing: true, jumped: false, swing: None }
     }
 
     /// Runs like a host behind a transport: periods of `block` frames are
     /// cut where a span starts, and each piece gets its own `sync`.
     /// `press` events are applied at their frames (which must be period
     /// boundaries in every block size used).
-    fn run_synced(
-        e: &mut Engine,
-        spans: &[Span],
-        press: &[(u64, u8)],
-        frames: u64,
-        block: u32,
-    ) -> Vec<(u64, EventKind)> {
+    fn run_synced(e: &mut Engine, spans: &[Span], press: &[(u64, u8)], frames: u64, block: u32) -> Vec<(u64, EventKind)> {
         let mut out = Events::new();
         let mut got = Vec::new();
         while e.now < frames {
@@ -2212,11 +1875,7 @@ mod tests {
                 bar_ticks: 4 * PPQ,
             });
             e.process(n as u32, &mut out);
-            got.extend(
-                out.as_slice()
-                    .iter()
-                    .map(|ev| (now + u64::from(ev.offset), ev.kind)),
-            );
+            got.extend(out.as_slice().iter().map(|ev| (now + u64::from(ev.offset), ev.kind)));
         }
         got
     }
@@ -2235,35 +1894,15 @@ mod tests {
     fn synced_start_can_wait_for_a_beat_or_a_bar() {
         for (start, first) in [(SyncStart::Beat, 4 * STEP), (SyncStart::Bar, 16 * STEP)] {
             let mut e = Engine::new(SR, 120.0);
-            e.set_settings(Settings {
-                mode: Mode::Repeat,
-                start,
-                ..Settings::default()
-            });
-            let got = run_synced(
-                &mut e,
-                &[span(0, 0, 120.0)],
-                &[(1000, 1)],
-                17 * STEP + 1,
-                128,
-            );
+            e.set_settings(Settings { mode: Mode::Repeat, start, ..Settings::default() });
+            let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(1000, 1)], 17 * STEP + 1, 128);
             assert_eq!(ons(&got)[0], (first, 1), "{start:?}");
             assert!(e.position() > 0.0);
         }
         // A press exactly on the line starts there.
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            start: SyncStart::Bar,
-            ..Settings::default()
-        });
-        let got = run_synced(
-            &mut e,
-            &[span(0, 0, 120.0)],
-            &[(16 * STEP, 1)],
-            17 * STEP,
-            128,
-        );
+        e.set_settings(Settings { mode: Mode::Repeat, start: SyncStart::Bar, ..Settings::default() });
+        let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(16 * STEP, 1)], 17 * STEP, 128);
         assert_eq!(ons(&got), [(16 * STEP, 1)]);
     }
 
@@ -2282,35 +1921,20 @@ mod tests {
 
     #[test]
     fn synced_timing_does_not_depend_on_the_period_size() {
-        let mut spans = [
-            span(0, 100, 120.0),
-            span(30_011, 1920, 97.0),
-            span(70_000, 0, 97.0),
-        ];
+        let mut spans = [span(0, 100, 120.0), span(30_011, 1920, 97.0), span(70_000, 0, 97.0)];
         spans[1].swing = Some((240, 60));
         spans[2].jumped = true;
         let mk = || {
             let mut e = engine(Mode::Pattern);
-            e.set_pattern(
-                Pattern::parse("x x:3 . x | nudge~20 -10 10 | vel~30 | gate~40").unwrap(),
-            );
-            e.set_settings(Settings {
-                mode: Mode::Pattern,
-                swing: 62,
-                rate: Rate::SixteenthTriplet,
-                ..Settings::default()
-            });
+            e.set_pattern(Pattern::parse("x x:3 . x | nudge~20 -10 10 | vel~30 | gate~40").unwrap());
+            e.set_settings(Settings { mode: Mode::Pattern, swing: 62, rate: Rate::SixteenthTriplet, ..Settings::default() });
             e
         };
         let press = [(0, 1), (0, 2)];
         let a = run_synced(&mut mk(), &spans, &press, 100_000, 128);
         assert!(a.len() > 40);
         for block in [1, 64, 127, 1000, 100_000] {
-            assert_eq!(
-                run_synced(&mut mk(), &spans, &press, 100_000, block),
-                a,
-                "block {block}"
-            );
+            assert_eq!(run_synced(&mut mk(), &spans, &press, 100_000, block), a, "block {block}");
         }
     }
 
@@ -2321,10 +1945,7 @@ mod tests {
         spans[1].jumped = true;
         let mut e = engine(Mode::Repeat);
         let got = run_synced(&mut e, &spans, &[(0, 1)], 10_000 + 2 * STEP, 128);
-        assert_eq!(
-            ons(&got),
-            [(0, 1), (STEP, 1), (10_000, 1), (10_000 + STEP, 1)]
-        );
+        assert_eq!(ons(&got), [(0, 1), (STEP, 1), (10_000, 1), (10_000 + STEP, 1)]);
     }
 
     #[test]
@@ -2334,41 +1955,17 @@ mod tests {
         let mut s = span(0, 0, 120.0);
         s.swing = Some((240, 66));
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            rate: Rate::ThirtySecond,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Repeat, rate: Rate::ThirtySecond, ..Settings::default() });
         let got = run_synced(&mut e, &[s], &[(0, 1)], 2 * STEP, 128);
         let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
         let delay = STEP * 16 / 50;
-        assert_eq!(
-            t,
-            [
-                0,
-                (STEP / 2) * 66 / 50,
-                STEP + delay,
-                STEP + delay + (STEP / 2) * 34 / 50
-            ]
-        );
+        assert_eq!(t, [0, (STEP / 2) * 66 / 50, STEP + delay, STEP + delay + (STEP / 2) * 34 / 50]);
         // Without transport swing, the arp's own swing works on the transport
         // grid as it does free-running.
         let mut e = Engine::new(SR, 120.0);
-        e.set_settings(Settings {
-            mode: Mode::Repeat,
-            swing: 66,
-            ..Settings::default()
-        });
+        e.set_settings(Settings { mode: Mode::Repeat, swing: 66, ..Settings::default() });
         let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(0, 1)], 4 * STEP, 128);
-        assert_eq!(
-            ons(&got),
-            [
-                (0, 1),
-                (STEP + delay, 1),
-                (2 * STEP, 1),
-                (3 * STEP + delay, 1)
-            ]
-        );
+        assert_eq!(ons(&got), [(0, 1), (STEP + delay, 1), (2 * STEP, 1), (3 * STEP + delay, 1)]);
     }
 
     #[test]
@@ -2388,21 +1985,14 @@ mod tests {
         let spans = [span(0, 0, 120.0)];
         let got = run_synced(&mut e, &spans, &[(0, 1)], STEP + 1000, 128);
         assert_eq!(ons(&got), [(0, 1), (STEP, 1)]);
-        e.set_settings(Settings {
-            rate: Rate::Quarter,
-            ..e.settings()
-        });
+        e.set_settings(Settings { rate: Rate::Quarter, ..e.settings() });
         let mut out = Events::new();
         let mut got = Vec::new();
         while e.now < 9 * STEP {
             let now = e.now;
             e.sync(&Clock::playing(0, now, 120.0));
             e.process(128, &mut out);
-            got.extend(
-                out.as_slice()
-                    .iter()
-                    .map(|ev| (now + u64::from(ev.offset), ev.kind)),
-            );
+            got.extend(out.as_slice().iter().map(|ev| (now + u64::from(ev.offset), ev.kind)));
         }
         assert_eq!(ons(&got), [(4 * STEP, 1), (8 * STEP, 1)]);
     }

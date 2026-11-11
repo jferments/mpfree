@@ -19,24 +19,8 @@ const APP_TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
 /// The page names the samples add the panel and the quick band under.
 pub const PANEL_PAGE: &str = "Play";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
-const PAD_NAMES: [&str; 16] = [
-    "Kick",
-    "Snare",
-    "Closed Hat",
-    "Open Hat",
-    "Clap",
-    "Rim",
-    "Tom Low",
-    "Tom Hi",
-    "Crash",
-    "Ride",
-    "Shaker",
-    "Perc 1",
-    "Perc 2",
-    "",
-    "Sub Hit",
-    "",
-];
+const PAD_NAMES: [&str; 16] = ["Kick", "Snare", "Closed Hat", "Open Hat", "Clap", "Rim", "Tom Low", "Tom Hi", "Crash",
+                               "Ride", "Shaker", "Perc 1", "Perc 2", "", "Sub Hit", ""];
 const SAMPLE_RATE: u32 = 44_100;
 
 /// One sample screen: its file name and the UI showing it.
@@ -52,16 +36,12 @@ pub struct Sample {
 
 /// The built-in patterns as the page lists them.
 pub fn built_in_patterns() -> Vec<(String, mpfree_arp::Pattern)> {
-    Library::built_in()
-        .iter()
-        .map(|(n, p)| (n.to_string(), *p))
-        .collect()
+    Library::built_in().iter().map(|(n, p)| (n.to_string(), *p)).collect()
 }
 
 /// Runs `e` for `steps` steps of its rate, in 128-frame periods.
 fn run_steps(e: &mut Engine, steps: f64) {
-    let frames = steps * f64::from(e.settings().rate.ticks()) / f64::from(mpfree_arp::PPQ) * 60.0
-        / e.bpm()
+    let frames = steps * f64::from(e.settings().rate.ticks()) / f64::from(mpfree_arp::PPQ) * 60.0 / e.bpm()
         * f64::from(SAMPLE_RATE);
     let mut out = Events::new();
     let mut done = 0.0;
@@ -86,33 +66,13 @@ struct Setup<'a> {
 
 impl Default for Setup<'_> {
     fn default() -> Self {
-        Setup {
-            settings: Settings::default(),
-            pattern: 0,
-            held: &[],
-            steps: 0.0,
-            mutated: false,
-            latch: true,
-            quick: false,
-        }
+        Setup { settings: Settings::default(), pattern: 0, held: &[], steps: 0.0, mutated: false, latch: true,
+                quick: false }
     }
 }
 
-fn scene(
-    name: &'static str,
-    about: &'static str,
-    fonts: Fonts,
-    setup: Setup,
-) -> Result<Sample, String> {
-    let Setup {
-        settings,
-        pattern,
-        held,
-        steps,
-        mutated,
-        latch,
-        quick,
-    } = setup;
+fn scene(name: &'static str, about: &'static str, fonts: Fonts, setup: Setup) -> Result<Sample, String> {
+    let Setup { settings, pattern, held, steps, mutated, latch, quick } = setup;
     let patterns = built_in_patterns();
     let mut e = Engine::new(SAMPLE_RATE, 96.0);
     e.set_settings(settings);
@@ -121,11 +81,7 @@ fn scene(
         p = p.mutated(7, 40);
     }
     e.set_pattern(p);
-    e.set_latch(if latch {
-        LatchMode::Replace
-    } else {
-        LatchMode::Off
-    });
+    e.set_latch(if latch { LatchMode::Replace } else { LatchMode::Off });
     for &slot in held {
         e.press(slot, 100);
     }
@@ -154,168 +110,35 @@ fn scene(
         }
     }
     ui.add("pads", pads);
-    let line = if quick {
-        quick_hint(settings.mode)
-    } else {
-        hint(settings.mode)
-    };
+    let line = if quick { quick_hint(settings.mode) } else { hint(settings.mode) };
     ui.add("hint", Label::new(line, Tone::Dim, Align::Center));
     let page = ArpPanel::add(&mut ui, PANEL_PAGE, QUICK_PAGE, &state)?;
     ui.show(if quick { QUICK_PAGE } else { PANEL_PAGE })?;
-    Ok(Sample {
-        name,
-        about,
-        ui,
-        page,
-        quick,
-        state,
-    })
+    Ok(Sample { name, about, ui, page, quick, state })
 }
 
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let base = Settings::default();
     Ok(vec![
-        scene(
-            "quick-hat-roll",
-            "Quick band: NOTE REPEAT held with the closed hat, 1/16",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Repeat,
-                    gate: 40,
-                    ..base
-                },
-                held: &[2],
-                steps: 5.5,
-                latch: false,
-                quick: true,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "quick-arp-latched",
-            "Quick band: Arp Up 1/16 over pads 1 3 5, latched",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Arp,
-                    order: Order::Up,
-                    octaves: 2,
-                    ..base
-                },
-                held: &[0, 2, 4],
-                steps: 3.5,
-                quick: true,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "arp-up-2-oct",
-            "Panel: Arp, Up over 2 octaves, pads 1 3 5 latched",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Arp,
-                    order: Order::Up,
-                    octaves: 2,
-                    swing: 58,
-                    ..base
-                },
-                held: &[0, 2, 4],
-                steps: 3.5,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "arp-converge",
-            "Panel: Arp, Converge, 1/16T, pads 1 2 3 4 latched",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Arp,
-                    order: Order::Converge,
-                    rate: Rate::SixteenthTriplet,
-                    gate: 80,
-                    ..base
-                },
-                held: &[0, 1, 2, 3],
-                steps: 6.5,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "arp-random",
-            "Panel: Arp, Random, pads 1 5 latched",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Arp,
-                    order: Order::Random,
-                    octaves: 3,
-                    ..base
-                },
-                held: &[0, 4],
-                steps: 2.5,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "repeat",
-            "Panel: Note Repeat at 1/32, pad 3 latched",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Repeat,
-                    rate: Rate::ThirtySecond,
-                    gate: 30,
-                    ..base
-                },
-                held: &[2],
-                steps: 5.5,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "pattern",
-            "Panel: Pattern \"Climb\" over pads 1 2 5",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Pattern,
-                    ..base
-                },
-                pattern: 3,
-                held: &[0, 1, 4],
-                steps: 4.5,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "pattern-mutated",
-            "Panel: Pattern \"Rolls\", mutated (Original is lit)",
-            fonts(),
-            Setup {
-                settings: Settings {
-                    mode: Mode::Pattern,
-                    ..base
-                },
-                pattern: 6,
-                held: &[0, 2, 4],
-                steps: 2.5,
-                mutated: true,
-                ..Setup::default()
-            },
-        )?,
-        scene(
-            "direct",
-            "Panel: Direct, nothing generated, so no step strip",
-            fonts(),
-            Setup {
-                latch: false,
-                ..Setup::default()
-            },
-        )?,
+        scene("quick-hat-roll", "Quick band: NOTE REPEAT held with the closed hat, 1/16", fonts(),
+              Setup { settings: Settings { mode: Mode::Repeat, gate: 40, ..base }, held: &[2], steps: 5.5, latch: false, quick: true, ..Setup::default() })?,
+        scene("quick-arp-latched", "Quick band: Arp Up 1/16 over pads 1 3 5, latched", fonts(),
+              Setup { settings: Settings { mode: Mode::Arp, order: Order::Up, octaves: 2, ..base }, held: &[0, 2, 4], steps: 3.5, quick: true, ..Setup::default() })?,
+        scene("arp-up-2-oct", "Panel: Arp, Up over 2 octaves, pads 1 3 5 latched", fonts(),
+              Setup { settings: Settings { mode: Mode::Arp, order: Order::Up, octaves: 2, swing: 58, ..base }, held: &[0, 2, 4], steps: 3.5, ..Setup::default() })?,
+        scene("arp-converge", "Panel: Arp, Converge, 1/16T, pads 1 2 3 4 latched", fonts(),
+              Setup { settings: Settings { mode: Mode::Arp, order: Order::Converge, rate: Rate::SixteenthTriplet, gate: 80, ..base }, held: &[0, 1, 2, 3], steps: 6.5, ..Setup::default() })?,
+        scene("arp-random", "Panel: Arp, Random, pads 1 5 latched", fonts(),
+              Setup { settings: Settings { mode: Mode::Arp, order: Order::Random, octaves: 3, ..base }, held: &[0, 4], steps: 2.5, ..Setup::default() })?,
+        scene("repeat", "Panel: Note Repeat at 1/32, pad 3 latched", fonts(),
+              Setup { settings: Settings { mode: Mode::Repeat, rate: Rate::ThirtySecond, gate: 30, ..base }, held: &[2], steps: 5.5, ..Setup::default() })?,
+        scene("pattern", "Panel: Pattern \"Climb\" over pads 1 2 5", fonts(),
+              Setup { settings: Settings { mode: Mode::Pattern, ..base }, pattern: 3, held: &[0, 1, 4], steps: 4.5, ..Setup::default() })?,
+        scene("pattern-mutated", "Panel: Pattern \"Rolls\", mutated (Original is lit)", fonts(),
+              Setup { settings: Settings { mode: Mode::Pattern, ..base }, pattern: 6, held: &[0, 2, 4], steps: 2.5, mutated: true, ..Setup::default() })?,
+        scene("direct", "Panel: Direct, nothing generated, so no step strip", fonts(),
+              Setup { latch: false, ..Setup::default() })?,
     ])
 }
 
@@ -334,24 +157,13 @@ enum WsScene {
     Lanes,
 }
 
-fn workspace_scene(
-    name: &'static str,
-    about: &'static str,
-    fonts: Fonts,
-    scene: WsScene,
-) -> Result<WorkspaceSample, String> {
+fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, scene: WsScene)
+    -> Result<WorkspaceSample, String> {
     let recording = scene == WsScene::Record;
-    let climb = built_in_patterns()
-        .into_iter()
-        .find(|(n, _)| n == "Climb")
-        .map(|(_, p)| p)
-        .unwrap_or_default();
+    let climb = built_in_patterns().into_iter().find(|(n, _)| n == "Climb").map(|(_, p)| p).unwrap_or_default();
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
     let mut e = Engine::new(SAMPLE_RATE, 96.0);
-    e.set_settings(Settings {
-        mode: Mode::Pattern,
-        ..Settings::default()
-    });
+    e.set_settings(Settings { mode: Mode::Pattern, ..Settings::default() });
     let mut header = Header::new(&APP_TABS);
     let state = ArpState::from_engine(&e, built_in_patterns(), 3, true);
     header.chips = chips(&state);
@@ -378,17 +190,9 @@ fn workspace_scene(
     } else if scene == WsScene::Lanes {
         // A 3-value velocity lane and a 5-value octave lane over Climb's
         // steps, with a little random gate; step 7 playing.
-        for (lane, pos, d) in [
-            (LaneRow::Velocity, 0, 15),
-            (LaneRow::Velocity, 1, -5),
-            (LaneRow::Velocity, 2, -3),
-            (LaneRow::Octave, 0, 0),
-            (LaneRow::Octave, 1, 0),
-            (LaneRow::Octave, 2, 1),
-            (LaneRow::Octave, 3, 0),
-            (LaneRow::Octave, 4, -1),
-            (LaneRow::Gate, 0, 6),
-        ] {
+        for (lane, pos, d) in [(LaneRow::Velocity, 0, 15), (LaneRow::Velocity, 1, -5), (LaneRow::Velocity, 2, -3),
+                               (LaneRow::Octave, 0, 0), (LaneRow::Octave, 1, 0), (LaneRow::Octave, 2, 1),
+                               (LaneRow::Octave, 3, 0), (LaneRow::Octave, 4, -1), (LaneRow::Gate, 0, 6)] {
             ws.editor.turn_lane(lane, pos, d);
         }
         ws.editor.set_lane_len(LaneRow::Velocity, 3);
@@ -409,34 +213,17 @@ fn workspace_scene(
         h.text = ws.hint().to_string();
     }
     ui.show(ws.page())?;
-    Ok(WorkspaceSample {
-        name,
-        about,
-        ui,
-        ws,
-    })
+    Ok(WorkspaceSample { name, about, ui, ws })
 }
 
 /// The pattern workspace's sample screens.
 pub fn workspace_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WorkspaceSample>, String> {
     Ok(vec![
-        workspace_scene(
-            "workspace-edit",
-            "Pattern workspace: \"Climb\" with an accent, a ratchet and a chance added",
-            fonts(),
-            WsScene::Edit,
-        )?,
-        workspace_scene(
-            "workspace-record",
-            "Pattern workspace: recording on the pads, 6 of 8 steps in",
-            fonts(),
-            WsScene::Record,
-        )?,
-        workspace_scene(
-            "workspace-lanes",
-            "Pattern workspace: the lanes, each looping at its own length",
-            fonts(),
-            WsScene::Lanes,
-        )?,
+        workspace_scene("workspace-edit", "Pattern workspace: \"Climb\" with an accent, a ratchet and a chance added",
+                        fonts(), WsScene::Edit)?,
+        workspace_scene("workspace-record", "Pattern workspace: recording on the pads, 6 of 8 steps in", fonts(),
+                        WsScene::Record)?,
+        workspace_scene("workspace-lanes", "Pattern workspace: the lanes, each looping at its own length", fonts(),
+                        WsScene::Lanes)?,
     ])
 }

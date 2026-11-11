@@ -38,10 +38,7 @@ fn device_abi() -> io::Result<()> {
     if IS_DEVICE_ABI {
         Ok(())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "device calls are built for the MPC's 32-bit ARM only",
-        ))
+        Err(io::Error::new(io::ErrorKind::Unsupported, "device calls are built for the MPC's 32-bit ARM only"))
     }
 }
 
@@ -51,39 +48,23 @@ pub fn ioctl_buf(fd: RawFd, request: u32, buf: &mut [u8]) -> io::Result<c_int> {
     device_abi()?;
     let size = ((request >> 16) & 0x3FFF) as usize;
     if size != buf.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "ioctl {request:#x} wants {size} bytes, buffer has {}",
-                buf.len()
-            ),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                  format!("ioctl {request:#x} wants {size} bytes, buffer has {}", buf.len())));
     }
     // SAFETY: the kernel reads and writes at most `size` bytes at buf, which is that long.
     let rc = unsafe { ioctl(fd, request as c_ulong, buf.as_mut_ptr()) };
-    if rc < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(rc)
-    }
+    if rc < 0 { Err(io::Error::last_os_error()) } else { Ok(rc) }
 }
 
 /// ioctl with no argument (such as PREPARE and DROP).
 pub fn ioctl_none(fd: RawFd, request: u32) -> io::Result<c_int> {
     device_abi()?;
     if (request >> 16) & 0x3FFF != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "this request takes an argument",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "this request takes an argument"));
     }
     // SAFETY: a request without an argument; the kernel reads nothing from us.
     let rc = unsafe { ioctl(fd, request as c_ulong, 0usize) };
-    if rc < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(rc)
-    }
+    if rc < 0 { Err(io::Error::last_os_error()) } else { Ok(rc) }
 }
 
 /// ioctl that passes an int by pointer (_IOW(..., int)).
@@ -109,9 +90,7 @@ pub fn clear_nonblock(fd: RawFd) -> io::Result<()> {
 /// SCHED_FIFO for the calling thread (pid 0 = this thread).
 pub fn realtime(priority: i32) -> io::Result<()> {
     device_abi()?;
-    let p = SchedParam {
-        sched_priority: priority,
-    };
+    let p = SchedParam { sched_priority: priority };
     // SAFETY: p lives across the call.
     if unsafe { sched_setscheduler(0, SCHED_FIFO, &p) } < 0 {
         return Err(io::Error::last_os_error());

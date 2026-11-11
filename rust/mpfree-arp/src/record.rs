@@ -47,9 +47,7 @@ pub fn step_for_pad(slot: u8) -> Option<Step> {
 
 /// A short label for a pad slot on the record screen.
 pub fn pad_label(slot: u8) -> &'static str {
-    const NTH: [&str; 9] = [
-        "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th",
-    ];
+    const NTH: [&str; 9] = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th"];
     match slot {
         0..=8 => NTH[usize::from(slot)],
         PAD_NEXT => "x next",
@@ -149,9 +147,7 @@ impl Recorder {
         if self.mode != RecordMode::Step {
             return Wrote::Nothing;
         }
-        let Some(step) = step_for_pad(slot) else {
-            return Wrote::Nothing;
-        };
+        let Some(step) = step_for_pad(slot) else { return Wrote::Nothing };
         if let Some(index) = self.chord_with_held(slot) {
             return self.write(slot, index, Step::play(Pick::All), velocity, 0.0);
         }
@@ -169,9 +165,7 @@ impl Recorder {
         if self.mode != RecordMode::FreeTime {
             return Wrote::Nothing;
         }
-        let Some(step) = step_for_pad(slot) else {
-            return Wrote::Nothing;
-        };
+        let Some(step) = step_for_pad(slot) else { return Wrote::Nothing };
         let index = self.nearest(position);
         if self.chord_with_held(slot) == Some(index) {
             return self.write(slot, index, Step::play(Pick::All), velocity, position);
@@ -183,10 +177,7 @@ impl Recorder {
     /// ties on the steps it covered (`position` as for `press_at`). In Step
     /// mode the position is ignored; use pad 15 for ties.
     pub fn release(&mut self, slot: u8, position: f64) {
-        let Some((start, pressed)) = self.held.get_mut(usize::from(slot)).and_then(Option::take)
-        else {
-            return;
-        };
+        let Some((start, pressed)) = self.held.get_mut(usize::from(slot)).and_then(Option::take) else { return };
         if self.mode != RecordMode::FreeTime || !matches!(self.steps[start], Step::Play { .. }) {
             return;
         }
@@ -241,39 +232,18 @@ impl Recorder {
             return None;
         }
         (0..9u8).filter(|&s| s != slot).find_map(|s| {
-            self.held[usize::from(s)].map(|(i, _)| i).filter(|&i| {
-                matches!(
-                    self.steps[i],
-                    Step::Play {
-                        pick: Pick::Index(_) | Pick::All,
-                        ..
-                    }
-                )
-            })
+            self.held[usize::from(s)]
+                .map(|(i, _)| i)
+                .filter(|&i| matches!(self.steps[i], Step::Play { pick: Pick::Index(_) | Pick::All, .. }))
         })
     }
 
     fn write(&mut self, slot: u8, index: usize, step: Step, velocity: u8, position: f64) -> Wrote {
         let step = match step {
-            Step::Play {
-                pick,
-                octave,
-                gate,
-                ratchet,
-                chance,
-                accent,
-            } => {
+            Step::Play { pick, octave, gate, ratchet, chance, accent } => {
                 // A chord keeps an accent from the first hit.
-                let was = matches!(self.steps[index], Step::Play { accent: true, .. })
-                    && pick == Pick::All;
-                Step::Play {
-                    pick,
-                    octave,
-                    gate,
-                    ratchet,
-                    chance,
-                    accent: accent || was || velocity >= self.accent_from,
-                }
+                let was = matches!(self.steps[index], Step::Play { accent: true, .. }) && pick == Pick::All;
+                Step::Play { pick, octave, gate, ratchet, chance, accent: accent || was || velocity >= self.accent_from }
             }
             other => other,
         };
@@ -290,9 +260,7 @@ mod tests {
     use super::*;
 
     fn text(r: &Recorder) -> String {
-        r.pattern(&Pattern::default())
-            .map(|p| p.to_text())
-            .unwrap_or_default()
+        r.pattern(&Pattern::default()).map(|p| p.to_text()).unwrap_or_default()
     }
 
     fn tap(r: &mut Recorder, slot: u8, velocity: u8) -> Wrote {
@@ -305,10 +273,7 @@ mod tests {
     fn the_pad_layout() {
         let labels: Vec<&str> = (0..16).map(pad_label).collect();
         assert_eq!(labels[..3], ["1st", "2nd", "3rd"]);
-        assert_eq!(
-            labels[9..],
-            ["", "", "", "x next", "? random", "_ tie", ". rest"]
-        );
+        assert_eq!(labels[9..], ["", "", "", "x next", "? random", "_ tie", ". rest"]);
         assert_eq!(step_for_pad(9), None);
         assert_eq!(step_for_pad(16), None);
     }
@@ -316,13 +281,7 @@ mod tests {
     #[test]
     fn step_mode_writes_one_step_per_press_and_stops_when_full() {
         let mut r = Recorder::step(6);
-        assert_eq!(
-            tap(&mut r, 0, 120),
-            Wrote::Step {
-                index: 0,
-                step: Pattern::parse("1!").unwrap().steps()[0]
-            }
-        );
+        assert_eq!(tap(&mut r, 0, 120), Wrote::Step { index: 0, step: Pattern::parse("1!").unwrap().steps()[0] });
         tap(&mut r, 2, 80);
         tap(&mut r, PAD_TIE, 80);
         tap(&mut r, PAD_NEXT, 80);
@@ -378,10 +337,6 @@ mod tests {
         r.release(1, 9.4);
         let p = r.pattern(&base).unwrap();
         assert_eq!(p.to_text(), "_ x *! _ _ x . 2 | vel 100 60");
-        assert_eq!(
-            r.press(0, 100),
-            Wrote::Nothing,
-            "Step-mode calls do nothing in Free time"
-        );
+        assert_eq!(r.press(0, 100), Wrote::Nothing, "Step-mode calls do nothing in Free time");
     }
 }

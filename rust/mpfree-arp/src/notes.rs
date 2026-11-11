@@ -30,13 +30,7 @@ impl Default for NoteSet {
 
 impl NoteSet {
     pub const fn new() -> Self {
-        Self {
-            items: [Held {
-                note: 0,
-                velocity: 0,
-            }; MAX_NOTES],
-            len: 0,
-        }
+        Self { items: [Held { note: 0, velocity: 0 }; MAX_NOTES], len: 0 }
     }
 
     pub fn len(&self) -> usize {
@@ -57,10 +51,7 @@ impl NoteSet {
     }
 
     pub fn velocity(&self, note: u8) -> Option<u8> {
-        self.as_slice()
-            .iter()
-            .find(|h| h.note == note)
-            .map(|h| h.velocity)
+        self.as_slice().iter().find(|h| h.note == note).map(|h| h.velocity)
     }
 
     /// Adds a note at the end, or updates its velocity if it is already in.
@@ -224,10 +215,7 @@ mod tests {
         assert_eq!(s.velocity(2), Some(50));
         let mut out = [Held::default(); MAX_NOTES];
         assert_eq!(s.sorted(&mut out), 3);
-        assert_eq!(
-            out[..3].iter().map(|h| h.note).collect::<Vec<_>>(),
-            [2, 7, 9]
-        );
+        assert_eq!(out[..3].iter().map(|h| h.note).collect::<Vec<_>>(), [2, 7, 9]);
         assert!(s.remove(2) && !s.remove(2));
         assert_eq!(notes(&s), [7, 9]);
         let mut full = NoteSet::new();

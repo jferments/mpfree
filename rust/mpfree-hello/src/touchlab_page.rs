@@ -94,10 +94,7 @@ impl TouchLabView {
     /// events can carry the kernel's own times (`set_event_time`).
     pub fn new() -> TouchLabView {
         TouchLabView::with_clock(Box::new(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_micros() as u64)
-                .unwrap_or(0)
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
         }))
     }
 
@@ -199,11 +196,7 @@ impl TouchLabView {
 
     fn go_to(&mut self, step: usize) {
         self.step = step.min(STEPS.len() - 1);
-        self.stage = if step >= STEPS.len() {
-            Stage::Done
-        } else {
-            Stage::Ready
-        };
+        self.stage = if step >= STEPS.len() { Stage::Done } else { Stage::Ready };
         self.recorder = StepRecorder::new(&STEPS[self.step], self.config.swipe_min_speed);
         self.last_gesture.clear();
     }
@@ -220,10 +213,7 @@ impl TouchLabView {
             }
         }
         self.last_gesture.clear();
-        self.lines.push(format!(
-            "touch-lab-step: step={} seconds={}",
-            step.name, step.seconds
-        ));
+        self.lines.push(format!("touch-lab-step: step={} seconds={}", step.name, step.seconds));
         self.stage = Stage::Window(now);
     }
 
@@ -258,9 +248,7 @@ impl TouchLabView {
             Button::Again => self.reset(),
             Button::Exit => self.leave(),
         }
-        if self.step + 1 >= STEPS.len()
-            && matches!(b, Button::Next | Button::Skip)
-            && self.stage == Stage::Ready
+        if self.step + 1 >= STEPS.len() && matches!(b, Button::Next | Button::Skip) && self.stage == Stage::Ready
             && self.results[self.step].is_some()
         {
             self.stage = Stage::Done;
@@ -278,10 +266,7 @@ impl TouchLabView {
 
     fn buttons(&self, r: Rect) -> Vec<(Button, Rect)> {
         let (top, _, _, bottom) = Self::regions(r);
-        let mut v = vec![(
-            Button::Exit,
-            Rect::new(top.right() - 150, top.y + 14, 130, 48),
-        )];
+        let mut v = vec![(Button::Exit, Rect::new(top.right() - 150, top.y + 14, 130, 48))];
         let row: &[Button] = match self.stage {
             Stage::Ready => &[Button::Start, Button::Skip],
             Stage::Result => &[Button::Redo, Button::Next],
@@ -308,14 +293,7 @@ impl TouchLabView {
     fn targets(&self, area: Rect) -> Vec<(i32, i32, i32)> {
         let (cx, cy) = (area.x + area.w / 2, area.y + area.h / 2);
         match STEPS[self.step].name {
-            "taps" => (0..5)
-                .map(|i| {
-                    (
-                        area.x + area.w * (2 * i + 1) / 10,
-                        cy + if i % 2 == 0 { -80 } else { 80 },
-                        40,
-                    )
-                })
+            "taps" => (0..5).map(|i| (area.x + area.w * (2 * i + 1) / 10, cy + if i % 2 == 0 { -80 } else { 80 }, 40))
                 .collect(),
             "long_press" => vec![(cx, cy, 70)],
             "hold_centre" => vec![(cx, cy, 16)],
@@ -337,9 +315,7 @@ fn describe(g: &Gesture) -> String {
         Gesture::LongPress { .. } => "long press".to_string(),
         Gesture::DragStart { .. } => "drag".to_string(),
         Gesture::DragEnd { vx, vy, .. } => format!("lift at {:.0} px/s", vx.hypot(vy)),
-        Gesture::Swipe {
-            direction, speed, ..
-        } => {
+        Gesture::Swipe { direction, speed, .. } => {
             let d = match direction {
                 SwipeDirection::Left => "left",
                 SwipeDirection::Right => "right",
@@ -354,11 +330,7 @@ fn describe(g: &Gesture) -> String {
 }
 
 fn circle(cx: &mut PaintCx, x: i32, y: i32, radius: i32, c: Color) {
-    cx.canvas.fill_round_rect(
-        Rect::new(x - radius, y - radius, 2 * radius, 2 * radius),
-        radius,
-        c,
-    );
+    cx.canvas.fill_round_rect(Rect::new(x - radius, y - radius, 2 * radius, 2 * radius), radius, c);
 }
 
 impl Widget for TouchLabView {
@@ -368,42 +340,18 @@ impl Widget for TouchLabView {
         let step = &STEPS[self.step];
         // Top: title, step, reader line.
         let (line1, line2) = top.inset_xy(20, 10).take_top(48);
-        cx.text(
-            FontId::Bold,
-            t.size_title,
-            line1,
-            Align::Left,
-            t.text,
-            "Touch lab",
-        );
+        cx.text(FontId::Bold, t.size_title, line1, Align::Left, t.text, "Touch lab");
         let label = match self.stage {
             Stage::Done => "All steps done".to_string(),
             _ => format!("Step {} of {}: {}", self.step + 1, STEPS.len(), step.name),
         };
-        cx.text(
-            FontId::Sans,
-            t.size_body,
-            line1,
-            Align::Center,
-            t.text,
-            &label,
-        );
-        cx.text(
-            FontId::Mono,
-            t.size_small,
-            line2,
-            Align::Left,
-            t.text_dim,
-            &self.reader,
-        );
+        cx.text(FontId::Sans, t.size_body, line1, Align::Center, t.text, &label);
+        cx.text(FontId::Mono, t.size_small, line2, Align::Left, t.text_dim, &self.reader);
         // Instruction or status.
         cx.panel(instr);
         let now = (self.clock)();
         let (msg, color) = match self.stage {
-            Stage::Ready => (
-                format!("{}  Press Start when ready.", step.instruction),
-                t.text,
-            ),
+            Stage::Ready => (format!("{}  Press Start when ready.", step.instruction), t.text),
             Stage::Countdown(t0) => {
                 let left = (t0 + COUNTDOWN_US).saturating_sub(now) / 1_000_000 + 1;
                 (format!("Get ready: {left}"), t.warn)
@@ -415,33 +363,16 @@ impl Widget for TouchLabView {
             }
             Stage::Result => match &self.results[self.step] {
                 Some(s) if s.pass => (format!("PASS. {}", counts(s)), t.good),
-                Some(s) => (
-                    format!(
-                        "Not as expected ({}). {}",
-                        s.note.replace('_', " "),
-                        counts(s)
-                    ),
-                    t.warn,
-                ),
+                Some(s) => (format!("Not as expected ({}). {}", s.note.replace('_', " "), counts(s)), t.warn),
                 None => (String::new(), t.text),
             },
             Stage::Done => {
                 let pass = self.results.iter().flatten().filter(|s| s.pass).count();
                 let run = self.results.iter().flatten().count();
-                (
-                    format!("{pass} of {run} steps as expected. Results are in the system log."),
-                    t.text,
-                )
+                (format!("{pass} of {run} steps as expected. Results are in the system log."), t.text)
             }
         };
-        cx.text(
-            FontId::Sans,
-            t.size_body,
-            instr.inset_xy(16, 0),
-            Align::Left,
-            color,
-            &msg,
-        );
+        cx.text(FontId::Sans, t.size_body, instr.inset_xy(16, 0), Align::Left, color, &msg);
         // Work area.
         cx.canvas.stroke_round_rect(area, t.radius, 2, t.outline);
         if self.stage == Stage::Done {
@@ -450,10 +381,7 @@ impl Widget for TouchLabView {
                 let (line, rest) = row.take_top(40);
                 let (text, c) = match result {
                     Some(r) if r.pass => (format!("{:<14} pass", s.name), t.good),
-                    Some(r) => (
-                        format!("{:<14} {}", s.name, r.note.replace('_', " ")),
-                        t.warn,
-                    ),
+                    Some(r) => (format!("{:<14} {}", s.name, r.note.replace('_', " ")), t.warn),
                     None => (format!("{:<14} skipped", s.name), t.text_dim),
                 };
                 cx.text(FontId::Mono, t.size_body, line, Align::Left, c, &text);
@@ -463,37 +391,14 @@ impl Widget for TouchLabView {
             if step.check == Check::PadAndSwipe {
                 let pad = Self::pad_rect(area);
                 cx.canvas.fill_round_rect(pad, t.radius, t.raised);
-                cx.text(
-                    FontId::Bold,
-                    t.size_body,
-                    pad,
-                    Align::Center,
-                    t.text,
-                    "Hold this pad",
-                );
-                let right = Rect::new(
-                    pad.right() + 40,
-                    area.y,
-                    area.right() - pad.right() - 40,
-                    area.h,
-                );
-                cx.text(
-                    FontId::Sans,
-                    t.size_body,
-                    right,
-                    Align::Center,
-                    t.text_dim,
-                    "Swipe here",
-                );
+                cx.text(FontId::Bold, t.size_body, pad, Align::Center, t.text, "Hold this pad");
+                let right = Rect::new(pad.right() + 40, area.y, area.right() - pad.right() - 40, area.h);
+                cx.text(FontId::Sans, t.size_body, right, Align::Center, t.text_dim, "Swipe here");
             }
             if step.check == Check::Flings(2) {
                 let mut y = area.y + 20;
                 while y + 50 < area.bottom() {
-                    cx.canvas.fill_round_rect(
-                        Rect::new(area.x + area.w / 4, y, area.w / 2, 44),
-                        8,
-                        t.surface,
-                    );
+                    cx.canvas.fill_round_rect(Rect::new(area.x + area.w / 4, y, area.w / 2, 44), 8, t.surface);
                     y += 56;
                 }
             }
@@ -505,43 +410,18 @@ impl Widget for TouchLabView {
             }
             if !self.last_gesture.is_empty() {
                 let (_, foot) = area.take_bottom(40);
-                cx.text(
-                    FontId::Mono,
-                    t.size_body,
-                    foot.inset_xy(16, 0),
-                    Align::Left,
-                    t.text_dim,
-                    &self.last_gesture,
-                );
+                cx.text(FontId::Mono, t.size_body, foot.inset_xy(16, 0), Align::Left, t.text_dim, &self.last_gesture);
             }
         }
         for (b, br) in self.buttons(r) {
-            let fill = if b == Button::Exit {
-                t.surface
-            } else {
-                t.raised
-            };
+            let fill = if b == Button::Exit { t.surface } else { t.raised };
             cx.canvas.fill_round_rect(br, t.radius, fill);
             cx.canvas.stroke_round_rect(br, t.radius, 2, t.outline);
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                br,
-                Align::Center,
-                t.text,
-                b.label(),
-            );
+            cx.text(FontId::Bold, t.size_body, br, Align::Center, t.text, b.label());
         }
     }
 
-    fn touch(
-        &mut self,
-        finger: u64,
-        phase: Touch,
-        x: i32,
-        y: i32,
-        r: Rect,
-    ) -> Option<mpfree_ui::EventKind> {
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<mpfree_ui::EventKind> {
         let clock = (self.clock)();
         let now = match self.event_time.take() {
             Some(t) if t.abs_diff(clock) < 1_000_000 => t,
@@ -549,15 +429,10 @@ impl Widget for TouchLabView {
         };
         let (_, _, area, _) = Self::regions(r);
         if phase == Touch::Down {
-            let what = if let Some((b, _)) = self
-                .buttons(r)
-                .into_iter()
-                .find(|(_, br)| br.contains(x, y))
-            {
+            let what = if let Some((b, _)) = self.buttons(r).into_iter().find(|(_, br)| br.contains(x, y)) {
                 Finger::Button(b)
             } else if matches!(self.stage, Stage::Window(_)) && area.contains(x, y) {
-                let pad = STEPS[self.step].check == Check::PadAndSwipe
-                    && Self::pad_rect(area).contains(x, y);
+                let pad = STEPS[self.step].check == Check::PadAndSwipe && Self::pad_rect(area).contains(x, y);
                 Finger::Area(if pad { Owner::Pad } else { Owner::Area })
             } else {
                 Finger::Ignored
@@ -565,22 +440,13 @@ impl Widget for TouchLabView {
             self.fingers.retain(|(f, _)| *f != finger);
             self.fingers.push((finger, what));
         }
-        let what = self
-            .fingers
-            .iter()
-            .find(|(f, _)| *f == finger)
-            .map(|(_, w)| *w)?;
+        let what = self.fingers.iter().find(|(f, _)| *f == finger).map(|(_, w)| *w)?;
         if matches!(phase, Touch::Up | Touch::Cancel) {
             self.fingers.retain(|(f, _)| *f != finger);
         }
         match what {
             Finger::Button(b) => {
-                if phase == Touch::Up
-                    && self
-                        .buttons(r)
-                        .iter()
-                        .any(|(bb, br)| *bb == b && br.contains(x, y))
-                {
+                if phase == Touch::Up && self.buttons(r).iter().any(|(bb, br)| *bb == b && br.contains(x, y)) {
                     self.press(b);
                 }
             }
@@ -618,10 +484,8 @@ impl Widget for TouchLabView {
 
 fn counts(s: &StepSummary) -> String {
     let w = s.swipes;
-    format!(
-        "taps {}, long {}, drags {}, swipes L{} R{} U{} D{}, flings {}",
-        s.taps, s.long, s.drags, w[0], w[1], w[2], w[3], s.flings
-    )
+    format!("taps {}, long {}, drags {}, swipes L{} R{} U{} D{}, flings {}", s.taps, s.long, s.drags, w[0], w[1], w[2],
+            w[3], s.flings)
 }
 
 #[cfg(test)]
@@ -641,11 +505,7 @@ mod tests {
     }
 
     fn tap_button(lab: &mut TouchLabView, b: Button, finger: u64) {
-        let (_, r) = *lab
-            .buttons(SCREEN)
-            .iter()
-            .find(|(bb, _)| *bb == b)
-            .expect("button shown");
+        let (_, r) = *lab.buttons(SCREEN).iter().find(|(bb, _)| *bb == b).expect("button shown");
         let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
         lab.touch(finger, Touch::Down, x, y, SCREEN);
         lab.touch(finger, Touch::Up, x, y, SCREEN);
@@ -669,10 +529,7 @@ mod tests {
         assert_eq!(lab.stage, Stage::Result);
         let lines = lab.take_lines();
         assert_eq!(lines[0], "touch-lab-step: step=reader seconds=3");
-        assert!(
-            lines[1].starts_with("touch-lab: step=reader result=pass "),
-            "{lines:?}"
-        );
+        assert!(lines[1].starts_with("touch-lab: step=reader result=pass "), "{lines:?}");
         // The Start tap itself was not recorded.
         assert_eq!(lab.results[0].unwrap().downs, 0);
         tap_button(&mut lab, Button::Next, 2);
@@ -730,32 +587,18 @@ mod tests {
     fn targets_sit_in_the_work_area_and_buttons_outside_it() {
         let (mut lab, _) = lab();
         let (top, instr, area, bottom) = TouchLabView::regions(SCREEN);
-        assert!(
-            top.bottom() <= instr.y && instr.bottom() <= area.y && area.bottom() <= bottom.y,
-            "{area:?}"
-        );
+        assert!(top.bottom() <= instr.y && instr.bottom() <= area.y && area.bottom() <= bottom.y, "{area:?}");
         assert!(area.w > 1200 && area.h > 500, "{area:?}");
         for (step, s) in STEPS.iter().enumerate() {
             lab.go_to(step);
             for (x, y, r) in lab.targets(area) {
-                assert!(
-                    area.contains(x - r, y - r) && area.contains(x + r, y + r),
-                    "{} {x},{y}",
-                    s.name
-                );
+                assert!(area.contains(x - r, y - r) && area.contains(x + r, y + r), "{} {x},{y}", s.name);
             }
             for (b, br) in lab.buttons(SCREEN) {
-                assert!(
-                    br.intersect(area).is_empty()
-                        && SCREEN.contains(br.right() - 1, br.bottom() - 1),
-                    "{b:?}"
-                );
+                assert!(br.intersect(area).is_empty() && SCREEN.contains(br.right() - 1, br.bottom() - 1), "{b:?}");
             }
         }
-        assert!(area.contains(
-            TouchLabView::pad_rect(area).right(),
-            TouchLabView::pad_rect(area).bottom()
-        ));
+        assert!(area.contains(TouchLabView::pad_rect(area).right(), TouchLabView::pad_rect(area).bottom()));
     }
 
     #[test]
@@ -766,9 +609,7 @@ mod tests {
         tap_button(&mut lab, Button::Exit, 2);
         assert!(lab.wants_exit());
         let lines = lab.take_lines();
-        assert!(lines
-            .iter()
-            .any(|l| l.starts_with("touch-lab: step=reader")));
+        assert!(lines.iter().any(|l| l.starts_with("touch-lab: step=reader")));
         assert_eq!(lines.last().unwrap(), "touch-lab-exit");
         lab.reset();
         assert!(!lab.wants_exit());
@@ -781,11 +622,7 @@ mod tests {
         let mut fonts = mpfree_ui::Fonts::embedded();
         let theme = mpfree_ui::Theme::dark();
         let mut draw = |lab: &TouchLabView| {
-            let mut cx = PaintCx {
-                canvas: &mut canvas,
-                theme: &theme,
-                fonts: &mut fonts,
-            };
+            let mut cx = PaintCx { canvas: &mut canvas, theme: &theme, fonts: &mut fonts };
             lab.paint(&mut cx, SCREEN);
         };
         for step in 0..STEPS.len() {
