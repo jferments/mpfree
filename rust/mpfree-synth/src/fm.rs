@@ -32,7 +32,7 @@ use mpfree_node::{
     PressureMode, PressureShape, Smooth, Timed,
 };
 
-use crate::dsp::{note_hz, Rng};
+use crate::dsp::{note_hz, same_key, Rng};
 use crate::fm_params::*;
 use crate::pressure::{swell_gain, Depths, Slot};
 
@@ -510,6 +510,9 @@ enum State {
 struct OpState {
     phase: u32,
     dphase: u32,
+    /// What `dphase` was worked out from: the pitch's bits, the frequency
+    /// fields and the rate. A step with the same inputs keeps it.
+    fkey: [u32; 3],
     env: DxEnv,
     /// Gain now and its change per frame, ramped across a control step.
     g: f32,
@@ -606,7 +609,7 @@ pub struct Fm {
     values: [f32; ID_SPACE],
     patch: Patch,
     voices: [Voice; POOL],
-    sine: Vec<f32>,
+    sine: Box<[f32; SIN_N + 1]>,
     rng: Rng,
     lfo_phase: f32,
     lfo_held: f32,
@@ -634,6 +637,29 @@ const SIN_BITS: u32 = 12;
 const SIN_N: usize = 1 << SIN_BITS;
 const FRAC_BITS: u32 = 32 - SIN_BITS;
 
+/// Whether an operator sounds across a run of frames (see `render`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Live {
+    Never,
+    Always,
+    Check,
+}
+
+/// The phase offset for a modulation input in cycles: the low 32 bits of
+/// `input * 2^32` truncated, as `(x as i64) as u32` gives. The i64
+/// conversion is a library call on ARMv7, so a value below 2^31 in size
+/// (in practice all of them) goes through i32, which keeps the same low
+/// 32 bits; anything else (and NaN) still takes the i64 path.
+#[inline]
+fn phase_shift(input: f32) -> u32 {
+    let x = input * 4_294_967_296.0;
+    if x.abs() < 2_147_483_648.0 {
+        x as i32 as u32
+    } else {
+        x as i64 as u32
+    }
+}
+
 impl Default for Fm {
     fn default() -> Self {
         Fm::new(48_000)
@@ -646,9 +672,10 @@ impl Fm {
         for p in PARAMS.iter() {
             values[p.id as usize] = p.default;
         }
-        let sine = (0..=SIN_N)
-            .map(|i| (i as f64 / SIN_N as f64 * std::f64::consts::TAU).sin() as f32)
-            .collect();
+        let mut sine = Box::new([0.0; SIN_N + 1]);
+        for (i, s) in sine.iter_mut().enumerate() {
+            *s = (i as f64 / SIN_N as f64 * std::f64::consts::TAU).sin() as f32;
+        }
         let mut s = Fm {
             rate,
             values,
@@ -1102,14 +1129,29 @@ impl Fm {
         let fb = (f32::from(p.fb.min(7)) + press * d.get(target::FEEDBACK) * 7.0).clamp(0.0, 7.0);
         v.fb_scale = if fb <= 0.0 { 0.0 } else { (fb - 8.0).exp2() };
         let mut carriers_done = true;
+        let bent = pitch + bend;
         for (j, o) in v.ops.iter_mut().enumerate() {
             let q = &p.ops[j];
-            let hz = if q.fixed {
-                op_freq(0.0, true, q.coarse, q.fine, q.detune)
-            } else {
-                op_freq(pitch + bend, false, q.coarse, q.fine, q.detune)
-            };
-            o.dphase = ((hz / rate).clamp(0.0, 0.49) * 4_294_967_296.0) as u32;
+            // The same inputs give the same increment, so a held note
+            // skips the exp2 and the divides.
+            let key = [
+                if q.fixed { 0 } else { bent.to_bits() },
+                0x8000_0000
+                    | u32::from(q.fixed) << 24
+                    | u32::from(q.coarse) << 16
+                    | u32::from(q.fine) << 8
+                    | u32::from(q.detune as u8),
+                self.rate,
+            ];
+            if !same_key(&o.fkey, &key) {
+                let hz = if q.fixed {
+                    op_freq(0.0, true, q.coarse, q.fine, q.detune)
+                } else {
+                    op_freq(bent, false, q.coarse, q.fine, q.detune)
+                };
+                o.dphase = ((hz / rate).clamp(0.0, 0.49) * 4_294_967_296.0) as u32;
+                o.fkey = key;
+            }
             let kbd = scale_keyboard(v.note, q.brk, q.ld, q.rd, q.lc, q.rc);
             let outlevel = (((scale_level(q.out) + kbd).clamp(0, 127)) << 5)
                 + scale_velocity(v.velocity, q.vel);
@@ -1153,7 +1195,7 @@ impl Fm {
     // ---- audio rate ----
 
     #[inline]
-    fn sin(tab: &[f32], ph: u32) -> f32 {
+    fn sin(tab: &[f32; SIN_N + 1], ph: u32) -> f32 {
         let i = (ph >> FRAC_BITS) as usize;
         let f = (ph & ((1 << FRAC_BITS) - 1)) as f32 * (1.0 / (1u32 << FRAC_BITS) as f32);
         let a = tab[i];
@@ -1163,10 +1205,25 @@ impl Fm {
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let r = self.patch.route;
         let gain = VOICE_GAIN * self.out.value;
-        let tab = &self.sine[..];
+        let tab = &*self.sine;
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
+            }
+            // Which operators sound across this run. An operator's gain
+            // step only changes at a control step, so one at zero with no
+            // step stays silent, and one with a step (or above zero with
+            // none) always sounds; anything else is checked every frame
+            // as before.
+            let mut live = [Live::Check; 6];
+            for (l, o) in live.iter_mut().zip(&v.ops) {
+                *l = if o.g == 0.0 && o.gstep == 0.0 {
+                    Live::Never
+                } else if o.gstep != 0.0 || o.g > 0.0 {
+                    Live::Always
+                } else {
+                    Live::Check
+                };
             }
             for k in from..to {
                 let mut m = [0f32; 6];
@@ -1178,11 +1235,15 @@ impl Fm {
                     if j == r.fb_to {
                         input += fb_in;
                     }
-                    let y = if o.g == 0.0 && o.gstep == 0.0 {
-                        0.0
+                    let sounds = match live[j] {
+                        Live::Never => false,
+                        Live::Always => true,
+                        Live::Check => !(o.g == 0.0 && o.gstep == 0.0),
+                    };
+                    let y = if sounds {
+                        Self::sin(tab, o.phase.wrapping_add(phase_shift(input))) * o.g
                     } else {
-                        let shift = (input * 4_294_967_296.0) as i64 as u32;
-                        Self::sin(tab, o.phase.wrapping_add(shift)) * o.g
+                        0.0
                     };
                     o.phase = o.phase.wrapping_add(o.dphase);
                     o.g = (o.g + o.gstep).max(0.0);
@@ -1307,5 +1368,46 @@ impl Node for Fm {
         // The slowest release can take a long time; a host waits for the
         // voices to free instead. This is a bound for a typical patch.
         (4.0 * self.rate as f32) as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::phase_shift;
+
+    #[test]
+    fn the_phase_shift_matches_the_i64_conversion_for_every_input() {
+        let wide = |input: f32| (input * 4_294_967_296.0) as i64 as u32;
+        let mut edge = vec![
+            0.0,
+            -0.0,
+            f32::NAN,
+            -f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MIN,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+            f32::EPSILON,
+        ];
+        // Around the i32 edge (2^31 / 2^32 = 0.5) and the i64 edge.
+        for c in [0.5f32, 1.0, 2.0, 2_147_483_648.0, 4_294_967_296.0] {
+            let mut x = c;
+            for _ in 0..4 {
+                x = f32::from_bits(x.to_bits() - 1);
+            }
+            for _ in 0..9 {
+                edge.extend([x, -x]);
+                x = f32::from_bits(x.to_bits() + 1);
+            }
+        }
+        for x in edge {
+            assert_eq!(phase_shift(x), wide(x), "{x:e}");
+        }
+        // Every 997th bit pattern: every exponent and sign, NaNs included.
+        for bits in (0..=u32::MAX).step_by(997) {
+            let x = f32::from_bits(bits);
+            assert_eq!(phase_shift(x), wide(x), "{bits:#x}");
+        }
     }
 }
