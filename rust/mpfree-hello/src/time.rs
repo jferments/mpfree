@@ -11,11 +11,13 @@
 //! notes go into the clips and the take history. After the sampler renders,
 //! [`TimeHost::mix_click`] adds the click while counting in and recording.
 //!
-//! One arp per track ([`TrackArps`]) sits between the player and the
-//! pads. A track with "Clips through the arp" on (`Track::through_arp`)
-//! plays its clips through its arp, and records the pads as pressed
-//! ([`TimeHost::pad_pressed`]); with it off, the clips play as recorded
-//! and the track records what the arp played ([`TimeHost::pad`]).
+//! One arp per track ([`TrackArps`], which the app owns with the arp
+//! panel) sits between the player and the pads when the loop calls
+//! [`TimeHost::period_arps`]. A track with "Clips through the arp" on
+//! (`Track::through_arp`) plays its clips through its arp, and records the
+//! pads as pressed ([`TimeHost::pad_pressed`]); with it off, the clips play
+//! as recorded and the track records what the arp played
+//! ([`TimeHost::pad`]).
 //!
 //! Every pad note also goes into the capture history, so CAPTURE
 //! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
@@ -238,8 +240,6 @@ pub struct TimeHost {
     pending: Option<Pending>,
     block: Box<Block>,
     sink: Box<Collect>,
-    /// One arp per track, between the player and `sink`.
-    arps: Box<TrackArps>,
     view: PlayView,
     project: Project,
     launches: Vec<Launch>,
@@ -302,7 +302,6 @@ impl TimeHost {
                 n: 0,
                 dropped: 0,
             }),
-            arps: Box::new(TrackArps::new(rate, bpm)),
             view: PlayView::empty(),
             project,
             launches: Vec::new(),
@@ -366,25 +365,15 @@ impl TimeHost {
         self.changed = true;
         self.recorded = false;
         self.steps_changed = true;
-        self.sync_arps();
         Ok(())
     }
 
-    /// Each track's arp plays into the track's destination, and takes its
-    /// clips when the track's "Clips through the arp" is on.
-    fn sync_arps(&mut self) {
-        for (t, track) in self.project.tracks.iter().enumerate() {
-            self.arps.set_through(t, track.through_arp);
-            self.arps.set_dest(t, track.dest);
-        }
-    }
-
     /// "Clips through the arp" for `track` (see `Track::through_arp`).
-    /// Turning it either way clears the track's arp at the start of the
-    /// next period, so no note is left hanging. False if there is no
-    /// such track.
-    // The arp panel calls it (the arp thread's side, with the per-track
-    // arps in the app); until then only tests do.
+    /// The track's arp follows from the next [`TimeHost::period_arps`],
+    /// which clears it if it holds anything, so no note is left hanging.
+    /// False if there is no such track.
+    // The arp panel calls it (the arp thread's side); until then only
+    // tests do.
     #[allow(dead_code)]
     pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
         let Some(t) = self.project.tracks.get_mut(track) else {
@@ -394,18 +383,7 @@ impl TimeHost {
             t.through_arp = on;
             self.changed = true;
         }
-        self.sync_arps();
         true
-    }
-
-    /// The per-track arps: each track's settings, latch and pattern (change
-    /// them between periods), and [`TrackArps::pad`] for the live pads of
-    /// the focused track.
-    // The app moves its arp onto these (the arp thread's side); until then
-    // only tests use it.
-    #[allow(dead_code)]
-    pub fn arps_mut(&mut self) -> &mut TrackArps {
-        &mut self.arps
     }
 
     /// The clip the Play page's pattern edits: the armed track's (track 1
@@ -713,7 +691,9 @@ impl TimeHost {
     /// Whether the armed track records the pads as pressed (its clips
     /// play through its arp) rather than what its arp played.
     fn records_pressed(&self) -> bool {
-        self.armed.is_some_and(|t| self.arps.records_pads(t))
+        self.armed
+            .and_then(|t| self.project.tracks.get(t))
+            .is_some_and(|t| t.through_arp)
     }
 
     /// A pad note as pressed, before any arp, in the coming period at
@@ -843,9 +823,32 @@ impl TimeHost {
         })
     }
 
-    /// Run one period: the clips play into `pads`, the armed track records.
-    /// Runs the transport first unless [`TimeHost::advance`] already did.
+    /// Run one period: the clips play into `pads`, every track as
+    /// recorded (no arp), and the armed track records. Runs the transport
+    /// first unless [`TimeHost::advance`] already did. For previews and
+    /// tests; the pad player calls [`TimeHost::period_arps`].
     pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
+        self.run(frames, pads, None);
+    }
+
+    /// [`TimeHost::period`] with the per-track arps between the player and
+    /// `pads`: a track whose clips play through its arp ("Clips through the
+    /// arp") plays them into its arp; the others play as recorded; every
+    /// arp's notes (the live pads' too, fed with [`TrackArps::pad`] before
+    /// this) go to `pads` with them, in frame order. Each arp first takes
+    /// its track's destination and switch.
+    // The pad player calls it once the app owns the per-track arps (the
+    // arp thread's side); until then only tests do.
+    #[allow(dead_code)]
+    pub fn period_arps(&mut self, frames: u32, pads: &mut impl Pads, arps: &mut TrackArps) {
+        for (t, track) in self.project.tracks.iter().enumerate() {
+            arps.set_through(t, track.through_arp);
+            arps.set_dest(t, track.dest);
+        }
+        self.run(frames, pads, Some(arps));
+    }
+
+    fn run(&mut self, frames: u32, pads: &mut impl Pads, arps: Option<&mut TrackArps>) {
         let ok = match self.advanced.take() {
             Some(ok) => ok,
             None => self.transport.process(frames, &mut self.block),
@@ -862,11 +865,18 @@ impl TimeHost {
             self.changed = true;
         }
         self.sink.n = 0;
-        // The player's notes go through the per-track arps (a through
-        // track's into its arp, the rest as they are), then to the pads.
-        self.player
-            .process(&self.view, &self.block, &mut self.arps.through_sink());
-        self.arps.finish(&self.block, &mut *self.sink);
+        match arps {
+            // The player's notes go through the per-track arps (a through
+            // track's into its arp, the rest as they are), then to the pads.
+            Some(arps) => {
+                self.player
+                    .process(&self.view, &self.block, &mut arps.through_sink());
+                arps.finish(&self.block, &mut *self.sink);
+            }
+            None => self
+                .player
+                .process(&self.view, &self.block, &mut *self.sink),
+        }
         for o in &self.sink.out[..self.sink.n] {
             match o.event {
                 Event::NoteOn { note, velocity } => {
@@ -986,7 +996,6 @@ impl TimeHost {
     /// Notes lost because a table was full (should stay 0).
     pub fn dropped(&self) -> u64 {
         self.sink.dropped
-            + self.arps.dropped()
             + self.recorder.dropped()
             + self.player.stats().dropped
             + self.capture.dropped()
@@ -1247,27 +1256,34 @@ mod tests {
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
 
-    /// Track `track`'s arp plays up in sixteenths.
-    fn arp_up(h: &mut TimeHost, track: usize) {
+    /// Per-track arps with track `track`'s arp playing up in sixteenths.
+    fn arp_up(track: usize) -> TrackArps {
         use mpfree_arp::{Mode, Order, Rate, Settings};
-        h.arps_mut().engine(track).unwrap().set_settings(Settings {
+        let mut arps = TrackArps::new(RATE, 120.0);
+        arps.engine(track).unwrap().set_settings(Settings {
             mode: Mode::Arp,
             order: Order::Up,
             rate: Rate::Sixteenth,
             gate: 50,
             ..Settings::default()
         });
+        arps
     }
 
-    /// Records one bar into a new clip on track 3 (a two-bar loop): the
-    /// pads pressed the chord 4, 7, 9 at frame 1000 and held it to the bar
-    /// line, while the app's arp let pads 20 and 21 be heard. Then plays
-    /// the next pass and returns its pad hits as (frame, pad).
-    fn record_a_chord(h: &mut TimeHost) -> Vec<(u64, usize)> {
+    /// Records one bar into a new clip on track 3 (a two-bar loop) through
+    /// the per-track arps: the pads pressed the chord 4, 7, 9 at frame
+    /// 1000 and held it to the bar line, while the app's arp let pads 20
+    /// and 21 be heard. Then plays the next pass and returns its pad hits
+    /// as (frame, pad).
+    fn record_a_chord(h: &mut TimeHost, arps: &mut TrackArps) -> Vec<(u64, usize)> {
         let mut pads = Fake::default();
         h.command(Command::SetLoop(Some((0, 2 * 3840))));
         h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
-        while pads.frame < 2 * BAR {
+        let on = |note| Event::NoteOn {
+            note,
+            velocity: 100,
+        };
+        while pads.frame < 4 * BAR {
             let f = pads.frame;
             let at = |x: u64| {
                 (f..f + u64::from(PERIOD))
@@ -1276,31 +1292,13 @@ mod tests {
             };
             if let Some(o) = at(1000) {
                 for note in [4, 7, 9] {
-                    h.pad_pressed(
-                        o,
-                        Event::NoteOn {
-                            note,
-                            velocity: 100,
-                        },
-                    );
+                    h.pad_pressed(o, on(note));
                 }
-                h.pad(
-                    o,
-                    Event::NoteOn {
-                        note: 20,
-                        velocity: 100,
-                    },
-                );
+                h.pad(o, on(20));
             }
             if let Some(o) = at(1000 + 5512) {
                 h.pad(o, Event::NoteOff { note: 20 });
-                h.pad(
-                    o,
-                    Event::NoteOn {
-                        note: 21,
-                        velocity: 100,
-                    },
-                );
+                h.pad(o, on(21));
             }
             if let Some(o) = at(BAR - 100) {
                 for note in [4, 7, 9] {
@@ -1308,13 +1306,19 @@ mod tests {
                 }
                 h.pad(o, Event::NoteOff { note: 21 });
             }
-            h.period(PERIOD, &mut pads);
+            h.period_arps(PERIOD, &mut pads, arps);
             pads.frame += u64::from(PERIOD);
         }
-        assert!(pads.hits.is_empty(), "the first pass only records");
-        run(h, &mut pads, 4 * BAR, &[]);
-        assert_eq!(h.dropped(), 0);
-        pads.hits.iter().map(|&(f, p, _)| (f, p)).collect()
+        assert!(
+            pads.hits.iter().all(|&(f, _, _)| f >= 2 * BAR),
+            "the first pass only records"
+        );
+        assert_eq!(h.dropped() + arps.dropped(), 0);
+        pads.hits
+            .iter()
+            .filter(|&&(f, _, _)| f >= 2 * BAR)
+            .map(|&(f, p, _)| (f, p))
+            .collect()
     }
 
     /// "Clips through the arp" on: the track records the chord as pressed
@@ -1325,8 +1329,9 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         assert!(h.set_through_arp(2, true));
         assert!(h.project.tracks[2].through_arp);
-        arp_up(&mut h, 2);
-        let hits = record_a_chord(&mut h);
+        let mut arps = arp_up(2);
+        let hits = record_a_chord(&mut h, &mut arps);
+        assert!(arps.through(2) && !arps.through(1));
         let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
         let mut kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
         kept.sort();
@@ -1349,8 +1354,8 @@ mod tests {
     #[test]
     fn a_track_with_the_switch_off_records_and_plays_what_was_heard() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
-        arp_up(&mut h, 2);
-        let hits = record_a_chord(&mut h);
+        let mut arps = arp_up(2);
+        let hits = record_a_chord(&mut h, &mut arps);
         let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
         let kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
         assert_eq!(kept, [20, 21]);
