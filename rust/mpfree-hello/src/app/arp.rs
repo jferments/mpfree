@@ -827,10 +827,12 @@ impl App {
             ],
             ArpItem::Scale => vec![
                 "Keeps the arp's notes in key: a pad off the",
-                "scale plays the scale note below it, and the",
-                "octaves and Degree lanes move along the scale.",
-                "For a synth on the pads; leave it Off for drum",
-                "kits, whose pads are sounds, not notes.",
+                "scale moves into it (see Out-of-key notes),",
+                "and the octaves and Degree lanes move along",
+                "the scale. Scales from your patterns file",
+                "come after the built-in ones. For a synth on",
+                "the pads; leave it Off for drum kits, whose",
+                "pads are sounds, not notes.",
             ],
             ArpItem::Root => vec![
                 "The scale's first note. Pad 1 counts as C,",

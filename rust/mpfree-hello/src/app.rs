@@ -1695,7 +1695,7 @@ mod tests {
         // A scale with other notes coming down keeps them when the root moves.
         let classical = mpfree_arp::scale::SCALES
             .iter()
-            .position(|d| d.name == "Melodic minor, classical")
+            .position(|d| d.name == "Mel. minor classical")
             .unwrap();
         for _ in 3..classical {
             app.step_item(row(&app, ArpItem::Scale), 1);
