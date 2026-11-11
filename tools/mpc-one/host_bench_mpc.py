@@ -24,10 +24,16 @@ the first waits for you to press Enter:
      of audio each, about 2 to 5 minutes; nobody knows exactly until it has
      run once), then `mpfree-bench --afford` (each synth preset and the sampler
      at several voice counts: what a voice costs and how many fit in each
-     budget; writes nothing). Their output, and the JSON, go into this report.
+     budget; writes nothing), then `mpfree-bench --lanes --lane-cores 3,2`
+     (the same work on one core and split over two, about 5 minutes; it pins
+     its own main thread to core 3 and its lane workers to core 2, and prints
+     "not pinned (reason)" and runs unpinned if a pin is refused; writes
+     nothing). Their output, and the JSON, go into this report.
 
 The benchmark only computes. It opens no device and writes only its JSON
-file (the --afford run writes nothing), into /run/mpfree-bench (RAM). It
+file (the --afford and --lanes runs write nothing), into /run/mpfree-bench
+(RAM). The --lanes run sets the CPU affinity of its own threads only, which
+ends with the process. It
 runs as an ordinary process (no real-time priority), so the pad player's
 audio thread (SCHED_FIFO), if it is running, always comes first: the
 benchmark cannot make it underrun. It
@@ -65,6 +71,7 @@ RUNS = (
     ("--calibrate", 120),
     ("--json @@BUILD@@.json", 1200),
     ("--afford", 600),
+    ("--lanes --lane-cores 3,2", 1200),
 )
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
@@ -170,8 +177,8 @@ def main(argv):
             out.say(f"  {name}: copied; its hash on the MPC matches")
 
         for n, (name, _, _) in enumerate(programs, start=4):
-            out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, then every engine (only computes)")
-            answer = hello.ready(out, "Takes a few minutes; the MPC can stay as it is.")
+            out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, every engine, then one core vs two (only computes)")
+            answer = hello.ready(out, "Takes about 10 to 15 minutes; the MPC can stay as it is.")
             if answer == "quit":
                 raise Stop("stopped by you")
             if answer == "skip":
