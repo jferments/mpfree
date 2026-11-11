@@ -99,6 +99,7 @@ The music tabs, in this order:
 ## Proposed, waiting for Jay (not part of the spec yet)
 
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
+- **Mixer on TRACK MIX** (FX thread, 09:04Z, decision 4 in its doc): TRACK MIX opens a full-screen mixer over the current tab, and SHIFT + TRACK MIX the pad mixer, like Prefs on SHIFT + MENU. No Mix tab. That the MPC One has a TRACK MIX button is not checked yet; round 7's mapper lists it so it can be found.
 - **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
 
 ## Where things stand (2026-11-11 08:10Z)

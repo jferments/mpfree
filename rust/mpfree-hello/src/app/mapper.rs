@@ -64,7 +64,7 @@ const fn c(name: &'static str, job: Job) -> Control {
 
 /// The MPC One's buttons, transport first. Names are from the panel as
 /// MPFree expects it.
-pub const CONTROLS: [Control; 34] = [
+pub const CONTROLS: [Control; 35] = [
     c("REC", Job::Rec),
     c("OVERDUB", Job::Overdub),
     c("STOP", Job::Fixed(button::STOP)),
@@ -86,6 +86,9 @@ pub const CONTROLS: [Control; 34] = [
     c("MENU", Job::Menu),
     c("MAIN", Job::None),
     c("BROWSE", Job::None),
+    // Asked for by the FX thread's mixer proposal (Track Mix opens the
+    // mixer); that the MPC One has a button by this name is not checked yet.
+    c("TRACK MIX", Job::None),
     c("-", Job::Minus),
     c("+", Job::Plus),
     c("Q-LINK", Job::None),
