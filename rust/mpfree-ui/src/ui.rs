@@ -93,6 +93,14 @@ pub enum EventKind {
     /// A frame of a sound picked: a tap on a waveform, or on an overview
     /// (where the view should centre).
     Frame(u64),
+    /// A cell of a grid tapped (a step of a pattern: `row` is the lane's
+    /// sound, `col` the step).
+    Cell { row: usize, col: usize },
+    /// Something switched on or off by a tap (a speaker's mute), by index.
+    Toggle(usize),
+    /// A finger on a two-way pad: 0 to 1 left to right (`x`) and bottom to
+    /// top (`y`), `down` until it lifts.
+    Xy { x: f32, y: f32, down: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -339,6 +347,16 @@ impl Ui {
     /// Where `name` sits on the current page.
     pub fn rect_of(&self, name: &str) -> Option<Rect> {
         let page = self.pages.get(self.current)?;
+        page.slots
+            .iter()
+            .find(|(i, _)| self.widgets[*i].0 == name)
+            .map(|(_, r)| *r)
+    }
+
+    /// Where `name` sits on page `page`, shown or not (for a widget that
+    /// sizes what it shows to its rectangle before its page is up).
+    pub fn rect_on(&self, page: &str, name: &str) -> Option<Rect> {
+        let page = self.pages.iter().find(|p| p.name == page)?;
         page.slots
             .iter()
             .find(|(i, _)| self.widgets[*i].0 == name)
