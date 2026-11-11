@@ -196,10 +196,20 @@ fn place(node: &Node, r: Rect, gap: i32, out: &mut Vec<(String, Rect)>) {
 /// Play = col(header:60, row(side:480, pads:*):*, hint:28)
 /// ```
 ///
+/// A name starting with `@` defines a piece of text that later specs use by
+/// that name, so pages that must line up share one value:
+///
+/// ```text
+/// @side = 460
+/// Play = col(header:60, row(pads:*, side:@side):*, hint:26)
+/// Arp  = col(header:60, row(pads:*, arp-list:@side):*, hint:26)
+/// ```
+///
 /// Returns (page, spec) pairs; the specs are checked here, the widget names
 /// when they are applied ([`crate::Ui::apply_layouts`]).
 pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
+    let mut defs: Vec<(String, String)> = Vec::new();
     let mut open: Option<(usize, String, String, i32)> = None;
     for (n, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -220,6 +230,23 @@ pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
             continue;
         }
         spec = spec.trim().to_string();
+        // Longest names first, so @side2 is not read as @side.
+        for (name, text) in &defs {
+            spec = spec.replace(name.as_str(), text);
+        }
+        if page.starts_with('@') {
+            if page.len() < 2 || !page[1..].bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+                return Err(format!("layout line {}: bad name {page:?}", start + 1));
+            }
+            defs.retain(|(n, _)| *n != page);
+            defs.push((page, spec));
+            defs.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
+            continue;
+        }
+        if let Some(i) = spec.find('@') {
+            return Err(format!("layout line {} ({page}): {} is not defined above", start + 1,
+                               spec[i..].split(|c: char| !(c.is_ascii_alphanumeric() || "@_-".contains(c))).next().unwrap_or("@")));
+        }
         parse(&spec).map_err(|e| format!("layout line {} ({page}): {e}", start + 1))?;
         out.push((page, spec));
     }
@@ -278,6 +305,10 @@ mod tests {
         assert_eq!(got, vec![("Play".to_string(), "col(header:60, row(side:480, pads:*):*)".to_string()),
                              ("Debug".to_string(), "a".to_string())]);
         assert!(parse_file("Play = col(a, b").unwrap_err().contains("never closed"));
+        let shared = parse_file("@side = 460\n@sidebar = 99\nPlay = row(pads:*, side:@side)\nArp = row(pads:*, l:@sidebar)\n").unwrap();
+        assert_eq!(shared, vec![("Play".to_string(), "row(pads:*, side:460)".to_string()),
+                                ("Arp".to_string(), "row(pads:*, l:99)".to_string())]);
+        assert_eq!(parse_file("Play = row(a:@w)").unwrap_err(), "layout line 1 (Play): @w is not defined above");
         assert!(parse_file("Play col(a)").unwrap_err().starts_with("layout line 1"));
     }
 }
