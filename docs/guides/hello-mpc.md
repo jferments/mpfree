@@ -195,6 +195,20 @@ Every 30 s the app writes a status line to the system log: hits, underruns, pad-
 
 **The check** (`MPFREE_HELLO_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
 
+### Round 5 results (2026-11-11)
+
+From the owner's results zip (clone at `38905af`). The owner's summary: "That worked beautifully!"
+
+- **Storage:** the hashes of `p1`–`p6`, the U-Boot environment and both boot areas match the baseline before the test and after the power-cycle, with 0 sectors written to `p1`–`p6`.
+- **Start-up:** the test build answered SSH 24 s after the jump (eth0 needed its usual retry). The galaxy, then the loading page with its progress bar and messages, then the pad player filling the whole screen, with no log at the edges (the owner's answer). No unit failed.
+- **Button guide:** **MENU is button 123, NOTE REPEAT is 11, TAP TEMPO is 53, − is 55 and + is 54** (notes on channel 1 of the Private port). All five are in Akai's startup light list. Round 4's unknown button 11 was NOTE REPEAT, and the guess for TAP TEMPO was right. Two more buttons were pressed once each and are still unnamed: 52 and 73.
+- **Sound:** about 7.5 minutes of play: 409 pad hits plus 209 Note Repeat hits, kits 1 to 5, up to 24 sounds at once (the voice limit), peak −10.8 dBFS, 0 periods clipped, **0 underruns in 155145 periods**.
+- **Pad to sound:** mean 8.67 ms (8.56 to 8.70 ms) over 358 timed hits, the same as round 4.
+- **Note Repeat and Latch** (through `mpfree-arp`): held pads repeated, up to 16 hits a second on two pads. SHIFT + NOTE REPEAT turned Latch on, pads 1 and 2 stayed latched after release, and STOP stopped everything. The note engine dropped 0 events, with 0 overflow.
+- **Velocity:** 1 to 127 again, and 72 of the 409 hits (18 %) arrived as exactly 127 (28 % in round 4). 184 hits (45 %) were below 32.
+- **Menus and console:** MENU was pressed 8 times, SHIFT + MENU (Prefs) once, and SHIFT + STOP (console) twice. The app doesn't log page changes, so these rest on the owner's summary.
+- **Not tested this round:** FULL LEVEL (button 39) was never pressed, so Full and Half Level are untested. No screen pad hit or kit tap was recorded ("0 from the screen"), and the owner skipped the check's paced phases, so touch in the pad player is still unconfirmed.
+
 ### The factory drum kits
 
 [`offline-factory-kit.py`](../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):
