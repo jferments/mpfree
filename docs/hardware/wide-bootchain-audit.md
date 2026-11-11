@@ -185,3 +185,36 @@ output is private p1-embedded-spl-dtb.json inside the single ZIP.
 This improves the chances of reconstructing an owner-built SPL's DDR
 initialization requirements, but cannot verify real DDR training or
 establish that a candidate owner SPL is BootROM-accepted.
+
+
+## Third pass: full function graph and 3.10 fallback
+
+After the 2026-11-11 owner ZIP, the runner additionally saves
+p1-evidence-graph-v3.json and p3-evidence-graph-v3.json. These enumerate
+every Ghidra-recognized function's direct calls and nonlocal jump
+candidates, plus balanced targeted pseudocode for ROM/reboot, DDR,
+SPL, boot media, kernel boot, Fastboot authorization/memory, environment,
+security and recovery. Data/address references are tagged as static.
+
+The owner ZIP established a 3,239-byte embedded SPL DTB with DDR controller,
+PHY and SDRAM parameters, and showed that the saved P2 environment matches
+a candidate compiled U-Boot environment in P3. A cross-stage FDT audit now
+also checks for embedded DTBs in P3 and collects boot-related properties.
+
+A prior 3.10 userspace comparison was skipped because its assumed rootfs
+path did not exist. The runner now looks in bounded MPFree work folders
+for an already extracted ext4 image **verified by the 6.18.44 kernel
+listing**. When missing, by default it verifies the known official MPC
+3.10 Gen1 update SHA-256, checks for at least 1.3 GiB free, and invokes
+the existing **offline only** partition extractor for rootfs. The
+extracted proprietary rootfs stays in ~/mpfree-work, outside the ZIP.
+The ZIP contains only reports and logs.
+
+Set MPFREE_AUTO_EXTRACT_310=0 to disable automatic *offline* unpacking,
+or MPFREE_310_ROOTFS=/absolute/path/to/rootfs.img to specify a previously
+extracted image. Neither option contacts the MPC.
+
+The detailed 64-question evidence/backlog matrix is in
+bootchain-open-questions-2026-11-11.md. No source-code-only audit can
+establish live silicon MaskROM entry, unsigned SPL acceptance, or
+independent eMMC restore: these remain explicit physical proof gates.
