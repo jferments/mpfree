@@ -2,7 +2,7 @@
 //! Workstation only: no MPC, ALSA or network access. It reads one WAV and
 //! writes only inside the output folder it is given.
 //!
-//! It renders seven presets that show what the engine does, each to its own
+//! It renders eight presets that show what the engine does, each to its own
 //! WAV, and writes `grain-report.txt` with the grain counts and how fast
 //! each render ran (and, with `--demo`, `demo-input.wav`, the source):
 //!
@@ -16,6 +16,11 @@
 //! - `pressure-pad.wav`: the input on four granular pads in the sampler
 //!   engine, one after another, each pressed harder then lighter: pressure
 //!   on grain density, then grain size, then position, then pitch.
+//! - `master-freeze.wav`: the input on a pad in the sampler engine, under
+//!   the master granular effect half wet. Freeze at 30 % holds that moment
+//!   while the input carries on; at 60 % the input stops and the frozen
+//!   cloud plays on alone; at 85 % freeze is let go and the cloud fades as
+//!   the silence reaches it.
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -28,7 +33,7 @@ use mpfree_grain::{Budget, Clip, GrainVoice, LiveBuffer, Params, TempoSync, Wind
 use mpfree_sampler::chop::demo_beat;
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source};
+use mpfree_sampler::model::{GrainParams, Layer, MasterFx, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source};
 use mpfree_sampler::PreparedSample;
 
 #[path = "shared/wav_out.rs"]
@@ -220,6 +225,43 @@ fn render_pressure(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, B
     Ok(Rendered { name: "pressure-pad", left, right, spawned: None, skipped: e.stats().skipped_grains, peak_grains, millis })
 }
 
+/// The input on a pad through the sampler engine, under the master granular
+/// effect half wet, frozen partway through (see the list at the top).
+fn render_master(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, Box<dyn Error>> {
+    let source = Source::new("input", rate, 2, data.to_vec())?;
+    let mut project = Project::new();
+    project.add_source(source.clone());
+    let mut pad = Pad::new("input", Layer::new(Region::whole(&source)));
+    pad.amp = Ahdsr { release_ms: 80.0, ..Ahdsr::OPEN };
+    project.set_pad(0, Some(pad), None)?;
+    let grain = GrainParams { position: 0.8, spray: 0.15, size_ms: 140.0, density: 25.0, pitch_spray: 0.15, spread: 0.8, ..GrainParams::default() };
+    project.set_master(MasterFx { mix: 0.5, grain }, None)?;
+    let mut e = Engine::new(rate, 8);
+    e.set_view(EngineView::build(&project, rate));
+    e.set_master_fx(Engine::make_master_fx(rate));
+    // The input starts again each time it ends, until it stops at 60 %.
+    let (freeze, stop, thaw) = (frames * 3 / 10, frames * 6 / 10, frames * 85 / 100);
+    let mut events = vec![(freeze, Event::Freeze { on: true }), (stop, Event::AllOff), (thaw, Event::Freeze { on: false })];
+    events.extend((0..stop).step_by(data.len() / 2).map(|f| (f, Event::NoteOn { pad: 0, velocity: 127 })));
+    events.sort_by_key(|&(f, _)| f);
+    let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+    let mut peak_grains = 0;
+    let t = Instant::now();
+    let mut at = 0;
+    while at < frames {
+        let n = BLOCK.min(frames - at);
+        for &(f, ev) in events.iter().filter(|(f, _)| (at..at + n).contains(f)) {
+            e.schedule((f - at) as u32, ev);
+        }
+        e.render(&mut left[at..at + n], &mut right[at..at + n]);
+        peak_grains = peak_grains.max(e.live_grains());
+        at += n;
+    }
+    let millis = t.elapsed().as_secs_f64() * 1000.0;
+    let spawned = e.master_fx().map(|fx| fx.stats().spawned);
+    Ok(Rendered { name: "master-freeze", left, right, spawned, skipped: e.stats().skipped_grains, peak_grains, millis })
+}
+
 fn run() -> Result<(), Box<dyn Error>> {
     let o = parse()?;
     let (data, rate, label) = match &o.input {
@@ -256,6 +298,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut outs: Vec<Rendered> = presets.iter().map(|&(name, p, n)| render(name, &data, rate, p, n, o.seed)).collect();
     outs.push(render_live(&data, rate, frames, o.seed));
     outs.push(render_pressure(&data, rate, frames)?);
+    outs.push(render_master(&data, rate, frames)?);
 
     let mut rep = String::new();
     writeln!(rep, "mpfree-grain report")?;
