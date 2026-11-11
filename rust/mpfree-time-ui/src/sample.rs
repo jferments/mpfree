@@ -245,10 +245,19 @@ impl Session {
         for e in self.player.erased().to_vec() {
             changed |= self.takes.erase(&mut self.project, &e);
         }
+        for e in self.player.erased_locks().to_vec() {
+            changed |= self.takes.erase_lock(&mut self.project, &e);
+        }
         for k in self.recorder.taken().to_vec() {
             self.takes
                 .add(&mut self.project, &k)
                 .map_err(|e| format!("recorded note: {e:?}"))?;
+            changed = true;
+        }
+        for k in self.recorder.taken_locks().to_vec() {
+            self.takes
+                .add_lock(&mut self.project, &k)
+                .map_err(|e| format!("recorded lock: {e:?}"))?;
             changed = true;
         }
         if changed {
