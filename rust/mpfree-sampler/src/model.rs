@@ -146,6 +146,37 @@ pub enum PlayMode {
     Granular,
 }
 
+/// What pressing harder on a held pad changes. The MPC's pads send
+/// pressure (polyphonic aftertouch) for each pad; 0 is a light touch and
+/// full pressure gives the whole `depth`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PressureTarget {
+    #[default]
+    Off,
+    /// Level, up to ±12 dB.
+    Level,
+    /// Pitch, up to ±12 semitones (grains too).
+    Pitch,
+    /// Filter cutoff, up to ±4 octaves (needs the pad's filter on).
+    Filter,
+    /// Grains per second, up to ×16 or ÷16 (granular regions).
+    GrainDensity,
+    /// Grain length, up to ×8 or ÷8 (granular regions).
+    GrainSize,
+    /// Where grains read, moved by up to the whole region, wrapping.
+    GrainPosition,
+    /// Grain spray, up to ±100 %.
+    GrainSpray,
+}
+
+/// A pad's pressure routing: one target and how far full pressure moves
+/// it, from −1 (down) to +1 (up).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PressureRoute {
+    pub target: PressureTarget,
+    pub depth: f32,
+}
+
 /// A recipe on part of a source. The source's audio is never changed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
@@ -343,13 +374,16 @@ pub struct Pad {
     pub level_db: f32,
     pub pan: f32,
     pub tune_cents: i32,
+    /// What pressure on this pad changes.
+    pub pressure: PressureRoute,
 }
 
 impl Pad {
     pub fn new(name: &str, layer: Layer) -> Pad {
         Pad { name: name.to_string(), layers: vec![layer], select: LayerSelect::All, polyphony: 8,
             mute_group: None, chokes: Vec::new(), amp: Ahdsr::OPEN, filter: Filter::default(),
-            filter_env: Ahdsr::OPEN, vel_to_level: 1.0, vel_to_start: 0.0, level_db: 0.0, pan: 0.0, tune_cents: 0 }
+            filter_env: Ahdsr::OPEN, vel_to_level: 1.0, vel_to_start: 0.0, level_db: 0.0, pan: 0.0, tune_cents: 0,
+            pressure: PressureRoute::default() }
     }
 }
 
@@ -416,7 +450,9 @@ impl Project {
 
     fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
         if pad.layers.len() > MAX_LAYERS { return Err(ModelError::TooManyLayers); }
-        if pad.polyphony == 0 || pad.chokes.iter().any(|&c| c >= PADS) || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g)) {
+        let depth = pad.pressure.depth;
+        if pad.polyphony == 0 || pad.chokes.iter().any(|&c| c >= PADS) || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
+            || !depth.is_finite() || depth.abs() > 1.0 {
             return Err(ModelError::BadPad);
         }
         for l in &pad.layers {

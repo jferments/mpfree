@@ -19,7 +19,7 @@ use std::sync::Arc;
 use mpfree_grain::{Budget, Clip, GrainVoice};
 
 use crate::dsp::{db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf};
-use crate::model::{ChannelPick, Fade, LayerSelect, LoopMode, PlayMode, Project, PADS};
+use crate::model::{ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, PlayMode, PressureRoute, PressureTarget, Project, PADS};
 
 /// Fade length when a voice is choked, muted by its group, or pushed out by
 /// the pad's polyphony limit.
@@ -33,8 +33,12 @@ pub const MAX_EVENTS: usize = 256;
 pub const GRAIN_BUDGET: usize = 256;
 /// Granular voices render their grains in chunks of this many frames.
 const GRAIN_CHUNK: usize = 256;
-/// Filter coefficients are recomputed every this many frames.
+/// Filter coefficients, and anything pressure moves, are recomputed every
+/// this many frames.
 const FILTER_STEP: u32 = 16;
+/// Pressure is smoothed with this time constant, so steps between pressure
+/// messages don't zipper.
+const PRESSURE_SMOOTH_S: f32 = 0.005;
 const ONE: i64 = 1 << 32;
 
 #[derive(Clone, Debug)]
@@ -76,6 +80,7 @@ pub struct ViewPad {
     filter_env: Ahdsr,
     vel_to_level: f32,
     vel_to_start: f32,
+    pressure: PressureRoute,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -132,6 +137,7 @@ impl EngineView {
                     layers, select: p.select, polyphony: p.polyphony, mute_group: p.mute_group,
                     chokes: p.chokes.clone(), amp: p.amp, filter: p.filter, filter_env: p.filter_env,
                     vel_to_level: p.vel_to_level.clamp(0.0, 1.0), vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
+                    pressure: p.pressure,
                 }
             }));
         }
@@ -143,6 +149,9 @@ impl EngineView {
 pub enum Event {
     NoteOn { pad: u8, velocity: u8 },
     NoteOff { pad: u8 },
+    /// Pressure on a held pad, 0 to 127 (polyphonic aftertouch). Moves the
+    /// pad's pressure target on its playing voices, smoothed over about 5 ms.
+    Pressure { pad: u8, value: u8 },
     /// Releases every voice (gate-style), e.g. on STOP.
     AllOff,
 }
@@ -188,6 +197,20 @@ struct Voice {
     /// Plays through the engine's grain voice in the same slot.
     granular: bool,
     src_rate: u32,
+    /// Grain settings before pressure moves them.
+    grain_base: GrainParams,
+    route: PressureRoute,
+    /// Pressure asked for and the smoothed value in use, 0 to 1.
+    press_target: f32,
+    press: f32,
+    press_coef: f32,
+    /// What pressure has made of the step, the gain and the cutoff. The
+    /// gain glides to each new value over [`FILTER_STEP`] frames.
+    base_step: i64,
+    press_gain: f32,
+    press_gain_inc: f32,
+    press_fc: f32,
+    press_count: u32,
 }
 
 impl Voice {
@@ -317,6 +340,9 @@ impl Engine {
         match ev {
             Event::NoteOn { pad, velocity } => self.note_on(pad, velocity),
             Event::NoteOff { pad } => self.note_off(pad),
+            Event::Pressure { pad, value } => for v in &mut self.voices {
+                if v.active && v.pad == pad && v.kill_left == 0 { v.press_target = f32::from(value.min(127)) / 127.0; }
+            },
             Event::AllOff => for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
                 if v.active {
                     v.held = false;
@@ -469,6 +495,16 @@ impl Engine {
             last_l: 0.0, last_r: 0.0,
             granular,
             src_rate: l.src_rate,
+            grain_base: l.grain,
+            route: vp.pressure,
+            press_target: 0.0,
+            press: 0.0,
+            press_coef: 1.0 - (-1.0 / (PRESSURE_SMOOTH_S * self.rate)).exp(),
+            base_step: l.step,
+            press_gain: 1.0,
+            press_gain_inc: 0.0,
+            press_fc: 1.0,
+            press_count: 0,
         };
         if granular {
             let g = &mut self.grains[slot];
@@ -528,6 +564,9 @@ fn render_granular(v: &mut Voice, g: &mut GrainVoice, budget: &mut Budget, frame
         let (bl, br) = (&mut sl[..n], &mut sr[..n]);
         bl.fill(0.0);
         br.fill(0.0);
+        if v.route.target != PressureTarget::Off {
+            g.set_params(pressed_grain(v.grain_base, v.route, v.press));
+        }
         g.render(&clip, budget, frame + at as u64, bl, br);
         for k in 0..n {
             let (l, r) = finish(v, rate, bl[k], br[k], 1.0);
@@ -540,12 +579,48 @@ fn render_granular(v: &mut Voice, g: &mut GrainVoice, budget: &mut Budget, frame
     if !v.active { v.data = None; }
 }
 
+/// Grain settings with pressure `p` (0 to 1) applied along `route`.
+fn pressed_grain(mut g: GrainParams, route: PressureRoute, p: f32) -> GrainParams {
+    let d = route.depth * p;
+    match route.target {
+        PressureTarget::Pitch => g.pitch += 12.0 * d,
+        PressureTarget::GrainDensity => g.density *= (4.0 * d).exp2(),
+        PressureTarget::GrainSize => g.size_ms *= (3.0 * d).exp2(),
+        PressureTarget::GrainPosition => g.position = (g.position + d).rem_euclid(1.0),
+        PressureTarget::GrainSpray => g.spray = (g.spray + d).clamp(0.0, 1.0),
+        PressureTarget::Off | PressureTarget::Level | PressureTarget::Filter => {}
+    }
+    g
+}
+
+/// Smooths the voice's pressure and, every [`FILTER_STEP`] frames, updates
+/// what it moves on the voice itself: gain, step (pitch) and cutoff.
+#[inline]
+fn follow_pressure(v: &mut Voice) {
+    v.press += (v.press_target - v.press) * v.press_coef;
+    if v.press_count == 0 {
+        let d = v.route.depth * v.press;
+        match v.route.target {
+            PressureTarget::Level => v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32,
+            PressureTarget::Pitch if !v.granular => v.step = ((v.base_step as f64) * f64::from(d).exp2()).round().max(1.0) as i64,
+            PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
+            _ => {}
+        }
+    }
+    v.press_gain += v.press_gain_inc;
+    v.press_count = (v.press_count + 1) % FILTER_STEP;
+}
+
 /// Everything after the source read, for one frame: amp envelope, kill
 /// fade, gain and pan, filter, the stolen voice's tail. `g` is the gain
 /// from the region's fades. Marks the voice done when its kill fade or
 /// envelope ends.
 #[inline]
 fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32, f32) {
+    if v.route.target != PressureTarget::Off {
+        follow_pressure(v);
+        g *= v.press_gain;
+    }
     if let Some(a) = &mut v.amp { g *= a.next(); }
     if v.kill_left > 0 { g *= f32::from(v.kill_left) / f32::from(KILL_FRAMES); }
 
@@ -555,7 +630,7 @@ fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32,
     if let (Some(f), Some(fe)) = (v.filter, v.fenv.as_mut()) {
         let e = fe.next();
         if v.filter_count == 0 {
-            let fc = f.cutoff_hz * (f.env_octaves * e).exp2();
+            let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
             v.svf[0].set(fc, f.resonance, rate);
             v.svf[1].set(fc, f.resonance * 0.5, rate);
         }
