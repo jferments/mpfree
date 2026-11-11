@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-stretch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Offline time stretch and pitch shift for the MPFree sampler: a phase-locked phase vocoder and a windowed-sinc resampler, in steps a worker thread can run"
+
+[dependencies]
+mpfree-analysis = { path = "../mpfree-analysis" }

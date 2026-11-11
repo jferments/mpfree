@@ -2,6 +2,7 @@
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
 //! loops, layers, chokes, stealing, filters, sample-accurate events,
+//! slice auditions,
 //! granular pads, pad pressure, and swapping prebuilt views (the pad player
 //! switches kits that way).
 //!
@@ -106,12 +107,30 @@ fn render_and_events_never_allocate() {
         });
         r.reverse = i % 5 == 4;
         r.tune_cents = (i as i32 - 8) * 50;
+        // Some at the project tempo: repitched, or stretched (no copy is
+        // made here, so those repitch too).
+        r.warp = match i % 4 {
+            1 => Some(Warp {
+                bpm: 100.0,
+                method: WarpMethod::Repitch,
+            }),
+            3 => Some(Warp::new(140.0)),
+            _ => None,
+        };
         let mut pad = Pad::new("p", Layer::new(r.clone()));
         pad.layers.push(Layer::new(r));
         pad.select = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random][i % 3];
         pad.polyphony = 2;
         pad.mute_group = (i % 4 == 0).then_some(1);
+        // Some are keygroups too, played by notes below.
+        pad.keys = (i % 4 == 2).then_some(Keys {
+            lo: 40,
+            hi: 80,
+            root: 60,
+        });
         pad.chokes = vec![(i + 1) % 16];
+        // Half of them wobble like worn tape.
+        pad.wow = if i % 2 == 1 { 0.8 } else { 0.0 };
         pad.filter = Filter {
             kind: FilterKind::LowPass,
             poles: 4,
@@ -191,7 +210,8 @@ fn render_and_events_never_allocate() {
         p.set_pad(i, Some(pad), None).unwrap();
     }
     let mut e = Engine::new(rate, 24);
-    e.set_view(EngineView::build(&p, rate));
+    let mut warps = mpfree_sampler::warp::Warps::new(120.0);
+    e.set_view(EngineView::build_warped(&p, rate, &mut warps));
     // A second view, swapped in and out while voices play: only the views
     // move, nothing is built or dropped.
     let mut q = Project::new();
@@ -202,6 +222,13 @@ fn render_and_events_never_allocate() {
         q.set_pad(i, Some(Pad::new("k", Layer::new(r))), None)
             .unwrap();
     }
+    // The spare view plays 16 Levels of cutoff (its pads have no filter,
+    // so the levels bring one in).
+    q.set_pads_play(PadsPlay::Levels {
+        pad: 2,
+        by: Levels::Cutoff,
+    })
+    .unwrap();
     let mut spare = Some(EngineView::build(&q, rate));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
@@ -230,9 +257,22 @@ fn render_and_events_never_allocate() {
         None,
     )
     .unwrap();
-    let mut wet = Some(EngineView::build(&p, rate));
+    // The wet views play 16 Levels of decay and of start.
+    p.set_pads_play(PadsPlay::Levels {
+        pad: 0,
+        by: Levels::Decay,
+    })
+    .unwrap();
+    let mut wet = Some(EngineView::build_warped(&p, rate, &mut warps));
+    p.set_pads_play(PadsPlay::Levels {
+        pad: 1,
+        by: Levels::Start,
+    })
+    .unwrap();
+    let mut wet_start = Some(EngineView::build_warped(&p, rate, &mut warps));
+    p.set_pads_play(PadsPlay::Pads).unwrap();
     p.set_master(MasterFx::default(), None).unwrap();
-    let dry = EngineView::build(&p, rate);
+    let dry = EngineView::build_warped(&p, rate, &mut warps);
 
     // The counter itself works: one Vec is one allocation and one free.
     watch(true);
@@ -243,14 +283,42 @@ fn render_and_events_never_allocate() {
     watch(true);
     for block in 0..2000u32 {
         let pad = (block * 7 % 16) as u8;
+        // The transport's tempo, moving now and then.
+        e.set_tempo(120.0 + f64::from(block / 100 % 5) * 7.5);
+        if block % 6 == 0 {
+            let note = 38 + (block / 6 % 46) as u8;
+            e.schedule(block % 128, Event::Key { note, velocity: 90 });
+            e.schedule(
+                (block + 64) % 128,
+                Event::KeyOff {
+                    note: note.wrapping_sub(12),
+                },
+            );
+        }
         if block % 200 == 10 {
             wet = Some(e.set_view(wet.take().unwrap()));
+        }
+        if block % 300 == 150 {
+            wet_start = Some(e.set_view(wet_start.take().unwrap()));
         }
         if block % 64 == 0 {
             e.schedule(
                 block % 128,
                 Event::Freeze {
                     on: block % 128 == 0,
+                },
+            );
+        }
+        // Tape stops and starts, at once and over a few blocks.
+        if block % 150 == 40 {
+            e.schedule(0, Event::Tape { stop: true, ms: 30 });
+        }
+        if block % 150 == 70 {
+            e.schedule(
+                block % 128,
+                Event::Tape {
+                    stop: false,
+                    ms: (block % 3 * 10) as u16,
                 },
             );
         }
@@ -296,6 +364,18 @@ fn render_and_events_never_allocate() {
                 value: (block * 37 % 128) as u8,
             },
         );
+        if block % 7 == 3 {
+            e.schedule(
+                block % 128,
+                Event::Audition {
+                    pad: (block % 20) as u8,
+                    layer: 0,
+                    start: 1000 + block,
+                    end: 6000,
+                    velocity: 100,
+                },
+            );
+        }
         if block % 300 == 299 {
             e.apply(Event::AllOff);
         }

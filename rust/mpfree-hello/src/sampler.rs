@@ -18,9 +18,13 @@
 //!   on the screen thread and sends it here in a [`ViewSwap`];
 //!   [`Player::swap_view`] puts it in place and hands the old view back in
 //!   the same box, so the screen thread frees it.
+//! - While the Grain tab shows, a [`Cloud`] goes back and forth the same
+//!   way: the screen thread names the pad, the audio thread copies that
+//!   pad's grains into it ([`Player::fill_cloud`]) about 25 times a second
+//!   and sends it back.
 
 use mpfree_sampler::dsp::Ahdsr;
-use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
+use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView, PadOut, MAX_GRAINS};
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
 };
@@ -77,6 +81,49 @@ impl PartialEq for ViewSwap {
     fn eq(&self, other: &ViewSwap) -> bool {
         self.kit == other.kit
             && self.view.as_ref().map(|v| v.revision) == other.view.as_ref().map(|v| v.revision)
+    }
+}
+
+/// How many grains a [`Cloud`] holds: two voices' worth.
+pub const CLOUD_GRAINS: usize = 2 * MAX_GRAINS;
+
+/// The grains one layer of one pad plays now, for the Grain tab's cloud.
+/// The screen thread names the kit, pad and layer and sends it to the audio
+/// thread, which fills it in place and sends it back in the same box: the
+/// channels move a pointer, and neither side allocates for it after the
+/// first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cloud {
+    pub kit: usize,
+    pub pad: u8,
+    pub layer: u8,
+    /// How many of `grains` are filled.
+    pub len: usize,
+    pub grains: [GrainView; CLOUD_GRAINS],
+    /// Where that layer's first voice reads, in source frames.
+    pub head: Option<u64>,
+    /// Grains playing on every pad, and how many may.
+    pub live: usize,
+}
+
+impl Default for Cloud {
+    fn default() -> Cloud {
+        Cloud {
+            kit: 0,
+            pad: 0,
+            layer: 0,
+            len: 0,
+            grains: [GrainView::default(); CLOUD_GRAINS],
+            head: None,
+            live: 0,
+        }
+    }
+}
+
+impl Cloud {
+    /// The grains filled in.
+    pub fn grains(&self) -> &[GrainView] {
+        &self.grains[..self.len.min(CLOUD_GRAINS)]
     }
 }
 
@@ -312,6 +359,23 @@ impl Player {
         p
     }
 
+    /// Copies the grains `c` asks for (its kit, pad and layer) into it, with
+    /// that layer's playhead and the grains playing on every pad. A kit
+    /// that isn't playing has none. Never allocates.
+    pub fn fill_cloud(&self, c: &mut Cloud) {
+        c.live = self.engine.live_grains();
+        (c.len, c.head) = (0, None);
+        if c.kit != self.kit {
+            return;
+        }
+        c.len = self.engine.grains_of(c.pad, c.layer, &mut c.grains);
+        c.head = self
+            .engine
+            .playheads()
+            .find(|&(pad, layer, _)| pad == c.pad && layer == c.layer)
+            .map(|(_, _, at)| at);
+    }
+
     /// Starts pad `pad`'s sound `offset` frames into the next render.
     /// Returns false if the playing kit has no sound on that pad.
     pub fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
@@ -340,6 +404,37 @@ impl Player {
         }
     }
 
+    /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
+    /// from the next render, as the pad made from that slice will play it
+    /// (a tap on the Chop page). Only while kit `kit` is the one playing;
+    /// returns whether it went to the engine.
+    pub fn audition(
+        &mut self,
+        kit: usize,
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+        velocity: u8,
+    ) -> bool {
+        if kit != self.kit || pad >= 16 || layer > usize::from(u8::MAX) {
+            return false;
+        }
+        let clip = |f: u64| u32::try_from(f).unwrap_or(u32::MAX);
+        let velocity = engine_velocity(velocity);
+        velocity > 0
+            && self.engine.schedule(
+                0,
+                Event::Audition {
+                    pad: pad as u8,
+                    layer: layer as u8,
+                    start: clip(start),
+                    end: clip(end),
+                    velocity,
+                },
+            )
+    }
+
     /// Pad pressure, 0 to 127, from the next render on.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
@@ -351,6 +446,12 @@ impl Player {
                 },
             );
         }
+    }
+
+    /// The project tempo, for warped pads (cheap when it hasn't moved:
+    /// call it every period).
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.engine.set_tempo(bpm);
     }
 
     /// Fades every sound out (over a few milliseconds; a Grains pad over its
@@ -382,8 +483,9 @@ impl Player {
         master_out(left, right, master)
     }
 
-    /// The engine's sound alone, before the level: the pad player adds the
-    /// synth to it, then calls [`master_out`].
+    /// The engine's sound alone, every pad in one pair, before the level
+    /// (the tests; the pad player renders with [`Player::render_routed`]).
+    #[cfg(test)]
     pub fn render_dry(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -393,8 +495,6 @@ impl Player {
     /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
     /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
     /// [`Player::render_dry`] renders.
-    // The mixer's wiring (round 8) calls it; until then only the tests do.
-    #[allow(dead_code)]
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -402,7 +502,9 @@ impl Player {
 }
 
 /// The level, then the clip to full scale. Returns the peak before the
-/// clip (above 1.0 means the period clipped).
+/// clip (above 1.0 means the period clipped). The pad player's mixer does
+/// this now (the Level is its master fader, Master safety its limit).
+#[cfg(test)]
 pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
     let mut peak = 0f32;
     for s in left.iter_mut().chain(right.iter_mut()) {
@@ -532,6 +634,24 @@ mod tests {
             assert_eq!(*peak > 0.05, pad == 0 || pad == 5, "pad {pad}: peak {peak}");
         }
         assert_eq!((dry.playing(), routed.playing()), (0, 0));
+    }
+
+    #[test]
+    fn a_slice_plays_once_on_the_playing_kit_only() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        // Kick (pad 1) is 3000 frames: frames 1000 to 1500 of it.
+        assert!(!p.audition(1, 0, 0, 1000, 1500, 127), "kit 2 isn't playing");
+        assert!(!p.audition(0, 16, 0, 1000, 1500, 127));
+        assert!(!p.audition(0, 0, 0, 1000, 1500, 0));
+        assert!(p.audition(0, 0, 0, 1000, 1500, 127));
+        let (out, _) = run(&mut p, 8);
+        let last = out.iter().rposition(|x| x.abs() > 1e-6).unwrap() / 2;
+        assert!(
+            (490..500).contains(&last),
+            "the slice is 500 frames (its sine may touch zero at the end): {last}"
+        );
+        assert_eq!(p.playing(), 0);
     }
 
     #[test]
@@ -737,6 +857,41 @@ mod tests {
         assert_eq!((kick.len(), snare.len()), (1, 1));
         assert!(kick[0] > snare[0] && kick[0] <= 512, "{kick:?} {snare:?}");
         assert_eq!(heads.of(3).count(), 0);
+    }
+
+    #[test]
+    fn the_cloud_holds_the_named_pads_grains_without_allocating() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        p.select(2);
+        assert!(p.hit_at(5, 127, 0));
+        run(&mut p, 40);
+        let mut c = Box::new(Cloud {
+            kit: 2,
+            pad: 5,
+            ..Cloud::default()
+        });
+        let ((), calls) = crate::sys::alloc_count::calls(|| p.fill_cloud(&mut c));
+        assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
+        assert!(c.len > 0 && c.len == c.grains().len(), "{}", c.len);
+        assert!(c.live >= c.len);
+        assert!(c
+            .grains()
+            .iter()
+            .all(|g| (0.0..=1.0).contains(&g.position) && g.level >= 0.0));
+        assert!(c.head.is_some(), "the voice's reading place");
+        // Another pad, layer or kit has none.
+        for (kit, pad, layer) in [(2, 0, 0), (2, 5, 1), (0, 5, 0)] {
+            (c.kit, c.pad, c.layer) = (kit, pad, layer);
+            p.fill_cloud(&mut c);
+            assert_eq!((c.len, c.head), (0, None), "{kit} {pad} {layer}");
+            assert!(c.live > 0);
+        }
+        p.release_at(5, 0);
+        run(&mut p, 150);
+        (c.kit, c.pad, c.layer) = (2, 5, 0);
+        p.fill_cloud(&mut c);
+        assert_eq!((c.len, c.head, c.live), (0, None, 0));
     }
 
     #[test]

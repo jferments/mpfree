@@ -3,12 +3,18 @@
 //! each.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{FilterKind, LayerSelect, PressureTarget};
+use std::sync::Arc;
+
+use mpfree_sampler::model::{
+    FilterKind, Keys, Layer, LayerSelect, Levels, Pad, PadsPlay, PressureTarget, Project, Region,
+    Source, KEYGROUP_POLYPHONY,
+};
 use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row};
 use mpfree_sampler_ui::play_widgets::{
     env_level, filter_db, EnvPoint, EnvelopeView, FilterCurve, LayerMap,
 };
 use mpfree_sampler_ui::sample::{self, layered_project, play_samples, PlaySample, PAD, RATE};
+use mpfree_sampler_ui::source::SourceView;
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
@@ -67,7 +73,7 @@ fn step_apply(s: &mut PlaySample, row: Row, delta: i32) {
 fn gesture(a: &PlayAction) -> u64 {
     match a {
         PlayAction::Pad { gesture, .. } => *gesture,
-        PlayAction::Tab(_) => panic!("not an edit"),
+        _ => panic!("not an edit of the pad"),
     }
 }
 
@@ -102,8 +108,8 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     assert_eq!(bar.active, play_tab::TAB);
     assert_eq!(
         bar.enabled,
-        vec![true, true, true, true, false, false],
-        "Pads, Wave, Chop and Play are built"
+        vec![true, true, true, true, true, false],
+        "Pads, Wave, Chop, Play and Grain are built"
     );
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
@@ -131,6 +137,10 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         (Row::Level, "+0.0 dB"),
         (Row::Pan, "Center"),
         (Row::Tune, "+0 st"),
+        (Row::Keys, "Off"),
+        (Row::RootKey, "–"),
+        (Row::PadsPlay, "Their sounds"),
+        (Row::PadsFrom, "–"),
         (Row::VelToLevel, "100 %"),
         (Row::VelToStart, "20 %"),
         (Row::Pressure, "Filter cutoff"),
@@ -204,6 +214,8 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Level, -3, "-1.5 dB"),
         (Row::Pan, -5, "L 25"),
         (Row::Tune, 7, "+7 st"),
+        (Row::Wow, 3, "30 %"),
+        (Row::Wow, -5, "Off"),
         (Row::Sustain, -8, "60 %"),
         (Row::Release, 2, "20 ms"),
         (Row::FilterEnv, 3, "+0.75 oct"),
@@ -545,4 +557,170 @@ fn every_play_sample_screen_draws() {
         s.ui.paint(&mut c);
         assert!(!s.about.is_empty(), "{}", s.name);
     }
+}
+
+/// The tab on a pad holding a second of A3 (220 Hz).
+fn tone() -> PlaySample {
+    let mut s = play(false);
+    let data = (0..RATE as usize)
+        .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / f64::from(RATE)).sin()) as f32)
+        .collect();
+    let source = Source::new("Tone", RATE, 1, data).unwrap();
+    let mut project = Project::new();
+    project.add_source(source.clone());
+    project
+        .set_pad(
+            PAD,
+            Some(Pad::new("Tone", Layer::new(Region::whole(&source)))),
+            None,
+        )
+        .unwrap();
+    let view = Arc::new(SourceView::analyse(&source));
+    assert_eq!(view.root_note, Some(57));
+    s.state = PlayState::from_project(&project, PAD, |_| view.clone()).unwrap();
+    s.project = project;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    s
+}
+
+#[test]
+fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
+    let mut s = tone();
+    let before = s.state.settings.clone();
+    // Nothing to step while Keys are off.
+    assert_eq!(step(&mut s, Row::LowKey, 1), None);
+    step_apply(&mut s, Row::Keys, 1);
+    assert_eq!(s.state.settings.keys, Some(Keys::all(57)), "A3, as heard");
+    assert_eq!(
+        s.state.settings.polyphony, KEYGROUP_POLYPHONY,
+        "voices for chords"
+    );
+    for (row, value) in [
+        (Row::Keys, "On"),
+        (Row::LowKey, "C-1"),
+        (Row::HighKey, "G9"),
+        (Row::RootKey, "A3"),
+    ] {
+        assert_eq!(row_value(&s, row), value, "{row:?}");
+    }
+    // The zone narrows; the low key never passes the high one.
+    for (row, delta, value) in [
+        (Row::LowKey, 36, "C2"),
+        (Row::HighKey, -60, "G4"),
+        (Row::RootKey, 3, "C4"),
+        (Row::LowKey, 100, "G4"),
+        (Row::LowKey, -31, "C2"),
+    ] {
+        step_apply(&mut s, row, delta);
+        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+    }
+    let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
+    assert!(
+        bar.subtitle.ends_with("keys C2–G4, root C4"),
+        "{}",
+        bar.subtitle
+    );
+    let what = describe(&before, &s.state.settings);
+    assert!(
+        what.contains("keys Off -> On, low key – -> C2, high key – -> G4, root key – -> C4"),
+        "{what}"
+    );
+    // Off again.
+    step_apply(&mut s, Row::Keys, -1);
+    assert_eq!(s.state.settings.keys, None);
+}
+
+#[test]
+fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
+    let mut s = tone();
+    step_apply(&mut s, Row::Keys, 1);
+    s.tab.lift();
+    // The kit's rows are their own action, an undo step each.
+    let a = step(&mut s, Row::PadsPlay, 1).unwrap();
+    assert_eq!(
+        a,
+        PlayAction::PadsPlay(PadsPlay::Keys { from: 48 }),
+        "C3: A3's octave"
+    );
+    apply(&mut s, &a);
+    assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 48 });
+    assert_eq!(
+        (row_value(&s, Row::PadsPlay), row_value(&s, Row::PadsFrom)),
+        ("Notes".into(), "C3".into())
+    );
+    let view = EngineView::build(&s.project, RATE);
+    assert!(
+        (0..16).all(|i| view.has_pad(i)),
+        "every pad is a note the keygroup holds"
+    );
+    for (delta, value) in [(1, "C4"), (-9, "C-1"), (20, "C8")] {
+        step_apply(&mut s, Row::PadsFrom, delta);
+        assert_eq!(row_value(&s, Row::PadsFrom), value, "{delta:+}");
+    }
+    let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
+    assert!(
+        bar.subtitle.ends_with("pads play notes from C8"),
+        "{}",
+        bar.subtitle
+    );
+    // Past the top, nothing changes.
+    assert_eq!(step(&mut s, Row::PadsFrom, 1), None);
+    step_apply(&mut s, Row::PadsPlay, -1);
+    assert_eq!(row_value(&s, Row::PadsPlay), "Their sounds");
+    assert!(s.project.undo());
+    assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 108 });
+}
+
+#[test]
+fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
+    let mut s = tone();
+    assert_eq!(row_value(&s, Row::LevelsBy), "–");
+    // Pads play goes round: their sounds, notes, 16 Levels of this pad.
+    step_apply(&mut s, Row::PadsPlay, -1);
+    assert_eq!(
+        s.project.pads_play(),
+        PadsPlay::Levels {
+            pad: PAD as u8,
+            by: Levels::Velocity
+        }
+    );
+    assert_eq!(
+        (row_value(&s, Row::PadsPlay), row_value(&s, Row::LevelsBy)),
+        ("16 Levels".into(), "Velocity".into())
+    );
+    assert_eq!(row_value(&s, Row::PadsFrom), "–");
+    let view = EngineView::build(&s.project, RATE);
+    assert!((0..16).all(|i| view.has_pad(i)), "every pad plays A5");
+    for (delta, by) in [(1, "Tune"), (3, "Start"), (1, "Velocity"), (-2, "Decay")] {
+        step_apply(&mut s, Row::LevelsBy, delta);
+        assert_eq!(row_value(&s, Row::LevelsBy), by, "{delta:+}");
+    }
+    let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
+    assert!(
+        bar.subtitle.ends_with("pads play 16 Levels of A5 by decay"),
+        "{}",
+        bar.subtitle
+    );
+    // Tune at pad 16: seven semitones up from A3 is E4.
+    let mut e = Engine::new(RATE, 8);
+    step_apply(&mut s, Row::LevelsBy, -2);
+    assert_eq!(row_value(&s, Row::LevelsBy), "Tune");
+    e.set_view(EngineView::build(&s.project, RATE));
+    e.apply(Event::NoteOn {
+        pad: 15,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0; 12_000], vec![0.0; 12_000]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    let hz = mpfree_analysis::yin(&l[1000..9192], RATE, 4096, 40.0, 3000.0, 0.15)
+        .unwrap()
+        .0;
+    assert!((hz - 329.63).abs() < 1.0, "{hz}");
+    // Once more round: back to their sounds.
+    step_apply(&mut s, Row::PadsPlay, 1);
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+    assert_eq!(row_value(&s, Row::LevelsBy), "–");
 }

@@ -32,7 +32,7 @@ impl Lcg {
     }
 }
 
-const NAMES: [&str; 13] = [
+const NAMES: [&str; 14] = [
     "filter",
     "dj filter",
     "drive",
@@ -46,6 +46,7 @@ const NAMES: [&str; 13] = [
     "flanger",
     "phaser",
     "lo-fi",
+    "comb",
 ];
 
 fn make(i: usize) -> Box<dyn Node> {
@@ -62,7 +63,8 @@ fn make(i: usize) -> Box<dyn Node> {
         9 => Box::new(Chorus::new()),
         10 => Box::new(Flanger::new()),
         11 => Box::new(Phaser::new()),
-        _ => Box::new(LoFi::new()),
+        12 => Box::new(LoFi::new()),
+        _ => Box::new(Comb::new()),
     }
 }
 
@@ -942,5 +944,110 @@ fn a_full_event_queue_drops_and_counts() {
     assert!(
         !c.queue(7, Timed::new(0, NodeEvent::Param { id: 0, value: 4.0 })),
         "no such slot"
+    );
+}
+
+/// The strongest frequency in `x` within `lo..hi` Hz, by a Goertzel scan in
+/// 1-cent steps.
+fn strongest(x: &[f32], lo: f32, hi: f32) -> f32 {
+    let mut best = (0.0f32, lo);
+    let mut f = lo;
+    while f <= hi {
+        let w = 2.0 * PI * f / RATE as f32;
+        let c = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s = v + c * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        let p = s1 * s1 + s2 * s2 - c * s1 * s2;
+        if p > best.0 {
+            best = (p, f);
+        }
+        f *= 2f32.powf(1.0 / 1200.0);
+    }
+    best.1
+}
+
+#[test]
+fn the_comb_rings_in_tune_and_notes_play_it() {
+    // An impulse into the comb: its ring peaks at the pitch, within 5
+    // cents, from 55 Hz to 4 kHz, and at its second harmonic up to 5 kHz
+    // (above that the damping's delay, matched at the pitch, sharpens the
+    // upper harmonics a little, as in a real string).
+    for &hz in &[55.0f32, 220.0, 1_000.0, 4_000.0] {
+        let mut c = Comb::new();
+        c.prepare(RATE, MAX_BLOCK);
+        c.set_param(ids::comb::PITCH, hz);
+        c.set_param(ids::comb::FEEDBACK, 95.0);
+        c.set_param(ids::comb::MIX, 100.0);
+        c.set_param(ids::comb::SPREAD, 0.0);
+        c.reset();
+        let n = RATE as usize;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        l[0] = 1.0;
+        r[0] = 1.0;
+        run_once(&mut c, &mut l, &mut r);
+        // Past the first few periods (the impulse itself is broadband).
+        let ring = &l[(3.0 * RATE as f32 / hz) as usize..];
+        for k in [1.0f32, 2.0] {
+            if hz * k > 5_000.0 {
+                continue;
+            }
+            let got = strongest(ring, hz * k * 0.95, hz * k * 1.05);
+            let cents = 1200.0 * (got / (hz * k)).log2();
+            assert!(
+                cents.abs() < 5.0,
+                "{hz} Hz, harmonic {k}: {got} Hz ({cents:.1} cents)"
+            );
+        }
+        // The peaks stay near unity gain.
+        assert!(peak(&l) < 1.5, "{hz} Hz: peak {}", peak(&l));
+    }
+    // A note sets the pitch (Key follow on by default): A3 = 220 Hz.
+    let mut c = Comb::new();
+    c.prepare(RATE, MAX_BLOCK);
+    c.set_param(ids::comb::PITCH, 1_000.0);
+    c.reset();
+    let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    c.process(
+        &Ctx::new(RATE, 0),
+        &[Timed::new(
+            0,
+            NodeEvent::NoteOn {
+                note: 57,
+                velocity: 100,
+            },
+        )],
+        &mut l,
+        &mut r,
+    );
+    assert!((c.param(ids::comb::PITCH) - 220.0).abs() < 0.01);
+    // Negative feedback: odd harmonics of half the pitch.
+    let mut c = Comb::new();
+    c.prepare(RATE, MAX_BLOCK);
+    c.set_param(ids::comb::PITCH, 440.0);
+    c.set_param(ids::comb::FEEDBACK, -95.0);
+    c.set_param(ids::comb::MIX, 100.0);
+    c.set_param(ids::comb::SPREAD, 0.0);
+    c.reset();
+    let n = RATE as usize;
+    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+    l[0] = 1.0;
+    run_once(&mut c, &mut l, &mut r);
+    let got = strongest(&l[n / 20..], 200.0, 240.0);
+    assert!(
+        (got - 220.0).abs() < 1.0,
+        "negative feedback rings at {got} Hz"
+    );
+    // The drawn curve matches: a peak at the pitch, a dip between.
+    let mut c = Comb::new();
+    c.prepare(RATE, MAX_BLOCK);
+    c.set_param(ids::comb::PITCH, 220.0);
+    let (at, between) = (c.response_db(220.0), c.response_db(330.0));
+    assert!(
+        at > -1.5 && between < at - 15.0,
+        "curve: {at} dB, {between} dB"
     );
 }
