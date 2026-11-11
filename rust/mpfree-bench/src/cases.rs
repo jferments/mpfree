@@ -911,6 +911,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
+    v.push(measured(|| live_arps(rate, 4)));
+    v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
@@ -1304,6 +1306,68 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
             arps.finish(&block, &mut sink);
             // Silent, except the notes so far in the first sample, so the
             // self-test can see that notes flowed.
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = sink.notes as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The pad player's per-track arps with `n` of them busy at once, as when
+/// several tracks hold latched arps: each latched a 4-note chord (pressed
+/// on the pads through its arp) and plays it Up over 2 octaves in 32nds,
+/// following the transport (128 BPM, swung). The other arps idle. No clips:
+/// the Time case measures those.
+fn live_arps(rate: u32, n: usize) -> Case {
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(
+        0,
+        T::SetSwing(mpfree_transport::Swing {
+            grid: PPQ as u32 / 4,
+            amount: 58,
+        }),
+    );
+    t.command(0, T::Play);
+    let mut arps = Box::new(TrackArps::new(rate, 128.0));
+    for track in 0..n {
+        let e = arps.engine(track).expect("an arp");
+        e.set_settings(mpfree_arp::Settings {
+            mode: mpfree_arp::Mode::Arp,
+            rate: mpfree_arp::Rate::ThirtySecond,
+            octaves: 2,
+            ..mpfree_arp::Settings::default()
+        });
+        e.set_latch(mpfree_arp::LatchMode::Replace);
+    }
+    let view = PlayView::compile(&Song::new(), &[]).expect("view");
+    let mut sink = TimeSink { notes: 0 };
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    Case {
+        name: format!("Arps: {n} latched arps at 32nds"),
+        module: "time",
+        what: "the per-track arps, n of 16 playing latched 4-note chords",
+        block: Box::new(move |b, l, r| {
+            t.process(l.len() as u32, &mut block);
+            if b == 0 {
+                for track in 0..n {
+                    for k in 0..4u8 {
+                        let note = 36 + track as u8 * 2 + k * 4;
+                        arps.pad(
+                            track,
+                            0,
+                            mpfree_play::Event::NoteOn {
+                                note,
+                                velocity: 100,
+                            },
+                        );
+                        arps.pad(track, 1, mpfree_play::Event::NoteOff { note });
+                    }
+                }
+            }
+            player.process(&view, &block, &mut arps.through_sink());
+            arps.finish(&block, &mut sink);
             l.fill(0.0);
             r.fill(0.0);
             l[0] = sink.notes as f32;
@@ -1762,6 +1826,22 @@ mod tests {
         let mut t = measured(|| time(44_100, 8, true));
         let (lt, _) = run(&mut t, 3_000);
         assert!(lt[0] > 500.0 && lt[0] != l[0], "{} against {}", lt[0], l[0]);
+    }
+
+    #[test]
+    fn the_live_arps_case_plays_every_busy_arp() {
+        let mut four = measured(|| live_arps(44_100, 4));
+        let (l4, _) = run(&mut four, 1_000);
+        let mut all = measured(|| live_arps(44_100, 16));
+        let (l16, _) = run(&mut all, 1_000);
+        // About 3 s at 128 BPM: some 50 32nds, an on and an off each.
+        assert!(l4[0] > 300.0, "{}", l4[0]);
+        assert!(
+            (l16[0] / l4[0] - 4.0).abs() < 0.2,
+            "{} against {}",
+            l16[0],
+            l4[0]
+        );
     }
 
     #[test]
