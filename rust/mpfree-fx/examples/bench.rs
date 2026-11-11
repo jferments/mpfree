@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
-use mpfree_fx::{Chain, Compressor, Crush, Delay, DjFilter, Drive, MasterSafety, MultiFilter};
+use mpfree_fx::{Chain, Cloud, Compressor, Crush, Delay, DjFilter, Drive, MasterSafety, MultiFilter};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -53,6 +53,9 @@ fn main() {
     node("Delay", Box::new(Delay::new()), &[]);
     node("Compressor", Box::new(Compressor::new()), &[]);
     node("Master safety", Box::new(MasterSafety::new()), &[]);
+    for (k, name) in ["Cloud reverb (Plate)", "Cloud reverb (Room)", "Cloud reverb (Hall)", "Cloud reverb (Cloud)", "Cloud reverb (Echoes)"].iter().enumerate() {
+        node(name, Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)]);
+    }
     let mut chain = Chain::new();
     chain.prepare(RATE, MAX_BLOCK);
     chain.push(Box::new(Drive::new()));
