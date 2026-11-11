@@ -93,6 +93,22 @@ impl Svf {
     }
 
     pub fn reset(&mut self) { self.ic1 = [0.0; 2]; self.ic2 = [0.0; 2]; }
+
+    /// The steady-state response at `hz` as a complex gain `(re, im)`, for
+    /// drawing curves. Exact: the trapezoidal filter is the bilinear
+    /// transform of its analog prototype, so at `hz` the prototype sees
+    /// `s = j tan(pi hz / rate) / g`.
+    pub fn response(&self, hz: f32, rate: u32) -> (f64, f64) {
+        let (a1, a2) = (f64::from(self.a1), f64::from(self.a2));
+        let g = a2 / a1;
+        let k = (1.0 / a1 - 1.0) / g - g;
+        let w = (std::f64::consts::PI * f64::from(hz) / f64::from(rate)).tan() / g;
+        // H = m0 + (m2 + j m1 w) / (1 - w^2 + j k w)
+        let (dr, di) = (1.0 - w * w, k * w);
+        let (nr, ni) = (f64::from(self.m2), f64::from(self.m1) * w);
+        let den = dr * dr + di * di;
+        (f64::from(self.m0) + (nr * dr + ni * di) / den, (ni * dr - nr * di) / den)
+    }
 }
 
 /// Resonance 0 to 1 as a filter Q: 0 is flat (0.707), 1 is 40 (rings
