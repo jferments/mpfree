@@ -243,4 +243,4 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 - Wavetable on the pads (a third Engine choice) and the Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
 - Synth tab visuals for Drums and Pluck (a pad grid with the models, the string or the mode bank).
-- Plugin hosting: CLAP first, in a sandbox process.
+- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).

@@ -9,7 +9,7 @@ use mpfree_fx::{
 };
 use mpfree_grain::GrainNode;
 use mpfree_looper::{Command as LooperCommand, Looper};
-use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_prof::alloc;
 use mpfree_sampler::dsp::{Filter, FilterKind};
@@ -19,6 +19,7 @@ use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
+use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
 
@@ -296,11 +297,23 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
     }
 }
 
+/// Which of the sampler case's pads are set. The hits are the same in
+/// every case (a hit on an unset pad does nothing), so the two parts add
+/// up to the whole.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SamplerPads {
+    All,
+    /// Pads 1 to 16: sample voices (Hermite read, envelope, filter).
+    Samples,
+    /// Pads 17 to 20: granular voices.
+    Grains,
+}
+
 /// The sampler as the pad player uses it: 16 one-shot, gated and looping
 /// pads with filters and two layers, four granular pads, 24 voices, a hit
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
-fn sampler(name: &str, rate: u32, master: bool) -> Case {
+fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
     let s = Source::new(
         "noise",
         rate,
@@ -312,7 +325,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
     .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
-    for i in 0..16usize {
+    for i in (0..16usize).filter(|_| which != SamplerPads::Grains) {
         let mut r = Region::whole(&s);
         r.mode = [
             PlayMode::OneShot,
@@ -339,7 +352,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
-    for i in 16..20usize {
+    for i in (16..20usize).filter(|_| which != SamplerPads::Samples) {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
         r.grain = GrainParams {
@@ -567,9 +580,32 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
-    v.push(measured(|| sampler("Sampler, 20 pads", rate, false)));
     v.push(measured(|| {
-        sampler("Sampler, 20 pads + master grains", rate, true)
+        sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, 20 pads + master grains",
+            rate,
+            true,
+            SamplerPads::All,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 16 sample pads alone",
+            rate,
+            false,
+            SamplerPads::Samples,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 4 granular pads alone",
+            rate,
+            false,
+            SamplerPads::Grains,
+        )
     }));
     v.push(measured(|| {
         effect(
@@ -741,6 +777,8 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     v.push(measured(|| chain(rate)));
+    v.push(measured(|| track_host(rate, 4, 4)));
+    v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| song(rate)));
@@ -943,7 +981,7 @@ fn song(rate: u32) -> Case {
             .values
     };
     let mut parts = [
-        sampler("sampler", rate, true),
+        sampler("sampler", rate, true, SamplerPads::All),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
         mixer("mixer", rate, 12, 8, Inserts::Song),
@@ -1140,6 +1178,128 @@ fn looper(rate: u32, seconds: u32) -> Case {
 fn input_frame(buf: &mut [f32], i: usize, l: f32, r: f32) {
     buf[2 * i] = l;
     buf[2 * i + 1] = r;
+}
+
+/// A chord for track `t` at a change: `voices` notes from a root that
+/// moves with the change.
+fn chord(t: usize, change: u64, voices: usize) -> impl Iterator<Item = u8> {
+    let root = 36 + ((change * 5 + t as u64 * 7) % 24) as u8;
+    (0..voices).map(move |k| root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8)
+}
+
+/// The track host as a song uses it: `tracks` tracks of Poly (Init), each
+/// a `voices`-note chord changing every half second (the tracks a beat
+/// apart), into one sum. The Poly work is the same as the Poly cases'; the
+/// rest is the host: queues, sorting, per-track sums, the clip guard.
+fn track_host(rate: u32, tracks: usize, voices: usize) -> Case {
+    let max = MAX_BLOCK.min(1024);
+    let mut host = TrackHost::new(tracks, rate, max);
+    for t in 0..tracks {
+        let mut p = Poly::new(rate);
+        p.set_param(POLYPHONY, voices as f32);
+        host.swap(t, Some(Instrument::new(Box::new(p), rate, max)))
+            .expect("a free slot");
+        host.route(t, Some(t));
+    }
+    let mut held: Vec<Vec<u8>> = (0..tracks).map(|_| Vec::with_capacity(voices)).collect();
+    Case {
+        name: format!("Track host, {tracks} Poly tracks of {voices} voices"),
+        module: "synth",
+        what: "chords changing every 0.5 s on each track",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            let half = u64::from(rate / 2);
+            for (t, notes) in held.iter_mut().enumerate() {
+                // Track t changes t/tracks of a half second after track 0.
+                let shift = half * t as u64 / tracks as u64;
+                let g = f0 + half - shift;
+                if g % half + len > half || b == 0 {
+                    let at = if b == 0 {
+                        0
+                    } else {
+                        ((half - g % half) % len) as u32
+                    };
+                    for &n in notes.iter() {
+                        host.note_off(t, at, n);
+                    }
+                    notes.clear();
+                    for n in chord(t, g / half, voices) {
+                        notes.push(n);
+                        host.note_on(t, at, n, 96);
+                    }
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            host.render(&Ctx::new(rate, f0), l.len(), &mut Sum { left: l, right: r });
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// An instrument that makes no sound and costs nothing, to see the host's
+/// own share.
+struct Quiet;
+
+static QUIET_INFO: NodeInfo = NodeInfo {
+    id: "bench.quiet",
+    name: "Quiet",
+    kind: Kind::Instrument,
+};
+
+impl Node for Quiet {
+    fn info(&self) -> &'static NodeInfo {
+        &QUIET_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
+    fn set_param(&mut self, _: u16, _: f32) {}
+    fn param(&self, _: u16) -> f32 {
+        f32::NAN
+    }
+    fn prepare(&mut self, _: u32, _: usize) {}
+    fn reset(&mut self) {}
+    fn process(&mut self, _: &Ctx, events: &[Timed], _: &mut [f32], _: &mut [f32]) {
+        std::hint::black_box(events);
+    }
+}
+
+/// The host alone: `tracks` tracks of an instrument that does nothing, with
+/// four notes on and off in every block on every track.
+fn track_host_alone(rate: u32, tracks: usize) -> Case {
+    let max = MAX_BLOCK.min(1024);
+    let mut host = TrackHost::new(tracks, rate, max);
+    for t in 0..tracks {
+        host.swap(t, Some(Instrument::new(Box::new(Quiet), rate, max)))
+            .expect("a free slot");
+        host.route(t, Some(t));
+    }
+    Case {
+        name: format!("Track host alone, {tracks} tracks, 8 events each per block"),
+        module: "synth",
+        what: "the host's own work: queues, sorting, sums, the clip guard",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u32;
+            for t in 0..tracks {
+                for k in 0..4u32 {
+                    let note = 40 + ((b as u32 + k * 7 + t as u32) % 48) as u8;
+                    // Out of order on purpose: the host sorts.
+                    host.note_on(t, (len - 1 - k * 13) % len, note, 100);
+                    host.note_off(t, (k * 29 + 3) % len, note);
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            host.render(
+                &Ctx::new(rate, b * u64::from(len)),
+                l.len(),
+                &mut Sum { left: l, right: r },
+            );
+        }),
+        mem_bytes: 0,
+    }
 }
 
 #[cfg(test)]
