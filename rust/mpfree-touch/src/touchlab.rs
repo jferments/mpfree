@@ -61,24 +61,60 @@ pub struct LabStep {
 /// The lab's steps, in order. Names are stable: the host check and the
 /// runbook use them.
 pub const STEPS: [LabStep; 9] = [
-    LabStep { name: "reader", seconds: 3, check: Check::Idle,
-              instruction: "Don't touch the screen." },
-    LabStep { name: "taps", seconds: 10, check: Check::Taps(5),
-              instruction: "Tap each of the 5 targets once, one at a time." },
-    LabStep { name: "long_press", seconds: 8, check: Check::LongPresses(2),
-              instruction: "Press and hold the target for 2 seconds, then lift. Do it twice." },
-    LabStep { name: "drag_stop", seconds: 10, check: Check::DragsWithoutSwipe(2),
-              instruction: "Drag slowly across the screen, stop for a second, then lift. Do it twice." },
-    LabStep { name: "swipes", seconds: 12, check: Check::FourSwipes,
-              instruction: "Swipe quickly once each way: left, right, up, down." },
-    LabStep { name: "fling", seconds: 10, check: Check::Flings(2),
-              instruction: "Flick the list up and down a few times." },
-    LabStep { name: "hold_centre", seconds: 12, check: Check::Hold,
-              instruction: "Hold one finger still on the centre dot for 10 seconds, then lift." },
-    LabStep { name: "hold_corner", seconds: 12, check: Check::Hold,
-              instruction: "Hold one finger still on the top-left dot for 10 seconds, then lift." },
-    LabStep { name: "pad_and_swipe", seconds: 10, check: Check::PadAndSwipe,
-              instruction: "Hold a screen pad with one hand and swipe the page with the other." },
+    LabStep {
+        name: "reader",
+        seconds: 3,
+        check: Check::Idle,
+        instruction: "Don't touch the screen.",
+    },
+    LabStep {
+        name: "taps",
+        seconds: 10,
+        check: Check::Taps(5),
+        instruction: "Tap each of the 5 targets once, one at a time.",
+    },
+    LabStep {
+        name: "long_press",
+        seconds: 8,
+        check: Check::LongPresses(2),
+        instruction: "Press and hold the target for 2 seconds, then lift. Do it twice.",
+    },
+    LabStep {
+        name: "drag_stop",
+        seconds: 10,
+        check: Check::DragsWithoutSwipe(2),
+        instruction: "Drag slowly across the screen, stop for a second, then lift. Do it twice.",
+    },
+    LabStep {
+        name: "swipes",
+        seconds: 12,
+        check: Check::FourSwipes,
+        instruction: "Swipe quickly once each way: left, right, up, down.",
+    },
+    LabStep {
+        name: "fling",
+        seconds: 10,
+        check: Check::Flings(2),
+        instruction: "Flick the list up and down a few times.",
+    },
+    LabStep {
+        name: "hold_centre",
+        seconds: 12,
+        check: Check::Hold,
+        instruction: "Hold one finger still on the centre dot for 10 seconds, then lift.",
+    },
+    LabStep {
+        name: "hold_corner",
+        seconds: 12,
+        check: Check::Hold,
+        instruction: "Hold one finger still on the top-left dot for 10 seconds, then lift.",
+    },
+    LabStep {
+        name: "pad_and_swipe",
+        seconds: 10,
+        check: Check::PadAndSwipe,
+        instruction: "Hold a screen pad with one hand and swipe the page with the other.",
+    },
 ];
 
 pub fn step(name: &str) -> Option<&'static LabStep> {
@@ -159,13 +195,20 @@ impl StepRecorder {
                 format!("{head} kind=drag-start t_ms={t_ms}")
             }
             Gesture::Drag { .. } => return None,
-            Gesture::DragEnd { vx, vy, cancelled, .. } => {
+            Gesture::DragEnd {
+                vx, vy, cancelled, ..
+            } => {
                 if !cancelled && vx.hypot(vy) >= self.fling_speed {
                     self.flings += 1;
                 }
-                format!("{head} kind=drag-end vx={vx:.0} vy={vy:.0} cancelled={} t_ms={t_ms}", u8::from(cancelled))
+                format!(
+                    "{head} kind=drag-end vx={vx:.0} vy={vy:.0} cancelled={} t_ms={t_ms}",
+                    u8::from(cancelled)
+                )
             }
-            Gesture::Swipe { direction, speed, .. } => {
+            Gesture::Swipe {
+                direction, speed, ..
+            } => {
                 let (i, name) = match direction {
                     SwipeDirection::Left => (0, "left"),
                     SwipeDirection::Right => (1, "right"),
@@ -180,7 +223,10 @@ impl StepRecorder {
                 format!("{head} kind=2f-start t_ms={t_ms}")
             }
             Gesture::TwoFinger { .. } => return None,
-            Gesture::TwoFingerEnd { cancelled } => format!("{head} kind=2f-end cancelled={} t_ms={t_ms}", u8::from(cancelled)),
+            Gesture::TwoFingerEnd { cancelled } => format!(
+                "{head} kind=2f-end cancelled={} t_ms={t_ms}",
+                u8::from(cancelled)
+            ),
         };
         Some(line)
     }
@@ -198,21 +244,32 @@ impl StepRecorder {
             .and_then(|(_, v)| hold_stats(v));
         let total_swipes: u32 = self.swipes.iter().sum();
         let (pass, note) = match self.step.check {
-            Check::Idle => (self.downs == 0, if self.downs == 0 { "ok" } else { "touched" }),
+            Check::Idle => (
+                self.downs == 0,
+                if self.downs == 0 { "ok" } else { "touched" },
+            ),
             Check::Taps(n) => judge(self.taps >= n && self.drags == 0, "ok", "taps_or_drags"),
             Check::LongPresses(n) => judge(self.long >= n, "ok", "too_few_long_presses"),
-            Check::DragsWithoutSwipe(n) => {
-                judge(self.drags >= n && total_swipes == 0, "ok", "swipe_or_too_few_drags")
-            }
-            Check::FourSwipes => judge(self.swipes.iter().all(|&c| c >= 1), "ok", "missing_direction"),
+            Check::DragsWithoutSwipe(n) => judge(
+                self.drags >= n && total_swipes == 0,
+                "ok",
+                "swipe_or_too_few_drags",
+            ),
+            Check::FourSwipes => judge(
+                self.swipes.iter().all(|&c| c >= 1),
+                "ok",
+                "missing_direction",
+            ),
             Check::Flings(n) => judge(self.flings >= n, "ok", "too_few_flings"),
             Check::Hold => {
                 let long_enough = hold.is_some_and(|h| h.duration_us >= 5_000_000);
                 judge(long_enough, "ok", "no_hold_of_5s")
             }
-            Check::PadAndSwipe => {
-                judge(total_swipes >= 1 && self.two_finger == 0, "ok", "no_swipe_or_paired")
-            }
+            Check::PadAndSwipe => judge(
+                total_swipes >= 1 && self.two_finger == 0,
+                "ok",
+                "no_swipe_or_paired",
+            ),
         };
         StepSummary {
             step: self.step.name,
@@ -225,7 +282,11 @@ impl StepRecorder {
             swipes: self.swipes,
             two_finger: self.two_finger,
             flings: self.flings,
-            hold: if self.step.check == Check::Hold { hold } else { None },
+            hold: if self.step.check == Check::Hold {
+                hold
+            } else {
+                None
+            },
         }
     }
 }
@@ -272,8 +333,16 @@ impl StepSummary {
 
 /// The reader's state, as a journal line.
 #[allow(clippy::too_many_arguments)]
-pub fn reader_line(seeded: bool, slot: i32, fingers: u32, resyncs: u64, fallbacks: u64, drained: u64, contacts: u64,
-                   events: u64) -> String {
+pub fn reader_line(
+    seeded: bool,
+    slot: i32,
+    fingers: u32,
+    resyncs: u64,
+    fallbacks: u64,
+    drained: u64,
+    contacts: u64,
+    events: u64,
+) -> String {
     format!(
         "touch-reader: seeded={} slot={slot} fingers={fingers} resyncs={resyncs} fallbacks={fallbacks} drained={drained} contacts={contacts} events={events}",
         u8::from(seeded)
@@ -288,6 +357,9 @@ pub fn parse_line(line: &str) -> Option<(&str, Vec<(&str, &str)>)> {
         .filter_map(|tag| line.find(tag).map(|at| (at, *tag)))
         .min_by_key(|(at, _)| *at)?;
     let rest = &line[start.0 + start.1.len()..];
-    let pairs = rest.split_whitespace().filter_map(|kv| kv.split_once('=')).collect();
+    let pairs = rest
+        .split_whitespace()
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
     Some((start.1.trim_end_matches(':'), pairs))
 }

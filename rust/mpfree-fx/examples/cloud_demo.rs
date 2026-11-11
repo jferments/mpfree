@@ -31,18 +31,33 @@ const BPM: f64 = 90.0;
 const BLOCK: usize = 128;
 const BARS: usize = 12;
 
-fn step(s: f64) -> usize { (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize }
-fn bar(b: usize) -> usize { step((b as f64 - 1.0) * 16.0) }
-fn db(x: f32) -> f32 { gain_to_db(x) }
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32 }
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
-fn hz(midi: i32) -> f32 { 440.0 * 2f32.powf((midi - 69) as f32 / 12.0) }
+fn step(s: f64) -> usize {
+    (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize
+}
+fn bar(b: usize) -> usize {
+    step((b as f64 - 1.0) * 16.0)
+}
+fn db(x: f32) -> f32 {
+    gain_to_db(x)
+}
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32
+}
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+fn hz(midi: i32) -> f32 {
+    440.0 * 2f32.powf((midi - 69) as f32 / 12.0)
+}
 
 struct Noise(u64);
 
 impl Noise {
     fn next(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         ((self.0 >> 40) as f32 / (1u64 << 23) as f32) - 1.0
     }
 }
@@ -50,7 +65,10 @@ impl Noise {
 /// A saw from its harmonics below 12 kHz.
 fn saw(ph: f32, hz: f32) -> f32 {
     let n = ((12_000.0 / hz) as usize).clamp(1, 24);
-    (1..=n).map(|k| (TAU * ph * k as f32).sin() / k as f32).sum::<f32>() * 0.55
+    (1..=n)
+        .map(|k| (TAU * ph * k as f32).sin() / k as f32)
+        .sum::<f32>()
+        * 0.55
 }
 
 /// One mono-ish stem in stereo.
@@ -61,7 +79,9 @@ fn add(s: &mut Stem, at: usize, len: usize, pan: f32, f: &mut dyn FnMut(usize) -
     let fade = (0.003 * RATE as f32) as usize;
     for k in 0..len {
         let i = at + k;
-        if i >= s.0.len() { break; }
+        if i >= s.0.len() {
+            break;
+        }
         let x = f(k) * ((len - k) as f32 / fade as f32).min(1.0);
         s.0[i] += x * (1.0 - pan);
         s.1[i] += x * (1.0 + pan);
@@ -82,32 +102,63 @@ fn stems(total: usize) -> [Stem; 5] {
         let s0 = (b as f64 - 1.0) * 16.0;
         for &s in &[0.0, 7.0, 10.0] {
             let mut ph = 0.0f32;
-            add(&mut st[KICK], step(s0 + s), (0.4 * rate) as usize, 0.0, &mut |k| {
-                let t = k as f32 / rate;
-                ph += (46.0 + 130.0 * (-t * 30.0).exp()) / rate;
-                ((ph * TAU).sin() * 3.0).tanh() * (-t * 6.0).exp() * 0.55
-            });
+            add(
+                &mut st[KICK],
+                step(s0 + s),
+                (0.4 * rate) as usize,
+                0.0,
+                &mut |k| {
+                    let t = k as f32 / rate;
+                    ph += (46.0 + 130.0 * (-t * 30.0).exp()) / rate;
+                    ((ph * TAU).sin() * 3.0).tanh() * (-t * 6.0).exp() * 0.55
+                },
+            );
         }
         for &s in &[4.0, 12.0] {
             let mut ph = 0.0f32;
-            add(&mut st[SNARE], step(s0 + s), (0.22 * rate) as usize, 0.05, &mut |k| {
-                let t = k as f32 / rate;
-                ph += 185.0 / rate;
-                noise.next() * (-t * 18.0).exp() * 0.4 + (ph * TAU).sin() * (-t * 30.0).exp() * 0.3
-            });
+            add(
+                &mut st[SNARE],
+                step(s0 + s),
+                (0.22 * rate) as usize,
+                0.05,
+                &mut |k| {
+                    let t = k as f32 / rate;
+                    ph += 185.0 / rate;
+                    noise.next() * (-t * 18.0).exp() * 0.4
+                        + (ph * TAU).sin() * (-t * 30.0).exp() * 0.3
+                },
+            );
         }
         for h in 0..16 {
             let s = h as f64 + if h % 2 == 1 { 0.2 } else { 0.0 };
-            let vel = if h % 4 == 2 { 0.12 } else if h % 2 == 0 { 0.08 } else { 0.05 };
+            let vel = if h % 4 == 2 {
+                0.12
+            } else if h % 2 == 0 {
+                0.08
+            } else {
+                0.05
+            };
             let mut prev = 0.0f32;
-            add(&mut st[HATS], step(s0 + s), (0.04 * rate) as usize, -0.35, &mut |k| {
-                let n = noise.next();
-                let x = n - prev;
-                prev = n;
-                x * (-(k as f32) / rate * 110.0).exp() * vel
-            });
+            add(
+                &mut st[HATS],
+                step(s0 + s),
+                (0.04 * rate) as usize,
+                -0.35,
+                &mut |k| {
+                    let n = noise.next();
+                    let x = n - prev;
+                    prev = n;
+                    x * (-(k as f32) / rate * 110.0).exp() * vel
+                },
+            );
         }
-        let riff: [(f64, f64, i32); 5] = [(0.0, 3.0, 28), (3.0, 1.0, 28), (6.0, 2.0, 31), (8.0, 3.5, 28), (12.0, 3.0, 26)];
+        let riff: [(f64, f64, i32); 5] = [
+            (0.0, 3.0, 28),
+            (3.0, 1.0, 28),
+            (6.0, 2.0, 31),
+            (8.0, 3.5, 28),
+            (12.0, 3.0, 26),
+        ];
         for &(s, len, n) in &riff {
             let f = hz(n);
             let mut ph = 0.0f32;
@@ -118,8 +169,18 @@ fn stems(total: usize) -> [Stem; 5] {
         }
         // E minor, C, G, D: stabs, sparse stabs in the hall, a held chord
         // for the cloud.
-        let chord: [i32; 3] = match (b - 1) % 4 { 0 => [52, 55, 59], 1 => [48, 52, 55], 2 => [50, 55, 59], _ => [50, 54, 57] };
-        let hits: &[(f64, f64)] = match b { 7 | 8 => &[(0.0, 1.0), (8.0, 1.0)], 9 => &[(0.0, 15.0)], 10 => &[], _ => &[(2.0, 1.0), (6.0, 1.0), (10.0, 1.0), (14.0, 1.0)] };
+        let chord: [i32; 3] = match (b - 1) % 4 {
+            0 => [52, 55, 59],
+            1 => [48, 52, 55],
+            2 => [50, 55, 59],
+            _ => [50, 54, 57],
+        };
+        let hits: &[(f64, f64)] = match b {
+            7 | 8 => &[(0.0, 1.0), (8.0, 1.0)],
+            9 => &[(0.0, 15.0)],
+            10 => &[],
+            _ => &[(2.0, 1.0), (6.0, 1.0), (10.0, 1.0), (14.0, 1.0)],
+        };
         for &(s, len) in hits {
             for (v, &n) in chord.iter().enumerate() {
                 let f = hz(n + 12);
@@ -150,33 +211,58 @@ fn stems(total: usize) -> [Stem; 5] {
     for (v, &n) in [64, 67, 71, 76].iter().enumerate() {
         let f = hz(n);
         let mut ph = 0.0f32;
-        add(&mut st[CHORDS], at, step(2.0), (v as f32 - 1.5) * 0.3, &mut |k| {
-            ph = (ph + f / rate).fract();
-            let t = k as f32 / rate;
-            (saw(ph, f) * 0.6 + (TAU * ph).sin() * 0.4) * (t / 0.005).min(1.0) * (-t * 5.0).exp() * 0.15
-        });
+        add(
+            &mut st[CHORDS],
+            at,
+            step(2.0),
+            (v as f32 - 1.5) * 0.3,
+            &mut |k| {
+                ph = (ph + f / rate).fract();
+                let t = k as f32 / rate;
+                (saw(ph, f) * 0.6 + (TAU * ph).sin() * 0.4)
+                    * (t / 0.005).min(1.0)
+                    * (-t * 5.0).exp()
+                    * 0.15
+            },
+        );
     }
     st
 }
 
 fn main() {
     let light = std::env::args().nth(2).is_some_and(|a| a == "light");
-    let out = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        std::path::Path::new(&home).join("mpfree-work").join("cloud-demo.wav")
-    });
+    let out = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::Path::new(&home)
+                .join("mpfree-work")
+                .join("cloud-demo.wav")
+        });
     let total = bar(BARS + 1);
     let st = stems(total);
 
     // One reverb per character, wet only, from the factory presets.
-    let names = ["Small room", "Dark plate", "Big hall", "Endless cloud", "Echo chamber"];
+    let names = [
+        "Small room",
+        "Dark plate",
+        "Big hall",
+        "Endless cloud",
+        "Echo chamber",
+    ];
     let mut verbs: Vec<Cloud> = names
         .iter()
         .map(|name| {
-            let p = CLOUD_PRESETS.iter().find(|p| p.name == *name).expect("preset");
+            let p = CLOUD_PRESETS
+                .iter()
+                .find(|p| p.name == *name)
+                .expect("preset");
             let mut c = Cloud::new();
             c.prepare(RATE, BLOCK);
-            for &(id, v) in p.values { c.set_param(id, v); }
+            for &(id, v) in p.values {
+                c.set_param(id, v);
+            }
             c.set_param(ids::cloud::MIX, 100.0);
             c.set_param(ids::cloud::QUALITY, if light { 1.0 } else { 0.0 });
             c
@@ -184,7 +270,9 @@ fn main() {
         .collect();
     // The cloud decays in 2.5 s once released, so the end rings out in time.
     verbs[3].set_param(ids::cloud::DECAY, 2500.0);
-    for v in &mut verbs { v.reset(); }
+    for v in &mut verbs {
+        v.reset();
+    }
     // Send levels per stem (kick, snare, hats, bass, chords) for each reverb,
     // and the bars they are open.
     let sends: [([f32; 5], usize, usize); 5] = [
@@ -200,7 +288,14 @@ fn main() {
 
     let mut fuzz = Drive::new();
     fuzz.prepare(RATE, BLOCK);
-    for (id, v) in [(ids::drive::MODE, 4.0), (ids::drive::DRIVE, 22.0), (ids::drive::TONE, 4500.0), (ids::drive::MIX, 80.0)] { fuzz.set_param(id, v); }
+    for (id, v) in [
+        (ids::drive::MODE, 4.0),
+        (ids::drive::DRIVE, 22.0),
+        (ids::drive::TONE, 4500.0),
+        (ids::drive::MIX, 80.0),
+    ] {
+        fuzz.set_param(id, v);
+    }
     fuzz.reset();
     let mut safety = MasterSafety::new();
     safety.prepare(RATE, BLOCK);
@@ -212,8 +307,15 @@ fn main() {
     let ramp = (0.01 * RATE as f32) as usize;
     let open = |i: usize, from: usize, to: usize| -> f32 {
         let (a, b) = (bar(from), bar(to));
-        if i < a || i >= b + ramp { return 0.0; }
-        ((i - a) as f32 / ramp as f32).min(1.0) * if i >= b { 1.0 - (i - b) as f32 / ramp as f32 } else { 1.0 }
+        if i < a || i >= b + ramp {
+            return 0.0;
+        }
+        ((i - a) as f32 / ramp as f32).min(1.0)
+            * if i >= b {
+                1.0 - (i - b) as f32 / ramp as f32
+            } else {
+                1.0
+            }
     };
     let (mut l, mut r) = (vec![0.0f32; total], vec![0.0f32; total]);
     let mut pre = (vec![0.0f32; total], vec![0.0f32; total]);
@@ -221,16 +323,30 @@ fn main() {
     let mut at = 0;
     while at < total {
         let len = BLOCK.min(total - at);
-        let ctx = Ctx { bpm: BPM, playing: true, ..Ctx::new(RATE, at as u64) };
+        let ctx = Ctx {
+            bpm: BPM,
+            playing: true,
+            ..Ctx::new(RATE, at as u64)
+        };
         let range = at..at + len;
-        let (mut bl, mut br) = (st[BASS].0[range.clone()].to_vec(), st[BASS].1[range.clone()].to_vec());
+        let (mut bl, mut br) = (
+            st[BASS].0[range.clone()].to_vec(),
+            st[BASS].1[range.clone()].to_vec(),
+        );
         fuzz.process(&ctx, &[], &mut bl, &mut br);
         let dry = |k: usize, ch: usize| -> f32 {
             let i = at + k;
             let s = |n: usize| if ch == 0 { st[n].0[i] } else { st[n].1[i] };
-            1.3 * s(KICK) + s(SNARE) + s(HATS) + 1.2 * if ch == 0 { bl[k] } else { br[k] } + s(CHORDS)
+            1.3 * s(KICK)
+                + s(SNARE)
+                + s(HATS)
+                + 1.2 * if ch == 0 { bl[k] } else { br[k] }
+                + s(CHORDS)
         };
-        let (mut ml, mut mr): (Vec<f32>, Vec<f32>) = ((0..len).map(|k| dry(k, 0)).collect(), (0..len).map(|k| dry(k, 1)).collect());
+        let (mut ml, mut mr): (Vec<f32>, Vec<f32>) = (
+            (0..len).map(|k| dry(k, 0)).collect(),
+            (0..len).map(|k| dry(k, 1)).collect(),
+        );
         for (v, verb) in verbs.iter_mut().enumerate() {
             let (gains, from, to) = sends[v];
             let mut sl = vec![0.0f32; len];
@@ -238,9 +354,15 @@ fn main() {
             for k in 0..len {
                 let i = at + k;
                 let g = open(i, from, to);
-                if g == 0.0 { continue; }
+                if g == 0.0 {
+                    continue;
+                }
                 for n in 0..5 {
-                    let (x, y) = if n == BASS { (bl[k], br[k]) } else { (st[n].0[i], st[n].1[i]) };
+                    let (x, y) = if n == BASS {
+                        (bl[k], br[k])
+                    } else {
+                        (st[n].0[i], st[n].1[i])
+                    };
                     sl[k] += g * gains[n] * x;
                     sr[k] += g * gains[n] * y;
                 }
@@ -248,18 +370,30 @@ fn main() {
             let mut events = Vec::new();
             if v == 3 {
                 for (f, value) in [(freeze_at, 1.0), (release_at, 0.0)] {
-                    if range.contains(&f) { events.push(Timed::new((f - at) as u32, NodeEvent::Param { id: ids::cloud::FREEZE, value })); }
+                    if range.contains(&f) {
+                        events.push(Timed::new(
+                            (f - at) as u32,
+                            NodeEvent::Param {
+                                id: ids::cloud::FREEZE,
+                                value,
+                            },
+                        ));
+                    }
                 }
             }
             verb.process(&ctx, &events, &mut sl, &mut sr);
             for k in 0..len {
                 ml[k] += returns[v] * sl[k];
                 mr[k] += returns[v] * sr[k];
-                if at + k >= total - 4800 { tails[v] = tails[v].max(sl[k].abs()).max(sr[k].abs()); }
+                if at + k >= total - 4800 {
+                    tails[v] = tails[v].max(sl[k].abs()).max(sr[k].abs());
+                }
             }
         }
         // Hot on purpose: Master safety catches it.
-        for x in ml.iter_mut().chain(mr.iter_mut()) { *x *= 0.95; }
+        for x in ml.iter_mut().chain(mr.iter_mut()) {
+            *x *= 0.95;
+        }
         pre.0[range.clone()].copy_from_slice(&ml);
         pre.1[range.clone()].copy_from_slice(&mr);
         let (mut rl, mut rr) = (ml.clone(), mr.clone());
@@ -270,34 +404,91 @@ fn main() {
         at += len;
     }
 
-    let sections = ["dry", "dry", "small room", "small room", "dark plate", "dark plate", "big hall", "big hall", "endless cloud", "cloud frozen", "echo chamber", "ring out"];
+    let sections = [
+        "dry",
+        "dry",
+        "small room",
+        "small room",
+        "dark plate",
+        "dark plate",
+        "big hall",
+        "big hall",
+        "endless cloud",
+        "cloud frozen",
+        "echo chamber",
+        "ring out",
+    ];
     println!("Cloud reverb demo: {BARS} bars at {BPM} BPM, {RATE} Hz, {BLOCK}-frame blocks\n");
-    println!("  bar  {:<15} {:>9} {:>9} {:>9}", "reverb", "in peak", "out peak", "out RMS");
+    println!(
+        "  bar  {:<15} {:>9} {:>9} {:>9}",
+        "reverb", "in peak", "out peak", "out RMS"
+    );
     for (b, section) in sections.iter().enumerate() {
         let (r0, r1) = (bar(b + 1), bar(b + 2).min(total));
         let pin = peak(&pre.0[r0..r1]).max(peak(&pre.1[r0..r1]));
-        println!("  {:>3}  {:<15} {:>6.1} dB {:>6.1} dB {:>6.1} dB", b + 1, section, db(pin), db(peak(&l[r0..r1]).max(peak(&r[r0..r1]))), db(rms(&l[r0..r1])));
+        println!(
+            "  {:>3}  {:<15} {:>6.1} dB {:>6.1} dB {:>6.1} dB",
+            b + 1,
+            section,
+            db(pin),
+            db(peak(&l[r0..r1]).max(peak(&r[r0..r1]))),
+            db(rms(&l[r0..r1]))
+        );
     }
     let s = safety.stats();
     let rs = raw.stats();
     let last = peak(&l[total - 4800..]).max(peak(&r[total - 4800..]));
     println!("\nMaster safety (Safe limiter, ceiling -0.3 dBFS): caught {} overs, most limiting {:.1} dB, peak out {:.2} dBFS, clipped frames {}", s.overs, s.max_reduction_db, s.peak_out_db, s.clipped);
-    println!("A Raw master on the same mix would have clipped {} frames (peak {:+.1} dBFS)", rs.clipped, rs.peak_out_db);
-    println!("last 100 ms peak {:.1} dBFS; reverb returns there: {}", db(last), names.iter().zip(tails).map(|(n, t)| format!("{n} {:.0} dB", db(t))).collect::<Vec<_>>().join(", "));
+    println!(
+        "A Raw master on the same mix would have clipped {} frames (peak {:+.1} dBFS)",
+        rs.clipped, rs.peak_out_db
+    );
+    println!(
+        "last 100 ms peak {:.1} dBFS; reverb returns there: {}",
+        db(last),
+        names
+            .iter()
+            .zip(tails)
+            .map(|(n, t)| format!("{n} {:.0} dB", db(t)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let mut ok = true;
-    if s.clipped > 0 || peak(&l).max(peak(&r)) > 1.0 { println!("FAIL: the converter would clip"); ok = false; }
-    if !l.iter().chain(&r).all(|v| v.is_finite()) { println!("FAIL: non-finite output"); ok = false; }
-    if last > 1e-3 { println!("FAIL: the end is not quiet"); ok = false; }
+    if s.clipped > 0 || peak(&l).max(peak(&r)) > 1.0 {
+        println!("FAIL: the converter would clip");
+        ok = false;
+    }
+    if !l.iter().chain(&r).all(|v| v.is_finite()) {
+        println!("FAIL: non-finite output");
+        ok = false;
+    }
+    if last > 1e-3 {
+        println!("FAIL: the end is not quiet");
+        ok = false;
+    }
 
     let mut pcm = Vec::with_capacity(total * 4);
     for i in 0..total {
-        for x in [l[i], r[i]] { pcm.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()); }
+        for x in [l[i], r[i]] {
+            pcm.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+        }
     }
-    if let Some(dir) = out.parent() { std::fs::create_dir_all(dir).expect("create output dir"); }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).expect("create output dir");
+    }
     std::fs::write(&out, wav(&pcm)).expect("write wav");
-    println!("wrote {} ({} frames, {:.1} s), PCM hash {:016x}", out.display(), total, total as f32 / RATE as f32, fnv(&pcm));
+    println!(
+        "wrote {} ({} frames, {:.1} s), PCM hash {:016x}",
+        out.display(),
+        total,
+        total as f32 / RATE as f32,
+        fnv(&pcm)
+    );
     println!("(the PCM hash repeats on the same computer; other computers' maths libraries can differ in the last bit)");
-    if !ok { eprintln!("self-check FAILED"); std::process::exit(1); }
+    if !ok {
+        eprintln!("self-check FAILED");
+        std::process::exit(1);
+    }
     println!("self-check ok");
 }
 
@@ -321,5 +512,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

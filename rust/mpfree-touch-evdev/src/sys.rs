@@ -63,7 +63,10 @@ pub fn get_abs(fd: c_int, code: u8) -> io::Result<AbsInfo> {
 /// One value (`code` = TRACKING_ID, POSITION_X ...) for each of `slots` slots.
 pub fn get_mt_slots(fd: c_int, code: u8, slots: usize) -> io::Result<Vec<i32>> {
     if slots == 0 || slots > MAX_SLOTS {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "slot count out of range"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "slot count out of range",
+        ));
     }
     // struct input_mt_request_layout { __u32 code; __s32 values[slots]; }
     let mut buf = [0i32; MAX_SLOTS + 1];

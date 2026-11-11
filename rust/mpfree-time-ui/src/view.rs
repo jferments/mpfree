@@ -23,8 +23,10 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
-use crate::widgets::{BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, Run, TakeItem, TakeList,
-                     TransportBar, GRID_COLS};
+use crate::widgets::{
+    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, Run, TakeItem, TakeList,
+    TransportBar, GRID_COLS,
+};
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
 use mpfree_seq::{Project, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
@@ -43,15 +45,24 @@ pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
 pub const BAR_SPEC: &str = "transport:44";
 /// The Clips page: the grid, and beside it the record settings over the takes.
-pub const CLIPS_LAYOUT: &str = "col(header:60, transport:44, row(clips:*, col(record:*, takes:240):430):*, hint:26)";
+pub const CLIPS_LAYOUT: &str =
+    "col(header:60, transport:44, row(clips:*, col(record:*, takes:240):430):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   + records into an empty slot   ·   a track's name arms it";
 /// The record settings, top to bottom.
-pub const RECORD_ROWS: [&str; 5] = ["Armed track", "Record mode", "Count-in", "Loop, bars", "Tempo, BPM"];
+pub const RECORD_ROWS: [&str; 5] = [
+    "Armed track",
+    "Record mode",
+    "Count-in",
+    "Loop, bars",
+    "Tempo, BPM",
+];
 /// The loop lengths the Loop row steps through, in bars from bar 1 (0 is off).
 pub const LOOP_BARS: [i64; 6] = [0, 1, 2, 4, 8, 16];
 /// Track colours, by track number.
-pub const TRACK_COLORS: [u32; 8] = [0xE8A33D, 0x3DDC97, 0x6EA8FE, 0xFF8A3D, 0xC77DFF, 0xFF6FA8, 0x2EC4B6, 0x9AA8FF];
+pub const TRACK_COLORS: [u32; 8] = [
+    0xE8A33D, 0x3DDC97, 0x6EA8FE, 0xFF8A3D, 0xC77DFF, 0xFF6FA8, 0x2EC4B6, 0x9AA8FF,
+];
 
 /// `layout` with the transport bar under the header, for the app's Play
 /// page and the arp's layouts: `col(header:60, ...` becomes
@@ -86,15 +97,31 @@ pub struct TransportInfo {
 
 impl Default for TransportInfo {
     fn default() -> Self {
-        TransportInfo { state: State::Stopped, position: 0, bpm: 120.0, meter: Meter::default(),
-                        swing: Swing::default(), loop_range: None, overdub: false, count_in: 0 }
+        TransportInfo {
+            state: State::Stopped,
+            position: 0,
+            bpm: 120.0,
+            meter: Meter::default(),
+            swing: Swing::default(),
+            loop_range: None,
+            overdub: false,
+            count_in: 0,
+        }
     }
 }
 
 impl TransportInfo {
     pub fn of(t: &Transport) -> TransportInfo {
-        TransportInfo { state: t.state(), position: t.position(), bpm: t.bpm(), meter: t.meter(), swing: t.swing(),
-                        loop_range: t.loop_range(), overdub: t.overdub(), count_in: t.count_in() }
+        TransportInfo {
+            state: t.state(),
+            position: t.position(),
+            bpm: t.bpm(),
+            meter: t.meter(),
+            swing: t.swing(),
+            loop_range: t.loop_range(),
+            overdub: t.overdub(),
+            count_in: t.count_in(),
+        }
     }
 }
 
@@ -140,10 +167,22 @@ pub struct TakeRow {
 impl TakeRow {
     pub fn of(t: &Take) -> TakeRow {
         let made = t.made.first().map(|(track, slot, _)| (*track, *slot));
-        let at = made.or_else(|| t.added.first().or(t.erased.first()).map(|&(track, slot, _)| (track, slot)));
+        let at = made.or_else(|| {
+            t.added
+                .first()
+                .or(t.erased.first())
+                .map(|&(track, slot, _)| (track, slot))
+        });
         let added = t.added.len() + t.made.iter().map(|(_, _, c)| c.notes.len()).sum::<usize>();
-        TakeRow { number: t.number, captured: t.captured, edited: t.edited, made: made.is_some(), at, added,
-                  erased: t.erased.len() }
+        TakeRow {
+            number: t.number,
+            captured: t.captured,
+            edited: t.edited,
+            made: made.is_some(),
+            at,
+            added,
+            erased: t.erased.len(),
+        }
     }
 
     /// What it is: "take", "capture" or "edit".
@@ -184,8 +223,13 @@ pub struct TimeState {
 }
 
 impl TimeState {
-    pub fn from_engine(transport: TransportInfo, project: &Project, launches: &[Launch], armed: Option<usize>,
-                       takes: &Takes) -> TimeState {
+    pub fn from_engine(
+        transport: TransportInfo,
+        project: &Project,
+        launches: &[Launch],
+        armed: Option<usize>,
+        takes: &Takes,
+    ) -> TimeState {
         let tracks = project
             .tracks
             .iter()
@@ -196,15 +240,27 @@ impl TimeState {
                     .slots
                     .iter()
                     .map(|s| {
-                        s.as_ref().map(|c| ClipInfo { name: c.name.clone(), length: c.length, speed: c.speed,
-                                                      notes: c.notes.len() })
+                        s.as_ref().map(|c| ClipInfo {
+                            name: c.name.clone(),
+                            length: c.length,
+                            speed: c.speed,
+                            notes: c.notes.len(),
+                        })
                     })
                     .collect(),
             })
             .collect();
-        TimeState { transport, tracks, launches: launches.to_vec(), cues: Vec::new(), armed,
-                    done: takes.done().iter().map(TakeRow::of).collect(),
-                    undone: takes.undone().iter().map(TakeRow::of).collect(), chips: Vec::new(), capture: None }
+        TimeState {
+            transport,
+            tracks,
+            launches: launches.to_vec(),
+            cues: Vec::new(),
+            armed,
+            done: takes.done().iter().map(TakeRow::of).collect(),
+            undone: takes.undone().iter().map(TakeRow::of).collect(),
+            chips: Vec::new(),
+            capture: None,
+        }
     }
 
     pub fn clip(&self, track: usize, slot: usize) -> Option<&ClipInfo> {
@@ -222,7 +278,9 @@ impl TimeState {
     }
 
     fn track_name(&self, track: usize) -> String {
-        self.tracks.get(track).map_or_else(|| format!("Track {}", track + 1), |t| t.name.clone())
+        self.tracks
+            .get(track)
+            .map_or_else(|| format!("Track {}", track + 1), |t| t.name.clone())
     }
 }
 
@@ -238,13 +296,19 @@ pub enum TimeAction {
     /// Arm a track for recording, or none.
     Arm(Option<usize>),
     /// Play this clip from the next bar line (see [`clips_after`]).
-    Launch { track: usize, slot: usize },
+    Launch {
+        track: usize,
+        slot: usize,
+    },
     /// Stop the track's clip on the next bar line.
     StopClip(usize),
     /// Take back the launch or stop waiting on the track.
     Uncue(usize),
     /// Make a clip in this empty slot, launch it and arm its track.
-    NewClip { track: usize, slot: usize },
+    NewClip {
+        track: usize,
+        slot: usize,
+    },
     /// Chip `i` on the bar was tapped.
     Chip(usize),
     /// Keep what was just played (CAPTURE): into the armed track's playing
@@ -274,8 +338,13 @@ pub fn launch_origin(t: &TransportInfo) -> Tick {
 /// - Uncue takes the track's cue back.
 /// - NewClip launches its new clip at once from [`launch_origin`] (it
 ///   records from there), and takes the track's cue back.
-pub fn clips_after(project: &Project, launches: &[Launch], cues: &[Cue], action: &TimeAction, t: &TransportInfo)
-                   -> (Vec<Launch>, Vec<Cue>) {
+pub fn clips_after(
+    project: &Project,
+    launches: &[Launch],
+    cues: &[Cue],
+    action: &TimeAction,
+    t: &TransportInfo,
+) -> (Vec<Launch>, Vec<Cue>) {
     let (mut launches, mut cues) = (launches.to_vec(), cues.to_vec());
     let rolling = t.state.rolling();
     let (track, slot) = match *action {
@@ -299,7 +368,11 @@ pub fn clips_after(project: &Project, launches: &[Launch], cues: &[Cue], action:
     launches.retain(|l| l.track != track);
     if let Some((slot, clip)) = slot.and_then(|s| Some((s, project.clip(track, s)?))) {
         let bar = t.position - t.position.rem_euclid(t.meter.bar_ticks());
-        launches.push(Launch { track, slot, origin: anchored(bar, clip.length, clip.speed) });
+        launches.push(Launch {
+            track,
+            slot,
+            origin: anchored(bar, clip.length, clip.speed),
+        });
     }
     (launches, cues)
 }
@@ -323,7 +396,11 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
     match *action {
         TimeAction::Launch { track, slot } | TimeAction::NewClip { track, slot } => {
             out.retain(|l| l.track != track);
-            out.push(Launch { track, slot, origin: launch_origin(t) });
+            out.push(Launch {
+                track,
+                slot,
+                origin: launch_origin(t),
+            });
         }
         TimeAction::StopClip(track) => out.retain(|l| l.track != track),
         _ => {}
@@ -343,9 +420,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             BarButton::Undo => TimeAction::Undo,
         }),
         (TRANSPORT, EventKind::Select(i)) => Some(TimeAction::Chip(*i)),
-        (CLIPS, EventKind::Tab(track)) => {
-            Some(TimeAction::Arm(if st.armed == Some(*track) { None } else { Some(*track) }))
-        }
+        (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
+            None
+        } else {
+            Some(*track)
+        })),
         (CLIPS, EventKind::Select(i)) => {
             let (track, slot) = (i / SLOTS, i % SLOTS);
             if track >= st.tracks.len() {
@@ -353,7 +432,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             } else if st.clip(track, slot).is_none() {
                 Some(TimeAction::NewClip { track, slot })
             } else if st.cue(track).is_some_and(|c| {
-                c.slot == Some(slot) || (c.slot.is_none() && st.launch(track).is_some_and(|l| l.slot == slot))
+                c.slot == Some(slot)
+                    || (c.slot.is_none() && st.launch(track).is_some_and(|l| l.slot == slot))
             }) {
                 // Tapping what is cued takes it back.
                 Some(TimeAction::Uncue(track))
@@ -371,7 +451,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let n = st.tracks.len() as i64 + 1;
                     let now = st.armed.map_or(0, |a| a as i64 + 1);
                     let next = (now + i64::from(d)).rem_euclid(n);
-                    Some(TimeAction::Arm(if next == 0 { None } else { Some(next as usize - 1) }))
+                    Some(TimeAction::Arm(if next == 0 {
+                        None
+                    } else {
+                        Some(next as usize - 1)
+                    }))
                 }
                 1 => Some(TimeAction::Transport(Command::ToggleOverdub)),
                 2 => {
@@ -386,11 +470,17 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                             .iter()
                             .position(|&n| a == 0 && b == n * bar)
                             // A loop set elsewhere steps from the nearest length.
-                            .unwrap_or_else(|| LOOP_BARS.iter().rposition(|&n| n * bar <= b - a).unwrap_or(1)),
+                            .unwrap_or_else(|| {
+                                LOOP_BARS
+                                    .iter()
+                                    .rposition(|&n| n * bar <= b - a)
+                                    .unwrap_or(1)
+                            }),
                     };
                     let next = (now as i32 + d).clamp(0, LOOP_BARS.len() as i32 - 1) as usize;
                     let range = (next > 0).then(|| (0, LOOP_BARS[next] * bar));
-                    (range != t.loop_range).then_some(TimeAction::Transport(Command::SetLoop(range)))
+                    (range != t.loop_range)
+                        .then_some(TimeAction::Transport(Command::SetLoop(range)))
                 }
                 4 => {
                     let bpm = (t.bpm + f64::from(d)).clamp(MIN_BPM, MAX_BPM);
@@ -414,7 +504,13 @@ pub fn length_label(song_ticks: f64, meter: Meter) -> String {
         let n = song_ticks / unit as f64;
         (n >= 1.0 && (n - n.round()).abs() < 1e-6).then_some(n.round() as i64)
     };
-    let plural = |n: i64, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+    let plural = |n: i64, one: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
     if let Some(n) = whole(meter.bar_ticks()) {
         plural(n, "bar")
     } else if let Some(n) = whole(meter.beat_ticks()) {
@@ -428,11 +524,17 @@ pub fn length_label(song_ticks: f64, meter: Meter) -> String {
 
 /// The loop as the bar shows it: "off", "1" (one bar), "1–4", or positions.
 pub fn loop_label(range: Option<(Tick, Tick)>, meter: Meter) -> String {
-    let Some((a, b)) = range else { return "off".to_string() };
+    let Some((a, b)) = range else {
+        return "off".to_string();
+    };
     let bar = meter.bar_ticks();
     if a % bar == 0 && b % bar == 0 {
         let (first, last) = (a / bar + 1, b / bar);
-        if first == last { format!("{first}") } else { format!("{first}–{last}") }
+        if first == last {
+            format!("{first}")
+        } else {
+            format!("{first}–{last}")
+        }
     } else {
         format!("{}–{}", meter.position(a), meter.position(b))
     }
@@ -445,21 +547,34 @@ fn bar_beat(tick: Tick, meter: Meter) -> String {
 
 /// The pending capture as Capture's button shows it: "1 bar", "4 bars".
 pub fn bars_label(bars: i64) -> String {
-    if bars == 1 { "1 bar".to_string() } else { format!("{bars} bars") }
+    if bars == 1 {
+        "1 bar".to_string()
+    } else {
+        format!("{bars} bars")
+    }
 }
 
 fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
     match row.at {
-        Some((track, slot)) => format!("{word} {} · {} / {}", row.number, st.track_name(track), slot + 1),
+        Some((track, slot)) => format!(
+            "{word} {} · {} / {}",
+            row.number,
+            st.track_name(track),
+            slot + 1
+        ),
         None => format!("{word} {}", row.number),
     }
 }
 
 fn take_detail(row: &TakeRow) -> String {
     let new = if row.made { "new " } else { "" };
-    if row.erased > 0 { format!("{new}+{} −{}", row.added, row.erased) } else { format!("{new}+{}", row.added) }
+    if row.erased > 0 {
+        format!("{new}+{} −{}", row.added, row.erased)
+    } else {
+        format!("{new}+{}", row.added)
+    }
 }
 
 // ---------------------------------------------------------------- what the widgets show
@@ -475,15 +590,37 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
         State::Recording => Run::Recording,
     };
     bar.position = t.meter.position(t.position).to_string();
-    let swing = if t.swing.amount == 50 { "off".to_string() } else { format!("{}%", t.swing.amount) };
-    bar.items = vec![BarItem::new("BPM", format!("{:.1}", t.bpm), Tone::Normal),
-                     BarItem::new("", format!("{}/{}", t.meter.beats, t.meter.unit), Tone::Normal),
-                     BarItem::new("Swing", swing, Tone::Normal),
-                     BarItem::new("Loop", loop_label(t.loop_range, t.meter),
-                                  if t.loop_range.is_some() { Tone::Accent } else { Tone::Dim })];
+    let swing = if t.swing.amount == 50 {
+        "off".to_string()
+    } else {
+        format!("{}%", t.swing.amount)
+    };
+    bar.items = vec![
+        BarItem::new("BPM", format!("{:.1}", t.bpm), Tone::Normal),
+        BarItem::new(
+            "",
+            format!("{}/{}", t.meter.beats, t.meter.unit),
+            Tone::Normal,
+        ),
+        BarItem::new("Swing", swing, Tone::Normal),
+        BarItem::new(
+            "Loop",
+            loop_label(t.loop_range, t.meter),
+            if t.loop_range.is_some() {
+                Tone::Accent
+            } else {
+                Tone::Dim
+            },
+        ),
+    ];
     if t.state == State::CountIn {
-        let bars = if t.count_in == 1 { "1 bar".to_string() } else { format!("{} bars", t.count_in) };
-        bar.items.insert(0, BarItem::new("Count-in", bars, Tone::Warn));
+        let bars = if t.count_in == 1 {
+            "1 bar".to_string()
+        } else {
+            format!("{} bars", t.count_in)
+        };
+        bar.items
+            .insert(0, BarItem::new("Count-in", bars, Tone::Warn));
     }
     bar.overdub = t.overdub;
     bar.undo = st.done.last().map(TakeRow::short);
@@ -493,19 +630,32 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
 
 /// Cell `slot` of `track` for `st`.
 pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
-    let Some(clip) = st.clip(track, slot) else { return GridCell::default() };
+    let Some(clip) = st.clip(track, slot) else {
+        return GridCell::default();
+    };
     let t = &st.transport;
     let len = clip.song_len().max(1.0);
-    let notes = if clip.notes == 1 { "1 note".to_string() } else { format!("{} notes", clip.notes) };
-    let mut cell = GridCell { state: CellState::Stopped, name: clip.name.clone(), detail: length_label(len, t.meter),
-                              foot: notes, progress: 0.0 };
+    let notes = if clip.notes == 1 {
+        "1 note".to_string()
+    } else {
+        format!("{} notes", clip.notes)
+    };
+    let mut cell = GridCell {
+        state: CellState::Stopped,
+        name: clip.name.clone(),
+        detail: length_label(len, t.meter),
+        foot: notes,
+        progress: 0.0,
+    };
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
         cell.foot = format!("from {}", bar_beat(cue_tick(t), t.meter));
         return cell;
     }
-    let Some(l) = st.launch(track).filter(|l| l.slot == slot) else { return cell };
+    let Some(l) = st.launch(track).filter(|l| l.slot == slot) else {
+        return cell;
+    };
     if l.origin > t.position {
         cell.state = CellState::Queued;
         cell.foot = format!("from {}", bar_beat(l.origin, t.meter));
@@ -548,25 +698,39 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
 /// The record settings' rows.
 pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
     let t = &st.transport;
-    let row = |name: &str, value: String| OptionRow { name: name.to_string(), value };
-    let armed = st.armed.map_or_else(|| "none".to_string(), |a| st.track_name(a));
+    let row = |name: &str, value: String| OptionRow {
+        name: name.to_string(),
+        value,
+    };
+    let armed = st
+        .armed
+        .map_or_else(|| "none".to_string(), |a| st.track_name(a));
     let count_in = match t.count_in {
         0 => "off".to_string(),
         1 => "1 bar".to_string(),
         n => format!("{n} bars"),
     };
-    vec![row(RECORD_ROWS[0], armed),
-         row(RECORD_ROWS[1], if t.overdub { "Overdub" } else { "Replace" }.to_string()),
-         row(RECORD_ROWS[2], count_in),
-         row(RECORD_ROWS[3], loop_label(t.loop_range, t.meter)),
-         row(RECORD_ROWS[4], format!("{:.1}", t.bpm))]
+    vec![
+        row(RECORD_ROWS[0], armed),
+        row(
+            RECORD_ROWS[1],
+            if t.overdub { "Overdub" } else { "Replace" }.to_string(),
+        ),
+        row(RECORD_ROWS[2], count_in),
+        row(RECORD_ROWS[3], loop_label(t.loop_range, t.meter)),
+        row(RECORD_ROWS[4], format!("{:.1}", t.bpm)),
+    ]
 }
 
 /// The takes newest first: the undone ones (dimmed), then the ones Undo
 /// can take back; and which row Undo takes back next.
 pub fn take_items(st: &TimeState) -> (Vec<TakeItem>, Option<usize>) {
-    let item = |r: &TakeRow, undone: bool| TakeItem { title: take_title(st, r), detail: take_detail(r),
-                                                       color: r.at.map(|(track, _)| track_color(track)), undone };
+    let item = |r: &TakeRow, undone: bool| TakeItem {
+        title: take_title(st, r),
+        detail: take_detail(r),
+        color: r.at.map(|(track, _)| track_color(track)),
+        undone,
+    };
     let mut items: Vec<TakeItem> = st.undone.iter().map(|r| item(r, true)).collect();
     items.extend(st.done.iter().rev().map(|r| item(r, false)));
     let current = (!st.done.is_empty()).then_some(st.undone.len());
@@ -618,8 +782,12 @@ impl TimePage {
     pub fn update(&self, ui: &mut Ui, st: &TimeState) {
         let bar = bar_of(st);
         let same_bar = ui.get::<TransportBar>(TRANSPORT).is_some_and(|b| {
-            b.run == bar.run && b.position == bar.position && b.items == bar.items && b.overdub == bar.overdub
-                && b.undo == bar.undo && b.chips == bar.chips
+            b.run == bar.run
+                && b.position == bar.position
+                && b.items == bar.items
+                && b.overdub == bar.overdub
+                && b.undo == bar.undo
+                && b.chips == bar.chips
         });
         if !same_bar {
             if let Some(b) = ui.get_mut::<TransportBar>(TRANSPORT) {
@@ -633,15 +801,26 @@ impl TimePage {
         }
         let tracks = grid_tracks(st);
         let rows = self.visible_rows(ui).max(1);
-        let title = format!("Clips · slots {}–{} of {SLOTS}", self.first_row + 1, (self.first_row + rows).min(SLOTS));
+        let title = format!(
+            "Clips · slots {}–{} of {SLOTS}",
+            self.first_row + 1,
+            (self.first_row + rows).min(SLOTS)
+        );
         let legend = if st.tracks.len() > GRID_COLS {
-            format!("tracks {}–{} of {}", self.first_track + 1, (self.first_track + GRID_COLS).min(st.tracks.len()),
-                    st.tracks.len())
+            format!(
+                "tracks {}–{} of {}",
+                self.first_track + 1,
+                (self.first_track + GRID_COLS).min(st.tracks.len()),
+                st.tracks.len()
+            )
         } else {
             "ring: one pass   ·   amber: next bar   ·   red: recording".to_string()
         };
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
-            g.tracks == tracks && g.title == title && g.legend == legend && g.first_row == self.first_row
+            g.tracks == tracks
+                && g.title == title
+                && g.legend == legend
+                && g.first_row == self.first_row
                 && g.first_track == self.first_track
         });
         if !same_grid {
@@ -664,7 +843,11 @@ impl TimePage {
         let undo = st.done.last().map(TakeRow::short);
         let redo = st.undone.last().map(TakeRow::short);
         let same_takes = ui.get::<TakeList>(TAKES).is_some_and(|l| {
-            l.items == items && l.current == current && l.undo == undo && l.redo == redo && l.capture == st.capture
+            l.items == items
+                && l.current == current
+                && l.undo == undo
+                && l.redo == redo
+                && l.capture == st.capture
         });
         if !same_takes {
             if let Some(l) = ui.get_mut::<TakeList>(TAKES) {
@@ -693,18 +876,43 @@ mod tests {
         for (i, name) in ["Drums", "Bass", "Stab"].iter().enumerate() {
             let mut t = Track::new(name, i as u16);
             let mut c = Clip::new("A", 2 * BAR);
-            c.add_note(Note { tick: 0, len: 10, note: 1, velocity: 100, chance: 100 }).unwrap();
+            c.add_note(Note {
+                tick: 0,
+                len: 10,
+                note: 1,
+                velocity: 100,
+                chance: 100,
+            })
+            .unwrap();
             t.slots[0] = Some(c);
             t.slots[1] = Some(Clip::new("B", 1680));
             p.tracks.push(t);
         }
-        let launches = [Launch { track: 0, slot: 0, origin: 0 }, Launch { track: 1, slot: 1, origin: 5 * BAR }];
-        let t = TransportInfo { state: State::Playing, position: 4 * BAR + 960, ..TransportInfo::default() };
+        let launches = [
+            Launch {
+                track: 0,
+                slot: 0,
+                origin: 0,
+            },
+            Launch {
+                track: 1,
+                slot: 1,
+                origin: 5 * BAR,
+            },
+        ];
+        let t = TransportInfo {
+            state: State::Playing,
+            position: 4 * BAR + 960,
+            ..TransportInfo::default()
+        };
         TimeState::from_engine(t, &p, &launches, Some(2), &Takes::default())
     }
 
     fn ev(widget: &str, kind: EventKind) -> UiEvent {
-        UiEvent { widget: widget.to_string(), kind }
+        UiEvent {
+            widget: widget.to_string(),
+            kind,
+        }
     }
 
     #[test]
@@ -726,7 +934,10 @@ mod tests {
         assert!(page.visible_rows(&ui) >= 6, "{}", page.visible_rows(&ui));
         // Every record setting is in view at once (58 px a row).
         let record = ui.rect_of(RECORD).unwrap();
-        assert!(record.h - 14 * 2 - 34 >= 58 * RECORD_ROWS.len() as i32, "{record:?}");
+        assert!(
+            record.h - 14 * 2 - 34 >= 58 * RECORD_ROWS.len() as i32,
+            "{record:?}"
+        );
         // Three takes and the buttons.
         let takes = ui.rect_of(TAKES).unwrap();
         assert!(takes.h - 14 * 2 - 34 - 48 - 8 >= 3 * 38, "{takes:?}");
@@ -736,72 +947,149 @@ mod tests {
     fn cells_show_what_each_clip_is_doing() {
         let mut st = state();
         let c = cell_of(&st, 0, 0);
-        assert_eq!((c.state, c.detail.as_str(), c.foot.as_str()), (CellState::Playing, "2 bars", ""));
+        assert_eq!(
+            (c.state, c.detail.as_str(), c.foot.as_str()),
+            (CellState::Playing, "2 bars", "")
+        );
         assert_eq!(cell_of(&st, 1, 0).foot, "1 note");
         // Bar 5 beat 2 of a 2-bar clip from bar 1: an eighth of the way round.
         assert_eq!(c.progress, 0.125);
         let q = cell_of(&st, 1, 1);
-        assert_eq!((q.state, q.detail.as_str(), q.foot.as_str()), (CellState::Queued, "7/16", "from 6.1"));
+        assert_eq!(
+            (q.state, q.detail.as_str(), q.foot.as_str()),
+            (CellState::Queued, "7/16", "from 6.1")
+        );
         assert_eq!(cell_of(&st, 1, 0).state, CellState::Stopped);
         assert_eq!(cell_of(&st, 0, 2).state, CellState::Empty);
-        st.launches.push(Launch { track: 2, slot: 0, origin: 0 });
+        st.launches.push(Launch {
+            track: 2,
+            slot: 0,
+            origin: 0,
+        });
         assert_eq!(cell_of(&st, 2, 0).state, CellState::Playing);
         st.transport.state = State::Recording;
         let r = cell_of(&st, 2, 0);
-        assert_eq!((r.state, r.detail.as_str()), (CellState::Recording, "recording"));
-        assert_eq!(cell_of(&st, 0, 0).state, CellState::Playing, "only the armed track records");
+        assert_eq!(
+            (r.state, r.detail.as_str()),
+            (CellState::Recording, "recording")
+        );
+        assert_eq!(
+            cell_of(&st, 0, 0).state,
+            CellState::Playing,
+            "only the armed track records"
+        );
     }
 
     #[test]
     fn taps_on_the_grid_launch_stop_make_and_arm() {
         let st = state();
-        let tap = |track: usize, slot: usize| action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st);
+        let tap = |track: usize, slot: usize| {
+            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+        };
         assert_eq!(tap(0, 0), Some(TimeAction::StopClip(0)));
         assert_eq!(tap(0, 1), Some(TimeAction::Launch { track: 0, slot: 1 }));
-        assert_eq!(tap(1, 1), Some(TimeAction::StopClip(1)), "a queued clip stops too");
+        assert_eq!(
+            tap(1, 1),
+            Some(TimeAction::StopClip(1)),
+            "a queued clip stops too"
+        );
         assert_eq!(tap(2, 5), Some(TimeAction::NewClip { track: 2, slot: 5 }));
         assert_eq!(tap(3, 0), None, "no such track");
-        assert_eq!(action(&ev(CLIPS, EventKind::Tab(0)), &st), Some(TimeAction::Arm(Some(0))));
-        assert_eq!(action(&ev(CLIPS, EventKind::Tab(2)), &st), Some(TimeAction::Arm(None)), "arming again disarms");
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Tab(0)), &st),
+            Some(TimeAction::Arm(Some(0)))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Tab(2)), &st),
+            Some(TimeAction::Arm(None)),
+            "arming again disarms"
+        );
     }
 
     #[test]
     fn the_bar_and_takes_buttons_map_to_commands() {
         let st = state();
         let bar = |b: BarButton| action(&ev(TRANSPORT, EventKind::Tab(b.index())), &st);
-        assert_eq!(bar(BarButton::Stop), Some(TimeAction::Transport(Command::Stop)));
-        assert_eq!(bar(BarButton::Play), Some(TimeAction::Transport(Command::Play)));
-        assert_eq!(bar(BarButton::Rec), Some(TimeAction::Transport(Command::Record)));
-        assert_eq!(bar(BarButton::Mode), Some(TimeAction::Transport(Command::ToggleOverdub)));
+        assert_eq!(
+            bar(BarButton::Stop),
+            Some(TimeAction::Transport(Command::Stop))
+        );
+        assert_eq!(
+            bar(BarButton::Play),
+            Some(TimeAction::Transport(Command::Play))
+        );
+        assert_eq!(
+            bar(BarButton::Rec),
+            Some(TimeAction::Transport(Command::Record))
+        );
+        assert_eq!(
+            bar(BarButton::Mode),
+            Some(TimeAction::Transport(Command::ToggleOverdub))
+        );
         assert_eq!(bar(BarButton::Undo), Some(TimeAction::Undo));
-        assert_eq!(action(&ev(TRANSPORT, EventKind::Select(0)), &st), Some(TimeAction::Chip(0)));
-        assert_eq!(action(&ev(TAKES, EventKind::Tab(0)), &st), Some(TimeAction::Undo));
-        assert_eq!(action(&ev(TAKES, EventKind::Tab(1)), &st), Some(TimeAction::Redo));
-        assert_eq!(action(&ev(TAKES, EventKind::Tab(2)), &st), Some(TimeAction::Capture));
+        assert_eq!(
+            action(&ev(TRANSPORT, EventKind::Select(0)), &st),
+            Some(TimeAction::Chip(0))
+        );
+        assert_eq!(
+            action(&ev(TAKES, EventKind::Tab(0)), &st),
+            Some(TimeAction::Undo)
+        );
+        assert_eq!(
+            action(&ev(TAKES, EventKind::Tab(1)), &st),
+            Some(TimeAction::Redo)
+        );
+        assert_eq!(
+            action(&ev(TAKES, EventKind::Tab(2)), &st),
+            Some(TimeAction::Capture)
+        );
     }
 
     #[test]
     fn record_settings_step_within_their_range() {
         let mut st = state();
-        let step = |st: &TimeState, index: usize, delta: i32| action(&ev(RECORD, EventKind::Step { index, delta }), st);
+        let step = |st: &TimeState, index: usize, delta: i32| {
+            action(&ev(RECORD, EventKind::Step { index, delta }), st)
+        };
         // Armed: Stab (2) -> none -> Drums (0), and back.
         assert_eq!(step(&st, 0, 1), Some(TimeAction::Arm(None)));
         st.armed = None;
         assert_eq!(step(&st, 0, 1), Some(TimeAction::Arm(Some(0))));
         assert_eq!(step(&st, 0, -1), Some(TimeAction::Arm(Some(2))));
-        assert_eq!(step(&st, 1, -1), Some(TimeAction::Transport(Command::ToggleOverdub)));
+        assert_eq!(
+            step(&st, 1, -1),
+            Some(TimeAction::Transport(Command::ToggleOverdub))
+        );
         assert_eq!(step(&st, 2, -1), None, "count-in is already off");
-        assert_eq!(step(&st, 2, 1), Some(TimeAction::Transport(Command::SetCountIn(1))));
+        assert_eq!(
+            step(&st, 2, 1),
+            Some(TimeAction::Transport(Command::SetCountIn(1)))
+        );
         st.transport.count_in = MAX_COUNT_IN;
         assert_eq!(step(&st, 2, 1), None);
-        assert_eq!(step(&st, 3, 1), Some(TimeAction::Transport(Command::SetLoop(Some((0, BAR))))));
+        assert_eq!(
+            step(&st, 3, 1),
+            Some(TimeAction::Transport(Command::SetLoop(Some((0, BAR)))))
+        );
         st.transport.loop_range = Some((0, 4 * BAR));
-        assert_eq!(step(&st, 3, 1), Some(TimeAction::Transport(Command::SetLoop(Some((0, 8 * BAR))))));
-        assert_eq!(step(&st, 3, -1), Some(TimeAction::Transport(Command::SetLoop(Some((0, 2 * BAR))))));
+        assert_eq!(
+            step(&st, 3, 1),
+            Some(TimeAction::Transport(Command::SetLoop(Some((0, 8 * BAR)))))
+        );
+        assert_eq!(
+            step(&st, 3, -1),
+            Some(TimeAction::Transport(Command::SetLoop(Some((0, 2 * BAR)))))
+        );
         // A loop set elsewhere (bars 3 to 5) steps from the nearest length.
         st.transport.loop_range = Some((2 * BAR, 5 * BAR));
-        assert_eq!(step(&st, 3, 1), Some(TimeAction::Transport(Command::SetLoop(Some((0, 4 * BAR))))));
-        assert_eq!(step(&st, 4, 1), Some(TimeAction::Transport(Command::SetTempo(121.0))));
+        assert_eq!(
+            step(&st, 3, 1),
+            Some(TimeAction::Transport(Command::SetLoop(Some((0, 4 * BAR)))))
+        );
+        assert_eq!(
+            step(&st, 4, 1),
+            Some(TimeAction::Transport(Command::SetTempo(121.0)))
+        );
         st.transport.bpm = MAX_BPM;
         assert_eq!(step(&st, 4, 1), None);
     }
@@ -823,19 +1111,62 @@ mod tests {
         let (p, t) = (project(), st.transport);
         let act = |l: &[Launch], c: &[Cue], a: TimeAction| clips_after(&p, l, c, &a, &t);
         let (l, c) = act(&st.launches, &[], TimeAction::Launch { track: 0, slot: 1 });
-        assert_eq!((l.as_slice(), c.as_slice()), (st.launches.as_slice(), &[Cue { track: 0, slot: Some(1) }][..]),
-                   "the launches stay until the bar line");
+        assert_eq!(
+            (l.as_slice(), c.as_slice()),
+            (
+                st.launches.as_slice(),
+                &[Cue {
+                    track: 0,
+                    slot: Some(1)
+                }][..]
+            ),
+            "the launches stay until the bar line"
+        );
         // A stop on the same track takes the launch's place; another track
         // gets its own cue.
         let (l, c) = act(&l, &c, TimeAction::StopClip(0));
-        assert_eq!(c, vec![Cue { track: 0, slot: None }]);
+        assert_eq!(
+            c,
+            vec![Cue {
+                track: 0,
+                slot: None
+            }]
+        );
         let (l, c) = act(&l, &c, TimeAction::Launch { track: 2, slot: 0 });
-        assert_eq!(c, vec![Cue { track: 0, slot: None }, Cue { track: 2, slot: Some(0) }]);
+        assert_eq!(
+            c,
+            vec![
+                Cue {
+                    track: 0,
+                    slot: None
+                },
+                Cue {
+                    track: 2,
+                    slot: Some(0)
+                }
+            ]
+        );
         let (l, c) = act(&l, &c, TimeAction::Uncue(0));
-        assert_eq!(c, vec![Cue { track: 2, slot: Some(0) }]);
+        assert_eq!(
+            c,
+            vec![Cue {
+                track: 2,
+                slot: Some(0)
+            }]
+        );
         // A new clip launches at once, and its track's cue goes.
         let (l, c) = act(&l, &c, TimeAction::NewClip { track: 2, slot: 4 });
-        assert_eq!((l.last(), c.len()), (Some(&Launch { track: 2, slot: 4, origin: 5 * BAR }), 0));
+        assert_eq!(
+            (l.last(), c.len()),
+            (
+                Some(&Launch {
+                    track: 2,
+                    slot: 4,
+                    origin: 5 * BAR
+                }),
+                0
+            )
+        );
         assert_eq!(act(&l, &c, TimeAction::Undo), (l.clone(), c.clone()));
     }
 
@@ -843,34 +1174,93 @@ mod tests {
     fn while_stopped_a_launch_happens_at_once_and_plays_wherever_the_song_goes() {
         let st = state();
         let p = project();
-        let t = TransportInfo { state: State::Stopped, position: 3 * BAR + 100, ..st.transport };
-        let cues = [Cue { track: 0, slot: Some(1) }];
-        let (l, c) = clips_after(&p, &st.launches, &cues, &TimeAction::Launch { track: 0, slot: 1 }, &t);
+        let t = TransportInfo {
+            state: State::Stopped,
+            position: 3 * BAR + 100,
+            ..st.transport
+        };
+        let cues = [Cue {
+            track: 0,
+            slot: Some(1),
+        }];
+        let (l, c) = clips_after(
+            &p,
+            &st.launches,
+            &cues,
+            &TimeAction::Launch { track: 0, slot: 1 },
+            &t,
+        );
         assert!(c.is_empty());
         let origin = anchored(3 * BAR, 1680, Speed::NORMAL);
-        assert_eq!(l, vec![Launch { track: 1, slot: 1, origin: 5 * BAR }, Launch { track: 0, slot: 1, origin }]);
+        assert_eq!(
+            l,
+            vec![
+                Launch {
+                    track: 1,
+                    slot: 1,
+                    origin: 5 * BAR
+                },
+                Launch {
+                    track: 0,
+                    slot: 1,
+                    origin
+                }
+            ]
+        );
         let (l, _) = clips_after(&p, &l, &[], &TimeAction::StopClip(1), &t);
-        assert_eq!(l, vec![Launch { track: 0, slot: 1, origin }]);
+        assert_eq!(
+            l,
+            vec![Launch {
+                track: 0,
+                slot: 1,
+                origin
+            }]
+        );
     }
 
     #[test]
     fn cued_cells_show_where_they_start_and_taps_take_cues_back() {
         let mut st = state();
-        st.cues = vec![Cue { track: 0, slot: Some(1) }, Cue { track: 2, slot: None }];
-        st.launches.push(Launch { track: 2, slot: 0, origin: 0 });
+        st.cues = vec![
+            Cue {
+                track: 0,
+                slot: Some(1),
+            },
+            Cue {
+                track: 2,
+                slot: None,
+            },
+        ];
+        st.launches.push(Launch {
+            track: 2,
+            slot: 0,
+            origin: 0,
+        });
         let q = cell_of(&st, 0, 1);
         assert_eq!((q.state, q.foot.as_str()), (CellState::Queued, "from 6.1"));
         let a = cell_of(&st, 0, 0);
-        assert_eq!((a.state, a.detail.as_str()), (CellState::Playing, "until 6.1"));
+        assert_eq!(
+            (a.state, a.detail.as_str()),
+            (CellState::Playing, "until 6.1")
+        );
         let s = cell_of(&st, 2, 0);
-        assert_eq!((s.state, s.detail.as_str()), (CellState::Playing, "stops 6.1"));
+        assert_eq!(
+            (s.state, s.detail.as_str()),
+            (CellState::Playing, "stops 6.1")
+        );
         // In a loop of bars 4 and 5, the next bar line played is bar 4's.
         st.transport.loop_range = Some((3 * BAR, 5 * BAR));
         assert_eq!(cell_of(&st, 0, 1).foot, "from 4.1");
         assert_eq!(cue_tick(&st.transport), 3 * BAR);
-        let tap = |track: usize, slot: usize| action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st);
+        let tap = |track: usize, slot: usize| {
+            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+        };
         assert_eq!(tap(0, 1), Some(TimeAction::Uncue(0)), "the cued clip");
-        assert_eq!(tap(2, 0), Some(TimeAction::Uncue(2)), "the clip with a stop cued");
+        assert_eq!(
+            tap(2, 0),
+            Some(TimeAction::Uncue(2)),
+            "the clip with a stop cued"
+        );
         assert_eq!(tap(0, 0), Some(TimeAction::StopClip(0)), "the playing clip");
         assert_eq!(tap(2, 1), Some(TimeAction::Launch { track: 2, slot: 1 }));
     }
@@ -880,44 +1270,119 @@ mod tests {
         let st = state();
         let t = st.transport;
         let after = launches_after(&st.launches, &TimeAction::Launch { track: 0, slot: 1 }, &t);
-        assert_eq!(after, vec![Launch { track: 1, slot: 1, origin: 5 * BAR }, Launch { track: 0, slot: 1, origin: 5 * BAR }]);
+        assert_eq!(
+            after,
+            vec![
+                Launch {
+                    track: 1,
+                    slot: 1,
+                    origin: 5 * BAR
+                },
+                Launch {
+                    track: 0,
+                    slot: 1,
+                    origin: 5 * BAR
+                }
+            ]
+        );
         let stopped = launches_after(&after, &TimeAction::StopClip(1), &t);
-        assert_eq!(stopped, vec![Launch { track: 0, slot: 1, origin: 5 * BAR }]);
+        assert_eq!(
+            stopped,
+            vec![Launch {
+                track: 0,
+                slot: 1,
+                origin: 5 * BAR
+            }]
+        );
         // On a bar line: now. Stopped: from the start of the bar.
-        let on_bar = TransportInfo { position: 3 * BAR, ..t };
+        let on_bar = TransportInfo {
+            position: 3 * BAR,
+            ..t
+        };
         assert_eq!(launch_origin(&on_bar), 3 * BAR);
-        let stopped = TransportInfo { state: State::Stopped, position: 3 * BAR + 100, ..t };
+        let stopped = TransportInfo {
+            state: State::Stopped,
+            position: 3 * BAR + 100,
+            ..t
+        };
         assert_eq!(launch_origin(&stopped), 3 * BAR);
         // Counting in from bar 0: bar 1.
-        let count = TransportInfo { state: State::CountIn, position: -1000, ..t };
+        let count = TransportInfo {
+            state: State::CountIn,
+            position: -1000,
+            ..t
+        };
         assert_eq!(launch_origin(&count), 0);
-        assert_eq!(launches_after(&st.launches, &TimeAction::Undo, &t), st.launches);
+        assert_eq!(
+            launches_after(&st.launches, &TimeAction::Undo, &t),
+            st.launches
+        );
     }
 
     #[test]
     fn takes_list_newest_first_with_the_undone_dimmed() {
         let mut st = state();
-        let row = |n: u32| TakeRow { number: n, captured: false, edited: false, made: false, at: Some((2, 0)), added: n as usize,
-                                     erased: 0 };
+        let row = |n: u32| TakeRow {
+            number: n,
+            captured: false,
+            edited: false,
+            made: false,
+            at: Some((2, 0)),
+            added: n as usize,
+            erased: 0,
+        };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
         let (items, current) = take_items(&st);
-        let titles: Vec<(&str, bool)> = items.iter().map(|i| (i.title.as_str(), i.undone)).collect();
-        assert_eq!(titles, vec![("Take 4 · Stab / 1", true), ("Take 3 · Stab / 1", true),
-                                ("Take 2 · Stab / 1", false), ("Take 1 · Stab / 1", false)]);
+        let titles: Vec<(&str, bool)> =
+            items.iter().map(|i| (i.title.as_str(), i.undone)).collect();
+        assert_eq!(
+            titles,
+            vec![
+                ("Take 4 · Stab / 1", true),
+                ("Take 3 · Stab / 1", true),
+                ("Take 2 · Stab / 1", false),
+                ("Take 1 · Stab / 1", false)
+            ]
+        );
         assert_eq!(current, Some(2));
         assert_eq!(items[2].detail, "+2");
         st.done[1].erased = 5;
         assert_eq!(take_items(&st).0[2].detail, "+2 −5");
         // A capture that made a clip.
-        st.done[1] = TakeRow { number: 1, captured: true, edited: false, made: true, at: Some((0, 3)), added: 9, erased: 0 };
+        st.done[1] = TakeRow {
+            number: 1,
+            captured: true,
+            edited: false,
+            made: true,
+            at: Some((0, 3)),
+            added: 9,
+            erased: 0,
+        };
         let (items, _) = take_items(&st);
-        assert_eq!((items[2].title.as_str(), items[2].detail.as_str()), ("Capture 1 · Drums / 4", "new +9"));
-        assert_eq!((st.done[1].short(), st.done[0].short()), ("capture 1".to_string(), "take 1".to_string()));
-        st.done[1] = TakeRow { number: 5, captured: false, edited: true, made: false, at: Some((1, 0)), added: 1, erased: 1 };
+        assert_eq!(
+            (items[2].title.as_str(), items[2].detail.as_str()),
+            ("Capture 1 · Drums / 4", "new +9")
+        );
+        assert_eq!(
+            (st.done[1].short(), st.done[0].short()),
+            ("capture 1".to_string(), "take 1".to_string())
+        );
+        st.done[1] = TakeRow {
+            number: 5,
+            captured: false,
+            edited: true,
+            made: false,
+            at: Some((1, 0)),
+            added: 1,
+            erased: 1,
+        };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
-        assert_eq!((bars_label(1), bars_label(4)), ("1 bar".to_string(), "4 bars".to_string()));
+        assert_eq!(
+            (bars_label(1), bars_label(4)),
+            ("1 bar".to_string(), "4 bars".to_string())
+        );
         st.done.clear();
         assert_eq!(take_items(&st).1, None);
     }
@@ -953,6 +1418,10 @@ mod tests {
         st.transport.position += 1;
         page.update(&mut ui, &st);
         let drawn = ui.paint(&mut c);
-        assert_eq!(drawn, vec![ui.rect_of(TRANSPORT).unwrap()], "one tick on: only the bar");
+        assert_eq!(
+            drawn,
+            vec![ui.rect_of(TRANSPORT).unwrap()],
+            "one tick on: only the bar"
+        );
     }
 }

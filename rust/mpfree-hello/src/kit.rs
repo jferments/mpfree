@@ -58,7 +58,10 @@ pub struct Kit {
 }
 
 fn clean_name(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).chars().filter(|c| !c.is_control()).collect()
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 struct Reader<'a> {
@@ -68,7 +71,11 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(n).filter(|&e| e <= self.data.len()).ok_or("the kit file is cut short")?;
+        let end = self
+            .at
+            .checked_add(n)
+            .filter(|&e| e <= self.data.len())
+            .ok_or("the kit file is cut short")?;
         let s = &self.data[self.at..end];
         self.at = end;
         Ok(s)
@@ -88,7 +95,9 @@ pub fn parse(data: &[u8]) -> Result<Vec<Sound>, String> {
     }
     let count = r.u32()? as usize;
     if !(1..=MAX_SOUNDS).contains(&count) {
-        return Err(format!("the kit has {count} sounds; 1 to {MAX_SOUNDS} are allowed"));
+        return Err(format!(
+            "the kit has {count} sounds; 1 to {MAX_SOUNDS} are allowed"
+        ));
     }
     let mut sounds: Vec<Sound> = Vec::with_capacity(count);
     for i in 0..count {
@@ -102,7 +111,10 @@ pub fn parse(data: &[u8]) -> Result<Vec<Sound>, String> {
         }
         let frames = r.u32()?;
         if frames == 0 || frames > MAX_FRAMES {
-            return Err(format!("sound {}: {frames} frames; 1 to {MAX_FRAMES} are allowed", i + 1));
+            return Err(format!(
+                "sound {}: {frames} frames; 1 to {MAX_FRAMES} are allowed",
+                i + 1
+            ));
         }
         let name_len = r.u16()? as usize;
         if name_len > MAX_NAME {
@@ -110,7 +122,12 @@ pub fn parse(data: &[u8]) -> Result<Vec<Sound>, String> {
         }
         let name = clean_name(r.take(name_len)?);
         let raw = r.take(frames as usize * 4)?;
-        let audio = raw.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
+        let audio = raw
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
         sounds.push(Sound { note, name, audio });
     }
     if r.at != data.len() {
@@ -127,7 +144,9 @@ pub fn parse_kits(data: &[u8]) -> Result<Vec<Kit>, String> {
     }
     let count = r.u32()? as usize;
     if !(1..=MAX_KITS).contains(&count) {
-        return Err(format!("the file has {count} kits; 1 to {MAX_KITS} are allowed"));
+        return Err(format!(
+            "the file has {count} kits; 1 to {MAX_KITS} are allowed"
+        ));
     }
     let mut kits = Vec::with_capacity(count);
     for i in 0..count {
@@ -167,7 +186,12 @@ impl Mixer {
     /// Plays the first kit until `select` picks another. `kits` must not be empty.
     pub fn new(kits: Vec<Kit>) -> Self {
         assert!(!kits.is_empty());
-        Mixer { kits, kit: 0, voices: Vec::with_capacity(MAX_VOICES), hits: 0 }
+        Mixer {
+            kits,
+            kit: 0,
+            voices: Vec::with_capacity(MAX_VOICES),
+            hits: 0,
+        }
     }
 
     // The pad player plays kits through the sampler engine (sampler.rs) from
@@ -203,12 +227,20 @@ impl Mixer {
         let kit = self.kit;
         let sound = self.kits[kit].sounds.iter().position(|s| s.note == note)?;
         if self.voices.len() >= MAX_VOICES {
-            let oldest = (0..self.voices.len()).min_by_key(|&i| self.voices[i].started).unwrap();
+            let oldest = (0..self.voices.len())
+                .min_by_key(|&i| self.voices[i].started)
+                .unwrap();
             self.voices.swap_remove(oldest);
         }
         self.hits += 1;
-        self.voices.push(Voice { kit, sound, pos: 0, wait: offset, gain: velocity.min(127) as f32 / 127.0,
-                                 started: self.hits });
+        self.voices.push(Voice {
+            kit,
+            sound,
+            pos: 0,
+            wait: offset,
+            gain: velocity.min(127) as f32 / 127.0,
+            started: self.hits,
+        });
         Some(sound)
     }
 
@@ -286,7 +318,10 @@ pub fn build_kits(kits: &[(&str, Vec<u8>)]) -> Vec<u8> {
 
 #[cfg(test)]
 pub fn one_kit(sounds: Vec<Sound>) -> Vec<Kit> {
-    vec![Kit { name: "test".to_string(), sounds }]
+    vec![Kit {
+        name: "test".to_string(),
+        sounds,
+    }]
 }
 
 #[cfg(test)]
@@ -295,12 +330,20 @@ mod tests {
 
     #[test]
     fn parses_a_kit_and_rejects_bad_ones() {
-        let data = build(&[(37, "Kick", &[1000, -1000, 2000, -2000]), (36, "Snare", &[5, 6])]);
+        let data = build(&[
+            (37, "Kick", &[1000, -1000, 2000, -2000]),
+            (36, "Snare", &[5, 6]),
+        ]);
         let kit = parse(&data).unwrap();
         assert_eq!(kit.len(), 2);
-        assert_eq!((kit[0].note, kit[0].name.as_str(), kit[0].frames()), (37, "Kick", 2));
+        assert_eq!(
+            (kit[0].note, kit[0].name.as_str(), kit[0].frames()),
+            (37, "Kick", 2)
+        );
         assert_eq!(kit[1].audio, vec![5, 6]);
-        assert!(parse(&data[..data.len() - 1]).unwrap_err().contains("cut short"));
+        assert!(parse(&data[..data.len() - 1])
+            .unwrap_err()
+            .contains("cut short"));
         let mut extra = data.clone();
         extra.push(0);
         assert!(parse(&extra).unwrap_err().contains("extra bytes"));
@@ -371,11 +414,17 @@ mod tests {
     #[test]
     fn parses_kits_and_switches_between_them() {
         let a = build(&[(37, "Kick", &[16384, 16384, 16384, 16384])]);
-        let b = build(&[(37, "Clap", &[-16384, -16384, -16384, -16384]), (36, "Hat", &[1, 1])]);
+        let b = build(&[
+            (37, "Clap", &[-16384, -16384, -16384, -16384]),
+            (36, "Hat", &[1, 1]),
+        ]);
         let data = build_kits(&[("House", a.clone()), ("Trap\u{7}", b.clone())]);
         let kits = parse_kits(&data).unwrap();
         assert_eq!(kits.len(), 2);
-        assert_eq!((kits[0].name.as_str(), kits[1].name.as_str()), ("House", "Trap"));
+        assert_eq!(
+            (kits[0].name.as_str(), kits[1].name.as_str()),
+            ("House", "Trap")
+        );
         assert_eq!(kits[1].sounds[1].name, "Hat");
         assert!(parse_kits(&data[..data.len() - 1]).is_err());
         let mut extra = data.clone();
@@ -385,7 +434,9 @@ mod tests {
         assert!(parse_kits(&build_kits(&[])).is_err());
         let mut bad = b.clone();
         bad[0] = b'X';
-        assert!(parse_kits(&build_kits(&[("Bad", bad)])).unwrap_err().contains("kit 1 (Bad)"));
+        assert!(parse_kits(&build_kits(&[("Bad", bad)]))
+            .unwrap_err()
+            .contains("kit 1 (Bad)"));
 
         // A hit plays the selected kit; a sound already playing finishes after a switch.
         let mut m = Mixer::new(kits);
