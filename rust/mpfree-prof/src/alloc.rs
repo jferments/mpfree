@@ -1,7 +1,12 @@
 //! An allocator that counts, per thread, so the audio thread can prove it
 //! never allocates.
 //!
-//! A program opts in by installing it (the library itself changes nothing):
+//! It exists only with the crate's `counting-alloc` feature (mpfree-bench
+//! turns it on; the pad player does not), so the unsafe code below is not
+//! even compiled into programs that do not ask for it. Without the feature
+//! [`thread_count`] is always 0 and [`installed`] is false.
+//!
+//! A program opts in by enabling the feature and installing it:
 //!
 //! ```ignore
 //! #[global_allocator]
@@ -15,8 +20,9 @@
 //! can stay installed in device builds. [`crate::Span`] and
 //! [`crate::Profiled`] read the counter around each block; without the
 //! allocator the count stays 0 and [`installed`] says so.
-#![allow(unsafe_code)]
+#![cfg_attr(feature = "counting-alloc", allow(unsafe_code))]
 
+#[cfg(feature = "counting-alloc")]
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +33,7 @@ thread_local! {
 
 static TOTAL: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "counting-alloc")]
 #[inline]
 fn count() {
     // `try_with`: a thread that is being torn down may still free memory.
@@ -35,8 +42,10 @@ fn count() {
 }
 
 /// The counting pass-through allocator. See the module docs.
+#[cfg(feature = "counting-alloc")]
 pub struct CountingAlloc;
 
+#[cfg(feature = "counting-alloc")]
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         count();

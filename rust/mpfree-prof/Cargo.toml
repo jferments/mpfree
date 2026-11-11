@@ -7,3 +7,9 @@ description = "Real-time profiling for MPFree: per-block timing with percentiles
 
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
+
+[features]
+# The counting global allocator (alloc::CountingAlloc), for programs that
+# install it, such as mpfree-bench. Off by default: it is the crate's only
+# unsafe code.
+counting-alloc = []

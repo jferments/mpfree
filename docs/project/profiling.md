@@ -15,7 +15,7 @@ device, in the same units, against one budget. This page is how.
 | `Profiled<N>` | `mpfree-prof` | Wraps any `mpfree_node::Node` (synth, effect, Grains) and times its `process`. It is a node itself, so it drops into a chain slot. |
 | `Profiler` | `mpfree-prof` | A fixed set of named probes for a host's audio loop (`period`, `sampler`, `synth`, `fx`, `looper`, `time`, `mix`, or `module/detail`). |
 | `SharedSummary` | `mpfree-prof` | Hands a summary from the audio thread to the screen with no lock (a sequence lock over atomics). |
-| `alloc::CountingAlloc` | `mpfree-prof` | A pass-through global allocator that counts per thread. Install it in a program and every `Span` and `Profiled` also reports allocator calls made inside the block (there should be none). |
+| `alloc::CountingAlloc` | `mpfree-prof`, feature `counting-alloc` | A pass-through global allocator that counts per thread. Install it in a program and every `Span` and `Profiled` also reports allocator calls made inside the block (there should be none). It is the crate's only unsafe code, so it compiles only with the feature: mpfree-bench turns it on, the pad player does not. |
 | `budget` | `mpfree-prof` | The period and the per-module budget table below. |
 | `model` | `mpfree-prof` | Reference kernels that turn a desktop time into an MPC estimate. |
 | `procs` | `mpfree-prof` | Every process on the machine from `/proc`: CPU, memory, threads, real-time policy. The data for the Dev tools process page. Read-only. |
@@ -137,11 +137,12 @@ The runbook step comes with the round, written and rehearsed word for word
 against Jay's paths, labelled with what it touches, and run only on Jay's
 go.
 
-## Dev tools pages (proposal to the Hello MPC thread)
+## Dev tools pages
 
 Jay asked (2026-11-11) for tools in the Dev tools menu to see which
 processes use resources and how much CPU each FX, synth, and the audio
-playback and processing use. The Hello MPC thread owns the Dev tab; the
+playback and processing use. The Hello MPC thread owns the Dev tab and
+agreed both pages; their wiring into mpfree-hello rides with round 7. The
 data side is here:
 
 - **Processes**: `procs::ProcTable::sample()` once a second on the screen
