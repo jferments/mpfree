@@ -292,6 +292,10 @@ pub enum ToUi {
     SampleQLink(usize, i32),
     /// On the Looper tab: a Q-Link (0-3) turned by this many detents.
     LooperQLink(usize, i32),
+    /// MAIN on the Play page (None: the next view), STEP SEQ (Beats).
+    PlayView(Option<PlayView>),
+    /// SAMPLE EDIT and PROG EDIT: the Sample tab's editor to open.
+    SampleEditor(sample_page::Editor),
     /// On the Sample page: a Q-Link let go (the turn is one undo step).
     SampleLift,
     /// On the Sample page: the wheel (zoom).
@@ -1218,8 +1222,8 @@ impl Player {
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
                               STOP: stop listening   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Console if self.settings.debug_mode => "The system log, as it comes   ·   MENU: pause or clear   ·   \
-                                                              SHIFT + wheel: Dev page   ·   SHIFT + STOP: back".to_string(),
-                View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + STOP: back"
+                                                              SHIFT + wheel: Dev page   ·   SHIFT + ERASE: back".to_string(),
+                View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
@@ -1531,6 +1535,19 @@ impl Player {
                     {
                         q.touched[k] = on;
                     }
+                }
+            }
+            ToUi::PlayView(v) => {
+                let v = v.unwrap_or_else(|| {
+                    let at = PlayView::ALL.iter().position(|&x| x == self.play.view);
+                    PlayView::from_index(at.map_or(0, |i| (i + 1) % PlayView::ALL.len()))
+                });
+                self.show_play_view(v);
+            }
+            ToUi::SampleEditor(e) => {
+                self.sample.open_editor(&mut self.ui, e);
+                if self.ready && self.view == View::Sample {
+                    self.show_view(View::Sample);
                 }
             }
             ToUi::LooperQLink(k, ticks) => {
@@ -2045,7 +2062,7 @@ impl Player {
                 self.sample.refresh_if_stale(&mut self.ui);
                 self.sample.page().to_string()
             }
-            // Without the developer tools the Console (SHIFT + STOP) has no strip.
+            // Without the developer tools the Console (SHIFT + ERASE) has no strip.
             View::Console if !self.settings.debug_mode => "Console".to_string(),
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);
@@ -3252,6 +3269,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SampleWheel(d) => p.apply(ToUi::SampleWheel(d)),
             Effect::SamplePad(d) => p.apply(ToUi::SamplePad(d)),
             Effect::SampleUndo { redo } => p.apply(ToUi::SampleUndo(redo)),
+            Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
+            Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Kit(_)
@@ -3263,6 +3282,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Looper(_)
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
+            | Effect::ProgEdit
+            | Effect::Metronome
             | Effect::Mixer(_) => {}
             Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
         }
@@ -4277,6 +4298,25 @@ mod tests {
                 command: mpfree_looper::LayerCommand::Mute(false),
             })
         );
+    }
+
+    /// MAIN steps the Play page's views; STEP SEQ goes to Beats; SAMPLE
+    /// EDIT and PROG EDIT open the Sample tab's editors.
+    #[test]
+    fn the_mode_buttons_pick_play_views_and_sample_editors() {
+        let mut p = sample_player(Fonts::embedded());
+        assert_eq!(p.play_view(), PlayView::All);
+        p.apply(ToUi::PlayView(None));
+        assert_eq!(p.play_view(), PlayView::Beats);
+        p.apply(ToUi::PlayView(Some(PlayView::Drum)));
+        p.apply(ToUi::PlayView(None));
+        assert_eq!(p.play_view(), PlayView::All, "after Drum comes All again");
+        let mut p = sample_sampler(Fonts::embedded());
+        assert_eq!(p.page(), sample_page::PAGE);
+        p.apply(ToUi::SampleEditor(sample_page::Editor::Pads));
+        assert_eq!(p.page(), sample_page::PADS_PAGE, "the page follows at once");
+        p.apply(ToUi::SampleEditor(sample_page::Editor::Wave));
+        assert_eq!(p.page(), sample_page::PAGE);
     }
 
     /// The Looper tab (mockup J): a loop tapped is picked, a layer's

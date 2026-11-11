@@ -35,7 +35,7 @@
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
-//!                      player; STOP silences, SHIFT + STOP shows the system log
+//!                      player; STOP silences, SHIFT + ERASE shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
 //!                      startup screen's last frame behind the loading card;
 //!                      --data DIR keeps settings and found buttons there
@@ -2777,6 +2777,25 @@ fn player_session(
                     out.show(gui::ToUi::ClipsWheel { delta, scroll })
                 }
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
+                app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+                // PROG EDIT: the sound the pads play (Jay, 20:40Z).
+                app::Effect::ProgEdit => {
+                    let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
+                    if synth_now {
+                        later.extend(app.open_tab(app::View::Synth));
+                    } else {
+                        out.show(gui::ToUi::SampleEditor(sample_page::Editor::Pads));
+                        later.extend(app.open_tab(app::View::Sample));
+                    }
+                }
+                app::Effect::Metronome => {
+                    time.metronome = !time.metronome;
+                    out.note(&format!(
+                        "SHIFT + PLAY START: metronome {}",
+                        if time.metronome { "on" } else { "off" }
+                    ));
+                }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
                 // While the synth has the pads, PAD BANK A-H picks a bank's

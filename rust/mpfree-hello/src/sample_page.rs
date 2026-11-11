@@ -712,6 +712,11 @@ impl SamplePage {
             grain_tab::TAB => Editor::Grain,
             _ => return,
         };
+        self.open_editor(ui, editor);
+    }
+
+    /// Opens `editor` (SAMPLE EDIT: Wave; PROG EDIT: Pads).
+    pub fn open_editor(&mut self, ui: &mut Ui, editor: Editor) {
         if editor != self.editor {
             self.lift();
             self.editor = editor;
