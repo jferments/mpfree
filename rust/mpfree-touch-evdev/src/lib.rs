@@ -10,6 +10,9 @@
 //!    contact under the wrong slot. At open we read the current slot and every
 //!    slot's state (`EVIOCGABS` + `EVIOCGMTSLOTS`) and seed the decoder.
 //!    Fingers already resting on the screen are ignored until they lift.
+//!    If the snapshot can't be read, the reader still works, unseeded (the
+//!    old behaviour), and says so in [`ReaderStats::seeded`] and
+//!    [`TouchReader::seed_error`], so touch never disappears because of it.
 //! 2. **Resync after overflow.** On `SYN_DROPPED` we read the same snapshot
 //!    and resync, so fingers that stayed down keep going instead of all being
 //!    cancelled. Only if the snapshot fails do we fall back to cancelling.
@@ -136,6 +139,9 @@ impl TouchSource for EvdevFile {
 /// Counters for the GUI's Debug page and the workstation log.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReaderStats {
+    /// The decoder was seeded from a snapshot at open. False means the
+    /// snapshot failed and the reader runs unseeded (see `seed_error`).
+    pub seeded: bool,
     /// Kernel's current slot when we opened.
     pub slot_at_open: i32,
     /// Fingers already down at open (ignored until they lift).
@@ -157,6 +163,7 @@ pub struct TouchReader<S: TouchSource> {
     map: AxisMap,
     buf: Vec<u8>,
     stats: ReaderStats,
+    seed_error: Option<String>,
 }
 
 /// The reader on the real device.
@@ -173,9 +180,10 @@ impl EvdevTouch {
 }
 
 impl<S: TouchSource> TouchReader<S> {
-    /// Wrap `source` and seed the decoder from its snapshot. Fails if the
-    /// snapshot cannot be read: a reader that cannot seed is the old,
-    /// slot-guessing behaviour this crate exists to replace.
+    /// Wrap `source` and seed the decoder from its snapshot. If the queue
+    /// can't be drained or the snapshot can't be read, the reader runs
+    /// unseeded rather than failing, so the GUI keeps touch; the error is in
+    /// [`Self::seed_error`]. Fails only on a bad profile or screen size.
     pub fn new(mut source: S, profile: &TouchProfile, width: u32, height: u32) -> io::Result<Self> {
         let mut decoder = MtDecoder::new(profile.slots)
             .map_err(|e| io::Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
@@ -183,20 +191,31 @@ impl<S: TouchSource> TouchReader<S> {
             .axis_map(width, height)
             .map_err(|e| io::Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
         let mut buf = vec![0u8; EVENT_SIZE * BATCH];
-        let drained = drain(&mut source, &mut buf)?;
-        let snap = source.snapshot(profile.slots)?;
-        decoder.seed(&snap, 0);
-        let stats = ReaderStats {
-            slot_at_open: snap.current_slot,
-            fingers_at_open: snap.slots.iter().filter(|s| s.tracking_id >= 0).count() as u32,
-            drained_events: drained,
-            ..ReaderStats::default()
+        let mut stats = ReaderStats::default();
+        let seed = drain(&mut source, &mut buf).and_then(|drained| {
+            stats.drained_events = drained;
+            source.snapshot(profile.slots)
+        });
+        let seed_error = match seed {
+            Ok(snap) => {
+                decoder.seed(&snap, 0);
+                stats.seeded = true;
+                stats.slot_at_open = snap.current_slot;
+                stats.fingers_at_open = snap.slots.iter().filter(|s| s.tracking_id >= 0).count() as u32;
+                None
+            }
+            Err(e) => Some(format!("touch snapshot at open failed, running unseeded: {e}")),
         };
-        Ok(Self { source, decoder, map, buf, stats })
+        Ok(Self { source, decoder, map, buf, stats, seed_error })
     }
 
     pub fn stats(&self) -> ReaderStats {
         self.stats
+    }
+
+    /// Why seeding at open failed, if it did. For the Debug page and log.
+    pub fn seed_error(&self) -> Option<&str> {
+        self.seed_error.as_deref()
     }
 
     pub fn decoder(&self) -> &MtDecoder {
