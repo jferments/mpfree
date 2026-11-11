@@ -7,7 +7,8 @@
 //! NOTE REPEAT is held.
 
 use crate::view::{chips, hint, quick_hint, ArpPanel, ArpState};
-use mpfree_arp::{Engine, Events, LatchMode, Library, Mode, Order, Rate, Settings};
+use crate::workspace::{self, record_pad_labels, PatternWorkspace, Row};
+use mpfree_arp::{Engine, Events, LatchMode, Library, Mode, Order, Pattern, Rate, Settings};
 use mpfree_ui::widgets::{Header, Label, PadGrid};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -138,5 +139,63 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
               Setup { settings: Settings { mode: Mode::Pattern, ..base }, pattern: 6, held: &[0, 2, 4], steps: 2.5, mutated: true, ..Setup::default() })?,
         scene("direct", "Panel: Direct, nothing generated, so no step strip", fonts(),
               Setup { latch: false, ..Setup::default() })?,
+    ])
+}
+
+/// One sample screen of the pattern workspace.
+pub struct WorkspaceSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub ws: PatternWorkspace,
+}
+
+fn workspace_scene(name: &'static str, about: &'static str, fonts: Fonts, recording: bool)
+    -> Result<WorkspaceSample, String> {
+    let climb = built_in_patterns().into_iter().find(|(n, _)| n == "Climb").map(|(_, p)| p).unwrap_or_default();
+    let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
+    let mut e = Engine::new(SAMPLE_RATE, 96.0);
+    e.set_settings(Settings { mode: Mode::Pattern, ..Settings::default() });
+    let mut header = Header::new(&APP_TABS);
+    let state = ArpState::from_engine(&e, built_in_patterns(), 3, true);
+    header.chips = chips(&state);
+    ui.add("header", header);
+    let mut pads = PadGrid::new(16, 4);
+    let notes = Color::from_pad([0x00, 0x22, 0x3F]);
+    let marks = Color::from_pad([0x3F, 0x22, 0x00]);
+    for (i, (pad, label)) in pads.pads.iter_mut().zip(record_pad_labels()).enumerate() {
+        pad.label = label.to_string();
+        pad.color = (!label.is_empty()).then_some(if i < 9 { notes } else { marks });
+    }
+    ui.add("pads", pads);
+    ui.add("hint", Label::new(workspace::hint(recording), Tone::Dim, Align::Center));
+    let mut ws = PatternWorkspace::add(&mut ui, "Pattern", "Pattern, recording", "Climb", climb)?;
+    if recording {
+        // Part way through recording on the pads, in Step time.
+        let taken = Pattern::parse("1 3 2! . 1+ _").map_err(|e| e.to_string())?;
+        let mut steps = [mpfree_arp::Step::Rest; 8];
+        steps[..taken.len()].copy_from_slice(taken.steps());
+        ws.recorded(Pattern::from_steps(&steps).ok_or("pattern")?);
+        ws.recording = true;
+        ws.editor.select(Row::Step, 6);
+        ws.update(&mut ui, None);
+    } else {
+        // An accent, a ratchet and a chance added; the ratchet is selected.
+        ws.editor.tap(0);
+        ws.editor.turn(Row::Ratchet, 3, 2);
+        ws.editor.turn(Row::Chance, 5, -4);
+        ws.editor.select(Row::Ratchet, 3);
+        ws.update(&mut ui, Some(4));
+    }
+    ui.show(ws.page())?;
+    Ok(WorkspaceSample { name, about, ui, ws })
+}
+
+/// The pattern workspace's sample screens.
+pub fn workspace_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WorkspaceSample>, String> {
+    Ok(vec![
+        workspace_scene("workspace-edit", "Pattern workspace: \"Climb\" with an accent, a ratchet and a chance added",
+                        fonts(), false)?,
+        workspace_scene("workspace-record", "Pattern workspace: recording on the pads, 6 of 8 steps in", fonts(), true)?,
     ])
 }

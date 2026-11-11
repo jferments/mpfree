@@ -1,5 +1,5 @@
 //! mpfree-arp-preview: WORKSTATION ONLY. Draws the arp's sample screens (the
-//! Arp panel and the quick band) as PNG files, with a real arp engine behind
+//! Arp panel, the quick band and the pattern workspace) as PNG files, with a real arp engine behind
 //! each one, so the screens can be looked at before they go on the MPC.
 //! Opens no device.
 //!
@@ -8,7 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-use mpfree_arp_ui::sample::samples;
+use mpfree_arp_ui::sample::{samples, workspace_samples};
 use mpfree_ui::{Fonts, SoftCanvas};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -76,13 +76,17 @@ fn run(o: &Options) -> Result<PathBuf, String> {
     let fonts = || Fonts::with_files(o.font.as_deref(), o.bold.as_deref(), o.mono.as_deref());
     fonts()?;
     let mut list = String::new();
-    for mut s in samples(|| fonts().unwrap_or_else(|_| Fonts::embedded()))? {
-        let (w, h) = s.ui.size();
+    let font = || fonts().unwrap_or_else(|_| Fonts::embedded());
+    let mut screens: Vec<(&str, &str, mpfree_ui::Ui)> =
+        samples(font)?.into_iter().map(|s| (s.name, s.about, s.ui)).collect();
+    screens.extend(workspace_samples(font)?.into_iter().map(|s| (s.name, s.about, s.ui)));
+    for (name, about, mut ui) in screens {
+        let (w, h) = ui.size();
         let mut canvas = SoftCanvas::new(w, h);
-        s.ui.paint(&mut canvas);
-        let file = dir.join(format!("{}.png", s.name));
+        ui.paint(&mut canvas);
+        let file = dir.join(format!("{name}.png"));
         write_png(&file, &canvas)?;
-        let line = format!("{}.png  {}", s.name, s.about);
+        let line = format!("{name}.png  {about}");
         println!("{line}");
         list.push_str(&line);
         list.push('\n');

@@ -331,6 +331,8 @@ pub struct Button {
 /// button `i` gives `Tab(i)`.
 pub struct ButtonRow {
     pub buttons: Vec<Button>,
+    /// Buttons on each line.
+    pub per_line: usize,
 }
 
 const BUTTON_H: i32 = 44;
@@ -342,13 +344,19 @@ impl ButtonRow {
                 .iter()
                 .map(|(l, tone)| Button { label: l.to_string(), tone: *tone, disabled: false })
                 .collect(),
+            per_line: 2,
         }
     }
 
-    /// Buttons share each line equally, two per line.
+    /// All the buttons on one line, as a toolbar.
+    pub fn one_line(labels: &[(&str, Tone)]) -> ButtonRow {
+        ButtonRow { per_line: labels.len().max(1), ..ButtonRow::new(labels) }
+    }
+
+    /// Buttons share each line equally, [`ButtonRow::per_line`] to a line.
     pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
         let inner = r.inset(12);
-        let per_line = 2;
+        let per_line = self.per_line.max(1) as i32;
         let gap = 10;
         let w = (inner.w - gap * (per_line - 1)) / per_line;
         let (line, col) = ((i as i32) / per_line, (i as i32) % per_line);
@@ -382,5 +390,142 @@ impl Widget for ButtonRow {
         (0..self.buttons.len())
             .find(|&i| !self.buttons[i].disabled && self.button_rect(r, i).contains(x, y))
             .map(EventKind::Tab)
+    }
+}
+
+// ---------------------------------------------------------------- lane grid
+
+/// The pattern workspace's grid: a column per step and a row per lane, with
+/// the row names on the left and the step numbers on top. A finger that goes
+/// down on a cell gives `Select(row * columns + col)`; moved up or down, it
+/// then gives `Step { index: the same cell, delta: +1 or -1 }` every
+/// [`DRAG_STEP`] pixels, so values can be dragged.
+pub struct LaneGrid {
+    pub rows: Vec<String>,
+    /// `cells[row][col]`, for the columns showing.
+    pub cells: Vec<Vec<StepCell>>,
+    /// The step number of the first column.
+    pub first: usize,
+    /// Columns drawn, whether or not there are steps for them.
+    pub columns: usize,
+    /// The selected cell, as (row, col).
+    pub cursor: Option<(usize, usize)>,
+    /// The column playing, if any.
+    pub playing: Option<usize>,
+    drag: Option<(u64, usize, i32)>,
+}
+
+const NAMES_W: i32 = 112;
+const NUMBERS_H: i32 = 28;
+const CELL_GAP: i32 = 4;
+/// Pixels of finger travel for one step of a dragged value.
+pub const DRAG_STEP: i32 = 28;
+
+impl LaneGrid {
+    pub fn new(rows: &[&str], columns: usize) -> LaneGrid {
+        LaneGrid {
+            rows: rows.iter().map(|s| s.to_string()).collect(),
+            cells: Vec::new(),
+            first: 0,
+            columns,
+            cursor: None,
+            playing: None,
+            drag: None,
+        }
+    }
+
+    /// Cell (row, col).
+    pub fn cell(&self, r: Rect, row: usize, col: usize) -> Rect {
+        let body = Rect::new(r.x + NAMES_W, r.y + NUMBERS_H, (r.w - NAMES_W).max(1), (r.h - NUMBERS_H).max(1));
+        let (nr, nc) = (self.rows.len().max(1) as i32, self.columns.max(1) as i32);
+        let w = (body.w - CELL_GAP * (nc - 1)) / nc;
+        let h = (body.h - CELL_GAP * (nr - 1)) / nr;
+        Rect::new(body.x + col as i32 * (w + CELL_GAP), body.y + row as i32 * (h + CELL_GAP), w, h)
+    }
+
+    fn hit(&self, r: Rect, x: i32, y: i32) -> Option<usize> {
+        for row in 0..self.rows.len() {
+            let have = self.cells.get(row).map_or(0, |c| c.len());
+            for col in 0..have.min(self.columns) {
+                if self.cell(r, row, col).contains(x, y) {
+                    return Some(row * self.columns + col);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Widget for LaneGrid {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_rect(r, t.bg);
+        for col in 0..self.columns {
+            let c = self.cell(r, 0, col);
+            let head = Rect::new(c.x, r.y, c.w, NUMBERS_H - 4);
+            let on = self.playing == Some(col);
+            let ink = if on { t.good } else { t.text_faint };
+            cx.text(FontId::Mono, t.size_small - 1.0, head, Align::Center, ink, &format!("{}", self.first + col + 1));
+        }
+        for (row, name) in self.rows.iter().enumerate() {
+            let c = self.cell(r, row, 0);
+            let label = Rect::new(r.x, c.y, NAMES_W - 10, c.h);
+            let on = self.cursor.is_some_and(|(cr, _)| cr == row);
+            let ink = if on { t.accent } else { t.text_dim };
+            cx.text(FontId::Bold, t.size_small, label, Align::Left, ink, &name.to_uppercase());
+            let cells = self.cells.get(row).map_or(&[][..], |v| v.as_slice());
+            for col in 0..self.columns {
+                let cell = self.cell(r, row, col);
+                let Some(c) = cells.get(col) else {
+                    cx.canvas.stroke_round_rect(cell, 6, 1, t.outline);
+                    continue;
+                };
+                let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
+                cx.canvas.fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
+                if self.playing == Some(col) {
+                    cx.canvas.stroke_round_rect(cell, 6, 2, t.good);
+                }
+                if self.cursor == Some((row, col)) {
+                    cx.canvas.stroke_round_rect(cell, 6, 3, t.accent);
+                }
+                if c.accent {
+                    let dot = Rect::new(cell.right() - 12, cell.y + 6, 6, 6);
+                    cx.canvas.fill_round_rect(dot, 3, t.warn);
+                }
+                let ink = match c.kind {
+                    CellKind::Rest | CellKind::Tie => t.text_faint,
+                    CellKind::Random => t.text_dim,
+                    CellKind::Chord => t.accent,
+                    CellKind::Note => t.text,
+                };
+                cx.text(FontId::Sans, t.size_body, cell, Align::Center, ink, &c.label);
+            }
+        }
+    }
+
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {
+                let i = self.hit(r, x, y)?;
+                self.drag = Some((finger, i, y));
+                self.cursor = Some((i / self.columns, i % self.columns));
+                Some(EventKind::Select(i))
+            }
+            Touch::Move => {
+                let (f, i, last) = self.drag?;
+                if f != finger || (y - last).abs() < DRAG_STEP {
+                    return None;
+                }
+                let delta = if y < last { 1 } else { -1 };
+                self.drag = Some((f, i, last - delta * DRAG_STEP));
+                Some(EventKind::Step { index: i, delta })
+            }
+            Touch::Up | Touch::Cancel => {
+                if self.drag.is_some_and(|(f, _, _)| f == finger) {
+                    self.drag = None;
+                }
+                None
+            }
+        }
     }
 }
