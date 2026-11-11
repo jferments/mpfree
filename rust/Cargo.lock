@@ -515,6 +515,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-looper",
  "mpfree-mixer-ui",
+ "mpfree-mod",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
