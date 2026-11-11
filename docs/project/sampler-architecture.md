@@ -41,7 +41,7 @@ It says which crates hold what, which thread does what, how data moves between t
 | `mpfree-stretch` | new, later (S7) | High-quality offline time stretch and pitch shift | `signalsmith-stretch` (C++ inside) | in the dependency only |
 | `mpfree-audio` | new, split from `mpfree-hello/src/alsa.rs` | `AudioDevice` trait (ADR-0002); ALSA playback **and capture**; a file device and a null device for tests | `libc`-level ioctls via `sys` | yes, isolated in `sys.rs` as today |
 | `mpfree-sampler-ui` | new | The sampler's screens: Sound page tabs, Record, Browser, Perform | `mpfree-ui` | none |
-| `mpfree-ui` | exists | New widgets: `Waveform`, `WaveOverview`, `MarkerRuler`, `Meter`, `XYPad`, `EnvelopeEditor`, `LayerMap`, `QLinkStrip`, `PadGrid` additions (waveform thumbnail, pressure ring) | `fontdue` | none |
+| `mpfree-ui` | exists | New widgets: `Waveform` (with the marker ruler as its tab strip) and `WaveOverview` are built in `wave.rs`, drawn from a `Peaks` source with a playhead redrawing only its strips (`examples/wave_preview.rs` draws the Wave tab to a PNG); still to come: `Meter`, `XYPad`, `EnvelopeEditor`, `LayerMap`, `QLinkStrip`, `PadGrid` additions (waveform thumbnail, pressure ring) | `fontdue` | none |
 | `mpfree-app` | new, grows out of `mpfree-hello` | The program: threads, wiring, settings, start-up | everything above | none |
 
 `mpfree-hello` stays as the test program for hardware rounds; `mpfree-app` is what the owner eventually boots into.
