@@ -2,8 +2,10 @@
 //! (`mpfree-play`'s player and recorder), take undo and a metronome click,
 //! run in the audio loop.
 //!
-//! Each period the loop hands [`TimeHost::pad`] the pad notes it plays
-//! (after the arp, with their offsets), then calls [`TimeHost::period`]:
+//! Each period the loop first runs the transport ([`TimeHost::advance`]),
+//! so the arp can follow its clock ([`TimeHost::arp_clock`]), hands
+//! [`TimeHost::pad`] the pad notes it plays (after the arp, with their
+//! offsets), then calls [`TimeHost::period`]:
 //! the transport runs, the clips play their notes on the kit's pads through
 //! [`Pads`] (the sampler), the armed track records, and recorded and erased
 //! notes go into the clips and the take history. After the sampler renders,
@@ -23,7 +25,7 @@ use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::{Clip, Project, Track};
 use mpfree_time_ui::view::{bars_label, launches_after, TimeAction, TimeState, TransportInfo};
-use mpfree_transport::{Block, Command, State, Transport};
+use mpfree_transport::{Block, Command, Mark, State, Transport};
 use std::f32::consts::TAU;
 
 /// Tracks in a new project.
@@ -146,6 +148,12 @@ pub struct TimeHost {
     pub metronome: bool,
     /// The clips, launches or takes changed since [`TimeHost::take_changed`].
     changed: bool,
+    /// [`TimeHost::advance`] ran the transport for the coming period (and
+    /// whether it could).
+    advanced: Option<bool>,
+    /// A start or jump after the first span of the last period: the next
+    /// arp clock says it jumped.
+    jump_pending: bool,
 }
 
 impl TimeHost {
@@ -162,7 +170,8 @@ impl TimeHost {
                                   capture: Box::new(Capture::new()), pending: None, block: Box::new(Block::new()),
                                   sink: Box::new(Collect { out: [blank; MAX_OUT], n: 0, dropped: 0 }),
                                   view: PlayView::empty(), project, launches: Vec::new(), armed: Some(0),
-                                  takes: Takes::default(), click: Click::new(rate), metronome: true, changed: true };
+                                  takes: Takes::default(), click: Click::new(rate), metronome: true, changed: true,
+                                  advanced: None, jump_pending: false };
         host.compile()?;
         Ok(host)
     }
@@ -297,9 +306,61 @@ impl TimeHost {
         self.capture.input(offset, event);
     }
 
+    /// Run the transport for the coming period, before the app's process,
+    /// so the arp can follow it ([`TimeHost::arp_clock`]).
+    /// [`TimeHost::period`] then plays and records on the same block.
+    pub fn advance(&mut self, frames: u32) -> bool {
+        let ok = self.transport.process(frames, &mut self.block);
+        self.advanced = Some(ok);
+        ok
+    }
+
+    /// The arp's clock for the coming period, from the first span of the
+    /// block [`TimeHost::advance`] made: None while stopped, so the arp
+    /// runs on its own tempo. The count-in counts as playing. `jumped` is
+    /// set by a start or jump before the first span, or by one later in the
+    /// last period (the arp follows the first span only, so it catches up
+    /// one period later).
+    // The arp thread's App::set_clock takes it: `app.set_clock(time.arp_clock())`
+    // after `time.advance` in the audio loop. Until that lands only tests call it.
+    pub fn arp_clock(&mut self) -> Option<mpfree_arp::Clock> {
+        let jump = |m: &Mark| matches!(m, Mark::Started { .. } | Mark::CountIn { .. } | Mark::Located { .. }
+                                            | Mark::Looped { .. });
+        let first = self.block.spans().first().copied();
+        let first_offset = first.map_or(0, |s| s.offset);
+        let mut jumped = std::mem::take(&mut self.jump_pending);
+        for m in self.block.markers() {
+            if jump(&m.mark) {
+                if m.offset <= first_offset {
+                    jumped = true;
+                } else {
+                    self.jump_pending = true;
+                }
+            }
+        }
+        let span = first?;
+        if !span.state.rolling() {
+            return None;
+        }
+        Some(mpfree_arp::Clock {
+            anchor_tick: span.anchor_tick,
+            frames_since_anchor: span.frame.saturating_sub(span.anchor_frame),
+            bpm: span.bpm,
+            playing: true,
+            jumped,
+            swing: (span.swing.amount > 50).then_some((span.swing.grid, span.swing.amount)),
+            bar_ticks: u32::try_from(span.meter.bar_ticks()).unwrap_or(4 * mpfree_arp::PPQ),
+        })
+    }
+
     /// Run one period: the clips play into `pads`, the armed track records.
+    /// Runs the transport first unless [`TimeHost::advance`] already did.
     pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
-        if !self.transport.process(frames, &mut self.block) {
+        let ok = match self.advanced.take() {
+            Some(ok) => ok,
+            None => self.transport.process(frames, &mut self.block),
+        };
+        if !ok {
             return;
         }
         self.capture.process(&self.block);
@@ -350,6 +411,17 @@ impl TimeHost {
     /// Add the click to the rendered period; returns the peak afterwards.
     pub fn mix_click(&mut self, left: &mut [f32], right: &mut [f32]) -> f32 {
         self.click.mix(left, right)
+    }
+
+    /// The transport's description of the last period (for the looper).
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    /// The song position as bar.beat.tick, for log lines.
+    pub fn position_text(&self) -> String {
+        let t = &self.transport;
+        t.meter().position(t.position()).to_string()
     }
 
     pub fn info(&self) -> TransportInfo {
@@ -434,6 +506,57 @@ mod tests {
 
     /// Frames per bar at 120 BPM.
     const BAR: u64 = 88_200;
+
+    /// The arp's clock follows the transport: None while stopped, the
+    /// transport's anchor while playing (a whole tick on an exact frame),
+    /// `jumped` once at the start and after a locate, and the swing.
+    #[test]
+    fn the_arp_clock_follows_the_transport() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert!(h.advance(PERIOD));
+        assert_eq!(h.arp_clock(), None, "stopped: the arp runs on its own");
+        h.period(PERIOD, &mut pads);
+        h.command(Command::Play);
+        let mut clocks = Vec::new();
+        for _ in 0..40 {
+            h.advance(PERIOD);
+            clocks.push(h.arp_clock().expect("playing"));
+            h.period(PERIOD, &mut pads);
+        }
+        assert!(clocks[0].jumped && clocks[1..].iter().all(|c| !c.jumped), "{clocks:?}");
+        for c in &clocks {
+            assert!(c.playing && c.bpm == 120.0 && c.bar_ticks == 3840 && c.swing.is_none());
+            // The anchor's tick and frame agree with the song position at the period's start.
+            let tick = c.anchor_tick as f64 + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE));
+            assert!(tick >= 0.0);
+        }
+        let k = clocks.len() - 1;
+        let at = |c: &mpfree_arp::Clock| c.anchor_tick as f64
+            + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE));
+        assert!((at(&clocks[k]) - at(&clocks[0]) - k as f64 * f64::from(PERIOD) * 960.0 * 2.0 / f64::from(RATE)).abs()
+                < 1e-6);
+        // A locate while playing: jumped once, from the new place.
+        h.command(Command::Locate(3840 * 4));
+        h.advance(PERIOD);
+        let c = h.arp_clock().unwrap();
+        assert!(c.jumped && (at(&c) - 15_360.0).abs() < 1e-6, "{c:?}");
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert!(!h.arp_clock().unwrap().jumped);
+        h.period(PERIOD, &mut pads);
+        // Swing on the transport goes to the arp.
+        h.command(Command::SetSwing(mpfree_transport::Swing { grid: 240, amount: 62 }));
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock().unwrap().swing, Some((240, 62)));
+        h.period(PERIOD, &mut pads);
+        // Stopped again: None.
+        h.command(Command::Stop);
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock(), None);
+    }
 
     #[test]
     fn a_new_clip_records_the_pads_and_plays_them_back() {

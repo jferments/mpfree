@@ -16,7 +16,7 @@ started by you pressing Enter:
      touch and screen devices.
   3. Test build RAM: copies the program to /run/mpfree-hello and checks its
      hash there. Nothing else is written; a power-cycle clears it. Skipped
-     when the only step is app, which needs no copy.
+     when the only steps are app and line, which need no copy.
   app: READ-ONLY. The pad player that a stick built with --app starts at
      power-on: one phase at a time, each started by Enter and ended by Enter
      when you are done, it shows what the app wrote to the system log in
@@ -24,6 +24,13 @@ started by you pressing Enter:
      30-second status lines with underruns and the note engine's dropped
      events) and asks what you saw. It only reads the log and the service's
      state; it copies, starts and stops nothing.
+  line: STATE-CHANGING (RAM only), and never in the default steps. The
+     MPC's line input, with the same pad player: first a read-only look at
+     the ACVA card's capture device in /proc/asound, then, only after you
+     type LINE, phases where you turn Line input on in the pad player (it
+     opens the capture device), watch its meter, loop it and turn it off
+     again, each followed by the same read-only look. The tool itself only
+     reads; the pad player opens and closes the device when you ask it to.
   4. inventory: the program lists sound cards, MIDI and input devices, the
      framebuffer and real-time limits (read-only).
   5. screen: stops the test build's own log display (mpfree-test-screen, our
@@ -50,7 +57,7 @@ started by you pressing Enter:
      counts underruns and late periods. Turn the volume knob down first.
   MPFREE_HELLO_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
-  app, then the numbered ones above. After lights, drums, setup and play it
+  app, line, then the numbered ones above. After lights, drums, setup and play it
   checks that the controller still has its normal USB id. The first step that
   draws on the screen stops the log display or the pad player (our own
   services), since both would draw on /dev/fb0. At the end it starts again
@@ -88,10 +95,13 @@ PROGRAM_MAX = 16 << 20
 KIT_MAX = 48 << 20
 KIT_MAGIC = b"MPFKITS1"
 REMOTE_DIR = "/run/mpfree-hello"
-STEPS = ("app", "inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
+STEPS = ("app", "line", "inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
+# The steps that use the pad player started at power-on: no copy, and they run before anything stops it.
+APP_STEPS = ("app", "line")
 DEFAULT_STEPS = "inventory,screen,touch,pads,click"
 CONTROLLER_ID = "09e8:0046"
 SETUP_WORD = "SEND"
+LINE_WORD = "LINE"
 # Tests set this so the prompts can be answered without a terminal.
 TESTING = os.environ.get("MPFREE_HELLO_TEST") == "1"
 
@@ -229,6 +239,23 @@ cat "$R/proc/uptime"
 APP_LOG = r"""R=''
 journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager --no-hostname -n 50000 2>&1
 """
+# The line input (read-only): the ACVA card's capture device node and its ALSA state (closed, or the
+# settings and position while the pad player has it open), next to the playback device's state.
+LINE_PROBE = r"""R=''
+found=0
+for d in "$R"/proc/asound/card[0-9]*; do
+  [ "$(cat "$d/id" 2>/dev/null)" = ACVA ] || continue
+  found=1
+  n=${d##*/card}
+  echo "ACVA is card $n"
+  ls -l "$R/dev/snd/pcmC${n}D0c" 2>&1
+  for f in pcm0c/info pcm0c/sub0/status pcm0c/sub0/hw_params pcm0p/sub0/hw_params; do
+    echo "--- card$n/$f"
+    cat "$d/$f" 2>&1
+  done
+done
+[ "$found" = 1 ] || echo "no sound card with the id ACVA"
+"""
 # The touchscreen's interrupt count (read-only): shows whether the ILI2117 sends anything at all.
 TOUCH_IRQ = r"""R=''
 grep -i 'ili' "$R/proc/interrupts" 2>/dev/null || echo "no ILI2117 line in /proc/interrupts"
@@ -360,8 +387,8 @@ def check_controller(mpc, out):
 # ended by Enter; the app's log lines from that time are shown. A skipped phase loses nothing: the
 # summary at the end reads the whole session.
 APP_PHASES = (
-    ("Debug mode and Map controls",
-     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on debug mode",
+    ("Developer tools and Map controls",
+     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on the developer tools",
       "and opens the list of the MPC's buttons: found (green), skipped (grey) or still to find.",
       "Tap a control in the list (or pick it with the wheel and press +), then press that button on the MPC:",
       "its number appears. Start with REC, OVERDUB, PLAY START, UNDO and the four PAD BANK buttons (they",
@@ -400,13 +427,20 @@ APP_PHASES = (
       "NOTE REPEAT + MENU opens the Arp panel: - / + walk Direct, Repeat, Arp and Pattern, and the",
       "pads play through it. NOTE REPEAT + MENU again closes it. STOP silences and unlatches."],
      "Did the quick band and the Arp panel show up and change what the pads played?"),
-    ("Looper: record, overdub and undo clips",
+    ("Clips: record, overdub and undo",
      ["Uses the buttons found in phase 1. Press PLAY: the transport bar counts bars and beats. Press REC,",
       "play a short beat on the pads for a bar or two, and press REC again: the take loops. Press OVERDUB",
       "(it switches Overdub and Replace), REC, and add more hits on the next pass; REC again. UNDO takes the",
       "last take back, SHIFT + UNDO puts it back. Tap the Clips tab: + makes a 2-bar clip and records into",
       "it, and tapping a clip launches or stops it on the next bar. PLAY START plays from bar 1. STOP stops."],
      "Did recording, overdub, undo and the clips loop in time? Anything out of time or lost?"),
+    ("Audio looper: loop the pads",
+     ["Tap the Looper tab. It records what the pads and the synth play (\"Records from: Pads and synth\");",
+      "the line input stays off. Press PLAY, then REC (or tap Record): recording starts on the next bar line",
+      "and lasts 2 bars, so play a beat on the pads through them. Then the loop plays. REC (or OVERDUB) adds",
+      "a layer from the next pass, REC again ends it, UNDO takes it back and SHIFT + UNDO puts it back.",
+      "Tap Mute twice, then Clear. MENU on the Looper tab has its options (bars, level). STOP stops."],
+     "Did the loop start on the bar and play back in time, without clicks? Did overdub, undo and Clear work?"),
     ("Touch lab",
      ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch lab, and press +.",
       "Follow the screen through all 9 steps (Start, a countdown, then do what it says; Next after",
@@ -419,8 +453,9 @@ APP_PHASES = (
      "Did the menus, the console and the screen pads work, and did STOP silence everything?"),
 )
 # The session summary at the end of the app step: every line that starts with one of these, from
-# power-on to the end (the last two status lines only).
-SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "debug mode: ",
+# power-on to the end (the last three status lines only).
+SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "developer tools: ",
+                    "looper: ", "line input: ",
                     "map: ", "map summary: ", "bank", "pad level: ", "kit ", "synth: ", "pads: ", "Latch ",
                     "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
                     "touch-lab-open", "touch-lab: ", "touch-lab-exit", "STOP: ")
@@ -540,6 +575,86 @@ def app_check(mpc, out, n, total):
     session_summary(mpc, out)
 
 
+LINE_PHASES = (
+    ("Line input on, and its meter",
+     ["Turn the MPC's volume knob down first. Plug a source into the line inputs (a phone or a synth, not",
+      "too loud), or leave them empty. Tap the Looper tab, press MENU, turn the wheel to \"Line input\" and",
+      "press +. The pad player opens the line input: \"Records from\" changes to Line input, or the log",
+      "says why it stays off. Play the source: the meter on the right moves. Unplug the right-hand plug,",
+      "then the left, to see which jack is L and which is R. Press MENU to close the options."],
+     "Did Line input turn on, and did the meter move? Which jack moved L, and which R?"),
+    ("Loop the line input",
+     ["Press PLAY, then REC (or tap Record): 2 bars from the next bar line. Play the source into it; then",
+      "the loop plays. Add a layer with OVERDUB (or REC), end it with REC, UNDO it. Tap Monitor to hear the",
+      "input through the outputs, then tap it again. The pads are not recorded now, only the line input."],
+     "Did the loop record the input and play it back in time? Any clicks, dropouts or noise?"),
+    ("Line input off",
+     ["Press MENU on the Looper tab, turn the wheel to \"Line input\" and press -. The pad player closes the",
+      "line input and \"Records from\" goes back to the pads; the loop keeps playing. Press MENU, then STOP."],
+     "Did Line input turn off, and did the pads and the loop keep playing?"),
+)
+
+
+def line_probe(mpc, out, when):
+    rc, text = mpc.run(LINE_PROBE, test=True)
+    out.say(f"  the line input {when} (read-only):")
+    for line in (text.strip() or f"(no answer, exit code {rc})").splitlines():
+        out.say(f"    {line}")
+
+
+def line_check(mpc, out, n, total):
+    """The line step: you open the line input from the pad player; the tool reads its state and log."""
+    out.say(f"\n[{n}/{total}] The line input (STATE-CHANGING on the MPC, RAM only: the pad player opens its capture "
+            "device when you turn Line input on)")
+    rc, text = mpc.run(APP_STATE, test=True)
+    out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+    line_probe(mpc, out, "before")
+    if not text.strip().endswith(": active"):
+        out.say("  The pad player is not running, so this step is left out. Nothing was opened.")
+        return
+    out.say("  What changes: the pad player opens the ACVA card's capture device (stereo, 44.1 kHz, 128-frame")
+    out.say("  periods) and reads it without waiting, so playback never waits on it. Nothing is written to the")
+    out.say("  eMMC, the U-Boot environment or the mixer settings, and nothing is saved: Line input is off at")
+    out.say("  every start.")
+    out.say("  Undo: Line input Off in the Looper options or Prefs closes the device. Leaving the pad player, or")
+    out.say("  switching the MPC off (the test build lives in RAM), closes it too.")
+    out.say("  If it fails: if the card refuses to open or start the input, the pad player logs why and the row")
+    out.say("  stays Off; after more than 3 read errors in a row it closes the input itself and says so. Which")
+    out.say("  jacks the input reads, and whether Akai's driver records on the test build at all, are not")
+    out.say("  checked yet: that is what this step finds out.")
+    while True:
+        a = typed(f"  Type {LINE_WORD} and press Enter to go on (s skips this step, q stops here): ")
+        if a in (LINE_WORD, "s", "q"):
+            break
+        print(f"  Please type {LINE_WORD} exactly, or s, or q.")
+    out.say(f"  answer: {a}")
+    if a == "q":
+        raise Stop("stopped by you")
+    if a != LINE_WORD:
+        return
+    for k, (title, todo, question) in enumerate(LINE_PHASES, start=1):
+        out.say(f"\n  Phase {k} of {len(LINE_PHASES)}: {title}")
+        for line in todo:
+            out.say(f"    {line}")
+        answer = ready(out, "Ready?")
+        if answer == "quit":
+            raise Stop("stopped by you")
+        if answer == "skip":
+            continue
+        since = uptime(mpc)
+        while (done := ask("  Go ahead. Press Enter when you are done (q stops here): ")) in ("again", "skip"):
+            print("  Please press just Enter when you are done, or q.")
+        summarize(out, app_lines(mpc, since))
+        line_probe(mpc, out, "now")
+        if done == "quit":
+            raise Stop("stopped by you")
+        note(out, question)
+    lines = app_lines(mpc, 0.0)
+    out.say("\n  The line input and the looper, the whole session:")
+    for message in [m for _, m in lines if m.startswith(("line input: ", "looper: ", "status: looper: "))][-40:]:
+        out.say(f"    {message}")
+
+
 def touch_interrupts(mpc, out, when):
     rc, text = mpc.run(TOUCH_IRQ, test=True)
     for line in (text.strip() or f"(no answer, exit code {rc})").splitlines()[:4]:
@@ -564,11 +679,12 @@ def session_summary(mpc, out):
     touch_interrupts(mpc, out, "now")
     out.say("\n  The app's latest status (every 30 s: hits, underruns, timing, voices, the engines' counters):")
     statuses = [m for _, m in lines if m.startswith("status: ")]
-    for message in statuses[-2:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
+    # Every 30 s: the pad player's line, the synth's and the looper's.
+    for message in statuses[-3:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
         out.say(f"    {message}")
     perf = [m for _, m in lines if m.startswith("perf: ")]
-    out.say(f"  Debug mode's process numbers ({len(perf)} perf lines; the latest):")
-    out.say(f"    {perf[-1] if perf else '(none: debug mode was not on, or not for 30 s)'}")
+    out.say(f"  The developer tools' process numbers ({len(perf)} perf lines; the latest):")
+    out.say(f"    {perf[-1] if perf else '(none: the developer tools were not on, or not for 30 s)'}")
 
 
 def copy_program(mpc, out, total, program, digest, kit, kit_digest):
@@ -607,8 +723,8 @@ def main(argv):
     out = kexec.Out(args.report)
     out.say("MPFree Hello MPC on the test build (changes RAM on the MPC only)")
     steps = chosen_steps(os.environ.get("MPFREE_HELLO_STEPS", DEFAULT_STEPS))
-    # The app step only reads; the program is copied only for the others.
-    copy = any(n != "app" for n in steps)
+    # The app and line steps use the pad player started at power-on; the program is copied only for the others.
+    copy = any(n not in APP_STEPS for n in steps)
     total = (3 if copy else 2) + len(steps)
 
     out.say(f"\n[1/{total}] Workstation checks (read-only)")
@@ -699,6 +815,8 @@ def main(argv):
         for i, name in enumerate(steps, start=4 if copy else 3):
             if name == "app":
                 app_check(mpc, out, i, total)
+            elif name == "line":
+                line_check(mpc, out, i, total)
             elif name == "inventory":
                 if step(i, "Inventory (read-only)", "Lists the sound, MIDI, input and screen devices."):
                     run_phase(mpc, out, "inventory")

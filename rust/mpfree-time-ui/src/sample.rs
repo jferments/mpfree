@@ -20,9 +20,6 @@ use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 /// The screen as the pad player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The pad player's music tabs, in the order the owner approved for the
-/// layout on 2026-11-11.
-pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
 /// The pad player's Play page (`mpfree-hello`'s `PLAY_LAYOUT`), before the
 /// bar goes in.
 pub const APP_PLAY_LAYOUT: &str = "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
@@ -365,10 +362,9 @@ fn arp_chip() -> Chip {
     Chip::new("Arp · Up · 1/16", Tone::Accent)
 }
 
-fn app_ui(fonts: Fonts, tab: usize, hint: &str) -> Ui {
+fn app_ui(fonts: Fonts, tab: &str, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
-    let mut header = Header::new(&APP_TABS);
-    header.active = tab;
+    let mut header = Header::app(tab);
     header.chips = vec![Chip::new("Akai session", Tone::Good), Chip::new("Kit 2 of 6", Tone::Accent)];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
@@ -377,7 +373,7 @@ fn app_ui(fonts: Fonts, tab: usize, hint: &str) -> Ui {
 
 fn clips_sample(name: &'static str, about: &'static str, fonts: Fonts, s: &Session, first_row: usize)
     -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, 1, CLIPS_HINT);
+    let mut ui = app_ui(fonts, "Clips", CLIPS_HINT);
     let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.first_row = first_row;
@@ -389,7 +385,7 @@ fn clips_sample(name: &'static str, about: &'static str, fonts: Fonts, s: &Sessi
 
 /// The pad player's Play page with the bar under the header.
 fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, 0, PLAY_HINT);
+    let mut ui = app_ui(fonts, "Play", PLAY_HINT);
     let mut pads = PadGrid::new(16, 4);
     let names = ["Kick", "Snare", "Closed Hat", "Open Hat", "Sub", "Glitch", "Stab", "Chord", "Chord 2", "Dust",
                  "Riser", "Wash", "Clank", "", "", ""];
