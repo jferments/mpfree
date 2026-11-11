@@ -6,6 +6,7 @@
 //!   built from the model.
 //! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
+//! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
 //!   also feeds [`model::Source::from_prepared`].
@@ -18,6 +19,7 @@ pub mod chop;
 pub mod dsp;
 pub mod engine;
 pub mod model;
+pub mod record;
 
 use std::fs::File;
 use std::io::Read;
