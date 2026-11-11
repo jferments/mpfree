@@ -135,6 +135,29 @@ pub trait Pads {
     fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool;
     fn release_at(&mut self, pad: usize, offset: u32);
     fn stop_all(&mut self);
+    /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
+    /// the pads through their track's arp, a latched arp, or a clip that
+    /// plays through its arp. It is live playing, so the pad player gives
+    /// it the pads' own treatment (velocity curve, flashes). Returns the
+    /// note to record as heard on the armed track (a pad number), or None.
+    /// By default it plays as a clip's note and records as it is.
+    fn live(&mut self, o: &Out) -> Option<Event> {
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                self.hit_at(usize::from(note), velocity, o.offset);
+                Some(o.event)
+            }
+            Event::NoteOff { note } => {
+                self.release_at(usize::from(note), o.offset);
+                Some(o.event)
+            }
+            Event::AllOff => {
+                self.stop_all();
+                None
+            }
+            Event::Lock { .. } | Event::Unlock { .. } => None,
+        }
+    }
 }
 
 impl Pads for crate::sampler::Player {
@@ -152,18 +175,27 @@ impl Pads for crate::sampler::Player {
 /// The player's notes for one period, in a fixed table.
 struct Collect {
     out: [Out; MAX_OUT],
+    /// Which of `out` an arp played (live playing, see [`Pads::live`]).
+    arp: [bool; MAX_OUT],
     n: usize,
     dropped: u64,
 }
 
-impl Sink for Collect {
-    fn send(&mut self, out: Out) {
+impl Collect {
+    fn push(&mut self, out: Out, arp: bool) {
         if self.n < MAX_OUT {
             self.out[self.n] = out;
+            self.arp[self.n] = arp;
             self.n += 1;
         } else {
             self.dropped += 1;
         }
+    }
+}
+
+impl Sink for Collect {
+    fn send(&mut self, out: Out) {
+        self.push(out, false);
     }
 }
 
@@ -263,6 +295,7 @@ pub struct TimeHost {
     advanced: Option<bool>,
     /// A start or jump after the first span of the last period: the next
     /// arp clock says it jumped.
+    #[allow(dead_code)] // read by arp_clock only
     jump_pending: bool,
     /// Pad hits this period, for the screen ([`TimeHost::hits`]).
     hits: [HitInfo; MAX_HITS],
@@ -272,6 +305,12 @@ pub struct TimeHost {
 }
 
 impl TimeHost {
+    /// The armed track (the one the pads, the arp panel and recording
+    /// follow), if any.
+    pub fn armed(&self) -> Option<usize> {
+        self.armed
+    }
+
     /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
     /// armed.
     pub fn new(rate: u32, bpm: f64) -> Result<TimeHost, String> {
@@ -299,6 +338,7 @@ impl TimeHost {
             block: Box::new(Block::new()),
             sink: Box::new(Collect {
                 out: [blank; MAX_OUT],
+                arp: [false; MAX_OUT],
                 n: 0,
                 dropped: 0,
             }),
@@ -784,8 +824,10 @@ impl TimeHost {
     /// set by a start or jump before the first span, or by one later in the
     /// last period (the arp follows the first span only, so it catches up
     /// one period later).
-    // The arp thread's App::set_clock takes it: `app.set_clock(time.arp_clock())`
-    // after `time.advance` in the audio loop. Until that lands only tests call it.
+    // The per-track arps (TimeHost::period_arps) take the clock from the
+    // block's spans themselves (ArpHost); App::process's single arp used
+    // this. Kept for a host that drives one Engine directly.
+    #[allow(dead_code)]
     pub fn arp_clock(&mut self) -> Option<mpfree_arp::Clock> {
         let jump = |m: &Mark| {
             matches!(
@@ -837,9 +879,6 @@ impl TimeHost {
     /// arp's notes (the live pads' too, fed with [`TrackArps::pad`] before
     /// this) go to `pads` with them, in frame order. Each arp first takes
     /// its track's destination and switch.
-    // The pad player calls it once the app owns the per-track arps (the
-    // arp thread's side); until then only tests do.
-    #[allow(dead_code)]
     pub fn period_arps(&mut self, frames: u32, pads: &mut impl Pads, arps: &mut TrackArps) {
         for (t, track) in self.project.tracks.iter().enumerate() {
             arps.set_through(t, track.through_arp);
@@ -856,28 +895,34 @@ impl TimeHost {
         if !ok {
             return;
         }
-        self.capture.process(&self.block);
-        // The Capture button shows what it would keep: a new phrase, or one
-        // more bar of it, is a change for the screen (once a bar at most).
-        let pending = self.capture.pending();
-        if pending != self.pending {
-            self.pending = pending;
-            self.changed = true;
-        }
         self.sink.n = 0;
         match arps {
             // The player's notes go through the per-track arps (a through
-            // track's into its arp, the rest as they are), then to the pads.
+            // track's into its arp, the rest as they are), then to the pads,
+            // with what the arps played (the live pads among it) marked.
             Some(arps) => {
                 self.player
                     .process(&self.view, &self.block, &mut arps.through_sink());
-                arps.finish(&self.block, &mut *self.sink);
+                let sink = &mut *self.sink;
+                arps.finish_with(&self.block, |o, arp| sink.push(*o, arp));
             }
             None => self
                 .player
                 .process(&self.view, &self.block, &mut *self.sink),
         }
-        for o in &self.sink.out[..self.sink.n] {
+        for i in 0..self.sink.n {
+            let o = self.sink.out[i];
+            if self.sink.arp[i] {
+                // Live playing: the pad player's own treatment, and what it
+                // says to record goes to the armed track as heard (or, on a
+                // track whose clips play through its arp, the pads as
+                // pressed do, through pad_pressed).
+                let heard = pads.live(&o);
+                if let Some(ev) = heard.filter(|_| self.armed == Some(usize::from(o.track))) {
+                    self.pad(o.offset, ev);
+                }
+                continue;
+            }
             match o.event {
                 Event::NoteOn { note, velocity } => {
                     pads.hit_at(usize::from(note), velocity, o.offset);
@@ -888,6 +933,15 @@ impl TimeHost {
                 // the pad player does not run yet.
                 Event::Lock { .. } | Event::Unlock { .. } => {}
             }
+        }
+        // After the live notes above, which it keeps as heard.
+        self.capture.process(&self.block);
+        // The Capture button shows what it would keep: a new phrase, or one
+        // more bar of it, is a change for the screen (once a bar at most).
+        let pending = self.capture.pending();
+        if pending != self.pending {
+            self.pending = pending;
+            self.changed = true;
         }
         self.recorder.process(&self.view, &self.block);
         // Cues that started on a bar line become the tracks' launches: the
@@ -1319,6 +1373,65 @@ mod tests {
             .filter(|&&(f, _, _)| f >= 2 * BAR)
             .map(|&(f, p, _)| (f, p))
             .collect()
+    }
+
+    /// The live pads through a track's arp, while the transport plays: the
+    /// arp steps on the transport's sixteenths (period_arps hands every arp
+    /// the clock), its notes reach the pads as live playing, and the armed
+    /// track records them as heard.
+    #[test]
+    fn the_pads_arp_steps_on_the_transport_grid_and_records_as_heard() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = arp_up(0);
+        // Its own tempo differs: the transport's clock puts it on the
+        // transport's grid.
+        arps.engine(0).unwrap().set_tempo(97.0);
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        assert_eq!(h.armed(), Some(0));
+        while pads.frame < 2 * BAR {
+            let f = pads.frame;
+            let at = |x: u64| {
+                (f..f + u64::from(PERIOD))
+                    .contains(&x)
+                    .then(|| (x - f) as u32)
+            };
+            if let Some(o) = at(1000) {
+                arps.pad(
+                    0,
+                    o,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if let Some(o) = at(BAR / 2) {
+                arps.pad(0, o, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        let sixteenth = BAR as f64 / 16.0;
+        let frames: Vec<u64> = pads.hits.iter().map(|&(f, _, _)| f).collect();
+        assert!(frames.len() >= 6 && frames.len() <= 8, "{frames:?}");
+        for &f in &frames {
+            let steps = f as f64 / sixteenth;
+            assert!(
+                (steps - steps.round()).abs() * sixteenth <= 1.0,
+                "on the transport's grid: {frames:?}"
+            );
+        }
+        assert!(frames[0] >= 1000 && (frames[0] as f64) < 1000.0 + sixteenth);
+        assert!(pads.hits.iter().all(|&(_, p, _)| p == 4));
+        assert_eq!(h.dropped() + arps.dropped(), 0);
+        let clip = h.project.tracks[0].slots[0].as_ref().unwrap();
+        assert_eq!(
+            clip.notes.len(),
+            frames.len(),
+            "every step recorded as heard"
+        );
     }
 
     /// "Clips through the arp" on: the track records the chord as pressed
