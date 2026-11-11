@@ -102,7 +102,7 @@ with `--quick`) at 128 frames and 44.1 kHz:
   engine" page.
 - **period (the whole audio thread, 60 %):** "Song" runs a busy song's
   engines one after another in every block: the sampler with the master
-  grains, an 8-voice Supersaw and a 4-voice Sub Bass, the mixer with a
+  grains, an 8-voice Supersaw and the Sub Bass (a mono preset), the mixer with a
   song's inserts, the time engine and the looper. It answers "does a whole
   song fit", including what the engines cost each other in the caches.
 
@@ -123,6 +123,23 @@ be costly to have many of.
 B's p99 and worst as a share of A's, and any change in memory. Use it for
 the default against the cortex-a17 build from the same MPC run (is NEON
 worth it?), or for a change against main on the same machine.
+
+### What can we afford? (`--afford`)
+
+```text
+cargo run --release -p mpfree-bench -- --afford [--calibration FILE]
+```
+
+It plays each Poly preset at 1, 2, 4, 8 and 16 voices and the sampler with
+1, 4, 8, 16 and 32 looping pads held, fits `p99 = fixed + voices x per
+voice`, and prints how many voices fit in the module's budget (synth 20 %,
+sampler 25 %). That is for one engine alone; several synth tracks share the
+synth budget, so two Supersaw tracks get half each. "16+ (75)" means every
+count measured fits and the line runs out at 75. Mono and legato presets
+play one voice, so they show one cost. With `--calibration` the times and
+counts are MPC estimates (the kernel range in brackets); on the MPC they are
+its own. It is not in round 7's device step, which was frozen before it
+existed; it goes in a later round.
 
 On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
