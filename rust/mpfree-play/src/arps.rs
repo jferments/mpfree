@@ -91,6 +91,21 @@ impl TrackArps {
         self.arps.get_mut(track).map(|a| &mut a.engine)
     }
 
+    /// Track `track`'s engine to read (the last track's past the end).
+    pub fn engine_at(&self, track: usize) -> &Engine {
+        &self.arps[track.min(MAX_TRACKS - 1)].engine
+    }
+
+    /// Track `track`'s engine to change (the last track's past the end).
+    pub fn engine_at_mut(&mut self, track: usize) -> &mut Engine {
+        &mut self.arps[track.min(MAX_TRACKS - 1)].engine
+    }
+
+    /// Notes no engine could queue, over every track, since the start.
+    pub fn overflow(&self) -> u64 {
+        self.arps.iter().map(|a| a.engine.overflow).sum()
+    }
+
     /// "Clips through the arp" for `track`. A change clears that track's
     /// arp, if it holds anything (held and latched notes, and what they
     /// sound), at the start of the next period, so no note the clip held in it, or that should now reach

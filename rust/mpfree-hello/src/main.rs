@@ -3230,7 +3230,7 @@ fn player_session(
                         latched.join(" ")
                     },
                     events.dropped,
-                    app.engine.overflow
+                    app.arps.overflow()
                 ));
             }
             window_repeats = 0;
@@ -3244,7 +3244,7 @@ fn player_session(
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
                                clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
-                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.arps.overflow(),
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
             out.note(&format!(
@@ -3336,7 +3336,7 @@ fn player_session(
     out.say(&format!("buttons: {}", app.map.describe()));
     out.say(&format!(
         "note engine: {repeats} repeats, {} events dropped, {} notes that could not be queued",
-        events.dropped, app.engine.overflow
+        events.dropped, app.arps.overflow()
     ));
     out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
