@@ -358,6 +358,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-analysis"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-arp"
 version = "0.1.0"
 
@@ -415,6 +419,7 @@ dependencies = [
 name = "mpfree-sampler"
 version = "0.1.0"
 dependencies = [
+ "mpfree-analysis",
  "mpfree-core",
 ]
 

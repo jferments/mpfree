@@ -22,6 +22,23 @@
 //! (up to three), `!` accents it, `~` holds it for the whole step, `'` makes
 //! it short, `:N` plays it N times within the step (2..=8, a ratchet) and
 //! `%N` plays it with an N% chance.
+//!
+//! Lanes follow the steps after a `|`, each with its own length, so they
+//! loop against the steps (polymeter):
+//!
+//! ```text
+//! x x . x | oct 0 0 1 | vel 127 70 90 | deg 0 2 4 | gate 30 80
+//! ```
+//!
+//! `oct` adds octaves (-3..=3); `deg` moves the note by scale degrees, or
+//! semitones without a scale (-24..=24); `vel` sets velocity (0 = as
+//! played); `gate` sets the note length in percent (0 = default); `nudge`
+//! moves the step early or late by up to half a step (-50..=50 percent).
+//!
+//! A lane name can carry a random amount, `~N`: each time a step plays, a
+//! random number from -N to N is added to that lane's value (`vel~20`,
+//! `gate~30`, `oct~1`, `deg~2`, `nudge~10`). A lane with a random amount
+//! needs no values: `| vel~20` varies the played velocity.
 
 /// Longest pattern, in steps (four bars of sixteenths).
 pub const MAX_STEPS: usize = 64;
@@ -83,16 +100,91 @@ impl core::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// One lane of per-step values with its own length. A lane shorter or
+/// longer than the steps loops on its own, so patterns can be polymetric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lane<T: Copy> {
+    values: [T; MAX_STEPS],
+    len: usize,
+    random: u8,
+}
+
+impl<T: Copy + Default> Default for Lane<T> {
+    fn default() -> Self {
+        Self { values: [T::default(); MAX_STEPS], len: 0, random: 0 }
+    }
+}
+
+impl<T: Copy + Default> Lane<T> {
+    /// A lane from up to [`MAX_STEPS`] values; an empty slice turns it off.
+    pub fn new(values: &[T]) -> Option<Self> {
+        if values.len() > MAX_STEPS {
+            return None;
+        }
+        let mut l = Self::default();
+        l.values[..values.len()].copy_from_slice(values);
+        l.len = values.len();
+        Some(l)
+    }
+
+    pub fn values(&self) -> &[T] {
+        &self.values[..self.len]
+    }
+
+    /// True when the lane has neither values nor a random amount.
+    pub fn is_off(&self) -> bool {
+        self.len == 0 && self.random == 0
+    }
+
+    /// How far each step's value may wander, in the lane's own units: a
+    /// random number from -random to random is added each time a step plays.
+    pub fn random(&self) -> u8 {
+        self.random
+    }
+
+    /// The same lane with a random amount; the parser and the editor keep it
+    /// within the lane's range.
+    pub fn with_random(mut self, amount: u8) -> Self {
+        self.random = amount;
+        self
+    }
+
+    /// The value for the `step`th step played, or None if the lane is off.
+    pub fn at(&self, step: u64) -> Option<T> {
+        (self.len > 0).then(|| self.values[(step % self.len as u64) as usize])
+    }
+}
+
+/// Optional lanes on top of the steps. Each loops at its own length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Lanes {
+    /// Octaves added to the step's own octave, -3..=3.
+    pub octave: Lane<i8>,
+    /// Scale degrees (with a scale set) or semitones (without), -24..=24.
+    pub degree: Lane<i8>,
+    /// Velocity, 1..=127; 0 = as played. An accent still wins.
+    pub velocity: Lane<u8>,
+    /// Gate in percent, 1..=100; 0 = the step's or engine's gate.
+    pub gate: Lane<u8>,
+    /// Moves the step early (negative) or late, in percent of a step,
+    /// -50..=50, on top of swing.
+    pub nudge: Lane<i8>,
+}
+
+/// Lane names in the text form, in the order they are written.
+const LANE_NAMES: [&str; 5] = ["oct", "deg", "vel", "gate", "nudge"];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pattern {
     steps: [Step; MAX_STEPS],
     len: usize,
+    pub lanes: Lanes,
 }
 
 impl Default for Pattern {
     /// One step that plays the next note: a plain arpeggio.
     fn default() -> Self {
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 1 };
+        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 1, lanes: Lanes::default() };
         p.steps[0] = Step::play(Pick::Next);
         p
     }
@@ -116,7 +208,7 @@ impl Pattern {
         if steps.is_empty() || steps.len() > MAX_STEPS {
             return None;
         }
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: steps.len() };
+        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: steps.len(), lanes: Lanes::default() };
         p.steps[..steps.len()].copy_from_slice(steps);
         Some(p)
     }
@@ -133,19 +225,139 @@ impl Pattern {
 
     /// Reads the text form described in the module docs.
     pub fn parse(text: &str) -> Result<Self, ParseError> {
-        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 0 };
-        for (i, token) in text.split_whitespace().enumerate() {
-            let at = |reason| ParseError { token: i + 1, reason };
+        let mut parts = text.split('|');
+        let mut p = Self { steps: [Step::Rest; MAX_STEPS], len: 0, lanes: Lanes::default() };
+        let mut token = 0;
+        for word in parts.next().unwrap_or("").split_whitespace() {
+            token += 1;
+            let t = token;
+            let at = move |reason| ParseError { token: t, reason };
             if p.len == MAX_STEPS {
                 return Err(at("more than 64 steps"));
             }
-            p.steps[p.len] = parse_step(token).map_err(at)?;
+            p.steps[p.len] = parse_step(word).map_err(at)?;
             p.len += 1;
         }
         if p.len == 0 {
             return Err(ParseError { token: 0, reason: "no steps" });
         }
+        for part in parts {
+            let mut words = part.split_whitespace();
+            token += 1;
+            let t = token;
+            let at = move |reason| ParseError { token: t, reason };
+            let word = words.next().ok_or(at("an empty lane after |"))?;
+            let (name, random) = match word.split_once('~') {
+                Some((name, n)) => (name, Some(n)),
+                None => (word, None),
+            };
+            let (lo, hi, max_random) = match name {
+                "oct" => (-3, 3, 3),
+                "deg" => (-24, 24, 24),
+                "vel" => (0, 127, 127),
+                "gate" => (0, 100, 100),
+                "nudge" => (-50, 50, 50),
+                _ => return Err(at("unknown lane (use oct, deg, vel, gate or nudge)")),
+            };
+            let random = match random {
+                None => 0,
+                Some(n) => match n.parse::<u8>() {
+                    Ok(n) if n >= 1 && n <= max_random => n,
+                    _ => {
+                        return Err(at(match name {
+                            "oct" => "random octaves must be ~1 to ~3",
+                            "deg" => "random degrees must be ~1 to ~24",
+                            "vel" => "random velocity must be ~1 to ~127",
+                            "gate" => "random gate must be ~1 to ~100",
+                            _ => "random nudge must be ~1 to ~50",
+                        }))
+                    }
+                },
+            };
+            let mut vals = [0i32; MAX_STEPS];
+            let mut n = 0;
+            for w in words {
+                token += 1;
+                let t = token;
+            let at = move |reason| ParseError { token: t, reason };
+                if n == MAX_STEPS {
+                    return Err(at("more than 64 values in a lane"));
+                }
+                let v: i32 = w.parse().map_err(|_| at("a lane value must be a whole number"))?;
+                if !(lo..=hi).contains(&v) {
+                    return Err(at(match name {
+                        "oct" => "octave must be -3 to 3",
+                        "deg" => "degree must be -24 to 24",
+                        "vel" => "velocity must be 0 to 127",
+                        "gate" => "gate must be 0 to 100",
+                        _ => "nudge must be -50 to 50",
+                    }));
+                }
+                vals[n] = v;
+                n += 1;
+            }
+            if n == 0 && random == 0 {
+                return Err(at("a lane needs at least one value or a ~random amount"));
+            }
+            let v = &vals[..n];
+            match name {
+                "oct" => p.lanes.octave = lane_of(v, |x| x as i8).with_random(random),
+                "deg" => p.lanes.degree = lane_of(v, |x| x as i8).with_random(random),
+                "vel" => p.lanes.velocity = lane_of(v, |x| x as u8).with_random(random),
+                "gate" => p.lanes.gate = lane_of(v, |x| x as u8).with_random(random),
+                _ => p.lanes.nudge = lane_of(v, |x| x as i8).with_random(random),
+            }
+        }
         Ok(p)
+    }
+
+    /// The same pattern turned by `n` steps (positive = later). Lanes are
+    /// left alone, as they loop on their own.
+    pub fn rotated(&self, n: i32) -> Self {
+        let mut p = *self;
+        let len = self.len as i32;
+        for i in 0..self.len {
+            let from = (i as i32 - n).rem_euclid(len) as usize;
+            p.steps[i] = self.steps[from];
+        }
+        p
+    }
+
+    /// A variation of this pattern. `amount` (0..=100) is the chance each
+    /// step changes; `seed` picks which changes, so the same seed gives the
+    /// same variation. The pattern itself is never changed, so going back
+    /// to the original is always possible. Ties stay where they are, and at
+    /// least one step still plays.
+    pub fn mutated(&self, seed: u32, amount: u8) -> Self {
+        let mut p = *self;
+        let mut x = seed.max(1);
+        let mut next = |n: u32| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x % n.max(1)
+        };
+        for i in 0..self.len {
+            if next(100) >= u32::from(amount.min(100)) {
+                continue;
+            }
+            p.steps[i] = match self.steps[i] {
+                Step::Tie => Step::Tie,
+                Step::Rest => Step::play(Pick::Next),
+                Step::Play { pick, octave, accent, gate, ratchet, chance } => match next(6) {
+                    0 => Step::Rest,
+                    1 => Step::Play { pick, octave: (octave + if next(2) == 0 { 1 } else { -1 }).clamp(-3, 3), accent, gate, ratchet, chance },
+                    2 => Step::Play { pick, octave, accent: !accent, gate, ratchet, chance },
+                    3 => Step::Play { pick, octave, accent, gate, ratchet: if ratchet > 1 { 1 } else { 2 + next(2) as u8 }, chance },
+                    4 => Step::Play { pick: Pick::Index(1 + next(4) as u8), octave, accent, gate, ratchet, chance },
+                    _ => Step::Play { pick: Pick::Random, octave, accent, gate, ratchet, chance },
+                },
+            };
+        }
+        if !p.steps().iter().any(|s| matches!(s, Step::Play { .. })) {
+            p.steps[0] = Step::play(Pick::Next);
+        }
+        p
     }
 
     /// Writes the text form; `parse` reads it back to the same pattern.
@@ -157,8 +369,39 @@ impl Pattern {
             }
             write_step(&mut s, step);
         }
+        let l = &self.lanes;
+        let lanes: [(&str, u8, Vec<i32>); 5] = [
+            (LANE_NAMES[0], l.octave.random, l.octave.values().iter().map(|&v| i32::from(v)).collect()),
+            (LANE_NAMES[1], l.degree.random, l.degree.values().iter().map(|&v| i32::from(v)).collect()),
+            (LANE_NAMES[2], l.velocity.random, l.velocity.values().iter().map(|&v| i32::from(v)).collect()),
+            (LANE_NAMES[3], l.gate.random, l.gate.values().iter().map(|&v| i32::from(v)).collect()),
+            (LANE_NAMES[4], l.nudge.random, l.nudge.values().iter().map(|&v| i32::from(v)).collect()),
+        ];
+        for (name, random, vals) in lanes {
+            if !vals.is_empty() || random > 0 {
+                s.push_str(" | ");
+                s.push_str(name);
+                if random > 0 {
+                    s.push('~');
+                    s.push_str(&random.to_string());
+                }
+                for v in vals {
+                    s.push(' ');
+                    s.push_str(&v.to_string());
+                }
+            }
+        }
         s
     }
+}
+
+fn lane_of<T: Copy + Default>(v: &[i32], f: impl Fn(i32) -> T) -> Lane<T> {
+    let mut l = Lane::default();
+    for (i, &x) in v.iter().enumerate() {
+        l.values[i] = f(x);
+    }
+    l.len = v.len();
+    l
 }
 
 fn parse_step(token: &str) -> Result<Step, &'static str> {
@@ -253,7 +496,7 @@ fn write_step(s: &mut String, step: &Step) {
 }
 
 /// MPFree's own starter patterns (original, not copied from any product).
-pub const BUILT_IN: [(&str, &str); 8] = [
+pub const BUILT_IN: [(&str, &str); 10] = [
     ("Straight", "x"),
     ("Gallop", "x x . x"),
     ("Bounce", "1 3 2 3"),
@@ -262,6 +505,8 @@ pub const BUILT_IN: [(&str, &str); 8] = [
     ("Stabs", "* . . * . . * ."),
     ("Rolls", "x x:2 x x:3"),
     ("Drift", "x x%60 ? x%30 . x _ ?"),
+    ("Three over four", "x x x x | oct 0 1 0 | vel 120 70 90 70 80"),
+    ("Climbing line", "1 1 1 1 1 1 1 1 | deg 0 2 4 5 7 4 2 | gate 40 40 80"),
 ];
 
 #[cfg(test)]
@@ -327,6 +572,61 @@ mod tests {
         }
         let p = Pattern::parse("2--!:3%40~ x' 9+++").unwrap();
         assert_eq!(Pattern::parse(&p.to_text()).unwrap(), p);
+    }
+
+    #[test]
+    fn reads_lanes_with_their_own_lengths() {
+        let p = Pattern::parse("x . x | oct 0 1 | vel 0 100 50 20 | deg -2 7 | gate 30").unwrap();
+        assert_eq!(p.len(), 3);
+        assert_eq!(p.lanes.octave.values(), [0, 1]);
+        assert_eq!(p.lanes.velocity.values(), [0, 100, 50, 20]);
+        assert_eq!(p.lanes.degree.values(), [-2, 7]);
+        assert_eq!(p.lanes.gate.values(), [30]);
+        assert_eq!(p.lanes.octave.at(5), Some(1));
+        assert_eq!(Pattern::parse("x").unwrap().lanes.octave.at(3), None);
+        assert_eq!(Pattern::parse(&p.to_text()).unwrap(), p);
+        let r = Pattern::parse("x x | vel~20 | gate~30 50 90 | nudge 0 -10 25 | oct~1 0").unwrap();
+        assert_eq!(r.lanes.velocity.random(), 20);
+        assert!(r.lanes.velocity.values().is_empty() && !r.lanes.velocity.is_off());
+        assert_eq!((r.lanes.gate.random(), r.lanes.gate.values()), (30, &[50, 90][..]));
+        assert_eq!(r.lanes.nudge.values(), [0, -10, 25]);
+        assert_eq!(r.to_text(), "x x | oct~1 0 | vel~20 | gate~30 50 90 | nudge 0 -10 25");
+        assert_eq!(Pattern::parse(&r.to_text()).unwrap(), r);
+        assert!(Pattern::parse("x").unwrap().lanes.nudge.is_off());
+        let errors = [
+            ("x | foo 1", 2, "unknown lane (use oct, deg, vel, gate or nudge)"),
+            ("x |", 2, "an empty lane after |"),
+            ("x | oct", 2, "a lane needs at least one value or a ~random amount"),
+            ("x | oct~4", 2, "random octaves must be ~1 to ~3"),
+            ("x | vel~0 1", 2, "random velocity must be ~1 to ~127"),
+            ("x | gate~x", 2, "random gate must be ~1 to ~100"),
+            ("x | nudge 51", 3, "nudge must be -50 to 50"),
+            ("x x | oct 0 4", 5, "octave must be -3 to 3"),
+            ("x | vel 1 x", 4, "a lane value must be a whole number"),
+            ("x | gate 101", 3, "gate must be 0 to 100"),
+        ];
+        for (text, token, reason) in errors {
+            assert_eq!(Pattern::parse(text), Err(ParseError { token, reason }), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn rotate_and_mutate_keep_the_original() {
+        let p = Pattern::parse("1 2 . _").unwrap();
+        assert_eq!(p.rotated(1).to_text(), "_ 1 2 .");
+        assert_eq!(p.rotated(-1).to_text(), "2 . _ 1");
+        assert_eq!(p.rotated(4), p);
+        let base = Pattern::parse("x x x x x x x x . . _ x").unwrap();
+        assert_eq!(base.mutated(7, 0), base);
+        let m = base.mutated(7, 60);
+        assert_ne!(m, base);
+        assert_eq!(base.mutated(7, 60), m, "same seed, same variation");
+        assert_eq!(m.steps()[10], Step::Tie);
+        assert_eq!(m.len(), base.len());
+        for seed in 1..200 {
+            let m = Pattern::parse(". x .").unwrap().mutated(seed, 100);
+            assert!(m.steps().iter().any(|s| matches!(s, Step::Play { .. })));
+        }
     }
 
     #[test]

@@ -53,8 +53,8 @@ and do not require graphics development headers on the MPC.
 - Generated reports, preview images, and ARM binaries are ignored by git.
   Source and instructions are MIT-licensed.
 
-See [GPU qualification findings](../../../docs/engineering/GPU_PANFROST_OFFSCREEN_20261109.md)
-and [M8 display safety boundary](../../../docs/engineering/M8_DISPLAY_OFFSCREEN_TESTCARD.md).
+See [GPU qualification findings](../../../docs/milestones/gpu-panfrost-offscreen.md)
+and [M8 display safety boundary](../../../docs/milestones/m08-offscreen-test-card.md).
 
 These numbers are **not on-screen FPS** and do not verify display presentation,
 touch mapping, font rendering, compositor integration, or audio underrun safety.
