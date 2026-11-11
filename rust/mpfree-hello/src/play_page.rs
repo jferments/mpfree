@@ -637,7 +637,12 @@ impl PlayPage {
                     c.bipolar = true;
                     c
                 }
-                None => QLinkCard::new("Tune", &self.pad_scope(self.last_pad), "-", 0.5),
+                None => {
+                    // No sound on the pad to tune: an empty ring.
+                    let mut c = QLinkCard::new("Tune", &self.pad_scope(self.last_pad), "-", 0.5);
+                    c.bipolar = true;
+                    c
+                }
             },
             Knob::Decay => match pad {
                 Some((_, Some(ms))) => QLinkCard::new(
@@ -649,7 +654,7 @@ impl PlayPage {
                 Some((_, None)) => {
                     QLinkCard::new("Decay", &self.pad_scope(self.last_pad), "Full", 1.0)
                 }
-                None => QLinkCard::new("Decay", &self.pad_scope(self.last_pad), "-", 1.0),
+                None => QLinkCard::new("Decay", &self.pad_scope(self.last_pad), "-", 0.0),
             },
             Knob::DrumsFilter | Knob::LoopFilter => {
                 let (v, scope) = if knob == Knob::DrumsFilter {
@@ -890,7 +895,7 @@ impl PlayPage {
 
     pub fn hit(&mut self, h: HitInfo) {
         if usize::from(h.pad) < 16 {
-            self.last_pad = usize::from(h.pad);
+            // The pad hit last is the pad's own news (ToUi::PadDown).
             self.hits.push_back(h);
             while self.hits.len() > 256 {
                 self.hits.pop_front();
@@ -941,9 +946,11 @@ impl PlayPage {
     /// Fill the pattern panel.
     pub fn fill_steps(&self, g: &mut StepGrid) {
         let clip = self.steps.clip.as_ref();
-        let title = match clip {
-            Some(c) => format!("{} · {}", c.name, self.steps.track_name),
-            None => format!("Pattern · {}", self.steps.track_name),
+        let first = clip.map_or("Pattern", |c| c.name.as_str());
+        let title = if self.steps.track_name.is_empty() {
+            first.to_string()
+        } else {
+            format!("{first} · {}", self.steps.track_name)
         };
         let bars = clip.map_or(1, |c| c.steps.div_ceil(16).max(1));
         let pages = clip.map_or(1, |c| c.steps.div_ceil(PAGE).max(1));
@@ -953,7 +960,7 @@ impl PlayPage {
         }
         if clip.is_none() {
             right.push_str(" · tap a step to start one");
-        } else if self.view == PlayView::Beats && self.selected.is_none() {
+        } else if self.view == PlayView::Beats {
             right.push_str(" · tap a step to edit it");
         }
         let steps = clip.map_or(PAGE, |c| c.steps.saturating_sub(self.page * PAGE).min(PAGE));
@@ -1084,6 +1091,7 @@ impl PlayPage {
         let mut by_pad: Vec<(usize, Vec<TimedHit>)> = Vec::new();
         let (mut offs, mut vels) = (Vec::new(), Vec::new());
         let mut histogram = [0u32; 15];
+        let round_start = (now / window).floor() * window;
         for h in &self.hits {
             if h.tick < now - window || h.tick > now + step {
                 continue;
@@ -1091,13 +1099,16 @@ impl PlayPage {
             let grid = (h.tick / step).round() * step;
             let off_ticks = h.tick - grid;
             let off_ms = (off_ticks * 60_000.0 / (h.bpm.max(1.0) * f64::from(PPQ))) as f32;
-            let at = (h.tick.rem_euclid(window) / step) as f32;
+            // From the nearest sixteenth's place, so an early hit on the
+            // window's first step sits just left of it (not at the end).
+            let at = ((grid.rem_euclid(window) + off_ticks) / step) as f32;
             let hit = TimedHit {
                 pad: usize::from(h.pad),
                 at,
                 off: (off_ticks / step) as f32,
                 off_ms,
                 velocity: h.velocity,
+                old: h.tick < round_start - step / 2.0,
             };
             match by_pad.iter_mut().find(|(p, _)| *p == hit.pad) {
                 Some((_, v)) => v.push(hit),

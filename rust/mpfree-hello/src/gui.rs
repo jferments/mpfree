@@ -516,7 +516,8 @@ impl Player {
         ui.add("help", Card::new("About this setting"));
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
-        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        // The hint line starts where the panels do (the mockups).
+        ui.add("hint", Label::new("", Tone::Dim, Align::Left).inset(18));
         ui.add("syssw", StatList::new("MPFree and the system"));
         ui.add("syshw", StatList::new("Hardware"));
         let time_page = TimePage::add_to(&mut ui).expect("clips layout");
@@ -690,6 +691,18 @@ impl Player {
                     kit.name.clone(),
                     switch(Some(s)),
                 ),
+                // The Drum view says how hits are played (the mockups);
+                // the others name the kit.
+                None if self.play.view == PlayView::Drum => (
+                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
+                    match self.status.pad_level {
+                        PadLevel::Off => "velocity on",
+                        PadLevel::Full => "full level",
+                        PadLevel::Half => "half level",
+                    }
+                    .to_string(),
+                    None,
+                ),
                 None => (
                     format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
                     kit.name.clone(),
@@ -814,6 +827,7 @@ impl Player {
         if v != PlayView::Beats {
             self.play.selected = None;
         }
+        self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
         let _ = self
@@ -1305,6 +1319,20 @@ impl Player {
                     self.play.last_pad = pad;
                     self.refresh_qlinks();
                 }
+                // A loop layer recording now takes its name from what is
+                // played into it.
+                let group = if synth_plays {
+                    Some("Synth")
+                } else {
+                    self.play
+                        .pads
+                        .get(pad)
+                        .and_then(|p| p.label.as_deref())
+                        .and_then(mpfree_ui::draw::sound_group)
+                };
+                if let Some(g) = group {
+                    self.looper_page.hit(g);
+                }
             }
             ToUi::PadUp(pad) => {
                 if let Some(g) = self
@@ -1472,6 +1500,7 @@ impl Player {
             }
             ToUi::Status(s) => {
                 self.status = s;
+                self.refresh_pads_bar();
                 if self.ready && self.view == View::Play {
                     // The quick band comes and goes with NOTE REPEAT.
                     self.show_view(View::Play);
@@ -2736,13 +2765,13 @@ fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
                         } else {
                             noise(n) * (-in_beat * 18.0).exp() * 0.6
                         };
-                        let hat = noise(n + 7) * (-in_half * 70.0).exp() * 0.18;
-                        0.62 * kick + hat
+                        let hat = noise(n + 7) * (-in_half * 70.0).exp() * 0.15;
+                        0.5 * kick + hat
                     }
                     // A bass line, a note each half beat.
                     1 => {
                         let note = [55.0, 55.0, 65.4, 49.0][(beat_no % 4) as usize];
-                        0.32 * (TAU * note * in_half).sin()
+                        0.24 * (TAU * note * in_half).sin()
                             * (in_half * 40.0).min(1.0)
                             * (-in_half * 2.0).exp()
                     }
@@ -2751,7 +2780,7 @@ fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
                         let bar_no = (n % len) / bar;
                         let in_bar = (n % bar) as f32 / beat as f32;
                         if bar_no % 2 == 1 && (1.5..3.6).contains(&in_bar) {
-                            0.3 * (TAU * 330.0 * in_beat).sin()
+                            0.22 * (TAU * 330.0 * in_beat).sin()
                                 * (0.6 + 0.4 * ((in_bar - 1.5) * 9.0).sin().abs())
                         } else {
                             0.0
@@ -2777,8 +2806,10 @@ fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
 /// The recorded loop on the Play page and the Looper tab.
 pub fn sample_loop(p: &mut Player) {
     let (wave, view) = recorded_loop();
-    p.apply(ToUi::LoopWave(Arc::clone(wave)));
     p.apply(ToUi::Looper(Box::new(view.clone())));
+    // Named as they would be from the pads played into them.
+    p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
+    p.apply(ToUi::LoopWave(Arc::clone(wave)));
 }
 
 /// A beat programmed on the Play page's pattern with the real sequencer
@@ -2822,6 +2853,25 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
             });
         }
     }
+    // The mockups' step 7 of the kick (velocity 96, 1/32 long, 4 ms
+    // early) and their swing (56 %).
+    for change in [
+        mpfree_seq::steps::Change::Velocity(96),
+        mpfree_seq::steps::Change::Length(STEP_TICKS / 2),
+        mpfree_seq::steps::Change::Nudge(-6),
+    ] {
+        let _ = h.step_action(StepAction::Change {
+            pad: 0,
+            step: 6,
+            change,
+        });
+    }
+    h.command(mpfree_transport::Command::SetSwing(
+        mpfree_transport::time::Swing {
+            grid: 240,
+            amount: 56,
+        },
+    ));
     h.command(mpfree_transport::Command::Play);
     let target = 8 * 3840 + sixteenths * STEP_TICKS;
     let mut q = Quiet;
@@ -2834,7 +2884,7 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
 }
 
 /// Hits played on the pads over the last two bars, a little off the grid
-/// as hands are (mostly late, a few early), for the Drum view's timing.
+/// as hands are (mostly early, as mockup I), for the Drum view's timing.
 pub fn sample_hits(p: &mut Player) {
     let t = p.play.transport;
     let bar = t.meter.bar_ticks() as f64;
@@ -2847,7 +2897,7 @@ pub fn sample_hits(p: &mut Player) {
         (0, "X... ..x. X.x. ...."),
         (2, ".... X... .... X..."),
         (4, "x.x. x.x. x.x. x.x."),
-        (5, ".... ...x .... ...x"),
+        (13, ".... ..x. ..x. ...."),
     ];
     let mut k = 0u32;
     let start = (now / (2.0 * bar)).floor() * 2.0 * bar - 2.0 * bar;
@@ -2859,8 +2909,8 @@ pub fn sample_hits(p: &mut Player) {
                 }
                 k += 1;
                 let grid = start + b as f64 * bar + i as f64 * 240.0;
-                // About 4 ms late on average, spread ±9 ms, at 92 BPM.
-                let ms = 4.0 + (hash(k) - 0.5) * 18.0;
+                // About 6 ms early on average, spread ±9 ms, at 92 BPM.
+                let ms = -6.0 + (hash(k) - 0.5) * 18.0;
                 let tick = grid + ms * 92.0 * 960.0 / 60_000.0;
                 if tick > now || tick < now - 2.0 * bar {
                     continue;
@@ -2912,14 +2962,17 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         PlayView::All => 1,
         PlayView::Beats => 6,
         PlayView::Loop => 8,
-        PlayView::Drum => 10,
+        // Bar 10: late in the timing view's two bars, as mockup I.
+        PlayView::Drum => 26,
     };
     sample_pattern(&mut p, at);
-    p.apply(ToUi::PadDown {
-        pad: 0,
-        velocity: 100,
+    // The kits' projects (Boom Bap's pads with sounds behind them), so the
+    // Tune and Decay Q-Links read the pads' own settings.
+    p.apply(ToUi::SampleKits {
+        projects: vec![mpfree_sampler::model::Project::new(), boom_bap_project()],
+        rate: 44_100,
     });
-    p.apply(ToUi::PadUp(0));
+    p.play.last_pad = if v == PlayView::Drum { 4 } else { 0 };
     p.apply(ToUi::Level { db: -1.5 });
     for _ in 0..3 {
         p.apply(ToUi::Meter {
@@ -2929,7 +2982,10 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     }
     let mut levels = p.play.levels;
     levels.pad_mutes = 1 << 7;
-    levels.drums_filter = -12.0;
+    levels.drums_filter = -16.0;
+    levels.loop_db = -3.0;
+    levels.line_db = 6.0;
+    levels.loop_filter = -22.0;
     levels.drums_send_db = 20.0 * 0.22f32.log10();
     p.apply(ToUi::PlayLevels(levels));
     let shared = Arc::new(crate::engines::EngineShared::default());
@@ -2943,27 +2999,73 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     match v {
         PlayView::All => {
             p.play.throw(2, true);
-            p.play.xy = (0.78, 0.62, true);
+            p.play.xy = (0.68, 0.62, true);
         }
         PlayView::Beats => {
             p.play.selected = Some((0, 6));
+            p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(0, true));
         }
         PlayView::Loop => {
-            p.play.xy = (0.55, 0.4, false);
+            p.play.throw(2, true);
+            p.play.xy = (0.68, 0.62, true);
         }
         PlayView::Drum => {
             sample_hits(&mut p);
+            p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(2, true));
-            p.play.xy = (0.7, 0.62, true);
+            p.play.xy = (0.68, 0.62, true);
         }
     }
     if let Some(xy) = p.ui.get_mut::<XyPad>(play_page::XY) {
         (xy.x, xy.y, xy.on) = p.play.xy;
+        if xy.on {
+            // The finger's way up to where it is, as the mockups draw it.
+            let (x, y, _) = p.play.xy;
+            let trail: Vec<(f32, f32)> = (0..10)
+                .map(|k| {
+                    let f = k as f32 / 10.0;
+                    (0.3 + (x - 0.3) * f, 0.12 + (y - 0.12) * f * f)
+                })
+                .collect();
+            xy.set_trail(&trail);
+        }
     }
     p.refresh_play();
     p.refresh_chips();
     p.refresh_qlinks();
+    p
+}
+
+/// Boom Bap's sampler project for the previews: a short made-up sound on
+/// each of its 16 pads, with the mockups' settings on Kick (-2 st) and Hat
+/// (+2 st, 180 ms decay).
+fn boom_bap_project() -> mpfree_sampler::model::Project {
+    use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+    let mut p = Project::new();
+    let names = [
+        "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom",
+        "Perc", "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        let data: Vec<f32> = (0..2_000)
+            .map(|n| (n as f32 * 0.05 * (i + 1) as f32).sin() * (1.0 - n as f32 / 2_000.0))
+            .collect();
+        let source = Source::new(name, 44_100, 1, data).expect("a sound");
+        let region = Region::whole(&source);
+        p.add_source(source);
+        let mut pad = Pad::new(name, Layer::new(region));
+        match i {
+            0 => pad.tune_cents = -200,
+            4 => {
+                pad.tune_cents = 200;
+                pad.amp.sustain = 0.0;
+                pad.amp.decay_ms = 180.0;
+            }
+            _ => {}
+        }
+        p.set_pad(i, Some(pad), None).expect("a pad");
+    }
     p
 }
 
@@ -4004,7 +4106,7 @@ mod tests {
                 .collect();
         assert_eq!(
             names,
-            ["Velocity 84", "Length 1/16", "Nudge 0 ms", "Chance 100 %"]
+            ["Velocity 96", "Length 1/32", "Nudge -4 ms", "Chance 100 %"]
         );
         assert_eq!(
             p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].scope,
@@ -4019,14 +4121,14 @@ mod tests {
                 [FromUi::Steps(StepAction::Change {
                     pad: 0,
                     step: 6,
-                    change: mpfree_seq::steps::Change::Velocity(76)
+                    change: mpfree_seq::steps::Change::Velocity(88)
                 })]
             ),
             "{sent:?}"
         );
         assert_eq!(
             p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().cards[0].value,
-            "76"
+            "88"
         );
     }
 
@@ -4036,10 +4138,17 @@ mod tests {
         let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
         assert_eq!(
             t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),
-            ["Kick", "Snare", "Hat", "Hat op"]
+            ["Kick", "Snare", "Hat", "Chop 1"]
         );
         let avg = t.average_ms.unwrap();
-        assert!((0.0..8.0).contains(&avg), "about 4 ms late: {avg}");
+        assert!((-10.0..-2.0).contains(&avg), "about 6 ms early: {avg}");
+        // Last time round's hits, ahead of the playhead, are drawn faint.
+        let now = t.now.unwrap();
+        for (_, _, _, hits) in &t.lanes {
+            for h in hits {
+                assert_eq!(h.old, h.at > now + 0.5, "{h:?} now {now}");
+            }
+        }
         assert!(t.spread_ms.unwrap() > 1.0 && t.histogram.iter().sum::<u32>() > 10);
         assert!(t.now.is_some());
     }
