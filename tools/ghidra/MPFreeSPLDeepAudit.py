@@ -102,7 +102,7 @@ def describe_at(va):
     return ins
 
 report = {
-    "schema": "mpfree-spl-deep-audit-v1",
+    "schema": "mpfree-spl-deep-audit-v2",
     "program": str(program.getName()),
     "base": "0xff704000",
     "size": LENGTH,
@@ -119,6 +119,16 @@ report = {
     "startup_flow_sites": [describe_at(x) for x in STARTUP],
     "mmio_exact_literals": [],
     "internal_address_constants": [],
+    "potential_thumb_function_pointers": [],
+    "handoff_words": [],
+    "sector_256_instruction_uses": [],
+    "raw_magic_literal_hits": [],
+    "direct_call_reachability": {},
+    "readme_reachability": (
+        "The earlier startup_reachable result was a UNION of four independently "
+        "seeded functions, including ff705350; it did NOT prove the storage "
+        "loader was reached from CPU reset. Interpret each seed separately."
+    ),
     "brom_magic_le_offsets": [],
     "function_count_total": 0,
     "function_summary": [],
@@ -128,6 +138,20 @@ report = {
 
 for off in range(0, LENGTH - 3, 4):
     value = int.from_bytes(data[off:off+4], "little")
+    if value in (0x27051956, 0x56190527, 0x100):
+        report["raw_magic_literal_hits"].append({
+            "address": "0x%08x" % (BASE + off),
+            "word": "0x%08x" % value
+        })
+    if BASE <= (value & ~1) < BASE + LENGTH and value & 1:
+        target = fm.getFunctionContaining(addr(value & ~1))
+        report["potential_thumb_function_pointers"].append({
+            "source": "0x%08x" % (BASE + off),
+            "value": "0x%08x" % value,
+            "target": "0x%08x" % (value & ~1),
+            "target_function": str(target.getName()) if target else None,
+            "note": "LSB=1 suggests Thumb code pointer if this word is data"
+        })
     if value == BOOTROM_MAGIC:
         report["brom_magic_le_offsets"].append("0x%08x" % (BASE + off))
     if value in MMIO_HINTS:
@@ -145,6 +169,48 @@ for off in range(0, LENGTH - 3, 4):
             "value": "0x%08x" % value,
         })
 report["internal_address_constants"] = report["internal_address_constants"][:256]
+
+# Capture actual raw 32-bit values around the indirect SRAM-to-loader
+# dispatch and the storage/image header loader. Previous audit incorrectly
+# omitted odd pointers (potential Thumb-state function addresses).
+for offset in (
+        0x011c, 0x015c, 0x01e0, 0x01fc, 0x0200, 0x0210,
+        0x1204, 0x1268, 0x126c, 0x1270, 0x1274, 0x1278, 0x127c,
+        0x13f8, 0x13fc, 0x1400, 0x1404, 0x1408, 0x140c, 0x1410,
+        0x14f0, 0x14fc, 0x1500, 0x1558, 0x1560,
+        0x1590, 0x1594, 0x1598, 0x159c, 0x15a0, 0x15a4,
+        0x15a8, 0x15ac, 0x15b0, 0x15b4
+):
+    raw = word(BASE + offset)
+    target_addr = raw & ~1
+    target_fn = (fm.getFunctionContaining(addr(target_addr))
+                 if BASE <= target_addr < BASE + LENGTH else None)
+    report["handoff_words"].append({
+        "source": "0x%08x" % (BASE + offset),
+        "raw_word": "0x%08x" % raw,
+        "target_sram_address": ("0x%08x" % target_addr
+                                if BASE <= target_addr < BASE + LENGTH else None),
+        "thumb_bit": bool(raw & 1),
+        "possible_function": str(target_fn.getName()) if target_fn else None,
+    })
+
+# Immediate operands in instructions are not necessarily stored as raw
+# 0x00000100 words. Search decoded operand strings separately.
+it_all_instructions = listing.getInstructions(True)
+while it_all_instructions.hasNext() and len(report["sector_256_instruction_uses"]) < 120:
+    instr = it_all_instructions.next()
+    va = int(instr.getAddress().getOffset())
+    if not BASE <= va < BASE + LENGTH:
+        continue
+    rendered = str(instr)
+    if re.search(r"(?<![0-9a-fA-F])0x100(?![0-9a-fA-F])", rendered):
+        func = fm.getFunctionContaining(instr.getAddress())
+        report["sector_256_instruction_uses"].append({
+            "site": "0x%08x" % va,
+            "assembly": rendered,
+            "function": str(func.getName()) if func else None,
+        })
+
 
 all_functions = {}
 it = fm.getFunctions(True)
@@ -194,12 +260,35 @@ while queue and len(seen) < 500:
     seen.add(va)
     queue.extend(t for t in call_graph.get(va, []) if t not in seen)
 report["startup_reachable"] = ["0x%08x" % x for x in sorted(seen)]
+for root in (BASE + 0x04, BASE + 0x60, BASE + 0x1208, BASE + 0x1350):
+    queue = deque([root])
+    visited = set()
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        queue.extend(x for x in call_graph.get(current, []) if x not in visited)
+    report["direct_call_reachability"]["0x%08x" % root] = {
+        "function_count": len(visited),
+        "reaches_loader_loop_ff705350": BASE + 0x1350 in visited,
+        "reaches_sector256_reader_ff7054a4": BASE + 0x14a4 in visited,
+        "visited": ["0x%08x" % x for x in sorted(visited)],
+        "warning": "DIRECT CALL EDGES ONLY; indirect branch/call omitted"
+    }
 
 # Prioritize startup, then likely MMC / SoC / ROM call-heavy routines.
 priorities = [BASE + off for off in (0x04, 0x60, 0xb8, 0x118,
                                      0x164, 0x1a8, 0x1e4, 0x1e8,
                                      0x208, 0x1208, 0x1350, 0x14a4,
-                                     0x21c0, 0x2a4c)]
+                                     0x21c0, 0x2a4c,
+                                     0x1260, 0x12c0, 0x1298, 0x1310,
+                                     0x1316, 0x1444, 0x1480, 0x1550,
+                                     0x1594, 0x15b0, 0x15bc, 0x1604,
+                                     0x19e0, 0x298a, 0x2980, 0x2984,
+                                     0x2a24, 0x2a4c, 0x3d28, 0x3de4,
+                                     0x3f10, 0x4204, 0x4c20, 0x4d90,
+                                     0x4f98, 0x4fdb, 0x5128)]
 # Include functions containing suspicious exact MMIO base constants, if any.
 for item in report["mmio_exact_literals"]:
     f = fm.getFunctionContaining(addr(int(item["location"], 16)))
@@ -213,7 +302,7 @@ decompiler.setSimplificationStyle("decompile")
 if not decompiler.openProgram(program):
     raise RuntimeError("Decompiler failed to open SRAM program")
 try:
-    for target in priorities[:25]:
+    for target in priorities[:50]:
         f = fm.getFunctionContaining(addr(target))
         key = "0x%08x" % target
         if not f:
@@ -249,4 +338,11 @@ print("Functions enumerated:", report["function_count_total"])
 print("Startup graph function count:", len(seen))
 print("Exact MMC/eFuse MMIO literal hints:", len(report["mmio_exact_literals"]))
 print("Back-to-BROM magic literal occurrences:", len(report["brom_magic_le_offsets"]))
+print("Potential Thumb function pointer words:", len(report["potential_thumb_function_pointers"]))
+print("Decoded sector-256 immediate uses:", len(report["sector_256_instruction_uses"]))
+print("Raw SRAM handoff words:", len(report["handoff_words"]))
+print("Direct-only reachability results:", {
+    k: (v["function_count"], v["reaches_sector256_reader_ff7054a4"])
+    for k, v in report["direct_call_reachability"].items()
+})
 print("Read-only study complete; no hardware or firmware writes")
