@@ -29,6 +29,7 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::chop_tab::{bank_of, pad_text};
 use crate::play_tab::{self, stepped, value_text};
+use crate::rec_tab;
 use crate::wave_tab::{self, default_loop, duration_text, mode_label, pad_color, TABS};
 use crate::widgets::{ButtonRow, PadBar, PadCell, PadMap, Setting, SettingList};
 
@@ -394,10 +395,14 @@ impl PadsTab {
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
             bar.active = TAB;
-            // A pad without a sound has nothing for the other tabs to edit.
+            // A pad without a sound has nothing for the other tabs to edit,
+            // but one can be recorded onto it.
             bar.enabled = TABS
                 .iter()
-                .map(|t| wave_tab::BUILT.contains(t) && (picked.is_some() || *t == TABS[TAB]))
+                .map(|t| {
+                    wave_tab::BUILT.contains(t)
+                        && (picked.is_some() || *t == TABS[TAB] || *t == TABS[rec_tab::TAB])
+                })
                 .collect();
             bar.title = match picked {
                 Some(p) => format!("Pad {here} · {}", p.name),
