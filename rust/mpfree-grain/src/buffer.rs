@@ -27,7 +27,7 @@ pub trait GrainSource {
 }
 
 /// Interpolates four interleaved frames that are known to be in range.
-#[inline]
+#[inline(always)]
 fn read4(w: &[f32], channels: usize, t: f32) -> [f32; 2] {
     if channels == 2 {
         let w: &[f32; 8] = w.try_into().expect("four stereo frames");
@@ -80,7 +80,7 @@ impl GrainSource for Clip<'_> {
         }
         self.data[frame as usize * self.channels + ch.min(self.channels - 1)]
     }
-    #[inline]
+    #[inline(always)]
     fn read(&self, frame: i64, t: f32) -> [f32; 2] {
         if frame - 1 < self.start || frame + 2 >= self.end {
             return read_slow(self, frame, t);
@@ -113,6 +113,10 @@ pub struct LiveBuffer {
     rate: u32,
     capacity: u64,
     written: u64,
+    /// Where the next write goes: `written % capacity`, kept as it moves so
+    /// that no read or write divides (a 64-bit `%` is a slow library call
+    /// on ARMv7).
+    head: usize,
     reserve: u64,
     frozen: bool,
 }
@@ -130,6 +134,7 @@ impl LiveBuffer {
             rate,
             capacity: frames as u64,
             written: 0,
+            head: 0,
             reserve: frames as u64 / 4,
             frozen: false,
         })
@@ -148,7 +153,10 @@ impl LiveBuffer {
     /// Forgets everything written (the span becomes empty) without touching
     /// the memory, so it is cheap enough for the audio thread. Freeze stays
     /// as it was.
-    pub fn clear(&mut self) { self.written = 0; }
+    pub fn clear(&mut self) {
+        self.written = 0;
+        self.head = 0;
+    }
 
     /// Appends interleaved frames (in this buffer's channel count). Ignored
     /// while frozen. A trailing partial frame is dropped.
@@ -158,9 +166,9 @@ impl LiveBuffer {
         }
         let c = self.channels;
         for frame in interleaved.chunks_exact(c) {
-            let at = (self.written % self.capacity) as usize * c;
+            let at = self.head * c;
             self.data[at..at + c].copy_from_slice(frame);
-            self.written += 1;
+            self.advance();
         }
     }
 
@@ -171,14 +179,36 @@ impl LiveBuffer {
             return;
         }
         for (&l, &r) in left.iter().zip(right) {
-            let at = (self.written % self.capacity) as usize * self.channels;
+            let at = self.head * self.channels;
             if self.channels == 2 {
                 self.data[at] = l;
                 self.data[at + 1] = r;
             } else {
                 self.data[at] = 0.5 * (l + r);
             }
-            self.written += 1;
+            self.advance();
+        }
+    }
+
+    #[inline(always)]
+    fn advance(&mut self) {
+        self.written += 1;
+        self.head += 1;
+        if self.head as u64 == self.capacity {
+            self.head = 0;
+        }
+    }
+
+    /// Where held frame `frame` is in `data`, in frames: `frame % capacity`,
+    /// worked out back from the write head instead of by dividing. `frame`
+    /// must be held (`written - capacity <= frame < written`).
+    #[inline(always)]
+    fn slot(&self, frame: i64) -> usize {
+        let back = (self.written as i64 - frame) as usize;
+        if back <= self.head {
+            self.head - back
+        } else {
+            self.head + self.capacity as usize - back
         }
     }
 
@@ -207,16 +237,16 @@ impl GrainSource for LiveBuffer {
         if frame < oldest || frame >= end {
             return 0.0;
         }
-        let at = (frame as u64 % self.capacity) as usize * self.channels;
+        let at = self.slot(frame) * self.channels;
         self.data[at + ch.min(self.channels - 1)]
     }
-    #[inline]
+    #[inline(always)]
     fn read(&self, frame: i64, t: f32) -> [f32; 2] {
         let (oldest, end) = self.held();
         if frame - 1 < oldest || frame + 2 >= end {
             return read_slow(self, frame, t);
         }
-        let first = ((frame - 1) as u64 % self.capacity) as usize;
+        let first = self.slot(frame - 1);
         if first + 4 > self.capacity as usize {
             return read_slow(self, frame, t); // the four frames wrap round
         }
