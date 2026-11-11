@@ -500,7 +500,7 @@ class HelloTests(unittest.TestCase):
         answers = "\n\n" + "\n\n\n" * 12
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 7 of 12: Clips: record, overdub and undo", res.stdout)
+        self.assertIn("Phase 7 of 12: Arrange: record, overdub and undo", res.stdout)
         self.assertIn("Phase 8 of 12: Audio looper: loop the pads", res.stdout)
         self.assertIn("Phase 9 of 12: Sample tab: Wave and Chop", res.stdout)
         self.assertIn("Phase 10 of 12: Prefs, System info and saving", res.stdout)

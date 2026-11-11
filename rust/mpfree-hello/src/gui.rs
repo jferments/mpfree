@@ -323,7 +323,7 @@ pub enum ToUi {
     Transport(TransportInfo),
     /// The data wheel in the workspace.
     WorkspaceWheel(i32),
-    /// The data wheel on the Clips page: step the selected record setting,
+    /// The data wheel on the Arrange page: step the selected record setting,
     /// or scroll the grid.
     ClipsWheel {
         delta: i32,
@@ -374,7 +374,7 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
-    /// A touch on the transport bar or the Clips page.
+    /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
@@ -441,7 +441,7 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
-    /// The time engine's bar and Clips page, and what they show.
+    /// The time engine's bar and Arrange page, and what they show.
     time_page: TimePage,
     pub time: TimeState,
     /// The Debug tab's Performance and Map controls pages.
@@ -882,7 +882,7 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
-                View::Clips => CLIPS_HINT.to_string(),
+                View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper => format!("REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   PLAY / STOP: \
                                          the transport   ·   MENU: looper options   ·   {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
@@ -1625,7 +1625,7 @@ impl Player {
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play => self.play_view.page().to_string(),
-            View::Clips => CLIPS_PAGE.to_string(),
+            View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
             View::Sample => {
@@ -1656,7 +1656,7 @@ impl Player {
         }
         self.switch_page(&page);
         self.view = v;
-        if v == View::Clips {
+        if v == View::Arrange {
             // How many slots fit is known once the grid is on screen.
             self.time_page.update(&mut self.ui, &self.time);
         }
@@ -2459,7 +2459,7 @@ fn quiet_player(fonts: Fonts) -> Player {
     p
 }
 
-/// The Clips page with the real time engine behind it: tapping Track 1's
+/// The Arrange page with the real time engine behind it: tapping Track 1's
 /// first slot recorded a two-bar beat from the pads (kick, snare, hats),
 /// REC punched out at bar 3, the clip plays on at 3.2, and Track 2 is
 /// armed for the next one.
@@ -2542,7 +2542,7 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     run_to(&mut host, 2 * BAR + 960 + 300)?;
     let mut p = quiet_player(fonts);
     p.apply(ToUi::Time(Box::new(host.state())));
-    p.apply(ToUi::Show(View::Clips));
+    p.apply(ToUi::Show(View::Arrange));
     Ok(p)
 }
 
@@ -3465,7 +3465,7 @@ mod tests {
             .ui
             .rect_of(crate::looper_page::LOOP_STRIP)
             .is_some_and(|r| r.w > 900));
-        p.apply(ToUi::Show(View::Clips));
+        p.apply(ToUi::Show(View::Arrange));
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
         assert!(clips.w > 780 && clips.h > 560, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));

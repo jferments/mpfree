@@ -45,7 +45,7 @@ pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 pub const BEATS_LINES: [&str; 3] = [
     "The step grid comes here: the pattern playing, a lane",
     "per pad, pages up to 64 steps (the sequencer's grid).",
-    "Until then, clips record and play on the Clips tab.",
+    "Until then, clips record and play on the Arrange tab.",
 ];
 
 /// The views, in the switch's order.

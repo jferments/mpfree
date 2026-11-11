@@ -2016,7 +2016,7 @@ fn looper_action(
 }
 
 /// A touch or a button for the time engine. The tempo belongs to the app
-/// (Note Repeat and the arp follow it too), so the Clips page's tempo goes
+/// (Note Repeat and the arp follow it too), so the Arrange page's tempo goes
 /// there; the transport follows it each period. Returns the app's effects.
 fn time_action(
     out: &mut Out,
