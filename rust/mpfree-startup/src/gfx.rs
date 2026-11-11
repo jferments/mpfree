@@ -427,97 +427,10 @@ impl Sprite {
 
 /// VT323, a terminal face (SIL OFL 1.1, see fonts/README.md).
 pub const VT323: &[u8] = include_bytes!("../fonts/VT323-Regular.ttf");
-/// Permanent Marker, a brush marker face (Apache 2.0, see fonts/README.md).
-pub const PERMANENT_MARKER: &[u8] = include_bytes!("../fonts/PermanentMarker-Regular.ttf");
 
 pub fn font_terminal() -> Font {
     Font::from_bytes(VT323, FontSettings::default()).expect("built-in VT323")
 }
 
-pub fn font_marker() -> Font {
-    Font::from_bytes(PERMANENT_MARKER, FontSettings::default()).expect("built-in Permanent Marker")
-}
-
 /// Colours the console swirl flickers through.
 pub const SHADES_CHAOS: [u32; 6] = [0x14806A, 0x1FBF5A, 0x39FF6A, 0xB8FF6A, 0x2DE2C0, 0x0E5E4A];
-
-/// The title's letters made sharper and wilder: stretched sideways, leaned
-/// forward, wavering up and down along the line, and every stroke's ends
-/// torn into sharp points (long ones trailing to the right, as if slashed
-/// at speed; short ones to the left).
-pub fn slash_letters(raw: &Mask, stretch: f32, lean: f32, s: f32) -> Mask {
-    let wobble = 7.0 * s;
-    let tail = (46.0 * s).max(4.0);
-    let pad = (tail * 1.3) as usize + 4;
-    let extra = (raw.h as f32 * lean).ceil() as usize;
-    let sw = (raw.w as f32 * stretch) as usize;
-    let (w, h) = (sw + extra + 2 * pad, raw.h + 2 * (wobble as usize + 2));
-    let mut m = Mask::new(w, h);
-    for y in 0..raw.h {
-        for x in 0..sw {
-            let v = raw.at(((x as f32 / stretch) as usize).min(raw.w - 1), y);
-            if v == 0 {
-                continue;
-            }
-            let xf = x as f32;
-            let dy = (xf * 0.011).sin() * wobble * 0.6 + (xf * 0.031 + 1.3).sin() * wobble * 0.4;
-            let yy = (y as f32 + dy + wobble + 2.0) as usize;
-            let xx = x + pad + ((raw.h - y) as f32 * lean) as usize;
-            if yy < h && xx < w {
-                m.a[yy * w + xx] = m.a[yy * w + xx].max(v);
-            }
-        }
-    }
-    // Torn ends: each run of ink in a row gets a pointed spike off each end.
-    // Spikes come in teeth a few rows tall, so the edges read as jagged
-    // points rather than fuzz.
-    let tooth = (13.0 * s).max(4.0) as usize;
-    let src = m.a.clone();
-    for y in 0..h {
-        let row = &src[y * w..(y + 1) * w];
-        let t = y / tooth;
-        let phase = (y % tooth) as f32 / tooth as f32;
-        let shape = 1.0 - (phase - 0.5).abs() * 2.0;
-        let r = hash(t as u32, 77) as f32 / u32::MAX as f32;
-        let l = hash(t as u32, 91) as f32 / u32::MAX as f32;
-        // About half the teeth get a blade; the rest leave the end as it is.
-        let right = if r > 0.45 {
-            (tail * shape * (r - 0.3)) as usize
-        } else {
-            0
-        };
-        let left = if l > 0.75 {
-            (tail * 0.4 * shape * (l - 0.5)) as usize
-        } else {
-            0
-        };
-        let mut x = 0;
-        while x < w {
-            if row[x] < 140 {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            while x < w && row[x] >= 140 {
-                x += 1;
-            }
-            if x - start < 3 {
-                continue;
-            }
-            for k in 0..right {
-                let i = x + k;
-                if i >= w || src[y * w + i] >= 140 {
-                    break;
-                }
-                m.a[y * w + i] = 255;
-            }
-            for k in 1..=left {
-                if start < k || src[y * w + start - k] >= 140 {
-                    break;
-                }
-                m.a[y * w + start - k] = 255;
-            }
-        }
-    }
-    crop(&m)
-}

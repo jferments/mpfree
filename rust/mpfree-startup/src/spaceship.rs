@@ -11,7 +11,7 @@
 //!   callouts as it passes; a status bar fills along the bottom.
 //! - 1.8 s: a reticle closes on the galaxy's core and a leader line runs to
 //!   the target panel, which types out what it found.
-//! - 2.4 s: "MPFree OS" is slashed on in a brush face, white to violet, then
+//! - 2.4 s: "MPFree OS" is cut on in the blade letters, white to violet, then
 //!   "v0.1" flickers on and the status bar reads ALL SYSTEMS ONLINE.
 //!
 //! Made once: the star field and the galaxy's glow (with and without it, to
@@ -19,6 +19,7 @@
 //! the background, adds the particles, then draws the panels (small
 //! translucent rectangles) and the overlay's thin lines.
 
+use crate::blade;
 use crate::gfx::{
     self, add, hex, light_line, mix3, over, pack, scale, smoothstep, Mask, Rng, Sprite,
 };
@@ -251,7 +252,6 @@ impl Spaceship {
             });
         }
 
-        let sans = gfx::font_sans();
         let mono = gfx::font_mono();
         let small = |text: &str, c: u32, x: i32, y: i32| {
             let m = gfx::text_mask(&mono, 13.0 * s, 1.5 * s, text);
@@ -347,19 +347,20 @@ impl Spaceship {
             }
         }
 
-        // The title: "MPFree OS" in the synthwave brush face, white to violet.
-        let marker = gfx::font_marker();
+        // The title: "MPFree OS" in the synthwave screen's blade letters,
+        // white to violet.
         let text = format!("{} OS", crate::TITLE);
-        let max_w = sw * 0.72;
-        let mut size = 132.0 * s;
-        let (stretch, lean) = (1.14, 0.34);
-        let mut raw = gfx::text_mask(&marker, size, 2.0, &text);
-        let wide = raw.w as f32 * stretch + raw.h as f32 * lean;
-        if wide > max_w {
-            size *= max_w / wide;
-            raw = gfx::text_mask(&marker, size, 2.0, &text);
+        let max_w = sw * 0.62;
+        let style = blade::Style {
+            seed: 3,
+            ..Default::default()
+        };
+        let mut cap = 92.0 * s;
+        let mut tm = blade::render(&text, cap, style);
+        if tm.w as f32 > max_w {
+            cap *= max_w / tm.w as f32;
+            tm = blade::render(&text, cap, style);
         }
-        let tm = gfx::slash_letters(&raw, stretch, lean, s * 0.8);
         let th = tm.h as f32;
         let tx = (w as i32 - tm.w as i32) / 2;
         let ty = (sh * 0.685) as i32;
@@ -376,7 +377,7 @@ impl Spaceship {
         let title_edge = Sprite::from(tx - pad as i32, ty - pad as i32, &edge, |_, _| 0x0E0620);
         let glow = edge.blurred(9, 3);
         let title_glow = Sprite::from(tx - pad as i32, ty - pad as i32, &glow, |_, _| VIOLET);
-        let sm = gfx::text_mask(&sans, 26.0 * s, 9.0 * s, crate::VERSION);
+        let sm = blade::render(crate::VERSION, 30.0 * s, blade::Style { seed: 5, ..style });
         let (sx, sy) = (
             (w as i32 - sm.w as i32) / 2,
             ty + tm.h as i32 + (8.0 * s) as i32,
