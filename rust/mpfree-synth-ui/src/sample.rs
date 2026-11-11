@@ -6,6 +6,8 @@ use crate::view::{SynthPanel, SynthState};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 use mpfree_synth::fm_params::{self as fp, op};
 use mpfree_synth::params as pp;
+use mpfree_synth::wavetable::params as wtp;
+use mpfree_synth::Wavetable;
 use mpfree_synth::{Drums, Fm, Pluck, Poly};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
@@ -238,6 +240,19 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     ] {
         out.push(fm_scene(name, about, preset, page, edits, fonts())?);
     }
+    for (name, about, preset, page, edits) in [
+        ("synth-wt-osc", "Wavetable · Morph Pad, Osc A page: the Vowels table as a stack of 16 frames, frame 3 bright",
+         "Morph Pad", "Osc A", &[][..]),
+        ("synth-wt-warp", "Wavetable · Growl Bass, Osc A page, edited: the Resonance table half way, bent 60 %",
+         "Growl Bass", "Osc A", &[(wtp::POSITION, 50.0), (wtp::WARP, 60.0)][..]),
+        ("synth-wt-sync", "Wavetable · Sync Sweep, Osc B page, edited: Basic's saw with sync warp at 40 %",
+         "Sync Sweep", "Osc B", &[(wtp::osc_id(1, wtp::OSC_LEVEL), 80.0), (wtp::osc_id(1, wtp::WARP_MODE), 2.0), (wtp::osc_id(1, wtp::WARP), 40.0)][..]),
+        ("synth-wt-mod", "Wavetable · Vowel Lead, Mod page: the mod envelope scans 70 % of the table", "Vowel Lead", "Mod", &[][..]),
+        ("synth-wt-pressure", "Wavetable · Morph Pad, Pressure page: pressure scans 40 % of the table and swells it 6 dB, a chord held and pressed",
+         "Morph Pad", "Pressure", &[][..]),
+    ] {
+        out.push(wt_scene(name, about, preset, page, edits, fonts())?);
+    }
     out.push(drum_scene(
         "synth-drums-kick",
         "Drums · Init Kit, Pad 1: the kick (Q-Links: tune, decay, tone, snap)",
@@ -281,6 +296,53 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     )?);
     out.push(generic_scene(fonts())?);
     Ok(out)
+}
+
+const WT_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Lead track";
+
+/// The Wavetable synth with a factory preset, on one of its pages.
+fn wt_scene(
+    name: &'static str,
+    about: &'static str,
+    preset: &str,
+    page: &str,
+    edits: &[(u16, f32)],
+    fonts: Fonts,
+) -> Result<Sample, String> {
+    let presets = Wavetable::presets();
+    let i = presets
+        .iter()
+        .position(|p| p.name == preset)
+        .ok_or_else(|| format!("no Wavetable preset {preset}"))?;
+    let mut node = Wavetable::new(48_000);
+    node.load_preset(&presets[i]);
+    for &(id, v) in edits {
+        node.set_param(id, v);
+    }
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
+    let mut st = SynthState::from_node(&node, "Lead", Color::rgb(0xD46CFF), names, Some(i));
+    st.edited = !edits.is_empty();
+    if page == "Pressure" {
+        press_chord(&mut node);
+        let mut out = [0.0; 16];
+        let n = node.pressures(&mut out);
+        st.pressures = out[..n].to_vec();
+    }
+    let mut ui = app_ui(fonts, WT_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel
+        .pages()
+        .iter()
+        .position(|p| p.name == page)
+        .ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample {
+        name,
+        about,
+        ui,
+        panel,
+    })
 }
 
 const FM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Keys track";
