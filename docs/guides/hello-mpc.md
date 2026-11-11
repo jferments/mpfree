@@ -180,8 +180,9 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 |---|---|
 | Pads | Play, through the velocity curve (Prefs: soft, linear or hard) |
 | FULL LEVEL | Every hit at 127; lit while on. SHIFT + FULL LEVEL: Half Level, every hit at 64 |
-| NOTE REPEAT (held) | Held pads repeat on the grid (Play options: rate, tempo) |
-| SHIFT + NOTE REPEAT | Latch: pads keep repeating after you let go; new pads replace them. NOTE REPEAT again turns it off. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
+| NOTE REPEAT (held) | Held pads play through the arp: Repeat on the grid until the Arp panel picks Arp or Pattern. The quick band shows the rates, Latch and the next steps; the wheel, − / + and Q-Links 1-4 set the arp (see the [arpeggiator](../project/arpeggiator.md) for every control) |
+| SHIFT + NOTE REPEAT | Latch: pads keep playing after you let go; new pads replace them. NOTE REPEAT again turns it off. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
+| NOTE REPEAT + MENU, or the arp chip | The Arp panel beside the pads (mode, rate, order, pattern, Q-Links), and from it the pattern workspace |
 | MENU | The current page's options; again to close. SHIFT + MENU: Prefs |
 | In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it |
 | TAP TEMPO | Sets the tempo; its light blinks with it |
@@ -189,7 +190,7 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 | Q-Link 1, the slider | The level |
 | STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back |
 
-The button numbers for MENU, NOTE REPEAT, TAP TEMPO, − and + are not measured yet, so on the first start a **button guide** asks for each one. STOP skips one. The numbers go in the log for next time.
+MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built in. At power-on a **button guide** asks only for buttons not known yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. STOP skips one. The numbers go in the log for next time. Prefs > Find the buttons again asks for all nine.
 
 Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow.
 
