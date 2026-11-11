@@ -5,8 +5,8 @@
 
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
-    presets, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, MultiFilter, Perform, Phaser,
+    presets, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq,
+    Flanger, LoFi, MasterSafety, MultiFilter, Perform, Phaser,
 };
 
 const RATE: u32 = 48_000;
@@ -28,6 +28,7 @@ fn nodes() -> Vec<Box<dyn Node>> {
         Box::new(Cloud::new()),
         Box::new(MasterSafety::new()),
         Box::new(Perform::new()),
+        Box::new(Character::new()),
     ]
 }
 
@@ -37,7 +38,7 @@ fn input(frames: usize) -> Vec<f32> {
     (0..frames)
         .map(|i| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let x = (seed >> 9) as f32 / (1u32 << 23) as f32 - 1.0;
+            let x = (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0;
             if i % (RATE as usize / 2) < RATE as usize / 8 {
                 0.4 * x
             } else {

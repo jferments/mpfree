@@ -6,7 +6,7 @@
 //! Perform FX (its own pad banks) have none.
 
 use crate::ids::{
-    chorus, comb, compressor as comp, crush, delay, drive, eq, filter, flanger, phaser,
+    character, chorus, comb, compressor as comp, crush, delay, drive, eq, filter, flanger, phaser,
 };
 use crate::Preset;
 
@@ -23,6 +23,7 @@ pub fn presets(id: &str) -> &'static [Preset] {
         "mpfree.fx.flanger" => FLANGER,
         "mpfree.fx.phaser" => PHASER,
         "mpfree.fx.compressor" => COMPRESSOR,
+        "mpfree.fx.character" => CHARACTER,
         "mpfree.fx.lofi" => crate::lofi::PRESETS,
         "mpfree.fx.cloud" => crate::cloud::PRESETS,
         _ => &[],
@@ -628,6 +629,52 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 180.0),
             (comp::KNEE, 0.0),
             (comp::SIDECHAIN, 1.0),
+        ],
+    },
+];
+
+/// Character: a little colour on a channel up to a pushed tape machine.
+pub static CHARACTER: &[Preset] = &[
+    Preset {
+        name: "Console warmth",
+        values: &[
+            (character::MODE, character::CONSOLE),
+            (character::AMOUNT, 30.0),
+        ],
+    },
+    Preset {
+        name: "Hot console",
+        values: &[
+            (character::MODE, character::CONSOLE),
+            (character::AMOUNT, 85.0),
+        ],
+    },
+    Preset {
+        name: "Tape glue",
+        values: &[
+            (character::MODE, character::TAPE),
+            (character::AMOUNT, 45.0),
+        ],
+    },
+    Preset {
+        name: "Pushed tape",
+        values: &[
+            (character::MODE, character::TAPE),
+            (character::AMOUNT, 85.0),
+        ],
+    },
+    Preset {
+        name: "Iron bass",
+        values: &[
+            (character::MODE, character::IRON),
+            (character::AMOUNT, 60.0),
+        ],
+    },
+    Preset {
+        name: "Soft highs",
+        values: &[
+            (character::MODE, character::SOFTEN),
+            (character::AMOUNT, 50.0),
         ],
     },
 ];

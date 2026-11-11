@@ -4,9 +4,9 @@
 
 use mpfree_fx::ids;
 use mpfree_fx::{
-    CapturePoint, Chain, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq,
-    Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, Print,
-    PrintJob, PrintState, StripId, Tail,
+    CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
+    Eq, Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser,
+    Print, PrintJob, PrintState, StripId, Tail,
 };
 use mpfree_grain::GrainNode;
 use mpfree_looper::{Command as LooperCommand, Looper, Phase as LooperPhase, MAX_LOOPS};
@@ -778,6 +778,21 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| {
         effect("Crush", rate, Box::new(Crush::new()), &[])
     }));
+    for (name, mode) in [
+        ("Character (Console)", ids::character::CONSOLE),
+        ("Character (Tape)", ids::character::TAPE),
+        ("Character (Iron)", ids::character::IRON),
+        ("Character (Soften)", ids::character::SOFTEN),
+    ] {
+        v.push(measured(|| {
+            effect(
+                name,
+                rate,
+                Box::new(Character::new()),
+                &[(ids::character::MODE, mode), (ids::character::AMOUNT, 70.0)],
+            )
+        }));
+    }
     v.push(measured(|| {
         effect("Delay", rate, Box::new(Delay::new()), &[])
     }));
