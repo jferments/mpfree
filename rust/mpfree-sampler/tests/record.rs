@@ -323,7 +323,10 @@ fn bar_lines_look_back_and_forward_from_any_frame() {
         w.mark(1_000 + k * 500);
     }
     w.set_bar(Some(500.0));
-    assert_eq!((r.back(0), r.back(9), r.back(10)), (Some(5_500), Some(1_000), None));
+    assert_eq!(
+        (r.back(0), r.back(9), r.back(10)),
+        (Some(5_500), Some(1_000), None)
+    );
     assert_eq!(r.bar_frames(), Some(500.0));
     // The first, and the third, bar line after frame 2 000 (which is one).
     assert_eq!(r.nth_after(2_000, 1), Some(2_500));
@@ -336,7 +339,11 @@ fn bar_lines_look_back_and_forward_from_any_frame() {
     }
     assert_eq!(r.back(BAR_LINES - 1), Some(1_000 + 20 * 500));
     assert_eq!(r.back(BAR_LINES), None);
-    assert_eq!(r.nth_after(0, 1), None, "the first line after frame 0 is gone");
+    assert_eq!(
+        r.nth_after(0, 1),
+        None,
+        "the first line after frame 0 is gone"
+    );
     w.set_bar(None);
     assert_eq!(r.bar_frames(), None, "stopped");
 }

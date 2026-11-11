@@ -461,7 +461,9 @@ impl BarWriter {
 
     /// A bar's length in frames at the tempo now; None while stopped.
     pub fn set_bar(&mut self, frames: Option<f64>) {
-        let bits = frames.filter(|f| f.is_finite() && *f > 0.0).map_or(0, f64::to_bits);
+        let bits = frames
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .map_or(0, f64::to_bits);
         self.bars.bar.store(bits, Ordering::Relaxed);
     }
 }
@@ -610,9 +612,9 @@ impl Pick {
     pub fn label(self) -> &'static str {
         match self {
             Pick::Stereo => "Left + right",
-            Pick::Left => "Left (mono)",
-            Pick::Right => "Right (mono)",
-            Pick::Mono => "Both, mixed to mono",
+            Pick::Left => "Left",
+            Pick::Right => "Right",
+            Pick::Mono => "Mono mix",
         }
     }
 

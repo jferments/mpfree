@@ -117,7 +117,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
     assert_eq!(bar.active, grain_tab::TAB);
     assert_eq!(
         bar.enabled,
-        vec![true, true, true, true, true, false],
+        vec![true, true, true, true, true, false, true],
         "every tab but FX is built"
     );
     for (row, value) in [
