@@ -98,6 +98,18 @@ run_ghidra() {
     }
     python3 -m json.tool "$report" >/dev/null
 }
+# Optional official 3.10 image: inspect the update container, never execute it.
+# Important because signed/update files may differ from installed P1/P3.
+UPDATE_IMAGE="${MPFREE_UPDATE_IMAGE:-$HOME/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img}"
+if [[ -f "$UPDATE_IMAGE" && ! -b "$UPDATE_IMAGE" ]]; then
+    echo
+    echo "[optional] Cataloging 3.10 firmware PART records (offline only)..."
+    python3 "$ROOT/tools/mpc-one/offline-update-image.py" "$UPDATE_IMAGE" \
+        > "$REPORT_DIR/firmware-3.10-container.txt"
+else
+    echo "[optional] No official 3.10 image found; skipping firmware container audit."
+fi
+
 echo "[2/3] P1 SRAM SPL"
 run_ghidra p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" "$REPORT_P1"
 echo "[3/3] P3 U-Boot"
