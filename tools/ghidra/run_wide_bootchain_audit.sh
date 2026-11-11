@@ -107,6 +107,14 @@ python3 "$ROOT/tools/mpc-one/offline-spl-fdt.py" \
     >"$REPORT_DIR/p1-embedded-spl-dtb-console.txt" 2>&1 ||
     echo "WARNING: embedded SPL FDT inspection failed; see ZIP output." >&2
 
+# Cross-stage SRAM SPL <-> U-Boot DTB / hardware overlays: no images
+# are extracted, executed or copied into reports.
+python3 "$ROOT/tools/mpc-one/offline-embedded-fdt-crossstage.py" \
+    --backup "$BACKUP" \
+    --report "$REPORT_DIR/p1-p3-embedded-fdt-crossstage.json" \
+    >"$REPORT_DIR/p1-p3-embedded-fdt-crossstage-console.txt" 2>&1 ||
+    echo "WARNING: cross-stage FDT scan failed; see ZIP log." >&2
+
 
 run_ghidra() {
     local kind="$1" project="$2" filename="$3" report="$4"
@@ -173,9 +181,53 @@ run_forensics p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" \
 run_forensics p3 "$P3_PROJECT" "p3-uimage-payload.bin" \
     "$REPORT_DIR/p3-forensics-pass2.json" || true
 
+# Third pass: collect the COMPLETE recognized function call graph plus
+# focused source/sink xrefs and a balanced caller/callee expansion for
+# all bootloader research domains, not another fixed-address-only report.
+run_evidence_graph() {
+    local kind="$1" project="$2" filename="$3" output="$4"
+    local log="$REPORT_DIR/$kind-evidence-graph-v3-ghidra.log"
+    echo
+    echo "Third pass: $kind whole-program evidence graph (offline only)..."
+    if ! "${GHIDRA[@]}" "$PROJECTS" "$project" \
+        -process "$filename" -readOnly -noanalysis \
+        -scriptPath "$ROOT/tools/ghidra" \
+        -postScript MPFreeBootChainEvidenceGraphV3.py "$kind" "$output" \
+        -log "$log" \
+        >"$REPORT_DIR/$kind-evidence-graph-v3-console.txt" 2>&1; then
+        echo "WARNING: $kind evidence graph failed; check archived console/logs." >&2
+        return 1
+    fi
+    if [[ ! -s "$output" ]] || ! python3 -m json.tool "$output" >/dev/null; then
+        echo "WARNING: $kind evidence graph report is missing/invalid." >&2
+        return 1
+    fi
+    echo "Third-pass $kind report: $output"
+}
+run_evidence_graph p1 "$P1_PROJECT" "p1-rk3288-sram-stage.bin" \
+    "$REPORT_DIR/p1-evidence-graph-v3.json" || true
+run_evidence_graph p3 "$P3_PROJECT" "p3-uimage-payload.bin" \
+    "$REPORT_DIR/p3-evidence-graph-v3.json" || true
+
+
 # Cross-check newer Akai userspace, boot scripts, and DTBs if the existing
 # extracted 3.10 rootfs image is on the workstation. Do not extract/run update.
-ROOTFS_310="${MPFREE_310_ROOTFS:-$HOME/mpfree-work/firmware-analysis/MPC-3.10.0-Gen1-update/rootfs.ext4}"
+ROOTFS_310="${MPFREE_310_ROOTFS:-}"
+LOCATOR_REPORT="$REPORT_DIR/firmware-3.10-rootfs-locator.json"
+if [[ -n "$ROOTFS_310" ]]; then
+    python3 "$ROOT/tools/mpc-one/find-extracted-310-rootfs.py" \
+        --explicit "$ROOTFS_310" --report "$LOCATOR_REPORT" \
+        >"$REPORT_DIR/firmware-3.10-rootfs-locator-console.txt" 2>&1 ||
+        echo "WARNING: 3.10 rootfs override inspection failed; see archive." >&2
+else
+    python3 "$ROOT/tools/mpc-one/find-extracted-310-rootfs.py" \
+        --report "$LOCATOR_REPORT" \
+        >"$REPORT_DIR/firmware-3.10-rootfs-locator-console.txt" 2>&1 ||
+        echo "WARNING: 3.10 rootfs discovery failed; see archive." >&2
+    if [[ -s "$LOCATOR_REPORT" ]]; then
+        ROOTFS_310="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("selected") or "")' "$LOCATOR_REPORT")"
+    fi
+fi
 if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
     echo
     echo "Comparing 3.10 rootfs boot, updater and reboot-mode metadata..."
@@ -186,7 +238,7 @@ if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
         >"$REPORT_DIR/firmware-3.10-boot-compare-console.txt" 2>&1 ||
         echo "WARNING: optional 3.10 rootfs comparison failed; see ZIP logs." >&2
 else
-    printf 'Optional 3.10 rootfs not found at %s; skipped comparison.\n' "$ROOTFS_310" |
+    printf 'No verified extracted 3.10 rootfs was identified (see locator report). Skipping comparison.\n' |
         tee "$REPORT_DIR/firmware-3.10-boot-compare-skipped.txt"
 fi
 
