@@ -5,8 +5,9 @@
 //! settings), the Chop tab (slices by transients, beats, a
 //! grid, silence or by hand, put on the kit's pads) and the Play tab (the
 //! layers' velocities, the amp envelope, the filter, voices, mute group,
-//! pressure); Grain and FX come later. The pad bar's tabs switch between
-//! them.
+//! pressure) and the Grain tab (the first layer's grain settings, the
+//! engine's grains over the sound, a touch pad for position and size); FX
+//! comes later. The pad bar's tabs switch between them.
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
@@ -28,6 +29,10 @@
 //!   changes the row picked (a turn, like a Q-Link's, is one undo step).
 //! - Chop to pads changes the kit like any edit (one undo step), and the
 //!   Play page's pad names follow ([`SamplePage::take_renamed`]).
+//! - On the Grain tab the cloud shows the grains the audio thread plays for
+//!   the pad: one boxed [`Cloud`] goes there, is filled and comes back
+//!   about 25 times a second, only while the tab shows
+//!   ([`SamplePage::take_cloud`], [`SamplePage::cloud_back`]).
 //! - Edits live in memory until the power goes off: nothing is saved yet.
 
 use std::collections::HashMap;
@@ -40,6 +45,7 @@ use mpfree_sampler::model::{
 };
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
+use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
 use mpfree_sampler_ui::wave_tab::{
@@ -51,7 +57,7 @@ use mpfree_ui::{Tone, Ui, UiEvent};
 
 use crate::app::bank_letter;
 use crate::gui::FromUi;
-use crate::sampler::{Playheads, ViewSwap};
+use crate::sampler::{Cloud, Playheads, ViewSwap};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
@@ -61,6 +67,8 @@ pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 /// The Pads tab's page.
 pub const PADS_PAGE: &str = "Sample · Pads";
+/// The Grain tab's page.
+pub const GRAIN_PAGE: &str = "Sample · Grain";
 /// The page shown while the kits load, or while the synth has the pads.
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
@@ -71,6 +79,7 @@ pub const PREFIX: &str = "smp-";
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
+const GRAIN_PREFIX: &str = "smp-grain-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -85,6 +94,11 @@ struct Gesture {
 
 enum Before {
     Region(Region),
+    /// A layer's region on the Grain tab.
+    Grain {
+        layer: usize,
+        region: Box<Region>,
+    },
     Pad(Box<Pad>),
     /// A pad on the Pads tab, which may have had no sound.
     Slot(Option<Box<Pad>>),
@@ -97,6 +111,7 @@ pub enum Editor {
     Wave,
     Chop,
     Play,
+    Grain,
 }
 
 pub struct SamplePage {
@@ -122,6 +137,13 @@ pub struct SamplePage {
     /// The Pads tab, added the first time it shows.
     pads: Option<PadsTab>,
     pads_state: Option<PadsState>,
+    /// The Grain tab, added the first time it is opened.
+    grain: Option<GrainTab>,
+    grain_state: Option<GrainState>,
+    /// The cloud's box, while it is here and not on the audio thread.
+    cloud: Option<Box<Cloud>>,
+    /// The last cloud shown had grains, a playhead or grains on other pads.
+    cloud_shown: bool,
     /// A kit whose pads were renamed or replaced, for the Play page.
     renamed: Option<usize>,
     /// The kit or pad changed since the page was last built.
@@ -170,6 +192,10 @@ impl SamplePage {
             velocity: None,
             pads: None,
             pads_state: None,
+            grain: None,
+            grain_state: None,
+            cloud: Some(Box::default()),
+            cloud_shown: false,
             renamed: None,
             stale: true,
             dirty: Vec::new(),
@@ -336,6 +362,11 @@ impl SamplePage {
     }
 
     #[cfg(test)]
+    pub fn grain(&self) -> Option<(&GrainTab, &GrainState)> {
+        self.grain.as_ref().zip(self.grain_state.as_ref())
+    }
+
+    #[cfg(test)]
     pub fn editor(&self) -> Editor {
         self.editor
     }
@@ -347,6 +378,7 @@ impl SamplePage {
         match self.editor {
             Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
+            Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             _ if self.pads_state.is_some() && self.pads.is_some() => PADS_PAGE,
             _ => EMPTY_PAGE,
@@ -390,6 +422,10 @@ impl SamplePage {
         self.play_state = None;
         if self.editor == Editor::Play {
             self.refresh_play(ui, bank);
+        }
+        self.grain_state = None;
+        if self.editor == Editor::Grain {
+            self.refresh_grain(ui, bank);
         }
         self.pads_state = None;
         if self.editor == Editor::Pads || self.state.is_none() {
@@ -504,6 +540,42 @@ impl SamplePage {
         }
     }
 
+    fn refresh_grain(&mut self, ui: &mut Ui, bank: Option<char>) {
+        if self.state.is_none() {
+            return;
+        }
+        let Some(project) = self.projects.get(self.kit) else {
+            return;
+        };
+        let sources = &mut self.sources;
+        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| {
+            sources
+                .entry(s.id())
+                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
+                .clone()
+        });
+        let Some(gs) = self.grain_state.as_ref() else {
+            return;
+        };
+        match self.grain.as_mut() {
+            Some(tab) => {
+                tab.bank = bank;
+                tab.update(ui, gs);
+            }
+            None => match GrainTab::add(ui, GRAIN_PAGE, gs) {
+                Ok(mut tab) => {
+                    tab.bank = bank;
+                    tab.update(ui, gs);
+                    self.grain = Some(tab);
+                }
+                Err(e) => {
+                    self.lines.push(format!("sample: no Grain page ({e})"));
+                    self.grain_state = None;
+                }
+            },
+        }
+    }
+
     fn build_state(&mut self) -> Option<WaveState> {
         let p = self.projects.get(self.kit)?;
         let region = &p.pad(self.pad)?.layers.first()?.region;
@@ -587,6 +659,15 @@ impl SamplePage {
             }
             return;
         }
+        if ev.widget.starts_with(GRAIN_PREFIX) {
+            let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
+                return;
+            };
+            if let Some(a) = tab.action(ui, ev, st) {
+                self.act_grain(ui, a);
+            }
+            return;
+        }
         if ev.widget.starts_with(PADS_PREFIX) {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
@@ -604,14 +685,15 @@ impl SamplePage {
         }
     }
 
-    /// Opens the editor's tab `i` (Pads, Wave, Chop or Play; the others
-    /// aren't built).
+    /// Opens the editor's tab `i` (Pads, Wave, Chop, Play or Grain; FX
+    /// isn't built).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             pads_tab::TAB => Editor::Pads,
             wave_tab::TAB => Editor::Wave,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
+            grain_tab::TAB => Editor::Grain,
             _ => return,
         };
         if editor != self.editor {
@@ -821,6 +903,52 @@ impl SamplePage {
         }
     }
 
+    fn act_grain(&mut self, ui: &mut Ui, a: GrainAction) {
+        match &a {
+            GrainAction::Tab(i) => self.open(ui, *i),
+            GrainAction::Region {
+                pad,
+                layer,
+                gesture,
+                ..
+            } => {
+                let (kit, pad, layer, gesture) = (self.kit, *pad, *layer, *gesture);
+                if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
+                    self.lift();
+                }
+                if self.gesture.is_none() {
+                    if let Some(st) = self.grain_state.as_ref() {
+                        self.gesture = Some(Gesture {
+                            id: gesture,
+                            kit,
+                            pad,
+                            before: Before::Grain {
+                                layer,
+                                region: Box::new(st.region.clone()),
+                            },
+                        });
+                    }
+                }
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
+                match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                    }
+                    Err(e) => self.lines.push(format!(
+                        "sample: edit of pad {} not made ({e:?})",
+                        self.pad_text(kit, pad)
+                    )),
+                }
+                self.refresh(ui);
+            }
+        }
+    }
+
     /// The kit whose pads were renamed or replaced since the last call, with
     /// its pads' names, for the Play page.
     pub fn take_renamed(&mut self) -> Option<(usize, Vec<Option<String>>)> {
@@ -842,7 +970,8 @@ impl SamplePage {
     /// turns finer. On Wave they move Start, End, Loop start and Loop end
     /// (one frame a detent with SHIFT); on Chop the slice, its start, the
     /// setting and the first pad; on Play Attack, Decay, Cutoff and
-    /// Resonance.
+    /// Resonance; on Grain position, size, density and pitch (with SHIFT
+    /// the sprays, and size and density finer).
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
         if self.page() == PADS_PAGE {
@@ -860,6 +989,15 @@ impl SamplePage {
             };
             if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
                 self.act_play(ui, a);
+            }
+            return;
+        }
+        if self.editor == Editor::Grain {
+            let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
+                return;
+            };
+            if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
+                self.act_grain(ui, a);
             }
             return;
         }
@@ -890,7 +1028,7 @@ impl SamplePage {
     }
 
     /// The data wheel: zoom round the marker last moved or the slice picked
-    /// (Wave, Chop), or change the row picked (Play).
+    /// (Wave, Chop), or change the row picked (Play, Grain).
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
         if self.page() == PADS_PAGE {
             self.turned();
@@ -911,6 +1049,15 @@ impl SamplePage {
                 };
                 if let Some(a) = tab.wheel(ui, st, delta) {
                     self.act_play(ui, a);
+                }
+            }
+            Editor::Grain => {
+                self.turned();
+                let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
+                    return;
+                };
+                if let Some(a) = tab.wheel(ui, st, delta) {
+                    self.act_grain(ui, a);
                 }
             }
             Editor::Chop => {
@@ -999,6 +1146,9 @@ impl SamplePage {
         if let Some(tab) = self.pads.as_mut() {
             tab.lift();
         }
+        if let Some(tab) = self.grain.as_mut() {
+            tab.lift();
+        }
         self.last_turn = None;
         let Some(g) = self.gesture.take() else { return };
         if let Before::Slot(before) = &g.before {
@@ -1022,6 +1172,12 @@ impl SamplePage {
                     return;
                 };
                 describe(before, &l.region, self.rate)
+            }
+            Before::Grain { layer, region } => {
+                let Some(l) = after.layers.get(*layer) else {
+                    return;
+                };
+                grain_tab::describe(region, &l.region)
             }
             Before::Pad(before) => play_tab::describe(before, after),
             Before::Slot(_) => String::new(),
@@ -1239,10 +1395,53 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            // The Play and Pads tabs draw no playheads.
-            Editor::Play | Editor::Pads => {}
+            // The Play and Pads tabs draw no playheads; the Grain tab's
+            // come with its cloud.
+            Editor::Play | Editor::Pads | Editor::Grain => {}
         }
         self.shown_heads = frames;
+    }
+
+    /// The cloud's box, naming the Grain tab's pad and layer, for the audio
+    /// thread to fill; None unless the Grain tab shows and the box is here.
+    pub fn take_cloud(&mut self) -> Option<FromUi> {
+        if self.page() != GRAIN_PAGE {
+            return None;
+        }
+        let st = self.grain_state.as_ref()?;
+        let mut c = self.cloud.take()?;
+        c.kit = self.kit;
+        c.pad = st.pad.min(usize::from(u8::MAX)) as u8;
+        c.layer = st.layer.min(usize::from(u8::MAX)) as u8;
+        Some(FromUi::SampleGrains(c))
+    }
+
+    /// The box found no room on its way: it waits here for the next time.
+    pub fn cloud_unsent(&mut self, c: Box<Cloud>) {
+        self.cloud = Some(c);
+    }
+
+    /// The audio thread filled the box: the Grain tab draws its grains if
+    /// they are still the ones it shows. The box stays here until the next
+    /// [`SamplePage::take_cloud`].
+    pub fn cloud_back(&mut self, ui: &mut Ui, c: Box<Cloud>) {
+        let shows = self.page() == GRAIN_PAGE && c.kit == self.kit;
+        if let (true, Some(tab), Some(st)) = (shows, self.grain.as_ref(), self.grain_state.as_ref())
+        {
+            if usize::from(c.pad) == st.pad && usize::from(c.layer) == st.layer {
+                let busy = c.len > 0 || c.head.is_some() || c.live > 0;
+                // An idle cloud is drawn once, not 25 times a second.
+                if busy || self.cloud_shown {
+                    let r = &st.region;
+                    let head = c
+                        .head
+                        .map(|h| ((h as f64 - r.start as f64) / r.frames().max(1) as f64) as f32);
+                    tab.set_cloud(ui, st, c.grains(), head, c.live);
+                }
+                self.cloud_shown = busy;
+            }
+        }
+        self.cloud = Some(c);
     }
 
     /// Lines for the log since the last call.
