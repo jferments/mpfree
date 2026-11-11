@@ -48,6 +48,7 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-boot-menu.sh
           sh -n tools/mpc-one/read-only-ethernet.sh
           sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
@@ -848,3 +849,99 @@ jobs:
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
 
+      - name: Build and check the static startup screen program (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-splash
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-splash
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-splash must be statically linked"; exit 1
+          fi
+          # Run it under qemu against a fake framebuffer and sysfs folder (no device).
+          sudo apt-get install -y --no-install-recommends qemu-user
+          t=$(mktemp -d)
+          mkdir "$t/sys"
+          printf 'U:800x1280p-0\n' > "$t/sys/modes"
+          echo 3200 > "$t/sys/stride"
+          echo 32 > "$t/sys/bits_per_pixel"
+          : > "$t/sys/pan"
+          truncate -s $((800 * 3840 * 4)) "$t/fb"
+          timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 2
+          test "$(cat "$t/sys/pan")" = "0,0"
+          test "$(stat -c %s "$t/fb")" = $((800 * 3840 * 4))
+          python3 - "$t/fb" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          frame = 800 * 1280 * 4
+          assert any(data[:frame]), "nothing was drawn"
+          assert not any(data[frame:]), "wrote past the visible frame"
+          print("PASS: static ARMv7 startup screen draws one frame's bytes on a fake framebuffer under qemu")
+          PY
+          # Boot menu: MPFree starts by itself; the factory OS only when picked.
+          menu() { rc=0; out=$(timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --menu --menu-seconds 1 "$@") || rc=$?; echo "$out rc=$rc"; }
+          r=$(menu); test "$r" = "choice=mpfree rc=0"
+          r=$(menu --no-mpfree); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\220\122\177' > "$t/wheel-right-play.mid"   # wheel cw, PLAY down
+          r=$(menu --midi-file "$t/wheel-right-play.mid"); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\260\144\177\231\045\100' > "$t/right-left-pad.mid"   # cw, ccw, a pad
+          r=$(menu --midi-file "$t/right-left-pad.mid"); test "$r" = "choice=mpfree rc=0"
+          echo "PASS: boot menu choices and exit codes under qemu"
+          # Title from a font file; a broken font file falls back to the block letters.
+          run1() { timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 1 "$@" > "$t/out.txt" 2>&1; }
+          dejavu=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          if [ -f "$dejavu" ]; then
+            run1 --font "$dejavu" --tracking 0.1; grep -q 'title font: DejaVu' "$t/out.txt"
+          fi
+          echo "not a font" > "$t/bad.ttf"
+          run1 --font "$t/bad.ttf"; grep -q 'using the built-in block letters' "$t/out.txt"
+          echo "PASS: title fonts under qemu"
+  splash-gl:
+    name: SDL3/GLES startup screen (desktop build, headless render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL3 build dependencies and Mesa
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev libxfixes-dev libxtst-dev libwayland-dev \
+            wayland-protocols libdrm-dev libgbm-dev libegl-dev libgles-dev libasound2-dev libudev-dev \
+            libdbus-1-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Build
+        run: cargo build --manifest-path rust/mpfree-splash-gl/Cargo.toml --release --locked
+      - name: Render frames offscreen with Mesa's software renderer and check them
+        run: |
+          d=$(mktemp -d)
+          SDL_VIDEO_DRIVER=offscreen timeout 300 rust/mpfree-splash-gl/target/release/mpfree-splash-gl \
+            --screenshot "$d" --frames 2 --every 5
+          python3 - "$d" <<'PY'
+          import struct, sys, zlib, pathlib
+          files = sorted(pathlib.Path(sys.argv[1]).glob("*.png"))
+          assert len(files) == 2, files
+          frames = []
+          for f in files:
+              data = f.read_bytes()
+              w, h = struct.unpack(">II", data[16:24])
+              assert (w, h) == (1280, 800), (w, h)
+              idat, i = b"", 8
+              while i < len(data):
+                  n = struct.unpack(">I", data[i:i + 4])[0]
+                  if data[i + 4:i + 8] == b"IDAT":
+                      idat += data[i + 8:i + 8 + n]
+                  i += 12 + n
+              raw = zlib.decompress(idat)
+              frames.append(raw)
+              row = 1 + w * 3
+              centre = raw[400 * row + 1 + 640 * 3: 400 * row + 1 + 640 * 3 + 3]
+              corner = raw[1 + 3: 1 + 6]
+              assert sum(raw[1:]) / len(raw) > 10, "the frame is nearly black"
+              assert sum(corner) < 120, ("the corner should be dark sky", corner)
+          assert frames[0] != frames[1], "the galaxy should turn between frames"
+          print("PASS: two 1280x800 frames rendered headless; they differ")
+          PY
