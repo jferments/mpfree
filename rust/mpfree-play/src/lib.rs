@@ -10,6 +10,8 @@
 //!   release notes on an `mpfree-arp` engine that follows the transport.
 //! - [`record`]: the clip recorder: notes played while the transport
 //!   records go into the armed track's clip at their exact ticks.
+//! - [`takes`]: take undo on the control thread: what each take recorded
+//!   and erased, to undo and redo it as a whole.
 //!
 //! The same session gives the same events for any period size, and the
 //! audio-thread call never allocates; `tests/` proves both. Host-only for
@@ -19,9 +21,11 @@
 pub mod arp;
 pub mod player;
 pub mod record;
+pub mod takes;
 pub mod view;
 
 pub use arp::ArpHost;
-pub use player::{Event, Out, Player, Sink, Stats, ALL};
+pub use player::{Erased, Event, Out, Player, Sink, Stats, ALL};
 pub use record::{Recorder, Taken};
+pub use takes::{Take, Takes};
 pub use view::{CompileError, Launch, PlayView};
