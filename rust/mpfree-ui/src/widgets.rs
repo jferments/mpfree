@@ -32,7 +32,7 @@ impl Chip {
 /// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
 /// Every crate's preview draws this bar ([`Header::app`]), never a list of its
 /// own; adding, removing, renaming or reordering a tab needs Jay's approval.
-pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+pub const APP_TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
 /// The tab after them while Prefs > "Show developer tools" is on.
 pub const DEV_TAB: &str = "Dev";
 
@@ -44,10 +44,19 @@ pub struct Header {
     pub tabs: Vec<String>,
     pub active: usize,
     pub chips: Vec<Chip>,
+    /// The small mixer icon (three sliders) at the bar's right edge, after
+    /// the chips (layout spec, section 2): `Some(open)`, lit while the
+    /// mixer is open. A tap gives `Select(MIXER_ICON)`.
+    pub mixer_icon: Option<bool>,
     /// Where each chip was last drawn (chip index, rect), for taps: a chip's
     /// width depends on its text, which only painting can measure.
     drawn_chips: RefCell<Vec<(usize, Rect)>>,
 }
+
+/// What a tap on the header's mixer icon gives: `Select(MIXER_ICON)`.
+pub const MIXER_ICON: usize = usize::MAX;
+/// The mixer icon's size.
+const ICON_W: i32 = 44;
 
 /// The room left of the first tab.
 const LEFT_W: i32 = 8;
@@ -62,8 +71,21 @@ impl Header {
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
             active: 0,
             chips: Vec::new(),
+            mixer_icon: None,
             drawn_chips: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Where the mixer icon sits, when the bar has one.
+    pub fn icon_rect(&self, r: Rect) -> Option<Rect> {
+        self.mixer_icon?;
+        let side = ICON_W.min(r.h);
+        Some(Rect::new(
+            r.right() - side,
+            r.y + (r.h - side) / 2,
+            side,
+            side,
+        ))
     }
 
     /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
@@ -121,9 +143,29 @@ impl Widget for Header {
                 name,
             );
         }
-        // Chips from the right edge leftwards; stop before the tabs.
+        // The mixer icon at the right edge: three sliders.
+        if let (Some(b), Some(open)) = (self.icon_rect(r), self.mixer_icon) {
+            cx.canvas
+                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+            if open {
+                let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
+                cx.canvas.fill_round_rect(bar, 1, t.accent);
+            }
+            let ink = if open { t.text } else { t.text_dim };
+            let (top, h) = (b.y + 11, b.h - 22);
+            for (i, knob) in [0.35f32, 0.75, 0.5].iter().enumerate() {
+                let x = b.x + 12 + i as i32 * 9;
+                cx.canvas
+                    .fill_rect(Rect::new(x, top, 2, h), ink.mix(t.surface, 0.4));
+                let ky = top + ((h - 6) as f32 * (1.0 - knob)) as i32;
+                cx.canvas
+                    .fill_round_rect(Rect::new(x - 3, ky, 8, 6), 2, ink);
+            }
+        }
+        // Chips from the right edge (or the icon) leftwards; stop before
+        // the tabs.
         let limit = self.tab_rect(r, self.tabs.len()).x;
-        let mut right = r.right();
+        let mut right = self.icon_rect(r).map_or(r.right(), |b| b.x - 8);
         let h = 34.min(r.h);
         let mut drawn = self.drawn_chips.borrow_mut();
         drawn.clear();
@@ -159,6 +201,9 @@ impl Widget for Header {
             self.active = i;
             return Some(EventKind::Tab(i));
         }
+        if self.icon_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Select(MIXER_ICON));
+        }
         let drawn = self.drawn_chips.borrow();
         drawn
             .iter()
@@ -192,6 +237,8 @@ pub struct PadGrid {
 }
 
 const PAD_GAP: i32 = 12;
+/// Pads shorter than this show their name only, without the number.
+const SMALL_PAD_H: i32 = 70;
 
 impl PadGrid {
     pub fn new(count: usize, cols: usize) -> PadGrid {
@@ -301,23 +348,29 @@ impl Widget for PadGrid {
             if pad.color.is_none() {
                 cx.canvas.stroke_round_rect(body, t.radius, 1, t.outline);
             }
-            let inner = body.inset(12);
-            let (top, rest) = inner.take_top(22);
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                top,
-                Align::Left,
-                sub,
-                &format!("{}", i + 1),
-            );
-            let (bottom, _) = rest.take_bottom(26);
             let label = if pad.label.is_empty() {
                 "—"
             } else {
                 pad.label.as_str()
             };
-            cx.text(FontId::Sans, t.size_body, bottom, Align::Left, ink, label);
+            if body.h < SMALL_PAD_H {
+                // A small pad (the Play page's pads panel): the name only.
+                let inner = body.inset_xy(8, 4);
+                cx.text(FontId::Sans, t.size_small, inner, Align::Center, ink, label);
+            } else {
+                let inner = body.inset(12);
+                let (top, rest) = inner.take_top(22);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    top,
+                    Align::Left,
+                    sub,
+                    &format!("{}", i + 1),
+                );
+                let (bottom, _) = rest.take_bottom(26);
+                cx.text(FontId::Sans, t.size_body, bottom, Align::Left, ink, label);
+            }
             if lit > 0.0 && pad.velocity > 0 {
                 let w = ((body.w - 24) as f32 * pad.velocity as f32 / 127.0) as i32;
                 let bar = Rect::new(body.x + 12, body.bottom() - 9, w.max(4), 4);
@@ -653,6 +706,8 @@ pub struct Label {
     pub text: String,
     pub tone: Tone,
     pub align: Align,
+    /// Room left and right of the text, px.
+    pub inset: i32,
 }
 
 impl Label {
@@ -661,7 +716,14 @@ impl Label {
             text: text.to_string(),
             tone,
             align,
+            inset: 6,
         }
+    }
+
+    /// The same with `inset` px of room either side.
+    pub fn inset(mut self, inset: i32) -> Label {
+        self.inset = inset;
+        self
     }
 }
 
@@ -671,7 +733,7 @@ impl Widget for Label {
         cx.text(
             FontId::Sans,
             px,
-            r.inset_xy(6, 0),
+            r.inset_xy(self.inset, 0),
             self.align,
             c,
             &self.text,
@@ -1244,7 +1306,7 @@ mod tests {
 
     #[test]
     fn the_app_bar_is_the_approved_one() {
-        assert_eq!(APP_TABS, ["Play", "Clips", "Synth", "Looper", "Sample"]);
+        assert_eq!(APP_TABS, ["Play", "Arrange", "Synth", "Looper", "Sample"]);
         assert_eq!(Header::app("Synth").active, 2);
         assert_eq!(Header::app("Prefs").active, usize::MAX);
     }
@@ -1423,5 +1485,27 @@ mod tests {
             None,
             "between the chips and the tabs"
         );
+    }
+
+    #[test]
+    fn the_mixer_icon_sits_at_the_right_edge_and_the_chips_move_left() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::new(&["Play", "Clips"]);
+        h.chips = vec![Chip::new("Kit 1 of 6 · Bank A", Tone::Accent)];
+        h.mixer_icon = Some(false);
+        ui.add("header", h);
+        ui.add("rest", Label::new("", Tone::Dim, Align::Left));
+        ui.add_page("p", "col(header:60, rest:*)").unwrap();
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+        let r = ui.rect_of("header").unwrap();
+        let h = ui.get::<Header>("header").unwrap();
+        let icon = h.icon_rect(r).unwrap();
+        assert_eq!(icon.right(), r.right());
+        assert!(
+            h.chip_rect(0).unwrap().right() < icon.x,
+            "the chip is left of the icon"
+        );
+        let e = ui.touch(1, Touch::Down, icon.x + 10, icon.y + 10).unwrap();
+        assert_eq!(e.kind, EventKind::Select(MIXER_ICON));
     }
 }

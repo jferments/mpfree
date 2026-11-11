@@ -26,10 +26,12 @@
 
 pub mod canvas;
 pub mod color;
+pub mod draw;
 pub mod fb;
 pub mod geom;
 pub mod layout;
 pub mod png;
+pub mod qlink;
 pub mod text;
 pub mod theme;
 pub mod ui;
