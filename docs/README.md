@@ -16,11 +16,16 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [UI architecture](project/ui-architecture.md): MPFree's GUI toolkit (`mpfree-ui`): canvas, theme, fonts, widgets, one-line page layouts, and how the screen and audio threads talk.
 - [Transport](project/transport.md): the time engine's clock that the sequencer, looper, arp and sampler follow: ticks, tempo map, loop, count-in, punch, and the same output for any period size (engine in `rust/mpfree-transport`, 2026-11-11).
 - [Playback](project/playback.md): clips of any length on the transport: the model, compiling, sample-exact playback, note-offs, a track through the arp, the clip recorder with replace, overdub and take undo, and a WAV renderer (engine in `rust/mpfree-seq` and `rust/mpfree-play`, 2026-11-11).
+- [Capture](project/capture.md): keep what was just played, even without recording: the always-on history, the last phrase cut to whole bars, a new clip in place or notes into the playing clip, undo, the Capture button, and a WAV demo (`rust/mpfree-capture`, 2026-11-11).
 
 ## Decisions
 
 - [ADR-0001: Rust first, C/C++ compatible](decisions/adr-0001-rust-first.md) (accepted 2026-11-08).
 - [ADR-0002: direct ALSA audio on the MPC One](decisions/adr-0002-direct-alsa-audio.md) (accepted 2026-11-09).
+
+## Testing and CI
+
+- [Testing and CI](guides/testing-and-ci.md): the test tiers, what each CI job checks, the self-hosted runners, rules for tests, coverage by crate, and the plan for the regression suite.
 
 ## Working with the device
 

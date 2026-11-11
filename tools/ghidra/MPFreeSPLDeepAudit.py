@@ -102,7 +102,7 @@ def describe_at(va):
     return ins
 
 report = {
-    "schema": "mpfree-spl-deep-audit-v2",
+    "schema": "mpfree-spl-deep-audit-v3",
     "program": str(program.getName()),
     "base": "0xff704000",
     "size": LENGTH,
@@ -121,6 +121,7 @@ report = {
     "internal_address_constants": [],
     "potential_thumb_function_pointers": [],
     "handoff_words": [],
+    "handoff_disassembly": [],
     "sector_256_instruction_uses": [],
     "raw_magic_literal_hits": [],
     "direct_call_reachability": {},
@@ -193,6 +194,31 @@ for offset in (
         "thumb_bit": bool(raw & 1),
         "possible_function": str(target_fn.getName()) if target_fn else None,
     })
+
+# Compact, instruction-level evidence around the unresolved final transfer to
+# DDR/U-Boot. These are Ghidra-decoded instructions, not a runtime trace.
+for label, start, length in (
+    ("post_header_init_and_possible_handoff", BASE + 0x120, 0xc4),
+    ("sram_runtime_indirect_jump", BASE + 0x1208, 0x75),
+    ("boot_target_selection", BASE + 0x1350, 0x100),
+    ("p3_image_reader", BASE + 0x14a4, 0xec),
+):
+    count = 0
+    rows = []
+    for va in range(start, start + length, 2):
+        inst = listing.getInstructionAt(addr(va))
+        if inst is None:
+            continue
+        count += 1
+        if count > 250:
+            break
+        rows.append({
+            "pc": "0x%08x" % va,
+            "asm": str(inst),
+            "type": str(inst.getFlowType()),
+            "targets": [str(v) for v in inst.getFlows()],
+        })
+    report["handoff_disassembly"].append({"region": label, "instructions": rows})
 
 # Immediate operands in instructions are not necessarily stored as raw
 # 0x00000100 words. Search decoded operand strings separately.
@@ -278,11 +304,11 @@ for root in (BASE + 0x04, BASE + 0x60, BASE + 0x1208, BASE + 0x1350):
     }
 
 # Prioritize startup, then likely MMC / SoC / ROM call-heavy routines.
-priorities = [BASE + off for off in (0x04, 0x60, 0xb8, 0x118,
+priorities = [BASE + off for off in (0x04, 0x60, 0xb8, 0x118, 0x120,
                                      0x164, 0x1a8, 0x1e4, 0x1e8,
                                      0x208, 0x1208, 0x1350, 0x14a4,
                                      0x21c0, 0x2a4c,
-                                     0x1260, 0x12c0, 0x1298, 0x1310,
+                                     0x1260, 0x12c0, 0x1298, 0x1310, 0x1342,
                                      0x1316, 0x1444, 0x1480, 0x1550,
                                      0x1594, 0x15b0, 0x15bc, 0x1604,
                                      0x19e0, 0x298a, 0x2980, 0x2984,

@@ -5,6 +5,7 @@
 //! mpfree-bench [--quick] [--filter TEXT] [--calibration FILE] [--json FILE]
 //!              [--check-allocs]
 //! mpfree-bench --calibrate [--machine NAME]
+//! mpfree-bench --compare A.json B.json
 //! ```
 //!
 //! - On the desktop it prints each case's mean, p99 and worst block. With
@@ -15,6 +16,11 @@
 //! - `--check-allocs` exits with status 2 if any engine allocated inside a
 //!   block (the counting allocator is installed in this program).
 //! - `--calibrate` times the reference kernels and prints a calibration file.
+//! - `--compare A.json B.json` puts two `--json` reports side by side, case
+//!   by case: B's p99 and worst as a share of A's (the default and the
+//!   cortex-a17 build on the MPC, or a change against main).
+//! - The "mem MB" column is what each engine holds once it is built (its
+//!   buffers, delay lines, sample memory), from the counting allocator.
 //!
 //! It only reads and computes: it opens no device, writes no file unless
 //! `--json` names one, and runs on one thread at normal priority.
@@ -40,10 +46,11 @@ struct Options {
     check_allocs: bool,
     calibrate: bool,
     machine: Option<String>,
+    compare: Option<(String, String)>,
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { quick: false, filter: None, calibration: None, json: None, check_allocs: false, calibrate: false, machine: None };
+    let mut o = Options { quick: false, filter: None, calibration: None, json: None, check_allocs: false, calibrate: false, machine: None, compare: None };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value"));
@@ -55,6 +62,10 @@ fn options() -> Result<Options, String> {
             "--check-allocs" => o.check_allocs = true,
             "--calibrate" => o.calibrate = true,
             "--machine" => o.machine = Some(value("--machine")?),
+            "--compare" => {
+                let a = value("--compare")?;
+                o.compare = Some((a, value("--compare")?));
+            }
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -88,7 +99,17 @@ struct Row {
     module: &'static str,
     what: &'static str,
     s: Summary,
+    mem_bytes: i64,
 }
+
+/// A module's budget, as a share of the period; "period" is the whole
+/// audio thread's.
+fn budget_pct(module: &str) -> Option<f64> {
+    if module == "period" { Some(budget::AUDIO_THREAD_WORST_PCT) } else { budget::for_module(module).map(|b| b.worst_pct) }
+}
+
+/// Megabytes (2^20 bytes), for the memory column.
+fn mb(bytes: i64) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
 
 fn esc(s: &str) -> String { s.replace('\\', "\\\\").replace('"', "\\\"") }
 
@@ -104,12 +125,82 @@ fn json(rows: &[Row], kernels: &[(String, f64)], blocks: u64) -> String {
     for (i, r) in rows.iter().enumerate() {
         let s = &r.s;
         let _ = write!(j, "{}\n    {{\"name\": \"{}\", \"module\": \"{}\", \"what\": \"{}\", \"blocks\": {}, \"mean_ns\": {:.0}, \"p50_ns\": {}, \
-                           \"p99_ns\": {}, \"p999_ns\": {}, \"max_ns\": {}, \"allocs\": {}}}",
+                           \"p99_ns\": {}, \"p999_ns\": {}, \"max_ns\": {}, \"allocs\": {}, \"mem_bytes\": {}}}",
                        if i > 0 { "," } else { "" }, esc(&r.name), r.module, esc(r.what), s.blocks, s.mean_ns, s.p50_ns, s.p99_ns,
-                       s.p999_ns, s.max_ns, s.allocs);
+                       s.p999_ns, s.max_ns, s.allocs, r.mem_bytes);
     }
     j.push_str("\n  ]\n}\n");
     j
+}
+
+/// One case from a `--json` report.
+#[derive(Debug, PartialEq)]
+struct Saved {
+    name: String,
+    p99_ns: f64,
+    max_ns: f64,
+    mem_bytes: f64,
+}
+
+/// A JSON string value after `"key": "`, unescaped (the writer escapes only
+/// `\` and `"`).
+fn json_str(line: &str, key: &str) -> Option<String> {
+    let rest = &line[line.find(&format!("\"{key}\": \""))? + key.len() + 5..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push(chars.next()?),
+            '"' => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn json_num(line: &str, key: &str) -> Option<f64> {
+    let rest = &line[line.find(&format!("\"{key}\": "))? + key.len() + 4..];
+    rest[..rest.find([',', '}'])?].trim().parse().ok()
+}
+
+/// The machine line and the cases of a report this program wrote (one case
+/// per line).
+fn read_report(path: &str) -> Result<(String, Vec<Saved>), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    if !text.contains("\"schema\": \"mpfree-bench/1\"") {
+        return Err(format!("{path}: not an mpfree-bench/1 report"));
+    }
+    let field = |key: &str| text.lines().find_map(|l| json_str(l, key)).unwrap_or_default();
+    let machine = format!("{}, build {}", field("machine"), field("build"));
+    let cases = text.lines().filter(|l| l.contains("\"module\": ")).map(|l| {
+        Some(Saved { name: json_str(l, "name")?, p99_ns: json_num(l, "p99_ns")?, max_ns: json_num(l, "max_ns")?,
+                     mem_bytes: json_num(l, "mem_bytes").unwrap_or(0.0) })
+    }).collect::<Option<Vec<_>>>().ok_or(format!("{path}: a case line could not be read"))?;
+    Ok((machine, cases))
+}
+
+/// B against A, case by case.
+fn compare(a: &str, b: &str) -> Result<String, String> {
+    let ((ma, ca), (mb_, cb)) = (read_report(a)?, read_report(b)?);
+    let period_ns = MPC.ns() as f64;
+    let pct = |ns: f64| 100.0 * ns / period_ns;
+    let mut t = String::new();
+    let _ = writeln!(t, "A: {a} ({ma})\nB: {b} ({mb_})\nShares of one period; B/A below 1.00 means B is faster.\n");
+    let _ = writeln!(t, "{:<50} {:>7} {:>7} {:>6}  {:>7} {:>7} {:>6}", "case", "A p99", "B p99", "B/A", "A max", "B max", "B/A");
+    for x in &ca {
+        match cb.iter().find(|y| y.name == x.name) {
+            Some(y) => {
+                let _ = writeln!(t, "{:<50} {:>6.2}% {:>6.2}% {:>6.2}  {:>6.2}% {:>6.2}% {:>6.2}{}", x.name, pct(x.p99_ns), pct(y.p99_ns),
+                                 y.p99_ns / x.p99_ns.max(1.0), pct(x.max_ns), pct(y.max_ns), y.max_ns / x.max_ns.max(1.0),
+                                 if (y.mem_bytes - x.mem_bytes).abs() > 1024.0 { format!("  mem {:.2} -> {:.2} MB", mb(x.mem_bytes as i64), mb(y.mem_bytes as i64)) } else { String::new() });
+            }
+            None => { let _ = writeln!(t, "{:<50} only in A", x.name); }
+        }
+    }
+    for y in cb.iter().filter(|y| !ca.iter().any(|x| x.name == y.name)) {
+        let _ = writeln!(t, "{:<50} only in B", y.name);
+    }
+    Ok(t)
 }
 
 fn main() -> ExitCode {
@@ -118,10 +209,23 @@ fn main() -> ExitCode {
         Err(e) => {
             if !e.is_empty() { eprintln!("mpfree-bench: {e}"); }
             eprintln!("usage: mpfree-bench [--quick] [--filter TEXT] [--calibration FILE] [--json FILE] [--check-allocs]\n       \
-                       mpfree-bench --calibrate [--machine NAME]");
+                       mpfree-bench --calibrate [--machine NAME]\n       \
+                       mpfree-bench --compare A.json B.json");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
     };
+    if let Some((a, b)) = &o.compare {
+        return match compare(a, b) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("mpfree-bench: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let (calls, rounds) = if o.quick { (200, 5) } else { (2000, 15) };
 
     if o.calibrate {
@@ -164,7 +268,7 @@ fn main() -> ExitCode {
         (None, false) => println!("Desktop numbers only: pass --calibration FILE (from --calibrate on the MPC) for MPC estimates."),
     }
     println!();
-    println!("{:<38} {:>8} {:>8} {:>8} {:>7} {:>7}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %",
+    println!("{:<50} {:>8} {:>8} {:>8} {:>7} {:>7} {:>8}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %", "mem MB",
              if on_device || model.is_some() { "MPC worst vs module budget" } else { "" });
 
     let mut rows = Vec::new();
@@ -180,10 +284,10 @@ fn main() -> ExitCode {
         }
         std::hint::black_box(&l);
         let s = probe.lifetime();
-        let budget = budget::for_module(c.module);
-        let verdict = |worst_ns: f64| budget.map_or(String::new(), |b| {
+        let budget_pct = budget_pct(c.module);
+        let verdict = |worst_ns: f64| budget_pct.map_or(String::new(), |b| {
             let pct = MPC.pct(worst_ns);
-            format!("{:>5.1} % of {:>4.1} % {}: {}", pct, b.worst_pct, c.module, Verdict::of(pct, b.worst_pct).word())
+            format!("{:>5.1} % of {:>4.1} % {}: {}", pct, b, c.module, Verdict::of(pct, b).word())
         });
         // The p99.9 block is the "worst" for verdicts: the single worst block
         // on a desktop is usually the OS, not the engine. On the device both
@@ -196,14 +300,14 @@ fn main() -> ExitCode {
         } else {
             String::new()
         };
-        println!("{:<38} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}%  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
-                 s.max_ns as f64 / 1e3, 100.0 * s.p99_ns as f64 / period_ns, 100.0 * s.max_ns as f64 / period_ns,
+        println!("{:<50} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}% {:>8.2}  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
+                 s.max_ns as f64 / 1e3, 100.0 * s.p99_ns as f64 / period_ns, 100.0 * s.max_ns as f64 / period_ns, mb(c.mem_bytes),
                  if s.allocs > 0 { format!("  ALLOCATES ({} calls)", s.allocs) } else { String::new() });
-        rows.push(Row { name: c.name, module: c.module, what: c.what, s });
+        rows.push(Row { name: c.name, module: c.module, what: c.what, s, mem_bytes: c.mem_bytes });
     }
 
     println!();
-    println!("Budgets (worst block, share of the period; proposal, see docs/project/profiling.md):");
+    println!("Budgets (worst block, share of the period; see docs/project/profiling.md):");
     for b in budget::MPC_BUDGETS {
         println!("  {:<8} {:>5.1} %  {:>6.0} us  {}", b.module, b.worst_pct, b.worst_ns(MPC) as f64 / 1e3, b.covers);
     }
@@ -222,4 +326,40 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_report_reads_back_and_compares() {
+        let s = |p99: u64, max: u64| Summary { blocks: 10, p99_ns: p99, max_ns: max, ..Summary::default() };
+        let rows = [
+            Row { name: "Chorus \"wide\" \\ 2".to_string(), module: "fx", what: "x", s: s(100_000, 200_000), mem_bytes: 4096 },
+            Row { name: "Delay".to_string(), module: "fx", what: "y", s: s(50_000, 60_000), mem_bytes: 1 << 20 },
+        ];
+        let dir = std::env::temp_dir().join(format!("mpfree-bench-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.json"), dir.join("b.json"));
+        std::fs::write(&a, json(&rows, &[("biquad".to_string(), 9.0)], 10)).unwrap();
+        std::fs::write(&b, json(&rows[..1], &[], 10)).unwrap();
+        let (machine, cases) = read_report(a.to_str().unwrap()).unwrap();
+        assert!(machine.contains(", build "), "{machine}");
+        assert_eq!(cases, vec![
+            Saved { name: "Chorus \"wide\" \\ 2".to_string(), p99_ns: 100_000.0, max_ns: 200_000.0, mem_bytes: 4096.0 },
+            Saved { name: "Delay".to_string(), p99_ns: 50_000.0, max_ns: 60_000.0, mem_bytes: 1_048_576.0 },
+        ]);
+        let t = compare(a.to_str().unwrap(), b.to_str().unwrap()).unwrap();
+        assert!(t.contains("Chorus \"wide\" \\ 2") && t.contains("1.00") && t.contains("Delay") && t.contains("only in A"), "{t}");
+        assert!(read_report(dir.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_song_counts_against_the_whole_thread() {
+        assert_eq!(budget_pct("period"), Some(budget::AUDIO_THREAD_WORST_PCT));
+        assert_eq!(budget_pct("synth"), Some(20.0));
+        assert_eq!(budget_pct("nothing"), None);
+    }
 }

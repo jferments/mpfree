@@ -22,6 +22,7 @@ mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
 mpfree-play = { path = "../mpfree-play" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
+mpfree-capture = { path = "../mpfree-capture" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
