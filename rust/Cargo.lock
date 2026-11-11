@@ -62,6 +62,13 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-fx"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
 

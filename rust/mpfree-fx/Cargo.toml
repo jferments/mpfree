@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-fx"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MPFree's effects on the shared mpfree-node interface: filters, drive, crush, delay, compressor, the Master safety stage and a click-free insert chain; real-time safe and block-size independent"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
