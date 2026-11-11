@@ -183,9 +183,14 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
         assert_eq!(s.tab.bounds(&s.state), b);
         assert_eq!(s.ui.get::<Waveform>(chop_tab::WAVE).unwrap().markers()[index].frame, b[index], "put back");
     }
-    // A tap on the wave picks the slice under it.
+    // A tap on the wave picks the slice under it and plays it.
     let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Frame(b[3] + 10) };
-    s.tab.action(&mut s.ui, &ev, &st);
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st),
+               Some(ChopAction::Audition { pad: st.pad, layer: st.layer, start: b[3], end: b[4] }));
+    assert_eq!(s.tab.selected(), 3);
+    // Outside the region there is no slice to play.
+    let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Frame(b[b.len() - 1] + 10) };
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
     assert_eq!(s.tab.selected(), 3);
     // A hand-made chop stays when the method's list is left alone, even
     // when the region's end moves (another pad chops again).
@@ -276,5 +281,46 @@ fn every_chop_sample_screen_draws() {
     for mut s in sample::chop_samples(Fonts::embedded).unwrap() {
         let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
         assert!(!s.ui.paint(&mut c).is_empty(), "{}", s.name);
+    }
+}
+
+/// Renders `frames` frames of `e` after scheduling `ev`.
+fn sound(e: &mut Engine, ev: Event, frames: usize) -> Vec<f32> {
+    assert!(e.schedule(0, ev));
+    let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    l.into_iter().zip(r).flat_map(|(a, b)| [a, b]).collect()
+}
+
+#[test]
+fn a_tapped_slice_sounds_as_the_pad_made_from_it_will() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Frame(b[2] + 5) };
+    let st = s.state.clone();
+    let tap = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+    let ChopAction::Audition { pad, layer, start, end } = tap else { panic!("{tap:?}") };
+    assert_eq!((pad, layer, start, end), (PAD, 0, b[2], b[3]));
+    // The tap, before anything goes on pads...
+    let frames = 4096;
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&s.project, RATE));
+    let heard = sound(&mut e, Event::Audition { pad: pad as u8, layer: layer as u8, start: start as u32, end: end as u32,
+                                                velocity: 100 }, frames);
+    // ...sounds as the slice's pad, once it is made.
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let pads = apply(&mut s, &a);
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&s.project, RATE));
+    let made = sound(&mut e, Event::NoteOn { pad: (pads.start + 2) as u8, velocity: 100 }, frames);
+    assert!(heard.iter().any(|x| x.abs() > 0.01), "the tap plays");
+    for (k, (h, m)) in heard.iter().zip(&made).enumerate() {
+        assert!((h - m).abs() < 1e-6, "sample {k}: {h} vs {m}");
     }
 }

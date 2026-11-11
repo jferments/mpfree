@@ -12,6 +12,8 @@
 //!   setting chops again; moving, splitting or merging a slice by hand turns
 //!   the method to Manual, so nothing undoes the hand edits behind the
 //!   user's back.
+//! - A **tap** on the wave picks the slice under it and plays it once, as
+//!   the pad made from it will ([`ChopAction::Audition`]).
 //! - **Split** cuts the slice picked in two, **Merge** joins it to the one
 //!   before, and **Chop to pads** puts the slices on consecutive pads of the
 //!   pad's bank as one undo step. Each new pad is the chopped pad (level,
@@ -60,7 +62,7 @@ pub const LAYOUT: &str = "col(header:60, smp-chop-bar:60, smp-chop-overview:56, 
 pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Tap a slice to pick it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
+pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
                         it back) · SHIFT + Q-Link 2: one frame at a time";
 
 /// Pads in a bank: the most slices one chop can put on pads.
@@ -211,6 +213,9 @@ pub enum ChopAction {
     /// end) on pads `to_pad..`, one each, made from pad `pad`'s layer
     /// `layer`, and keep the chop in the project: one undo step.
     ToPads { pad: usize, layer: usize, source: SourceId, name: String, mode: ChopMode, bounds: Vec<u64>, to_pad: usize },
+    /// Play source frames `start..end` (a slice) of pad `pad`'s layer
+    /// `layer` once, as a pad made from it would: a tap on the slice.
+    Audition { pad: usize, layer: usize, start: u64, end: u64 },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -619,11 +624,10 @@ impl ChopTab {
             }
             (WAVE, EventKind::Frame(f)) => {
                 let b = self.bounds(st);
-                if let Some(i) = (0..self.slices()).find(|&i| *f >= b[i] && *f < b[i + 1]) {
-                    self.selected = i;
-                    self.show(ui, st);
-                }
-                None
+                let i = (0..self.slices()).find(|&i| *f >= b[i] && *f < b[i + 1])?;
+                self.selected = i;
+                self.show(ui, st);
+                Some(ChopAction::Audition { pad: st.pad, layer: st.layer, start: b[i], end: b[i + 1] })
             }
             (OVERVIEW, EventKind::Frame(f)) => {
                 let width = self.wave_w;

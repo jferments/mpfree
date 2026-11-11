@@ -281,6 +281,21 @@ impl Player {
         }
     }
 
+    /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
+    /// from the next render, as the pad made from that slice will play it
+    /// (a tap on the Chop page). Only while kit `kit` is the one playing;
+    /// returns whether it went to the engine.
+    pub fn audition(&mut self, kit: usize, pad: usize, layer: usize, start: u64, end: u64, velocity: u8) -> bool {
+        if kit != self.kit || pad >= 16 || layer > usize::from(u8::MAX) {
+            return false;
+        }
+        let clip = |f: u64| u32::try_from(f).unwrap_or(u32::MAX);
+        let velocity = engine_velocity(velocity);
+        velocity > 0
+            && self.engine.schedule(0, Event::Audition { pad: pad as u8, layer: layer as u8, start: clip(start), end: clip(end),
+                                                         velocity })
+    }
+
     /// Pad pressure, 0 to 127, from the next render on.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
@@ -394,6 +409,21 @@ mod tests {
             assert!(want.iter().any(|&x| x.abs() > 0.1));
             assert_eq!((mixer.playing(), p.playing()), (0, 0));
         }
+    }
+
+    #[test]
+    fn a_slice_plays_once_on_the_playing_kit_only() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        // Kick (pad 1) is 3000 frames: frames 1000 to 1500 of it.
+        assert!(!p.audition(1, 0, 0, 1000, 1500, 127), "kit 2 isn't playing");
+        assert!(!p.audition(0, 16, 0, 1000, 1500, 127));
+        assert!(!p.audition(0, 0, 0, 1000, 1500, 0));
+        assert!(p.audition(0, 0, 0, 1000, 1500, 127));
+        let (out, _) = run(&mut p, 8);
+        let last = out.iter().rposition(|x| x.abs() > 1e-6).unwrap() / 2;
+        assert!((490..500).contains(&last), "the slice is 500 frames (its sine may touch zero at the end): {last}");
+        assert_eq!(p.playing(), 0);
     }
 
     #[test]
