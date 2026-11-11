@@ -179,6 +179,25 @@ impl Default for MasterSafety {
 }
 
 impl MasterSafety {
+    /// What a steady peak at `x` (linear, 1 is 0 dBFS) leaves as, after
+    /// the trim, in the mode set: the limiter holds it at the ceiling, Soft
+    /// clip bends it in from 6 dB under the ceiling, Raw passes it (the
+    /// converter clips it above 0 dBFS). For drawing.
+    pub fn curve(&self, x: f32) -> f32 {
+        let x = x * db_to_gain(self.v[ids::TRIM as usize]);
+        let ceil = db_to_gain(self.v[ids::CEILING as usize]);
+        let knee = ceil * 0.5;
+        match self.v[ids::MODE as usize] as usize {
+            0 => x.clamp(-ceil, ceil),
+            1 if x.abs() > knee => {
+                x.signum()
+                    * (knee + (ceil - knee) * crate::fast_tanh((x.abs() - knee) / (ceil - knee)))
+            }
+            1 => x,
+            _ => x.clamp(-1.0, 1.0),
+        }
+    }
+
     pub fn new() -> MasterSafety {
         let v = defaults(&PARAMS);
         let mut m = MasterSafety {
