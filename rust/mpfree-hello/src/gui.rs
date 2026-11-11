@@ -4122,7 +4122,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Clips · slots 2–7 of 16"
+            "Clips · slots 2–6 of 16"
         );
         assert!(p.take_actions().is_empty());
     }
@@ -4578,8 +4578,9 @@ mod tests {
             .rect_of(crate::looper_page::LOOP_STRIP)
             .is_some_and(|r| r.w > 900));
         p.apply(ToUi::Show(View::Arrange));
+        // The grid over the scene morph bar.
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
-        assert!(clips.w > 780 && clips.h > 560, "{clips:?}");
+        assert!(clips.w > 780 && clips.h > 500, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
         assert!(p.ui.rect_of("options").unwrap().h > 600);
         let c = Console::new(Fonts::embedded(), "touch", None);

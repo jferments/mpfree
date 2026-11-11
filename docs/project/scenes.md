@@ -1,4 +1,4 @@
-# Scenes and follow actions (T9)
+# Scenes, follow actions and the scene morph (T9, T10)
 
 A scene is a row of the launch grid. Launching it plays every track's clip in that row from the next bar line, so a whole part of the song changes at once. A scene can also switch the track mutes on that bar line, and a follow action can chain scenes and clips into a song without an arrangement.
 
@@ -10,7 +10,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 - **`Scene { name, mutes, follow, values }`**.
   - `mutes: Option<u16>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
-  - `values`: parameter values stored with the scene, for the scene morph (T10). Nothing reads them yet.
+  - `values`: parameter values stored with the scene, for the scene morph (T10, below).
 - **`Clip::follow`**: a clip can have a follow action of its own.
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
@@ -51,6 +51,30 @@ The host calls `due` after every period while the transport rolls, with the next
 - After every rolling period, `Perform::due` queues the follow actions coming due.
 - `TimeState::scene_playing` and `scene_cued` light the buttons.
 
+## The scene morph (T10, `mpfree_perform::morph`)
+
+A crossfader morphs every parameter two rows store, from one row's values to the other's, and lets go either back to the sound from before or where it is.
+
+The mod engine (`mpfree-mod`) already has scenes A and B and a morph position (`Owner::Morph(0)`). It glides every parameter both scenes hold, in knob positions, between the base layer and the macros. `SceneMorph` fills A and B from two rows:
+
+- **`load(engine, project, a, b)`** puts every parameter either row holds on both sides. A parameter only one row holds gets its value now on the other side, so it moves from where it is and nothing jumps. Values for parameters the engine does not have are counted and skipped.
+- **The snapshot.** The values the parameters have when a morph starts are kept. Loading other rows while morphing keeps that first snapshot.
+- **`snap_back(engine)`** lets go: every held parameter goes back to the snapshot, and the morph to 0. It returns the values for the host to send as `ModEvent::Set`. That covers knobs turned while morphing too: a turn moves the parameter's own value as well as the nearer scene.
+- **`keep(engine)`** lets go with every parameter where the morph has it. That is the value last sent, so an LFO on the parameter is caught where it was.
+- **`store(engine, project)`** writes A and B back into their rows. A knob turned while morphing edits the scene the morph is nearer, and this keeps the edit in the project.
+- **`save_scene(engine, project, row)`** stores every parameter's own value now, and every macro's position, in a row.
+
+On the Clips page, the morph bar sits under the grid:
+
+- **The A and B chips.** A tap on a chip's left half steps its row down, and on its right half steps it up.
+- **The crossfader.** Moving it loads the two rows if the morph is off.
+- **Snap back and Keep.** These answer only while a morph is loaded.
+- **Save A or Save B.** This saves the sound into the row the crossfader is nearer.
+
+The grid shows 5 rows at a time over the bar, down from 6.
+
+**Not wired yet in the pad player.** The morph needs the mod engine in the app (`modmix.rs`, on main). The rows can be picked already. Moving the crossfader, Snap back, Keep and Save log that the mod engine is not there yet. They will be wired once this branch has main.
+
 ## Tests
 
 - `mpfree-perform` unit tests cover:
@@ -68,7 +92,16 @@ The host calls `due` after every period while the transport rolls, with the next
   - scene follow actions ping-pong between two rows and carry their mutes;
   - Stop all stops every track on the bar line.
 - `mpfree-hello`'s `a_scene_plays_its_row_with_its_mutes_and_follows_on` runs the same through `TimeHost` with the pads.
-- `mpfree-time-ui` tests cover the scene buttons, Stop all, and redrawing the grid when a scene is cued.
+- `mpfree-time-ui` tests cover the scene buttons, Stop all, and redrawing the grid when a scene is cued. They also cover the morph bar's chips, crossfader and buttons, and redrawing only the bar when the crossfader moves.
+- `mpfree-perform/tests/morph.rs` runs the real mod engine. It checks:
+  - the morph at 0, halfway (a log cutoff halfway on its knob) and 1;
+  - a parameter only one row holds moving from where it was;
+  - snap back after a turn made while morphing;
+  - Keep;
+  - a reload keeping the first snapshot;
+  - saving a row (3 parameters and 8 macros);
+  - a turn written back into the nearer row;
+  - values for parameters the engine lacks being counted.
 
 ## Not yet
 
@@ -76,4 +109,4 @@ The host calls `due` after every period while the transport rolls, with the next
 - A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
-- The scene morph (T10) uses `Scene::values`.
+- The morph in the pad player (see above), and a Q-Link for the crossfader.

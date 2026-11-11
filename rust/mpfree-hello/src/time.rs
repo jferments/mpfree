@@ -46,7 +46,9 @@ use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Tak
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, Project, Track, SLOTS};
-use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
+use mpfree_time_ui::view::{
+    bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
+};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 use std::f32::consts::TAU;
@@ -258,6 +260,10 @@ pub struct TimeHost {
     /// Scenes and follow actions: cues the rows and chains clips and
     /// scenes on their bar lines.
     perform: Perform,
+    /// The morph bar's rows. The morph itself runs on the mod engine
+    /// (`mpfree_perform::SceneMorph`), which the pad player does not run
+    /// yet.
+    morph: MorphInfo,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -321,6 +327,7 @@ impl TimeHost {
             launches: Vec::new(),
             cues: Vec::new(),
             perform: Perform::default(),
+            morph: MorphInfo::default(),
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -672,6 +679,22 @@ impl TimeHost {
                 ))
             }
             TimeAction::Chip(_) => Ok(String::new()),
+            TimeAction::MorphRows { a, b } => {
+                self.morph.a = a.min(SLOTS - 1);
+                self.morph.b = b.min(SLOTS - 1);
+                self.changed = true;
+                Ok(format!(
+                    "morph: rows {} and {}",
+                    self.morph.a + 1,
+                    self.morph.b + 1
+                ))
+            }
+            TimeAction::Morph(_)
+            | TimeAction::SnapBack
+            | TimeAction::KeepMorph
+            | TimeAction::SaveScene(_) => {
+                Err("morph: the mod engine is not in the pad player yet".into())
+            }
         }
     }
 
@@ -1124,6 +1147,7 @@ impl TimeHost {
         st.cues = self.cues.clone();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
+        st.morph = self.morph;
         st
     }
 

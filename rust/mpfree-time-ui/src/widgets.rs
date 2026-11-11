@@ -1,6 +1,6 @@
 //! The widgets the time engine adds to mpfree-ui: the transport bar
-//! ([`TransportBar`]), the Clips launch grid ([`ClipGrid`]) and the takes
-//! list ([`TakeList`]). Like mpfree-ui's own widgets, each one only shows
+//! ([`TransportBar`]), the Clips launch grid ([`ClipGrid`]), the scene
+//! morph bar under it ([`MorphBar`]) and the takes list ([`TakeList`]). Like mpfree-ui's own widgets, each one only shows
 //! what the app put in its fields and reports touches; none of them knows
 //! about the transport, the clips or the audio thread.
 
@@ -746,6 +746,164 @@ impl Widget for ClipGrid {
     }
 }
 
+/// The scene morph under the grid: the rows on A and B (a tap on a chip's
+/// left half steps it down, on its right half up: `Step { index: 0 or 1,
+/// delta }`), the crossfader between them (`Value`, while the finger is
+/// down), and Snap back, Keep and Save (`Tab(0)`, `Tab(1)`, `Tab(2)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MorphBar {
+    /// The rows on A and B, shown 1-based.
+    pub a: usize,
+    pub b: usize,
+    /// The crossfader, 0 (A) to 1 (B).
+    pub pos: f32,
+    /// A morph is loaded: the crossfader moves the parameters.
+    pub on: bool,
+    /// Parameters the morph moves, for the label.
+    pub params: usize,
+}
+
+const CHIP_W: i32 = 96;
+const MORPH_BUTTONS: [(&str, i32); 3] = [("Snap back", 104), ("Keep", 72), ("Save", 84)];
+
+impl Default for MorphBar {
+    fn default() -> MorphBar {
+        MorphBar {
+            a: 0,
+            b: 1,
+            pos: 0.0,
+            on: false,
+            params: 0,
+        }
+    }
+}
+
+impl MorphBar {
+    pub fn new() -> MorphBar {
+        MorphBar::default()
+    }
+
+    /// The A chip, the crossfader, the B chip and the three buttons.
+    pub fn parts(r: Rect) -> (Rect, Rect, Rect, [Rect; 3]) {
+        let inner = r.inset_xy(14, 8);
+        let gap = 8;
+        let buttons_w: i32 = MORPH_BUTTONS.iter().map(|b| b.1 + gap).sum();
+        let (buttons, rest) = inner.take_right(buttons_w);
+        let mut x = buttons.x + gap;
+        let mut bs = [Rect::new(0, 0, 0, 0); 3];
+        for (i, (_, w)) in MORPH_BUTTONS.iter().enumerate() {
+            bs[i] = Rect::new(x, inner.y, *w, inner.h);
+            x += w + gap;
+        }
+        let (a, rest) = rest.take_left(CHIP_W);
+        let (b, rest) = rest.take_right(CHIP_W);
+        let fader = rest.inset_xy(16, 0);
+        (a, fader, b, bs)
+    }
+
+    /// The label of the Save button: the row the crossfader is nearer.
+    pub fn save_row(&self) -> usize {
+        if self.pos < 0.5 {
+            self.a
+        } else {
+            self.b
+        }
+    }
+}
+
+impl Widget for MorphBar {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(r.inset_xy(4, 2), 12, t.surface);
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        for (chip, side, row, near) in [
+            (a, "A", self.a, self.pos < 0.5),
+            (b, "B", self.b, self.pos >= 0.5),
+        ] {
+            cx.canvas.fill_round_rect(chip, 10, t.raised);
+            if self.on && near {
+                cx.canvas.stroke_round_rect(chip, 10, 2, t.accent);
+            }
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                chip,
+                Align::Center,
+                t.text,
+                &format!("‹  {side} {}  ›", row + 1),
+            );
+        }
+        // The crossfader: a track, the part from A filled while on, a knob.
+        let my = fader.y + fader.h / 2;
+        let track = Rect::new(fader.x, my - 3, fader.w, 6);
+        cx.canvas.fill_round_rect(track, 3, t.raised);
+        let x = fader.x + (self.pos.clamp(0.0, 1.0) * fader.w as f32).round() as i32;
+        let ink = if self.on { t.accent } else { t.text_faint };
+        if self.on {
+            cx.canvas
+                .fill_round_rect(Rect::new(fader.x, my - 3, x - fader.x, 6), 3, ink);
+        }
+        cx.canvas
+            .fill_round_rect(Rect::new(x - 9, fader.y + 4, 18, fader.h - 8), 6, ink);
+        let label = if self.on {
+            format!("Morph · {} parameters", self.params)
+        } else {
+            "Morph".to_string()
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(fader.x, fader.y - 2, fader.w, 16),
+            Align::Center,
+            t.text_dim,
+            &label,
+        );
+        for (i, br) in buttons.iter().enumerate() {
+            let live = self.on || i == 2;
+            cx.canvas
+                .fill_round_rect(*br, 10, if live { t.raised } else { t.surface });
+            let word = if i == 2 {
+                format!("Save {}", if self.pos < 0.5 { "A" } else { "B" })
+            } else {
+                MORPH_BUTTONS[i].0.to_string()
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                *br,
+                Align::Center,
+                if live { t.text } else { t.text_faint },
+                &word,
+            );
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        let slide = fader.inset_xy(-12, 0);
+        match phase {
+            Touch::Down => {
+                for (index, chip) in [a, b].iter().enumerate() {
+                    if chip.contains(x, y) {
+                        let delta = if x < chip.x + chip.w / 2 { -1 } else { 1 };
+                        return Some(EventKind::Step { index, delta });
+                    }
+                }
+                if let Some(i) = buttons.iter().position(|br| br.contains(x, y)) {
+                    return Some(EventKind::Tab(i));
+                }
+                slide.contains(x, y).then(|| {
+                    EventKind::Value(((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0))
+                })
+            }
+            Touch::Move if slide.inset_xy(0, -40).contains(x, y) => Some(EventKind::Value(
+                ((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0),
+            )),
+            _ => None,
+        }
+    }
+}
+
 fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let t = cx.theme.clone();
     if cell.state == CellState::Empty {
@@ -1141,6 +1299,44 @@ mod tests {
         assert!(g
             .cell_rect(r, 2, 15)
             .is_some_and(|c| c.bottom() <= r.bottom()));
+    }
+
+    #[test]
+    fn the_morph_bar_steps_rows_slides_and_has_three_buttons() {
+        let mut m = MorphBar::new();
+        let r = Rect::new(12, 680, 830, 64);
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        assert!(a.right() < fader.x && fader.right() < b.x && b.right() < buttons[0].x);
+        assert!(fader.w > 200, "{fader:?}");
+        assert_eq!(
+            m.touch(1, Touch::Down, a.x + 4, a.y + 4, r),
+            Some(EventKind::Step {
+                index: 0,
+                delta: -1
+            })
+        );
+        assert_eq!(
+            m.touch(1, Touch::Down, b.right() - 4, b.y + 4, r),
+            Some(EventKind::Step { index: 1, delta: 1 })
+        );
+        let mid = fader.x + fader.w / 2;
+        assert_eq!(
+            m.touch(1, Touch::Down, mid, fader.y + 10, r),
+            Some(EventKind::Value(0.5))
+        );
+        assert_eq!(
+            m.touch(1, Touch::Move, fader.right() + 5, fader.y + 10, r),
+            Some(EventKind::Value(1.0)),
+            "a drag past the end holds at B"
+        );
+        for (i, br) in buttons.iter().enumerate() {
+            assert_eq!(
+                m.touch(1, Touch::Down, br.x + 4, br.y + 4, r),
+                Some(EventKind::Tab(i))
+            );
+        }
+        m.pos = 0.7;
+        assert_eq!(m.save_row(), 1);
     }
 
     #[test]

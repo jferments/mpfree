@@ -24,8 +24,8 @@
 //! launches or stops at once.
 
 use crate::widgets::{
-    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, Run, TakeItem, TakeList,
-    TransportBar, GRID_COLS,
+    BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
+    TakeList, TransportBar, GRID_COLS,
 };
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
 use mpfree_seq::{Project, Speed, SLOTS};
@@ -40,13 +40,15 @@ pub const TRANSPORT: &str = "transport";
 pub const CLIPS: &str = "clips";
 pub const RECORD: &str = "record";
 pub const TAKES: &str = "takes";
+pub const MORPH: &str = "morph";
 /// The page's name, for the header tab.
 pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
 pub const BAR_SPEC: &str = "transport:44";
-/// The Clips page: the grid, and beside it the record settings over the takes.
+/// The Clips page: the grid over the scene morph, and beside them the record
+/// settings over the takes.
 pub const CLIPS_LAYOUT: &str =
-    "col(header:60, transport:44, row(clips:*, col(record:*, takes:240):430):*, hint:26)";
+    "col(header:60, transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):430):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
 /// The record settings, top to bottom.
@@ -224,6 +226,34 @@ pub struct TimeState {
     /// (`mpfree_perform::Perform`). The app sets them.
     pub scene_playing: Option<usize>,
     pub scene_cued: Option<usize>,
+    /// The scene morph. The app sets it.
+    pub morph: MorphInfo,
+}
+
+/// The scene morph as the screen shows it (`mpfree_perform::SceneMorph`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MorphInfo {
+    /// The rows on A and B.
+    pub a: usize,
+    pub b: usize,
+    /// The crossfader, 0 (A) to 1 (B).
+    pub pos: f32,
+    /// A morph is loaded: the rows' values are on A and B.
+    pub on: bool,
+    /// Parameters it moves.
+    pub params: usize,
+}
+
+impl Default for MorphInfo {
+    fn default() -> MorphInfo {
+        MorphInfo {
+            a: 0,
+            b: 1,
+            pos: 0.0,
+            on: false,
+            params: 0,
+        }
+    }
 }
 
 impl TimeState {
@@ -266,6 +296,7 @@ impl TimeState {
             capture: None,
             scene_playing: None,
             scene_cued: None,
+            morph: MorphInfo::default(),
         }
     }
 
@@ -325,6 +356,20 @@ pub enum TimeAction {
     LaunchScene(usize),
     /// Stop every track on the next bar line.
     StopAll,
+    /// Put these rows on the morph's A and B (loaded again if it is on).
+    MorphRows {
+        a: usize,
+        b: usize,
+    },
+    /// Move the crossfader, 0 (A) to 1 (B); it loads the rows first if the
+    /// morph is off.
+    Morph(f32),
+    /// Let go of the morph, every parameter back to where it was before.
+    SnapBack,
+    /// Let go of the morph, the parameters staying where it has them.
+    KeepMorph,
+    /// Store every parameter's value now in this row, for the morph.
+    SaveScene(usize),
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -433,6 +478,30 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             BarButton::Undo => TimeAction::Undo,
         }),
         (TRANSPORT, EventKind::Select(i)) => Some(TimeAction::Chip(*i)),
+        (MORPH, EventKind::Step { index, delta }) => {
+            let m = st.morph;
+            let step = |r: usize| {
+                (r as i64 + i64::from((*delta).signum())).rem_euclid(SLOTS as i64) as usize
+            };
+            Some(match index {
+                0 => TimeAction::MorphRows {
+                    a: step(m.a),
+                    b: m.b,
+                },
+                _ => TimeAction::MorphRows {
+                    a: m.a,
+                    b: step(m.b),
+                },
+            })
+        }
+        (MORPH, EventKind::Value(x)) => Some(TimeAction::Morph(*x)),
+        (MORPH, EventKind::Tab(0)) => st.morph.on.then_some(TimeAction::SnapBack),
+        (MORPH, EventKind::Tab(1)) => st.morph.on.then_some(TimeAction::KeepMorph),
+        (MORPH, EventKind::Tab(2)) => Some(TimeAction::SaveScene(if st.morph.pos < 0.5 {
+            st.morph.a
+        } else {
+            st.morph.b
+        })),
         (CLIPS, EventKind::Toggle(row)) => Some(if *row < SLOTS {
             TimeAction::LaunchScene(*row)
         } else {
@@ -776,6 +845,7 @@ impl TimePage {
         ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
         ui.add(RECORD, OptionList::new("Record"));
         ui.add(TAKES, TakeList::new("Takes"));
+        ui.add(MORPH, MorphBar::new());
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
         Ok(TimePage::default())
     }
@@ -851,6 +921,19 @@ impl TimePage {
                 g.first_track = self.first_track;
                 g.scene_playing = st.scene_playing;
                 g.scene_cued = st.scene_cued;
+            }
+        }
+        let m = st.morph;
+        let bar = MorphBar {
+            a: m.a,
+            b: m.b,
+            pos: m.pos,
+            on: m.on,
+            params: m.params,
+        };
+        if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
+            if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
+                *b = bar;
             }
         }
         let rows = record_rows(st);
@@ -956,7 +1039,16 @@ mod tests {
         let page = TimePage::add_to(&mut ui).unwrap();
         ui.show(CLIPS_PAGE).unwrap();
         assert_eq!(ui.rect_of(TRANSPORT).map(|r| (r.y, r.h)), Some((84, 44)));
-        assert!(page.visible_rows(&ui) >= 6, "{}", page.visible_rows(&ui));
+        // Five rows over the morph bar (the wheel scrolls the rest).
+        assert!(
+            page.visible_rows(&ui) >= 5,
+            "{} {:?}",
+            page.visible_rows(&ui),
+            ui.rect_of(CLIPS)
+        );
+        let morph = ui.rect_of(MORPH).unwrap();
+        assert_eq!(morph.h, 64);
+        assert!(morph.w >= 800, "{morph:?}");
         // Every record setting is in view at once (58 px a row).
         let record = ui.rect_of(RECORD).unwrap();
         assert!(
@@ -1032,6 +1124,48 @@ mod tests {
         assert_eq!(
             action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
             Some(TimeAction::StopAll)
+        );
+    }
+
+    #[test]
+    fn the_morph_bar_picks_rows_moves_and_lets_go() {
+        let mut st = state();
+        let morph = |k: EventKind, st: &TimeState| action(&ev(MORPH, k), st);
+        assert_eq!(
+            morph(
+                EventKind::Step {
+                    index: 0,
+                    delta: -1
+                },
+                &st
+            ),
+            Some(TimeAction::MorphRows { a: SLOTS - 1, b: 1 }),
+            "round to the last row"
+        );
+        assert_eq!(
+            morph(EventKind::Step { index: 1, delta: 1 }, &st),
+            Some(TimeAction::MorphRows { a: 0, b: 2 })
+        );
+        assert_eq!(
+            morph(EventKind::Value(0.3), &st),
+            Some(TimeAction::Morph(0.3))
+        );
+        assert_eq!(
+            morph(EventKind::Tab(0), &st),
+            None,
+            "nothing to snap back from"
+        );
+        assert_eq!(
+            morph(EventKind::Tab(2), &st),
+            Some(TimeAction::SaveScene(0))
+        );
+        st.morph.on = true;
+        st.morph.pos = 0.8;
+        assert_eq!(morph(EventKind::Tab(0), &st), Some(TimeAction::SnapBack));
+        assert_eq!(morph(EventKind::Tab(1), &st), Some(TimeAction::KeepMorph));
+        assert_eq!(
+            morph(EventKind::Tab(2), &st),
+            Some(TimeAction::SaveScene(1))
         );
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(2)), &st),
@@ -1471,6 +1605,13 @@ mod tests {
             ui.paint(&mut c),
             vec![ui.rect_of(CLIPS).unwrap()],
             "a scene cued: the grid"
+        );
+        st.morph.pos = 0.4;
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.paint(&mut c),
+            vec![ui.rect_of(MORPH).unwrap()],
+            "the crossfader moved: the morph bar"
         );
     }
 }
