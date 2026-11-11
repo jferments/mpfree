@@ -359,3 +359,86 @@ All major V4 analyses and firmware comparisons completed.
 
 This replaces endless undirected re-decompilation with testable
 questions and explicit hardware-proof gates.
+
+
+## Fifth owner ZIP (2026-11-11T192922Z-v5-3534429): Q111–Q148
+
+The owner-supplied incremental V5 archive had **30 indexed files**, all
+individually verified against the private ZIP's SHA-256 index. All three
+temporary Ghidra ELF imports completed (no target binaries executed).
+
+### Important new evidence and corrections
+
+- **Ghidra V5 ELF coverage was shallow in the actual application logic.**
+  Bootloader-signature: 39 recognized functions, most import stubs;
+  LoadPin: 38 recognized, most stubs; az01config: 52 recognized, most
+  stubs. Main logic for these stripped PIE executables was NOT fully
+  identified. This is a known class of Ghidra ARM ELF GOT/relative
+  relocation issue; do not describe this as 100% decompilation.
+- The **az01config** ELF includes a literal **program-fuses** command
+  (three Ghidra data references), along with eMMC path literals
+  for partitions 3, 4 and 11 and write/fsync/CRC32 imports.
+  Static evidence does not establish its arguments or precisely
+  which hardware resources it may program.
+  **Never execute az01config or program-fuses as a diagnostic.**
+- The standalone az01-bootloader-sig ELF contains signed-image
+  header diagnostics, eMMC partition 1/2/11 paths, RC4 and SHA256,
+  a 32-byte digest comparison, and an errx fatal-failure branch.
+  Whether the utility is invoked during ordinary boot remains
+  unproven.
+- LoadPin helper names /sys/kernel/security/loadpin/dm-verity,
+  /usr/lib/az0x/trusted-verity-digests and /dev/null, and imports
+  ioctl. This supports Linux userspace trustpoint configuration,
+  not silicon ROM signature enforcement.
+- V5 P1 graph: 213 recognized, 366 direct edges, 19 computed call
+  sites. P3: 1050 recognized, 2840 direct edges, 167 computed call
+  sites. Three P3 low-level decompilation failures remain.
+- SPL boot loop -> media load and indirect handoff are in the direct
+  call graph; Fastboot RAM completion -> bootm -> image loading is
+  also a direct call chain. Other dispatch relationships remain
+  unresolved by direct-call-only analysis; indirect calls/jump
+  tables may bridge those paths.
+
+### New question clusters
+
+| IDs | Focus | What V6 looks for |
+| --- | --- | --- |
+| Q111–Q116 | True silicon ROM, USB OTG wiring, SD/eMMC boot priority, extCSD and independent eMMC recovery | Differentiate BootROM from Fastboot; document hardware-only proof gaps |
+| Q117–Q121 | SPL entry, ARM/Thumb mode, media/DDR init, image checks, true second-stage branch | Backward/forward two-hop call graph and computed-call function ranking |
+| Q122–Q126 | Direct SD boot through stock U-Boot without modifying eMMC | Resolve boot scan, interactive U-Boot controls and temporary environment |
+| Q127–Q131 | Fastboot permission, getvar, RAM image type and memory overlap | Rank reachable Fastboot handlers, source/sink pseudocode and reset path |
+| Q132–Q139 | az01config program-fuses, partition writes, SHA/RC4 bootloader hash, LoadPin ioctl, invocation at boot | ELF32 ARM R_ARM_RELATIVE .text pointers, missing stripped-PIE main decompilation and service/config references |
+| Q140–Q144 | Firmware-upgrade resilience and long-term MPFree independence | Separate kexec-independent SD boot from true owner-controlled SPL and boot manager |
+| Q145–Q148 | Recovery fault model, observational tests, independent hardware restore rehearsal | Explicit no-100%-guarantee statement and verified external proof gates |
+
+The exact wording, evidence type and closure plan of every Q111–Q148
+question is machine-readable in **v6-static-evidence.json**, emitted
+by tools/mpc-one/offline-bootchain-v6-investigate.py.
+
+### V6 incremental investigation
+
+The recommended entry point is:
+
+    python3 tools/mpc-one/run_bootchain_v6_followup.py \
+      ~/mpfree-work/bootchain-wide-20261111T192922Z-v5-3534429.zip
+
+It reuses and SHA-validates the prior ZIP instead of rerunning every
+known P1/P3 decompilation, investigates the 186 recorded indirect call
+sites, analyzes command/callsite evidence in the private ELF disassembly,
+performs bounded read-only searching of the already extracted 3.10
+ext4 systemd/config files and derives code-pointer candidates from ARM
+PIE R_ARM_RELATIVE relocations. Where available, it attempts temporary
+Ghidra function recovery for the missing stripped ELF main/callbacks.
+All resulting artifacts are bundled in **ONE PRIVATE ZIP**, with raw
+Akai firmware and executables excluded.
+
+The complete proposed R01–R10 runtime protocol, recovery acceptance
+criteria and fault-model disclaimers are in
+[MPFree runtime and recovery research plan](mpfree-runtime-recovery-research-plan.md).
+
+**Never mistake fallback SD boot, ordinary U-Boot Fastboot, or the
+CONFIG_SPL_ROCKCHIP_BACK_TO_BROM normal handoff for a verified,
+bootloader-independent silicon USB recovery channel. The existing
+user-area eMMC backup may omit boot0, boot1, RPMB and hardware eFuse
+configuration. Even a validated restore procedure cannot guarantee
+recovery from physical failures or irreversible fuse programming.**
