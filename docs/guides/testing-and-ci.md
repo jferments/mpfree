@@ -28,7 +28,7 @@ filters, so the check always reports.
 | --- | --- | --- |
 | `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
-| `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, on a pinned toolchain | ~1 min |
+| `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
@@ -108,9 +108,11 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
   fix the new warnings, and merge that as one PR. Two lints are allowed
   workspace-wide: `needless_range_loop` (index loops are clearer in much of
   the DSP) and `should_implement_trait` (`mpfree-sampler`'s `next`).
-- **rustfmt** isn't enforced yet: 163 of 180 Rust files would change. The
-  one-time reformat is planned for a quiet moment on the merge desk, so open
-  PRs only need `cargo fmt` once. After that, CI checks it.
+- **rustfmt is enforced** by the `lint` job (`cargo fmt --check`, with the
+  pinned toolchain's rustfmt). Run `cargo fmt --manifest-path rust/Cargo.toml
+  --all` before pushing. Source checks that read Rust files (the workflow's
+  static checks, `test_hello_mpc.py`'s write audit) compare what the code
+  says, not how rustfmt wraps it.
 
 ## Merging
 
@@ -146,13 +148,12 @@ The engines are well covered: `mpfree-synth`, `-fx`, `-grain`, `-analysis`,
 
 In order. Each step is its own PR.
 
-1. **Gates** (this PR): clippy, the orphaned ROM tool tests, coverage, no
-   path filters. Then the required check on `main`, and rustfmt after the
-   reformat.
+1. **Gates** (done): clippy, the orphaned ROM tool tests, coverage, no path
+   filters, the no-allocation bench check (#92), and rustfmt after the
+   one-time reformat. Then the required check on `main`.
 2. **Raise the thin crates** in the table above. Done first: whole-program
    tests for render, session, device-smoke, screen-log and display. Next is
-   `mpfree-hello`, the program that actually runs on the MPC, once the
-   open PRs that change it have landed.
+   `mpfree-hello`, the program that actually runs on the MPC.
 3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
    audio and compare with stored references within a tolerance. Do the same
    for the Hello preview screens, which today are checked only as valid PNGs,
