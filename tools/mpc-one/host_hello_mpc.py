@@ -227,7 +227,11 @@ UPTIME = r"""R=''
 cat "$R/proc/uptime"
 """
 APP_LOG = r"""R=''
-journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager --no-hostname -n 5000 2>&1
+journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager --no-hostname -n 50000 2>&1
+"""
+# The touchscreen's interrupt count (read-only): shows whether the ILI2117 sends anything at all.
+TOUCH_IRQ = r"""R=''
+grep -i 'ili' "$R/proc/interrupts" 2>/dev/null || echo "no ILI2117 line in /proc/interrupts"
 """
 REPORT = r"""R=''
 cat "$R/run/mpfree-hello/hello.txt" 2>/dev/null || echo "(no report file)"
@@ -353,45 +357,56 @@ def check_controller(mpc, out):
 
 
 # The app step's phases: (title, what to do, the question afterwards). Each is started by Enter and
-# ended by Enter; the app's log lines from that time are shown.
+# ended by Enter; the app's log lines from that time are shown. A skipped phase loses nothing: the
+# summary at the end reads the whole session.
 APP_PHASES = (
     ("Button guide",
-     ["If the button guide is on the screen, press each button it asks for: MENU, NOTE REPEAT,",
-      "TAP TEMPO, - and +. Press STOP for one you cannot find. If the guide has gone already,",
-      "press Enter twice."],
+     ["If the button guide is on the screen, press each button it asks for: REC, OVERDUB, UNDO and",
+      "PLAY START. Press STOP for one you cannot find. If the guide has gone already, press Enter twice."],
      "Did each button you pressed show its number? Any you could not find?"),
-    ("Velocity, Full Level and Half Level",
-     ["Hit pad 1 three times softly, three times medium and three times hard.",
-      "Press FULL LEVEL (it should light) and hit pad 1 softly twice: both loud.",
-      "Press SHIFT + FULL LEVEL for Half Level and hit pad 1 softly twice: both medium.",
-      "Press FULL LEVEL twice: Full Level, then off (its light goes out)."],
-     "Did soft, medium and hard sound different? Did Full and Half Level sound right, and did FULL LEVEL light?"),
-    ("Note Repeat",
-     ["Hold NOTE REPEAT, then hold pad 1 for about 2 s: it repeats in 1/16 notes at 120 BPM.",
-      "Let go of pad 1, then of NOTE REPEAT."],
-     "Did pad 1 repeat evenly while both were held, and stop when you let go?"),
-    ("Latch",
-     ["Press SHIFT + NOTE REPEAT: Latch is on and NOTE REPEAT stays lit.",
-      "Hold pads 1 and 2 together for a moment, then let go: both keep repeating.",
-      "Hit pad 5 once: pads 1 and 2 stop and pad 5 repeats instead.",
-      "Press NOTE REPEAT: Latch turns off and everything stops."],
-     "Did the pads keep repeating after you let go, did pad 5 take over, and did NOTE REPEAT stop it all?"),
-    ("Menus",
-     ["Press MENU: the Play options open. Turn the wheel to pick a row; press + or - (or hold SHIFT",
-      "and turn the wheel) to change it. Set Note repeat rate to 1/8, then press MENU to close.",
-      "Hold NOTE REPEAT and a pad: it repeats half as fast. Let go.",
-      "Press SHIFT + MENU: Prefs opens. Set Pad velocity curve to Hard, press MENU to close, and",
-      "hit a pad softly a few times: quieter than before."],
-     "Did the menus open and close, and did the rate and the curve change what you heard?"),
-    ("Console, Debug and touch",
-     ["Press SHIFT + STOP: the system log fills the screen. Press SHIFT + STOP again to go back.",
-      "Tap the Debug tab, then the Play tab. Tap a few pads on the screen, a kit in the list,",
-      "and drag the level slider."],
-     "Did SHIFT + STOP show the log and go back? Which touches worked?"),
-    ("STOP",
-     ["Press SHIFT + NOTE REPEAT for Latch, hold pads 1 and 2, let go so they repeat, then press STOP."],
-     "Did STOP silence everything and turn Latch off?"),
+    ("Kits, Full Level and Half Level",
+     ["Hit pad 1 softly, medium and hard a few times: it should feel like round 5.",
+      "Press FULL LEVEL (it lights) and hit pad 1 softly twice: both loud. SHIFT + FULL LEVEL is",
+      "Half Level: soft hits come out medium. Press FULL LEVEL until its light goes out.",
+      "Hold a long sound, turn the wheel to the next kit: the sound finishes rather than cutting off.",
+      "Hit a few pads and press STOP while they ring: they fade out quickly, with no click."],
+     "Did Full and Half Level work and light FULL LEVEL? Did kit switching and STOP sound clean?"),
+    ("Grains",
+     ["Turn the wheel to the last kit, \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
+      "pads 1-4 get denser, 5-8 longer grains, 9-12 move where they read, 13-16 rise up to an octave.",
+      "Let go: it fades out. Then hold NOTE REPEAT and 8 pads together for about 10 s, and let go.",
+      "Turn the wheel back to kit 1."],
+     "Did the grains respond to pressure and fade out? Any crackles or dropouts in the 8-pad test?"),
+    ("Note Repeat and the arp",
+     ["Hold NOTE REPEAT: the quick band shows the rates and Latch. While holding it, - / + switch",
+      "Repeat, Arp and Pattern, the wheel changes the rate, order or pattern, and Q-Links 1-4 set",
+      "rate, gate, swing and octaves. Hold a few pads to hear each mode. SHIFT + NOTE REPEAT is Latch.",
+      "NOTE REPEAT + MENU opens the Arp panel: - / + walk Direct, Repeat, Arp and Pattern, and the",
+      "pads play through it. NOTE REPEAT + MENU again closes it. STOP silences and unlatches."],
+     "Did the quick band and the Arp panel show up and change what the pads played?"),
+    ("Looper: record, overdub and undo clips",
+     ["Press PLAY: the transport bar counts bars and beats. Press REC, play a short beat on the pads",
+      "for a bar or two, and press REC again: the take loops. Press OVERDUB (it switches Overdub and",
+      "Replace), REC, and add more hits on the next pass; REC again. UNDO takes the last take back,",
+      "SHIFT + UNDO puts it back. Tap the Clips tab: + makes a 2-bar clip and records into it, and",
+      "tapping a clip launches or stops it on the next bar. PLAY START plays from bar 1. STOP stops."],
+     "Did recording, overdub, undo and the clips loop in time? Anything out of time or lost?"),
+    ("Touch lab",
+     ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch lab, and press +.",
+      "Follow the screen through all 9 steps (Start, a countdown, then do what it says; Next after",
+      "each), about 3 minutes. Then press Exit at the top right."],
+     "Did the Touch lab open, and did the steps see your touches?"),
+    ("Menus, console and STOP",
+     ["Press MENU (the page's options) and MENU again to close. SHIFT + STOP shows the system log;",
+      "SHIFT + STOP again goes back. Tap a few pads on the screen and a kit in the list.",
+      "Last: SHIFT + NOTE REPEAT, hold pads 1 and 2, let go so they repeat, then press STOP."],
+     "Did the menus, the console and the screen pads work, and did STOP silence everything?"),
 )
+# The session summary at the end of the app step: every line that starts with one of these, from
+# power-on to the end (the last two status lines only).
+SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "pad level: ",
+                    "kit ", "Latch ", "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ",
+                    "time: ", "tempo ", "touch-lab-open", "touch-lab: ", "touch-lab-exit", "STOP: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
 SHOWN_PER_PHASE = 60
@@ -479,6 +494,8 @@ def app_check(mpc, out, n, total):
         raise Stop("stopped by you")
     if answer == "skip":
         return
+    touch_interrupts(mpc, out, "at the start")
+    out.say("  (s skips a phase. You can also play freely: the summary at the end reads the whole session.)")
     out.say("\n  Start-up: everything the app wrote since power-on")
     summarize(out, app_lines(mpc, 0.0))
     note(out, "Did the loading screen show over the galaxy with a progress bar and messages, then the pad player, "
@@ -503,8 +520,33 @@ def app_check(mpc, out, n, total):
         if done == "quit":
             raise Stop("stopped by you")
         note(out, question)
-    out.say("\n  The app's latest status (every 30 s: hits, underruns, timing, the note engine's dropped events):")
-    statuses = [m for _, m in app_lines(mpc, 0.0) if m.startswith(("status: ", "button guide done: "))]
+    session_summary(mpc, out)
+
+
+def touch_interrupts(mpc, out, when):
+    rc, text = mpc.run(TOUCH_IRQ, test=True)
+    for line in (text.strip() or f"(no answer, exit code {rc})").splitlines()[:4]:
+        out.say(f"  touch interrupts {when}: {' '.join(line.split())}")
+
+
+def session_summary(mpc, out):
+    """What the whole session showed, so a phase that was skipped or played freely still counts."""
+    lines = app_lines(mpc, 0.0)
+    out.say("\n  Session summary (the whole run since power-on; every line is in the report):")
+    picked = [m for _, m in lines if m.startswith(SUMMARY_PREFIXES)]
+    shown = 150
+    for message in picked[:shown]:
+        out.say(f"    {message}")
+    if len(picked) > shown:
+        out.say(f"    ... and {len(picked) - shown} more")
+    for _, message in lines:
+        log_only(out, f"      | {message}")
+    hits = sum(1 for _, m in lines if re.search(r"= pad \d+ down, velocity \d+$", m))
+    buttons = sorted({int(b) for _, m in lines for b in re.findall(r"= button (\d+) pressed$", m)})
+    out.say(f"    pad hits from the controller: {hits}; buttons pressed: {' '.join(map(str, buttons)) or 'none'}")
+    touch_interrupts(mpc, out, "now")
+    out.say("\n  The app's latest status (every 30 s: hits, underruns, timing, voices, the engines' counters):")
+    statuses = [m for _, m in lines if m.startswith("status: ")]
     for message in statuses[-2:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
         out.say(f"    {message}")
 
