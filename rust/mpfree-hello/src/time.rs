@@ -886,7 +886,7 @@ impl TimeHost {
                 Event::AllOff => pads.stop_all(),
                 // Parameter locks need the mod resolver (mpfree-mod), which
                 // the pad player does not run yet.
-                Event::Lock { .. } | Event::Unlock { .. } => {}
+                Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => {}
             }
         }
         self.recorder.process(&self.view, &self.block);

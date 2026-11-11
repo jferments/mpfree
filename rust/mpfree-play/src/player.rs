@@ -85,6 +85,7 @@
 use std::ops::Range;
 
 use mpfree_param::ParamAddr;
+use mpfree_seq::mpfree_moves::Out as MoveOut;
 use mpfree_seq::{Cond, DestId, Lock, Note, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
@@ -97,8 +98,8 @@ pub const MAX_ACTIVE: usize = 256;
 pub const MAX_STARTS: usize = 256;
 /// Notes replace recording can erase in one period.
 pub const MAX_ERASED: usize = 256;
-/// Parameter locks starting in one span, all tracks.
-pub const MAX_LOCK_STARTS: usize = 256;
+/// Parameter locks and move values starting in one span, all tracks.
+pub const MAX_LOCK_STARTS: usize = 1024;
 /// Parameter locks held at once, all tracks.
 pub const MAX_LOCKED: usize = 256;
 /// Ratchet hits waiting for their tick, all tracks.
@@ -146,7 +147,16 @@ pub enum Event {
         addr: ParamAddr,
         value: f32,
     },
-    /// The lock on `addr` ends: the parameter goes back to its own value.
+    /// A recorded move (an FX lane, `mpfree-moves`) sets `addr` to `value`
+    /// (in the parameter's own units) until the next value, a step's
+    /// `Lock` (which wins for its step) or [`Event::Unlock`]. For the
+    /// resolver in `mpfree-mod` (`ModEvent::Lane`).
+    Lane {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// The lock or move on `addr` ends: the parameter goes back to its own
+    /// value.
     Unlock {
         addr: ParamAddr,
     },
@@ -192,6 +202,8 @@ pub struct Stats {
     /// Parameter locks sent (each lock, not each unlock). Locks a full
     /// table left out count in `dropped`.
     pub locks: u64,
+    /// Move values sent (`Event::Lane`).
+    pub lanes: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -248,10 +260,23 @@ const NO_HIT: Hit = Hit {
     off: 0,
 };
 
-/// A parameter lock to send in a span, or (`addr` None) every lock of
-/// `track` to end: its clip stopped or switched, or it went quiet.
+/// What a [`LockStart`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockKind {
+    /// A step's parameter lock.
+    Step,
+    /// A move's value (`value`).
+    Lane,
+    /// A move lets its parameter go.
+    LaneEnd,
+}
+
+/// A parameter lock or move value to send in a span, or (`addr` None)
+/// every lock and move of `track` to end: its clip stopped or switched, or
+/// it went quiet.
 #[derive(Clone, Copy, Debug)]
 struct LockStart {
+    kind: LockKind,
     tick: Tick,
     track: u16,
     dest: DestId,
@@ -264,8 +289,10 @@ struct LockStart {
     row: Option<u8>,
 }
 
-/// A parameter lock held: since `at`, until a note of `track` (of the
-/// pad `scope`, for a pad's parameter) with no lock on its own tick.
+/// A parameter held, one entry a parameter. A step's lock: since `at`,
+/// until a note of `track` (of the pad `scope`, for a pad's parameter)
+/// with no lock on its own tick. A move (`lane`): at `value`, until the
+/// move lets go, a step's lock takes over, or everything ends.
 #[derive(Clone, Copy, Debug)]
 struct Held {
     track: u16,
@@ -273,10 +300,28 @@ struct Held {
     addr: ParamAddr,
     scope: Option<u8>,
     at: Tick,
+    /// Held by a move rather than a step's lock.
+    lane: bool,
+    /// The move's value, while `lane`.
+    value: f32,
+    /// A step's lock holding a parameter a move is also moving: the
+    /// move's value now, to go back to when the lock ends.
+    under: Option<f32>,
+}
+
+/// Where a track's moves played up to in the last span: on clip tick `to`
+/// of pass `pass` of the clip in `slot` from `origin`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MovesPos {
+    slot: usize,
+    origin: Tick,
+    pass: i64,
+    to: f64,
 }
 
 const NO_ADDR: ParamAddr = ParamAddr::new(mpfree_param::Owner::Macro(0), 0);
 const NO_LOCK_START: LockStart = LockStart {
+    kind: LockKind::Step,
     tick: 0,
     track: 0,
     dest: 0,
@@ -291,6 +336,9 @@ const NO_HELD: Held = Held {
     addr: NO_ADDR,
     scope: None,
     at: 0,
+    lane: false,
+    value: 0.0,
+    under: None,
 };
 
 const NO_SOUND: Sounding = Sounding {
@@ -356,6 +404,10 @@ pub struct Player {
     n_fill_changes: usize,
     /// This span has a note left out (so some locks may be too).
     left_out: bool,
+    /// Where each track's moves played up to, to tell a clip that goes on
+    /// from one that starts, jumps or comes back (which first chases its
+    /// moves' state).
+    moves_pos: [Option<MovesPos>; MAX_TRACKS],
 }
 
 const NO_ERASED_LOCK: ErasedLock = ErasedLock {
@@ -427,6 +479,7 @@ impl Player {
             fill_changes: [(0, false); MAX_FILL_CHANGES],
             n_fill_changes: 0,
             left_out: false,
+            moves_pos: [None; MAX_TRACKS],
         }
     }
 
@@ -543,7 +596,8 @@ impl Player {
         match m.mark {
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => {
                 self.end_all(m.offset, m.frame, out);
-                self.unlock_where(m.offset, m.frame, out, |_| true);
+                self.unlock_where(m.offset, m.frame, out, false, |_| true);
+                self.moves_pos = [None; MAX_TRACKS];
                 // A loop jump keeps the last results, so a PRE chain
                 // carries round the loop.
                 if !matches!(m.mark, Mark::Looped { .. }) {
@@ -552,7 +606,8 @@ impl Player {
             }
             Mark::Panic => {
                 self.end_all(m.offset, m.frame, out);
-                self.unlock_where(m.offset, m.frame, out, |_| true);
+                self.unlock_where(m.offset, m.frame, out, false, |_| true);
+                self.moves_pos = [None; MAX_TRACKS];
                 out.send(Out {
                     offset: m.offset,
                     frame: m.frame,
@@ -618,6 +673,7 @@ impl Player {
                     self.end_locks(ticks.start, i as u16, track.dest);
                 }
                 self.cut_hits(i as u16, ticks.start);
+                self.moves_pos[i] = None;
             }
             if let Some((clip, origin, start)) = playing {
                 if !(track.mute && replace.is_none()) {
@@ -633,6 +689,12 @@ impl Player {
                         !track.mute,
                         switch,
                     );
+                }
+                // The clip's moves after its locks: a step's lock on the
+                // same tick takes the parameter first, and the move's value
+                // waits under it.
+                if !track.mute {
+                    self.collect_moves(clip, origin, i, track.dest, &before);
                 }
             }
             let Some(at) = switch else { continue };
@@ -681,6 +743,7 @@ impl Player {
                     true,
                     None,
                 );
+                self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -744,10 +807,11 @@ impl Player {
                 self.stats.dropped += 1;
                 continue;
             }
-            // The track's locks without a lock on this note's tick end.
+            // The track's locks without a lock on this note's tick end (a
+            // move under one takes its parameter back). Moves go on.
             let (track, note, tick) = (s.track, s.note, s.tick);
-            self.unlock_where(offset, frame, out, |h| {
-                h.track == track && h.at != tick && h.scope.is_none_or(|p| p == note)
+            self.unlock_where(offset, frame, out, true, |h| {
+                !h.lane && h.track == track && h.at != tick && h.scope.is_none_or(|p| p == note)
             });
             out.send(Out {
                 offset,
@@ -827,7 +891,7 @@ impl Player {
     /// any row for a whole-step lock) plays if one of those notes does. A
     /// trigless lock, with no such note, always plays.
     fn lock_plays(&self, l: &LockStart, from: usize) -> bool {
-        if l.addr.is_none() || !self.left_out {
+        if l.kind != LockKind::Step || l.addr.is_none() || !self.left_out {
             return true;
         }
         let mut notes = self.starts[from..self.n_starts]
@@ -972,6 +1036,7 @@ impl Player {
     /// Queue the end of every lock `track` holds, on `tick`.
     fn end_locks(&mut self, tick: Tick, track: u16, dest: DestId) {
         self.push_lock(LockStart {
+            kind: LockKind::Step,
             tick,
             track,
             dest,
@@ -991,71 +1056,254 @@ impl Player {
         self.n_lock_starts += 1;
     }
 
-    /// Send a lock and hold it, or end a track's locks.
+    /// Send a lock or a move's value and hold its parameter, let a move
+    /// go, or end a track's locks and moves. One entry a parameter: a
+    /// step's lock beats a move on its step (the move's value waits under
+    /// it), and a move takes the parameter again when the lock ends.
     fn lock(&mut self, l: LockStart, span: &Span, out: &mut impl Sink) {
         let (offset, frame) = place(span, l.tick);
         let Some(addr) = l.addr else {
-            self.unlock_where(offset, frame, out, |h| h.track == l.track);
+            self.unlock_where(offset, frame, out, false, |h| h.track == l.track);
             return;
         };
-        let held = self.held[..self.n_held]
-            .iter()
-            .position(|h| h.track == l.track && h.addr == addr);
-        match held {
-            Some(j) => self.held[j].at = l.tick,
-            None if self.n_held == MAX_LOCKED => {
-                self.stats.dropped += 1;
-                return;
-            }
-            None => {
-                self.held[self.n_held] = Held {
-                    track: l.track,
-                    dest: l.dest,
-                    addr,
-                    scope: l.scope,
-                    at: l.tick,
-                };
-                self.n_held += 1;
-            }
-        }
-        out.send(Out {
+        let held = self.held[..self.n_held].iter().position(|h| h.addr == addr);
+        let at = |event| Out {
             offset,
             frame,
             track: l.track,
             dest: l.dest,
-            event: Event::Lock {
-                addr,
-                value: l.value,
+            event,
+        };
+        match l.kind {
+            LockKind::Step => {
+                match held {
+                    Some(j) => {
+                        let h = &mut self.held[j];
+                        if h.lane {
+                            h.under = Some(h.value);
+                            h.lane = false;
+                        }
+                        (h.track, h.dest, h.scope, h.at) = (l.track, l.dest, l.scope, l.tick);
+                    }
+                    None if self.n_held == MAX_LOCKED => {
+                        self.stats.dropped += 1;
+                        return;
+                    }
+                    None => {
+                        self.held[self.n_held] = Held {
+                            track: l.track,
+                            dest: l.dest,
+                            addr,
+                            scope: l.scope,
+                            at: l.tick,
+                            ..NO_HELD
+                        };
+                        self.n_held += 1;
+                    }
+                }
+                out.send(at(Event::Lock {
+                    addr,
+                    value: l.value,
+                }));
+                self.stats.locks += 1;
+            }
+            LockKind::Lane => {
+                match held {
+                    // A step's lock holds it: the move waits under it.
+                    Some(j) if !self.held[j].lane => {
+                        self.held[j].under = Some(l.value);
+                        return;
+                    }
+                    Some(j) => {
+                        let h = &mut self.held[j];
+                        // Already there (a chase and its first point, or a
+                        // flat stretch): nothing to send.
+                        if h.value.to_bits() == l.value.to_bits() {
+                            return;
+                        }
+                        (h.track, h.dest, h.value) = (l.track, l.dest, l.value);
+                    }
+                    None if self.n_held == MAX_LOCKED => {
+                        self.stats.dropped += 1;
+                        return;
+                    }
+                    None => {
+                        self.held[self.n_held] = Held {
+                            track: l.track,
+                            dest: l.dest,
+                            addr,
+                            at: l.tick,
+                            lane: true,
+                            value: l.value,
+                            ..NO_HELD
+                        };
+                        self.n_held += 1;
+                    }
+                }
+                out.send(at(Event::Lane {
+                    addr,
+                    value: l.value,
+                }));
+                self.stats.lanes += 1;
+            }
+            LockKind::LaneEnd => match held {
+                Some(j) if self.held[j].lane => {
+                    let h = self.held[j];
+                    self.held.copy_within(j + 1..self.n_held, j);
+                    self.n_held -= 1;
+                    out.send(Out {
+                        offset,
+                        frame,
+                        track: h.track,
+                        dest: h.dest,
+                        event: Event::Unlock { addr },
+                    });
+                }
+                // Under a step's lock: when it ends, the parameter is free.
+                Some(j) => self.held[j].under = None,
+                None => {}
             },
-        });
-        self.stats.locks += 1;
+        }
     }
 
-    /// Unlock the held locks `f` picks, in the order they were locked.
+    /// End the held locks and moves `f` picks, in the order they were
+    /// held. With `hand_back`, a lock with a move under it gives the
+    /// parameter back to the move (its value, not an unlock).
     fn unlock_where(
         &mut self,
         offset: u32,
         frame: u64,
         out: &mut impl Sink,
+        hand_back: bool,
         f: impl Fn(&Held) -> bool,
     ) {
         let mut kept = 0;
         for j in 0..self.n_held {
-            let h = self.held[j];
-            if f(&h) {
-                out.send(Out {
+            let mut h = self.held[j];
+            if !f(&h) {
+                self.held[kept] = h;
+                kept += 1;
+                continue;
+            }
+            match h.under.filter(|_| hand_back) {
+                Some(value) => {
+                    out.send(Out {
+                        offset,
+                        frame,
+                        track: h.track,
+                        dest: h.dest,
+                        event: Event::Lane {
+                            addr: h.addr,
+                            value,
+                        },
+                    });
+                    self.stats.lanes += 1;
+                    (h.lane, h.value, h.under) = (true, value, None);
+                    self.held[kept] = h;
+                    kept += 1;
+                }
+                None => out.send(Out {
                     offset,
                     frame,
                     track: h.track,
                     dest: h.dest,
                     event: Event::Unlock { addr: h.addr },
-                });
-            } else {
-                self.held[kept] = h;
-                kept += 1;
+                }),
             }
         }
         self.n_held = kept;
+    }
+
+    /// The moves of `clip` (from `origin`) due on `ticks`: each lane's
+    /// values on the clip's own ticks of each pass, on the song tick each
+    /// rounds to. When the clip did not just play up to the first of them
+    /// (it starts, comes back, or the song jumped), every lane's state
+    /// there comes first.
+    fn collect_moves(
+        &mut self,
+        clip: &ClipView,
+        origin: Tick,
+        track: usize,
+        dest: DestId,
+        ticks: &Range<Tick>,
+    ) {
+        if clip.moves.is_empty() || clip.song_len <= 0.0 || ticks.is_empty() {
+            if let Some(p) = self.moves_pos.get_mut(track) {
+                *p = None;
+            }
+            return;
+        }
+        let len = clip.length as f64;
+        // A value on song tick x sounds on x rounded half up: these bounds
+        // put each in exactly one span, however the periods fall.
+        let lo = ticks.start as f64 - 0.5;
+        let hi = ticks.end as f64 - 0.5;
+        let o = origin as f64;
+        let first = ((lo - o) / clip.song_len).floor().max(0.0);
+        let last = ((hi - o) / clip.song_len).floor();
+        let (tr, t8) = (track as u16, track as u8);
+        let mut checked = false;
+        let mut pass = first;
+        while pass <= last {
+            let start = o + pass * clip.song_len;
+            let from = clip.speed.to_clip(lo - start).max(0.0);
+            let to = clip.speed.to_clip(hi - start).min(len);
+            let p = pass as i64;
+            if from < to {
+                if !checked {
+                    checked = true;
+                    let goes_on = self
+                        .moves_pos
+                        .get(track)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|m| {
+                            m.slot == clip.slot
+                                && m.origin == origin
+                                && ((m.pass == p && m.to == from)
+                                    || (m.pass + 1 == p && m.to >= len && from == 0.0))
+                        });
+                    if !goes_on {
+                        // The state on the first tick this span plays.
+                        let tick = ticks.start.max(half_up(start));
+                        let at = clip.speed.to_clip(tick as f64 - start).clamp(0.0, len);
+                        clip.moves.chase(at, |target, o| {
+                            self.push_lane(tick, tr, dest, target.on(t8), o);
+                        });
+                    }
+                }
+                clip.moves.play(from, to, |t, target, o| {
+                    let tick = half_up(start + clip.speed.to_song(t));
+                    self.push_lane(tick.max(ticks.start), tr, dest, target.on(t8), o);
+                });
+                if let Some(m) = self.moves_pos.get_mut(track) {
+                    *m = Some(MovesPos {
+                        slot: clip.slot,
+                        origin,
+                        pass: p,
+                        to,
+                    });
+                }
+            }
+            pass += 1.0;
+        }
+    }
+
+    fn push_lane(&mut self, tick: Tick, track: u16, dest: DestId, addr: ParamAddr, o: MoveOut) {
+        let (kind, value) = match o {
+            MoveOut::Value(v) => (LockKind::Lane, v),
+            MoveOut::End => (LockKind::LaneEnd, 0.0),
+        };
+        self.push_lock(LockStart {
+            kind,
+            tick,
+            track,
+            dest,
+            addr: Some(addr),
+            value,
+            scope: None,
+            row: None,
+        });
     }
 
     /// Start or end the replace pass for this span.
@@ -1211,6 +1459,7 @@ impl Player {
                         }
                     } else {
                         self.push_lock(LockStart {
+                            kind: LockKind::Step,
                             tick,
                             track,
                             dest,
@@ -1282,6 +1531,13 @@ fn mix(x: u64) -> u64 {
 }
 
 /// Offset in the period and absolute frame of a tick in a span.
+/// The song tick `x` sounds on: rounded half up, also below zero (where
+/// `f64::round` would round half down), so it matches the half-open
+/// bounds a span is cut on.
+fn half_up(x: f64) -> Tick {
+    (x + 0.5).floor() as Tick
+}
+
 fn place(span: &Span, tick: Tick) -> (u32, u64) {
     let frame = span
         .frame_of(tick as f64)

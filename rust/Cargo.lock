@@ -648,6 +648,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-moves",
  "mpfree-param",
  "mpfree-transport",
 ]

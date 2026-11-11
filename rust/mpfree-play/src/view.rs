@@ -22,6 +22,7 @@
 use std::ops::Range;
 
 use mpfree_param::RelAddr;
+use mpfree_seq::mpfree_moves::Moves;
 use mpfree_seq::{DestId, Lock, ModelError, Note, Project, Quantise, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{ceil_to, Swing, Tick};
 
@@ -153,6 +154,8 @@ pub(crate) struct ClipView {
     pub notes: Vec<NoteView>,
     /// Sorted by `local`; equal ones in the order the clip holds them.
     pub locks: Vec<LockView>,
+    /// The clip's moves, on its own ticks (not quantised or swung).
+    pub moves: Moves,
 }
 
 impl ClipView {
@@ -481,6 +484,7 @@ fn clip_view(
         swing: clip.swing.or(t.swing),
         notes: Vec::new(),
         locks: Vec::new(),
+        moves: clip.moves.clone(),
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
