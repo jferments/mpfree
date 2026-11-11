@@ -58,6 +58,17 @@ class OfflineArtifactsWideTests(unittest.TestCase):
         self.assertTrue(parsed["header_crc32_valid"])
         self.assertTrue(parsed["payload_crc32_valid"])
 
+    def test_embedded_environment_candidate_is_not_assumed_runtime(self):
+        image, body = self.make_image()
+        raw = bytearray(image)
+        env = b"bootcmd=run az01_bootcmd\0boot_targets=mmc0 mmc1\0\0"
+        raw[64+300:64+300+len(env)] = env
+        compiled = audit.embedded_uboot_environment_candidates(
+            bytes(raw), {"boot_targets": "mmc0 mmc1"})
+        self.assertIn("candidate", compiled["status"])
+        self.assertTrue(
+            compiled["saved_comparison"]["boot_targets"]["same_as_saved"])
+
     def test_uimage_corrupted_body_fails_integrity_check(self):
         image, body = self.make_image()
         damaged = bytearray(image)
