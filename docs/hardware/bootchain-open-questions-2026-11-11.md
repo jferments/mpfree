@@ -180,3 +180,96 @@ prove it.
 
 Never intentionally erase eMMC, short pins, program OTP, flash bootloader,
 modify P2 environment or request true MaskROM as part of this audit.
+
+
+## Third owner ZIP: updated findings and Q65–Q88
+
+Input: bootchain-wide-20261111T125321Z_3403565.zip (31 ZIP entries,
+all major V3 Ghidra passes and the firmware-3.10 comparison succeeded).
+This appendix supersedes the older "3.10 comparison skipped" note.
+
+- P1 has 213 recognized functions, 86 V3 decompilations, 127
+  recognized functions without V3 pseudocode. P3 has 1,050 recognized
+  functions, 240 V3 decompilations and **810 without V3 pseudocode**.
+- U-Boot embeds a **35,213-byte DTB at payload offset 328436 (0x502F4)**.
+  Its rockchip,pctl-timing, rockchip,phy-timing, rockchip,sdram-params
+  arrays match the SPL's 3,239-byte embedded DTB exactly.
+- U-Boot DTB aliases identify mmc0 -> ff0f0000 (non-removable eMMC)
+  and mmc1 -> ff0c0000 (removable SD). The 3.10 Linux DTB independently
+  supports that physical distinction. Boot targets mmc0 then mmc1
+  make SD *fallback*, not a user-controlled primary boot mode.
+- The previous extracted 3.10 rootfs is present and was located at
+  ~/mpfree-work/akai-unpacked-20261110T024913Z-1hjja3_r/rootfs.img,
+  size 451468288, containing zImage-6.18.44-az01-2026-08-10-rt6.
+- SHA differences occurred in boot.scr.uimg, two target DTBs,
+  az01-update, az01-launch-MPC, az01-script-runner and
+  libaz01-prog.so.1.3; fw_env.config did not change.
+  **Executable boot script commands match** after stripping a
+  trailing newline; a changed uImage header is not evidence of
+  changed boot commands.
+- 3.10 az01-bootloader-sig references MMC partitions 1, 2 and 11,
+  SHA256_Update, and primary/fallback bootloader hash mismatch.
+  Presence in 3.6 was NOT checked by the earlier script and remains
+  unknown until the V4 cross-version binary audit.
+- The 3.10 libaz01-prog contains names for write_bootloader,
+  commit_bootloader, verify_image, verify_signature and OpenSSL EVP
+  operations. These describe possible updater behavior, NOT proof
+  that the official 3.10 rootfs-only update rewrites boot partitions.
+- The 3.10 rootfs includes a LoadPin/verity trustpoint configuration
+  service. Linux security policy is distinct from silicon BootROM
+  signature enforcement.
+- Fastboot boot completion invokes bootm and then CPU reset if
+  bootm returns. Permission global 0x0014d690 has only three
+  Ghidra references in the current P3 report; its runtime state
+  has not been observed.
+
+### New prioritized questions
+
+| ID | Question | Next evidence source / closure criterion |
+| --- | --- | --- |
+| Q65 | Why do boot.scr.uimg hashes differ when commands match? | V4 decode U-Boot script multi-image table and compare normalized script hashes |
+| Q66 | Which bytes/partitions are hashed by az01-bootloader-sig? | ARM ELF disassembly of actual referenced paths and read offsets |
+| Q67 | Does a mismatched primary/fallback loader only warn, halt boot, or trigger recovery? | Trace post-hash branch and executable callers |
+| Q68 | What role does eMMC partition 11 play in signing/recovery? | Trace bootloader-sig and az01config; compare physical partition map |
+| Q69 | Did 3.6 already have az01-bootloader-sig and invoke it at startup? | V4 independent baseline-P6 vs 3.10 file/service inspection |
+| Q70 | Does image signature verification run on every update? | libaz01-prog signature and image verification call graph, image format checks |
+| Q71 | Can an official update change P1/P3 despite the current update being rootfs-only? | Trace write_bootloader/commit_bootloader call paths, partition record constraints |
+| Q72 | Does the updater enforce rollback version or fuse policy? | Updater executable disassembly, signature checking and version checks |
+| Q73 | How do LoadPin/verity trustpoints get initialized? | Inspect service executable and kernel config; distinguish post-boot policy |
+| Q74 | Which 3.10 DTB properties *actually* changed? | Structural node/property diff of target acva and acva-c DTBs |
+| Q75 | Are early U-Boot MMC aliases consistent with Linux SD/eMMC controllers? | Cross-stage DTB and board initialization; runtime enumeration later |
+| Q76 | Is U-Boot embedded DTB specific to this MPC One PCB revision? | Trace board revision selection against DTB compatible and fdtfile |
+| Q77 | Are 2016 U-Boot bootz and 3.10 kernel/FDT ABI compatible? | Compare boot script, image header, bootz init, kernel/DTB runtime success |
+| Q78 | Can transient boot selection force mmc1 despite successful eMMC boot? | U-Boot console, environment, recovery ADC and boot order paths |
+| Q79 | Can SD boot use standard boot.scr/bootz without modifying eMMC? | Prove nonpersistent selection and safe kernel/FDT RAM layout |
+| Q80 | What does scriptaddr zero actually mean on this build? | Trace env script loader and U-Boot relocation; prove safe script buffer |
+| Q81 | Does a failed Fastboot RAM boot always reset rather than resume USB? | Fastboot boot-done reset path; cautious authorized runtime test later |
+| Q82 | Which of 810 previously undetailed P3 functions close outstanding boot/security gaps? | V4 recognized-function coverage pass, prioritized by callgraph centrality |
+| Q83 | Where do SPL MMC callback pointers and U-Boot indirect handlers lead? | V4 computed-call instruction windows and typed vtable data |
+| Q84 | Is there a credible software path to *genuine silicon* MaskROM? | Distinguish PMU loader flags from ROM entry, then true ROM enumeration |
+| Q85 | Which stage reads secure vs ordinary eFuse registers? | Inspect ffB10000 vs ffB40000 static accesses; hardware read still required |
+| Q86 | Can Linux verity/loadpin obstruct MPFree userspace or kernel boot? | Kernel config, systemd service and mount-path dependency tracing |
+| Q87 | What is the maximum demonstrably non-overlapping RAM boot image? | Reconstruct relocation/BSS/stack/USB download, not arbitrary 1.75GiB limit |
+| Q88 | Which remaining questions now require hardware observation? | Evidence ledger: ROM enumeration, USB wiring, fuse status, owner SPL acceptance |
+
+### V4 run additions
+
+MPFreeBootChainCoverageV4.py consumes each SHA-verified V3 graph and
+decompiles **all previously undetailed Ghidra-recognized functions**:
+127 P1 and 810 P3 in this owner's latest report. Indirect call sites
+also include nearby raw ARM/Thumb instruction windows. This improves
+analysis coverage, not proof that Ghidra recognized every function.
+
+offline-bootchain-v4-compare.py copies factory P6 to a temporary
+regular file, compares normalized 3.6/3.10 boot scripts and device
+tree properties, and inspects selected Akai updater/security programs
+via ARM ELF symbol tables and disassembly. A new 3.10 updater RAMFS
+file listing is included if unsquashfs is available.
+
+The existing runner packs all JSON/text/log results into ONE private
+ZIP at exit. No firmware binaries, whole-disk backup, Ghidra projects,
+or active bootloader execution are included.
+
+Static evidence cannot confirm silicon MaskROM, unsigned SPL acceptance,
+the existence of an independent eMMC restore path, or runtime Fastboot
+authorization: those remain deliberately separate hardware proof gates.
