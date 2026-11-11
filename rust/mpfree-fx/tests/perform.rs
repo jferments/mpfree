@@ -147,7 +147,17 @@ fn assert_follows(
 fn the_description_is_valid_and_the_bank_is_full() {
     let p = Perform::new();
     check_params(p.params()).unwrap();
-    assert_eq!(p.params().len(), 2 + 4 * PERFORM_SLOTS + 3 + PERFORM_SLOTS);
+    assert_eq!(
+        p.params().len(),
+        2 + 4 * PERFORM_SLOTS + 3 + PERFORM_SLOTS + 1
+    );
+    assert_eq!(ids::perform::MIX, 85);
+    assert_eq!(p.param(ids::perform::MIX), 100.0);
+    assert_eq!(
+        p.param(ids::perform::slot(15) + ids::perform::EFFECT),
+        effect("Wash throw"),
+        "pad 16 is the Play page's wash"
+    );
     for k in 0..PERFORM_SLOTS {
         let fx = p.param(ids::perform::slot(k) + ids::perform::EFFECT);
         assert!(fx >= 1.0, "pad {} has an effect by default", k + 1);
@@ -156,7 +166,8 @@ fn the_description_is_valid_and_the_bank_is_full() {
             perform_state::OFF
         );
     }
-    // Under 10 MiB at 48 kHz: the ring, two loop buffers and the echo.
+    // Under 10 MiB at 48 kHz: the ring, two loop buffers, the echo and the
+    // wash.
     assert!(p.memory_bytes() < 10 << 20, "{} bytes", p.memory_bytes());
 }
 
@@ -477,7 +488,7 @@ fn the_same_output_for_any_block_size() {
     while at < n {
         at += 1 + (g.next() as usize % 9_000);
         let k = (g.next() % PERFORM_SLOTS as u64) as u8;
-        let ev = match g.next() % 7 {
+        let ev = match g.next() % 8 {
             0 | 1 => on(k),
             2 | 3 => off(k),
             4 => NodeEvent::Param {
@@ -488,6 +499,15 @@ fn the_same_output_for_any_block_size() {
             5 => NodeEvent::Param {
                 id: ids::perform::DJ_FILTER,
                 value: g.unit() * 200.0 - 100.0,
+            },
+            // The overall mix, often all the way up.
+            7 => NodeEvent::Param {
+                id: ids::perform::MIX,
+                value: if g.next().is_multiple_of(2) {
+                    100.0
+                } else {
+                    g.unit() * 100.0
+                },
             },
             _ => NodeEvent::Param {
                 id: ids::perform::ECHO + (g.next() % 2) as u16,
@@ -710,4 +730,90 @@ fn a_pad_sounds_while_a_finger_or_its_hold_holds_it() {
     run(&mut p, &x, &[(0, NodeEvent::AllOff)], false);
     assert_eq!(state(&p), perform_state::OFF);
     assert_eq!(p.param(ids::perform::hold(0)), 0.0);
+}
+
+#[test]
+fn a_wash_throw_rings_on_after_the_pad_is_let_go_then_sleeps() {
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Wash throw", "1 bar", 70.0);
+    let sec = RATE as usize;
+    let n = 8 * sec;
+    let mut x = noise(n, 3);
+    for v in x.0.iter_mut().chain(x.1.iter_mut()) {
+        *v *= 0.3;
+    }
+    x.0[sec..].fill(0.0);
+    x.1[sec..].fill(0.0);
+    let y = run(&mut p, &x, &[(0, on(0)), (sec / 2, off(0))], true);
+    // The dry sound passes untouched until the first reflection (25 ms).
+    assert_follows("dry", &y.0, |i| x.0[i], 0..1000);
+    // While held the wash is under the dry sound but plainly there.
+    let dry = rms(&x.0[sec / 4..sec / 2]);
+    let wet: Vec<f32> = (sec / 4..sec / 2).map(|i| y.0[i] - x.0[i]).collect();
+    let db = 20.0 * (rms(&wet) / dry).log10();
+    assert!((-12.0..-3.0).contains(&db), "the wash at {db} dB");
+    // Once the music stops the tail rings on, then falls away.
+    let t1 = rms(&y.0[sec + sec / 10..sec + sec / 5]);
+    let t2 = rms(&y.0[2 * sec..2 * sec + sec / 10]);
+    assert!(t1 > 0.005 * dry, "the tail {t1}");
+    assert!(t2 < 0.25 * t1, "the tail falls: {t1} then {t2}");
+    // Then it sleeps: silence in is silence out, and no tail is left.
+    assert!(y.0[6 * sec..]
+        .iter()
+        .chain(&y.1[6 * sec..])
+        .all(|&v| v == 0.0));
+    assert!(p.tail_frames() < 2_000, "tail {}", p.tail_frames());
+}
+
+#[test]
+fn a_longer_wash_rings_longer() {
+    let sec = RATE as usize;
+    let tail = |amount: f32| {
+        let mut p = Perform::new();
+        slot(&mut p, 0, "Wash throw", "1 bar", amount);
+        let mut x = noise(4 * sec, 5);
+        x.0[sec / 2..].fill(0.0);
+        x.1[sec / 2..].fill(0.0);
+        let y = run(&mut p, &x, &[(0, on(0)), (sec / 2, off(0))], true);
+        rms(&y.0[2 * sec..2 * sec + sec / 10])
+    };
+    let (short, long) = (tail(20.0), tail(100.0));
+    assert!(long > 10.0 * short, "100 % rings {long}, 20 % {short}");
+}
+
+#[test]
+fn the_mix_sets_how_much_of_the_effects_is_heard() {
+    let n = 3 * BEAT;
+    let x = noise(n, 21);
+    // A stutter held throughout, with an echo throw and a wash ringing.
+    let events = [
+        (0, on(0)),
+        (BEAT / 2, on(9)),
+        (BEAT / 2 + 3_000, off(9)),
+        (BEAT, on(15)),
+        (BEAT + 6_000, off(15)),
+        (2 * BEAT, off(0)),
+    ];
+    let make = |mix: f32| {
+        let mut p = Perform::new();
+        p.set_param(ids::perform::MIX, mix);
+        p.reset();
+        p
+    };
+    let full = run(&mut make(100.0), &x, &events, true);
+    let none = run(&mut make(0.0), &x, &events, true);
+    let half = run(&mut make(50.0), &x, &events, true);
+    let moved = rms(&(0..n).map(|i| full.0[i] - x.0[i]).collect::<Vec<_>>());
+    assert!(moved > 0.1, "the effects change the sound ({moved})");
+    for i in 0..n {
+        for (a, b) in [(none.0[i], x.0[i]), (none.1[i], x.1[i])] {
+            assert_eq!(a.to_bits(), b.to_bits(), "mix 0 at frame {i}: {a} vs {b}");
+        }
+        let want = x.0[i] + 0.5 * (full.0[i] - x.0[i]);
+        assert!(
+            (half.0[i] - want).abs() < 1e-5,
+            "mix 50 at frame {i}: {} vs {want}",
+            half.0[i]
+        );
+    }
 }

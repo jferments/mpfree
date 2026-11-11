@@ -839,8 +839,8 @@ pub fn all(rate: u32) -> Vec<Case> {
         effect("Master safety", rate, Box::new(MasterSafety::new()), &[])
     }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
-    // and the heaviest stack: pitch drop with a gate, both sweeps, crush,
-    // the riser and an echo throw.
+    // the heaviest stack (pitch drop with a gate, both sweeps, crush, the
+    // riser and an echo throw) and the wash throw on its own.
     v.push(measured(|| perform("Perform FX, idle", rate, &[], false)));
     v.push(measured(|| {
         perform(
@@ -857,6 +857,10 @@ pub fn all(rate: u32) -> Vec<Case> {
             &[6, 7, 8, 9, 10, 11, 12],
             false,
         )
+    }));
+    // The wash throw (pad 16) held: its reverb fed and ringing all along.
+    v.push(measured(|| {
+        perform("Perform FX, a wash throw held", rate, &[15], false)
     }));
     // The reverb at Full (its cost before Eco, the worst case) and at
     // Eco, its default.
