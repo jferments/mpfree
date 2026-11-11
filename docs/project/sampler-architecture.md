@@ -40,7 +40,7 @@ It says which crates hold what, which thread does what, how data moves between t
 | `mpfree-project` | new | Project folder, `project.toml`, atomic saves, source files (WAV/FLAC) | `hound`, `claxon`, `flacenc` (optional), `toml`, `serde` | none |
 | `mpfree-stretch` | new, later (S7) | High-quality offline time stretch and pitch shift | `signalsmith-stretch` (C++ inside) | in the dependency only |
 | `mpfree-audio` | new, split from `mpfree-hello/src/alsa.rs` | `AudioDevice` trait (ADR-0002); ALSA playback **and capture**; a file device and a null device for tests | `libc`-level ioctls via `sys` | yes, isolated in `sys.rs` as today |
-| `mpfree-sampler-ui` | new | The sampler's screens: Sound page tabs, Record, Browser, Perform | `mpfree-ui` | none |
+| `mpfree-sampler-ui` | started | The sampler's screens. Built: the pad editor's Wave tab (`wave_tab.rs`) and `SourceView` (peaks, mono mix, tempo and root note per source, worked out off the audio thread). Still to come: Chop, Play, Grain and FX tabs, Record, Browser, Perform | `mpfree-ui`, `mpfree-sampler`, `mpfree-analysis` | none |
 | `mpfree-ui` | exists | New widgets: `Waveform` (with the marker ruler as its tab strip) and `WaveOverview` are built in `wave.rs`, drawn from a `Peaks` source with a playhead redrawing only its strips (`examples/wave_preview.rs` draws the Wave tab to a PNG); still to come: `Meter`, `XYPad`, `EnvelopeEditor`, `LayerMap`, `QLinkStrip`, `PadGrid` additions (waveform thumbnail, pressure ring) | `fontdue` | none |
 | `mpfree-app` | new, grows out of `mpfree-hello` | The program: threads, wiring, settings, start-up | everything above | none |
 
@@ -167,6 +167,27 @@ From round 6 the pad player (`mpfree-hello`, `src/sampler.rs`) plays through thi
 - A Grains kit plays the first kit's sounds as granular pads while they are held. Pressure moves density, grain size, position or pitch, one per row of pads.
 - Pad pressure from the controller goes to the engine as `Event::Pressure`, and Note Repeat's note-offs go to it as `Event::NoteOff`.
 - The 30 s status line adds the engine's render time per period (mean and max, and as a share of the 2.9 ms period), steals, dropped events, and peak and skipped grains. On the RK3288, these figures set the voice and grain limits.
+
+### The Wave tab (`mpfree-sampler-ui`)
+
+The first of the pad editor's tabs, as in the Wave mockup. It shows one layer of one pad: the overview, the waveform with Start, End and loop markers, the fades, bar and beat lines from the source's tempo, the Region settings and four Q-Link cards.
+- The tab never owns the project. The app builds a `WaveState` from the project and a `SourceView`, and applies the `WaveAction`s it gets back with `WaveAction::apply`.
+- Each drag or Q-Link turn is one undo step: the tab gives every change of the same drag or turn the same gesture id, and the app calls `lift` when a finger lifts or a Q-Link is let go.
+- Markers can't cross: Start ≤ loop start − crossfade, loop start < loop end, loop end ≤ End. Fades shrink to fit. Every move gives a region that `Region::check` accepts (the test makes 2000 random moves).
+- Markers snap to the nearest zero crossing (the default), to sixteenths of the source's tempo, or not at all. A Q-Link moves its marker one pixel of the current zoom per detent, snapping in the direction of the turn. With SHIFT it moves one frame per detent, unsnapped. The wheel zooms round the marker last moved or touched.
+- Region rows: mode, loop (off, forward, ping-pong), crossfade, gain (0.5 dB steps), tune (semitones), reverse, channels, fade in, fade out and snap. Loop mode always keeps a loop: choosing it makes one over the middle half of the region, and Off is skipped while it is on.
+- A tap on the wave asks the app to play the pad. Playheads come from the app with `set_playheads`.
+- `mpfree-sampler-preview OUT_DIR` draws the sample screens to PNG files.
+
+### The Sample tab in the pad player (`mpfree-hello`)
+
+The pad player's top bar has a Sample tab after Synth (Jay's name for the pad editor). It shows the Wave tab for the playing kit's pad that was hit last.
+- **Who owns what.** `sampler::Player::new` builds one project per kit (and the Grains kit) and hands them to the screen thread with `take_projects`. The screen thread owns them from then on (`sample_page.rs`); their undo history starts there, so UNDO never takes a loaded kit apart (`Project::clear_history`). The audio is shared with the engine's views (`Arc`), not copied.
+- **Edits reach the sound.** An edit changes the project on the screen thread, which then builds the kit's `EngineView` again and sends it to the audio thread in a box (`FromUi::SampleView`). `Player::swap_view` puts it in place (in the engine, if the kit is playing) and leaves the old view in the same box, which goes back (`ToUi::SampleViewBack`) to be freed on the screen thread. One view travels at a time; edits made meanwhile go with the next one. The audio thread never builds, allocates or frees a view; if the screen's channel is full, it keeps the box and tries again next period. Sounds already playing finish as they started; the next hit plays the edit.
+- **Controls.** Q-Links 1-4 move Start, End, loop start and loop end (SHIFT: one frame a detent); letting go of a Q-Link, or a second without turning, ends the turn (one undo step). The wheel zooms. SHIFT + wheel and - / + pick the previous or next pad with a sound. UNDO and SHIFT + UNDO undo and redo on this tab (the time engine's takes elsewhere). A tap on the wave plays the pad; in Gate, Loop and Granular modes it keeps sounding until the next tap or leaving the tab. Opening the tab while the synth has the pads gives them back to the last drum kit.
+- **On screen.** Pad names use the kit's bank letter (kit 2's pad 5 is B5). The playing kit's playheads come from the audio thread about 25 times a second while the tab shows (`Playheads`, fixed size). A pad without a sound, or the synth, shows a page that says so.
+- **In the log.** Each finished drag or turn writes one `sample:` line with what changed (for example `sample: kit 1 (House) pad A1 Kick: Start 0.000 s -> 0.012 s`), and the session's last lines count the views swapped in.
+- **Not yet.** Edits live in memory until the power goes off (no saving yet). Chop, Play, Grain and FX are greyed out.
 
 ### Warp and stretch
 

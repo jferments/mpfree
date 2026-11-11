@@ -51,6 +51,9 @@ pub enum View {
     Clips,
     /// The synth's page (mpfree-synth-ui): Poly's controls.
     Synth,
+    /// The sampler's pad editor (mpfree-sampler-ui): the Wave tab on the
+    /// pad last hit in the playing kit.
+    Sample,
     Debug,
     Console,
     Prefs,
@@ -70,7 +73,7 @@ pub enum View {
 
 /// The header's tabs: the Debug tab only in debug mode.
 pub fn tabs(debug: bool) -> Vec<View> {
-    let mut t = vec![View::Play, View::Clips, View::Synth];
+    let mut t = vec![View::Play, View::Clips, View::Synth, View::Sample];
     if debug {
         t.push(View::Debug);
     }
@@ -121,6 +124,7 @@ impl View {
             View::Play => "Play",
             View::Clips => "Clips",
             View::Synth => "Synth",
+            View::Sample => "Sample",
             View::Debug => "Debug",
             View::Console => "Console",
             View::Prefs => "Prefs",
@@ -432,6 +436,13 @@ pub enum Effect {
     SynthWheel(i32),
     /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
     SynthPage(i32),
+    /// The wheel on the Sample page: zoom the waveform.
+    SampleWheel(i32),
+    /// SHIFT + wheel, - or + on the Sample page: the previous or next pad
+    /// with a sound.
+    SamplePad(i32),
+    /// UNDO (or SHIFT + UNDO, redo) on the Sample page: the last edit there.
+    SampleUndo { redo: bool },
     /// Start the audio again with this many periods.
     Audio(u32),
     ClearLogs,
@@ -714,6 +725,8 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
+        } else if Some(note) == self.map.undo && self.view == View::Sample {
+            fx.push(Effect::SampleUndo { redo: shift });
         } else if Some(note) == self.map.undo {
             fx.push(Effect::Time(if shift { TimeAction::Redo } else { TimeAction::Undo }));
         } else if Some(note) == self.map.note_repeat {
@@ -751,6 +764,8 @@ impl App {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth {
                 fx.push(Effect::SynthPage(d));
+            } else if self.view == View::Sample {
+                fx.push(Effect::SamplePad(d));
             } else {
                 fx.push(Effect::Kit(d));
             }
@@ -844,6 +859,8 @@ impl App {
             View::Clips => vec![Effect::ClipsWheel { delta, scroll: self.shift }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Synth => vec![Effect::SynthWheel(delta)],
+            View::Sample if self.shift => vec![Effect::SamplePad(delta.signum())],
+            View::Sample => vec![Effect::SampleWheel(delta)],
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
@@ -859,8 +876,8 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         if self.view != v
-            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Debug | View::Console | View::Arp
-                                   | View::Perf | View::Map)
+            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Sample | View::Debug | View::Console
+                                   | View::Arp | View::Perf | View::Map)
         {
             self.back = self.view;
         }
@@ -1508,6 +1525,35 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_tab_comes_after_synth_and_takes_the_wheel_the_pads_and_undo() {
+        let mut app = ready();
+        assert_eq!(tabs(false), vec![View::Play, View::Clips, View::Synth, View::Sample, View::Console, View::Prefs]);
+        assert_eq!(View::Sample.tab_index(true), Some(3));
+        assert_eq!(app.tab(3), vec![Effect::Show(View::Sample)]);
+        assert_eq!(app.view(), View::Sample);
+        // The wheel zooms; SHIFT + wheel and - / + pick the pad.
+        assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-3), vec![Effect::SamplePad(-1)]);
+        // UNDO undoes the Sample page's edits there (SHIFT: redo), and the
+        // time engine's takes elsewhere.
+        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: true }]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: false }]);
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
+        assert_eq!(press(&mut app, 40), vec![Effect::SamplePad(-1)]);
+        // MENU opens the options and goes back to the Sample page.
+        let fx = press(&mut app, MENU);
+        assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Sample options"));
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Sample);
+        app.tab(0);
+        assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+    }
+
+    #[test]
     fn menu_and_shift_menu_open_options_and_prefs() {
         let mut app = ready();
         let fx = press(&mut app, MENU);
@@ -1552,9 +1598,9 @@ mod tests {
         let fx = app.start();
         assert!(!fx.iter().any(|e| matches!(e, Effect::Guide(_))));
         assert_eq!(app.view(), View::Play);
-        // No Debug tab until debug mode: tab 3 is Console.
-        assert_eq!(tabs(false)[3], View::Console);
-        assert_eq!(app.tab(3), vec![Effect::Show(View::Console)]);
+        // No Debug tab until debug mode: tab 4 is Console.
+        assert_eq!(tabs(false)[4], View::Console);
+        assert_eq!(app.tab(4), vec![Effect::Show(View::Console)]);
         app.open_tab(View::Prefs);
         let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();
         let fx = app.step_item(row, 1);
@@ -1589,8 +1635,8 @@ mod tests {
         assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: true }]);
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[3], View::Debug);
-        app.tab(3);
+        assert_eq!(tabs(true)[4], View::Debug);
+        app.tab(4);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
