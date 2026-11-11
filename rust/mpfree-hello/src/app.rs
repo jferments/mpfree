@@ -214,6 +214,7 @@ pub enum Item {
     LatchMode,
     Buffer,
     FindButtons,
+    CalibrateTouch,
     TouchLab,
     Rate,
     Tempo,
@@ -278,6 +279,8 @@ pub enum Effect {
     Quit,
     /// Open the Touch lab page (it starts at its first step).
     TouchLab,
+    /// Open the Calibrate touch page (four corner taps).
+    CalibrateTouch,
 }
 
 pub struct App {
@@ -576,7 +579,7 @@ impl App {
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
             (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons,
-                               Item::TouchLab],
+                               Item::CalibrateTouch, Item::TouchLab],
             (_, View::Debug) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -594,6 +597,7 @@ impl App {
             }),
             Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
+            Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
@@ -631,6 +635,10 @@ impl App {
                                  "restarts the sound."],
             Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +",
                                       "again, one at a time."],
+            Item::CalibrateTouch => vec!["Tap a target in each corner to check that",
+                                         "touches land where you touch. This version",
+                                         "only reports and logs the result; nothing",
+                                         "is saved. Exit or MENU leaves it."],
             Item::TouchLab => vec!["Timed touchscreen tests: taps, long presses,",
                                    "drags, swipes, flings and held fingers. Each",
                                    "step's result goes to the system log. Exit,",
@@ -719,6 +727,7 @@ impl App {
                 self.view = View::Guide;
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
+            Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::Rate => {
                 s.rate = cycle(&Rate::ALL, s.rate, d);

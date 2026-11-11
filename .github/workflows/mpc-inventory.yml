@@ -886,7 +886,7 @@ jobs:
             --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           timeout 120 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
-          for n in console loading loading-failed play debug syslog prefs options guide touchlab; do
+          for n in console loading loading-failed play debug syslog prefs options guide touchlab calibrate; do
             head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done
           echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."

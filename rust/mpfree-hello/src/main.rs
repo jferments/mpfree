@@ -59,6 +59,7 @@
 mod akai;
 mod app;
 mod alsa;
+mod calibrate_page;
 mod gui;
 mod kit;
 mod sampler;
@@ -1531,6 +1532,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+                app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
             }
         }
         if let Some(p) = audio_change {

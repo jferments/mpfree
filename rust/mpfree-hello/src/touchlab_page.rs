@@ -303,6 +303,55 @@ impl TouchLabView {
     }
 }
 
+/// A full-screen touch page the pad player opens over its own pages (the
+/// Touch lab, Calibrate touch). While one is open it gets every finger.
+pub trait TouchPage: Widget {
+    /// Start over, each time the page is opened (queues its open line).
+    fn open(&mut self);
+    /// Leave: close anything in progress and queue the exit line. Again does
+    /// nothing until `open`.
+    fn leave(&mut self);
+    /// True once the page's own Exit was pressed.
+    fn wants_exit(&self) -> bool;
+    fn has_lines(&self) -> bool;
+    /// Journal lines queued since the last call.
+    fn take_lines(&mut self) -> Vec<String>;
+    /// Advance timers; call every frame while `animating`.
+    fn tick(&mut self) {}
+    /// The kernel's timestamp of the finger event about to come.
+    fn set_event_time(&mut self, _time_us: u64) {}
+}
+
+impl TouchPage for TouchLabView {
+    fn open(&mut self) {
+        TouchLabView::reset(self);
+    }
+
+    fn leave(&mut self) {
+        TouchLabView::leave(self);
+    }
+
+    fn wants_exit(&self) -> bool {
+        TouchLabView::wants_exit(self)
+    }
+
+    fn has_lines(&self) -> bool {
+        TouchLabView::has_lines(self)
+    }
+
+    fn take_lines(&mut self) -> Vec<String> {
+        TouchLabView::take_lines(self)
+    }
+
+    fn tick(&mut self) {
+        TouchLabView::tick(self);
+    }
+
+    fn set_event_time(&mut self, time_us: u64) {
+        TouchLabView::set_event_time(self, time_us);
+    }
+}
+
 impl Default for TouchLabView {
     fn default() -> Self {
         TouchLabView::new()
