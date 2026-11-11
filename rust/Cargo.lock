@@ -374,6 +374,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-bench"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-grain",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-sampler",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-controller"
 version = "0.1.0"
 
@@ -463,6 +475,13 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-prof"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
 ]
 
 [[package]]
