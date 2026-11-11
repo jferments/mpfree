@@ -1,6 +1,7 @@
 //! Sample screens for the workstation preview and the tests: a real effect
 //! behind each page, set the way a player might have it.
 
+use crate::lock::Locks;
 use crate::perform::{self, PerformPanel};
 use crate::state::{make, FxState};
 use crate::view::{self, FxPanel};
@@ -437,6 +438,84 @@ fn perform_scene(fonts: Fonts, held: bool) -> Result<Sample, String> {
     })
 }
 
+const LOCK_HINT: &str =
+    "Step held: a turn locks it on the step · ERASE: the selected lock off · let go of the step to finish";
+
+/// Lock mode: step 5 held on the filter (its cutoff and resonance locked,
+/// the cutoff selected), and step 3 held on Perform FX (pads 1 and 6
+/// locked on, the DJ filter locked to a high-pass).
+fn lock_scenes(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
+    let mut out = Vec::new();
+    let filter_scene = SCENES
+        .iter()
+        .find(|s| s.name == "03-filter")
+        .ok_or("no filter scene")?;
+    let st = {
+        let mut node = make("mpfree.fx.filter").ok_or("no filter")?;
+        node.prepare(RATE, 512);
+        for &(id, v) in filter_scene.values {
+            node.set_param(id, v);
+        }
+        FxState::from_node(
+            node.as_ref(),
+            filter_scene.place,
+            mpfree_ui::Color::rgb(0x3DDC97),
+            BPM,
+            RATE,
+        )
+    };
+    let mut ui = app_ui(fonts(), LOCK_HINT);
+    let mut panel = FxPanel::add(&mut ui, PAGE, st)?;
+    let mut held = Locks::new("Step 5");
+    held.values = vec![(filter::CUTOFF, 380.0), (filter::RESONANCE, 78.0)];
+    panel.set_locks(&mut ui, Some(held));
+    let k = panel.pages()[0]
+        .params
+        .iter()
+        .position(|&i| panel.state.params[i].id == filter::CUTOFF)
+        .ok_or("no cutoff tile")?;
+    panel.event(
+        &mut ui,
+        &UiEvent {
+            widget: view::TILES.to_string(),
+            kind: EventKind::Select(k),
+        },
+    );
+    ui.show(PAGE)?;
+    out.push(Sample {
+        name: "19-filter-lock",
+        about: "Lock mode on the filter: step 5 held, its cutoff (380 Hz) and resonance locked and marked; the drawing shows what the step plays, the effect's own 1.4 kHz stays",
+        ui,
+    });
+
+    let mut node = make("mpfree.fx.perform").ok_or("no Perform FX")?;
+    node.prepare(RATE, 512);
+    let st = FxState::from_node(
+        node.as_ref(),
+        "Master · insert 1",
+        mpfree_ui::Color::rgb(0x6EA8FE),
+        BPM,
+        RATE,
+    );
+    let mut ui = app_ui(fonts(), LOCK_HINT);
+    let mut panel = PerformPanel::add(&mut ui, PAGE, st)?;
+    let mut held = Locks::new("Step 3");
+    held.values = vec![
+        (pf::hold(0), 1.0),
+        (pf::hold(5), 1.0),
+        (pf::DJ_FILTER, 45.0),
+    ];
+    panel.set_locks(&mut ui, Some(held));
+    panel.select(&mut ui, 5);
+    ui.show(PAGE)?;
+    out.push(Sample {
+        name: "20-perform-lock",
+        about: "Lock mode on Perform FX: step 3 held, pads 1 and 6 locked on (the step plays their effects), the DJ filter locked to a high-pass",
+        ui,
+    });
+    Ok(out)
+}
+
 /// Every sample screen. `fonts` makes a fresh set of fonts per screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut out = Vec::new();
@@ -445,5 +524,6 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     }
     out.push(perform_scene(fonts(), true)?);
     out.push(perform_scene(fonts(), false)?);
+    out.extend(lock_scenes(&fonts)?);
     Ok(out)
 }
