@@ -9,20 +9,27 @@ use mpfree_fx::{
     Print, PrintJob, PrintState, StripId, Tail,
 };
 use mpfree_grain::GrainNode;
-use mpfree_looper::{Command as LooperCommand, Looper, Phase as LooperPhase, MAX_LOOPS};
+use mpfree_lanes::{Config as LaneConfig, Job, Lane};
+use mpfree_looper::{
+    Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
+};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_prof::alloc;
+use mpfree_prof::budget::MPC;
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
-use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
+use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
+
+use std::time::{Duration, Instant};
 
 pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
 
@@ -220,57 +227,88 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
 fn chords(
     name: String,
     rate: u32,
-    mut s: Box<dyn Node>,
+    s: Box<dyn Node>,
     values: &[(u16, f32)],
     polyphony: u16,
     voices: usize,
 ) -> Case {
-    s.prepare(rate, MAX_BLOCK);
-    for &(id, v) in values {
-        s.set_param(id, v);
-    }
-    s.set_param(polyphony, voices as f32);
-    let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
-    let mut held: Vec<u8> = Vec::with_capacity(voices);
-    let mut seed = Lcg(3);
+    let mut c = Chords::new(rate, s, values, polyphony, voices);
     Case {
         name,
         module: "synth",
         what: "chords changing every 0.5 s",
-        block: Box::new(move |b, l, r| {
-            let len = l.len() as u64;
-            let f0 = b * len;
-            let half = u64::from(rate / 2);
-            events.clear();
-            // A chord change falls in this block.
-            if f0 % half + len > half || f0 == 0 {
-                let at = if f0 == 0 {
-                    0
-                } else {
-                    (half - f0 % half) as u32 % len as u32
-                };
-                for &note in held.iter() {
-                    events.push(Timed::new(at, NodeEvent::NoteOff { note }));
-                }
-                held.clear();
-                let root = 36 + (seed.next() >> 28) as u8;
-                for k in 0..voices {
-                    let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
-                    held.push(note);
-                    events.push(Timed::new(
-                        at,
-                        NodeEvent::NoteOn {
-                            note,
-                            velocity: 64 + (seed.next() >> 26) as u8,
-                        },
-                    ));
-                }
-            }
-            l.fill(0.0);
-            r.fill(0.0);
-            s.process(&Ctx::new(rate, f0), &events, l, r);
-        }),
+        block: Box::new(move |b, l, r| c.block(b, l, r)),
         mem_bytes: 0,
+    }
+}
+
+/// An instrument and the chords it plays (see [`chords`]): a block at a
+/// time, on whichever thread holds it.
+struct Chords {
+    rate: u32,
+    s: Box<dyn Node>,
+    voices: usize,
+    events: Vec<Timed>,
+    held: Vec<u8>,
+    seed: Lcg,
+}
+
+impl Chords {
+    fn new(
+        rate: u32,
+        mut s: Box<dyn Node>,
+        values: &[(u16, f32)],
+        polyphony: u16,
+        voices: usize,
+    ) -> Self {
+        s.prepare(rate, MAX_BLOCK);
+        for &(id, v) in values {
+            s.set_param(id, v);
+        }
+        s.set_param(polyphony, voices as f32);
+        Self {
+            rate,
+            s,
+            voices,
+            events: Vec::with_capacity(2 * voices),
+            held: Vec::with_capacity(voices),
+            seed: Lcg(3),
+        }
+    }
+
+    fn block(&mut self, b: u64, l: &mut [f32], r: &mut [f32]) {
+        let len = l.len() as u64;
+        let f0 = b * len;
+        let half = u64::from(self.rate / 2);
+        self.events.clear();
+        // A chord change falls in this block.
+        if f0 % half + len > half || f0 == 0 {
+            let at = if f0 == 0 {
+                0
+            } else {
+                (half - f0 % half) as u32 % len as u32
+            };
+            for &note in self.held.iter() {
+                self.events
+                    .push(Timed::new(at, NodeEvent::NoteOff { note }));
+            }
+            self.held.clear();
+            let root = 36 + (self.seed.next() >> 28) as u8;
+            for k in 0..self.voices {
+                let note = root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8;
+                self.held.push(note);
+                self.events.push(Timed::new(
+                    at,
+                    NodeEvent::NoteOn {
+                        note,
+                        velocity: 64 + (self.seed.next() >> 26) as u8,
+                    },
+                ));
+            }
+        }
+        l.fill(0.0);
+        r.fill(0.0);
+        self.s.process(&Ctx::new(self.rate, f0), &self.events, l, r);
     }
 }
 
@@ -381,6 +419,34 @@ enum SamplerPads {
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
 fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
+    let mut e = sampler_engine(rate, master, which, 24, |_| true);
+    let mut hits = SamplerHits::new();
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "a hit every 4 blocks over 20 pads, 24 voices",
+        block: Box::new(move |b, l, r| {
+            for ev in hits.at(b).into_iter().flatten() {
+                e.apply(ev);
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The [`sampler`] case's engine with `voices` voices and only the pads
+/// `keep` keeps (pads 0 to 15 samples, 16 to 19 grains), so two engines can
+/// split the pads between them.
+fn sampler_engine(
+    rate: u32,
+    master: bool,
+    which: SamplerPads,
+    voices: usize,
+    keep: impl Fn(usize) -> bool,
+) -> Engine {
     let s = Source::new(
         "noise",
         rate,
@@ -392,7 +458,7 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
     .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
-    for i in (0..16usize).filter(|_| which != SamplerPads::Grains) {
+    for i in (0..16usize).filter(|&i| which != SamplerPads::Grains && keep(i)) {
         let mut r = Region::whole(&s);
         r.mode = [
             PlayMode::OneShot,
@@ -419,7 +485,7 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
-    for i in (16..20usize).filter(|_| which != SamplerPads::Samples) {
+    for i in (16..20usize).filter(|&i| which != SamplerPads::Samples && keep(i)) {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
         r.grain = GrainParams {
@@ -435,7 +501,7 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
         pad.polyphony = 2;
         p.set_pad(i, Some(pad), None).expect("pad");
     }
-    let mut e = Engine::new(rate, 24);
+    let mut e = Engine::new(rate, voices);
     if master {
         e.set_master_fx(Engine::make_master_fx(rate));
         p.set_master(
@@ -453,27 +519,34 @@ fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
         .expect("master");
     }
     e.set_view(EngineView::build(&p, rate));
-    let mut seed = Lcg(11);
-    Case {
-        name: name.to_string(),
-        module: "sampler",
-        what: "a hit every 4 blocks over 20 pads, 24 voices",
-        block: Box::new(move |b, l, r| {
-            if b % 4 == 0 {
-                let pad = (seed.next() >> 27) as u8 % 20;
-                e.apply(Event::NoteOff {
-                    pad: (pad + 7) % 20,
-                });
-                e.apply(Event::NoteOn {
-                    pad,
-                    velocity: 40 + (seed.next() >> 25) as u8 % 88,
-                });
-            }
-            l.fill(0.0);
-            r.fill(0.0);
-            e.render(l, r);
-        }),
-        mem_bytes: 0,
+    e
+}
+
+/// The [`sampler`] case's hits: every 4 blocks, a note off on one pad and a
+/// note on another, with a random velocity. A hit on a pad an engine
+/// doesn't have does nothing, so engines that split the pads can all take
+/// every hit.
+struct SamplerHits(Lcg);
+
+impl SamplerHits {
+    fn new() -> Self {
+        Self(Lcg(11))
+    }
+
+    fn at(&mut self, b: u64) -> Option<[Event; 2]> {
+        if !b.is_multiple_of(4) {
+            return None;
+        }
+        let pad = (self.0.next() >> 27) as u8 % 20;
+        Some([
+            Event::NoteOff {
+                pad: (pad + 7) % 20,
+            },
+            Event::NoteOn {
+                pad,
+                velocity: 40 + (self.0.next() >> 25) as u8 % 88,
+            },
+        ])
     }
 }
 
@@ -995,7 +1068,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
-    v.push(measured(|| looper_loops(rate, 60)));
+    v.push(measured(|| looper_loops(rate, 60, false)));
+    v.push(measured(|| looper_loops(rate, 60, true)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1275,7 +1349,9 @@ impl Sink for TimeSink {
 /// The time engine as a busy song uses it: the transport looping 4 bars at
 /// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
 /// one at 3:2 speed, one swung and quantised), the first through the arp
-/// at 32nds over 2 octaves.
+/// at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// instrument's (a different one each step, so each ends at the next
+/// note) and one of the strip's.
 fn time(rate: u32, tracks: usize) -> Case {
     let ppq = i64::from(PPQ);
     let mut song = Song::new();
@@ -1292,6 +1368,24 @@ fn time(rate: u32, tracks: usize) -> Case {
                     velocity: 100,
                     chance: 100,
                 })
+            })
+            .collect();
+        c.locks = (0..32i64)
+            .flat_map(|k| {
+                [
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Inst, (k % 4) as u16),
+                        0.5,
+                    ),
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Strip, 0),
+                        (k % 8) as f32 / 8.0,
+                    ),
+                ]
             })
             .collect();
         if i == 1 {
@@ -1330,7 +1424,7 @@ fn time(rate: u32, tracks: usize) -> Case {
     Case {
         name: format!("Time: transport, {tracks} clips, arp"),
         module: "time",
-        what: "16ths with chords on every track, looping 4 bars",
+        what: "16ths with chords and 2 locks a step on every track, looping 4 bars",
         block: Box::new(move |_, l, r| {
             t.process(l.len() as u32, &mut block);
             player.process(&view, &block, &mut sink);
@@ -1433,8 +1527,10 @@ impl LoopRig {
 }
 
 /// [`MAX_LOOPS`] one-bar loops (2 s at 120 BPM) of three layers each,
-/// all playing.
-fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
+/// all playing. `edited`: every other loop is edited, a quarter reversed
+/// and a quarter trimmed to three beats and nudged (two pieces and a cut
+/// with its seam fade, the dearest to play).
+fn loops_rig(rate: u32, seconds: u32, edited: bool) -> LoopRig {
     let mut g = LoopRig {
         t: Transport::new(rate, 120.0).expect("transport"),
         lp: Looper::new(rate, seconds),
@@ -1468,19 +1564,39 @@ fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
         g.lp.command(LooperCommand::Overdub);
         g.run(0.25);
     }
+    if edited {
+        let beat = i64::from(PPQ);
+        for k in (1..MAX_LOOPS).step_by(2) {
+            g.lp.select_loop(k);
+            if k % 4 == 1 {
+                g.lp.command(LooperCommand::Edit(LooperEdit::Reverse));
+            } else {
+                g.lp.command(LooperCommand::Edit(LooperEdit::Trim {
+                    from: 0,
+                    to: 3 * beat,
+                }));
+                g.run(0.05);
+                g.lp.command(LooperCommand::Edit(LooperEdit::Nudge(1)));
+            }
+            g.run(0.05);
+        }
+    }
     g
 }
 
 /// Every loop playing at once ([`loops_rig`]), recorded before the timing
 /// starts. Timed: an overdub every other 2 s, on one loop after another,
 /// so the block mixes every layer of every loop and writes one more.
-fn looper_loops(rate: u32, seconds: u32) -> Case {
-    let mut g = loops_rig(rate, seconds);
+fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
+    let mut g = loops_rig(rate, seconds, edited);
     let every = 2 * u64::from(rate);
     let mut next = g.frame + every;
     let mut turn = 0usize;
     Case {
-        name: format!("Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing"),
+        name: format!(
+            "Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing{}",
+            if edited { ", half edited" } else { "" }
+        ),
         module: "looper",
         what: "every loop playing, with an overdub on one loop after another",
         block: Box::new(move |_, l, r| {
@@ -1837,6 +1953,233 @@ fn moves(rate: u32) -> Case {
     }
 }
 
+/// The lane cases (`--lanes`): the same work on one core and split over
+/// two with a lane (`mpfree-lanes`), so the gain and the handoff's cost
+/// can be read side by side. `worker` pins each lane's worker to that
+/// core. Each lane is closed when its case is dropped, before the next
+/// case starts.
+pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
+    let config = |spin: bool| LaneConfig {
+        name: "mpfree-bench-ln".into(),
+        core: worker,
+        // Spinning: longer than any gap between the bench's blocks, so the
+        // worker never sleeps (the lowest handoff, a busy core).
+        worker_spin: if spin {
+            Duration::from_millis(20)
+        } else {
+            Duration::ZERO
+        },
+        ..LaneConfig::default()
+    };
+    let probe = Lane::new(|_b: u64| {}, config(false));
+    let s = probe.setup();
+    println!(
+        "Lanes: {}; worker core: {}",
+        match &s.threaded {
+            Ok(()) => "a worker thread each".to_string(),
+            Err(e) => format!("on this thread ({e})"),
+        },
+        match &s.pinned {
+            None => "not pinned".to_string(),
+            Some(Ok(c)) => format!("pinned to {c}"),
+            Some(Err(e)) => format!("not pinned ({e})"),
+        }
+    );
+    drop(probe);
+    vec![
+        handoff("Lane handoff, empty job, worker sleeps", config(false)),
+        handoff("Lane handoff, empty job, worker spins", config(true)),
+        measured(|| {
+            sampler(
+                "Sampler 24 voices, one engine, one core",
+                rate,
+                false,
+                SamplerPads::All,
+            )
+        }),
+        measured(|| split_sampler("Sampler as 2 x 12 voices, one core", rate, None)),
+        measured(|| {
+            split_sampler(
+                "Sampler as 2 x 12 voices, 2 cores, worker sleeps",
+                rate,
+                Some(config(false)),
+            )
+        }),
+        measured(|| {
+            split_sampler(
+                "Sampler as 2 x 12 voices, 2 cores, worker spins",
+                rate,
+                Some(config(true)),
+            )
+        }),
+        measured(|| beside("Sampler 24 voices + Poly Init 8 voices, 1 core", rate, None)),
+        measured(|| {
+            beside(
+                "Sampler 24 voices + Poly Init 8 voices, 2 cores",
+                rate,
+                Some(config(false)),
+            )
+        }),
+    ]
+}
+
+/// How long a lane case waits for its lane: ten periods, so the numbers
+/// show the real time a split takes rather than a cut-off.
+fn lane_deadline() -> Instant {
+    Instant::now() + Duration::from_nanos(10 * MPC.ns())
+}
+
+/// A lane with nothing to do: the handoff alone (post, wake, run, say
+/// done, see it).
+fn handoff(name: &str, config: LaneConfig) -> Case {
+    let mut lane = Lane::new(|_b: u64| {}, config);
+    Case {
+        name: name.to_string(),
+        module: "lanes",
+        what: "an empty job posted and joined every block",
+        block: Box::new(move |b, _l, _r| {
+            if lane.post(b).is_ok() {
+                let _ = lane.join(lane_deadline());
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// A part of a period's render that a lane runs: an engine and its own
+/// output pair.
+struct Part<E> {
+    engine: E,
+    l: Vec<f32>,
+    r: Vec<f32>,
+}
+
+impl<E> Part<E> {
+    fn new(engine: E) -> Self {
+        let n = MPC.frames as usize;
+        Self {
+            engine,
+            l: vec![0.0; n],
+            r: vec![0.0; n],
+        }
+    }
+
+    /// Adds the part's output into `l` and `r`.
+    fn mix_into(&self, l: &mut [f32], r: &mut [f32]) {
+        for (a, b) in l.iter_mut().zip(&self.l) {
+            *a += b;
+        }
+        for (a, b) in r.iter_mut().zip(&self.r) {
+            *a += b;
+        }
+    }
+}
+
+/// Half the sampler's pads, with this block's hits.
+struct SamplerPart {
+    e: Engine,
+    hits: Option<[Event; 2]>,
+}
+
+impl Job for Part<SamplerPart> {
+    fn run(&mut self, _block: u64) {
+        let p = &mut self.engine;
+        for ev in p.hits.take().into_iter().flatten() {
+            p.e.apply(ev);
+        }
+        self.l.fill(0.0);
+        self.r.fill(0.0);
+        p.e.render(&mut self.l, &mut self.r);
+    }
+}
+
+impl Job for Part<Chords> {
+    fn run(&mut self, block: u64) {
+        self.engine.block(block, &mut self.l, &mut self.r);
+    }
+}
+
+/// The [`sampler`] case split in two by pad (even pads here, odd pads on
+/// the lane), 12 voices each, every hit to both. `lane` None: the lane runs
+/// on this thread, which is the same work on one core.
+fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+    let mut here = sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 0);
+    let there = Part::new(SamplerPart {
+        e: sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 1),
+        hits: None,
+    });
+    let mut lane = match lane {
+        Some(c) => Lane::new(there, c),
+        None => Lane::inline(there),
+    };
+    let mut hits = SamplerHits::new();
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "the sampler case's pads split over two engines of 12 voices",
+        block: Box::new(move |b, l, r| {
+            let ev = hits.at(b);
+            let posted = match lane.job() {
+                Some(j) => {
+                    j.engine.hits = ev;
+                    lane.post(b).is_ok()
+                }
+                None => false,
+            };
+            for e in ev.into_iter().flatten() {
+                here.apply(e);
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            here.render(l, r);
+            if posted {
+                if let Ok(j) = lane.join(lane_deadline()) {
+                    j.mix_into(l, r);
+                }
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The [`sampler`] case and Poly Init playing 8-voice chords: both here
+/// (`lane` None), or Poly on a lane beside the sampler.
+fn beside(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+    let mut here = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
+    let poly = Part::new(Chords::new(
+        rate,
+        Box::new(Poly::new(rate)),
+        PRESETS[0].values,
+        POLYPHONY,
+        8,
+    ));
+    let mut lane = match lane {
+        Some(c) => Lane::new(poly, c),
+        None => Lane::inline(poly),
+    };
+    let mut hits = SamplerHits::new();
+    Case {
+        name: name.to_string(),
+        module: "lanes",
+        what: "the sampler case here, Poly Init chords on a lane",
+        block: Box::new(move |b, l, r| {
+            let posted = lane.post(b).is_ok();
+            for e in hits.at(b).into_iter().flatten() {
+                here.apply(e);
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            here.render(l, r);
+            if posted {
+                if let Ok(j) = lane.join(lane_deadline()) {
+                    j.mix_into(l, r);
+                }
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1856,6 +2199,46 @@ mod tests {
         let mut c = measured(|| mixer("frozen", 44_100, 12, 8, Inserts::SongFrozen));
         let (l, _) = run(&mut c, 400);
         assert!(l.iter().any(|v| v.abs() > 1e-4), "it plays");
+    }
+
+    /// Every block's output from two cases, side by side.
+    fn same_blocks(mut a: Case, mut b: Case, blocks: u64) {
+        let (mut la, mut ra) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let (mut lb, mut rb) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let mut loud = false;
+        for k in 0..blocks {
+            (a.block)(k, &mut la, &mut ra);
+            (b.block)(k, &mut lb, &mut rb);
+            assert_eq!((&la, &ra), (&lb, &rb), "block {k}");
+            loud |= la.iter().any(|v| v.abs() > 1e-4);
+        }
+        assert!(loud, "the cases made no sound");
+    }
+
+    #[test]
+    fn a_split_on_two_cores_sounds_exactly_like_the_split_on_one() {
+        let lane = || Some(LaneConfig::default());
+        same_blocks(
+            split_sampler("one", 44_100, None),
+            split_sampler("two", 44_100, lane()),
+            600,
+        );
+        same_blocks(
+            beside("one", 44_100, None),
+            beside("two", 44_100, lane()),
+            600,
+        );
+    }
+
+    #[test]
+    fn the_lane_cases_cover_one_core_and_two() {
+        let mut cases = lanes(44_100, None);
+        assert_eq!(cases.len(), 8);
+        assert!(cases.iter().any(|c| c.name.contains("one core")));
+        assert!(cases.iter().any(|c| c.name.contains("2 cores")));
+        for c in &mut cases {
+            run(c, 20);
+        }
     }
 
     fn run(c: &mut Case, blocks: u64) -> (Vec<f32>, Vec<f32>) {
@@ -1913,7 +2296,7 @@ mod tests {
 
     #[test]
     fn the_loops_case_has_every_loop_playing() {
-        let mut c = measured(|| looper_loops(44_100, 60));
+        let mut c = measured(|| looper_loops(44_100, 60, true));
         let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
         let mut energy = 0.0f64;
         for b in 0..1_500u64 {
@@ -1925,12 +2308,14 @@ mod tests {
                 .sum::<f64>();
         }
         assert!(energy > 1_000.0, "{energy}");
-        let g = loops_rig(44_100, 60);
+        let g = loops_rig(44_100, 60, true);
         for k in 0..MAX_LOOPS {
             let s = g.lp.loop_status(k).unwrap();
+            // Trimmed to three beats of the bar.
+            let frames = if k % 4 == 3 { 66_150 } else { 88_200 };
             assert_eq!(
                 (s.phase, s.layers, s.frames),
-                (LooperPhase::Playing, 3, 88_200),
+                (LooperPhase::Playing, 3, frames),
                 "loop {k}"
             );
         }
