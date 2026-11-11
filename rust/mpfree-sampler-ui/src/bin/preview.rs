@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use mpfree_sampler_ui::sample::samples;
+use mpfree_sampler_ui::sample::{chop_samples, samples};
 use mpfree_ui::{Fonts, SoftCanvas};
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -25,13 +25,15 @@ fn run() -> Result<(), String> {
         return Err(format!("{} is not empty; give a new or empty folder", out.display()));
     }
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    for mut s in samples(Fonts::embedded)? {
-        let (w, h) = s.ui.size();
+    let mut screens: Vec<_> = samples(Fonts::embedded)?.into_iter().map(|s| (s.name, s.about, s.ui)).collect();
+    screens.extend(chop_samples(Fonts::embedded)?.into_iter().map(|s| (s.name, s.about, s.ui)));
+    for (name, about, mut ui) in screens {
+        let (w, h) = ui.size();
         let mut c = SoftCanvas::new(w, h);
-        s.ui.paint(&mut c);
-        let path = out.join(format!("{}.png", s.name));
+        ui.paint(&mut c);
+        let path = out.join(format!("{name}.png"));
         write_new(&path, &mpfree_ui::png::encode_rgb(w as u32, h as u32, &c.to_rgb()))?;
-        println!("wrote {} ({})", path.display(), s.about);
+        println!("wrote {} ({about})", path.display());
     }
     Ok(())
 }

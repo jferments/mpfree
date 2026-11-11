@@ -284,3 +284,57 @@ impl Widget for InfoCard {
         cx.text(FontId::Bold, t.size_body, body, Align::Left, t.text, &self.text);
     }
 }
+
+// ---------------------------------------------------------------- buttons
+
+/// A row of buttons sharing the width. A tap on an enabled button `i`
+/// gives [`EventKind::Tab`]`(i)`; the `primary` one is filled with the
+/// accent colour.
+pub struct ButtonRow {
+    pub labels: Vec<String>,
+    pub enabled: Vec<bool>,
+    pub primary: Option<usize>,
+}
+
+const BUTTON_GAP: i32 = 8;
+
+impl ButtonRow {
+    pub fn new(labels: &[&str]) -> ButtonRow {
+        ButtonRow { labels: labels.iter().map(|s| s.to_string()).collect(), enabled: vec![true; labels.len()], primary: None }
+    }
+
+    /// Button `i`'s rectangle. The primary button takes twice the room.
+    pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
+        let n = self.labels.len().max(1) as i32;
+        let shares = n + i32::from(self.primary.is_some_and(|p| p < self.labels.len()));
+        let inner = r.inset(6);
+        let unit = (inner.w - BUTTON_GAP * (n - 1)).max(0) / shares.max(1);
+        let width = |k: usize| if self.primary == Some(k) { 2 * unit } else { unit };
+        let x = inner.x + (0..i).map(|k| width(k) + BUTTON_GAP).sum::<i32>();
+        let w = if i + 1 == self.labels.len() { inner.right() - x } else { width(i) };
+        Rect::new(x, inner.y, w.max(0), inner.h)
+    }
+}
+
+impl Widget for ButtonRow {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        for (i, label) in self.labels.iter().enumerate() {
+            let b = self.button_rect(r, i);
+            let enabled = self.enabled.get(i).copied().unwrap_or(false);
+            let primary = self.primary == Some(i) && enabled;
+            cx.canvas.fill_round_rect(b, 10, if primary { t.accent } else { t.raised });
+            let color = if primary { t.bg } else if enabled { t.text } else { t.text_faint };
+            cx.text(FontId::Bold, t.size_body - 1.0, b, Align::Center, color, label);
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let i = (0..self.labels.len()).find(|&i| self.button_rect(r, i).contains(x, y))?;
+        self.enabled.get(i).copied().unwrap_or(false).then_some(EventKind::Tab(i))
+    }
+}
