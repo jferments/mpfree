@@ -12,24 +12,28 @@
 //! two-bar bass line on gated pads (note-offs end the notes), a
 //! seven-sixteenths pluck clip that drifts against the bar (polymeter),
 //! a track of held chords played through the arpeggiator (`mpfree-arp`),
-//! whose 1/16s follow the transport's tempo and swing, and a live take:
-//! the first pass is recorded, and a clave played a little off the grid on
+//! whose 1/16s follow the transport's tempo and swing, and two live takes.
+//! The first pass is recorded, and a clave played a little off the grid on
 //! the pads goes into an empty one-bar clip (the clip recorder). The clip
 //! quantises on playback, so from the next bar on each hit plays on the
 //! grid and the bar builds up; the transport punches out at the loop's end.
+//! In the second pass the transport punches in again for bar 3, with
+//! overdub off: the old clave notes are erased as the playhead reaches
+//! them (replace recording) while a new pattern is played, and bar 4 plays
+//! the new pattern alone.
 //! Every sound is synthesised here; no sample files are used.
 //!
 //! It prints two hashes. `events` covers every note the player and the arp
-//! sent (frame, track, note, velocity) and every recorded note, and is the
-//! same on every computer and for every period size; the tool checks that
-//! itself at 1, 128 and 4096 frames.
+//! sent (frame, track, note, velocity), every recorded note and every
+//! erased note, and is the same on every computer and for every period
+//! size; the tool checks that itself at 1, 128 and 4096 frames.
 //! `audio` covers the WAV bytes; it repeats on one computer but can differ
 //! between computers (the sounds use the system's maths library).
 
 use std::f32::consts::TAU;
 
 use mpfree_arp::{Engine as Arp, EventKind, Mode, Rate, Settings};
-use mpfree_play::{ArpHost, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, ALL};
+use mpfree_play::{ArpHost, Erased, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, ALL};
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event as SEvent};
 use mpfree_sampler::model::{Layer, Pad, PlayMode, Project as SProject, Region, Source};
@@ -46,22 +50,30 @@ const ARP: u16 = 1;
 const ARP_OUT: u16 = 100;
 /// The track the live take is recorded on.
 const TAKE: usize = 5;
-/// The take: a clave played live on pad 20 over the first pass of the loop,
-/// a little early or late: (bar, 1/16 step, milliseconds off the grid,
-/// velocity). The recorder puts each hit in a one-bar clip at the tick it
-/// was played on; the clip quantises to 1/16 on playback, so every hit
-/// plays on the grid from the next bar on, and the bars build up.
-const TAKE_HITS: [(i64, i64, f64, u8); 9] = [
-    (0, 0, 12.0, 110),
-    (0, 3, -9.0, 90),
-    (0, 6, 7.0, 95),
-    (1, 10, -14.0, 100),
-    (1, 12, 5.0, 85),
-    (2, 14, 10.0, 70),
-    (2, 15, -6.0, 60),
-    (3, 8, -11.0, 105),
-    (3, 9, 4.0, 50),
+/// The takes: a clave played live on pad 20, a little early or late:
+/// (pass of the loop, bar, 1/16 step, milliseconds off the grid, velocity).
+/// The recorder puts each hit in a one-bar clip at the tick it was played
+/// on; the clip quantises to 1/16 on playback, so every hit plays on the
+/// grid from the next bar on. The first take (pass 0) builds the bar up
+/// over four bars; the second (pass 1, bar 2) replaces it.
+const TAKE_HITS: [(u64, i64, i64, f64, u8); 14] = [
+    (0, 0, 0, 12.0, 110),
+    (0, 0, 3, -9.0, 90),
+    (0, 0, 6, 7.0, 95),
+    (0, 1, 10, -14.0, 100),
+    (0, 1, 12, 5.0, 85),
+    (0, 2, 14, 10.0, 70),
+    (0, 2, 15, -6.0, 60),
+    (0, 3, 8, -11.0, 105),
+    (0, 3, 9, 4.0, 50),
+    (1, 2, 0, 8.0, 115),
+    (1, 2, 4, -6.0, 80),
+    (1, 2, 8, 5.0, 110),
+    (1, 2, 12, -7.0, 85),
+    (1, 2, 14, 3.0, 95),
 ];
+/// Notes of the first take that the second one erases: all of them.
+const ERASED: usize = 9;
 
 fn main() {
     let mut period = 128u32;
@@ -123,7 +135,7 @@ fn main() {
     std::fs::write(&out, &wav).unwrap_or_else(|e| fail(&format!("cannot write {out}: {e}")));
 
     println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
-    println!("notes played: {}  recorded: {}  dropped by the sampler: {}", log.notes, log.recorded, engine.stats().dropped_events);
+    println!("notes played: {}  recorded: {}  erased: {}  dropped by the sampler: {}", log.notes, log.recorded, log.erased, engine.stats().dropped_events);
     println!("events {:016x}  (the same on every computer)", log.hash());
     println!("audio  {:016x}  (repeats on this computer)", fnv(&wav));
     for (p, h, n) in &hashes {
@@ -145,15 +157,25 @@ fn frame_of(tick: f64) -> u64 {
     (tick * 60.0 * f64::from(RATE) / (BPM * 960.0)).round() as u64
 }
 
+/// The frame of song tick `tick` in pass `pass` of the four-bar loop. A
+/// pass starts on the frame where the last one's end tick falls, and a
+/// tick falls on its rounded frame, so this is the frame it plays on.
+fn frame_in(pass: u64, tick: i64) -> u64 {
+    pass * frame_of((4 * BAR) as f64) + frame_of(tick as f64)
+}
+
 /// Run the transport for `frames` frames in periods of `period`, calling
 /// `each` with every block. It records the first pass of the loop and
-/// punches out at the loop's end, then plays on.
+/// punches out at the loop's end, records bar 3 of the second pass with
+/// overdub off (the transport's default), then plays on.
 fn play(frames: u64, period: u32, mut each: impl FnMut(u32, &Block)) {
     let mut t = Transport::new(RATE, BPM).expect("valid transport");
     t.command(0, Command::SetSwing(Swing::new(240, 56).expect("valid swing")));
     t.command(0, Command::SetLoop(Some((0, 4 * BAR))));
     t.command(0, Command::Record);
-    t.command(frame_of((4 * BAR) as f64), Command::Record);
+    t.command(frame_in(1, 0), Command::Record);
+    t.command(frame_in(1, 2 * BAR), Command::Record);
+    t.command(frame_in(1, 3 * BAR), Command::Record);
     // Stop just before the end so every note ends.
     t.command(frames - RATE as u64 / 2, Command::Stop);
     let mut block = Block::new();
@@ -166,7 +188,8 @@ fn play(frames: u64, period: u32, mut each: impl FnMut(u32, &Block)) {
 
 /// Everything that runs each period: the player, the arp, the live pads
 /// and the recorder on the audio thread, then the control thread's part:
-/// adding the recorded notes to the clip and compiling a new view.
+/// removing the erased notes from the clip, adding the recorded ones and
+/// compiling a new view.
 struct Session {
     project: Project,
     launches: Vec<Launch>,
@@ -182,10 +205,8 @@ struct Session {
 impl Session {
     fn new() -> Session {
         let (project, launches) = song();
-        let view = PlayView::compile(&project, &launches).expect("valid song");
-        let mut rec = Recorder::new();
-        rec.arm(Some(TAKE));
-        Session { project, launches, view, player: Player::new(), arp: arp(), rec, live: live_hits(), next_live: 0, log: EventLog::default() }
+        let view = compile(&project, &launches);
+        Session { project, launches, view, player: Player::new(), arp: arp(), rec: Recorder::new(), live: live_hits(), next_live: 0, log: EventLog::default() }
     }
 
     fn period(&mut self, block: &Block, mut sampler: Option<&mut Engine>) {
@@ -210,45 +231,59 @@ impl Session {
             }
         }
         rec.process(view, block);
-        if !rec.taken().is_empty() {
-            for k in rec.taken() {
-                project.tracks[k.track].slots[k.slot].as_mut().expect("the take's clip").add_note(k.note).expect("a valid note");
-                log.take(k);
-            }
-            *view = PlayView::compile(project, launches).expect("valid song");
+        if player.erased().is_empty() && rec.taken().is_empty() {
+            return;
         }
+        for e in player.erased() {
+            let clip = project.tracks[e.track].slots[e.slot].as_mut().expect("the take's clip");
+            assert!(clip.remove_note(&e.note), "an erased note is in the clip");
+            log.erase(e);
+        }
+        for k in rec.taken() {
+            project.tracks[k.track].slots[k.slot].as_mut().expect("the take's clip").add_note(k.note).expect("a valid note");
+            log.take(k);
+        }
+        *view = compile(project, launches);
     }
 
     fn check(&self) {
         assert_eq!(self.arp.dropped(), 0, "the arp dropped notes");
         assert_eq!(self.rec.dropped(), 0, "the recorder dropped notes");
+        assert_eq!(self.player.stats().dropped, 0, "the player dropped notes");
         assert_eq!(self.log.recorded, TAKE_HITS.len(), "every live hit is recorded");
+        assert_eq!(self.log.erased, ERASED, "the second take erases the first");
+        let take = self.project.tracks[TAKE].slots[0].as_ref().expect("the take's clip");
+        assert_eq!(take.notes.len(), TAKE_HITS.len() - ERASED, "the clip holds the second take");
     }
 }
 
-/// The player's events, the arp's and the recorded notes, each in order.
-/// They are kept apart because the order between them within one period
-/// depends on the period size.
+/// The player's events, the arp's, the recorded notes and the erased
+/// notes, each in order. They are kept apart because the order between
+/// them within one period depends on the period size.
 #[derive(Default)]
 struct EventLog {
     player: Vec<u8>,
     arp: Vec<u8>,
     take: Vec<u8>,
+    erase: Vec<u8>,
     notes: usize,
     recorded: usize,
+    erased: usize,
 }
 
 impl EventLog {
     fn hash(&self) -> u64 {
-        fnv(&[&self.player[..], &self.arp[..], &self.take[..]].concat())
+        fnv(&[&self.player[..], &self.arp[..], &self.take[..], &self.erase[..]].concat())
     }
 
     fn take(&mut self, k: &Taken) {
         self.recorded += 1;
-        for v in [k.track as i64, k.slot as i64, k.note.tick, k.note.len] {
-            self.take.extend_from_slice(&v.to_le_bytes());
-        }
-        self.take.extend_from_slice(&[k.note.note, k.note.velocity]);
+        note_bytes(&mut self.take, k.track, k.slot, &k.note);
+    }
+
+    fn erase(&mut self, e: &Erased) {
+        self.erased += 1;
+        note_bytes(&mut self.erase, e.track, e.slot, &e.note);
     }
 
     fn add(&mut self, o: &Out) {
@@ -288,6 +323,13 @@ impl Sink for Route<'_> {
             }
         }
     }
+}
+
+fn note_bytes(bytes: &mut Vec<u8>, track: usize, slot: usize, n: &Note) {
+    for v in [track as i64, slot as i64, n.tick, n.len] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.extend_from_slice(&[n.note, n.velocity]);
 }
 
 fn to_sampler(engine: &mut Engine, o: &Out) {
@@ -368,11 +410,18 @@ fn song() -> (Project, Vec<Launch>) {
     (p, launches)
 }
 
+/// The control thread's view of the song, with the take's track armed.
+fn compile(project: &Project, launches: &[Launch]) -> PlayView {
+    let mut view = PlayView::compile(project, launches).expect("valid song");
+    view.set_armed(Some(TAKE));
+    view
+}
+
 /// The take's hits as pad presses and releases (60 ms later), in frame order.
 fn live_hits() -> Vec<(u64, Event)> {
     let mut hits = vec![];
-    for &(bar, step, ms, velocity) in &TAKE_HITS {
-        let on = frame_of((bar * BAR + step * 240) as f64) as i64 + (ms * f64::from(RATE) / 1000.0).round() as i64;
+    for &(pass, bar, step, ms, velocity) in &TAKE_HITS {
+        let on = frame_in(pass, bar * BAR + step * 240) as i64 + (ms * f64::from(RATE) / 1000.0).round() as i64;
         let on = on.max(0) as u64;
         hits.push((on, Event::NoteOn { note: 20, velocity }));
         hits.push((on + u64::from(RATE) * 60 / 1000, Event::NoteOff { note: 20 }));
