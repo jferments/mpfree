@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-scale"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Musical scales for MPFree: a library of named 12-note scales, custom scales, snapping and stepping notes in key, and an optional project key; no allocation"
+
+[lib]
+name = "mpfree_scale"
+path = "src/lib.rs"
+
+[dependencies]

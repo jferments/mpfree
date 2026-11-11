@@ -127,6 +127,8 @@ pub struct TakeRow {
     pub number: u32,
     /// Made by CAPTURE.
     pub captured: bool,
+    /// An edit of a clip's notes (the step sequencer).
+    pub edited: bool,
     /// It made a new clip.
     pub made: bool,
     /// The track and slot it recorded into (of its first note).
@@ -140,12 +142,24 @@ impl TakeRow {
         let made = t.made.first().map(|(track, slot, _)| (*track, *slot));
         let at = made.or_else(|| t.added.first().or(t.erased.first()).map(|&(track, slot, _)| (track, slot)));
         let added = t.added.len() + t.made.iter().map(|(_, _, c)| c.notes.len()).sum::<usize>();
-        TakeRow { number: t.number, captured: t.captured, made: made.is_some(), at, added, erased: t.erased.len() }
+        TakeRow { number: t.number, captured: t.captured, edited: t.edited, made: made.is_some(), at, added,
+                  erased: t.erased.len() }
     }
 
-    /// What Undo and Redo name it: "take 3", "capture 2".
+    /// What it is: "take", "capture" or "edit".
+    pub fn word(&self) -> &'static str {
+        if self.captured {
+            "capture"
+        } else if self.edited {
+            "edit"
+        } else {
+            "take"
+        }
+    }
+
+    /// What Undo and Redo name it: "take 3", "capture 2", "edit 5".
     pub fn short(&self) -> String {
-        format!("{} {}", if self.captured { "capture" } else { "take" }, self.number)
+        format!("{} {}", self.word(), self.number)
     }
 }
 
@@ -435,7 +449,8 @@ pub fn bars_label(bars: i64) -> String {
 }
 
 fn take_title(st: &TimeState, row: &TakeRow) -> String {
-    let word = if row.captured { "Capture" } else { "Take" };
+    let mut word = row.word().to_string();
+    word[..1].make_ascii_uppercase();
     match row.at {
         Some((track, slot)) => format!("{word} {} · {} / {}", row.number, st.track_name(track), slot + 1),
         None => format!("{word} {}", row.number),
@@ -678,7 +693,7 @@ mod tests {
         for (i, name) in ["Drums", "Bass", "Stab"].iter().enumerate() {
             let mut t = Track::new(name, i as u16);
             let mut c = Clip::new("A", 2 * BAR);
-            c.add_note(Note { tick: 0, len: 10, note: 1, velocity: 100 }).unwrap();
+            c.add_note(Note { tick: 0, len: 10, note: 1, velocity: 100, chance: 100 }).unwrap();
             t.slots[0] = Some(c);
             t.slots[1] = Some(Clip::new("B", 1680));
             p.tracks.push(t);
@@ -882,7 +897,7 @@ mod tests {
     #[test]
     fn takes_list_newest_first_with_the_undone_dimmed() {
         let mut st = state();
-        let row = |n: u32| TakeRow { number: n, captured: false, made: false, at: Some((2, 0)), added: n as usize,
+        let row = |n: u32| TakeRow { number: n, captured: false, edited: false, made: false, at: Some((2, 0)), added: n as usize,
                                      erased: 0 };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -895,10 +910,13 @@ mod tests {
         st.done[1].erased = 5;
         assert_eq!(take_items(&st).0[2].detail, "+2 −5");
         // A capture that made a clip.
-        st.done[1] = TakeRow { number: 1, captured: true, made: true, at: Some((0, 3)), added: 9, erased: 0 };
+        st.done[1] = TakeRow { number: 1, captured: true, edited: false, made: true, at: Some((0, 3)), added: 9, erased: 0 };
         let (items, _) = take_items(&st);
         assert_eq!((items[2].title.as_str(), items[2].detail.as_str()), ("Capture 1 · Drums / 4", "new +9"));
         assert_eq!((st.done[1].short(), st.done[0].short()), ("capture 1".to_string(), "take 1".to_string()));
+        st.done[1] = TakeRow { number: 5, captured: false, edited: true, made: false, at: Some((1, 0)), added: 1, erased: 1 };
+        assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
+        assert_eq!(st.done[1].short(), "edit 5");
         assert_eq!((bars_label(1), bars_label(4)), ("1 bar".to_string(), "4 bars".to_string()));
         st.done.clear();
         assert_eq!(take_items(&st).1, None);
