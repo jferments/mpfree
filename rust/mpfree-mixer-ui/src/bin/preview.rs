@@ -23,10 +23,19 @@ struct Options {
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
-    let mut o = Options { out: None, font: None, bold: None, mono: None };
+    let mut o = Options {
+        out: None,
+        font: None,
+        bold: None,
+        mono: None,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut value = || it.next().map(PathBuf::from).ok_or_else(|| format!("{a} needs a value"));
+        let mut value = || {
+            it.next()
+                .map(PathBuf::from)
+                .ok_or_else(|| format!("{a} needs a value"))
+        };
         match a.as_str() {
             "--out" => o.out = Some(value()?),
             "--font" => o.font = Some(value()?),
@@ -40,7 +49,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 }
 
 fn utc_stamp() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
@@ -53,7 +65,12 @@ fn utc_stamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
+    format!(
+        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
 }
 
 /// New files only: never overwrite.
@@ -68,8 +85,12 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn run(o: &Options) -> Result<PathBuf, String> {
     let dir = o.out.clone().unwrap_or_else(|| {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        let work = std::env::var_os("MPFREE_WORK_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("mpfree-work"));
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let work = std::env::var_os("MPFREE_WORK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("mpfree-work"));
         work.join(format!("mixer-preview-{}", utc_stamp()))
     });
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;

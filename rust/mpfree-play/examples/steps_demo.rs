@@ -47,7 +47,12 @@ const KICK: u8 = 0;
 const SNARE: u8 = 1;
 const HAT: u8 = 2;
 const CLANK: u8 = 3;
-const SOUNDS: [(u8, &str); 4] = [(KICK, "kick"), (SNARE, "snare"), (HAT, "hat"), (CLANK, "clank")];
+const SOUNDS: [(u8, &str); 4] = [
+    (KICK, "kick"),
+    (SNARE, "snare"),
+    (HAT, "hat"),
+    (CLANK, "clank"),
+];
 /// 1/16 steps of the kick, over both bars: bar 1, then bar 2 as its copy
 /// with step 23 moved to 29.
 const KICKS: [usize; 6] = [0, 7, 10, 16, 26, 29];
@@ -64,10 +69,18 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--period" => {
-                period = args.next().and_then(|v| v.parse().ok()).filter(|p| (1..=8192).contains(p))
+                period = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|p| (1..=8192).contains(p))
                     .unwrap_or_else(|| fail("--period takes 1 to 8192"))
             }
-            "--out" => out = Some(args.next().unwrap_or_else(|| fail("--out takes a file name"))),
+            "--out" => {
+                out = Some(
+                    args.next()
+                        .unwrap_or_else(|| fail("--out takes a file name")),
+                )
+            }
             "-h" | "--help" => {
                 println!("steps_demo [--period N] [--out FILE]   (default FILE: ~/mpfree-work/steps-demo.wav)");
                 return;
@@ -101,19 +114,35 @@ fn main() {
     let wav = wav(&pcm.data);
     if let Some(dir) = std::path::Path::new(&out).parent() {
         if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
         }
     }
     std::fs::write(&out, &wav).unwrap_or_else(|e| fail(&format!("cannot write {out}: {e}")));
 
-    println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
-    println!("notes heard: {}  dropped by the sampler: {}  peak: {:.1} dBFS  clipped samples: {}", heard.len(),
-             engine.stats().dropped_events, 20.0 * pcm.peak.log10(), pcm.clipped);
+    println!(
+        "wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames",
+        frames as f64 / f64::from(RATE)
+    );
+    println!(
+        "notes heard: {}  dropped by the sampler: {}  peak: {:.1} dBFS  clipped samples: {}",
+        heard.len(),
+        engine.stats().dropped_events,
+        20.0 * pcm.peak.log10(),
+        pcm.clipped
+    );
     let per_pass: Vec<usize> = (0..BARS / 2)
-        .map(|p| heard.iter().filter(|h| h.1 == HAT && bar_of(h.0).0 / 2 == p).count())
+        .map(|p| {
+            heard
+                .iter()
+                .filter(|h| h.1 == HAT && bar_of(h.0).0 / 2 == p)
+                .count()
+        })
         .collect();
     println!("hats heard in each pass of the beat: {per_pass:?} (32 steps, 8 of them at 50 %)");
-    println!("checked: kicks on the grid, snares {LATE} ticks late, the roll on triplets, every pass");
+    println!(
+        "checked: kicks on the grid, snares {LATE} ticks late, the roll on triplets, every pass"
+    );
     println!("undo on a copy: edits come back newest first; one UNDO takes the whole velocity turn back, another the copied page: checked");
     println!("events {:016x}  (the same on every computer)", hash(&heard));
     println!("audio  {:016x}  (repeats on this computer)", fnv(&wav));
@@ -121,7 +150,10 @@ fn main() {
         println!("  events at period {p:>4}: {h:016x}");
     }
     let ok = hashes.iter().all(|&(_, h)| h == hash(&heard));
-    println!("same events for every period size: {}", if ok { "yes" } else { "NO" });
+    println!(
+        "same events for every period size: {}",
+        if ok { "yes" } else { "NO" }
+    );
     if !ok {
         std::process::exit(1);
     }
@@ -136,31 +168,53 @@ fn fail(msg: &str) -> ! {
 fn program() -> (Project, Takes) {
     let mut project = Project::new();
     let mut t = Track::new("Drums", 0);
-    t.slots[0] = Some(Clip::new("Steps", Grid::new(240).expect("1/16").page_length()));
+    t.slots[0] = Some(Clip::new(
+        "Steps",
+        Grid::new(240).expect("1/16").page_length(),
+    ));
     project.tracks.push(t);
     let mut takes = Takes::default();
     let sixteenths = Grid::new(240).expect("1/16");
     let triplets = Grid::new(160).expect("1/16 triplet");
     // Work out each edit from the clip as it is, then apply it.
-    let mut edit = |grid: Grid, f: &dyn Fn(Grid, &Clip) -> mpfree_seq::steps::Edit, join: Option<u64>| {
-        let e = f(grid, project.tracks[0].slots[0].as_ref().expect("the clip"));
-        takes.edit(&mut project, 0, 0, &e, join).unwrap_or_else(|e| fail(&format!("edit refused: {e:?}")));
-    };
+    let mut edit =
+        |grid: Grid, f: &dyn Fn(Grid, &Clip) -> mpfree_seq::steps::Edit, join: Option<u64>| {
+            let e = f(grid, project.tracks[0].slots[0].as_ref().expect("the clip"));
+            takes
+                .edit(&mut project, 0, 0, &e, join)
+                .unwrap_or_else(|e| fail(&format!("edit refused: {e:?}")));
+        };
     for &i in &BAR1_KICKS {
         edit(sixteenths, &|g, c| g.toggle(c, KICK, i, 120), None);
     }
     for &i in &SNARES[..2] {
         edit(sixteenths, &|g, c| g.toggle(c, SNARE, i, 112), None);
-        edit(sixteenths, &|g, c| g.change(c, SNARE, i, Change::Nudge(LATE)), None);
+        edit(
+            sixteenths,
+            &|g, c| g.change(c, SNARE, i, Change::Nudge(LATE)),
+            None,
+        );
     }
     for i in 0..PAGE {
         edit(sixteenths, &|g, c| g.toggle(c, HAT, i, 100), None);
-        edit(sixteenths, &|g, c| g.change(c, HAT, i, Change::Length(120)), None);
+        edit(
+            sixteenths,
+            &|g, c| g.change(c, HAT, i, Change::Length(120)),
+            None,
+        );
         if i % 2 == 1 {
-            edit(sixteenths, &|g, c| g.change(c, HAT, i, Change::Velocity(58)), None);
+            edit(
+                sixteenths,
+                &|g, c| g.change(c, HAT, i, Change::Velocity(58)),
+                None,
+            );
         }
         if i % 4 == 3 {
-            edit(sixteenths, &|g, c| g.change(c, HAT, i, Change::Chance(50)), None);
+            edit(
+                sixteenths,
+                &|g, c| g.change(c, HAT, i, Change::Chance(50)),
+                None,
+            );
         }
     }
     // Bar 2: a copy of bar 1, with the kick on step 23 moved to 29.
@@ -169,21 +223,37 @@ fn program() -> (Project, Takes) {
     edit(sixteenths, &|g, c| g.toggle(c, KICK, 29, 120), None);
     // A Q-Link turned from 100 down to 70 on the hat of step 2: one edit.
     for v in (1..=10).map(|k| 100 - 3 * k) {
-        edit(sixteenths, &|g, c| g.change(c, HAT, 2, Change::Velocity(v)), Some(Change::Velocity(v).key(HAT, 2)));
+        edit(
+            sixteenths,
+            &|g, c| g.change(c, HAT, 2, Change::Velocity(v)),
+            Some(Change::Velocity(v).key(HAT, 2)),
+        );
     }
     for &(i, v) in &ROLL {
         edit(triplets, &|g, c| g.toggle(c, SNARE, i, v), None);
     }
     edit(sixteenths, &|g, c| g.toggle(c, CLANK, 31, 110), None);
-    edit(sixteenths, &|g, c| g.change(c, CLANK, 31, Change::Chance(35)), None);
+    edit(
+        sixteenths,
+        &|g, c| g.change(c, CLANK, 31, Change::Chance(35)),
+        None,
+    );
     (project, takes)
 }
 
 /// The grid as a step sequencer shows it, a page per bar.
 fn print_grid(clip: &Clip) {
     let g = Grid::new(240).expect("1/16");
-    println!("the clip, on 1/16 steps (X loud, x soft, ? by chance, > late; the roll is on triplets):");
-    println!("         {}", (0..2).map(|_| "1 . . . 2 . . . 3 . . . 4 . . . ").collect::<Vec<_>>().join("| "));
+    println!(
+        "the clip, on 1/16 steps (X loud, x soft, ? by chance, > late; the roll is on triplets):"
+    );
+    println!(
+        "         {}",
+        (0..2)
+            .map(|_| "1 . . . 2 . . . 3 . . . 4 . . . ")
+            .collect::<Vec<_>>()
+            .join("| ")
+    );
     for (pitch, name) in SOUNDS {
         let row = g.row(clip, pitch);
         let cells: Vec<String> = row
@@ -211,8 +281,14 @@ fn check_undo(project: &Project, takes: &Takes) {
     let mut p = project.clone();
     let mut t = takes.clone();
     let g = Grid::new(240).expect("1/16");
-    let hat2 = |p: &Project| g.row(p.tracks[0].slots[0].as_ref().expect("clip"), HAT)[2].map(|s| s.velocity);
-    let roll = |p: &Project| Grid::new(160).expect("1/16 triplet").row(p.tracks[0].slots[0].as_ref().expect("clip"), SNARE)[47];
+    let hat2 = |p: &Project| {
+        g.row(p.tracks[0].slots[0].as_ref().expect("clip"), HAT)[2].map(|s| s.velocity)
+    };
+    let roll = |p: &Project| {
+        Grid::new(160)
+            .expect("1/16 triplet")
+            .row(p.tracks[0].slots[0].as_ref().expect("clip"), SNARE)[47]
+    };
     assert_eq!(hat2(&p), Some(70));
     // The clank's chance, the clank, then the roll's three steps, then the turn.
     for _ in 0..2 {
@@ -250,11 +326,20 @@ type Heard = (u64, u8, u8);
 /// notes left to chance.
 fn check(heard: &[Heard]) {
     let ticks = |pitch: u8| -> Vec<Tick> {
-        heard.iter().filter(|h| h.1 == pitch).map(|h| bar_of(h.0)).map(|(bar, t)| bar * BAR + t).collect()
+        heard
+            .iter()
+            .filter(|h| h.1 == pitch)
+            .map(|h| bar_of(h.0))
+            .map(|(bar, t)| bar * BAR + t)
+            .collect()
     };
-    let close = |got: &[Tick], want: &[Tick]| got.len() == want.len() && got.iter().zip(want).all(|(a, b)| (a - b).abs() <= 1);
+    let close = |got: &[Tick], want: &[Tick]| {
+        got.len() == want.len() && got.iter().zip(want).all(|(a, b)| (a - b).abs() <= 1)
+    };
     let every_pass = |steps: &[Tick]| -> Vec<Tick> {
-        (0..BARS / 2).flat_map(|p| steps.iter().map(move |s| p * 2 * BAR + s)).collect()
+        (0..BARS / 2)
+            .flat_map(|p| steps.iter().map(move |s| p * 2 * BAR + s))
+            .collect()
     };
     let kicks: Vec<Tick> = KICKS.iter().map(|&i| i as Tick * 240).collect();
     if !close(&ticks(KICK), &every_pass(&kicks)) {
@@ -264,10 +349,18 @@ fn check(heard: &[Heard]) {
     snares.extend(ROLL.iter().map(|&(i, _)| i as Tick * 160));
     snares.sort();
     if !close(&ticks(SNARE), &every_pass(&snares)) {
-        fail(&format!("the snares are not where they were nudged: {:?}", ticks(SNARE)));
+        fail(&format!(
+            "the snares are not where they were nudged: {:?}",
+            ticks(SNARE)
+        ));
     }
     let hats = ticks(HAT);
-    let sure: Vec<Tick> = every_pass(&(0..32).filter(|i| i % 4 != 3).map(|i| i * 240).collect::<Vec<_>>());
+    let sure: Vec<Tick> = every_pass(
+        &(0..32)
+            .filter(|i| i % 4 != 3)
+            .map(|i| i * 240)
+            .collect::<Vec<_>>(),
+    );
     if !sure.iter().all(|s| hats.iter().any(|h| (h - s).abs() <= 1)) {
         fail("a hat that always plays is missing");
     }
@@ -278,7 +371,10 @@ fn check(heard: &[Heard]) {
 }
 
 fn hash(heard: &[Heard]) -> u64 {
-    let bytes: Vec<u8> = heard.iter().flat_map(|&(f, p, v)| f.to_le_bytes().into_iter().chain([p, v])).collect();
+    let bytes: Vec<u8> = heard
+        .iter()
+        .flat_map(|&(f, p, v)| f.to_le_bytes().into_iter().chain([p, v]))
+        .collect();
     fnv(&bytes)
 }
 
@@ -310,7 +406,10 @@ impl Sink for Route<'_> {
         }
         if let Some(e) = self.sampler.as_deref_mut() {
             let ev = match o.event {
-                Event::NoteOn { note, velocity } => SEvent::NoteOn { pad: note, velocity },
+                Event::NoteOn { note, velocity } => SEvent::NoteOn {
+                    pad: note,
+                    velocity,
+                },
                 Event::NoteOff { note } => SEvent::NoteOff { pad: note },
                 Event::AllOff => SEvent::AllOff,
             };
@@ -320,20 +419,44 @@ impl Sink for Route<'_> {
 }
 
 /// Play the beat for `frames` frames (it stops after 8 bars).
-fn play(project: &Project, frames: u64, period: u32, mut sampler: Option<&mut Engine>) -> (Pcm, Vec<Heard>) {
-    let view = PlayView::compile(project, &[Launch { track: 0, slot: 0, origin: 0 }]).expect("the beat compiles");
+fn play(
+    project: &Project,
+    frames: u64,
+    period: u32,
+    mut sampler: Option<&mut Engine>,
+) -> (Pcm, Vec<Heard>) {
+    let view = PlayView::compile(
+        project,
+        &[Launch {
+            track: 0,
+            slot: 0,
+            origin: 0,
+        }],
+    )
+    .expect("the beat compiles");
     let mut t = Box::new(Transport::new(RATE, BPM).expect("valid transport"));
     t.command(0, Command::Play);
     t.command(frame_of(BARS * BAR), Command::Stop);
     let mut player = Box::new(Player::new());
     let mut block = Box::new(Block::new());
     let (mut left, mut right) = (vec![0.0f32; 8192], vec![0.0f32; 8192]);
-    let mut pcm = Pcm { data: Vec::with_capacity(frames as usize * 4), peak: 0.0, clipped: 0 };
+    let mut pcm = Pcm {
+        data: Vec::with_capacity(frames as usize * 4),
+        peak: 0.0,
+        clipped: 0,
+    };
     let mut heard = Vec::new();
     while t.frame() < frames {
         let n = period.min((frames - t.frame()) as u32);
         assert!(t.process(n, &mut block));
-        player.process(&view, &block, &mut Route { heard: &mut heard, sampler: sampler.as_deref_mut() });
+        player.process(
+            &view,
+            &block,
+            &mut Route {
+                heard: &mut heard,
+                sampler: sampler.as_deref_mut(),
+            },
+        );
         if let Some(e) = sampler.as_deref_mut() {
             let (l, r) = (&mut left[..n as usize], &mut right[..n as usize]);
             e.render(l, r);
@@ -343,7 +466,9 @@ fn play(project: &Project, frames: u64, period: u32, mut sampler: Option<&mut En
                     let v = x * MASTER;
                     pcm.peak = pcm.peak.max(v.abs());
                     pcm.clipped += usize::from(v.abs() > 1.0);
-                    pcm.data.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+                    pcm.data.extend_from_slice(
+                        &((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes(),
+                    );
                 }
             }
         }
@@ -371,7 +496,10 @@ struct Lp {
 
 impl Lp {
     fn new(hz: f32) -> Lp {
-        Lp { a: 1.0 - (-TAU * hz / RATE as f32).exp(), y: 0.0 }
+        Lp {
+            a: 1.0 - (-TAU * hz / RATE as f32).exp(),
+            y: 0.0,
+        }
     }
 
     fn run(&mut self, x: f32) -> f32 {
@@ -399,8 +527,11 @@ fn make(secs: f32, mut f: impl FnMut(f32) -> f32) -> Vec<f32> {
     (0..n)
         .flat_map(|i| {
             let left = n - i;
-            let gain =
-                if left < fade { 0.5 - 0.5 * (std::f32::consts::PI * left as f32 / fade as f32).cos() } else { 1.0 };
+            let gain = if left < fade {
+                0.5 - 0.5 * (std::f32::consts::PI * left as f32 / fade as f32).cos()
+            } else {
+                1.0
+            };
             let s = gain * f(i as f32 / RATE as f32);
             [s, s]
         })
@@ -422,7 +553,10 @@ fn sounds() -> SProject {
     let snare = make(0.3, |t| {
         let body = (TAU * 190.0 * t).sin() * (-t * 22.0).exp();
         let x = n.next();
-        0.65 * crush(drive(0.5 * body + 0.8 * (x - lp.run(x)) * (-t * 12.0).exp(), 4.0), 8)
+        0.65 * crush(
+            drive(0.5 * body + 0.8 * (x - lp.run(x)) * (-t * 12.0).exp(), 4.0),
+            8,
+        )
     });
     let mut lp = Lp::new(6000.0);
     let hat = make(0.06, |t| {
@@ -430,18 +564,32 @@ fn sounds() -> SProject {
         0.35 * crush((x - lp.run(x)) * (-t * 70.0).exp(), 7)
     });
     let clank = make(0.35, |t| {
-        let partials = [(540.0, 1.0, 9.0), (1213.0, 0.7, 12.0), (1771.0, 0.5, 16.0), (2390.0, 0.4, 20.0)];
-        let s: f32 = partials.iter().map(|&(hz, a, d)| a * (TAU * hz * t).sin() * (-t * d).exp()).sum();
+        let partials = [
+            (540.0, 1.0, 9.0),
+            (1213.0, 0.7, 12.0),
+            (1771.0, 0.5, 16.0),
+            (2390.0, 0.4, 20.0),
+        ];
+        let s: f32 = partials
+            .iter()
+            .map(|&(hz, a, d)| a * (TAU * hz * t).sin() * (-t * d).exp())
+            .sum();
         let click = n.next() * (-t * 250.0).exp();
         0.6 * crush(drive(0.6 * s + 0.5 * click, 3.0), 6)
     });
     let mut p = SProject::new();
-    for (pad, name, data) in [(KICK, "kick", kick), (SNARE, "snare", snare), (HAT, "hat", hat), (CLANK, "clank", clank)] {
+    for (pad, name, data) in [
+        (KICK, "kick", kick),
+        (SNARE, "snare", snare),
+        (HAT, "hat", hat),
+        (CLANK, "clank", clank),
+    ] {
         let s = Source::new(name, RATE, 2, data).expect("valid source");
         p.add_source(s.clone());
         let mut r = Region::whole(&s);
         r.mode = PlayMode::OneShot;
-        p.set_pad(usize::from(pad), Some(Pad::new(name, Layer::new(r))), None).expect("valid pad");
+        p.set_pad(usize::from(pad), Some(Pad::new(name, Layer::new(r))), None)
+            .expect("valid pad");
     }
     p
 }
@@ -466,5 +614,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

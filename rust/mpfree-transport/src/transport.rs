@@ -98,22 +98,38 @@ pub enum Command {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mark {
     /// Playback starts from `tick` (after a count-in, when it ends).
-    Started { tick: Tick },
+    Started {
+        tick: Tick,
+    },
     /// Stopped; `tick` is where playback resumes.
-    Stopped { tick: Tick },
+    Stopped {
+        tick: Tick,
+    },
     /// STOP while stopped: cut all sound.
     Panic,
     /// Back to bar 1 while stopped.
     Rewound,
     /// The count-in starts; recording starts at `record_at`.
-    CountIn { record_at: Tick },
-    RecordOn { tick: Tick },
-    RecordOff { tick: Tick },
+    CountIn {
+        record_at: Tick,
+    },
+    RecordOn {
+        tick: Tick,
+    },
+    RecordOff {
+        tick: Tick,
+    },
     Overdub(bool),
     /// Jumped from `from` to `to` (a locate while rolling).
-    Located { from: Tick, to: Tick },
+    Located {
+        from: Tick,
+        to: Tick,
+    },
     /// The loop jumped back: ticks from `end` on were not played.
-    Looped { end: Tick, start: Tick },
+    Looped {
+        end: Tick,
+        start: Tick,
+    },
     /// The tempo is now this, from this frame: a tempo segment, a live
     /// change, or a jump into another segment. Comes after the marker of
     /// the jump that caused it.
@@ -182,7 +198,13 @@ impl Span {
     /// span's anchor and tempo. Valid for ticks inside the span; beyond it
     /// it is a forecast that holds only if nothing changes.
     pub fn frame_of(&self, tick: f64) -> u64 {
-        frame_at(self.anchor_frame, self.anchor_tick, self.bpm, self.rate, tick)
+        frame_at(
+            self.anchor_frame,
+            self.anchor_tick,
+            self.bpm,
+            self.rate,
+            tick,
+        )
     }
 
     /// Offset in the period of a tick, if it falls in this span.
@@ -191,7 +213,8 @@ impl Span {
             return None;
         }
         let f = self.frame_of(tick);
-        (f >= self.frame && f < self.frame + u64::from(self.len)).then(|| self.offset + (f - self.frame) as u32)
+        (f >= self.frame && f < self.frame + u64::from(self.len))
+            .then(|| self.offset + (f - self.frame) as u32)
     }
 
     /// The whole ticks whose frame falls in this span. Empty when stopped.
@@ -211,7 +234,8 @@ impl Span {
         if !self.state.rolling() {
             return self.anchor_tick as f64;
         }
-        self.anchor_tick as f64 + ticks_in(frame as f64 - self.anchor_frame as f64, self.bpm, self.rate)
+        self.anchor_tick as f64
+            + ticks_in(frame as f64 - self.anchor_frame as f64, self.bpm, self.rate)
     }
 
     /// Every multiple of `step` ticks in the span, with its offset in the
@@ -220,7 +244,12 @@ impl Span {
     pub fn lines(&self, step: Tick) -> Lines {
         let step = step.max(1);
         let r = self.ticks();
-        Lines { span: *self, next: ceil_to(r.start, step), end: r.end, step }
+        Lines {
+            span: *self,
+            next: ceil_to(r.start, step),
+            end: r.end,
+            step,
+        }
     }
 }
 
@@ -266,10 +295,17 @@ const EMPTY_SPAN: Span = Span {
     anchor_tick: 0,
     bpm: 120.0,
     rate: 44_100,
-    swing: Swing { grid: PPQ / 4, amount: 50 },
+    swing: Swing {
+        grid: PPQ / 4,
+        amount: 50,
+    },
     meter: Meter { beats: 4, unit: 4 },
 };
-const EMPTY_MARKER: Marker = Marker { offset: 0, frame: 0, mark: Mark::Panic };
+const EMPTY_MARKER: Marker = Marker {
+    offset: 0,
+    frame: 0,
+    mark: Mark::Panic,
+};
 
 impl Default for Block {
     fn default() -> Self {
@@ -309,7 +345,12 @@ impl Block {
 
     fn push_span(&mut self, s: Span) -> bool {
         if let Some(last) = self.n_spans.checked_sub(1).map(|i| &mut self.spans[i]) {
-            let same = Span { offset: last.offset, len: last.len, frame: last.frame, ..s } == *last;
+            let same = Span {
+                offset: last.offset,
+                len: last.len,
+                frame: last.frame,
+                ..s
+            } == *last;
             if same && last.offset + last.len == s.offset {
                 last.len += s.len;
                 return true;
@@ -581,7 +622,13 @@ impl Transport {
     }
 
     fn frame_of(&self, tick: Tick) -> u64 {
-        frame_at(self.anchor_frame, self.anchor_tick, self.bpm, self.rate, tick as f64)
+        frame_at(
+            self.anchor_frame,
+            self.anchor_tick,
+            self.bpm,
+            self.rate,
+            tick as f64,
+        )
     }
 
     /// The song position at absolute frame `f`: the first whole tick not
@@ -602,7 +649,11 @@ impl Transport {
             state: self.state,
             overdub: self.overdub,
             anchor_frame: if rolling { self.anchor_frame } else { 0 },
-            anchor_tick: if rolling { self.anchor_tick } else { self.position },
+            anchor_tick: if rolling {
+                self.anchor_tick
+            } else {
+                self.position
+            },
             bpm: self.bpm,
             rate: self.rate,
             swing: self.swing,
@@ -620,7 +671,11 @@ impl Transport {
     }
 
     fn mark(&mut self, out: &mut Block, at: u64, mark: Mark) {
-        let m = Marker { offset: (at - out.start_frame) as u32, frame: at, mark };
+        let m = Marker {
+            offset: (at - out.start_frame) as u32,
+            frame: at,
+            mark,
+        };
         if !out.push_marker(m) {
             self.stats.block_full += 1;
         }
@@ -716,7 +771,13 @@ impl Transport {
                 if self.state == State::Stopped {
                     self.state = State::Playing;
                     self.anchor(at, self.position);
-                    self.mark(out, at, Mark::Started { tick: self.position });
+                    self.mark(
+                        out,
+                        at,
+                        Mark::Started {
+                            tick: self.position,
+                        },
+                    );
                 }
             }
             Command::PlayStart => match self.state {
@@ -729,7 +790,11 @@ impl Transport {
             },
             Command::Stop | Command::StopAndRewind => {
                 if self.state.rolling() {
-                    let resume = if self.state == State::CountIn { self.record_at } else { now };
+                    let resume = if self.state == State::CountIn {
+                        self.record_at
+                    } else {
+                        now
+                    };
                     if self.state == State::Recording {
                         self.mark(out, at, Mark::RecordOff { tick: now });
                     }
@@ -756,13 +821,31 @@ impl Transport {
                     self.record_at = self.position;
                     let lead = i64::from(self.count_in) * self.meter.bar_ticks();
                     self.anchor(at, self.position - lead);
-                    self.mark(out, at, Mark::CountIn { record_at: self.record_at });
+                    self.mark(
+                        out,
+                        at,
+                        Mark::CountIn {
+                            record_at: self.record_at,
+                        },
+                    );
                 }
                 State::Stopped => {
                     self.state = State::Recording;
                     self.anchor(at, self.position);
-                    self.mark(out, at, Mark::Started { tick: self.position });
-                    self.mark(out, at, Mark::RecordOn { tick: self.position });
+                    self.mark(
+                        out,
+                        at,
+                        Mark::Started {
+                            tick: self.position,
+                        },
+                    );
+                    self.mark(
+                        out,
+                        at,
+                        Mark::RecordOn {
+                            tick: self.position,
+                        },
+                    );
                 }
                 State::Playing => {
                     self.state = State::Recording;
@@ -868,9 +951,20 @@ mod tests {
         let mut beats = vec![];
         while t.frame() < 44_100 * 3 {
             t.process(512, &mut b);
-            beats.extend(b.spans().iter().flat_map(|s| s.lines(960).map(move |(k, o)| (k, s.frame - u64::from(s.offset) + u64::from(o)))));
+            beats.extend(b.spans().iter().flat_map(|s| {
+                s.lines(960)
+                    .map(move |(k, o)| (k, s.frame - u64::from(s.offset) + u64::from(o)))
+            }));
         }
-        assert_eq!(&beats[..4], &[(960, 22_050), (1920, 44_100), (2880, 66_150), (3840, 88_200)]);
+        assert_eq!(
+            &beats[..4],
+            &[
+                (960, 22_050),
+                (1920, 44_100),
+                (2880, 66_150),
+                (3840, 88_200)
+            ]
+        );
     }
 
     #[test]
@@ -879,7 +973,14 @@ mod tests {
         t.command(0, Command::SetCountIn(1));
         t.command(100, Command::Record);
         let b = run(&mut t, 4096);
-        assert_eq!(b.markers()[1], Marker { offset: 100, frame: 100, mark: Mark::CountIn { record_at: 0 } });
+        assert_eq!(
+            b.markers()[1],
+            Marker {
+                offset: 100,
+                frame: 100,
+                mark: Mark::CountIn { record_at: 0 }
+            }
+        );
         assert_eq!(b.spans()[1].state, State::CountIn);
         assert_eq!(b.spans()[1].ticks().start, -3840);
         let mut b = Block::new();
@@ -887,7 +988,13 @@ mod tests {
             t.process(4096, &mut b);
         }
         // One bar at 120 BPM is 2 s.
-        assert_eq!(marks(&b), vec![(88_300, Mark::Started { tick: 0 }), (88_300, Mark::RecordOn { tick: 0 })]);
+        assert_eq!(
+            marks(&b),
+            vec![
+                (88_300, Mark::Started { tick: 0 }),
+                (88_300, Mark::RecordOn { tick: 0 })
+            ]
+        );
         assert_eq!(t.state(), State::Recording);
     }
 
@@ -900,7 +1007,12 @@ mod tests {
         let mut loops = vec![];
         while t.frame() < 88_200 * 3 + 1 {
             t.process(1000, &mut b);
-            loops.extend(marks(&b).into_iter().filter(|m| matches!(m.1, Mark::Looped { .. })).map(|m| m.0));
+            loops.extend(
+                marks(&b)
+                    .into_iter()
+                    .filter(|m| matches!(m.1, Mark::Looped { .. }))
+                    .map(|m| m.0),
+            );
         }
         assert_eq!(loops, vec![88_200, 176_400, 264_600]);
     }
@@ -926,9 +1038,15 @@ mod tests {
         // Tick 100 is at frame 2297; the next 1/16 is tick 240, frame 5513.
         t.command(2297, Command::SetTempo(90.0));
         let b = run(&mut t, 8192);
-        assert_eq!(marks(&b), vec![(0, Mark::Started { tick: 0 }), (5513, Mark::Tempo(90.0))]);
+        assert_eq!(
+            marks(&b),
+            vec![(0, Mark::Started { tick: 0 }), (5513, Mark::Tempo(90.0))]
+        );
         let last = b.spans().last().unwrap();
-        assert_eq!((last.anchor_tick, last.anchor_frame, last.bpm), (240, 5513, 90.0));
+        assert_eq!(
+            (last.anchor_tick, last.anchor_frame, last.bpm),
+            (240, 5513, 90.0)
+        );
         assert_eq!(t.tempo_map().segments().len(), 1);
     }
 
@@ -941,7 +1059,11 @@ mod tests {
         let b = run(&mut t, 4096);
         assert_eq!(
             marks(&b)[1..],
-            [(1000, Mark::Stopped { tick: 44 }), (2000, Mark::Rewound), (2000, Mark::Panic)]
+            [
+                (1000, Mark::Stopped { tick: 44 }),
+                (2000, Mark::Rewound),
+                (2000, Mark::Panic)
+            ]
         );
         assert_eq!(t.position(), 0);
     }
@@ -958,7 +1080,13 @@ mod tests {
             t.process(4096, &mut b);
             all.extend(marks(&b));
         }
-        assert_eq!(all[1..], [(22_050, Mark::RecordOn { tick: 960 }), (44_100, Mark::RecordOff { tick: 1920 })]);
+        assert_eq!(
+            all[1..],
+            [
+                (22_050, Mark::RecordOn { tick: 960 }),
+                (44_100, Mark::RecordOff { tick: 1920 })
+            ]
+        );
         assert_eq!(t.state(), State::Playing);
     }
 
@@ -977,7 +1105,17 @@ mod tests {
     fn tempo_segments_change_the_tempo_on_their_tick() {
         use crate::time::Segment;
         let mut t = Transport::new(44_100, 120.0).unwrap();
-        let map = TempoMap::new(&[Segment { start: 0, bpm: 120.0 }, Segment { start: 960, bpm: 60.0 }]).unwrap();
+        let map = TempoMap::new(&[
+            Segment {
+                start: 0,
+                bpm: 120.0,
+            },
+            Segment {
+                start: 960,
+                bpm: 60.0,
+            },
+        ])
+        .unwrap();
         t.set_tempo_map(map).unwrap();
         t.command(0, Command::Play);
         let mut b = Block::new();
@@ -991,18 +1129,38 @@ mod tests {
                 }
             }
         }
-        assert_eq!(beats, vec![(0, 0, 120.0), (960, 22_050, 60.0), (1920, 66_150, 60.0), (2880, 110_250, 60.0)]);
+        assert_eq!(
+            beats,
+            vec![
+                (0, 0, 120.0),
+                (960, 22_050, 60.0),
+                (1920, 66_150, 60.0),
+                (2880, 110_250, 60.0)
+            ]
+        );
     }
 
     #[test]
     fn bad_values_are_counted_not_applied() {
         let mut t = Transport::new(44_100, 120.0).unwrap();
-        assert_eq!(Transport::new(8000, 120.0).err(), Some(ConfigError::SampleRate));
-        assert_eq!(Transport::new(44_100, 500.0).err(), Some(ConfigError::Tempo));
+        assert_eq!(
+            Transport::new(8000, 120.0).err(),
+            Some(ConfigError::SampleRate)
+        );
+        assert_eq!(
+            Transport::new(44_100, 500.0).err(),
+            Some(ConfigError::Tempo)
+        );
         t.command(0, Command::SetTempo(1000.0));
         t.command(0, Command::SetLoop(Some((0, 10))));
         t.command(0, Command::SetCountIn(9));
-        t.command(0, Command::SetSwing(Swing { grid: 7, amount: 60 }));
+        t.command(
+            0,
+            Command::SetSwing(Swing {
+                grid: 7,
+                amount: 60,
+            }),
+        );
         let b = run(&mut t, 64);
         assert!(b.markers().is_empty());
         assert_eq!(t.stats().rejected, 4);

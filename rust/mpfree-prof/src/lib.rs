@@ -33,9 +33,9 @@
 pub mod alloc;
 pub mod budget;
 pub mod model;
+mod node;
 pub mod procs;
 pub mod report;
-mod node;
 mod shared;
 mod stats;
 
@@ -55,16 +55,25 @@ pub struct Span {
 
 impl Span {
     #[inline]
-    pub fn start() -> Span { Span { allocs: alloc::thread_count(), at: Instant::now() } }
+    pub fn start() -> Span {
+        Span {
+            allocs: alloc::thread_count(),
+            at: Instant::now(),
+        }
+    }
 
     /// Nanoseconds since the start.
     #[inline]
-    pub fn elapsed_ns(&self) -> u64 { self.at.elapsed().as_nanos().min(u64::MAX as u128) as u64 }
+    pub fn elapsed_ns(&self) -> u64 {
+        self.at.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    }
 
     /// Allocator calls on this thread since the start (0 when the counting
     /// allocator is not installed).
     #[inline]
-    pub fn allocs(&self) -> u64 { alloc::thread_count().wrapping_sub(self.allocs) }
+    pub fn allocs(&self) -> u64 {
+        alloc::thread_count().wrapping_sub(self.allocs)
+    }
 }
 
 /// A fixed set of named probes, made before the audio stream starts. The
@@ -80,23 +89,36 @@ impl Profiler {
     /// One probe per name, each with the same over-limit threshold (usually
     /// the period: see [`budget::Period::ns`]).
     pub fn new(names: &[&'static str], limit_ns: u64) -> Profiler {
-        Profiler { names: names.to_vec(), probes: names.iter().map(|_| Probe::new(limit_ns)).collect() }
+        Profiler {
+            names: names.to_vec(),
+            probes: names.iter().map(|_| Probe::new(limit_ns)).collect(),
+        }
     }
 
     /// The index of a name, looked up once at setup.
-    pub fn index(&self, name: &str) -> Option<usize> { self.names.iter().position(|n| *n == name) }
+    pub fn index(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|n| *n == name)
+    }
 
-    pub fn names(&self) -> &[&'static str] { &self.names }
+    pub fn names(&self) -> &[&'static str] {
+        &self.names
+    }
 
     /// Records a finished span on probe `i`. Out-of-range indices are
     /// ignored (never a panic on the audio thread).
     #[inline]
     pub fn stop(&mut self, i: usize, span: Span, frames: u32) {
-        if let Some(p) = self.probes.get_mut(i) { p.stop(span, frames); }
+        if let Some(p) = self.probes.get_mut(i) {
+            p.stop(span, frames);
+        }
     }
 
-    pub fn probe(&self, i: usize) -> Option<&Probe> { self.probes.get(i) }
-    pub fn probe_mut(&mut self, i: usize) -> Option<&mut Probe> { self.probes.get_mut(i) }
+    pub fn probe(&self, i: usize) -> Option<&Probe> {
+        self.probes.get(i)
+    }
+    pub fn probe_mut(&mut self, i: usize) -> Option<&mut Probe> {
+        self.probes.get_mut(i)
+    }
 
     /// Every probe's window as `(name, summary)`, and the windows restart.
     /// Fills `out` (cleared first) so a host can reuse one buffer.
@@ -109,7 +131,11 @@ impl Profiler {
 
     /// Every probe's lifetime summary.
     pub fn lifetime(&self) -> Vec<(&'static str, Summary)> {
-        self.names.iter().zip(&self.probes).map(|(n, p)| (*n, p.lifetime())).collect()
+        self.names
+            .iter()
+            .zip(&self.probes)
+            .map(|(n, p)| (*n, p.lifetime()))
+            .collect()
     }
 }
 
