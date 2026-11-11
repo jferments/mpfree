@@ -45,6 +45,7 @@ FUNCTIONS=(
  "az01_commit_bootloader","az01_write_partition","az01_write_partition_image",
  "az01_usb_update_mode","az01_sign_update","az01_erase_partition",
  "az01_device_get_serial","az01_image_for_each_signature",
+ "main","_start",
 )
 DTB_KEYWORDS=("reboot-mode","dwmmc@","usb@ff540000","usb@ff580000",
               "saradc@ff100000","efuse","otp","reserved-memory","chosen",
@@ -164,6 +165,23 @@ def get_elf_details(binary,td):
             if not lines:continue
             details["function_disassembly"][name]={"lines":lines[:190],
                                                   "truncated":len(lines)>190}
+        # Small standalone helper ELFs (especially az01-bootloader-sig,
+        # around 9 KiB) may be stripped and have no exported "main".
+        # Include their bounded COMPLETE .text disassembly so that the
+        # partition read, SHA comparison and post-mismatch action can be
+        # traced even when objdump cannot find symbol names.
+        if len(binary) < 20000:
+            full=cmd([disassembler,"-d","--no-show-raw-insn",str(path)])
+            t=full.stdout.decode("utf-8","replace")
+            lines=[x[:240] for x in t.splitlines() if
+                   x.strip().endswith(">:") or
+                   re.search(r":\s+[a-z][a-z0-9.]*\s",x)]
+            details["small_elf_complete_text"]={
+                "disassembler_returncode":full.returncode,
+                "lines":lines[:1800],
+                "truncated":len(lines)>1800,
+                "warning":"Assembler listing is not proof of startup execution.",
+            }
         # For stripped standalone ELF, imports and GOT calls can locate the
         # relevant hash/partition paths; a full Ghidra import is later possible.
         reloc=cmd([disassembler,"-R",str(path)]).stdout.decode("utf-8","replace")
