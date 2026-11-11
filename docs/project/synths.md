@@ -226,9 +226,21 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
   - A tap selects a tile, and the wheel then turns it.
   - Q-Links 1 to 4 turn the marked tiles. A detent is one step for whole numbers and choices, and 1/100 of the range along the parameter's curve otherwise.
   - SHIFT + wheel steps through the pages.
+- **Q-Link sets** (`qsets`). A sound carries named sets of four controls, so the Q-Links can play it from any screen without opening its editor. Each engine has curated sets, in the order a player reaches for them:
+
+  | Engine | Sets |
+  |---|---|
+  | Poly | Tone (cutoff, resonance, filter env amount, drive), Env, Filter env, Motion (LFO rate, LFO to cutoff, LFO to pitch, unison detune), Mix, Osc |
+  | FM | Algo (algorithm, feedback, transpose, level), Levels 1-4, Ops 5-6 (levels and coarse), Ratios 1-4, Mod (LFO) |
+  | Wavetable | Tables (both positions and warps), Tone, Env, Mod env, Motion, Mix |
+  | Pluck | String, Mallet, Play |
+  | Drums | Hit (tune, decay, tone, snap), Body, Mix, on the pad hit last |
+
+  Any other node, such as a plugin, gets one set per Synth tab page (at most 8). Drums' sets name pad 1's parameters; `qsets::on_pad` moves them to the pad hit last, and `qsets::pad_relative` keeps a knob learned on another pad as pad 1's, so it follows the pad too. `qsets::save` writes the sets as `qset = <id> <id> <id> <id> <name>` lines for a preset file (`-` for a free knob), and `qsets::load` reads them back from a whole preset file: an id the node no longer has, or a meter, loads as a free knob. Showing the sets in the Q-Link column goes through `mpfree-mod`'s bindings; nothing on screen changes yet.
 - **The app's part.** The app owns the node on the audio thread. It builds a `SynthState` from the node (`SynthState::from_node`) and adds the panel with `SynthPanel::add(ui, "Synth", state)` after its own `header` and `hint` widgets. It passes touches (`SynthPanel::event`), Q-Link turns (`qlink`) and wheel turns (`wheel`, `step_page`) to the panel, and applies each `SynthAction` it gets back: `Set { id, value }` becomes `Node::set_param`, and `Preset(i)` loads the preset, after which the app calls `SynthPanel::load` with the node's new state. The panel updates its own copy of a value at once, so the screen keeps up with a finger.
 - **Preview.** `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the sample screens to PNG files in a new folder `~/mpfree-work/synth-preview-<UTC>`. It opens no device.
 - **Tests.**
+  - Q-Link sets: every engine's curated sets turn real knobs (no meters, switches or choices, nothing twice in a set), Drums' sets follow the pad, the sets save and load with a preset, and old or odd preset lines load safely.
   - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum). All 32 algorithms lay out with no boxes overlapping, carriers on the bottom row and every modulator above what it modulates.
   - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that the Pressure page draws the curve and live bars and reads depths in their targets' units, that FM draws its algorithm, rings the page's operators and opens an operator's page from a tap on its box, that every FM page has its strip, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
 
