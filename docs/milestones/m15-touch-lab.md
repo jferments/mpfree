@@ -33,12 +33,14 @@ A "fail" isn't a device problem. It says the gesture settings and Jay's hand dis
 All plain ASCII `key=value` pairs separated by spaces, emitted on the app's stdout (journal unit `mpfree-test-app.service`):
 
 ```text
-touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12
+touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12 events=480
 touch-gesture: step=swipes kind=swipe dir=left speed=1180 t_ms=4521
 touch-gesture: step=fling kind=drag-end vx=0 vy=-1136 cancelled=0 t_ms=2210
 touch-lab: step=swipes result=pass downs=4 taps=0 long=0 drags=4 swipes=1,1,1,1 two_finger=0 flings=4 note=ok
 touch-lab: step=hold_centre result=pass downs=1 taps=0 long=1 drags=0 swipes=0,0,0,0 two_finger=0 flings=0 note=ok hold_n=37 hold_hz=3.6 hold_std_x=0.84 hold_std_y=1.10 hold_max_dev=2.40
 ```
+
+`events` counts the raw input events the reader has read. The app logs the reader line when the touchscreen opens, then every 30 s while that count is changing. If Jay touched the screen and `events` stayed at 0, the events are stopping at or below the driver, not in MPFree's code.
 
 Gesture kinds are `tap`, `long`, `drag-start`, `drag-end` (with `vx`, `vy`, `cancelled`), `swipe` (with `dir`, `speed`), `2f-start` and `2f-end`. Positions and speeds are in logical pixels (1280×800). `parse_line` reads any of these lines back, and skips any timestamp or unit prefix in front.
 

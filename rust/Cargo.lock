@@ -86,6 +86,7 @@ dependencies = [
  "mpfree-core",
  "mpfree-screen-log",
  "mpfree-touch",
+ "mpfree-touch-evdev",
  "mpfree-ui",
 ]
 
