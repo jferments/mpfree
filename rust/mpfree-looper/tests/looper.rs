@@ -59,7 +59,8 @@ impl Rig {
             }
             self.mix[..2 * n].fill(0.0);
             assert!(self.t.process(n as u32, &mut self.b));
-            self.l.process(&self.b, &self.input[..2 * n], &mut self.mix[..2 * n]);
+            self.l
+                .process(&self.b, &self.input[..2 * n], &mut self.mix[..2 * n]);
             self.out.extend_from_slice(&self.mix[..2 * n]);
             self.frame += n as u64;
         }
@@ -75,7 +76,13 @@ impl Rig {
 
     /// The biggest jump between neighbouring output frames in `a..b`.
     fn max_step(&self, a: u64, b: u64) -> f32 {
-        (a + 1..b).map(|f| (self.left(f) - self.left(f - 1)).abs().max((self.right(f) - self.right(f - 1)).abs())).fold(0.0, f32::max)
+        (a + 1..b)
+            .map(|f| {
+                (self.left(f) - self.left(f - 1))
+                    .abs()
+                    .max((self.right(f) - self.right(f - 1)).abs())
+            })
+            .fold(0.0, f32::max)
     }
 }
 
@@ -122,12 +129,19 @@ fn the_first_pass_starts_on_the_bar_and_plays_back_sample_for_sample() {
     let mut r = Rig::new(10, 128);
     record_one_bar(&mut r, &noise);
     // Silent while armed and recording.
-    assert!(r.out[..2 * (START as usize + BAR)].iter().all(|&v| v == 0.0));
+    assert!(r.out[..2 * (START as usize + BAR)]
+        .iter()
+        .all(|&v| v == 0.0));
     r.run(START + 2 * BAR as u64, &|_| [0.0, 0.0]);
     let len = BAR as u64;
     for f in START + len + FADE as u64..START + 2 * len - FADE as u64 {
         let want = noise(f - len);
-        assert!((r.left(f) - want[0]).abs() < 1e-4, "frame {f}: {} vs {}", r.left(f), want[0]);
+        assert!(
+            (r.left(f) - want[0]).abs() < 1e-4,
+            "frame {f}: {} vs {}",
+            r.left(f),
+            want[0]
+        );
         assert!((r.right(f) - want[1]).abs() < 1e-4, "frame {f}");
     }
 }
@@ -158,7 +172,10 @@ fn the_loop_point_does_not_click() {
     let seam = START + 2 * BAR as u64;
     // The sine moves at most 0.5 * 2 pi / 1000.37 = 0.0031 per frame. A
     // raw splice here would jump about 0.13; the crossfade keeps it smooth.
-    let step = r.max_step(START + BAR as u64 + FADE as u64 + 1, START + 3 * BAR as u64 - 1);
+    let step = r.max_step(
+        START + BAR as u64 + FADE as u64 + 1,
+        START + 3 * BAR as u64 - 1,
+    );
     assert!(step < 0.008, "biggest step {step}");
     assert!((r.left(seam) - sine(START)[0]).abs() < 1e-3);
 }
@@ -188,10 +205,18 @@ fn overdubs_stack_and_undo_and_redo_fade() {
     assert_eq!((s.phase, s.layers, s.redo), (Phase::Playing, 2, 0));
     let layer = r.l.layer(1).unwrap();
     for q in (2_000 + FADE + 1)..5_000 {
-        assert!((layer[2 * q] - 0.25).abs() < 1e-5, "position {q}: {}", layer[2 * q]);
+        assert!(
+            (layer[2 * q] - 0.25).abs() < 1e-5,
+            "position {q}: {}",
+            layer[2 * q]
+        );
     }
     for q in (5_000 + FADE + 1..BAR).chain(0..2_000) {
-        assert!((layer[2 * q] - 0.125).abs() < 1e-5, "position {q}: {}", layer[2 * q]);
+        assert!(
+            (layer[2 * q] - 0.125).abs() < 1e-5,
+            "position {q}: {}",
+            layer[2 * q]
+        );
     }
     // Played back: the first pass plus the layer.
     let g = pos_frame(r.frame, 0);
@@ -207,13 +232,19 @@ fn overdubs_stack_and_undo_and_redo_fade() {
     let s = r.l.status();
     assert_eq!((s.layers, s.redo), (1, 1));
     assert!((r.left(r.frame - 1) - 0.25).abs() < 1e-4);
-    assert!(r.max_step(u, r.frame) < 0.125 / FADE as f32 * 1.5 + 1e-4, "undo clicked");
+    assert!(
+        r.max_step(u, r.frame) < 0.125 / FADE as f32 * 1.5 + 1e-4,
+        "undo clicked"
+    );
     r.cmd(L::Redo);
     let u = r.frame;
     r.run(u + 4 * FADE as u64, &z);
     let s = r.l.status();
     assert_eq!((s.layers, s.redo), (2, 0));
-    assert!(r.max_step(u, r.frame) < 0.25 / FADE as f32 * 1.5 + 1e-4, "redo clicked");
+    assert!(
+        r.max_step(u, r.frame) < 0.25 / FADE as f32 * 1.5 + 1e-4,
+        "redo clicked"
+    );
 
     // Undo, then a new overdub: Redo has nothing left to bring back.
     r.cmd(L::Undo);
@@ -280,7 +311,10 @@ fn punches_fade_and_old_audio_in_a_reused_slot_stays_silent() {
     r.run(g + BAR as u64, &z);
     assert!((r.left(g + 2_000) - 0.25).abs() < 1e-4, "stale audio heard");
     assert!((r.left(g + 6_000) - 0.375).abs() < 1e-4);
-    assert!((r.left(g + 15_000) - 0.25).abs() < 1e-4, "stale audio heard");
+    assert!(
+        (r.left(g + 15_000) - 0.25).abs() < 1e-4,
+        "stale audio heard"
+    );
     assert!(r.max_step(g, g + BAR as u64) < 0.125 / FADE as f32 * 1.5 + 1e-4);
 }
 
@@ -350,7 +384,10 @@ fn free_length_ends_on_the_bar_after_record() {
     assert!(r.l.status().ending);
     r.run(START + 2 * BAR as u64 + 1, &noise);
     let s = r.l.status();
-    assert_eq!((s.phase, s.frames, s.ticks), (Phase::Playing, 2 * BAR, 2 * BAR_TICKS));
+    assert_eq!(
+        (s.phase, s.frames, s.ticks),
+        (Phase::Playing, 2 * BAR, 2 * BAR_TICKS)
+    );
 }
 
 #[test]
@@ -509,7 +546,10 @@ fn every_period_size_gives_the_same_output() {
     for period in [64, 128, 256, 512] {
         let got = session(period);
         assert_eq!(got.len(), want.len());
-        let first = got.iter().zip(&want).position(|(a, b)| a.to_bits() != b.to_bits());
+        let first = got
+            .iter()
+            .zip(&want)
+            .position(|(a, b)| a.to_bits() != b.to_bits());
         assert_eq!(first, None, "period {period} differs at sample {first:?}");
     }
 }
@@ -522,7 +562,13 @@ fn overdub_pressed_during_the_first_pass_takes_over_where_it_ends() {
     // The player plays 0.25 for the first pass, then 0.125; the input
     // hears it LAT late.
     let end = START + BAR as u64;
-    let played = move |f: u64| if f < end { [0.25, -0.25] } else { [0.125, -0.125] };
+    let played = move |f: u64| {
+        if f < end {
+            [0.25, -0.25]
+        } else {
+            [0.125, -0.125]
+        }
+    };
     let late = move |f: u64| if f < LAT { [0.0, 0.0] } else { played(f - LAT) };
     r.cmd(L::SetBars(Some(1)));
     r.cmd(L::Record);
@@ -537,17 +583,28 @@ fn overdub_pressed_during_the_first_pass_takes_over_where_it_ends() {
     assert!(r.l.status().overdub_next);
     r.run(end + 1, &late);
     let s = r.l.status();
-    assert_eq!((s.phase, s.layers, s.overdub_next), (Phase::Overdubbing, 2, false));
+    assert_eq!(
+        (s.phase, s.layers, s.overdub_next),
+        (Phase::Overdubbing, 2, false)
+    );
     r.run(end + 8_000, &late);
     let layer = r.l.layer(1).unwrap();
     // It starts at the loop's first frame with a short fade, and holds
     // none of the first pass's input (that went to layer 1 only).
     assert!(layer[0].abs() < 0.125 / 32.0 + 1e-6, "{}", layer[0]);
     for q in mpfree_looper::HANDOFF_FADE..7_000 {
-        assert!((layer[2 * q] - 0.125).abs() < 1e-6, "position {q}: {}", layer[2 * q]);
+        assert!(
+            (layer[2 * q] - 0.125).abs() < 1e-6,
+            "position {q}: {}",
+            layer[2 * q]
+        );
     }
     let first = r.l.layer(0).unwrap();
     for q in (FADE..BAR - FADE).step_by(97) {
-        assert!((first[2 * q] - 0.25).abs() < 1e-6, "position {q}: {}", first[2 * q]);
+        assert!(
+            (first[2 * q] - 0.25).abs() < 1e-6,
+            "position {q}: {}",
+            first[2 * q]
+        );
     }
 }

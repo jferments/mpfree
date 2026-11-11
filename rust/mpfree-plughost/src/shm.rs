@@ -101,7 +101,10 @@ pub fn futex_wait(word: &AtomicU32, expected: u32, timeout: Option<Duration>) {
     let ts;
     let tsp = match timeout {
         Some(t) => {
-            ts = libc::timespec { tv_sec: t.as_secs() as libc::time_t, tv_nsec: t.subsec_nanos() as libc::c_long };
+            ts = libc::timespec {
+                tv_sec: t.as_secs() as libc::time_t,
+                tv_nsec: t.subsec_nanos() as libc::c_long,
+            };
             &ts as *const libc::timespec
         }
         None => std::ptr::null(),
@@ -109,7 +112,15 @@ pub fn futex_wait(word: &AtomicU32, expected: u32, timeout: Option<Duration>) {
     // SAFETY: a valid futex word in shared memory (no FUTEX_PRIVATE_FLAG,
     // so it works across processes) and a valid or null timeout.
     unsafe {
-        libc::syscall(libc::SYS_futex, word.as_ptr(), FUTEX_WAIT, expected, tsp, std::ptr::null::<u32>(), 0);
+        libc::syscall(
+            libc::SYS_futex,
+            word.as_ptr(),
+            FUTEX_WAIT,
+            expected,
+            tsp,
+            std::ptr::null::<u32>(),
+            0,
+        );
     }
 }
 
@@ -117,7 +128,15 @@ pub fn futex_wait(word: &AtomicU32, expected: u32, timeout: Option<Duration>) {
 pub fn futex_wake(word: &AtomicU32) {
     // SAFETY: as futex_wait.
     unsafe {
-        libc::syscall(libc::SYS_futex, word.as_ptr(), FUTEX_WAKE, i32::MAX, std::ptr::null::<libc::timespec>(), std::ptr::null::<u32>(), 0);
+        libc::syscall(
+            libc::SYS_futex,
+            word.as_ptr(),
+            FUTEX_WAKE,
+            i32::MAX,
+            std::ptr::null::<libc::timespec>(),
+            std::ptr::null::<u32>(),
+            0,
+        );
     }
 }
 
@@ -137,7 +156,11 @@ impl Mapping {
     pub fn create() -> std::io::Result<Mapping> {
         // SAFETY: plain syscalls; every failure path closes what it opened.
         unsafe {
-            let fd = libc::syscall(libc::SYS_memfd_create, c"mpfree-plughost".as_ptr(), libc::MFD_CLOEXEC) as libc::c_int;
+            let fd = libc::syscall(
+                libc::SYS_memfd_create,
+                c"mpfree-plughost".as_ptr(),
+                libc::MFD_CLOEXEC,
+            ) as libc::c_int;
             if fd < 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -158,20 +181,33 @@ impl Mapping {
         unsafe {
             let m = Self::map(fd)?;
             if !valid(m.ptr) {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not an mpfree-plughost block"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "not an mpfree-plughost block",
+                ));
             }
             Ok(m)
         }
     }
 
     unsafe fn map(fd: libc::c_int) -> std::io::Result<Mapping> {
-        let p = libc::mmap(std::ptr::null_mut(), SIZE, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0);
+        let p = libc::mmap(
+            std::ptr::null_mut(),
+            SIZE,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd,
+            0,
+        );
         if p == libc::MAP_FAILED {
             let e = std::io::Error::last_os_error();
             libc::close(fd);
             return Err(e);
         }
-        Ok(Mapping { fd, ptr: p as *mut Shm })
+        Ok(Mapping {
+            fd,
+            ptr: p as *mut Shm,
+        })
     }
 
     /// The host's sequence word. (Only the two atomics are handed out as

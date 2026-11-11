@@ -27,25 +27,43 @@ use std::f32::consts::TAU;
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, NodeEvent, Timed};
-use mpfree_fx::{gain_to_db, Chorus, Cloud, Drive, Eq, Flanger, LoFi, MasterSafety, Phaser, CLOUD_PRESETS, LOFI_PRESETS};
+use mpfree_fx::{
+    gain_to_db, Chorus, Cloud, Drive, Eq, Flanger, LoFi, MasterSafety, Phaser, CLOUD_PRESETS,
+    LOFI_PRESETS,
+};
 
 const RATE: u32 = 48_000;
 const BPM: f64 = 90.0;
 const BLOCK: usize = 128;
 const BARS: usize = 15;
 
-fn step(s: f64) -> usize { (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize }
-fn bar(b: usize) -> usize { step((b as f64 - 1.0) * 16.0) }
-fn db(x: f32) -> f32 { gain_to_db(x) }
-fn rms(x: &[f32]) -> f32 { (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32 }
-fn peak(x: &[f32]) -> f32 { x.iter().fold(0.0f32, |m, v| m.max(v.abs())) }
-fn hz(midi: i32) -> f32 { 440.0 * 2f32.powf((midi - 69) as f32 / 12.0) }
+fn step(s: f64) -> usize {
+    (s * 60.0 / BPM * f64::from(RATE) / 4.0).round() as usize
+}
+fn bar(b: usize) -> usize {
+    step((b as f64 - 1.0) * 16.0)
+}
+fn db(x: f32) -> f32 {
+    gain_to_db(x)
+}
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len().max(1) as f64).sqrt() as f32
+}
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+fn hz(midi: i32) -> f32 {
+    440.0 * 2f32.powf((midi - 69) as f32 / 12.0)
+}
 
 struct Noise(u64);
 
 impl Noise {
     fn next(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         ((self.0 >> 40) as f32 / (1u64 << 23) as f32) - 1.0
     }
 }
@@ -53,7 +71,10 @@ impl Noise {
 /// A saw from its harmonics below 12 kHz.
 fn saw(ph: f32, hz: f32) -> f32 {
     let n = ((12_000.0 / hz) as usize).clamp(1, 24);
-    (1..=n).map(|k| (TAU * ph * k as f32).sin() / k as f32).sum::<f32>() * 0.55
+    (1..=n)
+        .map(|k| (TAU * ph * k as f32).sin() / k as f32)
+        .sum::<f32>()
+        * 0.55
 }
 
 type Stem = (Vec<f32>, Vec<f32>);
@@ -63,7 +84,9 @@ fn add(s: &mut Stem, at: usize, len: usize, pan: f32, f: &mut dyn FnMut(usize) -
     let fade = (0.003 * RATE as f32) as usize;
     for k in 0..len {
         let i = at + k;
-        if i >= s.0.len() { break; }
+        if i >= s.0.len() {
+            break;
+        }
         let x = f(k) * ((len - k) as f32 / fade as f32).min(1.0);
         s.0[i] += x * (1.0 - pan);
         s.1[i] += x * (1.0 + pan);
@@ -105,27 +128,55 @@ fn stems(total: usize) -> [Stem; 3] {
     let rate = RATE as f32;
     for b in 1..14 {
         let s0 = (b as f64 - 1.0) * 16.0;
-        for &s in &[0.0, 7.0, 10.0] { kick(&mut st[DRUMS], step(s0 + s), 0.4, 0.6); }
+        for &s in &[0.0, 7.0, 10.0] {
+            kick(&mut st[DRUMS], step(s0 + s), 0.4, 0.6);
+        }
         for &s in &[4.0, 12.0] {
             let mut ph = 0.0f32;
-            add(&mut st[DRUMS], step(s0 + s), (0.22 * rate) as usize, 0.05, &mut |k| {
-                let t = k as f32 / rate;
-                ph += 185.0 / rate;
-                noise.next() * (-t * 18.0).exp() * 0.42 + (ph * TAU).sin() * (-t * 30.0).exp() * 0.3
-            });
+            add(
+                &mut st[DRUMS],
+                step(s0 + s),
+                (0.22 * rate) as usize,
+                0.05,
+                &mut |k| {
+                    let t = k as f32 / rate;
+                    ph += 185.0 / rate;
+                    noise.next() * (-t * 18.0).exp() * 0.42
+                        + (ph * TAU).sin() * (-t * 30.0).exp() * 0.3
+                },
+            );
         }
         for h in 0..16 {
             let s = h as f64 + if h % 2 == 1 { 0.2 } else { 0.0 };
-            let vel = if h % 4 == 2 { 0.2 } else if h % 2 == 0 { 0.14 } else { 0.08 };
+            let vel = if h % 4 == 2 {
+                0.2
+            } else if h % 2 == 0 {
+                0.14
+            } else {
+                0.08
+            };
             let mut prev = 0.0f32;
-            add(&mut st[DRUMS], step(s0 + s), (0.05 * rate) as usize, -0.35, &mut |k| {
-                let n = noise.next();
-                let x = n - prev;
-                prev = n;
-                x * (-(k as f32) / rate * 90.0).exp() * vel
-            });
+            add(
+                &mut st[DRUMS],
+                step(s0 + s),
+                (0.05 * rate) as usize,
+                -0.35,
+                &mut |k| {
+                    let n = noise.next();
+                    let x = n - prev;
+                    prev = n;
+                    x * (-(k as f32) / rate * 90.0).exp() * vel
+                },
+            );
         }
-        let riff: [(f64, f64, i32); 6] = [(0.0, 2.5, 28), (3.0, 1.0, 28), (5.0, 1.0, 40), (6.0, 2.0, 31), (8.0, 3.5, 28), (12.0, 3.0, 26)];
+        let riff: [(f64, f64, i32); 6] = [
+            (0.0, 2.5, 28),
+            (3.0, 1.0, 28),
+            (5.0, 1.0, 40),
+            (6.0, 2.0, 31),
+            (8.0, 3.5, 28),
+            (12.0, 3.0, 26),
+        ];
         for &(s, len, n) in &riff {
             let f = hz(n);
             let mut ph = 0.0f32;
@@ -135,7 +186,12 @@ fn stems(total: usize) -> [Stem; 3] {
             });
         }
         // E minor, C, G, D, held for the bar.
-        let notes: [i32; 4] = match (b - 1) % 4 { 0 => [52, 59, 64, 67], 1 => [48, 55, 64, 67], 2 => [50, 55, 62, 71], _ => [50, 57, 62, 66] };
+        let notes: [i32; 4] = match (b - 1) % 4 {
+            0 => [52, 59, 64, 67],
+            1 => [48, 55, 64, 67],
+            2 => [50, 55, 62, 71],
+            _ => [50, 57, 62, 66],
+        };
         chord(&mut st[CHORDS], step(s0), step(16.0), &notes, 0.25);
     }
     // The last hit at bar 14, into the reverb.
@@ -159,15 +215,25 @@ type Moves = Vec<(usize, u16, f32)>;
 fn events_in(moves: &Moves, at: usize, len: usize, out: &mut Vec<Timed>) {
     out.clear();
     for &(f, id, v) in moves {
-        if f >= at && f < at + len { out.push(Timed::new((f - at) as u32, NodeEvent::Param { id, value: v })); }
+        if f >= at && f < at + len {
+            out.push(Timed::new(
+                (f - at) as u32,
+                NodeEvent::Param { id, value: v },
+            ));
+        }
     }
 }
 
 fn main() {
-    let out = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        std::path::Path::new(&home).join("mpfree-work").join("mod-demo.wav")
-    });
+    let out = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::Path::new(&home)
+                .join("mpfree-work")
+                .join("mod-demo.wav")
+        });
     let total = bar(BARS + 1);
     let st = stems(total);
 
@@ -182,23 +248,87 @@ fn main() {
     let mut hall = Cloud::new();
     let mut safety = MasterSafety::new();
     let mut raw = MasterSafety::new();
-    let flange: &[(u16, f32)] = &[(ids::flanger::SYNC, 5.0), (ids::flanger::DEPTH, 80.0), (ids::flanger::DELAY, 1.2), (ids::flanger::FEEDBACK, 70.0), (ids::flanger::MIX, 0.0)];
+    let flange: &[(u16, f32)] = &[
+        (ids::flanger::SYNC, 5.0),
+        (ids::flanger::DEPTH, 80.0),
+        (ids::flanger::DELAY, 1.2),
+        (ids::flanger::FEEDBACK, 70.0),
+        (ids::flanger::MIX, 0.0),
+    ];
     let setups: [Setup; 11] = [
-        (&mut fuzz, &[(ids::drive::MODE, 4.0), (ids::drive::DRIVE, 20.0), (ids::drive::TONE, 4000.0), (ids::drive::MIX, 80.0)]),
-        (&mut chorus, &[(ids::chorus::VOICES, 3.0), (ids::chorus::DEPTH, 60.0), (ids::chorus::RATE, 0.5), (ids::chorus::MIX, 0.0)]),
+        (
+            &mut fuzz,
+            &[
+                (ids::drive::MODE, 4.0),
+                (ids::drive::DRIVE, 20.0),
+                (ids::drive::TONE, 4000.0),
+                (ids::drive::MIX, 80.0),
+            ],
+        ),
+        (
+            &mut chorus,
+            &[
+                (ids::chorus::VOICES, 3.0),
+                (ids::chorus::DEPTH, 60.0),
+                (ids::chorus::RATE, 0.5),
+                (ids::chorus::MIX, 0.0),
+            ],
+        ),
         (&mut flanger, flange),
         (&mut flanger_chords, flange),
-        (&mut phaser, &[(ids::phaser::SYNC, 6.0), (ids::phaser::STAGES, 3.0), (ids::phaser::FEEDBACK, 60.0), (ids::phaser::CENTER, 600.0), (ids::phaser::DEPTH, 85.0), (ids::phaser::MIX, 0.0)]),
-        (&mut phaser_chords, &[(ids::phaser::SYNC, 6.0), (ids::phaser::STAGES, 2.0), (ids::phaser::FEEDBACK, 40.0), (ids::phaser::CENTER, 900.0), (ids::phaser::MIX, 0.0)]),
-        (&mut eq, &[(ids::eq::LOW_CUT, 20.0), (ids::eq::freq(2), 2000.0), (ids::eq::q(2), 6.0)]),
-        (&mut lofi, LOFI_PRESETS.iter().find(|p| p.name == "Dusty vinyl").expect("preset").values),
-        (&mut hall, CLOUD_PRESETS.iter().find(|p| p.name == "Big hall").expect("preset").values),
+        (
+            &mut phaser,
+            &[
+                (ids::phaser::SYNC, 6.0),
+                (ids::phaser::STAGES, 3.0),
+                (ids::phaser::FEEDBACK, 60.0),
+                (ids::phaser::CENTER, 600.0),
+                (ids::phaser::DEPTH, 85.0),
+                (ids::phaser::MIX, 0.0),
+            ],
+        ),
+        (
+            &mut phaser_chords,
+            &[
+                (ids::phaser::SYNC, 6.0),
+                (ids::phaser::STAGES, 2.0),
+                (ids::phaser::FEEDBACK, 40.0),
+                (ids::phaser::CENTER, 900.0),
+                (ids::phaser::MIX, 0.0),
+            ],
+        ),
+        (
+            &mut eq,
+            &[
+                (ids::eq::LOW_CUT, 20.0),
+                (ids::eq::freq(2), 2000.0),
+                (ids::eq::q(2), 6.0),
+            ],
+        ),
+        (
+            &mut lofi,
+            LOFI_PRESETS
+                .iter()
+                .find(|p| p.name == "Dusty vinyl")
+                .expect("preset")
+                .values,
+        ),
+        (
+            &mut hall,
+            CLOUD_PRESETS
+                .iter()
+                .find(|p| p.name == "Big hall")
+                .expect("preset")
+                .values,
+        ),
         (&mut safety, &[]),
         (&mut raw, &[(ids::master::MODE, 2.0)]),
     ];
     for (node, values) in setups {
         node.prepare(RATE, BLOCK);
-        for &(id, v) in values { node.set_param(id, v); }
+        for &(id, v) in values {
+            node.set_param(id, v);
+        }
         node.reset();
     }
     hall.set_param(ids::cloud::MIX, 100.0);
@@ -209,16 +339,28 @@ fn main() {
     // Mix automation: each effect fades in for its section and again for
     // the drop.
     let on_off = |id: u16, level: f32, spans: &[(usize, usize)]| -> Moves {
-        spans.iter().flat_map(|&(a, b)| [(bar(a), id, level), (bar(b), id, 0.0)]).collect()
+        spans
+            .iter()
+            .flat_map(|&(a, b)| [(bar(a), id, level), (bar(b), id, 0.0)])
+            .collect()
     };
     let chorus_moves = on_off(ids::chorus::MIX, 55.0, &[(3, 5), (13, 15)]);
     let flanger_moves = on_off(ids::flanger::MIX, 50.0, &[(5, 7), (13, 15)]);
     let phaser_moves = on_off(ids::phaser::MIX, 60.0, &[(7, 9), (13, 15)]);
     let phaser_chord_moves = on_off(ids::phaser::MIX, 50.0, &[(7, 9)]);
     // Lo-fi creeps in: one Amount move a block, then off at bar 11.
-    let mut lofi_moves: Moves = vec![(bar(9), ids::lofi::MIX, 100.0), (bar(11), ids::lofi::MIX, 0.0)];
+    let mut lofi_moves: Moves = vec![
+        (bar(9), ids::lofi::MIX, 100.0),
+        (bar(11), ids::lofi::MIX, 0.0),
+    ];
     let (a, b) = (bar(9), bar(11));
-    for f in (a..b).step_by(BLOCK) { lofi_moves.push((f, ids::lofi::AMOUNT, 100.0 * ((f - a) as f32 / (b - a) as f32).sqrt())); }
+    for f in (a..b).step_by(BLOCK) {
+        lofi_moves.push((
+            f,
+            ids::lofi::AMOUNT,
+            100.0 * ((f - a) as f32 / (b - a) as f32).sqrt(),
+        ));
+    }
     // The build: one move a block, glided by the EQ's own smoothing.
     let mut eq_moves: Moves = vec![(bar(11), ids::eq::LOW_SLOPE, 2.0)];
     let (a, b) = (bar(11), bar(13));
@@ -237,7 +379,12 @@ fn main() {
     let mut at = 0;
     while at < total {
         let len = BLOCK.min(total - at);
-        let ctx = Ctx { bpm: BPM, beats: at as f64 * beats_per_frame, playing: true, ..Ctx::new(RATE, at as u64) };
+        let ctx = Ctx {
+            bpm: BPM,
+            beats: at as f64 * beats_per_frame,
+            playing: true,
+            ..Ctx::new(RATE, at as u64)
+        };
         let range = at..at + len;
         let slice = |s: &Stem| (s.0[range.clone()].to_vec(), s.1[range.clone()].to_vec());
         let (mut dl, mut dr) = slice(&st[DRUMS]);
@@ -254,12 +401,20 @@ fn main() {
         phaser_chords.process(&ctx, &ev, &mut cl, &mut cr);
         events_in(&flanger_moves, at, len, &mut ev);
         flanger_chords.process(&ctx, &ev, &mut cl, &mut cr);
-        let mut ml: Vec<f32> = (0..len).map(|k| 1.25 * dl[k] + 1.2 * bl[k] + cl[k]).collect();
-        let mut mr: Vec<f32> = (0..len).map(|k| 1.25 * dr[k] + 1.2 * br[k] + cr[k]).collect();
+        let mut ml: Vec<f32> = (0..len)
+            .map(|k| 1.25 * dl[k] + 1.2 * bl[k] + cl[k])
+            .collect();
+        let mut mr: Vec<f32> = (0..len)
+            .map(|k| 1.25 * dr[k] + 1.2 * br[k] + cr[k])
+            .collect();
         // The reverb send opens for the last hit only.
         let open = |i: usize| if i >= bar(14) { 0.8 } else { 0.0 };
-        let mut sl: Vec<f32> = (0..len).map(|k| open(at + k) * (0.5 * dl[k] + cl[k])).collect();
-        let mut sr: Vec<f32> = (0..len).map(|k| open(at + k) * (0.5 * dr[k] + cr[k])).collect();
+        let mut sl: Vec<f32> = (0..len)
+            .map(|k| open(at + k) * (0.5 * dl[k] + cl[k]))
+            .collect();
+        let mut sr: Vec<f32> = (0..len)
+            .map(|k| open(at + k) * (0.5 * dr[k] + cr[k]))
+            .collect();
         hall.process(&ctx, &[], &mut sl, &mut sr);
         for k in 0..len {
             ml[k] += sl[k];
@@ -279,34 +434,85 @@ fn main() {
         at += len;
     }
 
-    let sections = ["dry", "dry", "chorus", "chorus", "flanger", "flanger", "phaser", "phaser", "lo-fi rising", "lo-fi full", "eq build", "eq build", "drop, all", "last hit", "ring out"];
+    let sections = [
+        "dry",
+        "dry",
+        "chorus",
+        "chorus",
+        "flanger",
+        "flanger",
+        "phaser",
+        "phaser",
+        "lo-fi rising",
+        "lo-fi full",
+        "eq build",
+        "eq build",
+        "drop, all",
+        "last hit",
+        "ring out",
+    ];
     println!("Mod FX demo: {BARS} bars at {BPM} BPM, {RATE} Hz, {BLOCK}-frame blocks\n");
-    println!("  bar  {:<15} {:>9} {:>9} {:>9}", "effect", "in peak", "out peak", "out RMS");
+    println!(
+        "  bar  {:<15} {:>9} {:>9} {:>9}",
+        "effect", "in peak", "out peak", "out RMS"
+    );
     for (b, section) in sections.iter().enumerate() {
         let (r0, r1) = (bar(b + 1), bar(b + 2).min(total));
         let pin = peak(&pre.0[r0..r1]).max(peak(&pre.1[r0..r1]));
-        println!("  {:>3}  {:<15} {:>6.1} dB {:>6.1} dB {:>6.1} dB", b + 1, section, db(pin), db(peak(&l[r0..r1]).max(peak(&r[r0..r1]))), db(rms(&l[r0..r1])));
+        println!(
+            "  {:>3}  {:<15} {:>6.1} dB {:>6.1} dB {:>6.1} dB",
+            b + 1,
+            section,
+            db(pin),
+            db(peak(&l[r0..r1]).max(peak(&r[r0..r1]))),
+            db(rms(&l[r0..r1]))
+        );
     }
     let s = safety.stats();
     let rs = raw.stats();
     let last = peak(&l[total - 4800..]).max(peak(&r[total - 4800..]));
     println!("\nMaster safety (Safe limiter, ceiling -0.3 dBFS): caught {} overs, most limiting {:.1} dB, peak out {:.2} dBFS, clipped frames {}", s.overs, s.max_reduction_db, s.peak_out_db, s.clipped);
-    println!("A Raw master on the same mix would have clipped {} frames (peak {:+.1} dBFS)", rs.clipped, rs.peak_out_db);
+    println!(
+        "A Raw master on the same mix would have clipped {} frames (peak {:+.1} dBFS)",
+        rs.clipped, rs.peak_out_db
+    );
     println!("last 100 ms peak {:.1} dBFS", db(last));
     let mut ok = true;
-    if s.clipped > 0 || peak(&l).max(peak(&r)) > 1.0 { println!("FAIL: the converter would clip"); ok = false; }
-    if !l.iter().chain(&r).all(|v| v.is_finite()) { println!("FAIL: non-finite output"); ok = false; }
-    if last > 1e-3 { println!("FAIL: the end is not quiet"); ok = false; }
+    if s.clipped > 0 || peak(&l).max(peak(&r)) > 1.0 {
+        println!("FAIL: the converter would clip");
+        ok = false;
+    }
+    if !l.iter().chain(&r).all(|v| v.is_finite()) {
+        println!("FAIL: non-finite output");
+        ok = false;
+    }
+    if last > 1e-3 {
+        println!("FAIL: the end is not quiet");
+        ok = false;
+    }
 
     let mut pcm = Vec::with_capacity(total * 4);
     for i in 0..total {
-        for x in [l[i], r[i]] { pcm.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()); }
+        for x in [l[i], r[i]] {
+            pcm.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+        }
     }
-    if let Some(dir) = out.parent() { std::fs::create_dir_all(dir).expect("create output dir"); }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).expect("create output dir");
+    }
     std::fs::write(&out, wav(&pcm)).expect("write wav");
-    println!("wrote {} ({} frames, {:.1} s), PCM hash {:016x}", out.display(), total, total as f32 / RATE as f32, fnv(&pcm));
+    println!(
+        "wrote {} ({} frames, {:.1} s), PCM hash {:016x}",
+        out.display(),
+        total,
+        total as f32 / RATE as f32,
+        fnv(&pcm)
+    );
     println!("(the PCM hash repeats on the same computer; other computers' maths libraries can differ in the last bit)");
-    if !ok { eprintln!("self-check FAILED"); std::process::exit(1); }
+    if !ok {
+        eprintln!("self-check FAILED");
+        std::process::exit(1);
+    }
     println!("self-check ok");
 }
 
@@ -330,5 +536,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

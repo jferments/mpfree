@@ -64,7 +64,9 @@ impl Default for NullAudioBackend {
     }
 }
 impl NullAudioBackend {
-    pub fn stats(&self) -> SinkStats { self.stats }
+    pub fn stats(&self) -> SinkStats {
+        self.stats
+    }
 }
 impl AudioSink for NullAudioBackend {
     fn write(&mut self, left: &[f32], right: &[f32]) -> Result<(), HeadlessError> {
@@ -145,16 +147,23 @@ impl HeadlessSession {
             bpm: 120.0,
             bars: 1,
         };
-        let groove = GrooveEngine::new(&Pattern::basic(), config)
-            .map_err(|_| HeadlessError::Groove)?;
-        let mut sampler = Sampler::new(SAMPLE_RATE)
+        let groove =
+            GrooveEngine::new(&Pattern::basic(), config).map_err(|_| HeadlessError::Groove)?;
+        let mut sampler = Sampler::new(SAMPLE_RATE).map_err(|_| HeadlessError::Sampler)?;
+        let sample =
+            PreparedSample::parse_wav(&make_fixture()).map_err(|_| HeadlessError::Sampler)?;
+        let index = sampler
+            .add_sample(sample)
             .map_err(|_| HeadlessError::Sampler)?;
-        let sample = PreparedSample::parse_wav(&make_fixture())
+        sampler
+            .map_note(60, index)
             .map_err(|_| HeadlessError::Sampler)?;
-        let index = sampler.add_sample(sample).map_err(|_| HeadlessError::Sampler)?;
-        sampler.map_note(60, index).map_err(|_| HeadlessError::Sampler)?;
         Ok(Self {
-            groove, sampler, cursor: 0, next_note: 0, note_count: 0,
+            groove,
+            sampler,
+            cursor: 0,
+            next_note: 0,
+            note_count: 0,
             groove_l: [0.0; BLOCK],
             groove_r: [0.0; BLOCK],
             sampler_l: [0.0; BLOCK],
@@ -165,7 +174,9 @@ impl HeadlessSession {
     /// Keeps scheduler/note positions sample-exact, even if a callback block
     /// straddles a MIDI note timestamp (for example 22_050 modulo 128).
     pub fn render<S: AudioSink>(
-        &mut self, requested: usize, sink: &mut S,
+        &mut self,
+        requested: usize,
+        sink: &mut S,
     ) -> Result<(), HeadlessError> {
         if requested == 0 || requested > BLOCK {
             return Err(HeadlessError::InvalidBlock);
@@ -179,22 +190,22 @@ impl HeadlessSession {
                 self.note_count += 1;
                 self.next_note += TRIGGER_EVERY;
             }
-            let until_next_note = usize::try_from(
-                self.next_note.saturating_sub(self.cursor).min(BLOCK as u64)
-            ).map_err(|_| HeadlessError::InvalidBlock)?;
+            let until_next_note =
+                usize::try_from(self.next_note.saturating_sub(self.cursor).min(BLOCK as u64))
+                    .map_err(|_| HeadlessError::InvalidBlock)?;
             let n = (requested - done).min(until_next_note);
             if n == 0 {
                 return Err(HeadlessError::InvalidBlock);
             }
-            self.groove.render(&mut self.groove_l[..n], &mut self.groove_r[..n])
+            self.groove
+                .render(&mut self.groove_l[..n], &mut self.groove_r[..n])
                 .map_err(|_| HeadlessError::Groove)?;
-            self.sampler.render(&mut self.sampler_l[..n], &mut self.sampler_r[..n])
+            self.sampler
+                .render(&mut self.sampler_l[..n], &mut self.sampler_r[..n])
                 .map_err(|_| HeadlessError::Sampler)?;
             for i in 0..n {
-                self.groove_l[i] = (self.groove_l[i] + self.sampler_l[i] * 0.25)
-                    .clamp(-1.0, 1.0);
-                self.groove_r[i] = (self.groove_r[i] + self.sampler_r[i] * 0.25)
-                    .clamp(-1.0, 1.0);
+                self.groove_l[i] = (self.groove_l[i] + self.sampler_l[i] * 0.25).clamp(-1.0, 1.0);
+                self.groove_r[i] = (self.groove_r[i] + self.sampler_r[i] * 0.25).clamp(-1.0, 1.0);
             }
             sink.write(&self.groove_l[..n], &self.groove_r[..n])?;
             self.cursor += n as u64;
@@ -214,7 +225,9 @@ impl HeadlessSession {
                 + self.sampler.prepared_sample_bytes(),
         }
     }
-    pub fn frame(&self) -> u64 { self.cursor }
+    pub fn frame(&self) -> u64 {
+        self.cursor
+    }
 }
 
 /// A bounded, hardware-free execution of the real groove and sampler engines.
@@ -275,8 +288,14 @@ mod tests {
     fn rejects_invalid_callback_size_without_advancing() {
         let mut engine = HeadlessSession::new().unwrap();
         let mut sink = NullAudioBackend::default();
-        assert_eq!(engine.render(0, &mut sink), Err(HeadlessError::InvalidBlock));
-        assert_eq!(engine.render(129, &mut sink), Err(HeadlessError::InvalidBlock));
+        assert_eq!(
+            engine.render(0, &mut sink),
+            Err(HeadlessError::InvalidBlock)
+        );
+        assert_eq!(
+            engine.render(129, &mut sink),
+            Err(HeadlessError::InvalidBlock)
+        );
         assert_eq!(engine.frame(), 0);
         assert_eq!(sink.stats().frames, 0);
     }
@@ -284,7 +303,10 @@ mod tests {
     #[test]
     fn null_backend_rejects_invalid_pcm_without_accounting_mutation() {
         let mut sink = NullAudioBackend::default();
-        assert_eq!(sink.write(&[0.0, f32::NAN], &[0.0, 0.0]), Err(HeadlessError::InvalidOutput));
+        assert_eq!(
+            sink.write(&[0.0, f32::NAN], &[0.0, 0.0]),
+            Err(HeadlessError::InvalidOutput)
+        );
         assert_eq!(sink.stats().frames, 0);
         assert_eq!(sink.stats().checksum_fnv1a64, FNV_OFFSET);
     }

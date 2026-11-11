@@ -71,9 +71,14 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
     create_plugin: Some(factory_create),
 };
 
-static SYNTH_FEATURES: SyncPtr<[*const c_char; 4]> =
-    SyncPtr([c"instrument".as_ptr(), c"synthesizer".as_ptr(), c"stereo".as_ptr(), ptr::null()]);
-static GAIN_FEATURES: SyncPtr<[*const c_char; 3]> = SyncPtr([c"audio-effect".as_ptr(), c"stereo".as_ptr(), ptr::null()]);
+static SYNTH_FEATURES: SyncPtr<[*const c_char; 4]> = SyncPtr([
+    c"instrument".as_ptr(),
+    c"synthesizer".as_ptr(),
+    c"stereo".as_ptr(),
+    ptr::null(),
+]);
+static GAIN_FEATURES: SyncPtr<[*const c_char; 3]> =
+    SyncPtr([c"audio-effect".as_ptr(), c"stereo".as_ptr(), ptr::null()]);
 
 static SYNTH_DESC: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
@@ -113,7 +118,10 @@ unsafe extern "C" fn factory_count(_f: *const clap_plugin_factory) -> u32 {
     2
 }
 
-unsafe extern "C" fn factory_descriptor(_f: *const clap_plugin_factory, index: u32) -> *const clap_plugin_descriptor {
+unsafe extern "C" fn factory_descriptor(
+    _f: *const clap_plugin_factory,
+    index: u32,
+) -> *const clap_plugin_descriptor {
     match index {
         0 => &SYNTH_DESC.0,
         1 => &GAIN_DESC.0,
@@ -121,7 +129,11 @@ unsafe extern "C" fn factory_descriptor(_f: *const clap_plugin_factory, index: u
     }
 }
 
-unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const clap_host, id: *const c_char) -> *const clap_plugin {
+unsafe extern "C" fn factory_create(
+    _f: *const clap_plugin_factory,
+    host: *const clap_host,
+    id: *const c_char,
+) -> *const clap_plugin {
     if id.is_null() || host.is_null() {
         return ptr::null();
     }
@@ -152,8 +164,14 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         host,
         which,
         values: match which {
-            Which::Synth => SYNTH_PARAMS.iter().map(|p| AtomicU64::new(p.3.to_bits())).collect(),
-            Which::Gain => GAIN_PARAMS.iter().map(|p| AtomicU64::new(p.3.to_bits())).collect(),
+            Which::Synth => SYNTH_PARAMS
+                .iter()
+                .map(|p| AtomicU64::new(p.3.to_bits()))
+                .collect(),
+            Which::Gain => GAIN_PARAMS
+                .iter()
+                .map(|p| AtomicU64::new(p.3.to_bits()))
+                .collect(),
         },
         rate: 44_100.0,
         voices: [Voice::default(); VOICES],
@@ -195,17 +213,81 @@ type ParamDef = (u32, &'static CStr, &'static CStr, f64, f64, f64, u32);
 const AUTO: u32 = CLAP_PARAM_IS_AUTOMATABLE;
 static SYNTH_PARAMS: [ParamDef; 6] = [
     (synth_params::GAIN, c"Gain", c"Amp", -12.0, -60.0, 6.0, AUTO),
-    (synth_params::DECAY, c"Decay", c"Amp", 300.0, 10.0, 2000.0, AUTO),
-    (synth_params::WAVE, c"Wave", c"Osc", 0.0, 0.0, 2.0, AUTO | CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM),
-    (synth_params::VOICES, c"Voices", c"Meters", 0.0, 0.0, 16.0, CLAP_PARAM_IS_READONLY | CLAP_PARAM_IS_STEPPED),
-    (synth_params::TEMPO, c"Tempo", c"Meters", 0.0, 0.0, 999.0, CLAP_PARAM_IS_READONLY),
-    (synth_params::SECRET, c"Secret", c"", 0.0, 0.0, 1.0, CLAP_PARAM_IS_HIDDEN),
+    (
+        synth_params::DECAY,
+        c"Decay",
+        c"Amp",
+        300.0,
+        10.0,
+        2000.0,
+        AUTO,
+    ),
+    (
+        synth_params::WAVE,
+        c"Wave",
+        c"Osc",
+        0.0,
+        0.0,
+        2.0,
+        AUTO | CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM,
+    ),
+    (
+        synth_params::VOICES,
+        c"Voices",
+        c"Meters",
+        0.0,
+        0.0,
+        16.0,
+        CLAP_PARAM_IS_READONLY | CLAP_PARAM_IS_STEPPED,
+    ),
+    (
+        synth_params::TEMPO,
+        c"Tempo",
+        c"Meters",
+        0.0,
+        0.0,
+        999.0,
+        CLAP_PARAM_IS_READONLY,
+    ),
+    (
+        synth_params::SECRET,
+        c"Secret",
+        c"",
+        0.0,
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_HIDDEN,
+    ),
 ];
 static GAIN_PARAMS: [ParamDef; 4] = [
     (gain_params::GAIN, c"Gain", c"", 0.0, -60.0, 24.0, AUTO),
-    (gain_params::FAIL, c"Fail", c"Test", 0.0, 0.0, 1.0, CLAP_PARAM_IS_STEPPED),
-    (gain_params::STALL, c"Stall", c"Test", 0.0, 0.0, 1000.0, CLAP_PARAM_IS_STEPPED),
-    (gain_params::CRASH, c"Crash", c"Test", 0.0, 0.0, 1.0, CLAP_PARAM_IS_STEPPED),
+    (
+        gain_params::FAIL,
+        c"Fail",
+        c"Test",
+        0.0,
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED,
+    ),
+    (
+        gain_params::STALL,
+        c"Stall",
+        c"Test",
+        0.0,
+        0.0,
+        1000.0,
+        CLAP_PARAM_IS_STEPPED,
+    ),
+    (
+        gain_params::CRASH,
+        c"Crash",
+        c"Test",
+        0.0,
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED,
+    ),
 ];
 
 #[repr(C)]
@@ -236,7 +318,9 @@ impl Plug {
         self.table().iter().position(|p| p.0 == id)
     }
     fn get(&self, id: u32) -> f64 {
-        self.index(id).map_or(0.0, |i| f64::from_bits(self.values[i].load(Ordering::Relaxed)))
+        self.index(id).map_or(0.0, |i| {
+            f64::from_bits(self.values[i].load(Ordering::Relaxed))
+        })
     }
     fn set(&self, id: u32, v: f64) {
         if let Some(i) = self.index(id) {
@@ -327,7 +411,12 @@ fn db(v: f64) -> f64 {
     10f64.powf(v / 20.0)
 }
 
-unsafe fn events(proc_: &clap_process) -> (u32, Option<unsafe extern "C" fn(*const clap_input_events, u32) -> *const clap_event_header>) {
+unsafe fn events(
+    proc_: &clap_process,
+) -> (
+    u32,
+    Option<unsafe extern "C" fn(*const clap_input_events, u32) -> *const clap_event_header>,
+) {
     let ev = proc_.in_events;
     if ev.is_null() {
         return (0, None);
@@ -336,7 +425,10 @@ unsafe fn events(proc_: &clap_process) -> (u32, Option<unsafe extern "C" fn(*con
     (n, (*ev).get)
 }
 
-unsafe extern "C" fn p_process(p: *const clap_plugin, proc_: *const clap_process) -> clap_process_status {
+unsafe extern "C" fn p_process(
+    p: *const clap_plugin,
+    proc_: *const clap_process,
+) -> clap_process_status {
     let me = plug(p);
     let pr = &*proc_;
     match me.which {
@@ -365,7 +457,11 @@ unsafe fn synth_event(me: &mut Plug, h: *const clap_event_header) {
         }
         CLAP_EVENT_NOTE_EXPRESSION => {
             let e = &*(h as *const clap_event_note_expression);
-            for v in me.voices.iter_mut().filter(|v| v.on && (e.key < 0 || v.key == e.key)) {
+            for v in me
+                .voices
+                .iter_mut()
+                .filter(|v| v.on && (e.key < 0 || v.key == e.key))
+            {
                 match e.expression_id {
                     CLAP_NOTE_EXPRESSION_TUNING => v.tune = e.value,
                     CLAP_NOTE_EXPRESSION_PRESSURE => v.pressure = e.value,
@@ -403,11 +499,25 @@ fn note_on(me: &mut Plug, key: i16, velocity: f64) {
         }
         best
     });
-    me.voices[slot] = Voice { on: true, held: true, key, level: velocity, env: 1.0, phase: 0.0, tune: 0.0, pressure: 0.0, age: me.age };
+    me.voices[slot] = Voice {
+        on: true,
+        held: true,
+        key,
+        level: velocity,
+        env: 1.0,
+        phase: 0.0,
+        tune: 0.0,
+        pressure: 0.0,
+        age: me.age,
+    };
 }
 
 fn note_off(me: &mut Plug, key: i16) {
-    for v in me.voices.iter_mut().filter(|v| v.on && (key < 0 || v.key == key)) {
+    for v in me
+        .voices
+        .iter_mut()
+        .filter(|v| v.on && (key < 0 || v.key == key))
+    {
         v.held = false;
     }
 }
@@ -447,7 +557,13 @@ unsafe fn synth_process(me: &mut Plug, pr: &clap_process) -> clap_process_status
             let s = match wave {
                 0 => (v.phase * std::f64::consts::TAU).sin(),
                 1 => 2.0 * v.phase - 1.0,
-                _ => if v.phase < 0.5 { 1.0 } else { -1.0 },
+                _ => {
+                    if v.phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
             };
             let y = s * v.env * v.level * gain * (1.0 + v.pressure);
             // A little spread by key, so the channels differ.
@@ -486,7 +602,11 @@ unsafe fn synth_process(me: &mut Plug, pr: &clap_process) -> clap_process_status
             push_value(pr, synth_params::TEMPO, t);
         }
     }
-    if me.voices.iter().any(|v| v.on) { CLAP_PROCESS_CONTINUE } else { CLAP_PROCESS_SLEEP }
+    if me.voices.iter().any(|v| v.on) {
+        CLAP_PROCESS_CONTINUE
+    } else {
+        CLAP_PROCESS_SLEEP
+    }
 }
 
 unsafe fn push_value(pr: &clap_process, id: u32, value: f64) {
@@ -516,7 +636,11 @@ unsafe fn push_value(pr: &clap_process, id: u32, value: f64) {
 }
 
 unsafe fn gain_process(me: &mut Plug, pr: &clap_process) -> clap_process_status {
-    if pr.audio_inputs_count < 1 || pr.audio_outputs_count < 1 || pr.audio_inputs.is_null() || pr.audio_outputs.is_null() {
+    if pr.audio_inputs_count < 1
+        || pr.audio_outputs_count < 1
+        || pr.audio_inputs.is_null()
+        || pr.audio_outputs.is_null()
+    {
         return CLAP_PROCESS_ERROR;
     }
     let (inp, out) = (&*pr.audio_inputs, &*pr.audio_outputs);
@@ -549,7 +673,11 @@ unsafe fn gain_process(me: &mut Plug, pr: &clap_process) -> clap_process_status 
     if me.get(gain_params::CRASH) >= 0.5 {
         std::process::abort();
     }
-    if me.get(gain_params::FAIL) >= 0.5 { CLAP_PROCESS_ERROR } else { CLAP_PROCESS_CONTINUE }
+    if me.get(gain_params::FAIL) >= 0.5 {
+        CLAP_PROCESS_ERROR
+    } else {
+        CLAP_PROCESS_CONTINUE
+    }
 }
 
 // ------------------------------------------------------------------ extensions
@@ -567,8 +695,14 @@ unsafe extern "C" fn params_count(p: *const clap_plugin) -> u32 {
     plug(p).table().len() as u32
 }
 
-unsafe extern "C" fn params_info(p: *const clap_plugin, index: u32, info: *mut clap_param_info) -> bool {
-    let Some(d) = plug(p).table().get(index as usize) else { return false };
+unsafe extern "C" fn params_info(
+    p: *const clap_plugin,
+    index: u32,
+    info: *mut clap_param_info,
+) -> bool {
+    let Some(d) = plug(p).table().get(index as usize) else {
+        return false;
+    };
     let info = &mut *info;
     info.id = d.0;
     info.flags = d.6;
@@ -601,7 +735,13 @@ unsafe extern "C" fn params_value(p: *const clap_plugin, id: clap_id, out: *mut 
 
 const WAVES: [&CStr; 3] = [c"Sine", c"Saw", c"Square"];
 
-unsafe extern "C" fn params_to_text(p: *const clap_plugin, id: clap_id, value: f64, out: *mut c_char, cap: u32) -> bool {
+unsafe extern "C" fn params_to_text(
+    p: *const clap_plugin,
+    id: clap_id,
+    value: f64,
+    out: *mut c_char,
+    cap: u32,
+) -> bool {
     let me = plug(p);
     if cap == 0 || me.index(id).is_none() {
         return false;
@@ -639,11 +779,20 @@ unsafe extern "C" fn params_to_text(p: *const clap_plugin, id: clap_id, value: f
     true
 }
 
-unsafe extern "C" fn params_from_text(_p: *const clap_plugin, _id: clap_id, _text: *const c_char, _out: *mut f64) -> bool {
+unsafe extern "C" fn params_from_text(
+    _p: *const clap_plugin,
+    _id: clap_id,
+    _text: *const c_char,
+    _out: *mut f64,
+) -> bool {
     false
 }
 
-unsafe extern "C" fn params_flush(p: *const clap_plugin, input: *const clap_input_events, _out: *const clap_output_events) {
+unsafe extern "C" fn params_flush(
+    p: *const clap_plugin,
+    input: *const clap_input_events,
+    _out: *const clap_output_events,
+) {
     let me = plug(p);
     if input.is_null() {
         return;
@@ -657,7 +806,10 @@ unsafe extern "C" fn params_flush(p: *const clap_plugin, input: *const clap_inpu
     }
 }
 
-static AUDIO_PORTS: clap_plugin_audio_ports = clap_plugin_audio_ports { count: Some(ap_count), get: Some(ap_get) };
+static AUDIO_PORTS: clap_plugin_audio_ports = clap_plugin_audio_ports {
+    count: Some(ap_count),
+    get: Some(ap_get),
+};
 
 unsafe extern "C" fn ap_count(p: *const clap_plugin, is_input: bool) -> u32 {
     match (plug(p).which, is_input) {
@@ -666,7 +818,12 @@ unsafe extern "C" fn ap_count(p: *const clap_plugin, is_input: bool) -> u32 {
     }
 }
 
-unsafe extern "C" fn ap_get(p: *const clap_plugin, index: u32, is_input: bool, info: *mut clap_audio_port_info) -> bool {
+unsafe extern "C" fn ap_get(
+    p: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_audio_port_info,
+) -> bool {
     if index >= ap_count(p, is_input) {
         return false;
     }
@@ -680,13 +837,21 @@ unsafe extern "C" fn ap_get(p: *const clap_plugin, index: u32, is_input: bool, i
     true
 }
 
-static NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports { count: Some(np_count), get: Some(np_get) };
+static NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports {
+    count: Some(np_count),
+    get: Some(np_get),
+};
 
 unsafe extern "C" fn np_count(p: *const clap_plugin, is_input: bool) -> u32 {
     u32::from(plug(p).which == Which::Synth && is_input)
 }
 
-unsafe extern "C" fn np_get(p: *const clap_plugin, index: u32, is_input: bool, info: *mut clap_note_port_info) -> bool {
+unsafe extern "C" fn np_get(
+    p: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_note_port_info,
+) -> bool {
     if index >= np_count(p, is_input) {
         return false;
     }
@@ -698,18 +863,27 @@ unsafe extern "C" fn np_get(p: *const clap_plugin, index: u32, is_input: bool, i
     true
 }
 
-static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
+static STATE: clap_plugin_state = clap_plugin_state {
+    save: Some(state_save),
+    load: Some(state_load),
+};
 
 /// State: a magic, then each parameter's f64 bits, little-endian.
 const MAGIC: &[u8; 4] = b"MPTP";
 
 unsafe extern "C" fn state_save(p: *const clap_plugin, s: *const clap_ostream) -> bool {
     let me = plug(p);
-    let Some(write) = (*s).write else { return false };
+    let Some(write) = (*s).write else {
+        return false;
+    };
     let put = |b: &[u8]| -> bool {
         let mut off = 0;
         while off < b.len() {
-            let n = write(s, b[off..].as_ptr() as *const c_void, (b.len() - off) as u64);
+            let n = write(
+                s,
+                b[off..].as_ptr() as *const c_void,
+                (b.len() - off) as u64,
+            );
             if n <= 0 {
                 return false;
             }
@@ -734,7 +908,11 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, s: *const clap_istream) -
     let get = |b: &mut [u8]| -> bool {
         let mut off = 0;
         while off < b.len() {
-            let n = read(s, b[off..].as_mut_ptr() as *mut c_void, (b.len() - off) as u64);
+            let n = read(
+                s,
+                b[off..].as_mut_ptr() as *mut c_void,
+                (b.len() - off) as u64,
+            );
             if n <= 0 {
                 return false;
             }
@@ -757,7 +935,9 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, s: *const clap_istream) -
     true
 }
 
-static TAIL: clap_plugin_tail = clap_plugin_tail { get: Some(tail_get) };
+static TAIL: clap_plugin_tail = clap_plugin_tail {
+    get: Some(tail_get),
+};
 
 unsafe extern "C" fn tail_get(p: *const clap_plugin) -> u32 {
     let me = plug(p);
@@ -768,7 +948,9 @@ unsafe extern "C" fn tail_get(p: *const clap_plugin) -> u32 {
     }
 }
 
-static LATENCY: clap_plugin_latency = clap_plugin_latency { get: Some(latency_get) };
+static LATENCY: clap_plugin_latency = clap_plugin_latency {
+    get: Some(latency_get),
+};
 
 unsafe extern "C" fn latency_get(_p: *const clap_plugin) -> u32 {
     0

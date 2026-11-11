@@ -67,7 +67,10 @@ pub struct WindowTable {
 
 impl WindowTable {
     pub fn new(shape: Window) -> Self {
-        let mut w = WindowTable { shape, t: [0.0; TABLE + 1] };
+        let mut w = WindowTable {
+            shape,
+            t: [0.0; TABLE + 1],
+        };
         w.fill();
         w
     }
@@ -86,7 +89,9 @@ impl WindowTable {
         }
     }
 
-    pub fn shape(&self) -> Window { self.shape }
+    pub fn shape(&self) -> Window {
+        self.shape
+    }
 
     /// The window at `phase` in 0..1, linearly interpolated.
     #[inline]

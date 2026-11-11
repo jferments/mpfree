@@ -31,17 +31,45 @@ fn the_audio_threads_part_never_allocates() {
     for b in 0..2000u64 {
         events.clear();
         if b % 3 == 0 {
-            events.push(Timed::new(5, NodeEvent::NoteOn { note: 40 + (b % 40) as u8, velocity: 100 }));
+            events.push(Timed::new(
+                5,
+                NodeEvent::NoteOn {
+                    note: 40 + (b % 40) as u8,
+                    velocity: 100,
+                },
+            ));
         }
         if b % 4 == 0 {
-            events.push(Timed::new(20, NodeEvent::Pressure { note: 40 + (b % 40) as u8, value: (b % 128) as u8 }));
+            events.push(Timed::new(
+                20,
+                NodeEvent::Pressure {
+                    note: 40 + (b % 40) as u8,
+                    value: (b % 128) as u8,
+                },
+            ));
         }
         if b % 5 == 0 {
-            events.push(Timed::new(70, NodeEvent::NoteOff { note: 40 + ((b + 7) % 40) as u8 }));
-            events.push(Timed::new(90, NodeEvent::Param { id: wave, value: (b % 3) as f32 }));
+            events.push(Timed::new(
+                70,
+                NodeEvent::NoteOff {
+                    note: 40 + ((b + 7) % 40) as u8,
+                },
+            ));
+            events.push(Timed::new(
+                90,
+                NodeEvent::Param {
+                    id: wave,
+                    value: (b % 3) as f32,
+                },
+            ));
         }
         if b % 7 == 0 {
-            events.push(Timed::new(100, NodeEvent::Bend { value: ((b % 20) as f32 - 10.0) / 10.0 }));
+            events.push(Timed::new(
+                100,
+                NodeEvent::Bend {
+                    value: ((b % 20) as f32 - 10.0) / 10.0,
+                },
+            ));
         }
         if b % 500 == 499 {
             events.push(Timed::new(127, NodeEvent::AllOff));
@@ -52,13 +80,27 @@ fn the_audio_threads_part_never_allocates() {
         }
         l.fill(0.0);
         r.fill(0.0);
-        let c = Ctx { bpm: 90.0 + (b % 30) as f64, playing: true, ..Ctx::new(RATE, b * 128) };
+        let c = Ctx {
+            bpm: 90.0 + (b % 30) as f64,
+            playing: true,
+            ..Ctx::new(RATE, b * 128)
+        };
         synth.process(&c, &events, &mut l, &mut r);
         gain.process(&c, &[], &mut l, &mut r);
         let _ = (synth.param(0), synth.stats(), gain.stats());
     }
     let calls = thread_count() - before;
     assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
-    assert_eq!((synth.stats().errors, synth.stats().dropped, gain.stats().errors), (0, 0, 0));
-    assert!(synth.stats().blocks >= 4000, "every 128-frame block ran as two 64-frame calls");
+    assert_eq!(
+        (
+            synth.stats().errors,
+            synth.stats().dropped,
+            gain.stats().errors
+        ),
+        (0, 0, 0)
+    );
+    assert!(
+        synth.stats().blocks >= 4000,
+        "every 128-frame block ran as two 64-frame calls"
+    );
 }
