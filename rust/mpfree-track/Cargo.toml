@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-track"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MPFree's track host: each track's instrument node, fed by the sequencer and the pads, rendered into its mixer track; real-time safe and block-size independent"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-play = { path = "../mpfree-play" }
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-prof = { path = "../mpfree-prof" }
+
+[dev-dependencies]
+mpfree-synth = { path = "../mpfree-synth" }
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
