@@ -731,12 +731,9 @@ class StaticTests(unittest.TestCase):
     def test_the_program_writes_only_where_reviewed(self):
         """Every place the program opens a file for writing, in its Rust source."""
         found = []
-        # The arp's patterns file (write_patterns in main.rs): written to a .part file, then renamed over the
-        # file given with --save-patterns, and the .part removed if that fails. Only with that option, which
-        # the test boot's start-app.sh never passes (checked below).
-        reviewed = {("mpfree-hello/main.rs", "fs::rename(&part, path)"),
-                    ("mpfree-hello/main.rs", "let _ = fs::remove_file(&part);"),
-                    # mpfree-store's save (storage-spec.md): NAME.part beside the file, synced, renamed over it,
+        # The arp's patterns are saved only through mpfree-store (files/arp/patterns.txt under --data); the
+        # pad player itself writes no patterns file (checked below).
+        reviewed = {# mpfree-store's save (storage-spec.md): NAME.part beside the file, synced, renamed over it,
                     # and a .part left by a cut-off save removed first. Only under the folder given with --data.
                     ("mpfree-store/lib.rs", "match fs::remove_file(&part) {"),
                     ("mpfree-store/lib.rs", "fs::rename(&part, &path)?;"),
@@ -771,8 +768,6 @@ class StaticTests(unittest.TestCase):
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
-            # the arp's patterns file, only with --save-patterns FILE (never on the test boot, see above)
-            "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;",
             # mpfree-store's NAME.part, made new (never through a link) under the --data folder
             "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&part)?;",
         )
@@ -796,9 +791,13 @@ class StaticTests(unittest.TestCase):
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
 
-    def test_the_test_boot_never_saves_patterns(self):
-        """The stick's start line for the pad player never passes --save-patterns, so the test boot writes no
-        patterns file."""
+    def test_arp_patterns_are_saved_only_through_the_store(self):
+        """The pad player has no --save-patterns any more: Save keeps the arp's patterns in mpfree-store
+        (arp/patterns.txt under --data), and --patterns FILE is only read."""
+        main = dict(self.program_sources())["mpfree-hello/main.rs"]
+        self.assertNotIn('"--save-patterns"', main)
+        self.assertNotIn("fn write_patterns", main)
+        self.assertIn("store.write(app::saved::ARP, app::saved::ARP_PATTERNS, text.into_bytes())", main)
         with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
             starts = [ln for ln in fh.read().splitlines() if "mpfree-hello app" in ln]
         self.assertEqual(len(starts), 2, starts)   # with the data partition mounted, and without
