@@ -205,6 +205,7 @@ pub struct ViewPad {
     vel_to_start: f32,
     pressure: PressureRoute,
     keys: Option<Keys>,
+    wow: f32,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -384,6 +385,7 @@ impl EngineView {
                     vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
                     pressure: p.pressure,
                     keys: p.keys,
+                    wow: p.wow.clamp(0.0, 1.0),
                 }
             }));
         }
@@ -427,6 +429,14 @@ pub enum Event {
     /// the pads carry on dry. Does nothing without a master effect.
     Freeze {
         on: bool,
+    },
+    /// Tape stop (`stop`) or start: every voice slows to a halt, or comes
+    /// back up to speed, over `ms` milliseconds, as a tape machine's
+    /// motor would; the sound fades out as it nears a halt. Stopped, new
+    /// hits wait silent until the tape starts again.
+    Tape {
+        stop: bool,
+        ms: u16,
     },
     /// Plays source frames `start..end` of layer `layer` of pad `pad` once,
     /// forward from its first frame, with the pad's settings (level, pan,
@@ -508,6 +518,15 @@ struct Voice {
     plain_step: i64,
     /// The note a keygroup voice plays ([`NO_NOTE`] for a pad hit).
     note: u8,
+    /// How fast it plays against its step: the tape's speed with wow and
+    /// flutter (1 when neither moves).
+    speed: f32,
+    /// Its gain before the tape fades it.
+    base_gain_l: f32,
+    base_gain_r: f32,
+    /// Wow and flutter, 0 to 1, and where its three wobbles are (cycles).
+    wow: f32,
+    wow_phase: [f32; 3],
 }
 
 impl Voice {
@@ -644,7 +663,20 @@ pub struct Engine {
     master: Option<GrainFx>,
     /// The project tempo, for warped layers.
     tempo: f64,
+    /// The tape's speed (1 when running, 0 stopped), where it is going,
+    /// and how far it moves a frame.
+    tape: f32,
+    tape_target: f32,
+    tape_rate: f32,
+    /// Whether the voices still have to follow a tape that moved.
+    tape_moved: bool,
 }
+
+/// Wow and flutter at full depth: cents and cycles a second of each
+/// wobble (two slow ones for the wow, one fast for the flutter).
+const WOW: [(f32, f32); 3] = [(15.0, 0.53), (10.0, 0.29), (5.0, 7.3)];
+/// Below this speed the tape fades the sound out, reaching silence at a halt.
+const TAPE_FADE: f32 = 0.25;
 
 impl Engine {
     /// `voices` is the size of the fixed pool. All memory is reserved here.
@@ -670,6 +702,10 @@ impl Engine {
             frames: 0,
             master: None,
             tempo: 120.0,
+            tape: 1.0,
+            tape_target: 1.0,
+            tape_rate: 0.0,
+            tape_moved: false,
         }
     }
 
@@ -686,10 +722,7 @@ impl Engine {
         for v in &mut self.voices {
             if v.active && v.warp_bpm > 0.0 {
                 v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
-                v.step = v.base_step;
-                if v.route.target == PressureTarget::Pitch {
-                    pressure_step(v);
-                }
+                retime(v);
             }
         }
     }
@@ -865,6 +898,17 @@ impl Engine {
                     fx.set_frozen(on);
                 }
             }
+            Event::Tape { stop, ms } => {
+                self.tape_target = if stop { 0.0 } else { 1.0 };
+                let frames = f32::from(ms) * self.rate / 1000.0;
+                if frames < 1.0 {
+                    self.tape = self.tape_target;
+                    self.tape_rate = 0.0;
+                } else {
+                    self.tape_rate = 1.0 / frames;
+                }
+                self.tape_moved = true;
+            }
             Event::Audition {
                 pad,
                 layer,
@@ -872,6 +916,51 @@ impl Engine {
                 end,
                 velocity,
             } => self.audition(pad, layer, start, end, velocity),
+        }
+    }
+
+    /// The tape's speed now: 1 running, 0 stopped.
+    pub fn tape_speed(&self) -> f32 {
+        self.tape
+    }
+
+    /// Moves the tape on by `frames` and has every voice follow it and its
+    /// own wow and flutter. Once a period (or between events), never per
+    /// frame; cheap while the tape runs and no pad wobbles.
+    fn follow_tape(&mut self, frames: usize) {
+        if self.tape != self.tape_target {
+            let d = self.tape_rate * frames as f32;
+            self.tape = if self.tape < self.tape_target {
+                (self.tape + d).min(self.tape_target)
+            } else {
+                (self.tape - d).max(self.tape_target)
+            };
+            self.tape_moved = true;
+        }
+        let moved = self.tape_moved;
+        self.tape_moved = self.tape != 1.0 || self.tape != self.tape_target;
+        let (tape, rate) = (self.tape, self.rate);
+        let gain = (tape / TAPE_FADE).min(1.0);
+        for v in &mut self.voices {
+            if !v.active || !(moved || v.wow > 0.0) {
+                continue;
+            }
+            let mut cents = 0.0;
+            for (k, &(depth, hz)) in WOW.iter().enumerate() {
+                if v.wow > 0.0 {
+                    cents += v.wow * depth * (std::f32::consts::TAU * v.wow_phase[k]).sin();
+                    v.wow_phase[k] = (v.wow_phase[k] + hz * frames as f32 / rate).fract();
+                }
+            }
+            v.speed = tape
+                * if cents == 0.0 {
+                    1.0
+                } else {
+                    (cents / 1200.0).exp2()
+                };
+            v.gain_l = v.base_gain_l * gain;
+            v.gain_r = v.base_gain_r * gain;
+            retime(v);
         }
     }
 
@@ -1270,7 +1359,25 @@ impl Engine {
             warp_bpm: l.warp_bpm,
             plain_step: plain,
             note,
+            speed: 1.0,
+            base_gain_l: l.gain_l * level,
+            base_gain_r: l.gain_r * level,
+            wow: vp.wow,
+            // Each voice wobbles from its own place, so a chord doesn't
+            // wander in step.
+            wow_phase: [
+                (self.clock as f32 * 0.618_034).fract(),
+                (self.clock as f32 * 0.414_214).fract(),
+                (self.clock as f32 * 0.732_051).fract(),
+            ],
         };
+        if self.tape != 1.0 {
+            // A hit on a stopped (or slowing) tape plays at its speed.
+            v.speed = self.tape;
+            let gain = (self.tape / TAPE_FADE).min(1.0);
+            (v.gain_l, v.gain_r) = (v.base_gain_l * gain, v.base_gain_r * gain);
+            retime(v);
+        }
         if granular {
             let g = &mut self.grains[slot];
             g.set_params(grain);
@@ -1326,6 +1433,7 @@ impl Engine {
             let next = self.events.first().map_or(n, |&(o, _)| o.min(n));
             let (a, b) = (at as usize, next as usize);
             let frame = self.frames + at as u64;
+            self.follow_tape(b - a);
             for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
                 if !v.active {
                     continue;
@@ -1492,14 +1600,27 @@ fn pressure_step(v: &mut Voice) {
         PressureTarget::Level => {
             v.press_gain_inc = (db_to_gain(12.0 * d) - v.press_gain) / FILTER_STEP as f32
         }
-        PressureTarget::Pitch if !v.granular => {
-            v.step = ((v.base_step as f64) * f64::from(d).exp2())
-                .round()
-                .max(1.0) as i64
-        }
+        PressureTarget::Pitch => retime(v),
         PressureTarget::Filter => v.press_fc = (4.0 * d).exp2(),
         _ => {}
     }
+}
+
+/// The voice's step from its base step, its pitch pressure and its speed
+/// (the tape's, with wow and flutter). A granular voice's grains keep their
+/// own pitch.
+fn retime(v: &mut Voice) {
+    if v.granular {
+        return;
+    }
+    let mut step = v.base_step as f64;
+    if v.route.target == PressureTarget::Pitch {
+        step *= f64::from(v.route.depth * v.press).exp2();
+    }
+    if v.speed != 1.0 {
+        step *= f64::from(v.speed);
+    }
+    v.step = step.round().max(1.0) as i64;
 }
 
 /// Sets the voice's filter for envelope level `e`. The coefficients only
