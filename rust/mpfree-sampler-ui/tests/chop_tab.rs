@@ -4,8 +4,8 @@
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::{ChopMode, PlayMode};
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
-use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
+use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
 use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -23,9 +23,16 @@ fn beat() -> f64 {
 
 fn step(s: &mut ChopSample, row: Row, delta: i32) {
     let index = Row::ALL.iter().position(|r| *r == row).unwrap();
-    let ev = UiEvent { widget: chop_tab::LIST.into(), kind: EventKind::Step { index, delta } };
+    let ev = UiEvent {
+        widget: chop_tab::LIST.into(),
+        kind: EventKind::Step { index, delta },
+    };
     let st = s.state.clone();
-    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None, "the list changes only the chop");
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        None,
+        "the list changes only the chop"
+    );
 }
 
 fn method(s: &mut ChopSample, m: Method) {
@@ -59,7 +66,10 @@ fn buttons(s: &ChopSample) -> (Vec<String>, Vec<bool>) {
 }
 
 fn list_right(s: &ChopSample) -> String {
-    s.ui.get::<SettingList>(chop_tab::LIST).unwrap().right.clone()
+    s.ui.get::<SettingList>(chop_tab::LIST)
+        .unwrap()
+        .right
+        .clone()
 }
 
 #[test]
@@ -73,17 +83,33 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
     assert_eq!(s.tab.slices(), 15, "{b:?}");
     for (k, &cut) in b[1..b.len() - 1].iter().enumerate() {
         let eighth = (k + 1) as f64 * beat() / 2.0;
-        assert!((cut as f64 - eighth).abs() < 0.01 * f64::from(RATE), "cut {k} at {cut}, eighth at {eighth}");
+        assert!(
+            (cut as f64 - eighth).abs() < 0.01 * f64::from(RATE),
+            "cut {k} at {cut}, eighth at {eighth}"
+        );
     }
     assert_eq!(s.tab.method(), Method::Transient);
     // Fifteen slices fill A2-A16, A5 (the pad itself) among them.
     assert_eq!(s.tab.pads(st), Some(1..16));
     assert_eq!(s.tab.replaced(st), vec![PAD]);
     assert_eq!(list_right(&s), "replaces A5");
-    assert_eq!(buttons(&s), (vec!["Split".to_string(), "Merge".into(), "Chop to A2–A16".into()], vec![true, true, true]));
+    assert_eq!(
+        buttons(&s),
+        (
+            vec!["Split".to_string(), "Merge".into(), "Chop to A2–A16".into()],
+            vec![true, true, true]
+        )
+    );
     let bar = s.ui.get::<PadBar>(chop_tab::BAR).unwrap();
-    assert_eq!((bar.active, bar.title.as_str()), (chop_tab::TAB, "Pad A5 · Break 92"));
-    assert!(bar.subtitle.starts_with("15 slices · Transient · 92.0 BPM"), "{}", bar.subtitle);
+    assert_eq!(
+        (bar.active, bar.title.as_str()),
+        (chop_tab::TAB, "Pad A5 · Break 92")
+    );
+    assert!(
+        bar.subtitle.starts_with("15 slices · Transient · 92.0 BPM"),
+        "{}",
+        bar.subtitle
+    );
     // Less sensitive never finds more hits.
     let mut s = chop();
     let mut last = usize::MAX;
@@ -92,7 +118,10 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
         assert!(s.tab.slices() <= last);
         last = s.tab.slices();
     }
-    assert!(last < 15, "at 0 % only the strongest hits cut ({last} slices)");
+    assert!(
+        last < 15,
+        "at 0 % only the strongest hits cut ({last} slices)"
+    );
 }
 
 #[test]
@@ -104,7 +133,10 @@ fn beat_grid_and_silence_chop_again_as_their_settings_turn() {
     let b = s.tab.bounds(&s.state);
     assert_eq!(s.tab.slices(), 8, "beats 1 to 7 inside the region: {b:?}");
     for (k, &cut) in b[1..b.len() - 1].iter().enumerate() {
-        assert!((cut as f64 - (k + 1) as f64 * beat()).abs() <= 256.0, "cut {k} at {cut}");
+        assert!(
+            (cut as f64 - (k + 1) as f64 * beat()).abs() <= 256.0,
+            "cut {k} at {cut}"
+        );
     }
     step(&mut s, Row::Amount, -1);
     assert_eq!(s.tab.slices(), 15, "every 8th");
@@ -116,7 +148,10 @@ fn beat_grid_and_silence_chop_again_as_their_settings_turn() {
     let b = s.tab.bounds(&s.state);
     for (k, &cut) in b[1..b.len() - 1].iter().enumerate() {
         let even = rs + (re - rs) * (k as u64 + 1) / 8;
-        assert!(cut.abs_diff(even) <= 256, "cut {k} at {cut}, even at {even}");
+        assert!(
+            cut.abs_diff(even) <= 256,
+            "cut {k} at {cut}, even at {even}"
+        );
     }
     qlink(&mut s, 2, -2, false);
     assert_eq!(s.tab.slices(), 6, "Q-Link 3 turns the setting");
@@ -156,13 +191,21 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
     let mid = s.tab.bounds(&s.state)[2];
     assert!(mid.abs_diff((b[1] + b[2]) / 2) <= 256);
     let z = mid as usize;
-    assert!(mono[z] == 0.0 || (mono[z - 1] < 0.0) != (mono[z] < 0.0) || (mono[z] < 0.0) != (mono[z + 1] < 0.0));
+    assert!(
+        mono[z] == 0.0
+            || (mono[z - 1] < 0.0) != (mono[z] < 0.0)
+            || (mono[z] < 0.0) != (mono[z + 1] < 0.0)
+    );
     // Merge joins the slice picked to the one before.
     qlink(&mut s, 0, 1, false);
     assert_eq!(s.tab.selected(), 2);
     press(&mut s, Button::Merge);
     assert_eq!((s.tab.slices(), s.tab.selected()), (4, 1));
-    assert_eq!(s.tab.bounds(&s.state), b, "split then merged is where it began");
+    assert_eq!(
+        s.tab.bounds(&s.state),
+        b,
+        "split then merged is where it began"
+    );
     // Q-Link 2 moves the start of the slice picked: one frame with SHIFT.
     let start = s.tab.bounds(&s.state)[1];
     qlink(&mut s, 1, 3, true);
@@ -173,19 +216,32 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
     assert!(s.tab.bounds(&s.state)[1] > start);
     // Dragging a cut's marker moves it, but never past its neighbours.
     let st = s.state.clone();
-    let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Marker { index: 2, frame: 0 } };
+    let ev = UiEvent {
+        widget: chop_tab::WAVE.into(),
+        kind: EventKind::Marker { index: 2, frame: 0 },
+    };
     assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
     let b = s.tab.bounds(&s.state);
     assert_eq!((b[2], s.tab.selected()), (b[1] + 32, 2));
     // The first marker is the pad's Start and the last its End: they stay.
     for index in [0, 4] {
-        let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Marker { index, frame: 1000 } };
+        let ev = UiEvent {
+            widget: chop_tab::WAVE.into(),
+            kind: EventKind::Marker { index, frame: 1000 },
+        };
         s.tab.action(&mut s.ui, &ev, &st);
         assert_eq!(s.tab.bounds(&s.state), b);
-        assert_eq!(s.ui.get::<Waveform>(chop_tab::WAVE).unwrap().markers()[index].frame, b[index], "put back");
+        assert_eq!(
+            s.ui.get::<Waveform>(chop_tab::WAVE).unwrap().markers()[index].frame,
+            b[index],
+            "put back"
+        );
     }
     // A tap on the wave picks the slice under it.
-    let ev = UiEvent { widget: chop_tab::WAVE.into(), kind: EventKind::Frame(b[3] + 10) };
+    let ev = UiEvent {
+        widget: chop_tab::WAVE.into(),
+        kind: EventKind::Frame(b[3] + 10),
+    };
     s.tab.action(&mut s.ui, &ev, &st);
     assert_eq!(s.tab.selected(), 3);
     // A hand-made chop stays when the method's list is left alone, even
@@ -193,7 +249,10 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
     let mut moved = s.state.clone();
     moved.region.end -= 1000;
     s.tab.update(&mut s.ui, &moved);
-    assert_eq!((s.tab.method(), s.tab.bounds(&moved)[1..4].to_vec()), (Method::Manual, b[1..4].to_vec()));
+    assert_eq!(
+        (s.tab.method(), s.tab.bounds(&moved)[1..4].to_vec()),
+        (Method::Manual, b[1..4].to_vec())
+    );
 }
 
 #[test]
@@ -207,7 +266,15 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
     assert_eq!(s.tab.pads(&s.state), Some(5..9), "the pads after A5");
     assert_eq!(list_right(&s), "no pad replaced");
     let a = press(&mut s, Button::ToPads).unwrap();
-    let ChopAction::ToPads { to_pad, mode, ref bounds, .. } = a else { panic!("{a:?}") };
+    let ChopAction::ToPads {
+        to_pad,
+        mode,
+        ref bounds,
+        ..
+    } = a
+    else {
+        panic!("{a:?}")
+    };
     assert_eq!((to_pad, mode, bounds), (5, ChopMode::Grid, &b));
     assert_eq!(apply(&mut s, &a), 5..9);
     let template = s.project.pad(PAD).unwrap().clone();
@@ -216,7 +283,11 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
         assert_eq!(pad.name, format!("Break 92 {}", k + 1));
         let r = &pad.layers[0].region;
         assert_eq!((r.start, r.end), (b[k], b[k + 1]));
-        assert_eq!((r.mode, r.sustain_loop, r.gain_db), (PlayMode::OneShot, None, 2.0), "plays once, at the pad's gain");
+        assert_eq!(
+            (r.mode, r.sustain_loop, r.gain_db),
+            (PlayMode::OneShot, None, 2.0),
+            "plays once, at the pad's gain"
+        );
         assert_eq!(pad.level_db, template.level_db);
     }
     assert_eq!(s.project.chop_sets.len(), 1);
@@ -224,7 +295,13 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
     let view = EngineView::build(&s.project, RATE);
     let mut e = Engine::new(RATE, 32);
     e.set_view(view);
-    assert!(e.schedule(0, Event::NoteOn { pad: 7, velocity: 127 }));
+    assert!(e.schedule(
+        0,
+        Event::NoteOn {
+            pad: 7,
+            velocity: 127
+        }
+    ));
     let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
     for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
         e.render(a, b);
@@ -266,10 +343,16 @@ fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     assert!(list_right(&s).contains("too many"));
     // The bar's Wave tab goes back to Wave.
     let bar = s.ui.rect_of(chop_tab::BAR).unwrap();
-    let wave = s.ui.get::<PadBar>(chop_tab::BAR).unwrap().tab_rect(bar, wave_tab::TAB);
+    let wave =
+        s.ui.get::<PadBar>(chop_tab::BAR)
+            .unwrap()
+            .tab_rect(bar, wave_tab::TAB);
     let ev = s.ui.touch(1, Touch::Down, wave.x + 5, wave.y + 5).unwrap();
     let st = s.state.clone();
-    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), Some(ChopAction::Tab(wave_tab::TAB)));
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(ChopAction::Tab(wave_tab::TAB))
+    );
 }
 
 #[test]

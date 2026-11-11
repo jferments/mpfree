@@ -16,9 +16,13 @@ pub const BUCKETS: usize = (2 + OCTAVES * SUB) as usize;
 
 #[inline]
 fn bucket(ns: u64) -> usize {
-    if ns < 1 << LOW_BITS { return 0; }
+    if ns < 1 << LOW_BITS {
+        return 0;
+    }
     let e = 63 - ns.leading_zeros();
-    if e >= LOW_BITS + OCTAVES { return BUCKETS - 1; }
+    if e >= LOW_BITS + OCTAVES {
+        return BUCKETS - 1;
+    }
     let sub = ((ns >> (e - SUB_BITS)) & (SUB as u64 - 1)) as u32;
     (1 + (e - LOW_BITS) * SUB + sub) as usize
 }
@@ -26,8 +30,12 @@ fn bucket(ns: u64) -> usize {
 /// The largest value bucket `i` holds (a percentile reports this, so it
 /// never understates).
 fn bucket_top(i: usize) -> u64 {
-    if i == 0 { return (1 << LOW_BITS) - 1; }
-    if i >= BUCKETS - 1 { return u64::MAX; }
+    if i == 0 {
+        return (1 << LOW_BITS) - 1;
+    }
+    if i >= BUCKETS - 1 {
+        return u64::MAX;
+    }
     let k = (i - 1) as u32;
     let e = LOW_BITS + k / SUB;
     let sub = (k % SUB) as u64;
@@ -53,7 +61,16 @@ pub struct Stats {
 
 impl Default for Stats {
     fn default() -> Stats {
-        Stats { blocks: 0, frames: 0, total_ns: 0, max_ns: 0, over: 0, allocs: 0, alloc_blocks: 0, hist: [0; BUCKETS] }
+        Stats {
+            blocks: 0,
+            frames: 0,
+            total_ns: 0,
+            max_ns: 0,
+            over: 0,
+            allocs: 0,
+            alloc_blocks: 0,
+            hist: [0; BUCKETS],
+        }
     }
 }
 
@@ -64,7 +81,9 @@ impl Stats {
         self.frames += u64::from(frames);
         self.total_ns = self.total_ns.saturating_add(ns);
         self.max_ns = self.max_ns.max(ns);
-        if ns > limit_ns { self.over += 1; }
+        if ns > limit_ns {
+            self.over += 1;
+        }
         if allocs > 0 {
             self.allocs += allocs;
             self.alloc_blocks += 1;
@@ -82,7 +101,9 @@ impl Stats {
         self.over += o.over;
         self.allocs += o.allocs;
         self.alloc_blocks += o.alloc_blocks;
-        for (a, b) in self.hist.iter_mut().zip(o.hist.iter()) { *a = a.saturating_add(*b); }
+        for (a, b) in self.hist.iter_mut().zip(o.hist.iter()) {
+            *a = a.saturating_add(*b);
+        }
     }
 
     /// The value at or below which `q` (0 to 1) of the blocks fall, rounded
@@ -90,12 +111,16 @@ impl Stats {
     /// worst block. 0 with no blocks.
     pub fn quantile_ns(&self, q: f64) -> u64 {
         let n: u64 = self.hist.iter().map(|&c| u64::from(c)).sum();
-        if n == 0 { return 0; }
+        if n == 0 {
+            return 0;
+        }
         let rank = ((q.clamp(0.0, 1.0) * n as f64).ceil() as u64).max(1);
         let mut seen = 0u64;
         for (i, &c) in self.hist.iter().enumerate() {
             seen += u64::from(c);
-            if seen >= rank { return bucket_top(i).min(self.max_ns); }
+            if seen >= rank {
+                return bucket_top(i).min(self.max_ns);
+            }
         }
         self.max_ns
     }
@@ -105,7 +130,11 @@ impl Stats {
             blocks: self.blocks,
             frames: self.frames,
             total_ns: self.total_ns,
-            mean_ns: if self.blocks == 0 { 0.0 } else { self.total_ns as f64 / self.blocks as f64 },
+            mean_ns: if self.blocks == 0 {
+                0.0
+            } else {
+                self.total_ns as f64 / self.blocks as f64
+            },
             p50_ns: self.quantile_ns(0.5),
             p99_ns: self.quantile_ns(0.99),
             p999_ns: self.quantile_ns(0.999),
@@ -138,7 +167,9 @@ impl Summary {
     /// Share of real time used, in per cent: time spent over the audio the
     /// blocks covered. 0 with no frames.
     pub fn realtime_pct(&self, rate: u32) -> f64 {
-        if self.frames == 0 || rate == 0 { return 0.0; }
+        if self.frames == 0 || rate == 0 {
+            return 0.0;
+        }
         let audio_ns = self.frames as f64 * 1e9 / f64::from(rate);
         100.0 * self.total_ns as f64 / audio_ns
     }
@@ -146,13 +177,22 @@ impl Summary {
     /// One log line: mean, p99, worst in µs and as a share of `period_ns`.
     pub fn line(&self, name: &str, period_ns: f64) -> String {
         let us = |ns: f64| ns / 1000.0;
-        let pct = |ns: f64| if period_ns > 0.0 { 100.0 * ns / period_ns } else { 0.0 };
+        let pct = |ns: f64| {
+            if period_ns > 0.0 {
+                100.0 * ns / period_ns
+            } else {
+                0.0
+            }
+        };
         let mut s = format!(
             "{name}: mean {:.0} us ({:.1} %), p99 {:.0} us ({:.1} %), max {:.0} us ({:.1} %) over {} blocks, {} over the limit",
             us(self.mean_ns), pct(self.mean_ns), us(self.p99_ns as f64), pct(self.p99_ns as f64),
             us(self.max_ns as f64), pct(self.max_ns as f64), self.blocks, self.over);
         if self.allocs > 0 {
-            s.push_str(&format!(", {} allocator calls in {} blocks", self.allocs, self.alloc_blocks));
+            s.push_str(&format!(
+                ", {} allocator calls in {} blocks",
+                self.allocs, self.alloc_blocks
+            ));
         }
         s
     }
@@ -170,10 +210,20 @@ pub struct Probe {
 impl Probe {
     /// `limit_ns`: a block longer than this counts as over (usually the
     /// period, or a module's budget).
-    pub fn new(limit_ns: u64) -> Probe { Probe { limit_ns, life: Stats::default(), window: Stats::default() } }
+    pub fn new(limit_ns: u64) -> Probe {
+        Probe {
+            limit_ns,
+            life: Stats::default(),
+            window: Stats::default(),
+        }
+    }
 
-    pub fn limit_ns(&self) -> u64 { self.limit_ns }
-    pub fn set_limit_ns(&mut self, ns: u64) { self.limit_ns = ns; }
+    pub fn limit_ns(&self) -> u64 {
+        self.limit_ns
+    }
+    pub fn set_limit_ns(&mut self, ns: u64) {
+        self.limit_ns = ns;
+    }
 
     #[inline]
     pub fn record(&mut self, ns: u64, frames: u32, allocs: u64) {
@@ -189,8 +239,12 @@ impl Probe {
         ns
     }
 
-    pub fn lifetime(&self) -> Summary { self.life.summary() }
-    pub fn stats(&self) -> &Stats { &self.life }
+    pub fn lifetime(&self) -> Summary {
+        self.life.summary()
+    }
+    pub fn stats(&self) -> &Stats {
+        &self.life
+    }
 
     /// The window since the last take, and a fresh window.
     pub fn take_window(&mut self) -> Summary {
@@ -213,13 +267,22 @@ mod tests {
     #[test]
     fn buckets_cover_the_range_in_order() {
         let mut last = 0;
-        for ns in [0u64, 1, 1023, 1024, 1100, 2047, 2048, 5_000, 100_000, 2_902_494, 60_000_000] {
+        for ns in [
+            0u64, 1, 1023, 1024, 1100, 2047, 2048, 5_000, 100_000, 2_902_494, 60_000_000,
+        ] {
             let b = bucket(ns);
             assert!(b >= last, "{ns}");
-            assert!(bucket_top(b) >= ns, "{ns} in bucket {b} with top {}", bucket_top(b));
+            assert!(
+                bucket_top(b) >= ns,
+                "{ns} in bucket {b} with top {}",
+                bucket_top(b)
+            );
             if b > 0 && b < BUCKETS - 1 {
                 assert!(bucket_top(b - 1) < ns, "{ns} would fit the bucket below");
-                assert!((bucket_top(b) - ns) as f64 <= ns as f64 * 0.125 + 1.0, "{ns}: bucket wider than 12.5 %");
+                assert!(
+                    (bucket_top(b) - ns) as f64 <= ns as f64 * 0.125 + 1.0,
+                    "{ns}: bucket wider than 12.5 %"
+                );
             }
             last = b;
         }
@@ -232,8 +295,12 @@ mod tests {
     fn percentiles_mean_and_worst() {
         let mut s = Stats::default();
         // 990 blocks at 50 µs, 9 at 400 µs, one at 2 ms.
-        for _ in 0..990 { s.record(50_000, 128, 2_902_494, 0); }
-        for _ in 0..9 { s.record(400_000, 128, 2_902_494, 0); }
+        for _ in 0..990 {
+            s.record(50_000, 128, 2_902_494, 0);
+        }
+        for _ in 0..9 {
+            s.record(400_000, 128, 2_902_494, 0);
+        }
         s.record(2_000_000, 128, 1_000_000, 0);
         let m = s.summary();
         assert_eq!(m.blocks, 1000);
@@ -251,11 +318,16 @@ mod tests {
     fn realtime_share_and_line() {
         let mut p = Probe::new(2_902_494);
         // 100 blocks of 128 frames at 44.1 kHz taking 290.2 µs each: 10 %.
-        for _ in 0..100 { p.record(290_249, 128, 0); }
+        for _ in 0..100 {
+            p.record(290_249, 128, 0);
+        }
         p.record(10, 128, 3);
         let s = p.lifetime();
         let want = 100.0 * (100.0 * 290_249.0 + 10.0) / (101.0 * 128.0 * 1e9 / 44_100.0);
-        assert!((s.realtime_pct(44_100) - want).abs() < 1e-9 && (want - 9.9).abs() < 0.05, "{want}");
+        assert!(
+            (s.realtime_pct(44_100) - want).abs() < 1e-9 && (want - 9.9).abs() < 0.05,
+            "{want}"
+        );
         let line = s.line("synth", 2_902_494.0);
         assert!(line.starts_with("synth: mean 287 us (9.9 %), p99 ") && line.contains("max 290 us (10.0 %) over 101 blocks, 0 over the limit, 3 allocator calls in 1 blocks"), "{line}");
         assert_eq!(p.take_window().blocks, 101);
@@ -271,6 +343,16 @@ mod tests {
         b.record(9_000, 64, 1_000_000, 2);
         a.merge(&b);
         let s = a.summary();
-        assert_eq!((s.blocks, s.frames, s.max_ns, s.over, s.allocs, s.alloc_blocks), (2, 128, 9_000, 1, 2, 1));
+        assert_eq!(
+            (
+                s.blocks,
+                s.frames,
+                s.max_ns,
+                s.over,
+                s.allocs,
+                s.alloc_blocks
+            ),
+            (2, 128, 9_000, 1, 2, 1)
+        );
     }
 }

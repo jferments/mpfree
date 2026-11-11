@@ -20,7 +20,12 @@ pub enum MixView {
 }
 
 impl MixView {
-    pub const ALL: [MixView; 4] = [MixView::Tracks, MixView::Pads, MixView::Inputs, MixView::Buses];
+    pub const ALL: [MixView; 4] = [
+        MixView::Tracks,
+        MixView::Pads,
+        MixView::Inputs,
+        MixView::Buses,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -31,7 +36,9 @@ impl MixView {
         }
     }
 
-    pub fn index(self) -> usize { MixView::ALL.iter().position(|v| *v == self).unwrap_or(0) }
+    pub fn index(self) -> usize {
+        MixView::ALL.iter().position(|v| *v == self).unwrap_or(0)
+    }
 }
 
 /// One insert slot as the strip shows it.
@@ -53,7 +60,12 @@ pub struct SendView {
 }
 
 impl Default for SendView {
-    fn default() -> SendView { SendView { db: mpfree_fx::SILENT_DB, pre: false } }
+    fn default() -> SendView {
+        SendView {
+            db: mpfree_fx::SILENT_DB,
+            pre: false,
+        }
+    }
 }
 
 /// An input strip's own settings.
@@ -97,7 +109,10 @@ pub struct StripView {
 impl StripView {
     /// A strip at its defaults, for building a state by hand.
     pub fn new(id: StripId, name: impl Into<String>) -> StripView {
-        let has_sends = matches!(id, StripId::Input(_) | StripId::Pad(_) | StripId::Track(_) | StripId::Bus(_));
+        let has_sends = matches!(
+            id,
+            StripId::Input(_) | StripId::Pad(_) | StripId::Track(_) | StripId::Bus(_)
+        );
         StripView {
             id,
             name: name.into(),
@@ -112,17 +127,25 @@ impl StripView {
             inserts: Vec::new(),
             slots: 8,
             peak: [0.0; 2],
-            input: matches!(id, StripId::Input(_)).then(|| InputView { source: 1, monitor: 2, arm: false }),
+            input: matches!(id, StripId::Input(_)).then(|| InputView {
+                source: 1,
+                monitor: 2,
+                arm: false,
+            }),
             cost_pct: None,
         }
     }
 
     /// Whether the strip has an output to choose (a return and the master
     /// do not).
-    pub fn has_output(&self) -> bool { !matches!(self.id, StripId::Return(_) | StripId::Master) }
+    pub fn has_output(&self) -> bool {
+        !matches!(self.id, StripId::Return(_) | StripId::Master)
+    }
 
     /// What the output button says: "Master", "Sub 3", "Track 2", "None".
-    pub fn output_label(&self) -> String { output_label(self.output, self.output_track) }
+    pub fn output_label(&self) -> String {
+        output_label(self.output, self.output_track)
+    }
 }
 
 /// The name of an output choice ([`mx::OUTPUT`] value and track).
@@ -178,7 +201,12 @@ impl Default for MixState {
             view: MixView::Tracks,
             strips: Vec::new(),
             master: StripView::new(StripId::Master, "Master"),
-            safety: SafetyView { mode: "Safe limiter".into(), ceiling_db: -0.3, reduction_db: 0.0, overs: 0 },
+            safety: SafetyView {
+                mode: "Safe limiter".into(),
+                ceiling_db: -0.3,
+                reduction_db: 0.0,
+                overs: 0,
+            },
             counts: [0; 4],
             tracks: 16,
             selected: None,
@@ -189,11 +217,19 @@ impl Default for MixState {
 
 impl MixState {
     pub fn strip(&self, id: StripId) -> Option<&StripView> {
-        if id == StripId::Master { Some(&self.master) } else { self.strips.iter().find(|s| s.id == id) }
+        if id == StripId::Master {
+            Some(&self.master)
+        } else {
+            self.strips.iter().find(|s| s.id == id)
+        }
     }
 
     pub fn strip_mut(&mut self, id: StripId) -> Option<&mut StripView> {
-        if id == StripId::Master { Some(&mut self.master) } else { self.strips.iter_mut().find(|s| s.id == id) }
+        if id == StripId::Master {
+            Some(&mut self.master)
+        } else {
+            self.strips.iter_mut().find(|s| s.id == id)
+        }
     }
 
     /// Reads a mixer the control thread can see (the workstation preview,
@@ -205,12 +241,17 @@ impl MixState {
             MixView::Tracks => (0..m.tracks()).map(StripId::Track).collect(),
             MixView::Pads => (0..m.pads()).map(StripId::Pad).collect(),
             MixView::Inputs => (0..m.inputs()).map(StripId::Input).collect(),
-            MixView::Buses => (0..BUSES).map(StripId::Bus).chain((0..RETURNS).map(StripId::Return)).collect(),
+            MixView::Buses => (0..BUSES)
+                .map(StripId::Bus)
+                .chain((0..RETURNS).map(StripId::Return))
+                .collect(),
         };
         let strips = ids.iter().map(|&s| read_strip(m, s, name)).collect();
         let master = read_strip(m, StripId::Master, name);
         let rate = m.rate();
-        let cost_pct = m.profiling().then(|| m.probe_mut().take_window().realtime_pct(rate) as f32);
+        let cost_pct = m
+            .profiling()
+            .then(|| m.probe_mut().take_window().realtime_pct(rate) as f32);
         let ms = m.safety();
         let p = |id: u16| mpfree_fx::mpfree_node::Node::param(ms, id);
         let mode = match p(mpfree_fx::ids::master::MODE) as u8 {
@@ -250,16 +291,25 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
     }
     if let Some(sends) = v.sends.as_mut() {
         for (r, sv) in sends.iter_mut().enumerate() {
-            *sv = SendView { db: p(mx::send(r)), pre: p(mx::send_pre(r)) >= 0.5 };
+            *sv = SendView {
+                db: p(mx::send(r)),
+                pre: p(mx::send_pre(r)) >= 0.5,
+            };
         }
     }
     if let Some(i) = v.input.as_mut() {
-        *i = InputView { source: p(mx::SOURCE) as u8, monitor: p(mx::MONITOR) as u8, arm: p(mx::ARM) >= 0.5 };
+        *i = InputView {
+            source: p(mx::SOURCE) as u8,
+            monitor: p(mx::MONITOR) as u8,
+            arm: p(mx::ARM) >= 0.5,
+        };
     }
     v.audible = m.is_audible(s);
     let rate = m.rate();
     let profiling = m.profiling();
-    let keys: Vec<Option<StripId>> = (0..m.chain(s).map_or(0, |c| c.len())).map(|slot| m.key(s, slot)).collect();
+    let keys: Vec<Option<StripId>> = (0..m.chain(s).map_or(0, |c| c.len()))
+        .map(|slot| m.key(s, slot))
+        .collect();
     if let Some(c) = m.chain_mut(s) {
         v.slots = c.capacity();
         v.inserts = (0..c.len())
@@ -267,14 +317,28 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
                 name: c.node(slot).map_or("?", |n| n.info().name).to_string(),
                 on: c.is_on(slot),
                 key: keys[slot].map(name),
-                cost_pct: if profiling { c.probe_mut(slot).map(|p| p.take_window().realtime_pct(rate) as f32) } else { None },
+                cost_pct: if profiling {
+                    c.probe_mut(slot)
+                        .map(|p| p.take_window().realtime_pct(rate) as f32)
+                } else {
+                    None
+                },
             })
             .collect();
     }
-    v.cost_pct = if profiling { m.strip_probe_mut(s).map(|p| p.take_window().realtime_pct(rate) as f32) } else { None };
+    v.cost_pct = if profiling {
+        m.strip_probe_mut(s)
+            .map(|p| p.take_window().realtime_pct(rate) as f32)
+    } else {
+        None
+    };
     // An input's meter shows what comes in (what a take records), monitored
     // or not; every other strip's shows what it sends on.
-    v.peak = if matches!(s, StripId::Input(_)) { m.take_input_peaks(s) } else { m.take_peaks(s) };
+    v.peak = if matches!(s, StripId::Input(_)) {
+        m.take_input_peaks(s)
+    } else {
+        m.take_peaks(s)
+    };
     v
 }
 
@@ -292,4 +356,6 @@ pub fn default_name(s: StripId) -> String {
 }
 
 /// A level in dBFS for a meter, from a linear peak (-80 for silence).
-pub fn peak_db(p: f32) -> f32 { gain_to_db(p).max(-80.0) }
+pub fn peak_db(p: f32) -> f32 {
+    gain_to_db(p).max(-80.0)
+}

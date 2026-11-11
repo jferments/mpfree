@@ -1,8 +1,8 @@
 //! Widgets the arpeggiator's pages add to mpfree-ui's set. Like mpfree-ui's
 //! own, they only show what the page put in their fields and report touches.
 
-use mpfree_ui::{Align, EventKind, PaintCx, Rect, Tone, Touch, Widget};
 use mpfree_ui::text::FontId;
+use mpfree_ui::{Align, EventKind, PaintCx, Rect, Tone, Touch, Widget};
 
 // ---------------------------------------------------------------- segments
 
@@ -15,13 +15,25 @@ pub struct Segments {
 
 impl Segments {
     pub fn new(items: &[&str]) -> Segments {
-        Segments { items: items.iter().map(|s| s.to_string()).collect(), active: 0 }
+        Segments {
+            items: items.iter().map(|s| s.to_string()).collect(),
+            active: 0,
+        }
     }
 
     pub fn cell(&self, r: Rect, i: usize) -> Rect {
         let n = self.items.len().max(1) as i32;
         let w = r.w / n;
-        Rect::new(r.x + i as i32 * w, r.y, if i as i32 == n - 1 { r.w - w * (n - 1) } else { w }, r.h)
+        Rect::new(
+            r.x + i as i32 * w,
+            r.y,
+            if i as i32 == n - 1 {
+                r.w - w * (n - 1)
+            } else {
+                w
+            },
+            r.h,
+        )
     }
 }
 
@@ -38,7 +50,14 @@ impl Widget for Segments {
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
             }
             let font = if on { FontId::Bold } else { FontId::Sans };
-            cx.text(font, t.size_body, c, Align::Center, if on { t.text } else { t.text_dim }, name);
+            cx.text(
+                font,
+                t.size_body,
+                c,
+                Align::Center,
+                if on { t.text } else { t.text_dim },
+                name,
+            );
         }
     }
 
@@ -92,21 +111,62 @@ impl Widget for MiniBar {
         cx.panel(r);
         let [slower, faster, latch, name] = self.parts(r);
         let dot = Rect::new(name.x + 6, name.y + name.h / 2 - 4, 8, 8);
-        cx.canvas.fill_round_rect(dot, 4, if self.latched { t.warn } else { t.accent });
+        cx.canvas
+            .fill_round_rect(dot, 4, if self.latched { t.warn } else { t.accent });
         let label = Rect::new(name.x + 22, name.y, name.w - 22, name.h);
-        cx.text(FontId::Bold, t.size_body, label, Align::Left, t.text, &self.mode);
-        for (b, text, on) in [(slower, "−", self.can_slower), (faster, "+", self.can_faster)] {
-            cx.canvas.fill_round_rect(b, 10, if on { t.raised } else { t.surface });
-            cx.text(FontId::Bold, t.size_title, b, Align::Center, if on { t.text } else { t.text_faint }, text);
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            label,
+            Align::Left,
+            t.text,
+            &self.mode,
+        );
+        for (b, text, on) in [
+            (slower, "−", self.can_slower),
+            (faster, "+", self.can_faster),
+        ] {
+            cx.canvas
+                .fill_round_rect(b, 10, if on { t.raised } else { t.surface });
+            cx.text(
+                FontId::Bold,
+                t.size_title,
+                b,
+                Align::Center,
+                if on { t.text } else { t.text_faint },
+                text,
+            );
         }
         let rate = Rect::new(slower.right(), r.y, faster.x - slower.right(), r.h);
-        cx.text(FontId::Bold, t.size_title, rate, Align::Center, t.accent, &self.rate);
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            rate,
+            Align::Center,
+            t.accent,
+            &self.rate,
+        );
         let ink = if self.latched { t.warn } else { t.text_dim };
-        cx.canvas.fill_round_rect(latch, 10, if self.latched { t.bg.mix(t.warn, 0.22) } else { t.raised });
+        cx.canvas.fill_round_rect(
+            latch,
+            10,
+            if self.latched {
+                t.bg.mix(t.warn, 0.22)
+            } else {
+                t.raised
+            },
+        );
         if self.latched {
             cx.canvas.stroke_round_rect(latch, 10, 2, t.warn);
         }
-        cx.text(FontId::Bold, t.size_small, latch, Align::Center, ink, if self.latched { "LATCHED" } else { "LATCH" });
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            latch,
+            Align::Center,
+            ink,
+            if self.latched { "LATCHED" } else { "LATCH" },
+        );
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -147,7 +207,13 @@ impl SliderStack {
     pub fn new(title: &str, labels: &[&str]) -> SliderStack {
         SliderStack {
             title: title.to_string(),
-            rows: labels.iter().map(|l| Slider { label: l.to_string(), ..Slider::default() }).collect(),
+            rows: labels
+                .iter()
+                .map(|l| Slider {
+                    label: l.to_string(),
+                    ..Slider::default()
+                })
+                .collect(),
             active: None,
             grabbed: None,
         }
@@ -164,7 +230,12 @@ impl SliderStack {
         let n = self.rows.len().max(1) as i32;
         let h = body.h / n;
         let row = Rect::new(body.x, body.y + i as i32 * h, body.w, h);
-        let track = Rect::new(row.x + 11, row.y + SLIDER_HEAD + (h - SLIDER_HEAD - 8) / 2, (row.w - 22).max(1), 8);
+        let track = Rect::new(
+            row.x + 11,
+            row.y + SLIDER_HEAD + (h - SLIDER_HEAD - 8) / 2,
+            (row.w - 22).max(1),
+            8,
+        );
         (row, track)
     }
 
@@ -183,14 +254,29 @@ impl Widget for SliderStack {
             let on = self.active == Some(i);
             let head = Rect::new(row.x, row.y, row.w, SLIDER_HEAD);
             let ink = if on { t.accent } else { t.text_dim };
-            cx.text(FontId::Bold, t.size_small - 1.0, head, Align::Left, ink, &s.label.to_uppercase());
-            cx.text(FontId::Bold, t.size_body, head, Align::Right, t.text, &s.text);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                head,
+                Align::Left,
+                ink,
+                &s.label.to_uppercase(),
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                head,
+                Align::Right,
+                t.text,
+                &s.text,
+            );
             cx.canvas.fill_round_rect(track, 4, t.raised);
             let v = s.value.clamp(0.0, 1.0);
             let fill = Rect::new(track.x, track.y, ((track.w as f32) * v) as i32, track.h);
             cx.canvas.fill_round_rect(fill, 4, t.accent);
             let kx = track.x + fill.w;
-            cx.canvas.fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, t.text);
+            cx.canvas
+                .fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, t.text);
         }
     }
 
@@ -269,7 +355,13 @@ pub const MIN_CELL_W: i32 = 44;
 
 impl StepStrip {
     pub fn new(min_cells: usize) -> StepStrip {
-        StepStrip { cells: Vec::new(), first: 0, playing: None, cursor: None, min_cells }
+        StepStrip {
+            cells: Vec::new(),
+            first: 0,
+            playing: None,
+            cursor: None,
+            min_cells,
+        }
     }
 
     pub fn cell(&self, r: Rect, i: usize) -> Rect {
@@ -290,13 +382,21 @@ impl Widget for StepStrip {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         if self.cells.is_empty() {
-            cx.text(FontId::Sans, t.size_body, r, Align::Center, t.text_faint, "hold pads to see the next steps");
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                r,
+                Align::Center,
+                t.text_faint,
+                "hold pads to see the next steps",
+            );
             return;
         }
         for (i, c) in self.cells.iter().enumerate() {
             let cell = self.cell(r, i);
             let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
-            cx.canvas.fill_round_rect(cell, 8, if quiet { t.surface } else { t.raised });
+            cx.canvas
+                .fill_round_rect(cell, 8, if quiet { t.surface } else { t.raised });
             if self.cursor == Some(i) {
                 cx.canvas.stroke_round_rect(cell, 8, 2, t.accent);
             }
@@ -314,11 +414,32 @@ impl Widget for StepStrip {
                 CellKind::Note => t.text,
             };
             if c.sub.is_empty() {
-                cx.text(FontId::Sans, t.size_title, cell, Align::Center, ink, &c.label);
+                cx.text(
+                    FontId::Sans,
+                    t.size_title,
+                    cell,
+                    Align::Center,
+                    ink,
+                    &c.label,
+                );
             } else {
                 let (top, bottom) = cell.inset_xy(2, 6).take_top(cell.h / 2 + 2);
-                cx.text(FontId::Sans, t.size_title, top, Align::Center, ink, &c.label);
-                cx.text(FontId::Mono, t.size_small - 2.0, bottom, Align::Center, t.text_dim, &c.sub);
+                cx.text(
+                    FontId::Sans,
+                    t.size_title,
+                    top,
+                    Align::Center,
+                    ink,
+                    &c.label,
+                );
+                cx.text(
+                    FontId::Mono,
+                    t.size_small - 2.0,
+                    bottom,
+                    Align::Center,
+                    t.text_dim,
+                    &c.sub,
+                );
             }
         }
     }
@@ -357,7 +478,11 @@ impl ButtonRow {
         ButtonRow {
             buttons: labels
                 .iter()
-                .map(|(l, tone)| Button { label: l.to_string(), tone: *tone, disabled: false })
+                .map(|(l, tone)| Button {
+                    label: l.to_string(),
+                    tone: *tone,
+                    disabled: false,
+                })
                 .collect(),
             per_line: 2,
         }
@@ -365,7 +490,10 @@ impl ButtonRow {
 
     /// All the buttons on one line, as a toolbar.
     pub fn one_line(labels: &[(&str, Tone)]) -> ButtonRow {
-        ButtonRow { per_line: labels.len().max(1), ..ButtonRow::new(labels) }
+        ButtonRow {
+            per_line: labels.len().max(1),
+            ..ButtonRow::new(labels)
+        }
     }
 
     /// Buttons share each line equally, [`ButtonRow::per_line`] to a line.
@@ -375,7 +503,12 @@ impl ButtonRow {
         let gap = 10;
         let w = (inner.w - gap * (per_line - 1)) / per_line;
         let (line, col) = ((i as i32) / per_line, (i as i32) % per_line);
-        Rect::new(inner.x + col * (w + gap), inner.y + line * (BUTTON_H + gap), w, BUTTON_H)
+        Rect::new(
+            inner.x + col * (w + gap),
+            inner.y + line * (BUTTON_H + gap),
+            w,
+            BUTTON_H,
+        )
     }
 }
 
@@ -388,12 +521,20 @@ impl Widget for ButtonRow {
             if br.bottom() > r.bottom() {
                 break;
             }
-            let fill = if b.disabled { t.surface } else { t.bg.mix(t.tone(b.tone), 0.18) };
+            let fill = if b.disabled {
+                t.surface
+            } else {
+                t.bg.mix(t.tone(b.tone), 0.18)
+            };
             cx.canvas.fill_round_rect(br, 10, fill);
             if b.disabled {
                 cx.canvas.stroke_round_rect(br, 10, 1, t.outline);
             }
-            let ink = if b.disabled { t.text_faint } else { t.tone(b.tone) };
+            let ink = if b.disabled {
+                t.text_faint
+            } else {
+                t.tone(b.tone)
+            };
             cx.text(FontId::Bold, t.size_body, br, Align::Center, ink, &b.label);
         }
     }
@@ -455,11 +596,21 @@ impl LaneGrid {
 
     /// Cell (row, col).
     pub fn cell(&self, r: Rect, row: usize, col: usize) -> Rect {
-        let body = Rect::new(r.x + NAMES_W, r.y + NUMBERS_H, (r.w - NAMES_W).max(1), (r.h - NUMBERS_H).max(1));
+        let body = Rect::new(
+            r.x + NAMES_W,
+            r.y + NUMBERS_H,
+            (r.w - NAMES_W).max(1),
+            (r.h - NUMBERS_H).max(1),
+        );
         let (nr, nc) = (self.rows.len().max(1) as i32, self.columns.max(1) as i32);
         let w = (body.w - CELL_GAP * (nc - 1)) / nc;
         let h = (body.h - CELL_GAP * (nr - 1)) / nr;
-        Rect::new(body.x + col as i32 * (w + CELL_GAP), body.y + row as i32 * (h + CELL_GAP), w, h)
+        Rect::new(
+            body.x + col as i32 * (w + CELL_GAP),
+            body.y + row as i32 * (h + CELL_GAP),
+            w,
+            h,
+        )
     }
 
     fn hit(&self, r: Rect, x: i32, y: i32) -> Option<usize> {
@@ -484,14 +635,28 @@ impl Widget for LaneGrid {
             let head = Rect::new(c.x, r.y, c.w, NUMBERS_H - 4);
             let on = self.playing == Some(col);
             let ink = if on { t.good } else { t.text_faint };
-            cx.text(FontId::Mono, t.size_small - 1.0, head, Align::Center, ink, &format!("{}", self.first + col + 1));
+            cx.text(
+                FontId::Mono,
+                t.size_small - 1.0,
+                head,
+                Align::Center,
+                ink,
+                &format!("{}", self.first + col + 1),
+            );
         }
         for (row, name) in self.rows.iter().enumerate() {
             let c = self.cell(r, row, 0);
             let label = Rect::new(r.x, c.y, NAMES_W - 10, c.h);
             let on = self.cursor.is_some_and(|(cr, _)| cr == row);
             let ink = if on { t.accent } else { t.text_dim };
-            cx.text(FontId::Bold, t.size_small, label, Align::Left, ink, &name.to_uppercase());
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                label,
+                Align::Left,
+                ink,
+                &name.to_uppercase(),
+            );
             let cells = self.cells.get(row).map_or(&[][..], |v| v.as_slice());
             for col in 0..self.columns {
                 let cell = self.cell(r, row, col);
@@ -500,7 +665,8 @@ impl Widget for LaneGrid {
                     continue;
                 };
                 let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
-                cx.canvas.fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
+                cx.canvas
+                    .fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
                 let playing = match self.playing_rows.get(row) {
                     Some(p) => *p == Some(col),
                     None => self.playing == Some(col),
@@ -521,7 +687,14 @@ impl Widget for LaneGrid {
                     CellKind::Chord => t.accent,
                     CellKind::Note => t.text,
                 };
-                cx.text(FontId::Sans, t.size_body, cell, Align::Center, ink, &c.label);
+                cx.text(
+                    FontId::Sans,
+                    t.size_body,
+                    cell,
+                    Align::Center,
+                    ink,
+                    &c.label,
+                );
             }
         }
     }
