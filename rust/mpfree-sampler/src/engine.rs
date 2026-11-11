@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
+pub use mpfree_grain::{GrainView, MAX_GRAINS};
 
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
@@ -81,6 +82,9 @@ struct Vary {
     start: Option<f32>,
     cutoff_hz: Option<f32>,
     decay_ms: Option<f32>,
+    /// An audition: these source frames once, forward, without fades or a
+    /// loop, instead of the layer's region.
+    slice: Option<(i64, i64)>,
 }
 
 impl Vary {
@@ -175,6 +179,9 @@ pub struct ViewLayer {
     warp_bpm: f64,
     /// It plays a stretched copy, not the source.
     copy: bool,
+    /// For a stretched copy: the source frame its first frame was made
+    /// from, and its frames per source frame.
+    source_at: Option<(i64, f64)>,
 }
 
 impl ViewLayer {
@@ -313,6 +320,7 @@ impl EngineView {
                             grain,
                             warp_bpm: 0.0,
                             copy: false,
+                            source_at: None,
                         };
                         let warp = r.warp.filter(|_| r.mode != PlayMode::Granular);
                         if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
@@ -358,6 +366,7 @@ impl EngineView {
                                 // The copy is at the tempo it was made for.
                                 v.warp_bpm *= (r.frames() as f64) / (len as f64);
                                 v.copy = true;
+                                v.source_at = Some((r.start as i64, scale));
                             }
                         }
                         Some(v)
@@ -428,6 +437,20 @@ pub enum Event {
     Tape {
         stop: bool,
         ms: u16,
+    },
+    /// Plays source frames `start..end` of layer `layer` of pad `pad` once,
+    /// forward from its first frame, with the pad's settings (level, pan,
+    /// tune, channels, envelopes, filter, pressure), as a pad made from
+    /// that slice plays it: the Chop tab's audition of a slice. The pad's
+    /// own playing voices fade out first; mute groups and chokes are left
+    /// alone. `velocity` as for [`Event::NoteOn`]. The frames are clipped to
+    /// the source; nothing plays if none are left.
+    Audition {
+        pad: u8,
+        layer: u8,
+        start: u32,
+        end: u32,
+        velocity: u8,
     },
 }
 
@@ -802,6 +825,21 @@ impl Engine {
             .count()
     }
 
+    /// The grains layer `layer` of pad `pad` plays now, across every voice
+    /// playing it: each one's reading position (0 to 1 across the region),
+    /// window level and direction, for drawing the cloud. Fills `out` from
+    /// the start and returns how many it holds (grains past its end are
+    /// left out). Never allocates.
+    pub fn grains_of(&self, pad: u8, layer: u8, out: &mut [GrainView]) -> usize {
+        let mut n = 0;
+        for (v, g) in self.voices.iter().zip(&self.grains) {
+            if v.active && v.granular && v.pad == pad && v.layer == layer && n < out.len() {
+                n += g.grains(&mut out[n..]);
+            }
+        }
+        n
+    }
+
     /// Queues an event `offset` frames into the next render (later renders if
     /// the offset is past its end). Events at the same offset keep their order.
     /// Returns false, and counts it, if the queue is full.
@@ -871,6 +909,13 @@ impl Engine {
                 }
                 self.tape_moved = true;
             }
+            Event::Audition {
+                pad,
+                layer,
+                start,
+                end,
+                velocity,
+            } => self.audition(pad, layer, start, end, velocity),
         }
     }
 
@@ -993,6 +1038,34 @@ impl Engine {
         }
     }
 
+    fn audition(&mut self, pad: u8, layer: u8, start: u32, end: u32, velocity: u8) {
+        if velocity == 0 || start >= end {
+            return;
+        }
+        let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
+        let p = usize::from(pad);
+        let Some(Some(vp)) = self.view.pads.get(p) else {
+            return;
+        };
+        let li = usize::from(layer);
+        if li >= vp.layers.len() {
+            return;
+        }
+        self.stats.hits += 1;
+        let vel = f32::from(velocity) / 127.0;
+        let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
+        for v in &mut self.voices {
+            if v.active && v.pad == pad {
+                Self::kill(v);
+            }
+        }
+        let vary = Vary {
+            slice: Some((i64::from(start), i64::from(end))),
+            ..Vary::default()
+        };
+        self.start_voice(p, li, level, vel, NO_NOTE, vary);
+    }
+
     /// Pad `pad` plays: hit (`note` is [`NO_NOTE`]), as the keygroup for
     /// `note`, or at a 16 Levels step, with what `vary` changes.
     fn note_on(&mut self, pad: u8, velocity: u8, note: u8, vary: Vary) {
@@ -1106,12 +1179,34 @@ impl Engine {
         }
     }
 
+    /// Starts layer `li` of pad `p` with what `vary` changes. A slice, for
+    /// an audition, plays those source frames instead of the layer's
+    /// region: once, forward, without fades or a loop.
     fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, vary: Vary) {
         let semis = vary.semis;
         let Some(vp) = self.view.pads[p].as_ref() else {
             return;
         };
         let l = &vp.layers[li];
+        // A slice is in source frames; a stretched copy has its own.
+        let slice = vary.slice.map(|(a, b)| match l.source_at {
+            Some((first, scale)) => {
+                let at = |x: i64| ((x - first) as f64 * scale).round() as i64;
+                (at(a), at(b))
+            }
+            None => (a, b),
+        });
+        let slice = match slice {
+            Some((a, b)) => {
+                let frames = (l.data.len() / if l.stereo { 2 } else { 1 }) as i64;
+                let (a, b) = (a.max(0), b.min(frames));
+                if a >= b {
+                    return;
+                }
+                Some((a, b))
+            }
+            None => None,
+        };
         // A free voice, else the oldest releasing one, else the oldest.
         let slot = self
             .voices
@@ -1134,27 +1229,44 @@ impl Engine {
         if self.voices[slot].granular {
             self.grains[slot].kill(&mut self.budget);
         }
-        let granular = l.mode == PlayMode::Granular;
         let (tail_l, tail_r) = if stolen {
             self.stats.steals += 1;
             (self.voices[slot].last_l, self.voices[slot].last_r)
         } else {
             (0.0, 0.0)
         };
-        let frames = l.end - l.start;
-        let skip = if l.reverse {
+        // What the voice reads: the layer's region, or the slice once.
+        let (start, end, reverse, mode) = match slice {
+            Some((a, b)) => (a, b, false, PlayMode::OneShot),
+            None => (l.start, l.end, l.reverse, l.mode),
+        };
+        let granular = mode == PlayMode::Granular;
+        let frames = end - start;
+        let skip = if reverse || slice.is_some() {
             0
         } else {
             let from = vary.start.unwrap_or(vp.vel_to_start * (1.0 - vel));
             (from as f64 * frames as f64) as i64
         };
-        let start_frame = if l.reverse {
-            l.end - 1
+        let start_frame = if reverse {
+            end - 1
         } else {
-            (l.start + skip).min(l.end - 1)
+            (start + skip).min(end - 1)
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
-        let lp = l.sustain_loop.as_ref();
+        let lp = if slice.is_some() {
+            None
+        } else {
+            l.sustain_loop.as_ref()
+        };
+        let (fade_in, fade_out) = if slice.is_some() {
+            (None, None)
+        } else {
+            (
+                (l.fade_in.frames > 0).then_some(l.fade_in),
+                (l.fade_out.frames > 0).then_some(l.fade_out),
+            )
+        };
         let mut amp = vp.amp;
         if let Some(ms) = vary.decay_ms {
             (amp.decay_ms, amp.sustain) = (ms, 0.0);
@@ -1201,23 +1313,23 @@ impl Engine {
             pick_r,
             pos: start_frame << 32,
             step,
-            backwards: l.reverse,
-            reverse: l.reverse,
-            start: l.start,
-            end: l.end,
+            backwards: reverse,
+            reverse,
+            start,
+            end,
             loop_start: lp.map_or(0, |x| x.start),
             loop_end: lp.map_or(0, |x| x.end),
             crossfade: lp.map_or(0, |x| x.crossfade),
             ping_pong: lp.is_some_and(|x| x.ping_pong),
             looping: !granular
                 && lp.is_some()
-                && !l.reverse
-                && matches!(l.mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
-            fade_in: (l.fade_in.frames > 0).then_some(l.fade_in),
-            fade_out: (l.fade_out.frames > 0).then_some(l.fade_out),
+                && !reverse
+                && matches!(mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
+            fade_in,
+            fade_out,
             gain_l: l.gain_l * level,
             gain_r: l.gain_r * level,
-            mode: Some(l.mode),
+            mode: Some(mode),
             held: true,
             age: self.clock,
             amp: Some(Envelope::start(&amp, self.rate)),
