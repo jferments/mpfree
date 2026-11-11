@@ -84,6 +84,7 @@ fn effects_and_the_chain_never_allocate() {
     chain.push(Box::new(Delay::new()));
     chain.push(Box::new(Compressor::new()));
     chain.push(Box::new(DjFilter::new()));
+    chain.push(Box::new(Cloud::new()));
     chain.push(Box::new(MasterSafety::new()));
     // The same nodes on their own, outside a chain.
     let mut solo: Vec<Box<dyn Node>> = vec![
@@ -94,6 +95,7 @@ fn effects_and_the_chain_never_allocate() {
         Box::new(Compressor::new()),
         Box::new(DjFilter::new()),
         Box::new(MasterSafety::new()),
+        Box::new(Cloud::new()),
     ];
     for n in &mut solo { n.prepare(rate, MAX_BLOCK); }
     let params: Vec<Vec<ParamInfo>> = (0..chain.len()).map(|s| chain.node(s).unwrap().params().to_vec()).collect();
@@ -127,6 +129,7 @@ fn effects_and_the_chain_never_allocate() {
             chain.set_on(s, !chain.is_on(s));
         }
         if rng.next().is_multiple_of(300) { chain.set_param(4, ids::delay::FREEZE, (rng.next() % 2) as f32); }
+        if rng.next().is_multiple_of(300) { chain.set_param(7, ids::cloud::FREEZE, (rng.next() % 2) as f32); }
         let ctx = Ctx { bpm: 80.0 + (block % 7) as f64 * 10.0, sidechain: Some((&key[..len], &key[..len])), ..Ctx::new(rate, frame) };
         chain.process(&ctx, &mut l[..len], &mut r[..len]);
 
