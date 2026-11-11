@@ -23,6 +23,10 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [ADR-0001: Rust first, C/C++ compatible](decisions/adr-0001-rust-first.md) (accepted 2026-11-08).
 - [ADR-0002: direct ALSA audio on the MPC One](decisions/adr-0002-direct-alsa-audio.md) (accepted 2026-11-09).
 
+## Testing and CI
+
+- [Testing and CI](guides/testing-and-ci.md): the test tiers, what each CI job checks, the self-hosted runners, rules for tests, coverage by crate, and the plan for the regression suite.
+
 ## Working with the device
 
 - [Developer access](guides/developer-access.md): getting root SSH over direct Ethernet, and the safety runbook.

@@ -175,8 +175,18 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
 /// submixes, 4 returns), fed `tracks` tracks and `pads` pad channels of
 /// program material, with a typical song's routing: pads into the drum
 /// track, drums and bass into submixes, sends to two returns. With
-/// `inserts`, the strips carry a song's worth of effects too.
-fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Case {
+/// [`Inserts::Song`], the strips carry a song's worth of effects too
+/// (with the reverb at its Light quality: [`Inserts::SongLight`]).
+/// The inserts a [`mixer`] case carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inserts {
+    None,
+    Song,
+    SongLight,
+}
+
+fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Case {
+    let inserts = with != Inserts::None;
     use ids::mixer::{self as mx, output};
     let mut m = Mixer::new(MixerConfig::default(), rate, MAX_BLOCK.min(1024));
     for p in 0..pads {
@@ -201,6 +211,9 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Ca
         m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
         m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
         m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
+        if with == Inserts::SongLight {
+            m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
+        }
         m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
         m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
         m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
@@ -275,10 +288,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
                   &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
                     (mpfree_grain::node::param::SPRAY, 50.0)])));
-    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, false)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, false)));
-    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, false)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, true)));
+    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, Inserts::Song)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb", rate, 12, 8, Inserts::SongLight)));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| modulation(rate)));
     v.push(measured(|| time(rate, 8)));
@@ -298,7 +312,7 @@ fn song(rate: u32) -> Case {
         sampler("sampler", rate, true),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
-        mixer("mixer", rate, 12, 8, true),
+        mixer("mixer", rate, 12, 8, Inserts::Song),
         time(rate, 8),
         looper(rate, 60),
     ];
