@@ -34,7 +34,8 @@ filters, so the check always reports.
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
 The coverage table appears in the run's summary page, and the lcov file is
-kept as an artifact for 14 days.
+kept as an artifact for 7 days. If the account's artifact storage is full,
+the upload fails without failing the run.
 
 ### Where it runs
 
@@ -93,10 +94,22 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 - **New behaviour comes with tests** in the crate that owns it. Engine code
   gets unit tests. Audio output gets a fixed-output or golden check. A parser
   gets tests on bad input as well as good.
-- **Audio-thread code doesn't allocate or block.** `mpfree-fx` and
-  `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`),
-  and CI runs `mpfree-bench --check-allocs` over the profiled engines. New
-  audio paths should do the same.
+- **A sound or screen that changes on purpose gets new golden references** in the
+  same PR, with the reason in the commit:
+  `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-bench golden`. The golden
+  test fingerprints each bench case per eighth of its render and channel
+  (level in dB, zero crossings) and allows 0.5 dB and 3 % of crossings, so
+  another CPU or libm passes and a changed preset, tuning or filter fails.
+  A new bench case needs a reference too. A screen that changes on purpose
+  is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-hello --test cli`
+  (references are x86-64; the ARMv7 run under qemu checks only that the
+  pictures are valid).
+- **Audio-thread code doesn't allocate or block.** Each engine proves this
+  with a counting allocator (`tests/no_alloc.rs`), CI runs
+  `mpfree-bench --check-allocs` over the profiled engines, and
+  `mpfree-hello/src/rt_safety.rs` runs the pad player's whole sound path. A
+  new audio path gets a no-allocation test, and a new step in the pad
+  player's period goes into `rt_safety.rs` too.
 - **A program gets a `tests/cli.rs`** that runs it whole through
   `env!("CARGO_BIN_EXE_<name>")`: its arguments, exit codes and output files.
   Tests write only under `env!("CARGO_TARGET_TMPDIR")`, never a fixed `/tmp`
@@ -154,18 +167,29 @@ In order. Each step is its own PR.
 2. **Raise the thin crates** in the table above. Done first: whole-program
    tests for render, session, device-smoke, screen-log and display. Next is
    `mpfree-hello`, the program that actually runs on the MPC.
-3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
-   audio and compare with stored references within a tolerance. Do the same
-   for the Hello preview screens, which today are checked only as valid PNGs,
-   compared with stored images.
-4. **Real-time safety everywhere.** No-allocation and deadline tests for every
-   audio path (synth, sampler, play, arp), not only FX and grain. The `rust`
-   job already runs `mpfree-bench --quick --check-allocs`, which fails if any
-   engine it profiles allocates inside its audio callback. Its timings are
-   not a gate, because wall-clock speed on a shared VM varies from run to run.
-   The stable way to gate on CPU cost later is to count instructions per
-   engine under qemu-arm (ARMv7, like the MPC) and fail on a regression past
-   a set margin.
+3. **Golden regressions.** Audio is done: `mpfree-bench`'s golden test
+   renders every bench case (each Poly preset, the drum kits, the plucks,
+   every effect and reverb, the sampler, the mixer, the time engine and arp,
+   the looper, a whole song) and compares a fingerprint with
+   `rust/mpfree-bench/golden/cases.txt`. Screens too: `mpfree-hello`'s
+   `tests/cli.rs` draws all its preview screens and compares each with
+   `rust/mpfree-hello/golden/screens.txt` (the mean brightness of every
+   20×20 cell, within 1 level; renaming one tab label trips it).
+4. **Real-time safety everywhere.** Every engine has its own no-allocation
+   test (`tests/no_alloc.rs` in synth, sampler, fx, grain, looper, play,
+   transport, capture, track), and the `rust` job runs
+   `mpfree-bench --quick --check-allocs`, which fails if any bench case
+   allocates inside its audio callback. On top of those, `mpfree-hello`'s
+   `src/rt_safety.rs` runs the program's whole sound path the way its audio
+   loop does, period by period: pads and pressure into the arp, the
+   transport and a playing clip, the sampler or the synth, the click and the
+   looper. Half a minute of that may not allocate or free once. Recording
+   into a clip is left out: each finished note is an edit, and the clips are
+   compiled again on that thread. Bench timings are not a gate, because
+   wall-clock speed on a shared VM varies from run to run. The stable way to
+   gate on CPU cost later is to count instructions per engine (valgrind or
+   qemu-arm's instruction counter) and fail on a regression past a set
+   margin; that needs the tool installed on the runners first.
 5. **Fuzz and property tests** for everything that reads files or device
    input: WAV, MIDI, touch events, kit files, the DX7 sysex importer.
 6. **End-to-end headless scenarios** under qemu ARMv7: scripted pad and touch
