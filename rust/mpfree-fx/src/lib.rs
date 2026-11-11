@@ -50,6 +50,7 @@
 #![forbid(unsafe_code)]
 
 mod chain;
+mod character;
 mod cloud;
 mod comb;
 mod comp;
@@ -69,6 +70,7 @@ mod svf;
 mod xy;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
+pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
 pub use comb::Comb;
 pub use comp::Compressor;
@@ -100,6 +102,7 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
     pub use crate::comb::ids as comb;
     pub use crate::comp::ids as compressor;

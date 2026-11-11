@@ -2,7 +2,7 @@
 //! values, where it sits, its presets, and the tempo for synced times.
 
 use mpfree_fx::{
-    Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
+    Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
     MasterSafety, MultiFilter, Perform, Phaser, Preset,
 };
 use mpfree_node::{Node, NodeInfo, ParamInfo};
@@ -122,6 +122,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     ("mpfree.fx.flanger", "Flanger"),
     ("mpfree.fx.phaser", "Phaser"),
     ("mpfree.fx.lofi", "Lo-fi"),
+    ("mpfree.fx.character", "Character"),
     ("mpfree.fx.compressor", "Compressor"),
     ("mpfree.fx.cloud", "Cloud reverb"),
     ("mpfree.fx.master_safety", "Master safety"),
@@ -142,6 +143,7 @@ pub fn make(id: &str) -> Option<Box<dyn Node>> {
         "mpfree.fx.flanger" => Box::new(Flanger::new()),
         "mpfree.fx.phaser" => Box::new(Phaser::new()),
         "mpfree.fx.lofi" => Box::new(LoFi::new()),
+        "mpfree.fx.character" => Box::new(Character::new()),
         "mpfree.fx.compressor" => Box::new(Compressor::new()),
         "mpfree.fx.cloud" => Box::new(Cloud::new()),
         "mpfree.fx.master_safety" => Box::new(MasterSafety::new()),
@@ -165,6 +167,7 @@ pub enum Scratch {
     Flanger(Box<Flanger>),
     Phaser(Box<Phaser>),
     LoFi(Box<LoFi>),
+    Character(Box<Character>),
     Comp(Compressor),
     Master(Box<MasterSafety>),
     None,
@@ -184,6 +187,7 @@ impl Scratch {
             "mpfree.fx.flanger" => Scratch::Flanger(Box::new(Flanger::new())),
             "mpfree.fx.phaser" => Scratch::Phaser(Box::new(Phaser::new())),
             "mpfree.fx.lofi" => Scratch::LoFi(Box::new(LoFi::new())),
+            "mpfree.fx.character" => Scratch::Character(Box::new(Character::new())),
             "mpfree.fx.compressor" => Scratch::Comp(Compressor::new()),
             "mpfree.fx.master_safety" => Scratch::Master(Box::new(MasterSafety::new())),
             _ => Scratch::None,
@@ -207,6 +211,7 @@ impl Scratch {
             Scratch::Flanger(n) => n.as_mut(),
             Scratch::Phaser(n) => n.as_mut(),
             Scratch::LoFi(n) => n.as_mut(),
+            Scratch::Character(n) => n.as_mut(),
             Scratch::Comp(n) => n,
             Scratch::Master(n) => n.as_mut(),
             Scratch::None => return None,
