@@ -19,7 +19,7 @@
 //! `WsAction`s, and the screens hear what changed as [`Effect::Arp`].
 
 use super::{App, Effect, Item, View};
-use mpfree_arp::scale::{Scale, SCALES};
+use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
 use mpfree_arp::{Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
@@ -84,6 +84,7 @@ pub enum ArpItem {
     Accent,
     Scale,
     Root,
+    Snap,
     Strum,
     Retrigger,
     SwingFrom,
@@ -91,16 +92,23 @@ pub enum ArpItem {
 
 /// The Options menu opened from the Arp panel: the tempo, then the arp's
 /// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
-pub(super) const ARP_OPTIONS: [Item; 7] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
-                                           Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Strum),
+pub(super) const ARP_OPTIONS: [Item; 8] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
+                                           Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Snap), Item::Arp(ArpItem::Strum),
                                            Item::Arp(ArpItem::Retrigger), Item::Arp(ArpItem::SwingFrom)];
-
-pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 /// Accent level steps by this much per press or wheel click.
 const ACCENT_STEP: i32 = 8;
 /// Strum steps by this many percent.
 const STRUM_STEP: i32 = 10;
+
+fn snap_text(s: Snap) -> &'static str {
+    match s {
+        Snap::Down => "Note below",
+        Snap::Up => "Note above",
+        Snap::Nearest => "Nearest note",
+        Snap::Skip => "Not played",
+    }
+}
 
 pub fn mode_label(m: Mode) -> &'static str {
     match m {
@@ -530,6 +538,14 @@ impl App {
             }
         };
         let (mut replaced, mut added) = (0, 0);
+        let mut scales = 0;
+        for (name, up, down) in lib.scales() {
+            match self.custom_scales.iter_mut().find(|(n, ..)| n.eq_ignore_ascii_case(name)) {
+                Some(slot) => *slot = (name.to_string(), up, down),
+                None => self.custom_scales.push((name.to_string(), up, down)),
+            }
+            scales += 1;
+        }
         for (name, p) in lib.iter() {
             match self.patterns.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
                 Some(slot) => {
@@ -542,9 +558,15 @@ impl App {
                 }
             }
         }
+        // A scale of the owner's in use may have changed.
+        if self.scale_pick >= SCALES.len() {
+            self.apply_scale_pick();
+            self.update_engine();
+        }
         let mut fx = self.load_pattern(self.pattern_index);
         fx.push(Effect::Patterns(self.patterns.clone()));
-        fx.push(Effect::Note(format!("arp patterns file: {added} added, {replaced} built-in ones replaced")));
+        fx.push(Effect::Note(format!("arp patterns file: {added} added, {replaced} built-in ones replaced, \
+                                      {scales} scales of your own")));
         fx
     }
 
@@ -558,8 +580,11 @@ impl App {
                 let _ = lib.put(name, *p);
             }
         }
-        format!("# MPFree arp patterns, saved by the pad player. One per line: Name = pattern.\n\
-                 # The syntax is in docs/project/arpeggiator.md.\n{}", lib.to_text())
+        for (name, up, down) in &self.custom_scales {
+            let _ = lib.put_scale(name, &mpfree_arp::scale::scale_text(*up, *down));
+        }
+        format!("# MPFree arp patterns, saved by the pad player. One per line: Name = pattern;\n\
+                 # your scales after [scales]. The syntax is in docs/project/arpeggiator.md.\n{}", lib.to_text())
     }
 
     // ------------------------------------------------------------ transport
@@ -593,16 +618,34 @@ impl App {
 
     // ------------------------------------------------------------ options
 
-    /// The scale row: 0 is Off, otherwise the place in [`SCALES`]
-    /// (Chromatic, 0, is left out: it keeps every note, as Off does).
+    /// The Scale row's choices: 0 is Off, then the built-in scales but
+    /// Chromatic (which keeps every note, as Off does), then the owner's.
+    fn scale_choices(&self) -> usize {
+        SCALES.len() + self.custom_scales.len()
+    }
+
+    /// Choice `i`'s name and notes (up, down); None for Off.
+    fn scale_entry(&self, i: usize) -> Option<(&str, u16, u16)> {
+        match i {
+            0 => None,
+            i if i < SCALES.len() => Some((SCALES[i].name, SCALES[i].mask, SCALES[i].down)),
+            i => self.custom_scales.get(i - SCALES.len()).map(|(n, u, d)| (n.as_str(), *u, *d)),
+        }
+    }
+
     fn scale_choice(&self) -> usize {
-        self.arp.scale.and_then(|s| (1..SCALES.len()).find(|&i| Scale::new(s.root, SCALES[i].1) == s)).unwrap_or(0)
+        if self.arp.scale.is_some() { self.scale_pick } else { 0 }
+    }
+
+    /// The arp's scale from the Scale row's choice and the root.
+    fn apply_scale_pick(&mut self) {
+        self.arp.scale = self.scale_entry(self.scale_pick).map(|(_, up, down)| Scale::with_down(self.scale_root, up, down));
     }
 
     fn scale_text(&self) -> String {
-        match self.scale_choice() {
-            0 => "Off".to_string(),
-            i => format!("{} {}", NOTE_NAMES[usize::from(self.scale_root)], SCALES[i].0),
+        match self.scale_entry(self.scale_choice()) {
+            None => "Off".to_string(),
+            Some((name, ..)) => format!("{} {}", NOTE_NAMES[usize::from(self.scale_root)], name),
         }
     }
 
@@ -610,11 +653,12 @@ impl App {
         let s = &self.arp;
         match item {
             ArpItem::Accent => ("Accent level", s.accent.to_string()),
-            ArpItem::Scale => ("Scale", match self.scale_choice() {
-                0 => "Off".to_string(),
-                i => SCALES[i].0.to_string(),
+            ArpItem::Scale => ("Scale", match self.scale_entry(self.scale_choice()) {
+                None => "Off".to_string(),
+                Some((name, ..)) => name.to_string(),
             }),
             ArpItem::Root => ("Scale root", NOTE_NAMES[usize::from(self.scale_root)].to_string()),
+            ArpItem::Snap => ("Out-of-key notes", snap_text(s.snap).to_string()),
             ArpItem::Strum => ("Strum", if s.strum == 0 { "Off".to_string() } else { format!("{} % of a step", s.strum) }),
             ArpItem::Retrigger => ("New notes restart", if s.retrigger { "On" } else { "Off" }.to_string()),
             ArpItem::SwingFrom => ("Swing from", if self.swing_from_transport { "Transport" } else { "Arp" }.to_string()),
@@ -634,6 +678,10 @@ impl App {
                                    "kits, whose pads are sounds, not notes."],
             ArpItem::Root => vec!["The scale's first note. Pad 1 counts as C,",
                                   "pad 2 as C# and so on up."],
+            ArpItem::Snap => vec!["With a scale on, what a held note outside it",
+                                  "plays: the scale note below it, the one above,",
+                                  "the nearer of the two (below when they are as",
+                                  "near), or nothing: its steps stay silent."],
             ArpItem::Strum => vec!["Spreads the notes of a chord step across the",
                                    "step, lowest first, like a strum. Off plays",
                                    "them together."],
@@ -650,17 +698,20 @@ impl App {
 
     /// One of the arp's option rows stepped by `d` (-1 or +1).
     pub(super) fn step_arp_item(&mut self, item: ArpItem, d: i32) -> Vec<Effect> {
-        let before = self.arp;
-        let root = self.scale_root;
+        let before = (self.arp, self.scale_root, self.scale_pick);
         match item {
             ArpItem::Accent => self.arp.accent = (i32::from(self.arp.accent) + ACCENT_STEP * d).clamp(1, 127) as u8,
             ArpItem::Scale => {
-                let i = (self.scale_choice() as i32 + d).clamp(0, SCALES.len() as i32 - 1) as usize;
-                self.arp.scale = (i > 0).then(|| Scale::new(self.scale_root, SCALES[i].1));
+                self.scale_pick = (self.scale_choice() as i32 + d).clamp(0, self.scale_choices() as i32 - 1) as usize;
+                self.apply_scale_pick();
             }
             ArpItem::Root => {
                 self.scale_root = (i32::from(self.scale_root) + d).clamp(0, 11) as u8;
-                self.arp.scale = self.arp.scale.map(|s| Scale::new(self.scale_root, s.mask));
+                self.arp.scale = self.arp.scale.map(|s| Scale::with_down(self.scale_root, s.mask, s.down));
+            }
+            ArpItem::Snap => {
+                let at = Snap::ALL.iter().position(|&x| x == self.arp.snap).unwrap_or(0) as i32;
+                self.arp.snap = Snap::ALL[(at + d).clamp(0, Snap::ALL.len() as i32 - 1) as usize];
             }
             ArpItem::Strum => self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8,
             ArpItem::Retrigger => self.arp.retrigger = d > 0,
@@ -673,13 +724,14 @@ impl App {
                 return vec![Effect::Note(format!("arp swing from: {}", if t { "transport" } else { "arp" }))];
             }
         }
-        if self.arp == before && self.scale_root == root {
+        if (self.arp, self.scale_root, self.scale_pick) == before {
             return Vec::new();
         }
         self.update_engine();
         let note = match item {
             ArpItem::Accent => format!("arp accent level: {}", self.arp.accent),
             ArpItem::Scale | ArpItem::Root => format!("arp scale: {}", self.scale_text()),
+            ArpItem::Snap => format!("arp out-of-key notes: {}", snap_text(self.arp.snap).to_ascii_lowercase()),
             ArpItem::Strum => format!("arp strum: {} %", self.arp.strum),
             ArpItem::Retrigger => format!("arp new notes restart: {}", if self.arp.retrigger { "on" } else { "off" }),
             ArpItem::SwingFrom => unreachable!("returned above"),
