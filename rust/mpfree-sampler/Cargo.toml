@@ -7,3 +7,12 @@ description = "Bounded Rust WAV sampler with zero-alloc render and note-off fade
 
 [dependencies]
 mpfree-core = { path = "../mpfree-core" }
+mpfree-analysis = { path = "../mpfree-analysis" }
+
+[[bin]]
+name = "mpfree-sampler"
+path = "src/main.rs"
+
+[[bin]]
+name = "mpfree-chop"
+path = "src/bin/chop.rs"
