@@ -2399,6 +2399,15 @@ fn player_session(
                         out.note(&line);
                     }
                 }
+                gui::FromUi::Slice {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                } => {
+                    player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
+                }
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;

@@ -646,7 +646,7 @@ impl SamplePage {
                 return;
             };
             if let Some(a) = tab.action(ui, ev, st) {
-                self.act_chop(ui, a);
+                self.act_chop(ui, a, out);
             }
             return;
         }
@@ -703,9 +703,23 @@ impl SamplePage {
         }
     }
 
-    fn act_chop(&mut self, ui: &mut Ui, a: ChopAction) {
+    fn act_chop(&mut self, ui: &mut Ui, a: ChopAction, out: &mut Vec<FromUi>) {
         match &a {
             ChopAction::Tab(i) => self.open(ui, *i),
+            &ChopAction::Audition {
+                pad,
+                layer,
+                start,
+                end,
+            } => {
+                out.push(FromUi::Slice {
+                    kit: self.kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                });
+            }
             ChopAction::ToPads {
                 pad,
                 bounds,
