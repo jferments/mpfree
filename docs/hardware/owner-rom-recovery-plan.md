@@ -20,7 +20,7 @@ Decoding those bytes using the *public Rockchip RC4 header key* described in ups
 55 aa f0 0f 00 00 00 00 01 00 00 00 04 00 00 00
 ~~~
 
-The decoded Rockchip image signature is **0x0ff0aa55**, the flag **disable_rc4=1** means the SPL payload is stored unencrypted, and the initial loader begins **4 x 512 = 2048 bytes** after the start of this ID block. The remaining init size fields require reading the entire header from the owner's private backup. These are format observations, not evidence of secure-boot acceptance or functional execution.
+The decoded Rockchip image signature is **0x0ff0aa55**, the flag **disable_rc4=1** means the SPL payload is stored unencrypted, and the initial loader begins **4 x 512 = 2048 bytes** after the start of this ID block. **Owner-run full header validation:** the six original synthetic tests passed, and the private p1 SHA-256 was verified. The final header fields are init_size=64 sectors (**32 KiB**) and init_boot_size=1088 sectors (**544 KiB**). Upstream U-Boot rkcommon.h defines RK_MAX_BOOT_SIZE=512<<10 (**512 KiB**); rkcommon_set_header0() computes init_boot_size = init_size + RK_MAX_BOOT_SIZE when no separate boot file is supplied. This is **consistent with a default second-stage allowance**, not evidence that 544 KiB is stored in the 64-KiB p1 partition. p3 begins separately at disk sector 256. Actual back-to-ROM behavior remains unproven.
 
 ## Two independent first-stage image formats
 
@@ -49,7 +49,7 @@ Rockchip documents a **separate 1.5-V eFuse programming supply on RK3288 BGA bal
 | Gate | Evidence required | Status |
 | --- | --- | --- |
 | R0 | Private complete eMMC user-area + boot0/1 backups on separate media | Passed |
-| R1 | Offline decode p1 Rockchip header and inspect candidate owner SPL image | Header first bytes confirmed, full p1 report pending |
+| R1 | Offline decode p1 Rockchip header and inspect candidate owner SPL image | **Full p1 header verified; owner-built image pending** |
 | R2 | Exact motherboard revision, eMMC and RAM part numbers, USB-B route, UART pin voltage, P19 eFuse rail, safe boot-source override | Not established |
 | R3 | Independent genuine silicon MaskROM USB enumeration, not vendor Fastboot/Loader mode | Reported on another MPC One Gen1, not tested here |
 | R4 | MaskROM executes a source-built **owner-controlled** SRAM-first stage | Not demonstrated |
@@ -74,6 +74,32 @@ python3 tools/mpc-one/offline-rk3288-rom.py idblock \
 ~~~
 
 This inspector reads **only 64 KiB from an ordinary backup file on the host**, validates the known SHA256 and decodes the Rockchip 512-byte header. It will not contact the MPC, access a block device, transmit a USB packet or alter files. Keep the original eMMC image and decrypted payload private.
+
+
+## Python 3: inspecting the actual SRAM loader
+
+The next stage is to examine the **real 32-KiB SRAM loader code**, not infer its behavior from the default header size. The stage starts with the four-byte RK32 identifier and is a separate object from the p3 U-Boot image.
+
+**New private, host-only extraction and PyGhidra workflow:**
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+python3 -m unittest discover -s tools/mpc-one/tests -p 'test_offline_rk3288_rom.py' -v
+bash tools/ghidra/run_p1_sram_analysis.sh
+~~~
+
+The launcher validates the p1 hash and verified header fields, extracts exactly 32768 bytes from the existing backup to a *new private working directory*, and opens a separate Ghidra project importing the SRAM image at **0xff704000** as ARM:LE:32:v7. It seeds the **candidate entry 0xff704004** after the RK32 marker and runs automatic analysis. Initial ARM32 mode is **a hypothesis, not confirmed**.
+
+A Python 3 PyGhidra script exports a local JSON report under:
+
+~~~text
+~/mpfree-work/mpfree-ghidra-p1-sram-<timestamp>.json
+~~~
+
+It reports function candidates, nearby decompilation, call references and occurrences of Rockchip's back-to-ROM literal **0xEF08A53C**. Presence or absence of that literal **does not by itself prove** whether the SPL returns to BootROM: a constant can appear as inert data or be synthesized in instructions without an obvious four-byte word. The decisive follow-up is tracing the SPL's actual entry, DDR initialization and subsequent U-Boot load/ROM-return calls.
+
+The new SRAM PyGhidra scripts **have not been run on the owner's machine yet**. Their extracted private SPL bytes and decompiler report must remain local and not be committed to GitHub. They issue **no device or firmware operations**, make no eMMC, OTP, GPIO or USB writes, and never alter the source backup.
 
 ## Safe board documentation
 
@@ -111,3 +137,19 @@ Source: https://dl.radxa.com/rock2/docs/hw/radxa_rock2_som_140927.pdf , PDF page
 4. If the actual board has a controllable OTP programming supply, consider a professionally reviewed, electrically safe way of preserving owner control; any switch/design must be optional, revision-aware and must not compromise normal SoC power or EMC/signal-integrity properties.
 
 **Note**: "Recovery" button in the carrier reference may enter vendor U-Boot fastboot rather than immutable MaskROM. A schematic label alone does not establish true ROM entry. Likewise an accessible UART does not bypass silicon secure-boot constraints. The owner-built ROM SRAM loader is still a separate milestone.
+
+
+### Physical disk sector ranges implied by the verified header
+
+The first-stage partition and payload are **not** a single contiguous 544-KiB boot image:
+
+| Content | Whole-eMMC sector range | Capacity |
+| --- | --- | --- |
+| Rockchip header / prefix | 64–67 | 2 KiB |
+| RK32 SRAM loader (32 KiB) | **68–131** | **32 KiB** |
+| Remaining p1 space | 132–191 | 30 KiB |
+| U-Boot environment p2 | 192–207 | 8 KiB |
+| Gap before p3 | 208–255 | 24 KiB |
+| U-Boot proper p3 | **256–1023** | **384 KiB** |
+
+The header's 1088-sector **combined** size is not a directive to read 1088 sectors from p1: that would cross p2, p3, and even splash storage and would not represent an intact single boot image. Upstream U-Boot sets this size to the default maximum-next-stage allowance in image builds without an attached boot file. Exactly **how** Akai's actual SRAM loader obtains p3 must be determined from its instructions, not header arithmetic.
