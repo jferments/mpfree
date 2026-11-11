@@ -1597,3 +1597,40 @@ Once PCB mapping is established, commission/design a normally-transparent and el
 **Still missing**: confirmed secure fuse driver mapping; physical board P19 power topology; safe nondestructive forced MaskROM entry; acceptance of unsigned independently compiled SPL; compatible DRAM initialization; complete eMMC readback via RAM-only loader; automatic stock fallback.
 
 Firmware upgrades can remove userspace entrypoints but **cannot erase immutable silicon ROM**. Nevertheless until the physical and fuse risks are resolved we must not promise unconditional independent booting. Do not modify p1/p2/p3, boot arguments or eMMC until the project's Tier 3 recovery gate is actually passed.
+
+
+## 34. ROM independence tooling: validated MPC p1 first 16 bytes and offline Python inspector (2026-11-11)
+
+**New verified forensic result**: the exact first 16 bytes previously recorded by the MPC One boot-map survey for the p1 user-area ID block are:
+
+~~~text
+on-disk RC4: 3b 8c dc fc be 9f 9d 51 eb 30 34 ce 24 51 1f 98
+decoded    : 55 aa f0 0f 00 00 00 00 01 00 00 00 04 00 00 00
+~~~
+
+The decoded first word little-endian is **0x0ff0aa55** (valid Rockchip ID-header signature), the next control word at offset +8 is **disable_rc4=1** (SPL payload is *not* encrypted), and the +12 halfword is **init_offset=4** (the actual initial loader starts 2048 bytes after ID-block start). This is independently reproducible with upstream U-Boot's published RC4 key and RK3288 tools/rkcommon.c layout; only a public-format header was decoded. The owner has **not yet run the new Python inspector on the full private p1**, so full init-size and stage metadata remain pending. Note: the RC4 header is **format obfuscation, not secure boot or digital signature verification**.
+
+- **Added host-only Python tool**: tools/mpc-one/offline-rk3288-rom.py. Subcommand **idblock** reads precisely p1's 64 KiB from an ordinary backup file, checks the reference partition SHA256, decodes only the first 512 header bytes, reports init size/RC4 flag/RK32 first-stage signature. **rkimage** subcommand inspects a local source-built USB SRAM payload, accepting either plain RK32 or RC4-obfuscated prefix. No USB access, no SSH, no raw block-device opens and no writes.
+- **Added synthetic tests**: tools/mpc-one/tests/test_offline_rk3288_rom.py (RC4 known vector, mock first-stage encrypted/plain, wrong signature/hash, symlink/block-device rejection, RKIMAGE identification). The actual private eMMC file is not copied into tests or git.
+- **Added owner ROM engineering plan**: docs/hardware/owner-rom-recovery-plan.md. Separate initial **SRAM** code-execution proof from DDR training, Rockusb eMMC readback and permanent owner boot. Do not assume USB upload ACK proves ARM execution.
+- **Corrected outdated maskrom notes** in docs/hardware/maskrom-usb.md: secure eFuse regions have now all read zero (subject to vendor secure NVMEM mapping); PHYTEC RK3288 ROM priority is eMMC before SD; universal eMMC clock-short claims are unsafe and withdrawn.
+- **Strengthened Tier 3 recovery gate** in docs/research/recovery-and-os-strategy.md: true silicon ROM entry, actual source-built owner SPL execution, and whole eMMC readback required before modifying the bootloader or its environment.
+
+**Crucial new boot route:** upstream U-Boot's historical RK3288 documentation describes a direct **USB-to-internal-SRAM** code-loading path using a chip-specific RK32 image header at 0xff704000, without first requiring external DRAM. This offers a short, non-flashing **owner-code acceptance probe** once genuine ROM entry is safely established. The old USB example additionally RC4-encodes the transmitted RKIMAGE; that is **not** the same as the mandatory header0 obfuscation at SD/eMMC sector64. USB SPL acceptance and SDRAM initialization are separate milestones. Modern upstream maintainers express uncertainty about continued RKIMAGE support for all SoCs; it is not yet demonstrated on the MPC One. Sources:
+
+- https://android.googlesource.com/platform/external/u-boot/+/refs/heads/android10-c2f2-s2-release/tools/rkcommon.c
+- https://github.com/qemu/u-boot/blob/master/doc/README.rockchip
+- https://www.mail-archive.com/u-boot@lists.u-boot-project.org/msg02528.html
+- https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf
+
+**Owner's next offline command** (no hardware/firmware writes):
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+python3 -m unittest discover -s tools/mpc-one/tests -p 'test_offline_rk3288_rom.py' -v
+mkdir -p "$HOME/mpfree-work"
+python3 tools/mpc-one/offline-rk3288-rom.py idblock   "$HOME/mpfree-backups/mpc-one-emmc-20261109T233604Z-datprr67/mmcblk0.img"   | tee "$HOME/mpfree-work/mpc-one-idblock-offline.txt"
+~~~
+
+No live MaskROM entry, ROM upload, SD card formatting, GPIO change, eFuse operation, or storage modifications have been carried out during this update.
