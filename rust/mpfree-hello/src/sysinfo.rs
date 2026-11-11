@@ -163,7 +163,7 @@ mod tests {
         put("etc/os-release", "NAME=\"Poky\"\nVERSION=\"5.0 (scarthgap)\"\n");
         put("proc/sys/kernel/osrelease", "6.18.44-az01-2026-08-10-rt6\n");
         put("proc/version", "Linux version 6.18.44 #1 SMP PREEMPT_RT Mon Aug 10\n");
-        put("proc/mounts", "tmpfs /run tmpfs rw 0 0\n/dev/sda1 / ext4 ro,relatime 0 0\n");
+        put("proc/mounts", "tmpfs /run tmpfs rw 0 0\n/dev/root / ext4 ro,relatime 0 0\n");
         put("proc/uptime", "760.25 2900.00\n");
         put("proc/device-tree/model", "Akai Professional MPC One\0");
         put("proc/cpuinfo", "processor\t: 0\nmodel name\t: ARMv7 Processor rev 1 (v7l)\n\nprocessor\t: 1\n\
@@ -176,7 +176,7 @@ mod tests {
         let get = |rows: &[(String, String)], k: &str| rows.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get(&info.software, "Operating system").as_deref(), Some("Poky 5.0 (scarthgap)"));
         assert_eq!(get(&info.software, "Kernel").as_deref(), Some("Linux 6.18.44-az01-2026-08-10-rt6 (real-time)"));
-        assert_eq!(get(&info.software, "Root file system").as_deref(), Some("/dev/sda1, ext4, read-only"));
+        assert_eq!(get(&info.software, "Root file system").as_deref(), Some("/dev/root, ext4, read-only"));
         assert_eq!(get(&info.software, "Running for").as_deref(), Some("12 min 40 s"));
         assert_eq!(get(&info.software, "Host name"), None);
         assert!(get(&info.software, "MPFree").unwrap().starts_with("pad player 0.1.0, commit "));

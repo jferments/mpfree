@@ -1350,7 +1350,8 @@ fn read_patterns(path: &Path) -> Result<String, String> {
 
 /// Writes the arp pattern library file whole, never half: to `FILE.part`
 /// beside it, flushed to the disk, then renamed over `FILE`. A failure
-/// leaves `FILE` as it was and removes the `.part`. Returns the log line.
+/// leaves `FILE` as it was (a `.part` may stay; the next save replaces it,
+/// and the pad player never deletes files). Returns the log line.
 fn write_patterns(path: &Path, text: &str) -> String {
     let mut part = path.as_os_str().to_owned();
     part.push(".part");
@@ -1363,10 +1364,7 @@ fn write_patterns(path: &Path, text: &str) -> String {
     })();
     match result {
         Ok(()) => format!("arp patterns: saved {} bytes to {}", text.len(), path.display()),
-        Err(e) => {
-            let _ = fs::remove_file(&part);
-            format!("arp patterns: not saved to {} ({e}); {} is as it was", path.display(), path.display())
-        }
+        Err(e) => format!("arp patterns: not saved to {} ({e}); {} is as it was", path.display(), path.display()),
     }
 }
 
