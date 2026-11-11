@@ -355,5 +355,11 @@ print("\nFinished: ", folder)
 print(json.dumps(manifest, indent=2))
 PY
 echo
+echo
+echo "Synthesizing question/evidence ledger and human-readable summary..."
+python3 "$ROOT/tools/mpc-one/bootchain-evidence-ledger.py" "$REPORT_DIR" \
+    >"$REPORT_DIR/evidence-ledger-console.txt" 2>&1 ||
+    echo "WARNING: evidence ledger generation failed; logs will be included in ZIP." >&2
+
 echo "NEXT: upload the single ZIP generated at exit, not individual reports."
 echo "DO NOT commit the ZIP or proprietary reports to public GitHub."
