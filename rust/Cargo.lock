@@ -393,8 +393,18 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-fx"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+]
 
 [[package]]
 name = "mpfree-groove"
@@ -423,8 +433,10 @@ dependencies = [
  "mpfree-arp",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-sampler",
  "mpfree-screen-log",
  "mpfree-touch",
+ "mpfree-touch-evdev",
  "mpfree-ui",
 ]
 
@@ -496,6 +508,15 @@ name = "mpfree-synth"
 version = "0.1.0"
 dependencies = [
  "mpfree-node",
+]
+
+[[package]]
+name = "mpfree-synth-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-synth",
+ "mpfree-ui",
 ]
 
 [[package]]

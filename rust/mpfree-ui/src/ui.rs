@@ -68,6 +68,13 @@ pub enum EventKind {
     Value(f32),
     /// A value stepped down (-1) or up (+1), in row `index`.
     Step { index: usize, delta: i32 },
+    /// A waveform's marker `index` dragged to `frame`.
+    Marker { index: usize, frame: u64 },
+    /// A waveform scrolled or zoomed to this view.
+    View { start: f64, frames_per_px: f64 },
+    /// A frame of a sound picked: a tap on a waveform, or on an overview
+    /// (where the view should centre).
+    Frame(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]

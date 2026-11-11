@@ -58,9 +58,27 @@ Timing: oscillators, drive, filters, the amp envelope and the steal fade run eve
 - `cargo run --release -p mpfree-synth --example render [out.wav]` writes `~/mpfree-work/synth-demo.wav`: 9 bars at 92 BPM with synthesised drums, where Grit Bass, Acid (a cutoff sweep by automation), Dust Pad, Supersaw and Lead come in one after another, then a final chord rings out. It prints a timeline, each part's level per bar, checks each part sounds only where it should, and trims the master to -1 dBFS. The parts run through `Node::process` in 128-frame blocks.
 - `cargo run --release -p mpfree-synth --example bench` times one 128-frame block with 1 to 16 voices and unison 1 or 4. On the build host (an x86 desktop core) 16 voices take 3.6 % of real time at unison 1 and 5.6 % at unison 4. The MPC One's Cortex-A17 is slower; it needs its own run before voice limits are set.
 
+## The Synth tab (`rust/mpfree-synth-ui`)
+
+The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works for any `Node`, so hosted plugins and effects get the same page.
+
+- **Pages.** A native engine names its pages and what its Q-Links turn (Poly: Osc, Filter, Env, LFO, Voice). Any other node gets pages from its `ParamInfo` groups: consecutive groups share a page up to 12 tiles, and a group bigger than 16 is split. Every parameter is on exactly one page.
+- **Tiles.** Continuous and whole-number parameters are knobs; a bipolar one fills from the top. Choices of up to four show as buttons when they fit, otherwise as the chosen name with arrows. Toggles are switches. Read-only parameters are live meters. A tile's label carries its group when the group isn't the page's ("Env · Attack" on the Filter page).
+- **Visuals.** Poly gets four cards drawn from its values: both oscillators, the filter response (with a dashed line where the filter envelope takes it), the amp and filter envelopes, and the LFO. A tap on a card opens its page. Other nodes get the plain layout without cards.
+- **Control.**
+  - A finger dragged up or down a knob turns it; 320 px is the whole range.
+  - A tap selects a tile, and the wheel then turns it.
+  - Q-Links 1 to 4 turn the marked tiles. A detent is one step for whole numbers and choices, and 1/100 of the range along the parameter's curve otherwise.
+  - SHIFT + wheel steps through the pages.
+- **The app's part.** The app owns the node on the audio thread. It builds a `SynthState` from the node (`SynthState::from_node`) and adds the panel with `SynthPanel::add(ui, "Synth", state)` after its own `header` and `hint` widgets. It passes touches (`SynthPanel::event`), Q-Link turns (`qlink`) and wheel turns (`wheel`, `step_page`) to the panel, and applies each `SynthAction` it gets back: `Set { id, value }` becomes `Node::set_param`, and `Preset(i)` loads the preset, after which the app calls `SynthPanel::load` with the node's new state. The panel updates its own copy of a value at once, so the screen keeps up with a finger.
+- **Preview.** `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the sample screens to PNG files in a new folder `~/mpfree-work/synth-preview-<UTC>`. It opens no device.
+- **Tests.**
+  - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum).
+  - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
+
 ## Next
 
+- Wiring the Synth tab into `mpfree-hello`, with a Poly track the pads play. This follows the hello queue on the merge desk.
 - A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
 - FM (6 operators, DX7 banks), then a drum synth for the pads.
-- The Synth tab (`mpfree-synth-ui`) on mpfree-ui, now that PR #31 has merged.
 - Plugin hosting: CLAP first, in a sandbox process.

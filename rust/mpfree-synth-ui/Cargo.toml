@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-synth-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The Synth tab for the MPC One: instrument pages built from a node's parameters, with Poly's drawn visuals, presets and Q-Links, on mpfree-ui"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-synth = { path = "../mpfree-synth" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-synth-preview"
+path = "src/bin/preview.rs"
