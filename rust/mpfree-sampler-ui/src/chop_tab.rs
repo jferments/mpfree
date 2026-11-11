@@ -242,7 +242,7 @@ impl ChopAction {
 }
 
 /// `pad` named in the bank the app shows, as "A5".
-fn pad_text(bank: Option<char>, pad: usize) -> String {
+pub(crate) fn pad_text(bank: Option<char>, pad: usize) -> String {
     match bank {
         Some(b) => format!("{b}{}", pad % BANK + 1),
         None => pad_label(pad),
