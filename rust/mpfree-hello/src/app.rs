@@ -19,12 +19,19 @@
 //!
 //! The time engine: PLAY plays and STOP stops the transport (a second STOP
 //! also silences everything, as before); REC, OVERDUB, UNDO (SHIFT + UNDO
-//! redoes) and PLAY START come from the button guide. They become
-//! `Effect::Time`, which the audio loop hands to its `TimeHost`.
+//! redoes) and PLAY START are found with the control mapper (or the button
+//! guide in Prefs). They become `Effect::Time`, which the audio loop hands to
+//! its `TimeHost`.
+//!
+//! Debug mode (Prefs) adds the Debug tab: the MIDI log, the Performance page
+//! and the control mapper (the `mapper` submodule). The PAD BANK buttons,
+//! once found, pick banks A-H (`Effect::Bank`).
 
 mod arp;
+pub mod mapper;
 
 pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
+pub use mapper::{Code, MapView, Mark};
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, Recorder};
 use mpfree_controller::mpc_one::button;
@@ -55,25 +62,74 @@ pub enum View {
     Arp,
     /// The pattern workspace (full screen; Back returns to the panel).
     Pattern,
+    /// Debug mode: process, thread and audio numbers (on the Debug tab).
+    Perf,
+    /// Debug mode: the control mapper (on the Debug tab).
+    Map,
 }
 
-pub const TABS: [&str; 6] = ["Play", "Clips", "Synth", "Debug", "Console", "Prefs"];
+/// The header's tabs: the Debug tab only in debug mode.
+pub fn tabs(debug: bool) -> Vec<View> {
+    let mut t = vec![View::Play, View::Clips, View::Synth];
+    if debug {
+        t.push(View::Debug);
+    }
+    t.extend([View::Console, View::Prefs]);
+    t
+}
+
+/// The bank a PAD BANK button picks (0 = A ... 7 = H): SHIFT picks E-H,
+/// and pressing the button of the bank playing again swaps A and E (an
+/// assumption from other MPCs, to try on the MPC One).
+pub fn bank_target(current: usize, button: u8, shift: bool) -> usize {
+    let b = button as usize & 3;
+    if shift || current == b {
+        b + 4
+    } else {
+        b
+    }
+}
+
+/// A kit's bank letter (kits 1-8 are banks A-H, then again from kit 9).
+pub fn bank_letter(kit: usize) -> char {
+    (b'A' + (kit % 8) as u8) as char
+}
+
+/// The Debug tab's pages, in the order of its strip.
+pub const DEBUG_PAGES: [View; 3] = [View::Debug, View::Perf, View::Map];
 
 impl View {
-    pub fn from_tab(i: usize) -> View {
-        [View::Play, View::Clips, View::Synth, View::Debug, View::Console, View::Prefs].get(i).copied()
-            .unwrap_or(View::Play)
+    /// The tab a page belongs to (the Arp panel to Play, the debug pages to
+    /// Debug), if any.
+    pub fn tab_view(self) -> Option<View> {
+        match self {
+            View::Arp | View::Pattern => Some(View::Play),
+            View::Perf | View::Map => Some(View::Debug),
+            View::Options | View::Guide => None,
+            v => Some(v),
+        }
     }
 
-    pub fn tab(self) -> Option<usize> {
+    /// The tab's place in the header, which depends on debug mode.
+    pub fn tab_index(self, debug: bool) -> Option<usize> {
+        let v = self.tab_view()?;
+        tabs(debug).iter().position(|&t| t == v)
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
-            View::Play | View::Arp | View::Pattern => Some(0),
-            View::Clips => Some(1),
-            View::Synth => Some(2),
-            View::Debug => Some(3),
-            View::Console => Some(4),
-            View::Prefs => Some(5),
-            View::Options | View::Guide => None,
+            View::Play => "Play",
+            View::Clips => "Clips",
+            View::Synth => "Synth",
+            View::Debug => "Debug",
+            View::Console => "Console",
+            View::Prefs => "Prefs",
+            View::Options => "Options",
+            View::Guide => "Guide",
+            View::Arp => "Arp",
+            View::Pattern => "Pattern",
+            View::Perf => "Performance",
+            View::Map => "Map controls",
         }
     }
 }
@@ -171,6 +227,8 @@ pub struct ButtonMap {
     pub overdub: Option<u8>,
     pub undo: Option<u8>,
     pub play_start: Option<u8>,
+    /// PAD BANK A/E to D/H, found with the control mapper.
+    pub bank: [Option<u8>; 4],
 }
 
 impl ButtonMap {
@@ -218,7 +276,53 @@ impl ButtonMap {
             button::PLAY => return Some("PLAY"),
             _ => {}
         }
+        if let Some(k) = self.bank_of(note) {
+            return Some(["PAD BANK A/E", "PAD BANK B/F", "PAD BANK C/G", "PAD BANK D/H"][k as usize]);
+        }
         GuideStep::ALL.iter().find(|&&s| self.get(s) == Some(note)).map(|s| s.short())
+    }
+
+    /// Which PAD BANK button a note is (0 = A/E), once found.
+    pub fn bank_of(&self, note: u8) -> Option<u8> {
+        self.bank.iter().position(|&b| b == Some(note)).map(|k| k as u8)
+    }
+
+    /// The number a control with a job has now (the mapper starts from it).
+    pub fn of(&self, job: mapper::Job) -> Option<u8> {
+        use mapper::Job;
+        match job {
+            Job::None => None,
+            Job::Fixed(n) => Some(n),
+            Job::Menu => self.menu,
+            Job::NoteRepeat => self.note_repeat,
+            Job::TapTempo => self.tap_tempo,
+            Job::Minus => self.minus,
+            Job::Plus => self.plus,
+            Job::Rec => self.rec,
+            Job::Overdub => self.overdub,
+            Job::Undo => self.undo,
+            Job::PlayStart => self.play_start,
+            Job::Bank(k) => self.bank[k as usize & 3],
+        }
+    }
+
+    /// A control with a job found (or cleared) with the mapper.
+    pub fn learn(&mut self, job: mapper::Job, code: Option<u8>) {
+        use mapper::Job;
+        let slot = match job {
+            Job::None | Job::Fixed(_) => return,
+            Job::Menu => &mut self.menu,
+            Job::NoteRepeat => &mut self.note_repeat,
+            Job::TapTempo => &mut self.tap_tempo,
+            Job::Minus => &mut self.minus,
+            Job::Plus => &mut self.plus,
+            Job::Rec => &mut self.rec,
+            Job::Overdub => &mut self.overdub,
+            Job::Undo => &mut self.undo,
+            Job::PlayStart => &mut self.play_start,
+            Job::Bank(k) => &mut self.bank[k as usize & 3],
+        };
+        *slot = code;
     }
 
     /// One line for the log: every button the guide asked for.
@@ -244,13 +348,16 @@ pub struct Settings {
     pub show_pressure: bool,
     pub midi_paused: bool,
     pub console_paused: bool,
+    /// Debug mode: the Debug tab (MIDI log, Performance, Map controls) and
+    /// the `perf:` lines in the log.
+    pub debug_mode: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
         Settings { curve: Curve::Linear, screen_velocity: 100, rate: Rate::Sixteenth, bpm: 120.0,
                    latch_mode: LatchMode::Replace, periods: 3, show_pressure: false, midi_paused: false,
-                   console_paused: false }
+                   console_paused: false, debug_mode: false }
     }
 }
 
@@ -263,6 +370,8 @@ pub enum Item {
     Buffer,
     FindButtons,
     TouchLab,
+    DebugMode,
+    MapControls,
     Rate,
     Tempo,
     PadLevel,
@@ -350,6 +459,11 @@ pub enum Effect {
     TouchLab,
     /// For the time engine (transport, clips, takes).
     Time(TimeAction),
+    /// What the Map controls page shows.
+    Map(MapView),
+    /// A PAD BANK button pressed: 0 = A/E to 3 = D/H, and whether SHIFT
+    /// was held (E-H). The audio loop knows the bank playing, so it picks.
+    Bank { button: u8, shift: bool },
 }
 
 pub struct App {
@@ -398,6 +512,11 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// The control mapper (Debug mode).
+    mapper: mapper::Mapper,
+    /// Buttons pressed while the mapper listened: their release is kept
+    /// from the rest of the app too.
+    swallowed: [bool; 128],
 }
 
 impl App {
@@ -413,7 +532,8 @@ impl App {
                             taps: Vec::new(), beat_zero: 0.0,
                             tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None, qlink_turns: [0; 4],
-                            sent_step: 0, sent_notes, arp_dirty: true, rolling: false };
+                            sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
+                            mapper: mapper::Mapper::default(), swallowed: [false; 128] };
         app.engine.set_pattern(pattern);
         app.update_engine();
         app
@@ -435,13 +555,8 @@ impl App {
                           Effect::Light(button::FULL_LEVEL, LIGHT_OFF), Effect::Patterns(self.patterns.clone()),
                           self.arp_view()];
         fx.extend(self.repeat_light());
-        // At power-on the guide asks only for buttons nobody has pressed yet.
-        let unknown: Vec<GuideStep> = GuideStep::ALL.iter().copied().filter(|&s| self.map.get(s).is_none()).collect();
-        if !unknown.is_empty() {
-            self.back = View::Play;
-            self.open_guide(unknown);
-            fx.push(self.guide_view());
-        }
+        // Buttons not known yet are found with the control mapper (Debug
+        // mode), at the owner's pace: nothing asks for them at power-on.
         fx.push(Effect::Show(self.view));
         fx
     }
@@ -532,6 +647,20 @@ impl App {
     /// TAP TEMPO).
     pub fn button(&mut self, note: u8, pressed: bool, t: f64) -> Vec<Effect> {
         let mut fx = Vec::new();
+        // The mapper listening: every button is for it, release included.
+        let n = note as usize & 0x7F;
+        if !pressed && self.swallowed[n] {
+            self.swallowed[n] = false;
+            return fx;
+        }
+        if pressed && self.view == View::Map {
+            let listening = self.mapper.listening;
+            fx.extend(self.map_input(Code::Button(note)));
+            if listening {
+                self.swallowed[n] = true;
+                return fx;
+            }
+        }
         if note == button::SHIFT {
             self.shift = pressed;
             fx.push(self.status());
@@ -607,10 +736,17 @@ impl App {
             }
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
+        } else if let Some(k) = self.map.bank_of(note) {
+            fx.push(Effect::Bank { button: k, shift });
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
+            } else if self.view == View::Map && !shift {
+                // + listens for the selected control, - skips it.
+                fx.extend(if d > 0 { self.map_listen() } else { self.map_skip() });
+            } else if matches!(self.view, View::Debug | View::Perf | View::Map) {
+                fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth {
@@ -696,6 +832,13 @@ impl App {
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
+            // On the Debug tab SHIFT + wheel picks the page; on Map controls
+            // the wheel picks the control.
+            View::Debug | View::Perf | View::Map if self.shift => self.debug_step(delta.signum()),
+            View::Map => {
+                self.mapper.move_by(delta);
+                vec![Effect::Map(self.mapper.view())]
+            }
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
             View::Clips => vec![Effect::ClipsWheel { delta, scroll: self.shift }],
@@ -716,12 +859,24 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         if self.view != v
-            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Debug | View::Console | View::Arp)
+            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Debug | View::Console | View::Arp
+                                   | View::Perf | View::Map)
         {
             self.back = self.view;
         }
-        self.view = v;
         let mut fx = Vec::new();
+        if self.view == View::Map && v != View::Map {
+            self.mapper.listening = false;
+            if self.mapper.changed {
+                self.mapper.changed = false;
+                fx.push(Effect::Note(self.mapper.summary()));
+            }
+        }
+        if v == View::Map && self.view != View::Map {
+            self.refresh_mapper();
+            fx.push(Effect::Map(self.mapper.view()));
+        }
+        self.view = v;
         if self.in_menu() {
             self.selected = 0;
             fx.push(self.menu_view());
@@ -760,12 +915,147 @@ impl App {
         fx
     }
 
-    /// A tab touched on the screen.
+    /// A tab touched on the screen (its place in the header).
     pub fn tab(&mut self, i: usize) -> Vec<Effect> {
+        match tabs(self.settings.debug_mode).get(i) {
+            Some(&v) => self.open_tab(v),
+            None => Vec::new(),
+        }
+    }
+
+    /// Open a tab's page.
+    pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
         if self.view == View::Guide {
             return Vec::new();
         }
-        self.show(View::from_tab(i))
+        self.show(v)
+    }
+
+    // ------------------------------------------------------------ debug mode
+
+    /// A tap on the Debug tab's strip: MIDI, Performance or Map controls.
+    pub fn debug_page(&mut self, i: usize) -> Vec<Effect> {
+        match DEBUG_PAGES.get(i) {
+            Some(&v) if self.settings.debug_mode => self.show(v),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The next or previous page of the Debug tab.
+    fn debug_step(&mut self, d: i32) -> Vec<Effect> {
+        let at = DEBUG_PAGES.iter().position(|&v| v == self.view).unwrap_or(0) as i32;
+        let to = (at + d).rem_euclid(DEBUG_PAGES.len() as i32) as usize;
+        self.show(DEBUG_PAGES[to])
+    }
+
+    fn set_debug_mode(&mut self, on: bool) -> Vec<Effect> {
+        if self.settings.debug_mode == on {
+            return Vec::new();
+        }
+        self.settings.debug_mode = on;
+        if !on && matches!(self.back, View::Debug | View::Perf | View::Map) {
+            self.back = View::Play;
+        }
+        vec![Effect::Note(format!("debug mode: {}", if on { "on" } else { "off" }))]
+    }
+
+    /// The mapper's list starts from what the app knows (measured buttons,
+    /// and those found since).
+    fn refresh_mapper(&mut self) {
+        for (i, c) in mapper::CONTROLS.iter().enumerate() {
+            self.mapper.know(i, self.map.of(c.job));
+        }
+    }
+
+    /// A control pressed or turned on the Map controls page.
+    fn map_input(&mut self, code: Code) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if let Some((line, learned)) = self.mapper.input(code) {
+            fx.push(Effect::Note(line));
+            if let Some(l) = learned {
+                fx.extend(self.learn(l));
+            }
+        }
+        fx.push(Effect::Map(self.mapper.view()));
+        fx
+    }
+
+    fn learn(&mut self, l: mapper::Learned) -> Vec<Effect> {
+        self.map.learn(l.job, l.code);
+        let mut fx = Vec::new();
+        if l.job == mapper::Job::NoteRepeat {
+            fx.extend(self.repeat_light());
+        }
+        if matches!(l.job, mapper::Job::Bank(_)) {
+            // The audio loop lights the bank playing.
+            fx.push(Effect::Bank { button: u8::MAX, shift: false });
+        }
+        fx
+    }
+
+    /// A CC the decoder does not know (not the wheel or a Q-Link), from the
+    /// audio loop. Only the mapper uses it.
+    pub fn unknown_cc(&mut self, cc: u8) -> Vec<Effect> {
+        if self.view == View::Map {
+            self.map_input(Code::Cc(cc))
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A measured control that is not a button (a Q-Link turned or touched),
+    /// on the Map controls page: named in the card.
+    pub fn known_control(&mut self, code: Code) -> Vec<Effect> {
+        if self.view == View::Map {
+            self.map_input(code)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A control tapped in the list: listen for it.
+    pub fn map_row(&mut self, i: usize) -> Vec<Effect> {
+        if self.view != View::Map {
+            return Vec::new();
+        }
+        self.mapper.select(i, true);
+        vec![Effect::Map(self.mapper.view())]
+    }
+
+    fn map_listen(&mut self) -> Vec<Effect> {
+        let i = self.mapper.selected;
+        self.mapper.select(i, true);
+        vec![Effect::Map(self.mapper.view())]
+    }
+
+    fn map_skip(&mut self) -> Vec<Effect> {
+        let line = self.mapper.skip();
+        vec![Effect::Note(line), Effect::Map(self.mapper.view())]
+    }
+
+    /// The card's buttons: 0 Listen or Stop listening, 1 Skip, 2 Clear.
+    pub fn map_button(&mut self, i: usize) -> Vec<Effect> {
+        if self.view != View::Map {
+            return Vec::new();
+        }
+        match i {
+            0 if self.mapper.listening => {
+                self.mapper.stop_listening();
+                vec![Effect::Map(self.mapper.view())]
+            }
+            0 => self.map_listen(),
+            1 => self.map_skip(),
+            2 => {
+                let mut fx = Vec::new();
+                if let Some((line, learned)) = self.mapper.clear() {
+                    fx.push(Effect::Note(line));
+                    fx.extend(self.learn(learned));
+                }
+                fx.push(Effect::Map(self.mapper.view()));
+                fx
+            }
+            _ => Vec::new(),
+        }
     }
 
     // ------------------------------------------------------------ menus
@@ -773,8 +1063,8 @@ impl App {
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
             (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons,
-                               Item::TouchLab],
-            (_, View::Debug) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
+                               Item::DebugMode, Item::MapControls, Item::TouchLab],
+            (_, View::Debug | View::Perf | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
@@ -792,6 +1082,8 @@ impl App {
             Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
+            Item::DebugMode => ("Debug mode", if s.debug_mode { "On" } else { "Off" }.to_string()),
+            Item::MapControls => ("Map controls", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
             Item::PadLevel => ("Pad level", match self.pad_level {
@@ -833,6 +1125,15 @@ impl App {
                                    "drags, swipes, flings and held fingers. Each",
                                    "step's result goes to the system log. Exit,",
                                    "MENU or a page button leaves it."],
+            Item::DebugMode => vec!["Adds the Debug tab: the MIDI log, the",
+                                    "Performance page (CPU per thread, memory,",
+                                    "audio render time) and Map controls. The",
+                                    "numbers also go to the log every 30 s.",
+                                    "On the Debug tab, SHIFT + wheel picks the page."],
+            Item::MapControls => vec!["Find the numbers of the MPC's buttons, one at",
+                                      "a time, at your pace: pick a control, press it,",
+                                      "and see which ones are left. Turns on debug",
+                                      "mode. Wheel: pick, +: listen, -: skip."],
             Item::Rate => vec!["How often a held pad repeats with NOTE REPEAT",
                                "or Latch: from quarter notes to 32nd notes,",
                                "T for triplets."],
@@ -859,7 +1160,7 @@ impl App {
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
             (View::Prefs, _) => "Prefs".to_string(),
-            (_, b) => format!("{} options", TABS[b.tab().unwrap_or(0)]),
+            (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
         };
         let (name, _) = self.item_text(items[selected]);
         Effect::Menu(MenuView {
@@ -917,6 +1218,13 @@ impl App {
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
             Item::TouchLab => return vec![Effect::TouchLab],
+            Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
+            Item::MapControls => {
+                let mut fx = self.set_debug_mode(true);
+                fx.push(Effect::Settings(self.settings.clone()));
+                fx.extend(self.show(View::Map));
+                return fx;
+            }
             Item::Rate => {
                 s.rate = cycle(&Rate::ALL, s.rate, d);
                 fx.extend(self.arp_changed());
@@ -1180,7 +1488,7 @@ mod tests {
         assert_eq!(app.wheel(3), vec![Effect::Octave(1)]);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
-        assert_eq!(app.tab(View::Synth.tab().unwrap()), vec![Effect::Show(View::Synth)]);
+        assert_eq!(app.open_tab(View::Synth), vec![Effect::Show(View::Synth)]);
         assert_eq!(app.view(), View::Synth);
         assert_eq!(app.wheel(2), vec![Effect::SynthWheel(2)]);
         app.button(button::SHIFT, true, 0.0);
@@ -1228,7 +1536,7 @@ mod tests {
         assert_eq!(app.step_item(3, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
         assert!(app.step_item(3, -1).contains(&Effect::Audio(2)));
         // The Debug page's options.
-        app.tab(View::Debug.tab().unwrap());
+        app.open_tab(View::Debug);
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Debug options"));
         // The wheel picks kits outside menus.
@@ -1237,31 +1545,77 @@ mod tests {
     }
 
     #[test]
-    fn at_power_on_the_guide_asks_only_for_unknown_buttons() {
+    fn at_power_on_nothing_asks_and_the_mapper_finds_buttons_at_the_owners_pace() {
         let mut app = App::new(44_100, false);
         assert_eq!(app.map.menu, Some(123));
         assert_eq!((app.map.note_repeat, app.map.tap_tempo, app.map.minus, app.map.plus), (Some(11), Some(53), Some(55), Some(54)));
         let fx = app.start();
-        assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press REC")));
-        let fx = press(&mut app, button::STOP);
-        assert!(fx.contains(&Effect::Note("button guide: REC skipped".into())));
-        assert_eq!(app.view(), View::Guide);
-        // PLAY is named, not taken for PLAY START.
-        press(&mut app, button::STOP);
-        press(&mut app, button::STOP);
-        let fx = press(&mut app, button::PLAY);
-        assert!(matches!(&fx[0], Effect::Guide(g) if g.lines[0].contains("PLAY (button 82)")));
-        press(&mut app, button::STOP);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Guide(_))));
         assert_eq!(app.view(), View::Play);
-        assert_eq!(app.map.rec, None);
-        assert_eq!(app.map.menu, Some(MENU));
+        // No Debug tab until debug mode: tab 3 is Console.
+        assert_eq!(tabs(false)[3], View::Console);
+        assert_eq!(app.tab(3), vec![Effect::Show(View::Console)]);
+        app.open_tab(View::Prefs);
+        let row = app.items().iter().position(|&i| i == Item::MapControls).unwrap();
+        let fx = app.step_item(row, 1);
+        assert!(app.settings.debug_mode);
+        assert_eq!(app.view(), View::Map);
+        assert!(fx.contains(&Effect::Note("debug mode: on".into())));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Map(m) if m.rows[2].value == "button 81" && m.left > 20)));
+        // Tap REC: MPFree listens; STOP stops listening without silencing.
+        app.map_row(0);
+        let fx = press(&mut app, button::STOP);
+        assert!(!fx.contains(&Effect::StopSounds), "{fx:?}");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Map(m) if !m.listening)));
+        app.map_row(0);
+        let fx = press(&mut app, 73);
+        assert!(fx.contains(&Effect::Note("map: REC = button 73".into())));
+        assert_eq!(app.map.rec, Some(73));
+        // The wheel picks PAD BANK A/E, + listens, and it works at once.
+        let at = mapper::CONTROLS.iter().position(|c| c.name == "PAD BANK A/E").unwrap() as i32;
+        app.wheel(at - app.mapper.selected as i32);
+        press(&mut app, button::PLUS);
+        let fx = press(&mut app, 35);
+        assert!(fx.contains(&Effect::Bank { button: u8::MAX, shift: false }), "{fx:?}");
+        // - skips the next one; leaving the page writes the summary.
+        let fx = press(&mut app, button::MINUS);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.ends_with("skipped"))));
+        let fx = app.open_tab(View::Play);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
+                                             && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
+        assert_eq!(press(&mut app, 73), vec![Effect::Time(TimeAction::Transport(Command::Record))]);
+        assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: false }]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut app, 35), vec![Effect::Bank { button: 0, shift: true }]);
+        app.button(button::SHIFT, false, 0.0);
+        // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
+        assert_eq!(tabs(true)[3], View::Debug);
+        app.tab(3);
+        assert_eq!(app.view(), View::Debug);
+        app.button(button::SHIFT, true, 0.0);
+        app.wheel(1);
+        assert_eq!(app.view(), View::Perf);
+        app.wheel(1);
+        assert_eq!(app.view(), View::Map);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.debug_page(1), vec![Effect::Show(View::Perf)]);
+    }
+
+    #[test]
+    fn pad_banks_pick_e_to_h_with_shift_or_a_second_press() {
+        assert_eq!(bank_target(0, 1, false), 1);
+        assert_eq!(bank_target(1, 1, false), 5, "B again: F");
+        assert_eq!(bank_target(5, 1, false), 1, "F, then B: B");
+        assert_eq!(bank_target(5, 0, false), 0);
+        assert_eq!(bank_target(2, 3, true), 7, "SHIFT + D/H: H");
+        assert_eq!((bank_letter(0), bank_letter(7), bank_letter(9)), ('A', 'H', 'B'));
     }
 
     #[test]
     fn the_guide_learns_buttons_by_name() {
         let mut app = ready();
         app.map = ButtonMap::default();
-        app.tab(View::Prefs.tab().unwrap());
+        app.open_tab(View::Prefs);
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press MENU")));
@@ -1285,7 +1639,7 @@ mod tests {
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.contains("MENU = button 123")
                                              && n.contains("- = not found") && n.contains("UNDO = not found"))));
         // The guide again from Prefs, every button.
-        app.tab(View::Prefs.tab().unwrap());
+        app.open_tab(View::Prefs);
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
@@ -1485,7 +1839,7 @@ mod tests {
     #[test]
     fn the_clips_page_takes_the_wheel_and_the_tempo() {
         let mut app = ready();
-        app.tab(View::Clips.tab().unwrap());
+        app.open_tab(View::Clips);
         assert_eq!(app.view(), View::Clips);
         assert_eq!(app.wheel(1), vec![Effect::ClipsWheel { delta: 1, scroll: false }]);
         assert_eq!(held(&mut app, button::SHIFT, |a| a.wheel(-1)), vec![Effect::ClipsWheel { delta: -1, scroll: true }]);
@@ -1500,7 +1854,7 @@ mod tests {
         assert!(fx.contains(&Effect::Note("tempo 96.5 BPM".into())));
         app.set_tempo(1000.0);
         assert_eq!(app.settings.bpm, 300.0);
-        app.tab(View::Play.tab().unwrap());
+        app.open_tab(View::Play);
         assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel picks kits on Play");
     }
 }
