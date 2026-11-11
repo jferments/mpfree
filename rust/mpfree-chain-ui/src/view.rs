@@ -5,12 +5,16 @@
 //! - **Chain:** the strip's inserts in order, each with its number, name, a
 //!   line about its settings, a dot per macro that moves it, and a power
 //!   button (bypass with spillover). A tap selects an insert; the buttons
-//!   under the list move it up or down or remove it; the last row adds an
-//!   effect.
-//! - **Effect:** the selected insert's page: its parameter groups as tabs
-//!   and up to eight knobs. A knob shows a ring for how far modulation
-//!   moves it and a badge in its macro's colour. Drag a knob up or down to
-//!   turn it; touching one makes it the knob the right column works on.
+//!   under the list move it up or down or remove it; the last row opens the
+//!   effect picker.
+//! - **Effect:** the selected insert's page: its name (a tap opens its full
+//!   effect page, `mpfree-fx-ui`'s), its parameter groups as tabs, the
+//!   effect page's drawings for it (its curve, its delay taps; a tap opens
+//!   the page too), and up to eight knobs. A knob shows a ring for how far
+//!   modulation moves it and a badge in its macro's colour. Drag a knob up
+//!   or down to turn it; touching one makes it the knob the right column
+//!   works on. While the picker is open, the column lists the effects the
+//!   strip can take, each with a line about it; a tap adds one at the end.
 //! - **Modulate:** for the touched knob: which macro moves it (tap a
 //!   number; tap it again to take it off), Learn (the next Q-Link turned
 //!   takes the knob), and its mod matrix rows (drag a row's bar to set its
@@ -25,10 +29,10 @@ use std::f32::consts::PI;
 use mpfree_mod::{Source, MACROS};
 use mpfree_param::ParamAddr;
 use mpfree_synth_ui::draw::Mask;
-use mpfree_synth_ui::widgets::knob;
+use mpfree_synth_ui::widgets::{knob, Card, Visuals};
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 
-use crate::state::{macro_color, on_accent, ChainState, KNOBS_PER_PAGE};
+use crate::state::{macro_color, picks, ChainState, KNOBS_PER_PAGE};
 
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,19 +51,26 @@ pub enum ChainAction {
     },
     /// Take an insert out (`Edit::Remove`).
     Remove(usize),
-    /// Open the list of effects to add at the end.
-    AddEffect,
+    /// Add effect `id` (one of [`crate::state::picks`]) at the end of the
+    /// chain: `mpfree_fx_ui::make(id)`, then `Edit::Insert`.
+    Add(&'static str),
+    /// Open insert `slot`'s full effect page (`mpfree_fx_ui::FxPanel`): a
+    /// tap on the effect's name or its drawings.
+    OpenPage(usize),
     /// Show the selected insert's parameter group `g`.
     Group(usize),
     /// A knob was touched: the modulation column works on it.
     Focus(ParamAddr),
     /// Set a parameter: send it to the mod engine as `ModEvent::hand`
     /// gives (a `Set` unless it has a move lane or its track is
-    /// recording; then `Untouch` when the finger lifts).
+    /// recording, then a `Touch`).
     Set {
         addr: ParamAddr,
         value: f32,
     },
+    /// The finger left a knob: send `ModEvent::Untouch` for it (nothing
+    /// happens if the turn was a `Set`).
+    Release(ParamAddr),
     /// Put a parameter on macro `m`, or take it off (`None`).
     Macro {
         target: ParamAddr,
@@ -94,10 +105,22 @@ const HEAD_H: i32 = 40;
 const BUTTON_H: i32 = 44;
 /// Drag distance (pixels) for a knob's whole travel.
 const DRAG_TRAVEL: f32 = 300.0;
+/// The effect page's drawings, between the tabs and the knobs.
+const PICTURE_H: i32 = 140;
+/// The effect picker's tiles.
+const PICK_GAP: i32 = 8;
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
     pub back: Option<Rect>,
+    /// The selected effect's name: a tap opens its full page.
+    pub title: Rect,
+    /// The effect page's drawings, when there are any.
+    pub picture: Option<Rect>,
+    /// The picker's Cancel and its tiles, in [`picks`] order (none when the
+    /// picker is shut or the chain is full).
+    pub cancel: Option<Rect>,
+    pub picks: Vec<Rect>,
     pub scopes: Vec<Rect>,
     pub list: Rect,
     pub effect: Rect,
@@ -114,7 +137,9 @@ pub struct Layout {
     pub add_follower: Rect,
 }
 
-pub fn layout(r: Rect, st: &ChainState) -> Layout {
+/// Where everything goes. `picture`: whether there are drawings to show
+/// (see [`ChainView::layout`]).
+pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
     let (list, rest) = r.take_left(LIST_W);
     let (side, effect) = rest.take_right(SIDE_W);
     let effect = effect.inset_xy(GAP, 0);
@@ -141,7 +166,8 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
         .then(|| Rect::new(body.x, y, body.w, 44));
     let bw = (foot.w - 2 * 8) / 3;
     let buttons = [0, 1, 2].map(|i| Rect::new(foot.x + i * (bw + 8), foot.y, bw, BUTTON_H));
-    // Effect column: tabs along the top, knobs in two rows of four.
+    // Effect column: tabs along the top, the drawings, knobs in two rows
+    // of four. The picker takes the column's place.
     let einner = effect.inset(14);
     let (head, grid) = einner.take_top(52);
     let mut tabs = Vec::new();
@@ -153,9 +179,42 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
         x -= 6;
     }
     tabs.reverse();
+    let title = Rect::new(head.x, head.y, x + 6 - head.x - 8, 42);
+    let (picture, grid) = if picture && st.selected.is_some() && !st.picking {
+        let (p, rest) = grid.take_top(PICTURE_H + 8);
+        (Some(Rect::new(p.x, p.y + 8, p.w, PICTURE_H)), rest)
+    } else {
+        (None, grid)
+    };
     let grid = grid.inset_xy(0, 8);
+    let (mut cancel, mut pick_rects) = (None, Vec::new());
+    if st.picking {
+        tabs.clear();
+        cancel = Some(Rect::new(head.right() - 104, head.y + 4, 104, 36));
+        if st.slots.len() < st.room {
+            let n = picks(st.strip).len() as i32;
+            let cols = if grid.w >= 420 { 3 } else { 2 };
+            let rows_n = (n + cols - 1) / cols;
+            let w = (grid.w - (cols - 1) * PICK_GAP) / cols;
+            let h = ((grid.h - (rows_n - 1) * PICK_GAP) / rows_n.max(1)).min(120);
+            pick_rects = (0..n)
+                .map(|i| {
+                    Rect::new(
+                        grid.x + (i % cols) * (w + PICK_GAP),
+                        grid.y + (i / cols) * (h + PICK_GAP),
+                        w,
+                        h,
+                    )
+                })
+                .collect();
+        }
+    }
     // Four knobs a row where they fit, else three.
-    let n = st.params.len().min(KNOBS_PER_PAGE) as i32;
+    let n = if st.picking {
+        0
+    } else {
+        st.params.len().min(KNOBS_PER_PAGE) as i32
+    };
     let cols = if grid.w >= 440 { 4 } else { 3 };
     let rows_n = ((n + cols - 1) / cols).max(2);
     let (cw, ch) = (grid.w / cols, (grid.h / rows_n).min(250));
@@ -188,6 +247,10 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
     let add_follower = Rect::new(sbody.x + half + 8, ry + 4, half, 40);
     Layout {
         back,
+        title,
+        picture,
+        cancel,
+        picks: pick_rects,
         scopes,
         list,
         effect,
@@ -213,6 +276,8 @@ enum Drag {
 /// See the module docs.
 pub struct ChainView {
     state: ChainState,
+    /// The selected effect's drawings ([`crate::state::picture`]).
+    picture: Visuals,
     actions: Vec<ChainAction>,
     drag: Option<(u64, Drag)>,
 }
@@ -227,6 +292,7 @@ impl ChainView {
     pub fn new() -> ChainView {
         ChainView {
             state: ChainState::default(),
+            picture: Visuals::new(),
             actions: Vec::new(),
             drag: None,
         }
@@ -236,9 +302,24 @@ impl ChainView {
         &self.state
     }
 
-    /// Shows a new state (keeps nothing of the old one).
+    /// Shows a new state. Of the old one it keeps only an open picker
+    /// (the editor opened it; a state from the app with `picking` set
+    /// opens it too).
     pub fn update(&mut self, st: ChainState) {
+        let picking = st.picking || self.state.picking;
         self.state = st;
+        self.state.picking = picking;
+    }
+
+    /// Shows the selected effect's drawings ([`crate::state::picture`];
+    /// empty for none).
+    pub fn set_picture(&mut self, cards: Vec<Card>) {
+        self.picture.cards = cards;
+    }
+
+    /// Where everything goes in `r` as the widget stands.
+    pub fn layout(&self, r: Rect) -> Layout {
+        layout(r, &self.state, !self.picture.cards.is_empty())
     }
 
     pub fn take_actions(&mut self) -> Vec<ChainAction> {
@@ -288,6 +369,22 @@ impl ChainView {
             self.push(ChainAction::Scope(i));
             return;
         }
+        if self.state.picking {
+            if l.cancel.is_some_and(|c| c.contains(x, y)) {
+                self.state.picking = false;
+                return;
+            }
+            if let Some(i) = l.picks.iter().position(|r| r.contains(x, y)) {
+                if let Some(p) = picks(self.state.strip).get(i) {
+                    self.state.picking = false;
+                    self.push(ChainAction::Add(p.id));
+                }
+                return;
+            }
+            if l.effect.contains(x, y) {
+                return;
+            }
+        }
         let st = &self.state;
         for (i, r) in l.rows.iter().enumerate() {
             if r.contains(x, y) {
@@ -302,7 +399,7 @@ impl ChainView {
             }
         }
         if l.add.is_some_and(|r| r.contains(x, y)) {
-            self.push(ChainAction::AddEffect);
+            self.state.picking = true;
             return;
         }
         if let Some(sel) = st.selected {
@@ -333,6 +430,12 @@ impl ChainView {
         if let Some(g) = l.tabs.iter().position(|r| r.contains(x, y)) {
             self.push(ChainAction::Group(g));
             return;
+        }
+        if let Some(sel) = st.selected.filter(|_| !st.picking) {
+            if l.title.contains(x, y) || l.picture.is_some_and(|p| p.contains(x, y)) {
+                self.push(ChainAction::OpenPage(sel));
+                return;
+            }
         }
         let Some(focus) = st.focus else { return };
         if let Some(m) = l.macros.iter().position(|r| r.contains(x, y)) {
@@ -387,7 +490,7 @@ impl Widget for ChainView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let st = &self.state;
-        let l = layout(r, st);
+        let l = self.layout(r);
         cx.canvas.fill_rect(r, t.bg);
         // ---- Chain column.
         cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
@@ -557,7 +660,7 @@ impl Widget for ChainView {
                 t.size_small - 2.0,
                 pill,
                 Align::Center,
-                if s.on { on_accent(&t) } else { t.text_dim },
+                if s.on { t.on_accent } else { t.text_dim },
                 if s.on { "ON" } else { "OFF" },
             );
         }
@@ -609,6 +712,11 @@ impl Widget for ChainView {
         cx.canvas.fill_round_rect(l.effect, t.radius, t.surface);
         let einner = l.effect.inset(14);
         let (head, _) = einner.take_top(52);
+        if st.picking {
+            paint_picker(cx, &l, st, head);
+            paint_side(cx, &l, st);
+            return;
+        }
         match st.selected.and_then(|s| st.slots.get(s)) {
             None => {
                 cx.text(
@@ -624,11 +732,14 @@ impl Widget for ChainView {
                 cx.text(
                     FontId::Bold,
                     t.size_title,
-                    head.take_top(42).0,
+                    l.title,
                     Align::Left,
                     t.text,
-                    &s.name,
+                    &format!("{}  ›", s.name),
                 );
+                if let Some(pr) = l.picture {
+                    self.picture.paint(cx, pr);
+                }
                 for (g, (tr, name)) in l.tabs.iter().zip(&st.groups).enumerate() {
                     let on = g == st.group;
                     cx.canvas
@@ -638,7 +749,7 @@ impl Widget for ChainView {
                         t.size_small,
                         *tr,
                         Align::Center,
-                        if on { on_accent(&t) } else { t.text_dim },
+                        if on { t.on_accent } else { t.text_dim },
                         name,
                     );
                 }
@@ -694,7 +805,7 @@ impl Widget for ChainView {
                             t.size_small - 2.0,
                             b,
                             Align::Center,
-                            on_accent(&t),
+                            t.on_accent,
                             &format!("M{}", m + 1),
                         );
                     }
@@ -706,168 +817,18 @@ impl Widget for ChainView {
                             t.size_small - 2.0,
                             b,
                             Align::Center,
-                            on_accent(&t),
+                            t.on_accent,
                             "LK",
                         );
                     }
                 }
             }
         }
-        // ---- Modulate column.
-        cx.canvas.fill_round_rect(l.side, t.radius, t.surface);
-        let sinner = l.side.inset(14);
-        let (head, sbody) = sinner.take_top(30);
-        let Some(p) = st.focused() else {
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                head,
-                Align::Left,
-                t.text_dim,
-                "MODULATE",
-            );
-            cx.text(
-                FontId::Sans,
-                t.size_body,
-                sbody.take_top(60).0,
-                Align::Left,
-                t.text_dim,
-                "Touch a knob to modulate it",
-            );
-            return;
-        };
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            head,
-            Align::Left,
-            t.text_dim,
-            &format!("MODULATE · {}", p.info.name.to_uppercase()),
-        );
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            sbody.take_top(26).0.take_bottom(20).0,
-            Align::Left,
-            t.text_faint,
-            "MACRO",
-        );
-        for (m, mr) in l.macros.iter().enumerate() {
-            let on = p.macro_ == Some(m);
-            let c = macro_color(&t, m);
-            cx.canvas
-                .fill_round_rect(*mr, 10, if on { c } else { t.raised });
-            if !on {
-                cx.canvas
-                    .fill_round_rect(Rect::new(mr.x + 8, mr.y + mr.h / 2 - 4, 8, 8), 4, c);
-            }
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                *mr,
-                Align::Center,
-                if on { on_accent(&t) } else { t.text },
-                &(m + 1).to_string(),
-            );
-        }
-        let named = p
-            .macro_
-            .and_then(|m| st.macro_names.get(m))
-            .map_or("No macro: tap a number".to_string(), |n| format!("On {n}"));
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            Rect::new(sbody.x, l.macros[4].bottom() + 4, sbody.w, 24),
-            Align::Left,
-            t.text_dim,
-            &named,
-        );
-        cx.canvas
-            .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
-        let learn = if st.learning {
-            "Turn a Q-Link to take it"
-        } else {
-            "Learn to a Q-Link"
-        };
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            l.learn,
-            Align::Center,
-            if st.learning { on_accent(&t) } else { t.text },
-            learn,
-        );
-        let mh = Rect::new(sbody.x, l.learn.bottom() + 18, sbody.w, 24);
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            mh,
-            Align::Left,
-            t.text_faint,
-            "MOD MATRIX",
-        );
-        if !focused_takes_rows(st) {
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                Rect::new(mh.x, mh.bottom() + 4, mh.w, 24),
-                Align::Left,
-                t.text_dim,
-                "A switch: macros only",
-            );
-            return;
-        }
-        for (rv, (bar, xr)) in st.rows.iter().zip(&l.depth_rows) {
-            let (name, track) = bar.take_left(98);
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                name,
-                Align::Left,
-                t.text,
-                &rv.source,
-            );
-            let track = track.inset_xy(4, 14);
-            cx.canvas.fill_round_rect(track, 4, t.raised);
-            let mid = track.x + track.w / 2;
-            let end = mid + (rv.depth * track.w as f32 * 0.5) as i32;
-            let (a, b) = if end < mid { (end, mid) } else { (mid, end) };
-            cx.canvas
-                .fill_round_rect(Rect::new(a, track.y, (b - a).max(2), track.h), 4, t.good);
-            cx.canvas
-                .fill_rect(Rect::new(mid, track.y - 3, 1, track.h + 6), t.text_dim);
-            cx.text(
-                FontId::Mono,
-                t.size_small - 2.0,
-                Rect::new(track.x, track.bottom() + 1, track.w, 14),
-                Align::Center,
-                t.text_dim,
-                &format!("{:+.0} %", rv.depth * 100.0),
-            );
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                *xr,
-                Align::Center,
-                t.text_faint,
-                "x",
-            );
-        }
-        for (b, label) in [(l.add_lfo, "+ LFO"), (l.add_follower, "+ Follower")] {
-            cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                b,
-                Align::Center,
-                t.text_dim,
-                label,
-            );
-        }
+        paint_side(cx, &l, st);
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        let l = layout(r, &self.state);
+        let l = self.layout(r);
         match phase {
             Touch::Down => {
                 if let Some(i) = l.knobs.iter().position(|k| k.contains(x, y)) {
@@ -924,10 +885,238 @@ impl Widget for ChainView {
             }
             Touch::Up | Touch::Cancel => {
                 if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
-                    self.drag = None;
+                    if let Some((_, Drag::Knob { i, .. })) = self.drag.take() {
+                        if let Some(p) = self.state.params.get(i) {
+                            let addr = p.addr;
+                            self.push(ChainAction::Release(addr));
+                        }
+                    }
                 }
                 None
             }
         }
     }
+}
+
+/// The modulation column.
+fn paint_side(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(l.side, t.radius, t.surface);
+    let sinner = l.side.inset(14);
+    let (head, sbody) = sinner.take_top(30);
+    let Some(p) = st.focused() else {
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            head,
+            Align::Left,
+            t.text_dim,
+            "MODULATE",
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            sbody.take_top(60).0,
+            Align::Left,
+            t.text_dim,
+            "Touch a knob to modulate it",
+        );
+        return;
+    };
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        head,
+        Align::Left,
+        t.text_dim,
+        &format!("MODULATE · {}", p.info.name.to_uppercase()),
+    );
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        sbody.take_top(26).0.take_bottom(20).0,
+        Align::Left,
+        t.text_faint,
+        "MACRO",
+    );
+    for (m, mr) in l.macros.iter().enumerate() {
+        let on = p.macro_ == Some(m);
+        let c = macro_color(&t, m);
+        cx.canvas
+            .fill_round_rect(*mr, 10, if on { c } else { t.raised });
+        if !on {
+            cx.canvas
+                .fill_round_rect(Rect::new(mr.x + 8, mr.y + mr.h / 2 - 4, 8, 8), 4, c);
+        }
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            *mr,
+            Align::Center,
+            if on { t.on_accent } else { t.text },
+            &(m + 1).to_string(),
+        );
+    }
+    let named = p
+        .macro_
+        .and_then(|m| st.macro_names.get(m))
+        .map_or("No macro: tap a number".to_string(), |n| format!("On {n}"));
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        Rect::new(sbody.x, l.macros[4].bottom() + 4, sbody.w, 24),
+        Align::Left,
+        t.text_dim,
+        &named,
+    );
+    cx.canvas
+        .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
+    let learn = if st.learning {
+        "Turn a Q-Link to take it"
+    } else {
+        "Learn to a Q-Link"
+    };
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        l.learn,
+        Align::Center,
+        if st.learning { t.on_accent } else { t.text },
+        learn,
+    );
+    let mh = Rect::new(sbody.x, l.learn.bottom() + 18, sbody.w, 24);
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        mh,
+        Align::Left,
+        t.text_faint,
+        "MOD MATRIX",
+    );
+    if !focused_takes_rows(st) {
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(mh.x, mh.bottom() + 4, mh.w, 24),
+            Align::Left,
+            t.text_dim,
+            "A switch: macros only",
+        );
+        return;
+    }
+    for (rv, (bar, xr)) in st.rows.iter().zip(&l.depth_rows) {
+        let (name, track) = bar.take_left(98);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            name,
+            Align::Left,
+            t.text,
+            &rv.source,
+        );
+        let track = track.inset_xy(4, 14);
+        cx.canvas.fill_round_rect(track, 4, t.raised);
+        let mid = track.x + track.w / 2;
+        let end = mid + (rv.depth * track.w as f32 * 0.5) as i32;
+        let (a, b) = if end < mid { (end, mid) } else { (mid, end) };
+        cx.canvas
+            .fill_round_rect(Rect::new(a, track.y, (b - a).max(2), track.h), 4, t.good);
+        cx.canvas
+            .fill_rect(Rect::new(mid, track.y - 3, 1, track.h + 6), t.text_dim);
+        cx.text(
+            FontId::Mono,
+            t.size_small - 2.0,
+            Rect::new(track.x, track.bottom() + 1, track.w, 14),
+            Align::Center,
+            t.text_dim,
+            &format!("{:+.0} %", rv.depth * 100.0),
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            *xr,
+            Align::Center,
+            t.text_faint,
+            "x",
+        );
+    }
+    for (b, label) in [(l.add_lfo, "+ LFO"), (l.add_follower, "+ Follower")] {
+        cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            b,
+            Align::Center,
+            t.text_dim,
+            label,
+        );
+    }
+}
+
+/// The effect picker, over the effect column.
+fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, head: Rect) {
+    let t = cx.theme.clone();
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        head.take_top(42).0,
+        Align::Left,
+        t.text_dim,
+        &format!("ADD EFFECT · {} OF {} SLOTS USED", st.slots.len(), st.room),
+    );
+    if let Some(c) = l.cancel {
+        cx.canvas.fill_round_rect(c, 9, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            c,
+            Align::Center,
+            t.text,
+            "Cancel",
+        );
+    }
+    if l.picks.is_empty() {
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            l.effect,
+            Align::Center,
+            t.text_dim,
+            "This chain is full: remove an effect first",
+        );
+        return;
+    }
+    for (p, r) in picks(st.strip).iter().zip(&l.picks) {
+        cx.canvas.fill_round_rect(*r, 10, t.raised);
+        let inner = r.inset_xy(12, 10);
+        let (name, about) = inner.take_top(26);
+        cx.text(FontId::Bold, t.size_body, name, Align::Left, t.text, p.name);
+        let size = t.size_small - 1.0;
+        for (k, line) in wrap(cx, size, p.about, about.w).iter().take(2).enumerate() {
+            cx.text(
+                FontId::Sans,
+                size,
+                Rect::new(about.x, about.y + 4 + k as i32 * 19, about.w, 19),
+                Align::Left,
+                t.text_dim,
+                line,
+            );
+        }
+    }
+}
+
+/// `text` in lines no wider than `w` (a word wider than `w` gets a line of
+/// its own).
+fn wrap(cx: &mut PaintCx, size: f32, text: &str, w: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split(' ') {
+        match lines.last_mut() {
+            Some(l) if cx.measure(FontId::Sans, size, &format!("{l} {word}")) <= w => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }

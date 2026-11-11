@@ -42,6 +42,8 @@
 //! with it.
 
 mod cases;
+#[cfg(test)]
+mod golden;
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
