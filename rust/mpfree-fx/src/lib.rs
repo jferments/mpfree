@@ -97,6 +97,7 @@ pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printe
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use xy::{XyAxis, XyPad};
 
+pub use mpfree_lanes;
 pub use mpfree_node;
 
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
