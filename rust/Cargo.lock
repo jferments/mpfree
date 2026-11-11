@@ -381,7 +381,9 @@ dependencies = [
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-looper",
+ "mpfree-mod",
  "mpfree-node",
+ "mpfree-param",
  "mpfree-play",
  "mpfree-prof",
  "mpfree-sampler",
@@ -491,6 +493,14 @@ version = "0.1.0"
 dependencies = [
  "mpfree-fx",
  "mpfree-ui",
+]
+
+[[package]]
+name = "mpfree-mod"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-param",
 ]
 
 [[package]]
