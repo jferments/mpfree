@@ -26,6 +26,7 @@
 
 pub mod canvas;
 pub mod color;
+pub mod draw;
 pub mod fb;
 pub mod geom;
 pub mod layout;

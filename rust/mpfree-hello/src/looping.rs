@@ -292,11 +292,14 @@ impl LineIn {
 }
 
 /// The loop's waveform for the Looper tab: min, max and RMS of the playing
-/// layers, summed, in [`WAVE_COLUMNS`] columns per channel.
-#[derive(Clone, Debug, PartialEq)]
+/// layers, summed, in [`WAVE_COLUMNS`] columns per channel; and for the
+/// Play page's strip, each layer's peak (either side) per column.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoopWave {
     pub frames: u64,
     pub columns: Vec<[WaveColumn; 2]>,
+    /// `layers[k][col]`: layer k's peak in that column, 0 to 1.
+    pub layers: Vec<Vec<f32>>,
 }
 
 impl Peaks for LoopWave {
@@ -339,6 +342,9 @@ struct WaveBuilder {
     at: usize,
     frames: usize,
     acc: Vec<[(f32, f32, f32, u32); 2]>,
+    /// Each layer's peak per column (made at the start, so the audio
+    /// thread never allocates for it).
+    peaks: Vec<Vec<f32>>,
     building: bool,
 }
 
@@ -349,6 +355,7 @@ impl WaveBuilder {
             at: 0,
             frames: 0,
             acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
+            peaks: vec![vec![0.0; WAVE_COLUMNS]; mpfree_looper::MAX_LAYERS],
             building: false,
         }
     }
@@ -361,6 +368,9 @@ impl WaveBuilder {
         for c in self.acc.iter_mut() {
             *c = [(f32::MAX, f32::MIN, 0.0, 0); 2];
         }
+        for l in self.peaks.iter_mut() {
+            l.fill(0.0);
+        }
     }
 
     /// One slice; the finished wave when the last slice is done.
@@ -370,6 +380,16 @@ impl WaveBuilder {
         }
         let len = self.frames;
         let end = (self.at + WAVE_FRAMES_PER_PERIOD).min(len);
+        for k in 0..layers.min(self.peaks.len()) {
+            if let Some(l) = looper.layer(k) {
+                let peaks = &mut self.peaks[k];
+                for f in self.at..end {
+                    let p = l[2 * f].abs().max(l[2 * f + 1].abs());
+                    let col = f * WAVE_COLUMNS / len;
+                    peaks[col] = peaks[col].max(p);
+                }
+            }
+        }
         for f in self.at..end {
             let col = f * WAVE_COLUMNS / len;
             for ch in 0..2 {
@@ -409,9 +429,14 @@ impl WaveBuilder {
                 [col(c[0]), col(c[1])]
             })
             .collect();
+        let layers = self.peaks[..self.of.1.min(self.peaks.len())]
+            .iter()
+            .map(|l| l.iter().map(|p| p.min(1.0)).collect())
+            .collect();
         Some(LoopWave {
             frames: len as u64,
             columns,
+            layers,
         })
     }
 }
@@ -738,12 +763,7 @@ impl LoopHost {
             if s.frames == 0 {
                 let was_empty = self.wave.of.0 == 0;
                 self.wave.start(0, of);
-                return (!was_empty).then(|| {
-                    Arc::new(LoopWave {
-                        frames: 0,
-                        columns: Vec::new(),
-                    })
-                });
+                return (!was_empty).then(|| Arc::new(LoopWave::default()));
             }
             self.wave.start(s.frames, of);
         }
@@ -839,6 +859,7 @@ mod tests {
     #[test]
     fn the_wave_covers_the_loop_and_answers_any_zoom() {
         let w = LoopWave {
+            layers: Vec::new(),
             frames: 1000,
             columns: (0..10)
                 .map(|i| {

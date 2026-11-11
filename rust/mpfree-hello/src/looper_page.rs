@@ -10,9 +10,10 @@ use crate::app::Settings;
 use crate::looping::{bars_text, LoopSource, LoopWave, LooperView};
 use mpfree_arp_ui::widgets::{Button, ButtonRow};
 use mpfree_looper::Phase;
+use mpfree_ui::draw;
 use mpfree_ui::wave::{Beats, Waveform};
 use mpfree_ui::widgets::StatList;
-use mpfree_ui::{Align, FontId, PaintCx, Rect, Tone, Ui, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -131,69 +132,304 @@ impl Widget for Meter {
     }
 }
 
-/// The Play page's loop strip (the All and Loop views): a heading line with
-/// the loop's length and layers, over the loop's waveform. The Looper tab
-/// is where the loop is edited; this is where it is played.
+/// The Play page's looper panel (the All and Loop views), as mockups F and
+/// H draw it: "LOOPER" with a chip per layer, the length on the right, and
+/// under them the loop with each layer's peaks stacked in its colour (full
+/// behind the playhead, dimmer ahead), the bar lines and numbers, the
+/// playhead and the state in a pill. When the panel is tall (the Loop
+/// view) a row of the looper's buttons sits under the loop; a tap on one
+/// gives `Tab(i)` for [`STRIP_BUTTONS`]`[i]`. The Looper tab is where the
+/// loop is edited; this is where it is played.
 pub struct LoopStrip {
-    pub wave: Waveform,
-    /// The heading's right-hand text: "4 bars · 3 layers · Playing".
+    pub wave: Option<Arc<LoopWave>>,
+    /// The heading's right-hand text: "4 bars · 3 layers".
     pub right: String,
-    /// The heading as last drawn, so a playhead move redraws only its strip.
-    drawn: RefCell<Option<String>>,
+    /// The pill: "PLAYING", "OVERDUB"; None while empty.
+    pub state: Option<(String, Tone)>,
+    /// Shown in the loop's place while it is empty.
+    pub note: String,
+    /// The playhead, 0 to 1 along the loop.
+    pub position: Option<f32>,
+    /// Bars in the loop, for the bar lines.
+    pub bars: usize,
+    pub layers: usize,
+    /// The buttons' labels and whether each is lit (the Loop view).
+    pub buttons: Vec<(String, bool)>,
+    /// The playhead's x and everything else as last drawn, so a playhead
+    /// move redraws only the columns it passed.
+    drawn: RefCell<Option<(Rect, StripLook, i32)>>,
 }
 
-/// The strip's widget name, and the height of its heading line.
+/// What the strip shows apart from the playhead.
+#[derive(Clone, Debug, PartialEq)]
+struct StripLook {
+    right: String,
+    state: Option<(String, Tone)>,
+    note: String,
+    bars: usize,
+    layers: usize,
+    buttons: Vec<(String, bool)>,
+    wave: Option<u64>,
+}
+
+/// The strip's widget name.
 pub const LOOP_STRIP: &str = "play-loop";
-const STRIP_HEAD: i32 = 26;
+/// The buttons under the loop in the Loop view, in tap order. "Stop" stops
+/// the transport; the others are the Looper tab's ([`BUTTONS`]).
+pub const STRIP_BUTTONS: [&str; 7] = ["Record", "Overdub", "Stop", "Undo", "Redo", "Mute", "Clear"];
+/// The Looper tab's button for each of [`STRIP_BUTTONS`] (None: Stop).
+pub const STRIP_TO_BUTTON: [Option<usize>; 7] = [
+    Some(B_RECORD),
+    Some(B_OVERDUB),
+    None,
+    Some(B_UNDO),
+    Some(B_REDO),
+    Some(B_MUTE),
+    Some(B_CLEAR),
+];
+/// The layers' colours, layer 1 first.
+pub const LAYER_COLOURS: [Color; 8] = [
+    draw::KNOB[0],
+    draw::KNOB[1],
+    draw::CHOP,
+    draw::KNOB[2],
+    draw::VOX,
+    draw::PERC,
+    draw::KICK,
+    draw::FX,
+];
+/// Panels at least this tall show the buttons.
+const BUTTONS_FROM_H: i32 = 300;
 
 impl Default for LoopStrip {
     fn default() -> Self {
         LoopStrip {
-            wave: Waveform::new(),
+            wave: None,
             right: String::new(),
+            state: None,
+            note: String::new(),
+            position: None,
+            bars: 0,
+            layers: 0,
+            buttons: STRIP_BUTTONS
+                .iter()
+                .map(|b| (b.to_string(), false))
+                .collect(),
             drawn: RefCell::new(None),
         }
     }
 }
 
 impl LoopStrip {
-    /// Where the waveform sits in the strip's rectangle.
-    pub fn wave_area(r: Rect) -> Rect {
-        r.take_top(STRIP_HEAD).1
+    /// The loop's panel and the buttons' row in the strip's rectangle.
+    fn parts(r: Rect) -> (Rect, Option<Rect>) {
+        let (_, body) = draw::card_head(r);
+        if r.h >= BUTTONS_FROM_H {
+            let (btns, wave) = body.take_bottom(44);
+            (wave.take_bottom(8).1, Some(btns))
+        } else {
+            (body, None)
+        }
+    }
+
+    /// The loop's drawing area inside its panel.
+    fn wave_area(r: Rect) -> Rect {
+        LoopStrip::parts(r).0.inset_xy(10, 8)
+    }
+
+    fn button_rects(&self, row: Rect) -> Vec<Rect> {
+        let n = self.buttons.len().max(1) as i32;
+        let gap = 8;
+        let bw = (row.w - gap * (n - 1)) / n;
+        (0..n)
+            .map(|i| Rect::new(row.x + i * (bw + gap), row.y, bw, row.h))
+            .collect()
+    }
+
+    fn look(&self) -> StripLook {
+        StripLook {
+            right: self.right.clone(),
+            state: self.state.clone(),
+            note: self.note.clone(),
+            bars: self.bars,
+            layers: self.layers,
+            buttons: self.buttons.clone(),
+            wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize as u64),
+        }
+    }
+
+    fn play_x(&self, w: Rect) -> Option<i32> {
+        self.position
+            .filter(|_| self.wave.as_ref().is_some_and(|w| w.frames > 0))
+            .map(|p| w.x + (p.clamp(0.0, 1.0) * w.w as f32) as i32)
     }
 }
 
 impl Widget for LoopStrip {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let (head, _) = r.take_top(STRIP_HEAD);
-        cx.canvas.fill_rect(head, t.bg);
-        let line = head.inset_xy(4, 0);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            line,
-            Align::Left,
-            t.text_dim,
-            "LOOPER",
-        );
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            line,
-            Align::Right,
-            t.text_dim,
-            &self.right,
-        );
-        self.wave.paint(cx, LoopStrip::wave_area(r));
-        *self.drawn.borrow_mut() = Some(self.right.clone());
+        cx.canvas.fill_rect(r, t.bg);
+        draw::card(cx, r, "Looper", &self.right);
+        let (panel, btns) = LoopStrip::parts(r);
+        cx.canvas
+            .fill_round_rect(panel, 10, t.bg.mix(t.surface, 0.4));
+        let w = LoopStrip::wave_area(r);
+        let play = self.play_x(w);
+        let mid = w.y + w.h / 2;
+        let half = w.h as f32 / 2.0 - 2.0;
+        match self.wave.as_ref().filter(|wv| wv.frames > 0) {
+            Some(wave) => {
+                let cols = crate::looping::WAVE_COLUMNS;
+                let mut x = 0;
+                while x < w.w {
+                    let col = (x as usize * cols / w.w.max(1) as usize).min(cols - 1);
+                    let past = play.is_some_and(|p| w.x + x < p);
+                    let mut acc = 0.0f32;
+                    for (li, layer) in wave.layers.iter().enumerate() {
+                        let amp = layer.get(col).copied().unwrap_or(0.0);
+                        if amp <= 0.001 {
+                            continue;
+                        }
+                        let y0 = (acc * half) as i32;
+                        acc += amp;
+                        let y1 = (acc * half).min(half) as i32;
+                        let c = LAYER_COLOURS[li % LAYER_COLOURS.len()];
+                        let c = if past { c } else { c.mix(t.surface, 0.35) };
+                        if y1 > y0 {
+                            cx.canvas
+                                .fill_rect(Rect::new(w.x + x, mid - y1, 2, y1 - y0), c);
+                            cx.canvas
+                                .fill_rect(Rect::new(w.x + x, mid + y0, 2, y1 - y0), c);
+                        }
+                    }
+                    x += 3;
+                }
+                // Bar lines and numbers.
+                let bars = self.bars.max(1);
+                for b in 0..bars {
+                    let bx = w.x + (b as f32 / bars as f32 * w.w as f32) as i32;
+                    if b > 0 {
+                        cx.canvas.fill_rect(Rect::new(bx, w.y, 1, w.h), t.outline);
+                    }
+                    cx.text(
+                        FontId::Bold,
+                        11.0,
+                        Rect::new(bx + 5, w.y, 24, 14),
+                        Align::Left,
+                        t.text_faint,
+                        &format!("{}", b + 1),
+                    );
+                }
+                if let Some(px) = play {
+                    cx.canvas
+                        .fill_rect(Rect::new(px - 1, panel.y + 2, 2, panel.h - 4), t.text);
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Sans,
+                    14.0,
+                    panel,
+                    Align::Center,
+                    t.text_dim,
+                    &self.note,
+                );
+            }
+        }
+        // The state, top right of the loop.
+        if let Some((state, tone)) = &self.state {
+            let sw = draw::pill_width(cx, state, true);
+            let c = match tone {
+                Tone::Dim | Tone::Normal => t.text_faint,
+                k => t.tone(*k),
+            };
+            draw::pill(cx, panel.right() - sw - 10, panel.y + 8, 26, state, c, true);
+        }
+        // The layers, beside the title.
+        let mut lx = r.x + 12 + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
+        let shown = self.layers.min(4);
+        for li in 0..shown {
+            let name = format!("Layer {}", li + 1);
+            let tw = cx.measure(FontId::Sans, draw::HEAD_PX, &name);
+            draw::dot(cx, lx + 4, r.y + 19, 4, LAYER_COLOURS[li]);
+            cx.text(
+                FontId::Sans,
+                draw::HEAD_PX,
+                Rect::new(lx + 12, r.y + 10, tw + 4, 18),
+                Align::Left,
+                t.text_dim,
+                &name,
+            );
+            lx += tw + 30;
+        }
+        if self.layers > shown {
+            cx.text(
+                FontId::Sans,
+                draw::HEAD_PX,
+                Rect::new(lx, r.y + 10, 60, 18),
+                Align::Left,
+                t.text_faint,
+                &format!("+{}", self.layers - shown),
+            );
+        }
+        if let Some(row) = btns {
+            for (br, (label, on)) in self.button_rects(row).iter().zip(&self.buttons) {
+                let lit = if label == "Overdub" || label == "Stop dub" {
+                    t.warn
+                } else if label == "Mute" || label == "Unmute" {
+                    t.text_dim
+                } else {
+                    t.bad
+                };
+                cx.canvas
+                    .fill_round_rect(*br, 10, if *on { lit } else { t.raised });
+                let ink = if *on {
+                    t.bg
+                } else if label == "Clear" {
+                    t.bad
+                } else {
+                    t.text
+                };
+                cx.text(FontId::Bold, 14.0, *br, Align::Center, ink, label);
+            }
+        }
+        *self.drawn.borrow_mut() = Some((r, self.look(), play.unwrap_or(-1)));
     }
 
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
-        if self.drawn.borrow().as_deref() != Some(self.right.as_str()) {
+        let drawn = self.drawn.borrow();
+        let (at, look, old_x) = drawn.as_ref()?;
+        if *at != r || *look != self.look() {
             return None;
         }
-        self.wave.changed_parts(LoopStrip::wave_area(r))
+        let w = LoopStrip::wave_area(r);
+        let (panel, _) = LoopStrip::parts(r);
+        let new_x = self.play_x(w).unwrap_or(-1);
+        if new_x == *old_x {
+            return Some(Vec::new());
+        }
+        if *old_x < 0 || new_x < 0 || new_x < *old_x {
+            // Round the loop's end: the columns behind the old place
+            // turn dim again.
+            return Some(vec![panel]);
+        }
+        Some(vec![Rect::new(
+            old_x - 4,
+            panel.y,
+            new_x - old_x + 8,
+            panel.h,
+        )])
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let row = LoopStrip::parts(r).1?;
+        self.button_rects(row)
+            .iter()
+            .position(|b| b.contains(x, y))
+            .map(EventKind::Tab)
     }
 }
 
@@ -231,15 +467,11 @@ impl LooperPage {
     }
 
     /// The new loop waveform (empty when the loop was cleared), on the
-    /// Looper tab and on the Play page's strip (`strip_page`: a Play page
-    /// that has it, to size it; every Play view gives it the same width).
-    pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>, strip_page: &str) {
+    /// Looper tab and on the Play page's strip.
+    pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>) {
         let width = ui
             .rect_on(LOOPER_PAGE, WAVE)
             .map_or(600, |r| Waveform::wave_rect(r).w);
-        let strip = ui
-            .rect_on(strip_page, LOOP_STRIP)
-            .map_or(900, |r| Waveform::wave_rect(LoopStrip::wave_area(r)).w);
         self.frames = wave.frames;
         let set = |w: &mut Waveform, width: i32| {
             if wave.frames == 0 {
@@ -253,7 +485,7 @@ impl LooperPage {
             set(w, width);
         }
         if let Some(s) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
-            set(&mut s.wave, strip);
+            s.wave = Some(wave.clone()).filter(|w| w.frames > 0);
         }
     }
 
@@ -482,34 +714,92 @@ impl LooperPage {
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             mark(w);
         }
-        // The Play page's strip: the same wave, and a line on the loop.
-        let right = if s.phase == Phase::Empty {
-            "Empty: REC records the pads".to_string()
+        // The Play page's strip: the same loop, its layers and its state.
+        let empty = s.phase == Phase::Empty;
+        let n_bars = if s.frames == 0 {
+            0
         } else {
-            let state = match s.phase {
-                Phase::Armed => "Armed",
-                Phase::Recording => "Recording",
-                Phase::Overdubbing => "Overdubbing",
-                _ if s.muted => "Muted",
-                _ => "Playing",
-            };
-            let len = if s.frames == 0 {
+            bars(s.ticks).round().max(1.0) as usize
+        };
+        let right = if empty {
+            String::new()
+        } else {
+            let len = if n_bars == 0 {
                 String::new()
+            } else if n_bars == 1 {
+                "1 bar · ".to_string()
             } else {
-                format!("{:.0} bars · ", bars(s.ticks))
+                format!("{n_bars} bars · ")
             };
             format!(
-                "{len}{} layer{} · {state}",
+                "{len}{} layer{}",
                 s.layers,
                 if s.layers == 1 { "" } else { "s" }
             )
         };
+        let state = match s.phase {
+            Phase::Empty => None,
+            Phase::Armed => Some(("ARMED", Tone::Warn)),
+            Phase::Recording => Some(("RECORDING", Tone::Bad)),
+            Phase::Overdubbing => Some(("OVERDUB", Tone::Warn)),
+            Phase::Playing if s.muted => Some(("MUTED", Tone::Dim)),
+            Phase::Playing => Some(("PLAYING", Tone::Good)),
+        }
+        .map(|(a, b)| (a.to_string(), b));
+        let note = if empty {
+            format!(
+                "Empty: REC records the {}",
+                match v.source {
+                    LoopSource::Pads => "pads and the synth",
+                    LoopSource::Line => "line input",
+                }
+            )
+        } else {
+            String::new()
+        };
+        let buttons: Vec<(String, bool)> = vec![
+            (
+                record_label(s).to_string(),
+                matches!(s.phase, Phase::Armed | Phase::Recording),
+            ),
+            ("Overdub".to_string(), s.phase == Phase::Overdubbing),
+            ("Stop".to_string(), false),
+            ("Undo".to_string(), false),
+            ("Redo".to_string(), false),
+            (if s.muted { "Unmute" } else { "Mute" }.to_string(), s.muted),
+            ("Clear".to_string(), false),
+        ];
+        let position = (!empty && s.frames > 0).then_some(s.position);
         if let Some(st) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
-            mark(&mut st.wave);
-            if st.right != right {
+            if st.right != right
+                || st.state != state
+                || st.note != note
+                || st.position != position
+                || st.bars != n_bars
+                || st.layers != s.layers
+                || st.buttons != buttons
+            {
                 st.right = right;
+                st.state = state;
+                st.note = note;
+                st.position = position;
+                st.bars = n_bars;
+                st.layers = s.layers;
+                st.buttons = buttons;
             }
         }
+    }
+}
+
+/// What the Record button does now.
+fn record_label(s: &mpfree_looper::Status) -> &'static str {
+    match s.phase {
+        Phase::Empty => "Record",
+        Phase::Armed => "Cancel",
+        Phase::Recording if s.ending => "Ending",
+        Phase::Recording => "End",
+        Phase::Playing => "Overdub",
+        Phase::Overdubbing => "Stop dub",
     }
 }
 
@@ -563,9 +853,8 @@ mod tests {
             &mut ui,
             Arc::new(LoopWave {
                 frames: 88_200,
-                columns: Vec::new(),
+                ..LoopWave::default()
             }),
-            LOOPER_PAGE,
         );
         page.update(&mut ui, &v, &Settings::default());
         let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();

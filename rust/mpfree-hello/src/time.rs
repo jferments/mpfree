@@ -23,8 +23,10 @@
 
 use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
+use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, Project, Track};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
+use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 use std::f32::consts::TAU;
 
@@ -34,6 +36,82 @@ pub const TRACKS: usize = 8;
 pub const NEW_CLIP_BARS: i64 = 2;
 /// Notes the sequencer can start or stop in one period.
 const MAX_OUT: usize = 512;
+/// The Play page's steps: sixteenths.
+pub const STEP_TICKS: Tick = 240;
+/// Pad hits kept for the screen between two periods (more are dropped).
+const MAX_HITS: usize = 16;
+
+/// What the Play page's pattern shows: the armed track's clip (the one
+/// playing, else its first), each sound's steps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StepsData {
+    pub track: usize,
+    pub track_name: String,
+    pub clip: Option<StepClip>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepClip {
+    pub slot: usize,
+    pub name: String,
+    /// Steps in the clip (16 a bar).
+    pub steps: usize,
+    /// The clip's length and a step's, in song ticks (after its speed).
+    pub song_length: f64,
+    pub song_step: f64,
+    /// Where it was launched, while it plays (for the playhead).
+    pub origin: Option<Tick>,
+    /// Every pad (0 to 15), and any other note the clip holds, with its
+    /// steps (None: empty).
+    pub rows: Vec<(u8, Vec<Option<Step>>)>,
+}
+
+impl StepClip {
+    /// The steps of `pitch` (empty when the clip has no such row).
+    pub fn row(&self, pitch: u8) -> &[Option<Step>] {
+        self.rows
+            .iter()
+            .find(|(p, _)| *p == pitch)
+            .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// The step playing at song position `pos`, while the clip plays.
+    pub fn playing(&self, pos: Tick) -> Option<usize> {
+        let origin = self.origin?;
+        if self.song_length <= 0.0 || self.song_step <= 0.0 || pos < origin {
+            return None;
+        }
+        let at = ((pos - origin) as f64).rem_euclid(self.song_length);
+        Some(((at / self.song_step) as usize).min(self.steps.saturating_sub(1)))
+    }
+}
+
+/// A touch on the Play page's pattern.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepAction {
+    /// Tap step `step` of `pad`: on (at `velocity`) or off. With no clip,
+    /// a one-bar clip is made in the armed track's first empty slot and
+    /// launched.
+    Tap { pad: u8, step: usize, velocity: u8 },
+    /// A Q-Link on a step: velocity, length, nudge or chance.
+    Change {
+        pad: u8,
+        step: usize,
+        change: Change,
+    },
+}
+
+/// A pad hit while the transport rolls: where it fell, for the Play page's
+/// timing (Drum view).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HitInfo {
+    pub pad: u8,
+    pub velocity: u8,
+    /// Song position, ticks, with the fraction.
+    pub tick: f64,
+    pub bpm: f64,
+    pub bar_ticks: Tick,
+}
 
 /// Where the sequencer's notes go: the sampler's pads.
 pub trait Pads {
@@ -163,6 +241,11 @@ pub struct TimeHost {
     /// A start or jump after the first span of the last period: the next
     /// arp clock says it jumped.
     jump_pending: bool,
+    /// Pad hits this period, for the screen ([`TimeHost::hits`]).
+    hits: [HitInfo; MAX_HITS],
+    n_hits: usize,
+    /// The steps changed since [`TimeHost::take_steps_changed`].
+    steps_changed: bool,
 }
 
 impl TimeHost {
@@ -207,6 +290,9 @@ impl TimeHost {
             changed: true,
             advanced: None,
             jump_pending: false,
+            hits: [HitInfo::default(); MAX_HITS],
+            n_hits: 0,
+            steps_changed: true,
         };
         host.compile()?;
         Ok(host)
@@ -226,7 +312,144 @@ impl TimeHost {
         v.set_armed(self.armed);
         self.view = v;
         self.changed = true;
+        self.steps_changed = true;
         Ok(())
+    }
+
+    /// The clip the Play page's pattern edits: the armed track's (track 1
+    /// if none is armed) launched clip, else its first clip.
+    fn step_focus(&self) -> (usize, Option<usize>) {
+        let track = self.armed.unwrap_or(0);
+        let launched = self
+            .launches
+            .iter()
+            .find(|l| l.track == track)
+            .map(|l| l.slot);
+        let first = || {
+            self.project
+                .tracks
+                .get(track)?
+                .slots
+                .iter()
+                .position(Option::is_some)
+        };
+        (track, launched.or_else(first))
+    }
+
+    /// What the Play page's pattern shows. Allocates: called on a change.
+    pub fn steps(&self) -> StepsData {
+        let (track, slot) = self.step_focus();
+        let track_name = self
+            .project
+            .tracks
+            .get(track)
+            .map_or(String::new(), |t| t.name.clone());
+        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
+        let clip = slot.and_then(|slot| {
+            let c = self.project.clip(track, slot)?;
+            let mut pitches: Vec<u8> = (0..16).collect();
+            for n in &c.notes {
+                if !pitches.contains(&n.note) {
+                    pitches.push(n.note);
+                }
+            }
+            let origin = self
+                .launches
+                .iter()
+                .find(|l| l.track == track && l.slot == slot)
+                .map(|l| l.origin);
+            Some(StepClip {
+                slot,
+                name: c.name.clone(),
+                steps: grid.steps(c.length),
+                song_length: c.speed.to_song(c.length as f64),
+                song_step: c.speed.to_song(STEP_TICKS as f64),
+                origin,
+                rows: pitches.into_iter().map(|p| (p, grid.row(c, p))).collect(),
+            })
+        });
+        StepsData {
+            track,
+            track_name,
+            clip,
+        }
+    }
+
+    /// True once after the steps the Play page shows changed.
+    pub fn take_steps_changed(&mut self) -> bool {
+        std::mem::take(&mut self.steps_changed)
+    }
+
+    /// A touch on the Play page's pattern, as one undoable edit (a
+    /// Q-Link turned through many values joins one). A line for the log.
+    pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
+        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
+        let (track, slot) = self.step_focus();
+        let (slot, made) = match slot {
+            Some(s) => (s, None),
+            None => {
+                let StepAction::Tap { .. } = a else {
+                    return Ok(String::new());
+                };
+                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let s = t
+                    .slots
+                    .iter()
+                    .position(Option::is_none)
+                    .ok_or_else(|| format!("{} has no empty slot", t.name))?;
+                let name = format!("Pattern {}", s + 1);
+                t.slots[s] = Some(Clip::new(&name, grid.page_length()));
+                let info = self.info();
+                let launch = TimeAction::Launch { track, slot: s };
+                (self.launches, self.cues) =
+                    clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+                (s, Some(name))
+            }
+        };
+        let clip = self.project.clip(track, slot).ok_or("the clip is gone")?;
+        let (edit, join, what) = match a {
+            StepAction::Tap {
+                pad,
+                step,
+                velocity,
+            } => (
+                grid.toggle(clip, pad, step, velocity),
+                None,
+                format!("step {} of pad {}", step + 1, pad + 1),
+            ),
+            StepAction::Change { pad, step, change } => (
+                grid.change(clip, pad, step, change),
+                Some(change.key(pad, step)),
+                format!("step {} of pad {}: {change:?}", step + 1, pad + 1),
+            ),
+        };
+        if edit.is_empty() && made.is_none() {
+            return Ok(String::new());
+        }
+        self.takes
+            .edit(&mut self.project, track, slot, &edit, join)
+            .map_err(|e| format!("steps: {e:?}"))?;
+        self.compile()?;
+        let on = if edit.add.is_empty() { "off" } else { "on" };
+        Ok(match (made, a) {
+            (Some(name), _) => format!(
+                "steps: new clip {name} in {}, {what} {on}",
+                self.project.tracks[track].name
+            ),
+            (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
+            (None, _) => String::new(),
+        })
+    }
+
+    /// The pad hits of the last period that fell while the transport
+    /// rolled (for the Play page's timing); [`TimeHost::clear_hits`]
+    /// after reading.
+    pub fn hits(&self) -> &[HitInfo] {
+        &self.hits[..self.n_hits]
+    }
+
+    pub fn clear_hits(&mut self) {
+        self.n_hits = 0;
     }
 
     /// A transport command, from the next period on.
@@ -378,6 +601,27 @@ impl TimeHost {
     pub fn pad(&mut self, offset: u32, event: Event) {
         self.recorder.input(offset, event);
         self.capture.input(offset, event);
+        let Event::NoteOn { note, velocity } = event else {
+            return;
+        };
+        if self.n_hits >= MAX_HITS {
+            return;
+        }
+        let span = self
+            .block
+            .spans()
+            .iter()
+            .find(|s| offset >= s.offset && offset < s.offset + s.len.max(1));
+        if let Some(s) = span.filter(|s| s.state.rolling()) {
+            self.hits[self.n_hits] = HitInfo {
+                pad: note,
+                velocity,
+                tick: s.tick_at(s.frame + u64::from(offset - s.offset)),
+                bpm: s.bpm,
+                bar_ticks: s.meter.bar_ticks(),
+            };
+            self.n_hits += 1;
+        }
     }
 
     /// Run the transport for the coming period, before the app's process,

@@ -19,6 +19,7 @@
 //! [`EventKind::Value`]).
 
 use crate::color::Color;
+use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::ui::{EventKind, PaintCx, Touch, Widget};
@@ -29,19 +30,10 @@ pub const COLUMN_WIDTH: i32 = 168;
 pub const MASTER_WIDTH: i32 = 66;
 /// Pixels of drag per detent of a card's knob.
 pub const DRAG_DETENT: i32 = 8;
-/// Dots on a card's ring.
-const RING_DOTS: usize = 28;
-/// The ring's sweep, in degrees, from bottom left round to bottom right.
-const RING_SWEEP: f32 = 270.0;
 
 /// Each knob's colour when its target has none of its own: blue, green,
 /// yellow and pink, as in the Play mockups.
-pub const KNOB_COLOURS: [Color; 4] = [
-    Color::rgb(0x6EA8FE),
-    Color::rgb(0x3DDC97),
-    Color::rgb(0xF5C04A),
-    Color::rgb(0xE07BD8),
-];
+pub const KNOB_COLOURS: [Color; 4] = draw::KNOB;
 
 /// One knob's card.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -84,7 +76,8 @@ pub struct QLinkColumn {
     pub cards: [QLinkCard; 4],
     /// The knobs a finger rests on (the MPC's Q-Links sense touch).
     pub touched: [bool; 4],
-    /// The bank shown, for the column's heading: "Q-LINKS · MACROS 1-4".
+    /// The bank shown ("Play", "Mixer", "Arp"): not drawn (the cards fill
+    /// the column, as in the mockups), kept for the log and tests.
     pub title: String,
     drag: Option<(usize, i32)>,
 }
@@ -94,6 +87,9 @@ impl Default for QLinkColumn {
         QLinkColumn::new()
     }
 }
+
+/// Space between the cards.
+const CARD_GAP: i32 = 10;
 
 impl QLinkColumn {
     pub fn new() -> QLinkColumn {
@@ -105,12 +101,10 @@ impl QLinkColumn {
         }
     }
 
-    /// The column's heading line, then the four cards under it.
+    /// The four cards, filling the column top to bottom.
     pub fn card_rects(r: Rect) -> [Rect; 4] {
-        let (_, body) = r.take_top(HEADING);
-        let gap = 8;
-        let h = ((body.h - 3 * gap) / 4).max(0);
-        std::array::from_fn(|i| Rect::new(body.x, body.y + i as i32 * (h + gap), body.w, h))
+        let h = ((r.h - 3 * CARD_GAP) / 4).max(0);
+        std::array::from_fn(|i| Rect::new(r.x, r.y + i as i32 * (h + CARD_GAP), r.w, h))
     }
 
     /// The card under (x, y), if any.
@@ -126,87 +120,67 @@ impl QLinkColumn {
     }
 }
 
-const HEADING: i32 = 22;
-
 impl Widget for QLinkColumn {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        let (head, _) = r.take_top(HEADING);
-        cx.text(
-            FontId::Bold,
-            t.size_small - 2.0,
-            head,
-            Align::Left,
-            t.text_dim,
-            &self.title.to_uppercase(),
-        );
         for (k, cr) in QLinkColumn::card_rects(r).into_iter().enumerate() {
             let card = &self.cards[k];
-            let c = self.colour(k);
-            cx.canvas.fill_round_rect(cr, t.radius, t.surface);
-            if self.touched[k] {
-                cx.canvas.stroke_round_rect(cr, t.radius, 2, c);
+            let col = self.colour(k);
+            let on = self.touched[k];
+            cx.canvas
+                .fill_round_rect(cr, t.radius, if on { t.raised } else { t.surface });
+            if on {
+                cx.canvas.stroke_round_rect(cr, t.radius, 2, col);
             }
+            let inner = cr.inset_xy(14, 10);
+            let (top, rest) = inner.take_top(18);
             if card.is_free() {
-                let inner = cr.inset(12);
                 cx.text(
                     FontId::Bold,
-                    t.size_small,
-                    inner.take_top(20).0,
+                    13.0,
+                    top,
                     Align::Left,
                     t.text_faint,
                     &format!("Q{}", k + 1),
                 );
                 cx.text(
                     FontId::Sans,
-                    t.size_small,
-                    inner,
+                    13.0,
+                    rest,
                     Align::Center,
                     t.text_faint,
                     "free",
                 );
                 continue;
             }
-            // The colour bar down the left edge.
             cx.canvas
-                .fill_round_rect(Rect::new(cr.x, cr.y + 10, 3, (cr.h - 20).max(0)), 1, c);
-            let inner = cr.inset_xy(14, 10);
-            let (line, rest) = inner.take_top(18);
+                .fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, (cr.h - 28).max(0)), 2, col);
             cx.text(
                 FontId::Bold,
-                t.size_small - 2.0,
-                line,
+                13.0,
+                top,
                 Align::Left,
-                c,
+                col,
                 &format!("Q{}", k + 1),
             );
             cx.text(
-                FontId::Bold,
-                t.size_small - 4.0,
-                line.take_left(26).1,
+                FontId::Sans,
+                12.0,
+                top.take_left(28).1,
                 Align::Right,
                 t.text_faint,
                 &card.scope.to_uppercase(),
             );
-            let (name, rest) = rest.take_top(26);
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                name,
-                Align::Left,
-                t.text,
-                &card.name,
-            );
-            ring(cx, rest, card.pos, card.bipolar, c, t.raised);
-            let d = ring_diameter(rest);
-            let vr = Rect::new(rest.x, rest.y + (rest.h - 22) / 2 + 2, rest.w, 22);
-            let px = if d < 90 {
-                t.size_small - 2.0
-            } else {
-                t.size_small
-            };
-            cx.text(FontId::Bold, px, vr, Align::Center, t.text, &card.value);
+            let (name, rest) = rest.take_top(24);
+            cx.text(FontId::Bold, 16.0, name, Align::Left, t.text, &card.name);
+            // The knob: 270 degrees of dots, open at the bottom.
+            let d = rest.h.min(rest.w - 10).max(20);
+            let (ox, oy) = (rest.x + rest.w / 2, rest.y + rest.h / 2 + 2);
+            let rad = d as f32 / 2.0 - 5.0;
+            draw::ring(cx, ox, oy, rad, card.pos, card.bipolar, col);
+            let vr = Rect::new(ox - rad as i32, oy - 12, 2 * rad as i32, 24);
+            cx.text(FontId::Bold, 16.0, vr, Align::Center, t.text, &card.value);
         }
     }
 
@@ -236,51 +210,20 @@ impl Widget for QLinkColumn {
     }
 }
 
-fn ring_diameter(r: Rect) -> i32 {
-    (r.w.min(r.h) - 8).clamp(0, 104)
-}
-
-/// A ring of dots in `r`, lit as far as `pos` (from the top both ways when
-/// `bipolar`).
-fn ring(cx: &mut PaintCx, r: Rect, pos: f32, bipolar: bool, lit: Color, unlit: Color) {
-    let d = ring_diameter(r) as f32;
-    if d < 24.0 {
-        return;
-    }
-    let (ox, oy) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
-    let rad = d / 2.0 - 4.0;
-    let dot = if d < 80.0 { 4 } else { 6 };
-    let pos = pos.clamp(0.0, 1.0);
-    for i in 0..RING_DOTS {
-        let f = i as f32 / (RING_DOTS - 1) as f32;
-        let on = if bipolar {
-            (f - 0.5) * (pos - 0.5) >= 0.0 && (f - 0.5).abs() <= (pos - 0.5).abs()
-        } else {
-            f <= pos
-        };
-        // 0 is the bottom left, sweeping clockwise through the top.
-        let a = (135.0 + f * RING_SWEEP).to_radians();
-        let (x, y) = (ox + rad * a.cos(), oy + rad * a.sin());
-        let c = if on && pos > 0.0 || on && bipolar {
-            lit
-        } else {
-            unlit
-        };
-        cx.canvas.fill_round_rect(
-            Rect::new(x as i32 - dot / 2, y as i32 - dot / 2, dot, dot),
-            dot / 2,
-            c,
-        );
-    }
-}
-
-/// The master strip: a stereo meter, the level's handle and the level.
+/// The master strip, as the mockups' wide meter: "MASTER", a dB scale, the
+/// two sides' meters in segments with their peaks, the safety limiter's
+/// gain reduction beside them, the fader's handle across them, then the
+/// level and "LIM" under. Levels sit on the meter's scale
+/// ([`draw::meter_frac`]: -48 dB at the bottom to +6 dB at the top), the
+/// handle too, so a drag on the bar gives the fader's place on that scale
+/// as [`EventKind::Value`] (turn it into dB with [`draw::meter_db`]).
 pub struct MasterBar {
-    /// Each side's peak, dB below full scale (0 is full scale, -60 or
-    /// lower is silence).
+    /// Each side's level now, dBFS (-120 for silence).
     pub peak_db: [f32; 2],
-    /// The level, 0 to 1 along the bar.
-    pub level: f32,
+    /// Each side's held peak, dBFS.
+    pub hold_db: [f32; 2],
+    /// The master fader, dB.
+    pub fader_db: f32,
     /// The level as text: "-1.5".
     pub text: String,
     /// The safety limiter's gain reduction, dB (0 when it rests).
@@ -293,90 +236,99 @@ impl Default for MasterBar {
     }
 }
 
-/// The meter's range: 0 dB at the top to this many dB below at the bottom.
-pub const METER_FLOOR_DB: f32 = 48.0;
-/// The meter's segments: their pitch in pixels (2 of them dark).
-const SEGMENT: i32 = 6;
+/// How far the held peaks fall at each [`MasterBar::feed`], dB.
+const HOLD_FALL_DB: f32 = 0.6;
+/// The limiter's scale: this many dB of gain reduction fill its bar.
+const LIMIT_SCALE_DB: f32 = 12.0;
 
 impl MasterBar {
     pub fn new() -> MasterBar {
         MasterBar {
             peak_db: [-120.0; 2],
-            level: 0.75,
+            hold_db: [-120.0; 2],
+            fader_db: 0.0,
             text: String::new(),
             limit_db: 0.0,
         }
     }
 
-    /// The meter's track inside the bar.
-    pub fn track(r: Rect) -> Rect {
-        let inner = r.inset_xy(10, 0);
-        let (_, rest) = inner.take_top(36);
-        let (_, body) = rest.take_bottom(48);
-        body
+    /// New levels: the held peaks follow them up at once and fall slowly.
+    /// True when anything drawn changed.
+    pub fn feed(&mut self, db: [f32; 2]) -> bool {
+        let before = (self.peak_db, self.hold_db);
+        for ch in 0..2 {
+            self.peak_db[ch] = db[ch];
+            self.hold_db[ch] = db[ch].max(self.hold_db[ch] - HOLD_FALL_DB);
+        }
+        let seen = |x: f32| (x.max(-48.0) * 2.0).round();
+        (0..2).any(|ch| {
+            seen(before.0[ch]) != seen(self.peak_db[ch])
+                || seen(before.1[ch]) != seen(self.hold_db[ch])
+        })
     }
 
-    /// Where `db` sits on the track (0 dB at the top).
-    fn y_of(track: Rect, db: f32) -> i32 {
-        let f = (-db / METER_FLOOR_DB).clamp(0.0, 1.0);
-        track.y + (f * track.h as f32) as i32
+    /// The meters' track inside the bar `r`.
+    pub fn track(r: Rect) -> Rect {
+        let inner = r.inset_xy(8, 12);
+        let (_, rest) = inner.take_top(18);
+        let (_, rest) = rest.take_bottom(46);
+        rest.inset_xy(0, 8)
+    }
+
+    /// Where `db` sits on the track (+6 dB at the top, -48 dB at the bottom).
+    pub fn y_of(track: Rect, db: f32) -> i32 {
+        track.bottom() - (draw::meter_frac(db) * track.h as f32) as i32
     }
 }
 
 impl Widget for MasterBar {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(r, t.radius, t.surface);
-        let (head, _) = r.take_top(36);
-        cx.text(
-            FontId::Bold,
-            t.size_small - 4.0,
-            head,
-            Align::Center,
-            t.text_dim,
-            "MASTER",
-        );
-        let tr = MasterBar::track(r);
-        let w = (tr.w - 10) / 2;
-        // Segments, lit from the bottom to the peak: green, yellow in the
-        // top 6 dB, red at full scale.
-        let (warn_y, bad_y) = (MasterBar::y_of(tr, -6.0), MasterBar::y_of(tr, -0.5));
-        for side in 0..2 {
-            let x = tr.x + side * (w + 4);
-            let top = MasterBar::y_of(tr, self.peak_db[side as usize]);
-            let mut y = tr.bottom() - SEGMENT;
-            while y >= tr.y {
-                let lit = self.peak_db[side as usize] > -METER_FLOOR_DB && y + SEGMENT > top;
-                let c = match (lit, y) {
-                    (false, _) => t.raised,
-                    (true, y) if y < bad_y => t.bad,
-                    (true, y) if y < warn_y => t.warn,
-                    _ => t.good,
-                };
-                cx.canvas
-                    .fill_rect(Rect::new(x, y, w.max(1), SEGMENT - 2), c);
-                y -= SEGMENT;
-            }
+        cx.canvas.fill_rect(r, t.bg);
+        cx.panel(r);
+        let inner = r.inset_xy(8, 12);
+        let (top, _) = inner.take_top(18);
+        cx.text(FontId::Bold, 10.5, top, Align::Center, t.text_dim, "MASTER");
+        let (bottom, _) = inner.take_bottom(46);
+        let bars = MasterBar::track(r);
+        // The scale on the left, two bars, then the limiter's reduction.
+        let scale = Rect::new(bars.x, bars.y, 20, bars.h);
+        for db in [0.0f32, -6.0, -12.0, -24.0, -36.0] {
+            let y = MasterBar::y_of(bars, db);
+            let txt = format!("{}", db.abs() as i32);
+            cx.text(
+                FontId::Sans,
+                10.0,
+                Rect::new(scale.x, y - 6, scale.w, 12),
+                Align::Right,
+                t.text_faint,
+                &txt,
+            );
         }
-        // The level's handle across both sides.
-        let hy = tr.y + ((1.0 - self.level.clamp(0.0, 1.0)) * tr.h as f32) as i32;
+        let bx = scale.right() + 4;
+        let bw = 9;
+        for side in 0..2 {
+            let br = Rect::new(bx + side as i32 * (bw + 2), bars.y, bw, bars.h);
+            draw::meter_bar(cx, br, self.peak_db[side], self.hold_db[side], true);
+        }
+        let gx = bx + 2 * bw + 6;
         cx.canvas
-            .fill_round_rect(Rect::new(tr.x - 4, hy - 3, tr.w + 8, 6), 3, t.text);
-        let (foot, _) = r.take_bottom(48);
-        let (val, lim) = foot.take_top(26);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            val,
-            Align::Center,
-            t.text,
-            &self.text,
-        );
+            .fill_rect(Rect::new(gx, bars.y, 5, bars.h), t.raised);
+        if self.limit_db > 0.05 {
+            let gh = (self.limit_db / LIMIT_SCALE_DB * bars.h as f32) as i32;
+            cx.canvas
+                .fill_rect(Rect::new(gx, bars.y, 5, gh.clamp(3, bars.h)), t.warn);
+        }
+        let fy = MasterBar::y_of(bars, self.fader_db);
+        cx.canvas
+            .fill_round_rect(Rect::new(bx - 3, fy - 3, 2 * bw + 8, 6), 3, t.text);
+        let (b1, b2) = bottom.take_top(22);
+        cx.text(FontId::Bold, 14.0, b1, Align::Center, t.text, &self.text);
         if self.limit_db > 0.05 {
             cx.text(
-                FontId::Bold,
-                t.size_small - 4.0,
-                lim,
+                FontId::Sans,
+                10.5,
+                b2,
                 Align::Center,
                 t.warn,
                 &format!("LIM {:.1}", self.limit_db),
@@ -392,8 +344,8 @@ impl Widget for MasterBar {
         if tr.h <= 0 {
             return None;
         }
-        self.level = (1.0 - (y - tr.y) as f32 / tr.h as f32).clamp(0.0, 1.0);
-        Some(EventKind::Value(self.level))
+        let f = (tr.bottom() - y) as f32 / tr.h as f32;
+        Some(EventKind::Value(f.clamp(0.0, 1.0)))
     }
 }
 
@@ -423,9 +375,9 @@ mod tests {
             Some(2)
         );
         assert_eq!(
-            QLinkColumn::card_at(column(), mid.x + 10, column().y + 2),
+            QLinkColumn::card_at(column(), mid.x + 10, cards[1].bottom() + 4),
             None,
-            "the heading is not a card"
+            "the gap is not a card"
         );
     }
 
@@ -484,7 +436,21 @@ mod tests {
             Some(EventKind::Value(0.0))
         );
         assert_eq!(m.touch(1, Touch::Up, tr.x, tr.y, r), None);
-        assert_eq!(MasterBar::y_of(tr, 0.0), tr.y);
-        assert_eq!(MasterBar::y_of(tr, -METER_FLOOR_DB), tr.bottom());
+        assert_eq!(MasterBar::y_of(tr, 6.0), tr.y);
+        assert_eq!(MasterBar::y_of(tr, -48.0), tr.bottom());
+        // The handle sits where a drag to it would put the fader.
+        let y = MasterBar::y_of(tr, -1.5);
+        let Some(EventKind::Value(f)) = m.touch(1, Touch::Down, tr.x, y, r) else {
+            panic!("a value");
+        };
+        assert!(
+            (draw::meter_db(f) + 1.5).abs() < 0.2,
+            "{}",
+            draw::meter_db(f)
+        );
+        // Held peaks follow up at once and fall slowly.
+        assert!(m.feed([-6.0, -12.0]));
+        assert!(m.feed([-30.0, -30.0]));
+        assert_eq!(m.hold_db, [-6.0 - HOLD_FALL_DB, -12.0 - HOLD_FALL_DB]);
     }
 }
