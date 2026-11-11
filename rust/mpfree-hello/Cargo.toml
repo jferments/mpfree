@@ -14,6 +14,7 @@ mpfree-controller = { path = "../mpfree-controller" }
 mpfree-arp = { path = "../mpfree-arp" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }
 mpfree-touch = { path = "../mpfree-touch" }
+mpfree-touch-evdev = { path = "../mpfree-touch-evdev" }
 mpfree-ui = { path = "../mpfree-ui" }
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-node = { path = "../mpfree-node" }

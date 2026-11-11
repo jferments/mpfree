@@ -217,6 +217,7 @@ pub enum Item {
     LatchMode,
     Buffer,
     FindButtons,
+    TouchLab,
     Rate,
     Tempo,
     PadLevel,
@@ -285,6 +286,8 @@ pub enum Effect {
     Note(String),
     /// STOP in the timed `play` step: end it.
     Quit,
+    /// Open the Touch lab page (it starts at its first step).
+    TouchLab,
 }
 
 pub struct App {
@@ -586,7 +589,8 @@ impl App {
 
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
-            (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons],
+            (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons,
+                               Item::TouchLab],
             (_, View::Debug) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -604,6 +608,7 @@ impl App {
             }),
             Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
+            Item::TouchLab => ("Touch lab", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
             Item::PadLevel => ("Pad level", match self.pad_level {
@@ -640,6 +645,10 @@ impl App {
                                  "restarts the sound."],
             Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +",
                                       "again, one at a time."],
+            Item::TouchLab => vec!["Timed touchscreen tests: taps, long presses,",
+                                   "drags, swipes, flings and held fingers. Each",
+                                   "step's result goes to the system log. Exit,",
+                                   "MENU or a page button leaves it."],
             Item::Rate => vec!["How often a held pad repeats with NOTE REPEAT",
                                "or Latch: from quarter notes to 32nd notes,",
                                "T for triplets."],
@@ -724,6 +733,7 @@ impl App {
                 self.view = View::Guide;
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
+            Item::TouchLab => return vec![Effect::TouchLab],
             Item::Rate => {
                 s.rate = cycle(&Rate::ALL, s.rate, d);
                 self.update_engine();

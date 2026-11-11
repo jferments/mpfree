@@ -1,6 +1,6 @@
 # M15: Touch lab
 
-**Status:** the steps, the judging and the journal lines are built and tested on the workstation (`rust/mpfree-touch/src/touchlab.rs`). The on-screen page in `mpfree-hello` comes after PR #31 merges, and the lab then rides in the round after round 5, as one more Enter-paced phase of the app check. The Hello MPC runbook will carry the commands. Nothing here touches the device by itself.
+**Status:** the steps, the judging and the journal lines are built and tested on the workstation (`rust/mpfree-touch/src/touchlab.rs`), and so is the on-screen page in the pad player (`rust/mpfree-hello/src/touchlab_page.rs`, PR #53). The lab rides in the round after round 5 as one more phase of the app check; the Hello MPC runbook will carry the commands. Nothing here touches the device by itself: the page only reads the touchscreen the pad player already has open (no grab) and prints lines.
 
 ## What the lab is for
 
@@ -12,7 +12,7 @@ It only reads `/dev/input/event0` (no grab) and logs to the journal. The host si
 
 ## Steps
 
-Each step is shown on screen. Jay presses Enter on the workstation, a 3-2-1 countdown runs, and then the window opens.
+Each step is shown on screen with its instruction. Jay taps **Start** on the screen, a 3-2-1 countdown runs, and then the window opens. When it closes the page shows the result, and **Redo** or **Next** moves on. **Skip** passes over a step without running it.
 
 | Step | Window | Jay does | Passes when |
 |---|---|---|---|
@@ -28,20 +28,37 @@ Each step is shown on screen. Jay presses Enter on the workstation, a 3-2-1 coun
 
 A "fail" isn't a device problem. It says the gesture settings and Jay's hand disagreed, and the gesture lines show by how much.
 
+## In the pad player
+
+**Opening it.** Prefs (SHIFT + MENU), then the last row, **Touch lab**: turn the wheel to it and press +, or tap its arrows. Both work without touch, so the lab opens even when the touchscreen seems dead, and its top line then shows why (the reader line, or `touchscreen: not available yet (...)`).
+
+**Leaving it.** The **Exit** button at the top right, or any hardware button that changes the page (MENU closes Prefs, which closes the lab too). A step in progress is closed and logged first. Opening the lab again starts over at the first step.
+
+**The page.** A top bar with the step and the latest reader line (refreshed every 30 s), an instruction bar that turns into the countdown and then `GO (N s)`, and a work area with the step's targets (5 tap circles, the long-press target, the hold dots, the pad in `pad_and_swipe`, list rows in `fling`). Fingers show as green dots, and the last gesture is written at the bottom of the area. After the last step a list shows each step's result.
+
+**What is measured.** Only fingers that land in the work area while a window is open count. A finger already down when a window opens or closes is left out, and so are the buttons. In `pad_and_swipe`, the finger on the pad is recorded but kept out of gesture recognition, as a real pad would be. Gestures and speeds use the kernel's own event times, so a slow frame doesn't distort them. While the lab is open, touches go only to the lab, never to the app.
+
 ## Journal lines
 
 All plain ASCII `key=value` pairs separated by spaces, emitted on the app's stdout (journal unit `mpfree-test-app.service`):
 
 ```text
-touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12
+touch-reader: seeded=1 slot=3 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=12 events=480
+touch-lab-open: steps=9
+touch-lab-step: step=swipes seconds=12
 touch-gesture: step=swipes kind=swipe dir=left speed=1180 t_ms=4521
 touch-gesture: step=fling kind=drag-end vx=0 vy=-1136 cancelled=0 t_ms=2210
 touch-lab: step=swipes result=pass downs=4 taps=0 long=0 drags=4 swipes=1,1,1,1 two_finger=0 flings=4 note=ok
 touch-lab: step=hold_centre result=pass downs=1 taps=0 long=1 drags=0 swipes=0,0,0,0 two_finger=0 flings=0 note=ok hold_n=37 hold_hz=3.6 hold_std_x=0.84 hold_std_y=1.10 hold_max_dev=2.40
+touch-lab-exit
 ```
+
+`touch-lab-open` is printed each time the lab opens, `touch-lab-step` when a step's window opens, the `touch-lab` summary when it closes, and `touch-lab-exit` when the lab is left. A step that was skipped has no lines.
+
+`events` counts the raw input events the reader has read. The app logs the reader line when the touchscreen opens, then every 30 s while that count is changing. If Jay touched the screen and `events` stayed at 0, the events are stopping at or below the driver, not in MPFree's code.
 
 Gesture kinds are `tap`, `long`, `drag-start`, `drag-end` (with `vx`, `vy`, `cancelled`), `swipe` (with `dir`, `speed`), `2f-start` and `2f-end`. Positions and speeds are in logical pixels (1280×800). `parse_line` reads any of these lines back, and skips any timestamp or unit prefix in front.
 
 ## Next
 
-After #31 merges: swap `TouchIn` for `EvdevTouch`, add the `GestureRouter` hook to `mpfree-ui`, build the Touch lab page (targets, dots, a list and pads), then send the Hello MPC thread the branch, these line formats and the step table for the runbook.
+Jay runs the lab in the next round and reports how each step felt. The thresholds then get tuned from the `touch-gesture` lines, and the `GestureRouter` hook moves into `mpfree-ui` so other pages get gestures the same way.

@@ -101,6 +101,7 @@ dependencies = [
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-touch",
+ "mpfree-touch-evdev",
  "mpfree-ui",
 ]
 
