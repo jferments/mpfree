@@ -4,6 +4,7 @@
 //!   owned by the control thread.
 //! - [`engine`]: the real-time voice pool that plays an [`engine::EngineView`]
 //!   built from the model.
+//! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
@@ -13,6 +14,7 @@
 //! prepared memory. Design: `docs/project/sampler-design.md`.
 #![forbid(unsafe_code)]
 
+pub mod chop;
 pub mod dsp;
 pub mod engine;
 pub mod model;
