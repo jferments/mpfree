@@ -183,7 +183,9 @@ impl MasterSafety {
         let mode = self.v[0] as usize;
         let ceil = db_to_gain(self.v[2]);
         let knee = ceil * 0.5;
-        let look = self.look as f64;
+        // The average's divide as a multiply: a double divide every frame
+        // is slow on the MPC's ARM.
+        let inv_look = 1.0 / self.look as f64;
         // The trim as a gain, worked out again only while it glides; the
         // loudest output, turned into dB once per piece.
         let (mut t_db, mut t) = (f32::NAN, 1.0);
@@ -206,7 +208,7 @@ impl MasterSafety {
             self.boxv[self.box_pos] = self.env;
             self.box_pos += 1;
             if self.box_pos == self.boxv.len() { self.box_pos = 0; }
-            let g = ((self.box_sum / look) as f32).min(1.0);
+            let g = ((self.box_sum * inv_look) as f32).min(1.0);
             let (da, db) = (self.delay[0].run(a), self.delay[1].run(b));
             let (ya, yb) = match mode {
                 0 => {

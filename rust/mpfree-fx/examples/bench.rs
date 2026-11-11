@@ -64,8 +64,9 @@ fn main() {
     node("Lo-fi", Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)]);
     node("Master safety", Box::new(MasterSafety::new()), &[]);
     for (k, name) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
-        node(&format!("Cloud reverb ({name})"), Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)]);
-        node(&format!("Cloud reverb ({name}, Light)"), Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0), (ids::cloud::QUALITY, 1.0)]);
+        for (q, quality) in ["", ", Light", ", Eco"].iter().enumerate() {
+            node(&format!("Cloud reverb ({name}{quality})"), Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0), (ids::cloud::QUALITY, q as f32)]);
+        }
     }
     let mut chain = Chain::new();
     chain.prepare(RATE, MAX_BLOCK);

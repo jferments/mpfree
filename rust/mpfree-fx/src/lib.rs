@@ -138,6 +138,48 @@ pub(crate) fn fast_tanh(x: f32) -> f32 {
     (x * p / q).clamp(-1.0, 1.0)
 }
 
+/// `log2(x)` for a normal, positive `x`, to within about 3e-6 (plus the
+/// rounding of the result), without the library call: the exponent from
+/// the bits, and a degree-5 fit for the mantissa taken to [0.71, 1.41).
+/// Callers keep `x` in range (zero, denormals, infinities and NaN give
+/// garbage). On the MPC's Cortex-A17 `log10f` and `powf` cost hundreds of
+/// cycles each; on a desktop the library is as quick as this.
+#[inline]
+pub(crate) fn fast_log2(x: f32) -> f32 {
+    let bits = x.to_bits();
+    let mut e = ((bits >> 23) & 0xff) as i32 - 127;
+    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    if m > std::f32::consts::SQRT_2 {
+        m *= 0.5;
+        e += 1;
+    }
+    let t = m - 1.0;
+    let q = 1.442_715_8 + t * (-0.721_122_6 + t * (0.479_324_37 + t * (-0.367_703_97 + t * (0.322_085_5 - t * 0.205_298_29))));
+    e as f32 + t * q
+}
+
+/// `2^x` to within about 2e-7 of the value, without the library call:
+/// Cephes' `exp2f` fit on the fraction, the power of two from the bits.
+/// `x` is clamped to [-126, 126]; `fast_exp2(0.0)` is exactly 1.
+#[inline]
+pub(crate) fn fast_exp2(x: f32) -> f32 {
+    let x = x.clamp(-126.0, 126.0);
+    // Round to nearest with a truncating cast (no library call on ARMv7).
+    let n = (x + 126.5) as i32 - 126;
+    let f = x - n as f32;
+    let p = 1.0 + f * (6.931_472e-1 + f * (2.402_264_8e-1 + f * (5.550_332_5e-2 + f * (9.618_437e-3 + f * (1.339_887_4e-3 + f * 1.535_336_2e-4)))));
+    p * f32::from_bits(((n + 127) as u32) << 23)
+}
+
+/// [`db_to_gain`] through [`fast_exp2`] (per-sample gains).
+#[inline]
+pub(crate) fn fast_db_to_gain(db: f32) -> f32 { fast_exp2(db * 0.166_096_4) }
+
+/// A level in dB for a detector, through [`fast_log2`]: -120 dB at and
+/// below 1e-6 (and for NaN), 120 dB at and above 1e6.
+#[inline]
+pub(crate) fn fast_level_db(x: f32) -> f32 { if x > 1e-6 { 6.020_6 * fast_log2(x.min(1e6)) } else { -120.0 } }
+
 /// A one-pole DC blocker for one channel.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DcBlock { r: f32, x1: f32, y1: f32 }
@@ -245,6 +287,45 @@ mod tests {
             assert!(y.abs() <= 1.0);
             prev = y;
         }
+    }
+
+    #[test]
+    fn fast_log2_and_exp2_match_the_library() {
+        let mut worst_log = 0.0f64;
+        let mut worst_exp = 0.0f64;
+        let mut x = 1e-30f32;
+        while x < 1e30 {
+            // The fit's error, past the rounding of a result as large as 126.
+            let want = (x as f64).log2();
+            worst_log = worst_log.max((fast_log2(x) as f64 - want).abs() - want.abs() * 1.2e-7);
+            x *= 1.000_37;
+        }
+        for i in -126_000..=126_000 {
+            let y = i as f32 / 1000.0;
+            let want = (y as f64).exp2();
+            worst_exp = worst_exp.max(((fast_exp2(y) as f64 - want) / want).abs());
+        }
+        assert!(worst_log < 4e-6, "log2 {worst_log}");
+        assert!(worst_exp < 4e-7, "exp2 {worst_exp}");
+        assert_eq!(fast_exp2(0.0), 1.0);
+        assert_eq!(fast_db_to_gain(0.0), 1.0);
+        assert_eq!((fast_exp2(1.0), fast_exp2(-1.0), fast_exp2(10.0)), (2.0, 0.5, 1024.0));
+        assert!(fast_exp2(f32::NAN).is_nan());
+        // Monotonic, so a detector or an envelope never steps backwards.
+        let mut prev = f32::NEG_INFINITY;
+        for i in -20_000..=20_000 {
+            let y = fast_exp2(i as f32 / 997.0);
+            assert!(y >= prev, "exp2 at {i}");
+            prev = y;
+        }
+        // The detector's dB: the library's to 1e-4 dB, clamped at both ends.
+        for db in [-119.0f32, -60.0, -6.02, 0.0, 0.5, 12.0, 119.0] {
+            let g = db_to_gain(db);
+            assert!((fast_level_db(g) - gain_to_db(g)).abs() < 1e-4, "{db}");
+            assert!((fast_db_to_gain(db) / g - 1.0).abs() < 1e-6, "{db}");
+        }
+        assert_eq!((fast_level_db(0.0), fast_level_db(1e-7), fast_level_db(f32::NAN)), (-120.0, -120.0, -120.0));
+        assert!((fast_level_db(f32::INFINITY) - 120.0).abs() < 1e-3);
     }
 
     #[test]
