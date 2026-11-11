@@ -20,7 +20,7 @@ These are plain values, edited on the control thread and checked with `check()`.
 - **Quantise is non-destructive.** Notes keep their recorded ticks, and quantise (grid and strength) applies on playback, so it can be changed or undone later.
 - **Swing:** the clip's own swing wins, then the track's, then the transport's.
 
-Parameter locks, trig conditions and ratchets are in the model too (see [steps.md](steps.md)). Audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
+Parameter locks, trig conditions and ratchets are in the model too (see [steps.md](steps.md)). So are FX moves: a clip's `moves` holds a lane of points per parameter (the FX thread's `mpfree-moves`), see "FX moves" below. Audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
 
 ## Compiling (`PlayView`)
 
@@ -77,6 +77,17 @@ The player sends a clip's locks as `Event::Lock { addr, value }`, with `addr` th
 - **Jumps and switches.** A stop, a locate, a transport loop jump or a panic unlock everything, after the notes end. When a cue switches a track's clip, the old clip's locks end on the switch, before the new clip's start. A muted track, or one with nothing playing, lets its locks go at once and sends none.
 - **Every Unlock follows a Lock.** The player keeps what it has locked (up to 256 held locks, 256 lock starts a span; more is counted in `Stats::dropped`). `Stats::locks` counts locks sent. A pass being replaced sends none of its locks: it erases them (see "Replace and overdub").
 
+## FX moves
+
+A clip can hold moves: Perform FX gestures (the XY pad, the DJ knob, a pad's Hold) recorded as automation, one lane per parameter (`Clip::moves`, the FX thread's `mpfree-moves`). A lane's points sit on the clip's own ticks: a ramp glides to the next point, a step holds, an end lets the parameter go. A lane on a parameter of the clip's own track is track-relative (a copied clip moves its new track); any other (the master's Perform FX, a macro) is fixed.
+
+- **Lane events.** The player sends a lane's values as `Event::Lane { addr, value }` on the clip's own ticks: every point, and inside a ramp every 8th clip tick (about every 4 ms at 120 BPM). A value on song tick x sounds on x rounded half up, so every value lands on the same frame at any period size. An end sends `Event::Unlock`. A value equal to the one held is not sent again. `Stats::lanes` counts values sent. The mod resolver applies them (`ModEvent::Lane`, the mod thread's #129), and a hand on the control beats the lane until it lets go (`Touch`), which needs nothing from the player.
+- **A step's lock wins its step.** Lanes and step locks share one held slot per parameter. A step lock on a parameter a lane is moving takes it, and the lane's later values wait under the lock. When the lock ends (the track's next note without one), the lane takes the parameter back with its value there (`Lane`, not `Unlock`). A lane that ends under a lock leaves the parameter free when the lock ends. Moves are sent after the locks of the same tick, so a lock wins a tie. Notes never end a lane.
+- **Chase.** When a clip's moves did not just play up to this span (a start, a launch, a jump, a loop, a switch, an unmute), every lane's state on the first tick comes first: its value, or nothing where it is free. A lane moving at the end of a pass goes on from the start of the next.
+- **Jumps, switches, mutes.** A stop, a locate, a loop jump or a panic unlock everything (the chase brings back what the new place has). A switch ends the old clip's moves before the new clip's start. A muted track sends no moves and lets go of its own.
+- **Real-time safe.** No allocation (`Moves::play` and `chase` walk fixed tables of 64 lanes). Lock starts per span went from 256 to 1024 to make room for lane values.
+- **Cost.** In the bench's time case, which has no moves, the player and recorder cost 3.5 % more instructions (395 a period, about 0.3 µs on the MPC One). The moves case of the FX thread's bench plays 16 lanes.
+
 ## Through the arp (`ArpHost`)
 
 A track whose destination is an arpeggiator plays its notes into an `mpfree-arp` engine instead of a sound. The held notes press and release keys on the arp, and the arp's own notes go on to the sampler (or any other destination).
@@ -121,6 +132,17 @@ While the transport records, the host passes the armed track's knob moves to `Re
 - **Only the armed track.** A knob on another track's parameter, or a project parameter, is not recorded (`Recorder::stray_locks()` counts them). Nothing is recorded while not recording.
 - **Real-time safe.** Up to 64 recorded locks a period after joining; more are counted in `Recorder::dropped()`.
 
+### Perform FX gestures become moves
+
+The host gives the recorder the same Perform FX gestures it gives the move log: `Recorder::input_move(offset, Input::Move { addr, value, map })` while a control moves, `Input::End { addr }` when it lets go. While the transport records:
+
+- **On the clip's ticks.** Each gesture lands on the armed track's playing clip, from where the clip was when it began, at the clip's speed. A gesture that goes on past the clip's end keeps counting on; writing it splits it at the end (`Moves::put`).
+- **Where it ends.** A gesture ends where its control lets go, or at a punch out, a stop or a switch of the armed track's clip. After a loop jump or a locate it goes on from where the playhead landed, as a new part.
+- **Handing over.** `Recorder::taken_moves()` names each finished gesture (or each part of 1024 values of a long one) with its track, slot, target, map and take; `Recorder::move_points(k)` gives its points. The control thread writes each with `Takes::put_move`, which replaces what the lane had over the ticks the gesture covers, and with `PlayView::put_move` into the view in place.
+- **Which lane.** A parameter on the armed track gets a track-relative lane, any other a fixed one. Knob moves are not gestures: they still become parameter locks (the owner's decision, and an opt-in setting to record knobs as moves can come later).
+- **Undo.** `Takes::put_move` keeps what each write replaced (`Moves::put_saving`), so UNDO puts the lane back exactly and REDO writes the gesture again. Step edits that move lanes (a page copied, a clip made longer or shorter) keep the lanes before and after.
+- **Real-time safe.** 256 gesture inputs a period, 16 gestures at once, 32 handed over a period, in tables made when the recorder is made. `Recorder::dropped()` counts what did not fit.
+
 ### Replace and overdub
 
 With the transport's overdub on, a take only adds notes. With overdub off (the default, like REC on an MPC), the take replaces:
@@ -152,6 +174,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 - `tests/period_size.rs` plays a busy session on five tracks:
   - the session has a count-in, a loop with a tempo segment inside, live tempo changes, punch in and out, locates, stop and panic, and the shortest loop
   - the tracks cover polymeter, 3/4 speed, double speed with its own swing, quantised overlapping notes with chance below 100 %, and a muted track
+  - FX moves ride on the slow, fast and muted clips: ramps, holds and ends every 97 ticks, a gesture over the clip's end, one lane under the fast clip's locks and one fixed
 
   It cuts the session into periods of 1 to 8192 frames and three random sequences, and every event must match. It also checks that each note ends before it starts again and that the final stop ends every note. With the swing look-back window removed, the test fails.
 - `tests/arp.rs` plays a held chord through the arp:
@@ -171,6 +194,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a busy session (four tracks, every condition, chance, ratchets, locks, swing, quantise, 3/2 speed, FILL switched four times, a loop, a locate and a cue) gives the same events and stats at periods of 1 to 1024 frames
 
   Making a loop jump reset PRE, sending every lock, or keeping a ratchet's hits past a switch each make a test fail.
+- `tests/moves.rs` has 8 tests of how FX moves play: a ramp sends a value every 8th tick and an unlock at its end, each pass; a step lock beats the lane on its step and hands back at the next note; a lane ending under a lock leaves the parameter free; a locate into a gesture chases its value; a switch ends the old clip's moves; a fixed target; a muted track lets go and sends none; and every value on the same frame at period sizes 1 to 4096, with a locate, a loop, a tempo change and a 3/4-speed clip.
+- `tests/record_moves.rs` has 7 tests of recording gestures: a gesture becomes a lane and undoes and redoes with its take; a punch out ends a held gesture there; a gesture over the clip's end runs on into the next pass; nothing is recorded while only playing; a parameter off the track gets a fixed lane; a long gesture is handed over in parts, and only a new lane compiles; and the same moves at any period size. The view written in place equals a fresh compile after every period.
 - `tests/locks.rs` has 9 tests of how locks play: a lock comes before its note-on and ends at the track's next note without one; a trigless lock holds until the next note; a pad's lock ends only at that pad's next note; a chord keeps its lock for every note; a note its chance leaves out ends nothing; a stop and a locate unlock everything after the note-offs; a switch ends the old clip's locks before the new one's; a muted track lets its locks go and sends none; a clip locks the track it plays on.
 - `tests/record.rs` has 20 tests:
   - notes land on the ticks they were played on, with their lengths
@@ -196,7 +221,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a switch on the armed track ends the replace pass
 
   With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, some have trig conditions and ratchets, FILL turns on and off, and every track has locks (the instrument's, a pad's, the strip's). It sees no allocation and no free.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, some have trig conditions and ratchets, FILL turns on and off, and every track has locks (the instrument's, a pad's, the strip's) and FX moves (ramps, holds and ends, track-relative and fixed), while Perform FX gestures are recorded. It sees no allocation and no free.
 - `tests/in_place.rs` (3): thousands of random recorded and erased notes and locks, with and without quantise and speed, into the playing clip, a cued one, and the playing clip cued again, put in place leave the view equal to a fresh compile; a view with little room asks for a compile and the result is the same; with room set aside, recording in place allocates nothing once the take has begun.
 - `mpfree-hello`'s `recording_neither_compiles_nor_allocates_on_every_note`: the pad player records sixteen notes a second over a replace pass for 5.5 bars without an allocation or a free, its view equals a fresh compile, and the screens are told at most four times a second.
 
@@ -241,14 +266,14 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets. Once the app plays the pads through the per-track arps, it also hands `TimeHost::pad_pressed` the pads as pressed, before any arp. The armed track records the pressed pads when its clips play through its arp, and the heard notes otherwise. The capture history keeps the same side.
 2. `TimeHost::period` runs the transport and the player. The clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15. `TimeHost::period_arps(frames, pads, arps)` does the same with the per-track arps between the player and the pads. The app owns the `TrackArps` with its arp panel and lends it for the period. Each period every arp first takes its track's destination and switch. `TimeHost::set_through_arp(track, on)` turns the switch. Nothing calls `period_arps` or `set_through_arp` yet: the arp thread moves the app's arp onto the per-track arps.
-3. The armed track records, and the taken and erased notes, and the recorded locks, go into the clips and the take history. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet. `TimeHost::set_fill(on, offset)` turns FILL on or off for the trig conditions; no button calls it yet (the pad player picks the FILL button).
+3. The armed track records, and the taken and erased notes, the recorded locks and the recorded moves go into the clips and the take history. `TimeHost::gesture(offset, input)` takes a Perform FX gesture: the recorder records it while recording, and a move log (`mpfree_moves::MoveLog`) keeps it while rolling, so CAPTURE keeps the moves made over its phrase as part of the same capture. Nothing calls it yet: the Perform FX page calls it once the pad player runs it. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet. `TimeHost::set_fill(on, offset)` turns FILL on or off for the trig conditions; no button calls it yet (the pad player picks the FILL button).
 4. While counting in and recording, a click plays on each beat: 1760 Hz on the bar and 1320 Hz on the other beats, at about −12 dBFS.
 
 The player's `Lock` and `Unlock` events are ignored for now: they need the mod resolver, which the pad player does not run yet.
 
 It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
 
-Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, undo and redo, a capture) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Recording does not compile: each recorded or erased note or lock goes into the clip and into the view in place, in room set aside at each compile (`RECORD_ROOM`, 1024 notes and 1024 locks in the armed track's clips; a new take's lists have room for `TAKE_ROOM`, 256). Once a take has begun, a recording period allocates nothing, and the screens hear about the recorded notes at most four times a second. It is also far cheaper: on the workstation, with 8 clips of 500 notes playing, compiling after each recorded note took 66 to 90 µs (2 to 3 % of a 128-frame period, and several times that on the MPC One); putting the note in place takes 0.3 µs. Moving the other edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
+Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, undo and redo, a capture) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Recording does not compile: each recorded or erased note or lock goes into the clip and into the view in place, in room set aside at each compile (`RECORD_ROOM`, 1024 notes and 1024 locks in the armed track's clips, and room for two parts of a gesture in each of their lanes; a new take's lists have room for `TAKE_ROOM`, 256). A gesture on a parameter the clip has no lane for yet compiles once. Once a take has begun, a recording period allocates nothing, and the screens hear about the recorded notes at most four times a second. It is also far cheaper: on the workstation, with 8 clips of 500 notes playing, compiling after each recorded note took 66 to 90 µs (2 to 3 % of a 128-frame period, and several times that on the MPC One); putting the note in place takes 0.3 µs. Moving the other edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
 
 ## Next
 
