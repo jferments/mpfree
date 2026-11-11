@@ -380,6 +380,17 @@ impl TimeHost {
         self.capture.input(offset, event);
     }
 
+    /// A knob moved in the coming period, at `offset`: parameter `addr` is
+    /// now `value`. While the transport records and `addr` is on the armed
+    /// track, it becomes a parameter lock on the step it belongs to (see
+    /// `mpfree_play::Recorder`).
+    // No knob is mapped to a parameter in the pad player yet (that needs
+    // the mod resolver); the Q-Links call this once one is.
+    #[allow(dead_code)]
+    pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
+        self.recorder.input(offset, Event::Lock { addr, value });
+    }
+
     /// Run the transport for the coming period, before the app's process,
     /// so the arp can follow it ([`TimeHost::arp_clock`]).
     /// [`TimeHost::period`] then plays and records on the same block.
@@ -462,6 +473,9 @@ impl TimeHost {
                 }
                 Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
                 Event::AllOff => pads.stop_all(),
+                // Parameter locks need the mod resolver (mpfree-mod), which
+                // the pad player does not run yet.
+                Event::Lock { .. } | Event::Unlock { .. } => {}
             }
         }
         self.recorder.process(&self.view, &self.block);
@@ -475,12 +489,20 @@ impl TimeHost {
             let e = self.player.erased()[i];
             edited |= self.takes.erase(&mut self.project, &e);
         }
+        for i in 0..self.player.erased_locks().len() {
+            let e = self.player.erased_locks()[i];
+            edited |= self.takes.erase_lock(&mut self.project, &e);
+        }
         for i in 0..self.recorder.taken().len() {
             let k = self.recorder.taken()[i];
             edited |= self.takes.add(&mut self.project, &k).is_ok();
         }
+        for i in 0..self.recorder.taken_locks().len() {
+            let k = self.recorder.taken_locks()[i];
+            edited |= self.takes.add_lock(&mut self.project, &k).is_ok();
+        }
         if edited {
-            // The clips only gained or lost notes, and cues became
+            // The clips only gained or lost notes and locks, and cues became
             // launches of clips they had compiled with, so this compiles.
             let _ = self.compile();
         }
@@ -735,6 +757,35 @@ mod tests {
         run(&mut h, &mut pads, 8 * BAR, &[]);
         assert_eq!(pads.hits.len(), 2, "redo brings both back");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// A knob turned while a pad is held and the track records becomes a
+    /// parameter lock on that pad's note, and goes with its take.
+    #[test]
+    fn a_knob_turned_while_recording_locks_the_held_pads_note() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let press = [(1000, 4, 100, 2000)];
+        run(&mut h, &mut pads, 1536, &press);
+        let cutoff = RelAddr::new(OnTrack::Inst, 1);
+        h.knob(0, cutoff.on(2), 0.25);
+        h.knob(64, cutoff.on(2), 0.6);
+        // Another track's knob is not recorded here.
+        h.knob(100, cutoff.on(5), 0.9);
+        run(&mut h, &mut pads, BAR, &press);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert_eq!(clip.notes.len(), 1);
+        let locks: Vec<_> = clip
+            .locks
+            .iter()
+            .map(|l| (l.tick, l.sound, l.addr, l.value))
+            .collect();
+        assert_eq!(locks, vec![(clip.notes[0].tick, None, cutoff, 0.6)]);
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
 
     /// A clip launched while the music plays waits for the next bar line,

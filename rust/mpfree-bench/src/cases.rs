@@ -17,7 +17,8 @@ use mpfree_prof::alloc;
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
-use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
+use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
@@ -1102,7 +1103,9 @@ impl Sink for TimeSink {
 /// The time engine as a busy song uses it: the transport looping 4 bars at
 /// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
 /// one at 3:2 speed, one swung and quantised), the first through the arp
-/// at 32nds over 2 octaves.
+/// at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// instrument's (a different one each step, so each ends at the next
+/// note) and one of the strip's.
 fn time(rate: u32, tracks: usize) -> Case {
     let ppq = i64::from(PPQ);
     let mut song = Song::new();
@@ -1119,6 +1122,24 @@ fn time(rate: u32, tracks: usize) -> Case {
                     velocity: 100,
                     chance: 100,
                 })
+            })
+            .collect();
+        c.locks = (0..32i64)
+            .flat_map(|k| {
+                [
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Inst, (k % 4) as u16),
+                        0.5,
+                    ),
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Strip, 0),
+                        (k % 8) as f32 / 8.0,
+                    ),
+                ]
             })
             .collect();
         if i == 1 {
@@ -1157,7 +1178,7 @@ fn time(rate: u32, tracks: usize) -> Case {
     Case {
         name: format!("Time: transport, {tracks} clips, arp"),
         module: "time",
-        what: "16ths with chords on every track, looping 4 bars",
+        what: "16ths with chords and 2 locks a step on every track, looping 4 bars",
         block: Box::new(move |_, l, r| {
             t.process(l.len() as u32, &mut block);
             player.process(&view, &block, &mut sink);

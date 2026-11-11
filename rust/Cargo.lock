@@ -562,6 +562,7 @@ name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-param",
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
@@ -623,6 +624,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-param",
  "mpfree-transport",
 ]
 
