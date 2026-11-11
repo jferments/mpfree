@@ -147,6 +147,49 @@ def arm_elf(machine=40, flags=0x05000400, interp=False):
     return bytes(header + ph) + os.urandom(4000)
 
 
+
+def logical_lines(code):
+    """Rust source with each statement that rustfmt wraps put back on one line, so the source checks
+    below read what the code says, not how it is wrapped. A line joins the one before it while a
+    ( or [ is open (but not into or out of a { } block, such as a closure's body), or when it starts
+    a method call (.x) or ?, or is the lone { that rustfmt puts after a wrapped `if`.
+    Wrapped argument lists lose rustfmt's trailing comma: `f(a, b,\n)` reads `f(a, b)`."""
+    out, depth, in_str = [], 0, False
+    for raw in code.splitlines():
+        line = raw.strip()
+        inside = depth > 0 and not out[-1].rstrip().endswith(("{", ";")) and not line.startswith("}") if out else False
+        cont = out and (inside or line.startswith((".", "?")) or line == "{")
+        if cont:
+            prev = out[-1]
+            glue = "" if prev.endswith(("(", "[")) or line.startswith((")", "]", ".", "?")) else " "
+            out[-1] = prev + glue + line
+        else:
+            out.append(raw)
+        i = 0  # in_str carries over: a string literal can run over several lines
+        while i < len(line):
+            c = line[i]
+            if in_str:
+                if c == "\\":
+                    i += 1
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "'" and line[i + 1:i + 2] == "\\":
+                i = line.find("'", i + 3)  # an escaped char literal: '\'', '\n', '\u{..}'
+                if i < 0:
+                    break
+            elif c == "'" and line[i + 2:i + 3] == "'":
+                i += 2  # a char literal such as '(' or '"'
+            elif line.startswith("//", i):
+                break
+            elif c in "([":
+                depth += 1
+            elif c in ")]":
+                depth = max(0, depth - 1)
+            i += 1
+    return "\n".join(re.sub(r",([)\]])", r"\1", ln) for ln in out) + "\n"
+
 class HelloTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -726,7 +769,7 @@ class StaticTests(unittest.TestCase):
                                  [], name)
             else:
                 code = text
-            out.append((name, code))
+            out.append((name, logical_lines(code)))
         self.assertGreaterEqual(len(out), 20)
         return out
 
@@ -763,7 +806,8 @@ class StaticTests(unittest.TestCase):
             "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
             "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
             # the host-only preview pictures (never on the MPC)
-            "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))",
+            "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))"
+            ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
             # the ACVA playback device
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the ACVA capture device (the line input), opened only when the owner turns Line input on

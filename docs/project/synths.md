@@ -1,6 +1,6 @@
-# Synths: the node interface, Poly, FM and pad pressure
+# Synths: the node interface, Poly, FM, Drums, Pluck and pad pressure
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, then FM). Nothing here is wired to the pad player or has run on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
+**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, FM, Drums and Pluck; Drums and Pluck merged in PR #97). Poly plays on the pads (see "In the pad player"); FM, Drums and Pluck are not on the pads yet, and none has run its own cost bench on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
 
 ## The node interface (`mpfree-node`)
 
@@ -61,6 +61,42 @@ Every FM page has a visual strip, drawn from the values:
 - **Mod page:** the pitch envelope (on a ±2, 12, 24 or 48 semitone scale, so a small scoop still shows) and the LFO's wave after its delay.
 
 A tap on a box opens that operator's page; a tap elsewhere on the algorithm card opens Algo. `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the samples `synth-fm-algo`, `synth-fm-mod`, `synth-fm-op`, `synth-fm-kbd` and `synth-fm-pressure`. FM isn't in the pad player yet; Poly is the pads' synth for round 6.
+
+## Drums (`mpfree-synth`, `Drums`)
+
+A drum synth with a model per pad. Sixteen pads, each one of eleven models: **Kick, Snare, Clap, Closed hat, Open hat, Tom, Rim, Cowbell, Cymbal, Zap and FM perc**. Every pad has the same fourteen knobs, ids `pad * 16 + field` (`drum_params::pad_id`), grouped "Pad 1" to "Pad 16":
+
+- **Model**, **Tune** (±24 semitones from the model's own pitch: kick 50 Hz, tom 120 Hz, snare 185 Hz ...), **Decay** (10 ms to 5 s, the time to fall 60 dB).
+- **Tone** (the kick's shape, the snare's and hats' filter, the FM perc's index), **Snap** (a short noise click; for the clap, how sharp its bursts are), **Noise** (the noise layer: the snare's wires, the hats' noise against their six square oscillators).
+- **Sweep** and **Sweep time** (a pitch drop from up to 48 semitones above), **Drive** (soft saturation), **Level**, **Pan**.
+- **Vel > tone**, **Vel > level** and **Choke** (Off or group 1 to 4).
+
+How it plays:
+
+- **Notes:** pad 1 is the kit's *Pad 1 note* (36 by default, the MPC's usual kick note) and each pad after it a semitone higher; other notes are ignored. Note-offs are ignored too: every hit is a one-shot that rings for its decay.
+- **Hits:** a new hit on a pad fades its last hit out over 3 ms. A hit in a choke group fades out the group's other pads, so the closed hat (pad 4) closes the open hat (pad 5) in the Init kit. AllOff fades every hit over 30 ms.
+- **Knobs** apply to the next hit, as on drum machines: a hit takes its pad's settings when it starts. The kit Level moves at once, smoothed.
+- **Level:** at full velocity the Init kit peaks from about -15 dBFS (hats) to -9 dBFS (the kick). Pressure and bend are ignored.
+- **Kits:** Init Kit (kick, snare, clap, closed and open hat, three toms, rim, cowbell, cymbal, zap, FM perc, a long kick, a tight snare, a shaker), Boom Kit (long 808-style booms), Tight Kit (short and bright), Grit Kit (everything driven) and Electro Kit (zaps and FM blips for the toms).
+
+Every part of a voice runs every frame (no control rate), so the output is the same for any block size. 32 hit slots; nothing allocates after `prepare`.
+
+**On the Synth tab** Drums has a page per pad (the tab strip shows 1 to 16) and a Kit page. The Q-Links turn the pad's Tune, Decay, Tone and Snap. `pages::drum_page(pad)` gives the page of a pad, so the app can follow the last pad hit. The preview draws `synth-drums-kick`, `synth-drums-boom` and `synth-drums-hat`. `Drums::pad_name(pad)` gives the model name for pad labels.
+
+## Pluck (`mpfree-synth`, `Pluck`)
+
+Plucked strings and struck bars: two physical models behind one set of pages, picked with **Model**.
+
+- **String** is a Karplus-Strong string (the Jaffe-Smith extension): a delay line one period long with a one-pole damping filter and a first-order allpass in the loop. The tuning takes the filter's phase delay into account, so notes from C1 to C7 play within 2 cents (within 6 at C1 for the darkest presets). A pluck fills the line with a burst of noise shaped by **Pick** (brightness of the burst) and **Position** (a comb: plucking near the bridge is thin, near the middle hollow). **Brightness** sets the loop filter between 12 and 112 harmonics of the note.
+- **Mallet** is a modal bank: up to eight two-pole resonators per voice at a **Material**'s mode ratios (Marimba, Vibes, Bell, Glass, Kalimba, Steel drum), struck by a half-sine mallet pulse. **Hardness** is the pulse length (a harder mallet reaches higher modes); **Strike** is where the bar is hit, **Stretch** spreads the ratios, **High damp** shortens the upper modes.
+- **Decay** is the ring at middle C (higher notes ring shorter, lower ones longer); **Release** is how fast a note damps once its key is let go (1.5 s by default, so pad taps ring). **Vel > tone** makes soft notes darker. Transpose, Fine, Voices (1 to 16), Bend range, Level, Pan and Spread (alternate voices left and right).
+- **Notes:** playing a note that is still ringing re-plucks it in its own voice, adding to what sounds, as a real string does. Past the voice limit the oldest note (released ones first) fades out over 3 ms. Pressure is ignored.
+- **Level:** every preset peaks between -16 and -9 dBFS at full velocity across C2 to C6.
+- **Presets:** Init, Nylon, Steel String, Harp, Koto, Muted Bass (strings), and Marimba, Vibes, Bell, Glass, Kalimba and Steel Drum (mallets).
+
+Timing: the strings and resonators run every frame; pitch (transpose, fine, bend) runs at a control step of 16 frames aligned to the absolute frame. The delay lines (one per voice, 4096 frames at 48 kHz) are allocated in `prepare`.
+
+**On the Synth tab** Pluck has three pages: String (with the model, decay and release; Q-Links Decay, Brightness, Pick, Position), Mallet (Q-Links Hardness, Strike, Stretch, High damp) and Voice. The preview draws `synth-pluck-string` and `synth-pluck-mallet`.
 
 ## Pad pressure (poly aftertouch)
 
@@ -163,6 +199,8 @@ A swell preset at rest (a pad not pressed, a keyboard without aftertouch) plays 
 - `cargo run --release -p mpfree-synth --example render [out.wav]` writes `~/mpfree-work/synth-demo.wav`: 9 bars at 92 BPM with synthesised drums, where Grit Bass, Acid (a cutoff sweep by automation), Dust Pad, Supersaw and Lead come in one after another, then a final chord rings out. It prints a timeline, each part's level per bar, checks each part sounds only where it should, and trims the master to -1 dBFS. The parts run through `Node::process` in 128-frame blocks.
 - `cargo run --release -p mpfree-synth --example fm_render [out.wav]` writes `~/mpfree-work/fm-demo.wav`: 9 bars at 92 BPM with the same drums. Rubber Bass plays all the way through; Log Drum comes in for bars 3 and 4 (velocity drives its modulator); Glass Keys chords and Brass Section stabs (algorithm 22 and its pitch envelope) take bars 5 and 6; Bell Tower (with a bend down a semitone and back) and Steel Pluck, read back from a DX7 bank written from the presets, take bars 7 and 8; the final chord rings out. It checks the same things as the Poly demo, plus that the end is quiet and no voice is left on.
 - `cargo run --release -p mpfree-synth --example pressure_render [out.wav]` writes `~/mpfree-work/pressure-demo.wav`: the same 4-bar phrase twice at 90 BPM with the same notes and the same pad pressure, first with pressure Off on every synth, then on. A Brass chord with only its top note pressed (it swells twice), an Acid line that opens as the phrase builds, an FM Brass Section chord that swells and brightens, and a Dust Pad with vibrato on its top note; a last Brass chord swells and rings out in bar 9. It measures what pressure does in the second pass (the level difference between the passes, and brightness), checks each part clearly moves, and trims the master to -1 dBFS.
+- `cargo run --release -p mpfree-synth --example drum_pluck_render [out.wav]` writes `~/mpfree-work/drum-pluck-demo.wav`: 11 bars at 90 BPM. Bars 1-2 are the Init Kit alone (the open hat choked by the next closed hat, a tom fill); then the Grit Kit with the Muted Bass pluck; the Boom Kit with a Koto line; the Electro Kit with a Marimba riff; the Grit Kit with a Bell melody and a Kalimba arpeggio; and a Glass chord and a last boom ring out. Kits change on the bar line while the last hits ring on. It prints a timeline and each part's level per bar, checks each part sounds only where it should and the end is quiet, and trims the master to -1 dBFS.
+- `mpfree-bench` has cases for both (module "synth"): Drums Init Kit with a hit every 4 blocks and Boom Kit with a hit every block, and Pluck Steel String (8 voices), Harp (16), Marimba (8) and Bell (16) with chords changing every half second. On the build host (an x86 server core, 44.1 kHz, 128 frames) Drums take about 2 % of a period at p99 and the plucks 0.8 to 1.4 %; the MPC One's numbers need its own run (`--calibration`).
 - `cargo run --release -p mpfree-synth --example bench` times one 128-frame block with 1 to 16 voices: Poly at unison 1 or 4, and FM's Brass Section and Glass Keys. On the build host (an x86 desktop core) 16 voices take about 4 % of real time for Poly at unison 1, 5 to 6 % at unison 4, and about 3 % for FM; this host's runs vary by up to a third between runs, and pressure made no difference beyond that. The MPC One's Cortex-A17 is slower; it needs its own run before voice limits are set.
 
 ## The Synth tab (`rust/mpfree-synth-ui`)
@@ -200,5 +238,6 @@ The pad player (`play` and `app`) carries Poly and FM; one of them has the pads.
 
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
-- A drum synth for the pads.
+- Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
+- Synth tab visuals for Drums and Pluck (a pad grid with the models, the string or the mode bank).
 - Plugin hosting: CLAP first, in a sandbox process.
