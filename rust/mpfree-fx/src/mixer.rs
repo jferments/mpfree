@@ -59,6 +59,16 @@
 //! master after Master safety: resampling, the looper, recording an input
 //! dry or through its effects, bouncing and stems.
 //!
+//! **Freezing** ([`Mixer::freeze`]): a track or pad channel can play a
+//! [`Frozen`] recording of itself (made with [`crate::Print`] from its
+//! Before fader capture point) in place of its inserts, in step with the
+//! song, to free the processor. The fader, pan, sends, mute, solo and the
+//! strip's sidechain key go on working on the frozen audio. It crossfades
+//! in and out over [`FREEZE_FADE_MS`]; once in, the inserts ring out on
+//! silence and then stop, and [`Mixer::needs_input`] tells the host it can
+//! stop the instrument too. The frozen audio fades out while the transport
+//! is stopped. [`Mixer::thaw`] brings the inserts back.
+//!
 //! **Sample-timed:** strip controls take [`Timed`] parameter events with
 //! the ids in [`ids`] (automation, quantized mutes), and insert parameters
 //! take them through [`Mixer::queue_insert`]. The output is the same,
@@ -91,6 +101,7 @@ use mpfree_node::{Ctx, Curve, NodeEvent, ParamInfo, Smooth, Timed, Unit};
 use mpfree_prof::{Probe, Span};
 
 use crate::chain::{Chain, Insert};
+use crate::print::Frozen;
 use crate::{db_to_gain, MasterSafety};
 
 /// Submixes every mixer has.
@@ -118,6 +129,14 @@ const MAX_GLOBALS: usize = 1024;
 const SMOOTH_MS: f32 = 4.0;
 const DUCK_MS: f32 = 10.0;
 const TAP_FADE_MS: f32 = 20.0;
+/// A strip crossfades to and from its frozen audio over this long.
+pub const FREEZE_FADE_MS: f32 = 10.0;
+/// Frozen audio fades out over about this long when the transport stops,
+/// and back in when it starts.
+const FREEZE_GATE_MS: f32 = 3.0;
+/// Once frozen, the inserts run on silence until their output has been
+/// silent this long, so a thawed strip starts from quiet effects.
+const RING_QUIET_MS: f32 = 250.0;
 /// Destinations a strip can be crossfading between at once.
 const ROUTES: usize = 3;
 const NONE: u16 = u16::MAX;
@@ -394,6 +413,35 @@ pub enum CapturePoint {
     AfterFader,
     /// The master only: after Master safety, what is heard.
     AfterSafety,
+}
+
+/// Where a strip's freeze is ([`Mixer::freeze_state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreezeState {
+    /// Playing its inserts.
+    Off,
+    /// Crossfading to its frozen audio.
+    FadingIn,
+    /// Playing its frozen audio.
+    On,
+    /// Crossfading back to its inserts.
+    FadingOut,
+}
+
+/// A strip's freeze, inside the mixer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fz {
+    Off,
+    /// Crossfading in: the frozen audio's share, 0 to 1.
+    In(f32),
+    /// Frozen. While `ringing`, the inserts run on silence; `quiet` counts
+    /// the frames their output has been silent.
+    On {
+        ringing: bool,
+        quiet: usize,
+    },
+    /// Crossfading out: the frozen audio's share, 1 to 0.
+    Out(f32),
 }
 
 /// How a mixer is built.
@@ -929,6 +977,11 @@ struct Strip {
     /// all zeros at the start of a block, so an untouched one needs no
     /// scan.
     touched: bool,
+    /// The audio played in place of the inserts, and where the freeze is.
+    frozen: Option<Frozen>,
+    fz: Fz,
+    /// 1 while the transport rolls, 0 when stopped (frozen audio only).
+    fz_gate: Smooth,
 }
 
 impl Strip {
@@ -979,6 +1032,13 @@ impl Strip {
             probe: Probe::new(u64::MAX),
             clean: false,
             touched: true,
+            frozen: None,
+            fz: Fz::Off,
+            fz_gate: {
+                let mut g = Smooth::new(0.0);
+                g.set_time(rate, FREEZE_GATE_MS);
+                g
+            },
         }
     }
 
@@ -1166,6 +1226,15 @@ pub struct Mixer {
     epochs: Vec<Epoch>,
     edits: Vec<Edit>,
     retired: Vec<Insert>,
+    /// Frozen audio given back by [`Mixer::thaw`], for the host to drop.
+    thawed: Vec<Frozen>,
+    /// The frozen audio of the strip being crossfaded.
+    fz_buf: [Vec<f32>; 2],
+    fz_step: f32,
+    ring_quiet: usize,
+    /// Whether the last block's transport was rolling (a new freeze starts
+    /// heard or not by it).
+    rolling: bool,
     safety: MasterSafety,
     scratch: Scratch,
     hw: [Vec<f32>; 2],
@@ -1219,6 +1288,11 @@ impl Mixer {
             epochs: Vec::with_capacity(MAX_GLOBALS),
             edits: Vec::with_capacity(MAX_EDITS),
             retired: Vec::with_capacity(MAX_EDITS),
+            thawed: Vec::with_capacity(topo.pads + topo.tracks),
+            fz_buf: block(),
+            fz_step: 1.0 / (FREEZE_FADE_MS * 0.001 * rate as f32),
+            ring_quiet: (RING_QUIET_MS * 0.001 * rate as f32) as usize,
+            rolling: false,
             safety,
             scratch: Scratch {
                 post: [vec![0.0; CHUNK], vec![0.0; CHUNK]],
@@ -1478,6 +1552,90 @@ impl Mixer {
         self.retired.pop()
     }
 
+    /// Strip `s` plays `audio` in place of its inserts from the next block,
+    /// crossfading over [`FREEZE_FADE_MS`] (see the module docs). Only a
+    /// track or a pad channel can be frozen, and only while it is not;
+    /// otherwise the audio comes back. Real-time safe (it moves the audio
+    /// in; make it off the audio thread).
+    pub fn freeze(&mut self, s: StripId, audio: Frozen) -> Result<(), Frozen> {
+        let Some(k) = self.plan.topo.order(s) else {
+            return Err(audio);
+        };
+        let st = &mut self.strips[k];
+        if !matches!(st.role, Role::Track | Role::Pad)
+            || st.fz != Fz::Off
+            || st.frozen.is_some()
+            || audio.frames() == 0
+        {
+            return Err(audio);
+        }
+        st.frozen = Some(audio);
+        st.fz = Fz::In(0.0);
+        st.fz_gate.snap(if self.rolling { 1.0 } else { 0.0 });
+        Ok(())
+    }
+
+    /// Brings strip `s`'s inserts back, crossfading from its frozen audio
+    /// over [`FREEZE_FADE_MS`]; the host feeds the strip again from now on.
+    /// The frozen audio then comes back through [`Mixer::pop_thawed`].
+    /// False when the strip is not frozen.
+    pub fn thaw(&mut self, s: StripId) -> bool {
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
+        let st = &mut self.strips[k];
+        st.fz = match st.fz {
+            Fz::In(w) => Fz::Out(w),
+            Fz::On { .. } => Fz::Out(1.0),
+            _ => return false,
+        };
+        true
+    }
+
+    /// Where strip `s`'s freeze is.
+    pub fn freeze_state(&self, s: StripId) -> FreezeState {
+        match self.plan.topo.order(s).map(|k| self.strips[k].fz) {
+            Some(Fz::In(_)) => FreezeState::FadingIn,
+            Some(Fz::On { .. }) => FreezeState::On,
+            Some(Fz::Out(_)) => FreezeState::FadingOut,
+            _ => FreezeState::Off,
+        }
+    }
+
+    /// False once strip `s` is wholly frozen: the host can stop running
+    /// the instrument that feeds it (what it adds is ignored).
+    pub fn needs_input(&self, s: StripId) -> bool {
+        !matches!(self.freeze_state(s), FreezeState::On)
+    }
+
+    /// Strip `s`'s frozen audio, while it has some.
+    pub fn frozen(&self, s: StripId) -> Option<&Frozen> {
+        self.plan
+            .topo
+            .order(s)
+            .and_then(|k| self.strips[k].frozen.as_ref())
+    }
+
+    /// Moves strip `s`'s frozen loop to start on song beat `origin` (its
+    /// clip was launched again at another place). False when not frozen.
+    pub fn set_frozen_origin(&mut self, s: StripId, origin: f64) -> bool {
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
+        match &mut self.strips[k].frozen {
+            Some(f) if origin.is_finite() => {
+                f.origin = origin;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Frozen audio a thaw is done with, to drop off the audio thread.
+    pub fn pop_thawed(&mut self) -> Option<Frozen> {
+        self.thawed.pop()
+    }
+
     /// Frames from a track's input to the output: the slowest compensated
     /// path plus the master's inserts and Master safety.
     pub fn latency(&self) -> u32 {
@@ -1616,6 +1774,7 @@ impl Mixer {
             st.peak = [0.0; 2];
             st.peak_in = [0.0; 2];
             st.quiet = 0;
+            st.fz_gate.snap(0.0);
         }
         mpfree_node::Node::reset(&mut self.safety);
         self.started = false;
@@ -1857,6 +2016,7 @@ impl Mixer {
             return;
         }
         let whole = self.profiling.then(Span::start);
+        self.rolling = ctx.playing;
         self.apply_edits();
         self.align(false);
         self.start_ducks();
@@ -1876,8 +2036,13 @@ impl Mixer {
             duck_step,
             line_len,
             profiling,
+            thawed,
+            fz_buf,
+            fz_step,
+            ring_quiet,
             ..
         } = self;
+        let (fz_step, ring_quiet) = (*fz_step, *ring_quiet);
         let profiling = *profiling;
         let (topo, tap_step, duck_step, line_len) = (plan.topo, *tap_step, *duck_step, *line_len);
         // With no capture point in use, nothing needs to look for one.
@@ -1908,6 +2073,7 @@ impl Mixer {
             let span = profiling.then(Span::start);
             let fed = guard(st, len, stats);
             take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
+            let mut frozen = false;
             {
                 let key = |j: u16| {
                     let j = j as usize;
@@ -1919,8 +2085,72 @@ impl Mixer {
                     Some((&s.buf[0][..len], &s.buf[1][..len]))
                 };
                 let [bl, br] = &mut st.buf;
-                st.chain
-                    .process_keyed(&base, key, &mut bl[..len], &mut br[..len]);
+                let (bl, br) = (&mut bl[..len], &mut br[..len]);
+                match st.fz {
+                    Fz::Off => st.chain.process_keyed(&base, key, bl, br),
+                    Fz::On { ringing, quiet } => {
+                        frozen = true;
+                        if ringing {
+                            // The inserts ring out on silence, unheard.
+                            bl.fill(0.0);
+                            br.fill(0.0);
+                            st.chain.process_keyed(&base, key, bl, br);
+                            let q = if sounding(bl, br) { 0 } else { quiet + len };
+                            st.fz = Fz::On {
+                                ringing: q < ring_quiet,
+                                quiet: q,
+                            };
+                        } else {
+                            st.chain.flush_events();
+                        }
+                        if let Some(f) = &st.frozen {
+                            play_frozen(f, &base, &mut st.fz_gate, bl, br);
+                        }
+                    }
+                    Fz::In(w) | Fz::Out(w) => {
+                        frozen = true;
+                        st.chain.process_keyed(&base, key, bl, br);
+                        let [fl, fr] = fz_buf;
+                        let (fl, fr) = (&mut fl[..len], &mut fr[..len]);
+                        match &st.frozen {
+                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, fl, fr),
+                            None => {
+                                fl.fill(0.0);
+                                fr.fill(0.0);
+                            }
+                        }
+                        let dir = if matches!(st.fz, Fz::In(_)) {
+                            fz_step
+                        } else {
+                            -fz_step
+                        };
+                        let mut g = w;
+                        for i in 0..len {
+                            g = (g + dir).clamp(0.0, 1.0);
+                            bl[i] += (fl[i] - bl[i]) * g;
+                            br[i] += (fr[i] - br[i]) * g;
+                        }
+                        st.fz = match st.fz {
+                            Fz::In(_) if g >= 1.0 => Fz::On {
+                                ringing: true,
+                                quiet: 0,
+                            },
+                            Fz::In(_) => Fz::In(g),
+                            _ if g <= 0.0 => {
+                                if let Some(f) = st.frozen.take() {
+                                    if thawed.len() < thawed.capacity() {
+                                        thawed.push(f);
+                                    } else {
+                                        // Never reached: one per strip fits.
+                                        st.frozen = Some(f);
+                                    }
+                                }
+                                Fz::Off
+                            }
+                            _ => Fz::Out(g),
+                        };
+                    }
+                }
             }
             take(caps, k, CapturePoint::BeforeFader, &st.buf, 0, len);
             if st.role == Role::Master {
@@ -1944,7 +2174,7 @@ impl Mixer {
                 continue;
             }
             // An empty chain leaves the block as it came in.
-            let silent = if st.chain.is_empty() {
+            let silent = if st.chain.is_empty() && !frozen {
                 !fed
             } else {
                 !sounding(&st.buf[0][..len], &st.buf[1][..len])
@@ -2088,6 +2318,30 @@ fn scan(l: &[f32], r: &[f32]) -> (bool, bool) {
 
 /// Whether a block holds anything but zeros (or minus zeros).
 #[inline]
+/// Plays frozen audio into a block, faded out while the transport is
+/// stopped.
+fn play_frozen(f: &Frozen, ctx: &Ctx, gate: &mut Smooth, l: &mut [f32], r: &mut [f32]) {
+    gate.target = if ctx.playing { 1.0 } else { 0.0 };
+    if gate.settled() && gate.value == 0.0 {
+        l.fill(0.0);
+        r.fill(0.0);
+        return;
+    }
+    f.render(ctx, l, r);
+    if gate.settled() {
+        return;
+    }
+    for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+        let g = gate.next();
+        *a *= g;
+        *b *= g;
+    }
+    // Below -80 dB the fade is done: silence from the next block.
+    if gate.target == 0.0 && gate.value < 1e-4 {
+        gate.snap(0.0);
+    }
+}
+
 fn sounding(l: &[f32], r: &[f32]) -> bool {
     let mut any = 0u32;
     for (&a, &b) in l.iter().zip(r) {

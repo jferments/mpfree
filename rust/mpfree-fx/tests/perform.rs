@@ -147,7 +147,7 @@ fn assert_follows(
 fn the_description_is_valid_and_the_bank_is_full() {
     let p = Perform::new();
     check_params(p.params()).unwrap();
-    assert_eq!(p.params().len(), 2 + 4 * PERFORM_SLOTS + 3);
+    assert_eq!(p.params().len(), 2 + 4 * PERFORM_SLOTS + 3 + PERFORM_SLOTS);
     for k in 0..PERFORM_SLOTS {
         let fx = p.param(ids::perform::slot(k) + ids::perform::EFFECT);
         assert!(fx >= 1.0, "pad {} has an effect by default", k + 1);
@@ -612,4 +612,102 @@ fn the_xy_pad_plays_two_parameters_and_snaps_back_or_holds() {
     assert!(xy.tick(16.0));
     let (x, y) = xy.position();
     assert!(x > 0.25 && x < 0.5 && y < 0.5, "gliding back: {x}, {y}");
+}
+
+fn hold(k: usize, on: bool) -> NodeEvent {
+    NodeEvent::Param {
+        id: ids::perform::hold(k),
+        value: if on { 1.0 } else { 0.0 },
+    }
+}
+
+#[test]
+fn a_hold_plays_a_pad_like_a_finger() {
+    // A stutter on a lock (Hold on at a frame, off later) sounds exactly
+    // like the same pad held by a note, at any block size.
+    let x = noise(6 * SIXTEENTH, 7);
+    let fresh = || {
+        let mut p = Perform::new();
+        slot(&mut p, 0, "Stutter", "1/16", 100.0);
+        slot(&mut p, 1, "Crush", "1/16", 80.0);
+        p
+    };
+    let by_note = run(
+        &mut fresh(),
+        &x,
+        &[
+            (1_000, on(0)),
+            (9_000, on(1)),
+            (20_000, off(0)),
+            (26_000, off(1)),
+        ],
+        true,
+    );
+    let by_hold = run(
+        &mut fresh(),
+        &x,
+        &[
+            (1_000, hold(0, true)),
+            (9_000, hold(1, true)),
+            (20_000, hold(0, false)),
+            (26_000, hold(1, false)),
+        ],
+        true,
+    );
+    assert_eq!(by_note, by_hold);
+    let mut k = 0;
+    let ragged = render(
+        &mut fresh(),
+        &x,
+        &[
+            (1_000, hold(0, true)),
+            (9_000, hold(1, true)),
+            (20_000, hold(0, false)),
+            (26_000, hold(1, false)),
+        ],
+        true,
+        &mut || {
+            k = (k * 7 + 13) % 997;
+            k + 1
+        },
+    );
+    assert_eq!(by_note, ragged);
+}
+
+#[test]
+fn a_pad_sounds_while_a_finger_or_its_hold_holds_it() {
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Stutter", "1/16", 100.0);
+    let x = noise(4 * SIXTEENTH, 9);
+    let state = |p: &Perform| p.param(ids::perform::slot(0) + ids::perform::STATE);
+    // Hold on, a finger on and off: still on. Hold off: off.
+    run(
+        &mut p,
+        &x,
+        &[(0, hold(0, true)), (100, on(0)), (200, off(0))],
+        false,
+    );
+    assert_eq!(state(&p), perform_state::ON);
+    assert_eq!(p.param(ids::perform::hold(0)), 1.0);
+    run(&mut p, &x, &[(0, hold(0, false))], false);
+    assert_eq!(state(&p), perform_state::OFF);
+    // A finger, then Hold on and off: the finger still holds it.
+    run(
+        &mut p,
+        &x,
+        &[(0, on(0)), (100, hold(0, true)), (200, hold(0, false))],
+        false,
+    );
+    assert_eq!(state(&p), perform_state::ON);
+    run(&mut p, &x, &[(0, off(0))], false);
+    assert_eq!(state(&p), perform_state::OFF);
+    // Without a frame (set_param), Hold lands at the start of the next
+    // block; AllOff lets the Holds go too.
+    p.set_param(ids::perform::hold(0), 1.0);
+    assert_eq!(p.param(ids::perform::hold(0)), 1.0);
+    run(&mut p, &x, &[], false);
+    assert_eq!(state(&p), perform_state::ON);
+    run(&mut p, &x, &[(0, NodeEvent::AllOff)], false);
+    assert_eq!(state(&p), perform_state::OFF);
+    assert_eq!(p.param(ids::perform::hold(0)), 0.0);
 }

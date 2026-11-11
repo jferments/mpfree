@@ -509,3 +509,131 @@ fn perform_fx_never_allocates() {
     );
     assert!(l.iter().chain(&r).all(|v| v.is_finite()));
 }
+
+#[test]
+fn freezing_and_printing_never_allocate() {
+    // Takes armed, recorded, failed and handed out; strips frozen, thawed
+    // and given back; the transport stopping and starting; the freeze
+    // crossfades in every block size.
+    let rate = 48_000;
+    let cfg = MixerConfig {
+        inputs: 0,
+        pads: 2,
+        tracks: 2,
+        slots: 2,
+        max_latency_ms: 20.0,
+    };
+    let mut m = Mixer::new(cfg, rate, MAX_BLOCK);
+    m.chain_mut(StripId::Track(0))
+        .unwrap()
+        .push(Box::new(Delay::new()));
+    m.set_capture(0, Some((StripId::Track(0), CapturePoint::BeforeFader)));
+    let mut prints: Vec<Print> = (0..4).map(|_| Print::new(rate, 3.0)).collect();
+    let mut taken: Vec<Printed> = Vec::with_capacity(8);
+    let mut back: Vec<Frozen> = Vec::with_capacity(8);
+    let mut spare: Vec<Frozen> = (0..4)
+        .map(|_| Frozen {
+            left: vec![0.25; 9_000],
+            right: vec![-0.25; 9_000],
+            origin: 0.0,
+            beats: 1.0,
+            bpm: 120.0,
+            rate,
+        })
+        .collect();
+    let mut rng = Lcg(31);
+    let mut l = vec![0.0f32; MAX_BLOCK];
+    let mut r = vec![0.0f32; MAX_BLOCK];
+    let (mut frame, mut beats) = (0u64, 0.0f64);
+    let mut which = 0;
+    watch(true);
+    for block in 0..4000u64 {
+        let len = 1 + (rng.next() as usize) % 700;
+        let playing = (block / 600) % 5 != 4;
+        let bpm = if (block / 1300) % 2 == 0 {
+            120.0
+        } else {
+            100.0
+        };
+        if m.needs_input(StripId::Track(0)) {
+            let (il, ir) = m.strip_input(StripId::Track(0)).unwrap();
+            for i in 0..len {
+                il[i] = 0.3 * (rng.unit() * 2.0 - 1.0);
+                ir[i] = 0.3 * (rng.unit() * 2.0 - 1.0);
+            }
+        }
+        match rng.next() % 300 {
+            0 => {
+                let p = &mut prints[which % 4];
+                let _ = p.arm(PrintJob {
+                    start: beats.floor() + 1.0,
+                    beats: 0.5 + (rng.next() % 4) as f64 * 0.5,
+                    steady: rng.next() % 2 == 0,
+                    tail: if rng.next() % 2 == 0 {
+                        Tail::Cut
+                    } else {
+                        Tail::UntilSilent { max_ms: 200.0 }
+                    },
+                });
+            }
+            1 => prints[which % 4].cancel(),
+            2 => {
+                if let Some(f) = spare.pop() {
+                    let s = if rng.next() % 2 == 0 {
+                        StripId::Track(0)
+                    } else {
+                        StripId::Pad(1)
+                    };
+                    if let Err(f) = m.freeze(s, f) {
+                        spare.push(f);
+                    }
+                }
+            }
+            3 => {
+                m.thaw(StripId::Track(0));
+                m.thaw(StripId::Pad(1));
+            }
+            4 => {
+                m.set_frozen_origin(StripId::Track(0), beats.floor());
+            }
+            _ => {}
+        }
+        let ctx = Ctx {
+            bpm,
+            beats,
+            playing,
+            ..Ctx::new(rate, frame)
+        };
+        m.process(&ctx, &mut l[..len], &mut r[..len]);
+        for p in prints.iter_mut() {
+            p.process(&ctx, m.capture(0), m.capture_latency(0).unwrap_or(0));
+            let _ = (p.progress(), p.state(), p.start_beat());
+        }
+        let p = &mut prints[which % 4];
+        if let Some(t) = p.take() {
+            if taken.len() < taken.capacity() {
+                taken.push(t);
+            }
+            which += 1;
+        }
+        while let Some(f) = m.pop_thawed() {
+            if back.len() < back.capacity() {
+                back.push(f);
+            }
+        }
+        let _ = (m.freeze_state(StripId::Track(0)), m.frozen(StripId::Pad(1)));
+        frame += len as u64;
+        if playing {
+            beats += len as f64 * bpm / 60.0 / rate as f64;
+        }
+    }
+    watch(false);
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "allocations or frees on the audio path"
+    );
+    assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+    assert!(!taken.is_empty(), "some takes finished");
+    drop((taken, back, spare, prints));
+}

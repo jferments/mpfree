@@ -16,6 +16,12 @@
 //! `NoteOff` lets it go, and `AllOff` lets every slot go. Latching is the
 //! caller's choice (it simply does not send the `NoteOff`).
 //!
+//! Each pad also has a **Hold** parameter ([`ids::hold`]): turning it on
+//! holds the pad as a finger would, turning it off lets it go. A pad sounds
+//! while a finger or its Hold holds it. That makes the pads parameters
+//! like any other, so a step can lock a stutter on (a parameter lock) and
+//! a recorded move can play a pad back.
+//!
 //! Everything is counted in frames from the moment an effect starts, and
 //! the lengths are fixed (from the tempo) at that moment, so the output is
 //! the same, sample for sample, however a stream is cut into blocks. Entry
@@ -52,6 +58,12 @@ pub mod ids {
     pub const DJ_FILTER: u16 = slot(super::SLOTS);
     pub const ECHO: u16 = DJ_FILTER + 1;
     pub const ECHO_TIME: u16 = DJ_FILTER + 2;
+    /// Pad `k`'s Hold (a toggle): on holds the pad as a finger would, off
+    /// lets it go (unless a finger still holds it). For parameter locks on
+    /// steps and recorded moves; ids 69 to 84.
+    pub const fn hold(k: usize) -> u16 {
+        ECHO_TIME + 1 + k as u16
+    }
 }
 
 /// A slot's state, as its read-only STATE parameter reports it.
@@ -250,15 +262,30 @@ macro_rules! bank {
                 curve: Curve::Choice(LENGTHS),
                 readonly: false,
             },
+            $(
+                ParamInfo {
+                    id: ids::hold($k),
+                    name: "Hold",
+                    group: $group,
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    unit: Unit::None,
+                    curve: Curve::Toggle,
+                    readonly: false,
+                },
+            )*
         ]
     };
 }
 
 /// How many parameters: the two globals, four per pad, then the DJ filter,
-/// the echo and its time.
-const COUNT: usize = 2 + 4 * SLOTS + 3;
+/// the echo and its time, then a Hold per pad.
+const COUNT: usize = 2 + 4 * SLOTS + 3 + SLOTS;
 /// The ids from here on are not a pad's.
 const PADS_END: u16 = ids::slot(SLOTS);
+/// The first Hold id.
+const HOLDS: u16 = ids::hold(0);
 
 // Length choices by index, for the default bank below.
 const L_32: u8 = 1;
@@ -489,6 +516,14 @@ pub struct Perform {
     dirty: bool,
     /// The slots whose tone effect is on or fading out.
     tone_mask: u16,
+    /// Pads held by a note (a finger) and by their Hold parameter; a pad
+    /// sounds while either holds it.
+    by_note: u16,
+    by_param: u16,
+    /// Hold changes from `set_param` (which has no frame), applied at the
+    /// start of the next block: which pads, and on or off.
+    pend: u16,
+    pend_on: u16,
     rng: Rng,
     /// The echo: the delay, its send level, which slots hold it, its
     /// current time and feedback, and whether it is awake.
@@ -540,6 +575,10 @@ impl Perform {
             xf_len: 1,
             dirty: false,
             tone_mask: 0,
+            by_note: 0,
+            by_param: 0,
+            pend: 0,
+            pend_on: 0,
             rng: Rng::new(0x9E21),
             echo,
             echo_env: 0.0,
@@ -630,21 +669,61 @@ impl Perform {
 
     fn event(&mut self, ctx: &Ctx, ev: &NodeEvent, offset: usize, f: i64) {
         match *ev {
+            NodeEvent::Param { id, value } if (HOLDS..HOLDS + SLOTS as u16).contains(&id) => {
+                self.hold(ctx, (id - HOLDS) as usize, value >= 0.5, offset, f);
+            }
             NodeEvent::Param { id, value } => self.apply(id, value),
             NodeEvent::NoteOn { note, velocity } if (note as usize) < SLOTS => {
+                let k = note as usize;
                 if velocity == 0 {
-                    self.release(note as usize);
+                    self.note_off(k);
                 } else {
-                    self.press(ctx, note as usize, offset, f);
+                    self.by_note |= 1 << k;
+                    self.press(ctx, k, offset, f);
                 }
             }
-            NodeEvent::NoteOff { note } if (note as usize) < SLOTS => self.release(note as usize),
-            NodeEvent::AllOff => {
-                for k in 0..SLOTS {
-                    self.release(k);
-                }
-            }
+            NodeEvent::NoteOff { note } if (note as usize) < SLOTS => self.note_off(note as usize),
+            NodeEvent::AllOff => self.all_off(),
             _ => {}
+        }
+    }
+
+    fn note_off(&mut self, k: usize) {
+        self.by_note &= !(1 << k);
+        if self.by_param & (1 << k) == 0 {
+            self.release(k);
+        }
+    }
+
+    /// Lets every pad go, fingers and Holds alike.
+    fn all_off(&mut self) {
+        for k in 0..SLOTS {
+            self.release(k);
+            self.v[ids::hold(k) as usize] = 0.0;
+        }
+        self.by_note = 0;
+        self.by_param = 0;
+        self.pend = 0;
+    }
+
+    /// Pad `k`'s Hold turned on or off: it presses the pad unless a finger
+    /// already holds it, and lets it go unless a finger still does.
+    fn hold(&mut self, ctx: &Ctx, k: usize, on: bool, offset: usize, f: i64) {
+        let bit = 1 << k;
+        self.v[ids::hold(k) as usize] = if on { 1.0 } else { 0.0 };
+        if on == (self.by_param & bit != 0) {
+            return;
+        }
+        if on {
+            self.by_param |= bit;
+            if self.by_note & bit == 0 {
+                self.press(ctx, k, offset, f);
+            }
+        } else {
+            self.by_param &= !bit;
+            if self.by_note & bit == 0 {
+                self.release(k);
+            }
         }
     }
 
@@ -1017,6 +1096,17 @@ impl Node for Perform {
         &PARAMS
     }
     fn set_param(&mut self, id: u16, value: f32) {
+        if (HOLDS..HOLDS + SLOTS as u16).contains(&id) {
+            let bit = 1 << (id - HOLDS);
+            self.pend |= bit;
+            if value >= 0.5 {
+                self.pend_on |= bit;
+            } else {
+                self.pend_on &= !bit;
+            }
+            self.v[id as usize] = if value >= 0.5 { 1.0 } else { 0.0 };
+            return;
+        }
         self.apply(id, value);
     }
     fn param(&self, id: u16) -> f32 {
@@ -1081,6 +1171,12 @@ impl Node for Perform {
         self.xf_left = 0;
         self.dirty = false;
         self.tone_mask = 0;
+        self.by_note = 0;
+        self.by_param = 0;
+        self.pend = 0;
+        for k in 0..SLOTS {
+            self.v[ids::hold(k) as usize] = 0.0;
+        }
         self.rng = Rng::new(0x9E21);
         self.echo.reset();
         self.echo_env = 0.0;
@@ -1097,6 +1193,15 @@ impl Node for Perform {
         let step = 1.0 / fade as f32;
         let ramp = (0.002 * self.rate as f32) as u64;
         let end = base + len as i64;
+        if self.pend != 0 {
+            let (pend, on) = (self.pend, self.pend_on);
+            self.pend = 0;
+            for k in 0..SLOTS {
+                if pend & (1 << k) != 0 {
+                    self.hold(ctx, k, on & (1 << k) != 0, 0, base);
+                }
+            }
+        }
         if events.is_empty()
             && self.cur.is_none()
             && self.xf_left == 0

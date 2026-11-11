@@ -495,6 +495,16 @@ impl Chain {
         true
     }
 
+    /// Applies every queued parameter change now and drops the other
+    /// queued events, without running the chain (a frozen strip's inserts
+    /// keep up with their knobs). Real-time safe.
+    pub fn flush_events(&mut self) {
+        for s in &mut self.slots {
+            apply_params(s.node.as_mut(), &s.events);
+            s.events.clear();
+        }
+    }
+
     /// Runs the chain in place on one block. Every slot gets `ctx`'s
     /// sidechain.
     pub fn process(&mut self, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
