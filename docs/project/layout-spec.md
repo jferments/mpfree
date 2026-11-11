@@ -20,7 +20,8 @@
 - **Status chips** sit on the right: session, kit and bank (or "Poly · C3 to D#4" when the synth is on the pads), level, tempo, and the arp chip.
   - Chips never push tabs off the bar, and tabs never push chips off.
 - **Width:** up to 6 tabs are drawn at full width (112 px). More tabs share that room.
-- **Active tab:** the page's own tab is highlighted. Prefs, menus and the guide highlight none.
+- **Active tab:** the page's own tab is highlighted. Prefs, the mixer, menus and the guide highlight none.
+- **The mixer icon:** a small mixer (sliders) icon at the bar's right edge, after the chips, once the mixer is built. A tap opens the mixer (Jay, 09:17Z).
 
 ## 3. The tabs
 
@@ -40,10 +41,11 @@ The music tabs, in this order:
   - **Prefs.** SHIFT + MENU opens it.
   - **Each page's options.** MENU opens them.
   - **The Arp panel.** NOTE REPEAT + MENU opens it; it belongs to Play.
+  - **The mixer.** TRACK MIX or the mixer icon opens it over the current page, under the top bar, as Prefs does. The same button or icon again, or a tab, closes it (Jay, 09:17Z: the button or a small sliders icon in a corner; the FX thread builds it).
   - **The pattern workspace.**
   - **The button guide.**
   - **System info, Touch lab and Calibrate touch.** These open from Prefs.
-- **Adding, removing, renaming or reordering a tab** is a layout change, so it needs Jay's approval. Reserved for later, not built yet: Mix (the FX thread's mixer). The "Steps, Clips, Looper, Arrange, Synth, Mix" bar in the synth previews is a design mock, not this list.
+- **Adding, removing, renaming or reordering a tab** is a layout change, so it needs Jay's approval. There is no Mix tab: the mixer opens with TRACK MIX (above). The "Steps, Clips, Looper, Arrange, Synth, Mix" bar in the synth previews is a design mock, not this list.
 - **The order is Play, Clips, Synth, Looper, Sample, then Dev.** Jay chose it at 08:15Z.
 
 ## 4. The Play page
@@ -87,6 +89,7 @@ The music tabs, in this order:
 - **SHIFT + STOP:** the Console. It works without developer tools too, but has no strip then.
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
+- **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.
 - **REC, OVERDUB, UNDO:** they act on the page showing (Clips, Looper, Sample), otherwise on the clips.
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
 
@@ -99,7 +102,6 @@ The music tabs, in this order:
 ## Proposed, waiting for Jay (not part of the spec yet)
 
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
-- **Mixer on TRACK MIX** (FX thread, 09:04Z, decision 4 in its doc): TRACK MIX opens a full-screen mixer over the current tab, and SHIFT + TRACK MIX the pad mixer, like Prefs on SHIFT + MENU. No Mix tab. That the MPC One has a TRACK MIX button is not checked yet; round 7's mapper lists it so it can be found.
 - **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
 
 ## Where things stand (2026-11-11 08:10Z)
