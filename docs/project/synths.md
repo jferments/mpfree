@@ -1,6 +1,6 @@
-# Synths: the node interface, Poly, FM and pad pressure
+# Synths: the node interface, Poly, FM, Wavetable and pad pressure
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, then FM). Nothing here is wired to the pad player or has run on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
+**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, FM and Wavetable). Nothing here is wired to the pad player or has run on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
 
 ## The node interface (`mpfree-node`)
 
@@ -61,6 +61,10 @@ Every FM page has a visual strip, drawn from the values:
 - **Mod page:** the pitch envelope (on a ±2, 12, 24 or 48 semitone scale, so a small scoop still shows) and the LFO's wave after its delay.
 
 A tap on a box opens that operator's page; a tap elsewhere on the algorithm card opens Algo. `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the samples `synth-fm-algo`, `synth-fm-mod`, `synth-fm-op`, `synth-fm-kbd` and `synth-fm-pressure`. FM isn't in the pad player yet; Poly is the pads' synth for round 6.
+
+## Wavetable (`mpfree-synth`, `Wavetable`)
+
+Two table oscillators that scan through stacks of single-cycle frames, with warps (Bend, Sync, Mirror, FM), unison, a sub and noise, Poly's filter, a mod envelope and LFO that move the positions, and pad pressure. Ten factory tables are built from formulas; a player's WAV tables and a pad's sample can become user tables. Tables are band-limited at 17 half-octave levels, so high notes don't alias. The full description, the memory and cost numbers and the demo are in [Wavetable synth](wavetable.md).
 
 ## Pad pressure (poly aftertouch)
 
@@ -198,5 +202,6 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
+- Wavetable on the pads (a third Engine choice) and the Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - A drum synth for the pads.
 - Plugin hosting: CLAP first, in a sandbox process.
