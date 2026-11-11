@@ -174,6 +174,9 @@ pub struct KitView {
     pub pads: Vec<Option<String>>,
     /// The kit's pad colour, 0-63 per channel as the controller takes it.
     pub colour: [u8; 3],
+    /// The header chip while it plays, if not "Kit N of M · Bank X" (the
+    /// synth: "Poly · C3 to D#4").
+    pub chip: Option<String>,
 }
 
 /// Timing numbers from the audio thread.
@@ -228,12 +231,16 @@ pub enum ToUi {
     Settings(Settings),
     ClearLogs,
     ClearConsole,
-    /// The synth: its parameters, values and presets (at the start).
+    /// The synth: its parameters, values and presets (at the start, and
+    /// when the Synth tab's options pick the other engine).
     Synth(SynthState),
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
+    /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
+    /// live bars (a few times a second).
+    SynthPressures(Vec<f32>),
     /// On the Synth page: a Q-Link (0-3) turned by this many detents.
     SynthQLink(usize, i32),
     /// On the Synth page: the wheel turned (the selected knob).
@@ -258,8 +265,9 @@ pub enum ToUi {
     SampleUndo(bool),
     /// Where the playing kit's voices are (while the Sample page shows).
     SamplePlayheads(Playheads),
-    /// New pad labels for one kit (the synth's notes, after an octave change).
-    KitPads { kit: usize, pads: Vec<Option<String>> },
+    /// One kit's entry changed: its name, pad labels and chip (the synth,
+    /// after an octave, engine or pad layout change).
+    KitChanged { kit: usize, view: KitView },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
     /// Open the Calibrate touch page; any `Show` closes it again.
@@ -514,10 +522,7 @@ impl Player {
     fn refresh_chips(&mut self) {
         let mut chips = vec![Chip::new(self.session.0.clone(), self.session.1)];
         match self.kits.get(self.kit) {
-            Some(k) if k.name == crate::synth::KIT_NAME => {
-                let note = |i: usize| k.pads.get(i).cloned().flatten().unwrap_or_default();
-                chips.push(Chip::new(format!("Poly · {} to {}", note(0), note(15)), Tone::Accent));
-            }
+            Some(KitView { chip: Some(chip), .. }) => chips.push(Chip::new(chip.clone(), Tone::Accent)),
             Some(_) => chips.push(Chip::new(format!("Kit {} of {} · Bank {}", self.kit + 1, self.kits.len(),
                                                     crate::app::bank_letter(self.kit)), Tone::Accent)),
             None => {}
@@ -577,8 +582,9 @@ impl Player {
                 View::Clips => CLIPS_HINT.to_string(),
                 View::Looper => format!("REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   PLAY / STOP: \
                                          the transport   ·   MENU: looper options   ·   {stop}"),
-                View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
-                                        - / +: page   ·   {stop}"),
+                View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
+                                        - / +: page   ·   MENU: engine, scale   ·   {stop}",
+                                       self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
                      UNDO: undo   ·   tap the wave: play".to_string()
@@ -872,6 +878,11 @@ impl Player {
                     }
                 }
             }
+            ToUi::SynthPressures(values) => {
+                if let Some(p) = self.synth.as_mut() {
+                    p.set_pressures(&mut self.ui, &values);
+                }
+            }
             ToUi::SynthQLink(n, ticks) => {
                 if let Some(a) = self.synth.as_mut().and_then(|p| p.qlink(&mut self.ui, n, ticks)) {
                     self.outbox.push(FromUi::Synth(a));
@@ -913,9 +924,12 @@ impl Player {
                     self.sample.set_playheads(&mut self.ui, &h);
                 }
             }
-            ToUi::KitPads { kit, pads } => {
+            ToUi::KitChanged { kit, view } => {
+                if let Some(item) = self.ui.get_mut::<ListView>("kits").and_then(|l| l.items.get_mut(kit)) {
+                    item.text = view.name.clone();
+                }
                 if let Some(k) = self.kits.get_mut(kit) {
-                    k.pads = pads;
+                    *k = view;
                     if kit == self.kit {
                         self.set_kit(kit);
                     }
@@ -1663,6 +1677,7 @@ pub fn sample_kits() -> Vec<KitView> {
         pads: names.iter().take(n).map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
             .chain(std::iter::repeat(None)).take(16).collect(),
         colour,
+        chip: None,
     };
     vec![kit("Classic House", [0x3F, 0x22, 0x00], 16), kit("Boom Bap", [0x00, 0x2A, 0x3F], 12),
          kit("Trap", [0x2C, 0x00, 0x3F], 16), kit("Lo-Fi", [0x04, 0x3F, 0x00], 9),
@@ -1754,7 +1769,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SampleUndo { redo } => p.apply(ToUi::SampleUndo(redo)),
             Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
             | Effect::Time(_) | Effect::Octave(_) | Effect::Bank { .. } | Effect::Looper(_)
-            | Effect::SavePatterns(_) => {}
+            | Effect::SavePatterns(_) | Effect::SynthPads(_) => {}
         }
     }
 }
@@ -2115,6 +2130,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.take_actions();
         out.push((name, p));
     }
+    // FM on the pads with D Dorian chord pads, three chords held; FM's Synth
+    // tab; and the Synth tab's options with FM and a scale picked.
+    let mut fm = crate::synth::Synth::new(44_100);
+    let mut set = fm.settings();
+    set.engine = crate::synth::Engine::Fm;
+    set.scale = mpfree_arp::scale::by_name("Dorian").map(|d| mpfree_arp::scale::Scale::with_down(2, d.mask, d.down));
+    set.set_layout(mpfree_arp::scale::pads::PadLayout::Chords);
+    fm.set_settings(set);
+    let mut chords = sample_player(fonts());
+    chords.apply(ToUi::Status(Status { shift: false, pad_level: PadLevel::Off, repeat: false, latched: false,
+                                       rate: "1/16", bpm: 120.0 }));
+    chords.apply(ToUi::KitChanged { kit: synth_kit, view: fm.kit_view() });
+    chords.apply(ToUi::Synth(fm.state()));
+    chords.apply(ToUi::Kit(synth_kit));
+    for (pad, v) in [(0usize, 96u8), (3, 90), (12, 101)] {
+        chords.apply(ToUi::PadDown { pad, velocity: v });
+    }
+    out.push(("play-synth-chords", chords));
+    let mut fm_page = sample_player(fonts());
+    fm_page.apply(ToUi::KitChanged { kit: synth_kit, view: fm.kit_view() });
+    fm_page.apply(ToUi::Synth(fm.state()));
+    fm_page.apply(ToUi::Kit(synth_kit));
+    fm_page.apply(ToUi::Show(View::Synth));
+    out.push(("synth-fm", fm_page));
+    let mut options = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.step_item(0, 1));
+    for _ in 0..2 {
+        fx.extend(a.step_item(1, 1));
+    }
+    fx.extend(a.step_item(2, 1));
+    fx.extend(a.step_item(2, 1));
+    fx.extend(a.step_item(3, 1));
+    fx.extend(a.select(3));
+    apply_effects(&mut options, fx);
+    out.push(("synth-options", options));
     // The Sample page: the loop on kit 1's pad 5, then zoomed round the
     // loop start after a Q-Link 3 turn, then a pad without a sound, then
     // the Chop tab.
@@ -2721,6 +2775,35 @@ mod tests {
     }
 
     #[test]
+    fn the_synth_kit_and_page_follow_an_engine_switch_and_a_scale() {
+        let mut p = sample_player(Fonts::embedded());
+        let synth_kit = sample_kits().len();
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header").unwrap().chips.iter().map(|c| c.text.clone()).collect()
+        };
+        p.apply(ToUi::Kit(synth_kit));
+        let mut s = crate::synth::Synth::new(44_100);
+        let mut set = s.settings();
+        set.engine = crate::synth::Engine::Fm;
+        s.set_settings(set);
+        p.apply(ToUi::KitChanged { kit: synth_kit, view: s.kit_view() });
+        p.apply(ToUi::Synth(s.state()));
+        assert_eq!(p.ui.get::<ListView>("kits").unwrap().items[synth_kit].text, "Synth: FM");
+        assert!(chips(&p).contains(&"FM · C3 to D#4".to_string()), "{:?}", chips(&p));
+        assert_eq!(p.synth.as_ref().unwrap().state.info.id, "mpfree.fm");
+        // A scale and Chord pads: the chip says so and the pads name their chords.
+        set.scale = mpfree_arp::scale::by_name("Minor").map(|d| mpfree_arp::scale::Scale::with_down(9, d.mask, d.down));
+        set.set_layout(mpfree_arp::scale::pads::PadLayout::Chords);
+        s.set_settings(set);
+        p.apply(ToUi::KitChanged { kit: synth_kit, view: s.kit_view() });
+        assert!(chips(&p).contains(&"FM · A Minor · Chord pads · A3 to A4".to_string()), "{:?}", chips(&p));
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "i Am");
+        // The Pressure page's live bars.
+        p.apply(ToUi::SynthPressures(vec![0.5, 0.25]));
+        assert_eq!(p.synth.as_ref().unwrap().state.pressures, vec![0.5, 0.25]);
+    }
+
+    #[test]
     fn the_synth_page_shows_poly_and_sends_its_changes() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
@@ -2755,7 +2838,7 @@ mod tests {
         assert_eq!(p.synth.as_ref().unwrap().state.values, s.values());
         // An octave up relabels the synth's pads and its chip.
         s.shift_octave(1);
-        p.apply(ToUi::KitPads { kit: synth_kit, pads: s.pad_labels() });
+        p.apply(ToUi::KitChanged { kit: synth_kit, view: s.kit_view() });
         assert!(chips(&p).contains(&"Poly · C4 to D#5".to_string()), "{:?}", chips(&p));
         assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "C4");
         // Meters update the page's copy.

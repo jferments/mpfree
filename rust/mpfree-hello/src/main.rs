@@ -24,7 +24,7 @@
 //!                      from the pads or the screen, level on Q-Link 1 (at most
 //!                      G dB), timing of each hit, Note Repeat, Latch, Full and
 //!                      Half Level, MENU and Prefs, the button guide; the synth
-//!                      (Poly) as the kit list's last entry, its pages on the
+//!                      (Poly or FM) as the kit list's last entry, its pages on the
 //!                      Synth tab with Q-Links 1-4 on the marked knobs; the
 //!                      Sample tab, the sampler's pad editor (Wave: Start, End,
 //!                      the loop and fades of the pad last hit, Q-Links 1-4 on
@@ -1221,7 +1221,7 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
                 pads[pad as usize] = Some(s.name.clone());
             }
         }
-        gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k) }
+        gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k), chip: None }
     }).collect();
     views.push(synth.kit_view());
     views
@@ -1465,7 +1465,7 @@ const LOOP_SECONDS: u32 = 60;
 /// While overdubbing, the loop's waveform is redrawn about once a second.
 const LOOP_WAVE_PERIODS: u64 = 344;
 
-/// The sequencer's notes on the pads: the sampler's kit, or Poly while the
+/// The sequencer's notes on the pads: the sampler's kit, or the synth while the
 /// synth has the pads. Each hit is noted so the screen's pads can flash.
 struct SeqPads<'a> {
     player: &'a mut sampler::Player,
@@ -1560,15 +1560,24 @@ fn time_action(out: &mut Out, time: &mut time::TimeHost, app: &mut app::App, a: 
 /// The synth's part of the status line.
 fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
     let c = synth.counters();
-    format!("synth: Poly ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, {} resets",
-            synth.preset_name(), time.describe(), c.notes, c.peak_voices, synth.value(mpfree_synth::params::POLYPHONY),
+    format!("synth: {} ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, {} resets",
+            synth.engine().name(), synth.preset_name(), time.describe(), c.notes, c.peak_voices, synth.polyphony(),
             c.dropped, c.resets)
 }
 
-/// The log line for the pads moving to the synth or by an octave.
+/// The log line for the pads moving to the synth, by an octave or to
+/// another layout: "pads: Poly synth, C3 to D#4 (pad 1 = C3; …)", with the
+/// scale and layout when a scale is on.
 fn synth_pads_note(synth: &synth::Synth) -> String {
-    format!("pads: Poly synth, {} (pad 1 = {}; SHIFT + wheel on Play: octave)", synth.range_text(),
-            synth::note_name(synth.note(0)))
+    let setup = synth.setup();
+    let layout = match setup.scale {
+        Some(s) => format!("{}, {} (bank {}), ", synth::scale_name(&s), setup.layout.label(),
+                           app::bank_letter(synth.settings().bank)),
+        None => String::new(),
+    };
+    let pad1 = synth.root(0).map_or("no note".to_string(), synth::note_name);
+    format!("pads: {} synth, {layout}{} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)", synth.engine().name(),
+            synth.range_text())
 }
 
 fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
@@ -1588,8 +1597,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     }
     // The synth: one more entry after the kits, and the Synth tab.
     let mut synth = synth::Synth::new(RATE);
-    out.say(&format!("synth: Poly, preset {}, as kit list entry {} ({}); the Synth tab edits it",
-                     synth.preset_name(), kits.len() + 1, synth.range_text()));
+    out.say(&format!("synth: {}, preset {}, as kit list entry {} ({}); the Synth tab edits it and picks Poly or FM",
+                     synth.engine().name(), synth.preset_name(), kits.len() + 1, synth.range_text()));
     out.show(gui::ToUi::Kits(kit_views(&kits, &synth)));
     out.show(gui::ToUi::Synth(synth.state()));
     // The Sample tab edits the kits' projects on the screen thread.
@@ -1604,6 +1613,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // page wants turns, so the last position of each is kept.
     let mut qlink_at: [Option<u8>; 4] = [None; 4];
     let mut synth_meters = synth.meters();
+    // Each sounding voice's pressure, for the Synth tab's Pressure page.
+    let mut synth_pressures = [0f32; 16];
+    let mut shown_pressures = 0usize;
     // The Sample tab: a kit view the screen had no room to take back yet
     // (kept here, never freed on this thread), how many views were swapped
     // in, its playheads, and whether a view changed the playing kit's pads.
@@ -1795,8 +1807,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     if let Some(line) = param_log.flush(&synth) {
                         out.note(&line);
                     }
-                    if let Some(name) = synth.load_preset(k) {
-                        out.note(&format!("synth: preset {} of {}, {name}", k + 1, mpfree_synth::Poly::presets().len()));
+                    if let Some(name) = synth.load_preset(k).map(str::to_string) {
+                        out.note(&format!("synth: preset {} of {}, {name}", k + 1, synth.preset_count()));
                         out.show(gui::ToUi::SynthValues(synth.values()));
                     }
                 }
@@ -1912,7 +1924,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Octave(d) if synth_on || kit_to == Some(synth_kit) => {
                     if synth.shift_octave(d) {
                         out.note(&synth_pads_note(&synth));
-                        out.show(gui::ToUi::KitPads { kit: synth_kit, pads: synth.pad_labels() });
+                        out.show(gui::ToUi::KitChanged { kit: synth_kit, view: synth.kit_view() });
                         rest = synth.pad_colours();
                         ports.send_batch(out, false, "the synth's pad colours", &as_slices(&pad_colours(&rest)))?;
                         lit = [false; 16];
@@ -1922,6 +1934,25 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Octave(d) => {
                     let from = kit_to.unwrap_or(player.kit()) as i64;
                     kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
+                }
+                // The Synth tab's options: the engine, the scale and the
+                // pad layouts.
+                app::Effect::SynthPads(p) => {
+                    if let Some(line) = param_log.flush(&synth) {
+                        out.note(&line);
+                    }
+                    if synth.set_settings(p) {
+                        out.note(&format!("synth: {} on the pads, preset {}", synth.engine().name(),
+                                          synth.preset_name()));
+                        out.show(gui::ToUi::Synth(synth.state()));
+                    }
+                    out.note(&synth_pads_note(&synth));
+                    out.show(gui::ToUi::KitChanged { kit: synth_kit, view: synth.kit_view() });
+                    if synth_on {
+                        rest = synth.pad_colours();
+                        ports.send_batch(out, false, "the synth's pad colours", &as_slices(&pad_colours(&rest)))?;
+                        lit = [false; 16];
+                    }
                 }
                 app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
@@ -2299,6 +2330,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             if meters != synth_meters {
                 out.show(gui::ToUi::SynthMeters(meters.clone()));
                 synth_meters = meters;
+            }
+            let mut bars = [0f32; 16];
+            let n = synth.pressures(&mut bars);
+            if (n, bars) != (shown_pressures, synth_pressures) {
+                out.show(gui::ToUi::SynthPressures(bars[..n].to_vec()));
+                (shown_pressures, synth_pressures) = (n, bars);
             }
         }
         i += 1;
