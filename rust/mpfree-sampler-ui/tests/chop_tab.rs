@@ -4,6 +4,7 @@
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::{ChopMode, PlayMode};
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
+use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
 use mpfree_ui::wave::Waveform;
@@ -270,10 +271,10 @@ fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     assert!(list_right(&s).contains("too many"));
     // The bar's Wave tab goes back to Wave.
     let bar = s.ui.rect_of(chop_tab::BAR).unwrap();
-    let wave = s.ui.get::<PadBar>(chop_tab::BAR).unwrap().tab_rect(bar, 0);
+    let wave = s.ui.get::<PadBar>(chop_tab::BAR).unwrap().tab_rect(bar, wave_tab::TAB);
     let ev = s.ui.touch(1, Touch::Down, wave.x + 5, wave.y + 5).unwrap();
     let st = s.state.clone();
-    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), Some(ChopAction::Tab(0)));
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), Some(ChopAction::Tab(wave_tab::TAB)));
 }
 
 #[test]
