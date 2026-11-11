@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{
-    ChannelPick, Fade, LoopMode, Pad, PlayMode, Project, Region, SourceId,
+    ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, SourceId,
 };
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
@@ -229,12 +229,14 @@ impl SamplePage {
         self.stale = true;
     }
 
-    /// A pad was hit: the tab edits it from now on.
+    /// A pad was hit: the tab edits it (or, with the pads playing notes,
+    /// the keygroup that plays its note) from now on.
     pub fn hit(&mut self, pad: usize) {
         if self.auditioning == Some(pad) {
             // Its own release lets it go.
             self.auditioning = None;
         }
+        let pad = self.played(pad);
         if pad == self.pad || pad >= 16 {
             return;
         }
@@ -247,6 +249,7 @@ impl SamplePage {
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
+        let pad = self.played(pad);
         self.light(ui, pad, true);
         if pad != self.pad {
             return;
@@ -294,7 +297,24 @@ impl SamplePage {
 
     /// A pad let go: the Pads tab's map stops lighting it.
     pub fn pad_up(&mut self, ui: &mut Ui, pad: usize) {
+        let pad = self.played(pad);
         self.light(ui, pad, false);
+    }
+
+    /// The pad that sounds when pad `pad` is hit: itself, or with the
+    /// kit's pads playing notes, the first keygroup holding its note.
+    fn played(&self, pad: usize) -> usize {
+        let Some(p) = self.projects.get(self.kit) else {
+            return pad;
+        };
+        match p.pads_play() {
+            PadsPlay::Keys { from } if pad < 16 => p
+                .keygroups_for(from.saturating_add(pad as u8))
+                .first()
+                .copied()
+                .unwrap_or(pad),
+            _ => pad,
+        }
     }
 
     fn light(&mut self, ui: &mut Ui, pad: usize, down: bool) {
@@ -603,7 +623,11 @@ impl SamplePage {
         match &a {
             ChopAction::Tab(i) => self.open(ui, *i),
             ChopAction::ToPads {
-                pad, bounds, mode, ..
+                pad,
+                bounds,
+                mode,
+                keys_from,
+                ..
             } => {
                 let kit = self.kit;
                 let Some(project) = self.projects.get_mut(kit) else {
@@ -629,8 +653,16 @@ impl SamplePage {
                         };
                         let s = |f: u64| format!("{:.3} s", f as f64 / f64::from(self.rate.max(1)));
                         let span = format!("{} to {}", s(bounds[0]), s(bounds[n]));
+                        let to = match keys_from {
+                            Some(k) => format!(
+                                "keys {} to {} (pads {to}; the pads now play notes)",
+                                mpfree_sampler_ui::note_name(*k),
+                                mpfree_sampler_ui::note_name(k.saturating_add(n as u8 - 1))
+                            ),
+                            None => format!("pads {to}"),
+                        };
                         self.lines.push(format!("sample: {} pad {} {name}: chopped {span} into {n} slice{} ({mode:?}) on \
-                                                 pads {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
+                                                 {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
                                                 if n == 1 { "" } else { "s" }));
                     }
                     Err(e) => self.lines.push(format!(
@@ -707,6 +739,32 @@ impl SamplePage {
     fn act_play(&mut self, ui: &mut Ui, a: PlayAction) {
         match &a {
             PlayAction::Tab(i) => self.open(ui, *i),
+            PlayAction::PadsPlay(play) => {
+                self.lift();
+                let kit = self.kit;
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
+                let what = match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        match play {
+                            PadsPlay::Pads => "the pads play their own sounds".to_string(),
+                            PadsPlay::Keys { from } => format!(
+                                "the pads play notes, pad 1 {}",
+                                mpfree_sampler_ui::note_name(*from)
+                            ),
+                        }
+                    }
+                    Err(e) => format!("pads play not changed ({e:?})"),
+                };
+                let kit = self.kit_text_of(kit);
+                self.lines.push(format!("sample: {kit}: {what}"));
+                self.refresh(ui);
+            }
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {

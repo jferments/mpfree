@@ -632,7 +632,61 @@ pub struct Pad {
     pub tune_cents: i32,
     /// What pressure on this pad changes.
     pub pressure: PressureRoute,
+    /// As a keygroup: the notes it plays (see [`Keys`]). A pad without
+    /// keys only plays when it is hit.
+    pub keys: Option<Keys>,
 }
+
+/// A keygroup's notes: from `lo` to `hi` (MIDI notes), its sound played
+/// as recorded at `root` and a semitone higher for each note above it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keys {
+    pub lo: u8,
+    pub hi: u8,
+    pub root: u8,
+}
+
+impl Keys {
+    /// One note, played as recorded.
+    pub fn one(note: u8) -> Keys {
+        Keys {
+            lo: note,
+            hi: note,
+            root: note,
+        }
+    }
+
+    /// The whole keyboard, played as recorded at `root`.
+    pub fn all(root: u8) -> Keys {
+        Keys {
+            lo: 0,
+            hi: 127,
+            root,
+        }
+    }
+
+    pub fn contains(&self, note: u8) -> bool {
+        (self.lo..=self.hi).contains(&note)
+    }
+}
+
+/// What the kit's pads play.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadsPlay {
+    /// Each pad its own sound: a drum kit.
+    #[default]
+    Pads,
+    /// Notes: pad 1 plays note `from`, each pad after it a semitone
+    /// higher, through the kit's keygroups (pads with [`Keys`]).
+    Keys { from: u8 },
+}
+
+/// Where slices go on the keyboard by default: from note 36 (C2 as
+/// `note_name` writes it; C1 on keyboards that call middle C C3), as most
+/// samplers' slices to notes do.
+pub const SLICE_KEYS_FROM: u8 = 36;
+/// Voices a keygroup spread over the keyboard may hold.
+pub const KEYGROUP_POLYPHONY: u8 = 16;
 
 impl Pad {
     pub fn new(name: &str, layer: Layer) -> Pad {
@@ -652,6 +706,7 @@ impl Pad {
             pan: 0.0,
             tune_cents: 0,
             pressure: PressureRoute::default(),
+            keys: None,
         }
     }
 }
@@ -676,6 +731,10 @@ enum Undo {
     AddChop {
         set: Option<Box<ChopSet>>,
     },
+    /// What the pads play changed.
+    PadsPlay {
+        before: PadsPlay,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
 }
@@ -691,6 +750,7 @@ pub struct Project {
     pub chop_sets: Vec<ChopSet>,
     pads: Vec<Option<Pad>>,
     master: MasterFx,
+    pads_play: PadsPlay,
     undo: Vec<Undo>,
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
@@ -755,6 +815,12 @@ impl Project {
             return Err(ModelError::TooManyLayers);
         }
         let depth = pad.pressure.depth;
+        if pad
+            .keys
+            .is_some_and(|k| k.lo > k.hi || k.hi > 127 || k.root > 127)
+        {
+            return Err(ModelError::BadPad);
+        }
         if pad.polyphony == 0
             || pad.chokes.iter().any(|&c| c >= PADS)
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
@@ -909,6 +975,8 @@ impl Project {
                     Pad {
                         name,
                         layers: vec![Layer::new(region)],
+                        // A slice is a pad; chop to keys gives it its note.
+                        keys: None,
                         ..t.clone()
                     }
                 }
@@ -1007,6 +1075,103 @@ impl Project {
         Ok(id)
     }
 
+    pub fn pads_play(&self) -> PadsPlay {
+        self.pads_play
+    }
+
+    /// What the pads play: their own sounds, or notes through the
+    /// keygroups. One undo step.
+    pub fn set_pads_play(&mut self, play: PadsPlay) -> Result<(), ModelError> {
+        if let PadsPlay::Keys { from } = play {
+            if from > 127 - 15 {
+                return Err(ModelError::BadPad);
+            }
+        }
+        if play == self.pads_play {
+            return Ok(());
+        }
+        let before = std::mem::replace(&mut self.pads_play, play);
+        self.push_undo(Undo::PadsPlay { before });
+        Ok(())
+    }
+
+    /// Adds chop set `c` and puts its slices `first..first+count` on
+    /// consecutive pads from `to_pad` as keygroups of one note each, from
+    /// note `from_note` up, and the pads then play those notes (pad 1 the
+    /// first slice). One undo step. Each pad is as
+    /// [`Project::chop_to_pads`] makes it. Returns the chop set's index.
+    pub fn chop_to_keys(
+        &mut self,
+        c: ChopSet,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+        from_note: u8,
+        template: Option<&Pad>,
+    ) -> Result<usize, ModelError> {
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
+        if usize::from(from_note) + count > 128 || from_note > 127 - 15 {
+            return Err(ModelError::BadSlice);
+        }
+        let mut pads = self.slice_pads(&c, first, count, to_pad, template, 1)?;
+        for (k, p) in pads.iter_mut().enumerate() {
+            p.keys = Some(Keys::one(from_note + k as u8));
+        }
+        self.chop_sets.push(c);
+        let mut steps = vec![Undo::AddChop { set: None }];
+        steps.extend(self.place_pads(pads, to_pad));
+        let play = PadsPlay::Keys { from: from_note };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(self.chop_sets.len() - 1)
+    }
+
+    /// Makes pad `pad` a keygroup over the whole keyboard with its sound
+    /// as recorded at `root` (its detected root note, say), and the pads
+    /// play notes from the C at or below the root. One undo step.
+    pub fn spread_to_keys(&mut self, pad: usize, root: u8) -> Result<(), ModelError> {
+        if root > 127 {
+            return Err(ModelError::BadPad);
+        }
+        let mut p = self.pad(pad).cloned().ok_or(ModelError::BadPad)?;
+        p.keys = Some(Keys::all(root));
+        p.polyphony = p.polyphony.max(KEYGROUP_POLYPHONY);
+        self.check_pad(&p)?;
+        let before = self.pads[pad].replace(p);
+        let mut steps = vec![Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        }];
+        let play = PadsPlay::Keys {
+            from: (root - root % 12).min(127 - 15),
+        };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
+    /// The keygroups (pad indices) that play `note`, in pad order.
+    pub fn keygroups_for(&self, note: u8) -> Vec<usize> {
+        (0..PADS)
+            .filter(|&i| {
+                self.pad(i)
+                    .and_then(|p| p.keys)
+                    .is_some_and(|k| k.contains(note))
+            })
+            .collect()
+    }
+
     fn place_pads(&mut self, pads: Vec<Pad>, to_pad: usize) -> Vec<Undo> {
         let mut steps = Vec::with_capacity(pads.len());
         for (k, pad) in pads.into_iter().enumerate() {
@@ -1063,6 +1228,9 @@ impl Project {
                 self.chop_sets.push(*c);
                 Undo::AddChop { set: None }
             }
+            Undo::PadsPlay { before } => Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, before),
+            },
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }
