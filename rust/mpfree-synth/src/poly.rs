@@ -3,15 +3,22 @@
 //! a ladder or state-variable filter, two ADSR envelopes, a tempo-syncable
 //! LFO, poly, mono and legato modes with glide.
 //!
+//! Pad pressure goes through the shared shaper ([`mpfree_node::pressure`])
+//! into four slots ([`crate::pressure::POLY_TARGETS`]): cutoff, resonance,
+//! a level swell, vibrato (its own sine at Vib rate), the LFO's rate, pitch,
+//! drive, pulse width, sub and noise.
+//!
 //! Timing: amp envelopes, oscillators and filters run every frame. Pitch,
-//! cutoff, the LFO, the filter envelope and parameter smoothing run at a
-//! control rate of one step every [`CTRL`] frames, aligned to the absolute
-//! frame, so the output does not depend on how the host cuts blocks.
+//! cutoff, the LFO, the filter envelope, pressure and parameter smoothing
+//! run at a control rate of one step every [`CTRL`] frames, aligned to the
+//! absolute frame, so the output does not depend on how the host cuts
+//! blocks. Each voice's gain is ramped across a control step.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs, PressureMode, PressureShape, Smooth, Timed};
 
 use crate::dsp::*;
 use crate::params::*;
+use crate::pressure::{swell_gain, Depths, Slot};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -61,9 +68,18 @@ struct Voice {
     fenv: Env,
     coefs: FilterCoefs,
     filt: [Filter; 2],
-    /// Gain from velocity, the LFO and pressure, set each control step.
+    /// Gain from velocity, the LFO and pressure, ramped across each control
+    /// step by `gain_inc` a frame.
     gain: f32,
-    press: Smooth,
+    gain_inc: f32,
+    /// Drive, sub and noise for this voice (pressure can move them).
+    drive_gain: f32,
+    drive_amt: f32,
+    sub: f32,
+    noise: f32,
+    press: Pressure,
+    /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
+    pv: f32,
     kill_gain: f32,
     kill_step: f32,
 }
@@ -92,7 +108,13 @@ impl Voice {
             coefs: FilterCoefs::default(),
             filt: [Filter::default(); 2],
             gain: 0.0,
-            press: Smooth::new(0.0),
+            gain_inc: 0.0,
+            drive_gain: 1.0,
+            drive_amt: 0.0,
+            sub: 0.0,
+            noise: 0.0,
+            press: Pressure::new(),
+            pv: 0.0,
             kill_gain: 1.0,
             kill_step: 0.0,
         }
@@ -154,6 +176,13 @@ pub struct Poly {
     /// Absolute frame of the next frame to process, for control steps.
     frame: u64,
     meter_voices: f32,
+    /// The pressure shaper worked out for the control rate, and the slots.
+    press_c: PressureCoefs,
+    depths: Depths,
+    chord: PressureChord,
+    /// The pressure vibrato's phase (0 to 1) and value (-1 to 1).
+    vib_phase: f32,
+    vib: f32,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
 }
@@ -196,6 +225,11 @@ impl Poly {
             last_pitch: 60.0,
             frame: 0,
             meter_voices: 0.0,
+            press_c: PressureCoefs::default(),
+            depths: Depths::default(),
+            chord: PressureChord::default(),
+            vib_phase: 0.0,
+            vib: 0.0,
             dropped: 0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
@@ -214,8 +248,30 @@ impl Poly {
     /// Voices sounding or fading.
     pub fn active_voices(&self) -> usize { self.voices.iter().filter(|v| v.state != State::Free).count() }
 
+    /// The pressure each sounding voice uses now (0 to 1), in voice order,
+    /// for the Synth tab's live bars. Returns how many it wrote.
+    pub fn pressures(&self, out: &mut [f32]) -> usize {
+        let mut n = 0;
+        for v in self.voices.iter().filter(|v| v.sounding()) {
+            if n == out.len() { break; }
+            out[n] = v.pv;
+            n += 1;
+        }
+        n
+    }
+
     #[inline]
     fn v(&self, id: u16) -> f32 { self.values[id as usize] }
+
+    /// Works out the pressure shaper and slots from the values.
+    fn update_pressure(&mut self) {
+        let shape = PressureShape::from_params(PRESS_BASE, |id| self.values[id as usize]);
+        self.press_c = shape.coefs(self.ctrl_rate());
+        let slots: [Slot; 4] = std::array::from_fn(|n| Slot { target: self.v(press_target(n)) as u8, depth: self.v(press_depth(n)) / 100.0 });
+        // Off: pressure does nothing, and a level swell plays at the preset's
+        // full level (not at its resting dip).
+        self.depths = if shape.mode == PressureMode::Off { Depths::default() } else { Depths::from_slots(&slots) };
+    }
 
     fn ctrl_rate(&self) -> f32 { self.rate as f32 / CTRL as f32 }
 
@@ -280,7 +336,9 @@ impl Poly {
             let legato = mode == 2 && was_held && self.voices[0].state == State::On;
             let from = if self.voices[0].sounding() { self.voices[0].pitch } else { self.last_pitch };
             let v = &mut self.voices[0];
-            if v.state == State::Free || v.state == State::Kill { Self::fresh(v); }
+            let fresh = v.state == State::Free || v.state == State::Kill;
+            if fresh { Self::fresh(v); }
+            v.press.start();
             v.note = note;
             v.target = f32::from(note);
             v.pitch = if glide && (mode == 1 || legato) { from } else { v.target };
@@ -293,6 +351,7 @@ impl Poly {
             v.age = self.clock;
             self.last_pitch = f32::from(note);
             self.voice_control(0);
+            if fresh { Self::snap_gain(&mut self.voices[0]); }
             return;
         }
 
@@ -318,7 +377,9 @@ impl Poly {
         };
         let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
         let v = &mut self.voices[slot];
-        if !v.sounding() { Self::fresh(v); }
+        let fresh = !v.sounding();
+        if fresh { Self::fresh(v); }
+        v.press.start();
         v.note = note;
         v.vel = vel;
         v.target = f32::from(note);
@@ -334,6 +395,14 @@ impl Poly {
             }
         }
         self.voice_control(slot);
+        if fresh { Self::snap_gain(&mut self.voices[slot]); }
+    }
+
+    /// A fresh voice starts at its gain instead of ramping from the last
+    /// note's.
+    fn snap_gain(v: &mut Voice) {
+        v.gain += v.gain_inc * CTRL as f32;
+        v.gain_inc = 0.0;
     }
 
     /// Clears a slot's state for a new note.
@@ -344,7 +413,8 @@ impl Poly {
         v.amp.clear();
         v.fenv.clear();
         v.filt = [Filter::default(); 2];
-        v.press.snap(0.0);
+        v.press.clear();
+        v.pv = 0.0;
         v.kill_gain = 1.0;
     }
 
@@ -384,35 +454,32 @@ impl Poly {
                 if !glide { v.pitch = v.target; }
                 self.last_pitch = v.target;
             } else {
-                v.state = State::Release;
-                v.amp.gate_off();
-                v.fenv.gate_off();
+                Self::release(v);
             }
             return;
         }
         for v in &mut self.voices {
-            if v.state == State::On && v.note == note {
-                v.state = State::Release;
-                v.amp.gate_off();
-                v.fenv.gate_off();
-            }
+            if v.state == State::On && v.note == note { Self::release(v); }
         }
+    }
+
+    fn release(v: &mut Voice) {
+        v.state = State::Release;
+        v.amp.gate_off();
+        v.fenv.gate_off();
+        v.press.release();
     }
 
     fn all_off(&mut self) {
         self.stack_len = 0;
         for v in &mut self.voices {
-            if v.state == State::On {
-                v.state = State::Release;
-                v.amp.gate_off();
-                v.fenv.gate_off();
-            }
+            if v.state == State::On { Self::release(v); }
         }
     }
 
     fn pressure(&mut self, note: u8, value: u8) {
         for v in &mut self.voices {
-            if v.sounding() && v.note == note { v.press.target = f32::from(value.min(127)) / 127.0; }
+            if v.sounding() && v.note == note { v.press.set(value); }
         }
     }
 
@@ -452,7 +519,29 @@ impl Poly {
         s.wave2 = self.values[OSC2_WAVE as usize] as u8;
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
 
-        // LFO: free-running, or locked to the transport's beat.
+        // Pressure: the chord (Highest mode) aims before the voices step.
+        let c = &self.press_c;
+        let chord = if c.mode == PressureMode::Highest {
+            self.chord.step(c, self.voices.iter().filter(|v| v.sounding()).map(|v| (v.state == State::On, v.press.aim(c))))
+        } else {
+            0.0
+        };
+        let mut top = 0.0f32;
+        for v in self.voices.iter_mut().filter(|v| v.state != State::Free) {
+            let own = v.press.step(c);
+            v.pv = match c.mode {
+                PressureMode::PerNote => own,
+                PressureMode::Highest => chord,
+                PressureMode::Off => 0.0,
+            };
+            if v.sounding() { top = top.max(v.pv); }
+        }
+        let vib_hz = self.values[PRESS_VIB_RATE as usize];
+        self.vib_phase = (self.vib_phase + vib_hz * CTRL as f32 / self.rate as f32).fract();
+        self.vib = (std::f32::consts::TAU * self.vib_phase).sin();
+
+        // LFO: free-running, or locked to the transport's beat. Pressure on
+        // LFO rate follows the highest pressure (the LFO is shared).
         let shape = LfoShape::from_index(self.v(LFO_SHAPE));
         let sync = (self.v(LFO_SYNC) as usize).min(LFO_SYNC_BEATS.len() - 1);
         let prev = self.lfo_phase;
@@ -461,6 +550,7 @@ impl Poly {
             self.lfo_phase = (beats / LFO_SYNC_BEATS[sync]).rem_euclid(1.0);
         } else {
             let hz = if sync > 0 { ctx.bpm / 60.0 / LFO_SYNC_BEATS[sync] } else { f64::from(self.v(LFO_RATE)) };
+            let hz = hz * f64::from(exp2(self.depths.get(target::LFO_RATE) * 2.0 * top));
             self.lfo_phase = (self.lfo_phase + hz * CTRL as f64 / f64::from(self.rate)).rem_euclid(1.0);
         }
         if self.lfo_phase < prev { self.lfo_held = self.rng.bipolar(); }
@@ -491,7 +581,10 @@ impl Poly {
         let key = self.v(KEY_TRACK) / 100.0;
         let vel_cut = self.v(VEL_CUTOFF);
         let lfo_cut = lfo * self.v(LFO_CUTOFF);
-        let press_cut = self.v(PRESSURE_CUTOFF);
+        let d = self.depths;
+        let vib_p = self.vib;
+        let drive_db = self.sm.drive.value;
+        let (sh_drive_gain, sh_drive_amt, sh_sub, sh_noise) = (self.sh.drive_gain, self.sh.drive_amt, self.sh.sub, self.sh.noise);
         let vel_amp = self.v(VEL_AMP) / 100.0;
         let trem = 1.0 - self.v(LFO_AMP) / 100.0 * (0.5 - 0.5 * lfo);
         let cutoff = self.sm.cutoff.value;
@@ -499,9 +592,13 @@ impl Poly {
         let norm = VOICE_GAIN / (unison as f32).sqrt();
 
         let v = &mut self.voices[i];
+        let p = v.pv;
         v.pitch += (v.target - v.pitch) * glide_c;
         if (v.target - v.pitch).abs() < 1e-4 { v.pitch = v.target; }
-        let base = v.pitch + bend + vib;
+        let mut base = v.pitch + bend + vib;
+        if d.any {
+            base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
+        }
         for u in 0..unison {
             let pos = if unison > 1 { u as f32 / (unison - 1) as f32 * 2.0 - 1.0 } else { 0.0 };
             let cents = pos * detune;
@@ -512,14 +609,28 @@ impl Poly {
             v.pan_r[u] = (1.0 + p).sqrt();
         }
         v.dt_sub = (note_hz(base + o1 - 12.0) / rate).min(0.45);
-        v.pw1 = pw1;
-        v.pw2 = pw2;
-        let press = v.press.next();
+        let pw_p = p * d.get(target::WIDTH) * 0.45;
+        v.pw1 = (pw1 + pw_p).clamp(0.05, 0.95);
+        v.pw2 = (pw2 + pw_p).clamp(0.05, 0.95);
         let fe = v.fenv.next();
-        let oct = cutoff + fe * fenv_amt + (f32::from(v.note) - 60.0) / 12.0 * key + v.vel * vel_cut + lfo_cut + press * press_cut;
+        let oct = cutoff + fe * fenv_amt + (f32::from(v.note) - 60.0) / 12.0 * key + v.vel * vel_cut + lfo_cut + p * d.get(target::CUTOFF) * 4.0;
+        let res = (res + p * d.get(target::RESONANCE)).clamp(0.0, 1.0);
         v.coefs = FilterCoefs::new(exp2(oct), res, rate);
+        let dd = d.get(target::DRIVE);
+        if dd == 0.0 {
+            v.drive_gain = sh_drive_gain;
+            v.drive_amt = sh_drive_amt;
+        } else {
+            let db = (drive_db + p * dd * 24.0).clamp(0.0, 48.0);
+            v.drive_gain = exp2(db * (1.0 / 6.020_6));
+            v.drive_amt = (db / 3.0).min(1.0);
+        }
+        v.sub = (sh_sub + p * d.get(target::SUB)).clamp(0.0, 1.0);
+        v.noise = (sh_noise + p * d.get(target::NOISE)).clamp(0.0, 1.0);
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
-        v.gain = norm * vg * trem;
+        let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
+        let gain = norm * vg * trem * swell;
+        v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
 
     // ---- audio rate ----
@@ -530,9 +641,10 @@ impl Poly {
         let w2 = Wave::from_index(f32::from(s.wave2));
         let mode = FilterMode::from_index(f32::from(s.mode));
         // Silent sources are skipped (their phases wait).
-        let (use1, use2, use_sub, use_noise) = (s.lvl1 != 0.0, s.lvl2 != 0.0, s.sub != 0.0, s.noise != 0.0);
+        let (use1, use2) = (s.lvl1 != 0.0, s.lvl2 != 0.0);
         for v in &mut self.voices {
             if v.state == State::Free { continue; }
+            let (use_sub, use_noise) = (v.sub != 0.0, v.noise != 0.0);
             for k in from..to {
                 let mut l = 0.0;
                 let mut r = 0.0;
@@ -544,13 +656,14 @@ impl Poly {
                     r += a * v.pan_r[u];
                 }
                 let mut c = 0.0;
-                if use_sub { c += osc(Wave::Pulse, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub; }
-                if use_noise { c += self.rng.bipolar() * s.noise; }
-                let l = drive(l + c, s.drive_gain, s.drive_amt);
-                let r = drive(r + c, s.drive_gain, s.drive_amt);
+                if use_sub { c += osc(Wave::Pulse, &mut v.ph_sub, v.dt_sub, 0.5) * v.sub; }
+                if use_noise { c += self.rng.bipolar() * v.noise; }
+                let l = drive(l + c, v.drive_gain, v.drive_amt);
+                let r = drive(r + c, v.drive_gain, v.drive_amt);
                 let l = v.filt[0].process(mode, &v.coefs, l);
                 let r = v.filt[1].process(mode, &v.coefs, r);
                 let mut g = v.amp.next() * v.gain;
+                v.gain += v.gain_inc;
                 if v.state == State::Kill {
                     v.kill_gain -= v.kill_step;
                     if v.kill_gain <= 0.0 { v.kill_gain = 0.0; v.state = State::Free; }
@@ -578,6 +691,7 @@ impl Node for Poly {
         self.values[id as usize] = p.clamp(value);
         self.update_targets();
         if matches!(id, AMP_A | AMP_D | AMP_S | AMP_R | FENV_A | FENV_D | FENV_S | FENV_R) { self.update_envs(); }
+        if id >= PRESS_BASE { self.update_pressure(); }
         if id == VOICE_MODE { self.all_off(); }
     }
 
@@ -592,6 +706,7 @@ impl Node for Poly {
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(8_000);
         self.update_envs();
+        self.update_pressure();
         self.reset_smoothers();
         self.control(&Ctx::new(self.rate, 0), 0);
     }
@@ -602,6 +717,8 @@ impl Node for Poly {
         self.reset_smoothers();
         self.stack_len = 0;
         self.lfo_phase = 0.0;
+        self.vib_phase = 0.0;
+        self.chord.clear();
         self.meter_voices = 0.0;
         self.control(&Ctx::new(self.rate, 0), 0);
     }

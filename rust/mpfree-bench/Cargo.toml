@@ -12,3 +12,8 @@ mpfree-synth = { path = "../mpfree-synth" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-grain = { path = "../mpfree-grain" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-play = { path = "../mpfree-play" }
+mpfree-arp = { path = "../mpfree-arp" }
+mpfree-looper = { path = "../mpfree-looper" }
