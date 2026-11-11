@@ -190,8 +190,17 @@ In order. Each step is its own PR.
    gate on CPU cost later is to count instructions per engine (valgrind or
    qemu-arm's instruction counter) and fail on a regression past a set
    margin; that needs the tool installed on the runners first.
-5. **Fuzz and property tests** for everything that reads files or device
-   input: WAV, MIDI, touch events, kit files, the DX7 sysex importer.
+5. **Damaged input** (done): every reader of files and device input has a
+   `tests/robust_*.rs` that feeds it thousands of damaged copies of good
+   input (bits flipped, fields set to edge values, cut short, grown,
+   repeated) and checks the answer is an error or something safe to use,
+   never a panic: WAV in the sampler and wavetables, DX7 sysex (then played
+   in the FM engine), kits files, the plugin process's wire messages and
+   parameter ranges, touchscreen events, MIDI from the controller, arp
+   patterns and libraries (they must write back to what they read), and
+   settings files. The damage comes from `rust/test-support/mutate.rs`,
+   which needs no crate and no nightly toolchain, and the same seed gives
+   the same cases everywhere. A new reader gets the same kind of test.
 6. **End-to-end headless scenarios** under qemu ARMv7: scripted pad and touch
    input in, audio and screen fingerprints out.
 7. **Nightly long run:** soak tests and sanitizers. This needs the VM's job
