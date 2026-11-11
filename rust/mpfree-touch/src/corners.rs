@@ -28,7 +28,12 @@ pub enum Corner {
 }
 
 impl Corner {
-    pub const ORDER: [Corner; 4] = [Corner::TopLeft, Corner::TopRight, Corner::BottomRight, Corner::BottomLeft];
+    pub const ORDER: [Corner; 4] = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomRight,
+        Corner::BottomLeft,
+    ];
 
     /// (right half, bottom half) in logical space.
     fn quadrant(self) -> (bool, bool) {
@@ -77,7 +82,10 @@ pub struct Calibration {
 impl Calibration {
     /// The starting profile with this orientation.
     pub fn profile(&self, base: &TouchProfile) -> TouchProfile {
-        TouchProfile { orientation: self.orientation, ..*base }
+        TouchProfile {
+            orientation: self.orientation,
+            ..*base
+        }
     }
 }
 
@@ -104,7 +112,10 @@ impl CornerCalibrator {
     /// `base` gives the raw ranges and logical size; its orientation is only
     /// used to report whether the result matches.
     pub fn new(base: TouchProfile) -> Self {
-        Self { base, taps: Vec::with_capacity(4) }
+        Self {
+            base,
+            taps: Vec::with_capacity(4),
+        }
     }
 
     /// The corner to ask for now, or `None` when all four are in.
@@ -127,7 +138,11 @@ impl CornerCalibrator {
         }
         let region = (u > 0.5, v > 0.5);
         for (i, &(x, y)) in self.taps.iter().enumerate() {
-            if (norm(x, self.base.raw_x) > 0.5, norm(y, self.base.raw_y) > 0.5) == region {
+            if (
+                norm(x, self.base.raw_x) > 0.5,
+                norm(y, self.base.raw_y) > 0.5,
+            ) == region
+            {
                 return TapOutcome::SameAsEarlier(Corner::ORDER[i]);
             }
         }
@@ -208,5 +223,9 @@ pub fn parse_orientation_line(line: &str) -> Option<Orientation> {
             return None;
         }
     }
-    Some(Orientation { swap_xy: o.0?, flip_x: o.1?, flip_y: o.2? })
+    Some(Orientation {
+        swap_xy: o.0?,
+        flip_x: o.1?,
+        flip_y: o.2?,
+    })
 }

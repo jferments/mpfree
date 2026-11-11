@@ -46,7 +46,12 @@ pub struct InputEvent {
 
 impl InputEvent {
     pub const fn new(time_us: u64, kind: u16, code: u16, value: i32) -> Self {
-        Self { time_us, kind, code, value }
+        Self {
+            time_us,
+            kind,
+            code,
+            value,
+        }
     }
 }
 
@@ -243,7 +248,10 @@ impl MtDecoder {
                 Step::Pending
             }
             (EV_ABS, ABS_MT_SLOT) => {
-                match usize::try_from(ev.value).ok().filter(|&s| s < self.slots.len()) {
+                match usize::try_from(ev.value)
+                    .ok()
+                    .filter(|&s| s < self.slots.len())
+                {
                     Some(s) => self.current_slot = Some(s),
                     None => {
                         self.stats.out_of_range_slots += 1;
@@ -396,9 +404,16 @@ impl MtDecoder {
         self.events.clear();
         for slot in &mut self.slots {
             if let Some(contact) = slot.live.take() {
-                self.events.push(ContactEvent { phase: Phase::Cancel, contact, time_us });
+                self.events.push(ContactEvent {
+                    phase: Phase::Cancel,
+                    contact,
+                    time_us,
+                });
             }
-            *slot = Slot { stale: true, ..Slot::default() };
+            *slot = Slot {
+                stale: true,
+                ..Slot::default()
+            };
         }
         self.current_slot = None;
         self.btn_touch = None;
@@ -429,7 +444,11 @@ impl MtDecoder {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.ended {
                 if let Some(contact) = slot.live.take() {
-                    self.events.push(ContactEvent { phase: Phase::Up, contact, time_us });
+                    self.events.push(ContactEvent {
+                        phase: Phase::Up,
+                        contact,
+                        time_us,
+                    });
                 }
             }
             match (slot.tracking_id, slot.x, slot.y, slot.stale) {
@@ -456,7 +475,11 @@ impl MtDecoder {
                         };
                         self.next_id += 1;
                         slot.live = Some(contact);
-                        self.events.push(ContactEvent { phase: Phase::Down, contact, time_us });
+                        self.events.push(ContactEvent {
+                            phase: Phase::Down,
+                            contact,
+                            time_us,
+                        });
                     }
                 },
                 // Contact started but a coordinate is still unknown (only
@@ -465,7 +488,11 @@ impl MtDecoder {
                 // No contact, or a stale slot.
                 _ => {
                     if let Some(contact) = slot.live.take() {
-                        self.events.push(ContactEvent { phase: Phase::Up, contact, time_us });
+                        self.events.push(ContactEvent {
+                            phase: Phase::Up,
+                            contact,
+                            time_us,
+                        });
                     }
                 }
             }

@@ -15,7 +15,16 @@ use std::f32::consts::TAU;
 /// at (x, y), `width` pixels thick. The part from twelve o'clock clockwise
 /// to `frac` (0.0 to 1.0) is drawn in `color`, the rest in `rest`.
 #[allow(clippy::too_many_arguments)]
-pub fn ring(canvas: &mut dyn Canvas, x: i32, y: i32, size: i32, width: f32, frac: f32, rest: Color, color: Color) {
+pub fn ring(
+    canvas: &mut dyn Canvas,
+    x: i32,
+    y: i32,
+    size: i32,
+    width: f32,
+    frac: f32,
+    rest: Color,
+    color: Color,
+) {
     if size <= 0 {
         return;
     }
@@ -102,7 +111,13 @@ pub enum BarButton {
 }
 
 impl BarButton {
-    pub const ALL: [BarButton; 5] = [BarButton::Stop, BarButton::Play, BarButton::Rec, BarButton::Mode, BarButton::Undo];
+    pub const ALL: [BarButton; 5] = [
+        BarButton::Stop,
+        BarButton::Play,
+        BarButton::Rec,
+        BarButton::Mode,
+        BarButton::Undo,
+    ];
 
     pub fn index(self) -> usize {
         BarButton::ALL.iter().position(|b| *b == self).unwrap_or(0)
@@ -120,7 +135,11 @@ pub struct BarItem {
 
 impl BarItem {
     pub fn new(label: &str, value: impl Into<String>, tone: Tone) -> BarItem {
-        BarItem { label: label.to_string(), value: value.into(), tone }
+        BarItem {
+            label: label.to_string(),
+            value: value.into(),
+            tone,
+        }
     }
 }
 
@@ -157,8 +176,15 @@ impl Default for TransportBar {
 
 impl TransportBar {
     pub fn new() -> TransportBar {
-        TransportBar { run: Run::Stopped, position: "1.1.000".to_string(), items: Vec::new(), overdub: false,
-                       undo: None, chips: Vec::new(), hits: RefCell::new(Vec::new()) }
+        TransportBar {
+            run: Run::Stopped,
+            position: "1.1.000".to_string(),
+            items: Vec::new(),
+            overdub: false,
+            undo: None,
+            chips: Vec::new(),
+            hits: RefCell::new(Vec::new()),
+        }
     }
 
     /// The rectangle of a stop, play or record button inside `r` (the
@@ -171,7 +197,12 @@ impl TransportBar {
             BarButton::Rec => 2,
             _ => return None,
         };
-        Some(Rect::new(inner.x + i * (BAR_BUTTON_W + 4), inner.y, BAR_BUTTON_W, inner.h))
+        Some(Rect::new(
+            inner.x + i * (BAR_BUTTON_W + 4),
+            inner.y,
+            BAR_BUTTON_W,
+            inner.h,
+        ))
     }
 }
 
@@ -194,7 +225,9 @@ impl Widget for TransportBar {
             Run::CountIn => t.warn,
         };
         for b in [BarButton::Stop, BarButton::Play, BarButton::Rec] {
-            let Some(br) = TransportBar::button_rect(r, b) else { continue };
+            let Some(br) = TransportBar::button_rect(r, b) else {
+                continue;
+            };
             let on = b == lit;
             if on {
                 cx.canvas.fill_round_rect(br, 10, fill);
@@ -202,11 +235,15 @@ impl Widget for TransportBar {
             let c = if on { ink } else { t.text_dim };
             let (mx, my) = (br.x + br.w / 2, br.y + br.h / 2);
             match b {
-                BarButton::Stop => cx.canvas.fill_round_rect(Rect::new(mx - 6, my - 6, 12, 12), 2, c),
+                BarButton::Stop => {
+                    cx.canvas
+                        .fill_round_rect(Rect::new(mx - 6, my - 6, 12, 12), 2, c)
+                }
                 BarButton::Play => play_symbol(cx.canvas, Rect::new(mx - 5, my - 7, 12, 14), c),
                 _ => {
                     let c = if on { ink } else { t.bad.mix(t.text_dim, 0.35) };
-                    cx.canvas.fill_round_rect(Rect::new(mx - 7, my - 7, 14, 14), 7, c)
+                    cx.canvas
+                        .fill_round_rect(Rect::new(mx - 7, my - 7, 14, 14), 7, c)
                 }
             }
             hits.push((br, EventKind::Tab(b.index())));
@@ -216,10 +253,20 @@ impl Widget for TransportBar {
         let mode = Rect::new(x, inner.y, MODE_W, inner.h);
         cx.canvas.fill_round_rect(mode, 10, t.raised);
         let dot = if self.overdub { t.accent } else { t.warn };
-        cx.canvas.fill_round_rect(Rect::new(mode.x + 14, mode.y + mode.h / 2 - 4, 8, 8), 4, dot);
+        cx.canvas.fill_round_rect(
+            Rect::new(mode.x + 14, mode.y + mode.h / 2 - 4, 8, 8),
+            4,
+            dot,
+        );
         let word = if self.overdub { "Overdub" } else { "Replace" };
-        cx.text(FontId::Bold, t.size_small + 1.0, Rect::new(mode.x + 30, mode.y, mode.w - 36, mode.h), Align::Left,
-                t.text, word);
+        cx.text(
+            FontId::Bold,
+            t.size_small + 1.0,
+            Rect::new(mode.x + 30, mode.y, mode.w - 36, mode.h),
+            Align::Left,
+            t.text,
+            word,
+        );
         hits.push((mode, EventKind::Tab(BarButton::Mode.index())));
         x = mode.right() + 16;
         // Chips from the right edge leftwards, then Undo.
@@ -232,9 +279,19 @@ impl Widget for TransportBar {
             }
             let cr = Rect::new(right - w, inner.y, w, inner.h);
             cx.canvas.fill_round_rect(cr, cr.h / 2, t.raised);
-            cx.canvas.fill_round_rect(Rect::new(cr.x + 14, cr.y + cr.h / 2 - 4, 8, 8), 4, t.tone(chip.tone));
-            cx.text(FontId::Sans, t.size_small, Rect::new(cr.x + 28, cr.y, tw + 4, cr.h), Align::Left, t.text,
-                    &chip.text);
+            cx.canvas.fill_round_rect(
+                Rect::new(cr.x + 14, cr.y + cr.h / 2 - 4, 8, 8),
+                4,
+                t.tone(chip.tone),
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect::new(cr.x + 28, cr.y, tw + 4, cr.h),
+                Align::Left,
+                t.text,
+                &chip.text,
+            );
             hits.push((cr, EventKind::Select(i)));
             right -= w + 8;
         }
@@ -242,12 +299,26 @@ impl Widget for TransportBar {
         match &self.undo {
             Some(what) => {
                 cx.canvas.fill_round_rect(undo, 10, t.raised);
-                cx.text(FontId::Bold, t.size_small + 1.0, undo, Align::Center, t.text, &format!("Undo {what}"));
+                cx.text(
+                    FontId::Bold,
+                    t.size_small + 1.0,
+                    undo,
+                    Align::Center,
+                    t.text,
+                    &format!("Undo {what}"),
+                );
                 hits.push((undo, EventKind::Tab(BarButton::Undo.index())));
             }
             None => {
                 cx.canvas.stroke_round_rect(undo, 10, 1, t.outline);
-                cx.text(FontId::Sans, t.size_small + 1.0, undo, Align::Center, t.text_faint, "Undo");
+                cx.text(
+                    FontId::Sans,
+                    t.size_small + 1.0,
+                    undo,
+                    Align::Center,
+                    t.text_faint,
+                    "Undo",
+                );
             }
         }
         let limit = undo.x - 12;
@@ -258,30 +329,54 @@ impl Widget for TransportBar {
             Run::Recording => t.bad,
             Run::CountIn => t.warn,
         };
-        let pw = cx.measure(FontId::Mono, POSITION_PX, &self.position).max(cx.measure(FontId::Mono, POSITION_PX,
-                                                                                       "88.8.888"));
+        let pw = cx
+            .measure(FontId::Mono, POSITION_PX, &self.position)
+            .max(cx.measure(FontId::Mono, POSITION_PX, "88.8.888"));
         if x + pw <= limit {
-            cx.text(FontId::Mono, POSITION_PX, Rect::new(x, inner.y, pw + 4, inner.h), Align::Left, pc,
-                    &self.position);
+            cx.text(
+                FontId::Mono,
+                POSITION_PX,
+                Rect::new(x, inner.y, pw + 4, inner.h),
+                Align::Left,
+                pc,
+                &self.position,
+            );
             x += pw + 4;
         }
         // Readings, each after a thin rule, while they fit.
         for item in &self.items {
-            let lw = if item.label.is_empty() { 0 } else { cx.measure(FontId::Sans, t.size_small, &item.label) + 6 };
+            let lw = if item.label.is_empty() {
+                0
+            } else {
+                cx.measure(FontId::Sans, t.size_small, &item.label) + 6
+            };
             let vw = cx.measure(FontId::Bold, t.size_body, &item.value);
             let w = 32 + lw + vw;
             if x + w > limit {
                 break;
             }
-            cx.canvas.fill_rect(Rect::new(x + 16, inner.y + 9, 1, inner.h - 18), t.outline);
+            cx.canvas
+                .fill_rect(Rect::new(x + 16, inner.y + 9, 1, inner.h - 18), t.outline);
             let mut tx = x + 32;
             if lw > 0 {
-                cx.text(FontId::Sans, t.size_small, Rect::new(tx, inner.y, lw, inner.h), Align::Left, t.text_dim,
-                        &item.label);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    Rect::new(tx, inner.y, lw, inner.h),
+                    Align::Left,
+                    t.text_dim,
+                    &item.label,
+                );
                 tx += lw;
             }
-            cx.text(FontId::Bold, t.size_body, Rect::new(tx, inner.y, vw + 2, inner.h), Align::Left,
-                    t.tone(item.tone), &item.value);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                Rect::new(tx, inner.y, vw + 2, inner.h),
+                Align::Left,
+                t.tone(item.tone),
+                &item.value,
+            );
             x += w;
         }
         *self.hits.borrow_mut() = hits;
@@ -291,7 +386,11 @@ impl Widget for TransportBar {
         if phase != Touch::Down {
             return None;
         }
-        self.hits.borrow().iter().find(|(h, _)| h.contains(x, y)).map(|(_, k)| k.clone())
+        self.hits
+            .borrow()
+            .iter()
+            .find(|(h, _)| h.contains(x, y))
+            .map(|(_, k)| k.clone())
     }
 }
 
@@ -381,8 +480,15 @@ struct Geo {
 
 impl ClipGrid {
     pub fn new(title: &str, slots: usize) -> ClipGrid {
-        ClipGrid { title: title.to_string(), legend: String::new(), tracks: Vec::new(), slots, first_track: 0,
-                   first_row: 0, drawn: RefCell::new(None) }
+        ClipGrid {
+            title: title.to_string(),
+            legend: String::new(),
+            tracks: Vec::new(),
+            slots,
+            first_track: 0,
+            first_row: 0,
+            drawn: RefCell::new(None),
+        }
     }
 
     fn geo(&self, r: Rect) -> Geo {
@@ -393,9 +499,17 @@ impl ClipGrid {
         let col_w = ((body.right() - x0 - CELL_GAP * (cols - 1)) / cols).max(1);
         let cells_y = body.y + HEAD_H + CELL_GAP;
         let avail = body.bottom() - cells_y;
-        let rows = (((avail + CELL_GAP) / (ROW_MIN_H + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
+        let rows =
+            (((avail + CELL_GAP) / (ROW_MIN_H + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
         let row_h = ((avail - CELL_GAP * (rows as i32 - 1)) / rows as i32).max(1);
-        Geo { body, x0, col_w, cells_y, row_h, rows }
+        Geo {
+            body,
+            x0,
+            col_w,
+            cells_y,
+            row_h,
+            rows,
+        }
     }
 
     /// Rows (slots) shown at once in `r`.
@@ -404,15 +518,22 @@ impl ClipGrid {
     }
 
     fn col(&self, track: usize) -> Option<i32> {
-        (track >= self.first_track && track < self.first_track + GRID_COLS && track < self.tracks.len())
-            .then(|| (track - self.first_track) as i32)
+        (track >= self.first_track
+            && track < self.first_track + GRID_COLS
+            && track < self.tracks.len())
+        .then(|| (track - self.first_track) as i32)
     }
 
     /// Where track `track`'s name is, if it is in view.
     pub fn head_rect(&self, r: Rect, track: usize) -> Option<Rect> {
         let g = self.geo(r);
         let c = self.col(track)?;
-        Some(Rect::new(g.x0 + c * (g.col_w + CELL_GAP), g.body.y, g.col_w, HEAD_H))
+        Some(Rect::new(
+            g.x0 + c * (g.col_w + CELL_GAP),
+            g.body.y,
+            g.col_w,
+            HEAD_H,
+        ))
     }
 
     /// Where slot `slot` of track `track` is, if it is in view.
@@ -423,7 +544,12 @@ impl ClipGrid {
             return None;
         }
         let row = (slot - self.first_row) as i32;
-        Some(Rect::new(g.x0 + c * (g.col_w + CELL_GAP), g.cells_y + row * (g.row_h + CELL_GAP), g.col_w, g.row_h))
+        Some(Rect::new(
+            g.x0 + c * (g.col_w + CELL_GAP),
+            g.cells_y + row * (g.row_h + CELL_GAP),
+            g.col_w,
+            g.row_h,
+        ))
     }
 }
 
@@ -431,14 +557,20 @@ impl Widget for ClipGrid {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         let drawn = self.drawn.borrow();
         let d = drawn.as_ref()?;
-        if d.at != r || d.first != (self.first_track, self.first_row) || d.title != self.title
-            || d.legend != self.legend || d.tracks.len() != self.tracks.len()
+        if d.at != r
+            || d.first != (self.first_track, self.first_row)
+            || d.title != self.title
+            || d.legend != self.legend
+            || d.tracks.len() != self.tracks.len()
         {
             return None;
         }
         let mut parts = Vec::new();
         for (i, (old, new)) in d.tracks.iter().zip(&self.tracks).enumerate() {
-            if old.name != new.name || old.color != new.color || old.armed != new.armed || old.mute != new.mute
+            if old.name != new.name
+                || old.color != new.color
+                || old.armed != new.armed
+                || old.mute != new.mute
                 || old.cells.len() != new.cells.len()
             {
                 return None;
@@ -451,14 +583,25 @@ impl Widget for ClipGrid {
 
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        *self.drawn.borrow_mut() = Some(Drawn { at: r, first: (self.first_track, self.first_row),
-                                                title: self.title.clone(), legend: self.legend.clone(),
-                                                tracks: self.tracks.clone() });
+        *self.drawn.borrow_mut() = Some(Drawn {
+            at: r,
+            first: (self.first_track, self.first_row),
+            title: self.title.clone(),
+            legend: self.legend.clone(),
+            tracks: self.tracks.clone(),
+        });
         cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
         if self.tracks.is_empty() {
             let line = Rect::new(g.body.x, g.body.y, g.body.w, 30);
-            cx.text(FontId::Sans, t.size_body, line, Align::Left, t.text_faint, "No tracks yet");
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                line,
+                Align::Left,
+                t.text_faint,
+                "No tracks yet",
+            );
             return;
         }
         for row in 0..g.rows {
@@ -468,22 +611,53 @@ impl Widget for ClipGrid {
             }
             let y = g.cells_y + row as i32 * (g.row_h + CELL_GAP);
             let label = Rect::new(g.body.x, y, LABEL_W, g.row_h);
-            cx.text(FontId::Bold, t.size_small, label, Align::Center, t.text_faint, &format!("{}", slot + 1));
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                label,
+                Align::Center,
+                t.text_faint,
+                &format!("{}", slot + 1),
+            );
         }
         for (ti, track) in self.tracks.iter().enumerate() {
-            let Some(head) = self.head_rect(r, ti) else { continue };
-            let base = if track.mute { track.color.mix(t.surface, 0.6) } else { track.color };
-            cx.canvas.fill_round_rect(head, 8, base.mix(t.surface, 0.72));
+            let Some(head) = self.head_rect(r, ti) else {
+                continue;
+            };
+            let base = if track.mute {
+                track.color.mix(t.surface, 0.6)
+            } else {
+                track.color
+            };
+            cx.canvas
+                .fill_round_rect(head, 8, base.mix(t.surface, 0.72));
             let mut name = head.inset_xy(10, 0);
             if track.armed {
                 cx.canvas.stroke_round_rect(head, 8, 2, t.bad);
-                cx.canvas.fill_round_rect(Rect::new(name.x, head.y + head.h / 2 - 4, 8, 8), 4, t.bad);
+                cx.canvas.fill_round_rect(
+                    Rect::new(name.x, head.y + head.h / 2 - 4, 8, 8),
+                    4,
+                    t.bad,
+                );
                 name = name.take_left(14).1;
             }
-            let ink = if track.mute { t.text_faint } else { base.mix(t.text, 0.25) };
-            cx.text(FontId::Bold, t.size_small, name, Align::Left, ink, &track.name);
+            let ink = if track.mute {
+                t.text_faint
+            } else {
+                base.mix(t.text, 0.25)
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                name,
+                Align::Left,
+                ink,
+                &track.name,
+            );
             for (slot, cell) in track.cells.iter().enumerate() {
-                let Some(cr) = self.cell_rect(r, ti, slot) else { continue };
+                let Some(cr) = self.cell_rect(r, ti, slot) else {
+                    continue;
+                };
                 paint_cell(cx, cr, cell, base);
             }
         }
@@ -499,7 +673,10 @@ impl Widget for ClipGrid {
                 return Some(EventKind::Tab(track));
             }
             for slot in self.first_row..self.slots {
-                if self.cell_rect(r, track, slot).is_some_and(|c| c.contains(x, y)) {
+                if self
+                    .cell_rect(r, track, slot)
+                    .is_some_and(|c| c.contains(x, y))
+                {
                     return Some(EventKind::Select(track * self.slots + slot));
                 }
             }
@@ -512,7 +689,14 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let t = cx.theme.clone();
     if cell.state == CellState::Empty {
         cx.canvas.stroke_round_rect(cr, 10, 1, t.outline);
-        cx.text(FontId::Sans, t.size_title + 3.0, cr, Align::Center, t.text_faint, "+");
+        cx.text(
+            FontId::Sans,
+            t.size_title + 3.0,
+            cr,
+            Align::Center,
+            t.text_faint,
+            "+",
+        );
         return;
     }
     let fill = match cell.state {
@@ -528,28 +712,66 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     }
     let inner = cr.inset_xy(10, 8);
     let (name, rest) = inner.take_top(20);
-    cx.text(FontId::Bold, t.size_small + 1.0, name, Align::Left, t.text, &cell.name);
+    cx.text(
+        FontId::Bold,
+        t.size_small + 1.0,
+        name,
+        Align::Left,
+        t.text,
+        &cell.name,
+    );
     let (detail, _) = rest.take_top(20);
     let detail_ink = match cell.state {
         CellState::Recording => t.bad.mix(t.text, 0.2),
         _ => t.text_dim,
     };
-    cx.text(FontId::Sans, t.size_small - 1.0, detail, Align::Left, detail_ink, &cell.detail);
+    cx.text(
+        FontId::Sans,
+        t.size_small - 1.0,
+        detail,
+        Align::Left,
+        detail_ink,
+        &cell.detail,
+    );
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
     let ring_room = if rolling { RING + 4 } else { 0 };
-    let foot = Rect::new(inner.x, inner.bottom() - 18, (inner.w - ring_room).max(0), 18);
+    let foot = Rect::new(
+        inner.x,
+        inner.bottom() - 18,
+        (inner.w - ring_room).max(0),
+        18,
+    );
     let foot_ink = match cell.state {
         CellState::Queued => t.warn,
         CellState::Recording => t.bad.mix(t.text, 0.2),
         _ => t.text_faint,
     };
     if foot.y >= detail.bottom() - 2 {
-        cx.text(FontId::Sans, t.size_small - 1.0, foot, Align::Left, foot_ink, &cell.foot);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            foot,
+            Align::Left,
+            foot_ink,
+            &cell.foot,
+        );
     }
     if rolling && inner.h >= RING + 20 {
-        let color = if cell.state == CellState::Recording { t.bad } else { t.good };
-        ring(cx.canvas, cr.right() - RING - 7, cr.bottom() - RING - 7, RING, 3.5, cell.progress,
-             t.surface.mix(t.text_faint, 0.35), color);
+        let color = if cell.state == CellState::Recording {
+            t.bad
+        } else {
+            t.good
+        };
+        ring(
+            cx.canvas,
+            cr.right() - RING - 7,
+            cr.bottom() - RING - 7,
+            RING,
+            3.5,
+            cell.progress,
+            t.surface.mix(t.text_faint, 0.35),
+            color,
+        );
     }
 }
 
@@ -587,8 +809,15 @@ const TAKE_BUTTON_H: i32 = 48;
 
 impl TakeList {
     pub fn new(title: &str) -> TakeList {
-        TakeList { title: title.to_string(), right: String::new(), items: Vec::new(), current: None, undo: None,
-                   redo: None, capture: None }
+        TakeList {
+            title: title.to_string(),
+            right: String::new(),
+            items: Vec::new(),
+            current: None,
+            undo: None,
+            redo: None,
+            capture: None,
+        }
     }
 
     fn body(r: Rect) -> Rect {
@@ -602,7 +831,12 @@ impl TakeList {
         let body = TakeList::body(r);
         let w = (body.w - 16) / 3;
         let at = [1, 2, 0][i.min(2)];
-        Rect::new(body.x + at * (w + 8), body.bottom() - TAKE_BUTTON_H, w, TAKE_BUTTON_H)
+        Rect::new(
+            body.x + at * (w + 8),
+            body.bottom() - TAKE_BUTTON_H,
+            w,
+            TAKE_BUTTON_H,
+        )
     }
 }
 
@@ -613,11 +847,24 @@ impl Widget for TakeList {
         let limit = TakeList::button_rect(r, 0).y - 8;
         if self.items.is_empty() {
             let (a, rest) = body.take_top(26);
-            cx.text(FontId::Sans, t.size_body, a, Align::Left, t.text_faint, "No takes yet");
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                a,
+                Align::Left,
+                t.text_faint,
+                "No takes yet",
+            );
             let b = rest.take_top(24).0;
             if b.bottom() <= limit {
-                cx.text(FontId::Sans, t.size_small, b, Align::Left, t.text_faint,
-                        "REC records one; Capture keeps what you just played");
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    b,
+                    Align::Left,
+                    t.text_faint,
+                    "REC records one; Capture keeps what you just played",
+                );
             }
         }
         let mut y = body.y;
@@ -628,25 +875,49 @@ impl Widget for TakeList {
             let row = Rect::new(body.x, y, body.w, TAKE_ROW_H - 4);
             if self.current == Some(i) {
                 cx.canvas.fill_round_rect(row, 8, t.raised);
-                cx.canvas.fill_round_rect(Rect::new(row.x, row.y + 9, 3, row.h - 18), 1, t.accent);
+                cx.canvas
+                    .fill_round_rect(Rect::new(row.x, row.y + 9, 3, row.h - 18), 1, t.accent);
             }
             let dot = match (item.color, item.undone) {
                 (Some(c), false) => c,
                 (Some(c), true) => c.mix(t.surface, 0.65),
                 (None, _) => t.text_faint,
             };
-            cx.canvas.fill_round_rect(Rect::new(row.x + 12, row.y + row.h / 2 - 4, 8, 8), 4, dot);
-            let (ink, sub) = if item.undone { (t.text_faint, t.text_faint) } else { (t.text, t.text_dim) };
+            cx.canvas
+                .fill_round_rect(Rect::new(row.x + 12, row.y + row.h / 2 - 4, 8, 8), 4, dot);
+            let (ink, sub) = if item.undone {
+                (t.text_faint, t.text_faint)
+            } else {
+                (t.text, t.text_dim)
+            };
             let dw = cx.measure(FontId::Mono, t.size_mono, &item.detail);
             let detail = Rect::new(row.right() - dw - 10, row.y, dw + 2, row.h);
-            cx.text(FontId::Mono, t.size_mono, detail, Align::Right, sub, &item.detail);
+            cx.text(
+                FontId::Mono,
+                t.size_mono,
+                detail,
+                Align::Right,
+                sub,
+                &item.detail,
+            );
             let title = Rect::new(row.x + 28, row.y, (detail.x - row.x - 36).max(0), row.h);
-            cx.text(FontId::Sans, t.size_small + 1.0, title, Align::Left, ink, &item.title);
+            cx.text(
+                FontId::Sans,
+                t.size_small + 1.0,
+                title,
+                Align::Left,
+                ink,
+                &item.title,
+            );
             y += TAKE_ROW_H;
         }
-        for (i, (word, what)) in [("Undo", &self.undo), ("Redo", &self.redo), ("Capture", &self.capture)]
-            .into_iter()
-            .enumerate()
+        for (i, (word, what)) in [
+            ("Undo", &self.undo),
+            ("Redo", &self.redo),
+            ("Capture", &self.capture),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let b = TakeList::button_rect(r, i);
             match what {
@@ -662,11 +933,25 @@ impl Widget for TakeList {
                     let full = format!("{word} {w}");
                     // A narrow panel shows the word alone.
                     let fits = cx.measure(FontId::Bold, t.size_small + 1.0, &full) <= b.w - 12;
-                    cx.text(FontId::Bold, t.size_small + 1.0, b, Align::Center, ink, if fits { &full } else { word });
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small + 1.0,
+                        b,
+                        Align::Center,
+                        ink,
+                        if fits { &full } else { word },
+                    );
                 }
                 None => {
                     cx.canvas.stroke_round_rect(b, 12, 1, t.outline);
-                    cx.text(FontId::Sans, t.size_small + 1.0, b, Align::Center, t.text_faint, word);
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small + 1.0,
+                        b,
+                        Align::Center,
+                        t.text_faint,
+                        word,
+                    );
                 }
             }
         }
@@ -710,15 +995,29 @@ mod tests {
             assert_eq!(ev.kind, EventKind::Tab(b.index()));
             ui.touch(1, Touch::Up, br.x + 5, br.y + 5);
         }
-        let mode_x = TransportBar::button_rect(r, BarButton::Rec).unwrap().right() + 20;
-        assert_eq!(ui.touch(2, Touch::Down, mode_x, r.y + 20).unwrap().kind, EventKind::Tab(BarButton::Mode.index()));
+        let mode_x = TransportBar::button_rect(r, BarButton::Rec)
+            .unwrap()
+            .right()
+            + 20;
+        assert_eq!(
+            ui.touch(2, Touch::Down, mode_x, r.y + 20).unwrap().kind,
+            EventKind::Tab(BarButton::Mode.index())
+        );
         ui.touch(2, Touch::Up, mode_x, r.y + 20);
         // The chip is at the right edge, Undo just left of it.
-        assert_eq!(ui.touch(3, Touch::Down, r.right() - 20, r.y + 20).unwrap().kind, EventKind::Select(0));
+        assert_eq!(
+            ui.touch(3, Touch::Down, r.right() - 20, r.y + 20)
+                .unwrap()
+                .kind,
+            EventKind::Select(0)
+        );
         ui.touch(3, Touch::Up, r.right() - 20, r.y + 20);
         let chip_w = ui.fonts.measure(FontId::Sans, 14.0, "Arp · Up 1/16") + 40;
         let undo_x = r.right() - 4 - chip_w - 8 - 20;
-        assert_eq!(ui.touch(4, Touch::Down, undo_x, r.y + 20).unwrap().kind, EventKind::Tab(BarButton::Undo.index()));
+        assert_eq!(
+            ui.touch(4, Touch::Down, undo_x, r.y + 20).unwrap().kind,
+            EventKind::Tab(BarButton::Undo.index())
+        );
     }
 
     #[test]
@@ -733,9 +1032,19 @@ mod tests {
         let mut g = ClipGrid::new("Clips", 16);
         for i in 0..tracks {
             let mut cells = vec![GridCell::default(); 16];
-            cells[0] = GridCell { state: CellState::Playing, name: "Beat".into(), progress: 0.25, ..GridCell::default() };
-            g.tracks.push(GridTrack { name: format!("T{i}"), color: Color::rgb(0x3DDC97), armed: i == 1, mute: false,
-                                      cells });
+            cells[0] = GridCell {
+                state: CellState::Playing,
+                name: "Beat".into(),
+                progress: 0.25,
+                ..GridCell::default()
+            };
+            g.tracks.push(GridTrack {
+                name: format!("T{i}"),
+                color: Color::rgb(0x3DDC97),
+                armed: i == 1,
+                mute: false,
+                cells,
+            });
         }
         g
     }
@@ -751,9 +1060,15 @@ mod tests {
         let c = g.cell_rect(r, 2, 3).unwrap();
         assert!(c.w > 80 && c.h >= ROW_MIN_H, "{c:?}");
         assert!(r.intersect(c) == c);
-        assert_eq!(g.touch(1, Touch::Down, c.x + 2, c.y + 2, r), Some(EventKind::Select(2 * 16 + 3)));
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + 2, c.y + 2, r),
+            Some(EventKind::Select(2 * 16 + 3))
+        );
         let h = g.head_rect(r, 5).unwrap();
-        assert_eq!(g.touch(1, Touch::Down, h.x + 2, h.y + 2, r), Some(EventKind::Tab(5)));
+        assert_eq!(
+            g.touch(1, Touch::Down, h.x + 2, h.y + 2, r),
+            Some(EventKind::Tab(5))
+        );
         // Scrolled: slot 3 is the first row, track 2 the first column.
         let corner = g.cell_rect(r, 0, 0).unwrap();
         g.first_row = 3;
@@ -762,7 +1077,9 @@ mod tests {
         assert!(g.cell_rect(r, 1, 3).is_none() && g.cell_rect(r, 2, 2).is_none());
         // The last slot is in reach when scrolled to the bottom.
         g.first_row = 16 - rows;
-        assert!(g.cell_rect(r, 2, 15).is_some_and(|c| c.bottom() <= r.bottom()));
+        assert!(g
+            .cell_rect(r, 2, 15)
+            .is_some_and(|c| c.bottom() <= r.bottom()));
     }
 
     #[test]
@@ -774,10 +1091,16 @@ mod tests {
         assert!(undo.right() < redo.x && redo.right() <= r.right() - 14);
         assert_eq!(l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r), None);
         l.undo = Some("take 1".into());
-        assert_eq!(l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r), Some(EventKind::Tab(0)));
+        assert_eq!(
+            l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r),
+            Some(EventKind::Tab(0))
+        );
         assert_eq!(l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r), None);
         l.redo = Some("take 2".into());
-        assert_eq!(l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r), Some(EventKind::Tab(1)));
+        assert_eq!(
+            l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r),
+            Some(EventKind::Tab(1))
+        );
     }
 
     #[test]

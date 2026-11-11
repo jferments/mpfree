@@ -81,7 +81,11 @@ impl Peaks for RawPeaks {
             mx = mx.max(x);
             sq += x * x;
         }
-        WaveColumn { min: mn, max: mx, rms: (sq / (b - a) as f32).sqrt() }
+        WaveColumn {
+            min: mn,
+            max: mx,
+            rms: (sq / (b - a) as f32).sqrt(),
+        }
     }
 }
 
@@ -99,7 +103,10 @@ impl WaveView {
 
     /// All of `frames` across `width` pixels.
     pub fn whole(frames: u64, width: i32) -> WaveView {
-        WaveView { start: 0.0, frames_per_px: frames.max(1) as f64 / f64::from(width.max(1)) }
+        WaveView {
+            start: 0.0,
+            frames_per_px: frames.max(1) as f64 / f64::from(width.max(1)),
+        }
     }
 
     /// The frame under pixel `x` (counted from the waveform's left edge).
@@ -121,18 +128,36 @@ impl WaveView {
     /// further out than the whole sound, and not scrolled past either end.
     pub fn clamped(self, frames: u64, width: i32) -> WaveView {
         let whole = WaveView::whole(frames, width);
-        let fpp = if self.frames_per_px.is_finite() { self.frames_per_px } else { whole.frames_per_px };
-        let fpp = fpp.clamp(Self::MIN_FRAMES_PER_PX.min(whole.frames_per_px), whole.frames_per_px);
+        let fpp = if self.frames_per_px.is_finite() {
+            self.frames_per_px
+        } else {
+            whole.frames_per_px
+        };
+        let fpp = fpp.clamp(
+            Self::MIN_FRAMES_PER_PX.min(whole.frames_per_px),
+            whole.frames_per_px,
+        );
         let span = fpp * f64::from(width.max(1));
-        let start = if self.start.is_finite() { self.start } else { 0.0 };
-        WaveView { start: start.clamp(0.0, (frames.max(1) as f64 - span).max(0.0)), frames_per_px: fpp }
+        let start = if self.start.is_finite() {
+            self.start
+        } else {
+            0.0
+        };
+        WaveView {
+            start: start.clamp(0.0, (frames.max(1) as f64 - span).max(0.0)),
+            frames_per_px: fpp,
+        }
     }
 
     /// Zoomed in by `factor` (2 is twice as close) with `frame` staying
     /// under pixel `x`, then [`clamped`](Self::clamped).
     pub fn zoomed(self, factor: f64, frame: f64, x: f64, frames: u64, width: i32) -> WaveView {
         let fpp = self.frames_per_px / factor.max(1e-9);
-        WaveView { start: frame - x * fpp, frames_per_px: fpp }.clamped(frames, width)
+        WaveView {
+            start: frame - x * fpp,
+            frames_per_px: fpp,
+        }
+        .clamped(frames, width)
     }
 }
 
@@ -158,7 +183,11 @@ pub struct Marker {
 
 impl Marker {
     pub fn new(frame: u64, label: &str, kind: MarkerKind) -> Marker {
-        Marker { frame, label: label.to_string(), kind }
+        Marker {
+            frame,
+            label: label.to_string(),
+            kind,
+        }
     }
 }
 
@@ -192,7 +221,11 @@ enum Grab {
     /// Dragging marker `index`.
     Marker(usize),
     /// Maybe a tap, until it moves; then a scroll from this view.
-    Wave { x0: i32, view: WaveView, moved: bool },
+    Wave {
+        x0: i32,
+        view: WaveView,
+        moved: bool,
+    },
 }
 
 /// The zoomable waveform. The app sets what it shows; touches come back as
@@ -238,7 +271,10 @@ impl Waveform {
     pub fn new() -> Waveform {
         Waveform {
             peaks: None,
-            view: WaveView { start: 0.0, frames_per_px: 1.0 },
+            view: WaveView {
+                start: 0.0,
+                frames_per_px: 1.0,
+            },
             markers: Vec::new(),
             region: None,
             loop_span: None,
@@ -314,7 +350,8 @@ impl Waveform {
     }
 
     pub fn set_beats(&mut self, beats: Option<Beats>) {
-        self.beats = beats.filter(|b| b.frames_per_beat.is_finite() && b.frames_per_beat > 0.0 && b.per_bar > 0);
+        self.beats = beats
+            .filter(|b| b.frames_per_beat.is_finite() && b.frames_per_beat > 0.0 && b.per_bar > 0);
         self.changed();
     }
 
@@ -329,7 +366,9 @@ impl Waveform {
     /// does; returns the new view.
     pub fn zoom(&mut self, factor: f64, width: i32) -> WaveView {
         let mid = f64::from(width) / 2.0;
-        self.view = self.view.zoomed(factor, self.view.frame_at(mid), mid, self.frames(), width);
+        self.view = self
+            .view
+            .zoomed(factor, self.view.frame_at(mid), mid, self.frames(), width);
         self.changed();
         self.view
     }
@@ -338,7 +377,12 @@ impl Waveform {
     /// of the panel's rounded corners. Views are measured in its width.
     pub fn wave_rect(r: Rect) -> Rect {
         let below = r.take_top(TABS_H).1;
-        Rect::new(below.x + 4, below.y, (below.w - 8).max(1), (below.h - 4).max(1))
+        Rect::new(
+            below.x + 4,
+            below.y,
+            (below.w - 8).max(1),
+            (below.h - 4).max(1),
+        )
     }
 
     fn x_in(&self, wave: Rect, frame: f64) -> f64 {
@@ -365,7 +409,9 @@ impl Waveform {
         let n = self.peaks.as_ref().map_or(1, |p| p.channels().clamp(1, 2)) as i32;
         let gap = if n > 1 { 6 } else { 0 };
         let h = (wave.h - gap * (n - 1)) / n;
-        (0..n).map(|i| Rect::new(wave.x, wave.y + i * (h + gap), wave.w, h)).collect()
+        (0..n)
+            .map(|i| Rect::new(wave.x, wave.y + i * (h + gap), wave.w, h))
+            .collect()
     }
 
     fn bar_label(b: &Beats, beat: i64) -> String {
@@ -382,7 +428,8 @@ impl Widget for Waveform {
         // The tab strip: the panel's top, darker, keeping its round corners.
         let strip = r.take_top(TABS_H).0;
         cx.canvas.set_clip(clip.intersect(strip));
-        cx.canvas.fill_round_rect(r, t.radius, t.raised.with_alpha(110));
+        cx.canvas
+            .fill_round_rect(r, t.radius, t.raised.with_alpha(110));
         cx.canvas.set_clip(clip);
         let wave = Self::wave_rect(r);
         let frames = self.frames() as f64;
@@ -391,8 +438,16 @@ impl Widget for Waveform {
 
         // Behind the wave: the loop span and bar lines.
         if let Some((a, b)) = self.loop_span {
-            let (xa, xb) = (self.x_in(wave, a as f64).round() as i32, self.x_in(wave, b as f64).round() as i32);
-            let span = Rect::new(xa.max(wave.x), wave.y, (xb.min(wave.right()) - xa.max(wave.x)).max(0), wave.h);
+            let (xa, xb) = (
+                self.x_in(wave, a as f64).round() as i32,
+                self.x_in(wave, b as f64).round() as i32,
+            );
+            let span = Rect::new(
+                xa.max(wave.x),
+                wave.y,
+                (xb.min(wave.right()) - xa.max(wave.x)).max(0),
+                wave.h,
+            );
             cx.canvas.fill_rect(span, t.good.with_alpha(34));
         }
         if let Some(b) = self.beats {
@@ -400,21 +455,37 @@ impl Widget for Waveform {
             let last = ((self.view.end(wave.w) - b.first) / b.frames_per_beat).ceil() as i64;
             let px_per_beat = b.frames_per_beat / fpp;
             // Beats when they are far enough apart, else only bars.
-            let every = if px_per_beat >= 24.0 { 1 } else { i64::from(b.per_bar) };
+            let every = if px_per_beat >= 24.0 {
+                1
+            } else {
+                i64::from(b.per_bar)
+            };
             if (last - first) / every <= 400 {
                 for beat in first..=last {
                     if beat.rem_euclid(every) != 0 {
                         continue;
                     }
-                    let x = self.x_in(wave, b.first + beat as f64 * b.frames_per_beat).round() as i32;
+                    let x = self
+                        .x_in(wave, b.first + beat as f64 * b.frames_per_beat)
+                        .round() as i32;
                     if x < wave.x || x >= wave.right() {
                         continue;
                     }
                     let bar = beat.rem_euclid(i64::from(b.per_bar)) == 0;
-                    cx.canvas.fill_rect(Rect::new(x, wave.y, 1, wave.h), if bar { t.text_faint } else { t.outline });
+                    cx.canvas.fill_rect(
+                        Rect::new(x, wave.y, 1, wave.h),
+                        if bar { t.text_faint } else { t.outline },
+                    );
                     if bar && b.frames_per_beat * f64::from(b.per_bar) / fpp >= 48.0 {
                         let label = Rect::new(x + 5, wave.y + 4, 60, 18);
-                        cx.text(FontId::Mono, 13.0, label, Align::Left, t.text_faint, &Self::bar_label(&b, beat));
+                        cx.text(
+                            FontId::Mono,
+                            13.0,
+                            label,
+                            Align::Left,
+                            t.text_faint,
+                            &Self::bar_label(&b, beat),
+                        );
                     }
                 }
             }
@@ -424,12 +495,15 @@ impl Widget for Waveform {
         if let Some(p) = &self.peaks {
             let (on, off) = (t.accent, t.accent.mix(t.surface, 0.62));
             let (on_rms, off_rms) = (on.mix(t.text, 0.35), off.mix(t.text, 0.15));
-            let (rs, re) = self.region.map_or((0.0, frames), |(a, b)| (a as f64, b as f64));
+            let (rs, re) = self
+                .region
+                .map_or((0.0, frames), |(a, b)| (a as f64, b as f64));
             for (ch, lane) in self.lanes(wave).into_iter().enumerate() {
                 let mid = lane.y + lane.h / 2;
                 let half = (lane.h / 2 - 2).max(1) as f32;
                 let y = |v: f32| mid - (v.clamp(-1.0, 1.0) * half).round() as i32;
-                cx.canvas.fill_rect(Rect::new(x0, mid, (x1 - x0).max(0), 1), t.outline);
+                cx.canvas
+                    .fill_rect(Rect::new(x0, mid, (x1 - x0).max(0), 1), t.outline);
                 for x in x0..x1 {
                     let f0 = self.view.frame_at(f64::from(x - wave.x));
                     let c = p.column(ch, f0, f0 + fpp);
@@ -438,10 +512,16 @@ impl Widget for Waveform {
                     }
                     let inside = f0 + fpp > rs && f0 < re;
                     let (top, bot) = (y(c.max), y(c.min));
-                    cx.canvas.fill_rect(Rect::new(x, top, 1, (bot - top).max(1)), if inside { on } else { off });
+                    cx.canvas.fill_rect(
+                        Rect::new(x, top, 1, (bot - top).max(1)),
+                        if inside { on } else { off },
+                    );
                     let (rt, rb) = (y(c.rms.min(c.max)), y((-c.rms).max(c.min)));
                     if rb > rt {
-                        cx.canvas.fill_rect(Rect::new(x, rt, 1, rb - rt), if inside { on_rms } else { off_rms });
+                        cx.canvas.fill_rect(
+                            Rect::new(x, rt, 1, rb - rt),
+                            if inside { on_rms } else { off_rms },
+                        );
                     }
                 }
             }
@@ -463,7 +543,8 @@ impl Widget for Waveform {
                 for x in xa..xb {
                     let (y0, y1) = (y_at(x), y_at(x + 1));
                     let (top, bot) = (y0.min(y1), y0.max(y1));
-                    cx.canvas.fill_rect(Rect::new(x, top - 1, 2, bot - top + 2), t.warn);
+                    cx.canvas
+                        .fill_rect(Rect::new(x, top - 1, 2, bot - top + 2), t.warn);
                 }
             };
             if fi > 0 {
@@ -501,7 +582,8 @@ impl Widget for Waveform {
         for &f in &self.playheads {
             let x = self.x_in(wave, f as f64).round() as i32;
             if x >= wave.x && x < wave.right() {
-                cx.canvas.fill_rect(Rect::new(x, wave.y, PLAYHEAD_W, wave.h), t.text);
+                cx.canvas
+                    .fill_rect(Rect::new(x, wave.y, PLAYHEAD_W, wave.h), t.text);
                 painted.xs.push(x);
             }
         }
@@ -522,7 +604,11 @@ impl Widget for Waveform {
             }
         }
         // A strip a pixel wider each side, and the marker tabs above stay put.
-        Some(xs.into_iter().map(|x| Rect::new(x - 1, wave.y, PLAYHEAD_W + 2, wave.h)).collect())
+        Some(
+            xs.into_iter()
+                .map(|x| Rect::new(x - 1, wave.y, PLAYHEAD_W + 2, wave.h))
+                .collect(),
+        )
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -537,7 +623,11 @@ impl Widget for Waveform {
                     // A second finger: a pinch, whatever the first was doing.
                     let (a, b) = (self.fingers[0].1, self.fingers[1].1);
                     let mid = f64::from(a + b) / 2.0 - f64::from(wave.x);
-                    self.pinch = Some((f64::from((a - b).abs()).max(1.0), self.view, self.view.frame_at(mid)));
+                    self.pinch = Some((
+                        f64::from((a - b).abs()).max(1.0),
+                        self.view,
+                        self.view.frame_at(mid),
+                    ));
                     self.grab = None;
                     return None;
                 }
@@ -548,14 +638,25 @@ impl Widget for Waveform {
                     // The tab under the finger (the last drawn is on top),
                     // with a little room round it for a fingertip.
                     let tabs = &self.painted.get_mut().tabs;
-                    let hit = (0..self.markers.len().min(tabs.len())).rev()
+                    let hit = (0..self.markers.len().min(tabs.len()))
+                        .rev()
                         .find(|&i| tabs[i].is_some_and(|t| t.inset_xy(-6, -3).contains(x, y)));
                     if let Some(i) = hit {
                         self.grab = Some((finger, Grab::Marker(i)));
-                        return Some(EventKind::Marker { index: i, frame: self.markers[i].frame });
+                        return Some(EventKind::Marker {
+                            index: i,
+                            frame: self.markers[i].frame,
+                        });
                     }
                 }
-                self.grab = Some((finger, Grab::Wave { x0: x, view: self.view, moved: false }));
+                self.grab = Some((
+                    finger,
+                    Grab::Wave {
+                        x0: x,
+                        view: self.view,
+                        moved: false,
+                    },
+                ));
                 None
             }
             Touch::Move => {
@@ -568,11 +669,18 @@ impl Widget for Waveform {
                     let mid = f64::from(a + b) / 2.0 - f64::from(wave.x);
                     self.view = v0.zoomed(d / d0, frame, mid, frames, wave.w);
                     self.changed();
-                    return Some(EventKind::View { start: self.view.start, frames_per_px: self.view.frames_per_px });
+                    return Some(EventKind::View {
+                        start: self.view.start,
+                        frames_per_px: self.view.frames_per_px,
+                    });
                 }
                 match self.grab {
                     Some((g, Grab::Marker(i))) if g == finger => {
-                        let f = self.view.frame_at(f64::from(x - wave.x)).round().clamp(0.0, frames as f64) as u64;
+                        let f = self
+                            .view
+                            .frame_at(f64::from(x - wave.x))
+                            .round()
+                            .clamp(0.0, frames as f64) as u64;
                         self.set_marker_frame(i, f);
                         Some(EventKind::Marker { index: i, frame: f })
                     }
@@ -580,11 +688,21 @@ impl Widget for Waveform {
                         if !moved && (x - x0).abs() < TAP_SLOP {
                             return None;
                         }
-                        self.grab = Some((g, Grab::Wave { x0, view, moved: true }));
+                        self.grab = Some((
+                            g,
+                            Grab::Wave {
+                                x0,
+                                view,
+                                moved: true,
+                            },
+                        ));
                         let start = view.start - f64::from(x - x0) * view.frames_per_px;
                         self.view = WaveView { start, ..view }.clamped(frames, wave.w);
                         self.changed();
-                        Some(EventKind::View { start: self.view.start, frames_per_px: self.view.frames_per_px })
+                        Some(EventKind::View {
+                            start: self.view.start,
+                            frames_per_px: self.view.frames_per_px,
+                        })
                     }
                     _ => None,
                 }
@@ -597,8 +715,17 @@ impl Widget for Waveform {
                 let grab = self.grab.take_if(|(g, _)| *g == finger);
                 match grab {
                     // A tap picks the frame where it went down.
-                    Some((_, Grab::Wave { x0, moved: false, .. })) if phase == Touch::Up && wave.contains(x, y) => {
-                        let f = self.view.frame_at(f64::from(x0 - wave.x)).round().clamp(0.0, frames as f64) as u64;
+                    Some((
+                        _,
+                        Grab::Wave {
+                            x0, moved: false, ..
+                        },
+                    )) if phase == Touch::Up && wave.contains(x, y) => {
+                        let f = self
+                            .view
+                            .frame_at(f64::from(x0 - wave.x))
+                            .round()
+                            .clamp(0.0, frames as f64) as u64;
                         Some(EventKind::Frame(f))
                     }
                     _ => None,
@@ -626,7 +753,11 @@ impl Default for WaveOverview {
 
 impl WaveOverview {
     pub fn new() -> WaveOverview {
-        WaveOverview { peaks: None, shown: (0.0, 0.0), region: None }
+        WaveOverview {
+            peaks: None,
+            shown: (0.0, 0.0),
+            region: None,
+        }
     }
 
     pub fn set_peaks(&mut self, peaks: Option<Arc<dyn Peaks>>) {
@@ -661,12 +792,18 @@ impl Widget for WaveOverview {
         let fpp = frames / f64::from(inner.w.max(1));
         let mid = inner.y + inner.h / 2;
         let half = (inner.h / 2 - 1).max(1) as f32;
-        let (rs, re) = self.region.map_or((0.0, frames), |(a, b)| (a as f64, b as f64));
+        let (rs, re) = self
+            .region
+            .map_or((0.0, frames), |(a, b)| (a as f64, b as f64));
         let (on, off) = (t.text_dim, t.text_faint.mix(t.surface, 0.4));
         for x in 0..inner.w {
             let f0 = f64::from(x) * fpp;
             // Both channels in one lane: the widest of them.
-            let mut c = WaveColumn { min: f32::MAX, max: f32::MIN, rms: 0.0 };
+            let mut c = WaveColumn {
+                min: f32::MAX,
+                max: f32::MIN,
+                rms: 0.0,
+            };
             for ch in 0..p.channels().clamp(1, 2) {
                 let k = p.column(ch, f0, f0 + fpp);
                 c.min = c.min.min(k.min);
@@ -678,11 +815,19 @@ impl Widget for WaveOverview {
             let top = mid - (c.max.clamp(-1.0, 1.0) * half).round() as i32;
             let bot = mid - (c.min.clamp(-1.0, 1.0) * half).round() as i32;
             let inside = f0 + fpp > rs && f0 < re;
-            cx.canvas.fill_rect(Rect::new(inner.x + x, top, 1, (bot - top).max(1)), if inside { on } else { off });
+            cx.canvas.fill_rect(
+                Rect::new(inner.x + x, top, 1, (bot - top).max(1)),
+                if inside { on } else { off },
+            );
         }
         let xa = inner.x + (self.shown.0 / fpp).round() as i32;
         let xb = inner.x + (self.shown.1 / fpp).round() as i32;
-        let b = Rect::new(xa.max(inner.x) - 2, r.y + 3, (xb.min(inner.right()) - xa.max(inner.x)).max(4) + 4, r.h - 6);
+        let b = Rect::new(
+            xa.max(inner.x) - 2,
+            r.y + 3,
+            (xb.min(inner.right()) - xa.max(inner.x)).max(4) + 4,
+            r.h - 6,
+        );
         cx.canvas.fill_round_rect(b, 6, t.accent.with_alpha(40));
         cx.canvas.stroke_round_rect(b, 6, 2, t.accent);
     }
@@ -693,7 +838,9 @@ impl Widget for WaveOverview {
         }
         let inner = Self::inner(r);
         let frames = self.frames();
-        let f = (f64::from(x - inner.x) / f64::from(inner.w.max(1)) * frames as f64).round().clamp(0.0, frames as f64) as u64;
+        let f = (f64::from(x - inner.x) / f64::from(inner.w.max(1)) * frames as f64)
+            .round()
+            .clamp(0.0, frames as f64) as u64;
         let span = self.shown.1 - self.shown.0;
         self.shown = (f as f64 - span / 2.0, f as f64 + span / 2.0);
         Some(EventKind::Frame(f))

@@ -40,25 +40,148 @@ pub mod param {
 }
 
 #[allow(clippy::too_many_arguments)]
-const fn p(id: u16, name: &'static str, group: &'static str, min: f32, max: f32, default: f32, unit: Unit, curve: Curve) -> ParamInfo {
-    ParamInfo { id, name, group, min, max, default, unit, curve, readonly: false }
+const fn p(
+    id: u16,
+    name: &'static str,
+    group: &'static str,
+    min: f32,
+    max: f32,
+    default: f32,
+    unit: Unit,
+    curve: Curve,
+) -> ParamInfo {
+    ParamInfo {
+        id,
+        name,
+        group,
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    }
 }
 
 static PARAMS: [ParamInfo; 11] = [
-    p(param::MIX, "Mix", "Mix", 0.0, 100.0, 50.0, Unit::Percent, Curve::Linear),
-    p(param::FREEZE, "Freeze", "Mix", 0.0, 1.0, 0.0, Unit::None, Curve::Toggle),
-    p(param::POSITION, "Position", "Grains", 0.0, 100.0, 85.0, Unit::Percent, Curve::Linear),
-    p(param::SPRAY, "Spray", "Grains", 0.0, 100.0, 10.0, Unit::Percent, Curve::Linear),
-    p(param::SIZE, "Size", "Grains", 2.0, 2000.0, 120.0, Unit::Ms, Curve::Log),
-    p(param::DENSITY, "Density", "Grains", 0.5, 200.0, 20.0, Unit::Hz, Curve::Log),
-    p(param::PITCH, "Pitch", "Pitch", -24.0, 24.0, 0.0, Unit::Semitones, Curve::Linear),
-    p(param::PITCH_SPRAY, "Pitch spray", "Pitch", 0.0, 24.0, 0.0, Unit::Semitones, Curve::Linear),
-    p(param::REVERSE, "Reverse", "Pitch", 0.0, 100.0, 0.0, Unit::Percent, Curve::Linear),
-    p(param::SPREAD, "Spread", "Space", 0.0, 100.0, 60.0, Unit::Percent, Curve::Linear),
-    ParamInfo { id: param::GRAINS, name: "Grains", group: "Meter", min: 0.0, max: 64.0, default: 0.0, unit: Unit::None, curve: Curve::Stepped, readonly: true },
+    p(
+        param::MIX,
+        "Mix",
+        "Mix",
+        0.0,
+        100.0,
+        50.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::FREEZE,
+        "Freeze",
+        "Mix",
+        0.0,
+        1.0,
+        0.0,
+        Unit::None,
+        Curve::Toggle,
+    ),
+    p(
+        param::POSITION,
+        "Position",
+        "Grains",
+        0.0,
+        100.0,
+        85.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::SPRAY,
+        "Spray",
+        "Grains",
+        0.0,
+        100.0,
+        10.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::SIZE,
+        "Size",
+        "Grains",
+        2.0,
+        2000.0,
+        120.0,
+        Unit::Ms,
+        Curve::Log,
+    ),
+    p(
+        param::DENSITY,
+        "Density",
+        "Grains",
+        0.5,
+        200.0,
+        20.0,
+        Unit::Hz,
+        Curve::Log,
+    ),
+    p(
+        param::PITCH,
+        "Pitch",
+        "Pitch",
+        -24.0,
+        24.0,
+        0.0,
+        Unit::Semitones,
+        Curve::Linear,
+    ),
+    p(
+        param::PITCH_SPRAY,
+        "Pitch spray",
+        "Pitch",
+        0.0,
+        24.0,
+        0.0,
+        Unit::Semitones,
+        Curve::Linear,
+    ),
+    p(
+        param::REVERSE,
+        "Reverse",
+        "Pitch",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::SPREAD,
+        "Spread",
+        "Space",
+        0.0,
+        100.0,
+        60.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    ParamInfo {
+        id: param::GRAINS,
+        name: "Grains",
+        group: "Meter",
+        min: 0.0,
+        max: 64.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Stepped,
+        readonly: true,
+    },
 ];
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.grains", name: "Grains", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.grains",
+    name: "Grains",
+    kind: Kind::Effect,
+};
 
 /// The granular effect as a node. Made with [`GrainNode::new`]; silent
 /// (passes its input through) until [`Node::prepare`] gives it memory.
@@ -84,7 +207,13 @@ impl GrainNode {
         for p in &PARAMS {
             values[usize::from(p.id)] = p.default;
         }
-        GrainNode { fx: None, budget: Budget::new(Self::BUDGET), values, rate: 0, seed }
+        GrainNode {
+            fx: None,
+            budget: Budget::new(Self::BUDGET),
+            values,
+            rate: 0,
+            seed,
+        }
     }
 
     /// The effect inside, for drawing its memory, grains and playhead.
@@ -110,7 +239,10 @@ impl GrainNode {
     /// Hands every setting to the effect.
     fn apply_all(&mut self) {
         let p = self.grain_params();
-        let (mix, frozen) = (self.values[usize::from(param::MIX)] / 100.0, self.values[usize::from(param::FREEZE)] >= 0.5);
+        let (mix, frozen) = (
+            self.values[usize::from(param::MIX)] / 100.0,
+            self.values[usize::from(param::FREEZE)] >= 0.5,
+        );
         if let Some(fx) = &mut self.fx {
             fx.set_params(p);
             fx.set_mix(mix);
@@ -129,7 +261,9 @@ impl Node for GrainNode {
     }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        let Some(info) = PARAMS.iter().find(|p| p.id == id) else { return };
+        let Some(info) = PARAMS.iter().find(|p| p.id == id) else {
+            return;
+        };
         if info.readonly {
             return;
         }
@@ -177,7 +311,12 @@ impl Node for GrainNode {
             let o = (e.offset as usize).min(n);
             if o > at {
                 if let Some(fx) = &mut self.fx {
-                    fx.process(&mut self.budget, ctx.frame + at as u64, &mut left[at..o], &mut right[at..o]);
+                    fx.process(
+                        &mut self.budget,
+                        ctx.frame + at as u64,
+                        &mut left[at..o],
+                        &mut right[at..o],
+                    );
                 }
                 at = o;
             }
@@ -187,7 +326,12 @@ impl Node for GrainNode {
         }
         if at < n {
             if let Some(fx) = &mut self.fx {
-                fx.process(&mut self.budget, ctx.frame + at as u64, &mut left[at..n], &mut right[at..n]);
+                fx.process(
+                    &mut self.budget,
+                    ctx.frame + at as u64,
+                    &mut left[at..n],
+                    &mut right[at..n],
+                );
             }
         }
     }

@@ -8,19 +8,45 @@ pub fn value_text(p: &ParamInfo, v: f32) -> (String, &'static str) {
     let v = p.clamp(v);
     let bipolar = p.min < 0.0 && p.max > 0.0;
     match p.curve {
-        Curve::Choice(names) => return (names.get(v as usize).copied().unwrap_or("?").to_string(), ""),
+        Curve::Choice(names) => {
+            return (
+                names.get(v as usize).copied().unwrap_or("?").to_string(),
+                "",
+            )
+        }
         Curve::Toggle => return ((if v >= 0.5 { "On" } else { "Off" }).to_string(), ""),
         _ => {}
     }
     let stepped = p.curve == Curve::Stepped;
     match p.unit {
         Unit::Hz if v >= 1000.0 => (trim(v / 1000.0, if v >= 10_000.0 { 1 } else { 2 }), "kHz"),
-        Unit::Hz => (trim(v, if v >= 100.0 { 0 } else if v >= 10.0 { 1 } else { 2 }), "Hz"),
+        Unit::Hz => (
+            trim(
+                v,
+                if v >= 100.0 {
+                    0
+                } else if v >= 10.0 {
+                    1
+                } else {
+                    2
+                },
+            ),
+            "Hz",
+        ),
         Unit::Ms if v >= 1000.0 => (trim(v / 1000.0, 2), "s"),
-        Unit::Ms => (trim(v, if v >= 100.0 || v == v.round() { 0 } else { 1 }), "ms"),
-        Unit::Db => (signed(v, if v.abs() >= 10.0 && !bipolar { 0 } else { 1 }, bipolar), "dB"),
+        Unit::Ms => (
+            trim(v, if v >= 100.0 || v == v.round() { 0 } else { 1 }),
+            "ms",
+        ),
+        Unit::Db => (
+            signed(v, if v.abs() >= 10.0 && !bipolar { 0 } else { 1 }, bipolar),
+            "dB",
+        ),
         Unit::Percent => (signed(v, 0, bipolar), "%"),
-        Unit::Semitones => (signed(v, if stepped { 0 } else { 1 }, bipolar || stepped), "st"),
+        Unit::Semitones => (
+            signed(v, if stepped { 0 } else { 1 }, bipolar || stepped),
+            "st",
+        ),
         Unit::Cents => (signed(v, 0, bipolar), "ct"),
         Unit::Octaves => (signed(v, 1, bipolar), "oct"),
         Unit::Beats => (trim(v, 2), "beats"),
@@ -37,10 +63,24 @@ pub fn amount_text(target: &str, amount: f32, unit: Unit) -> (String, &'static s
         let n = trim(amount.abs(), 1);
         return (n, if amount < 0.0 { "dB duck" } else { "dB swell" });
     }
-    let p = ParamInfo { id: 0, name: "", group: "", min: -1e6, max: 1e6, default: 0.0, unit, curve: Curve::Linear, readonly: false };
+    let p = ParamInfo {
+        id: 0,
+        name: "",
+        group: "",
+        min: -1e6,
+        max: 1e6,
+        default: 0.0,
+        unit,
+        curve: Curve::Linear,
+        readonly: false,
+    };
     let short = |v: f32| {
         let s = signed(v, 2, true);
-        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
     };
     match unit {
         Unit::Octaves | Unit::Semitones => (short(amount), value_text(&p, amount).1),
@@ -54,28 +94,45 @@ pub fn amount_text(target: &str, amount: f32, unit: Unit) -> (String, &'static s
 /// The value and unit on one line, as the Q-Link strip shows it.
 pub fn value_line(p: &ParamInfo, v: f32) -> String {
     let (n, u) = value_text(p, v);
-    if u.is_empty() { n } else { format!("{n} {u}") }
+    if u.is_empty() {
+        n
+    } else {
+        format!("{n} {u}")
+    }
 }
 
 fn signed(v: f32, decimals: usize, sign: bool) -> String {
     let s = format!("{:.*}", decimals, v);
     // "-0" and "-0.0" read as zero.
-    let zero = s.trim_start_matches('-').chars().all(|c| c == '0' || c == '.');
+    let zero = s
+        .trim_start_matches('-')
+        .chars()
+        .all(|c| c == '0' || c == '.');
     if zero {
         return s.trim_start_matches('-').to_string();
     }
-    if sign && v > 0.0 { format!("+{s}") } else { s }
+    if sign && v > 0.0 {
+        format!("+{s}")
+    } else {
+        s
+    }
 }
 
 fn trim(v: f32, decimals: usize) -> String {
     let s = format!("{:.*}", decimals, v);
-    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_synth::params::{info, CUTOFF, FENV_AMOUNT, FENV_D, FILTER_MODE, LEVEL, LFO_RETRIG, OSC1_OCT, OSC2_FINE, PAN};
+    use mpfree_synth::params::{
+        info, CUTOFF, FENV_AMOUNT, FENV_D, FILTER_MODE, LEVEL, LFO_RETRIG, OSC1_OCT, OSC2_FINE, PAN,
+    };
 
     fn t(id: u16, v: f32) -> String {
         value_line(info(id).unwrap(), v)
