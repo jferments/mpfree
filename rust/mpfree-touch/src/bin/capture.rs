@@ -52,7 +52,9 @@ fn strict_sysfs_identity() -> Result<(), String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("cannot read touch identity {path}: {e}"))?;
         if content.trim() != target {
-            return Err(format!("touch identity mismatch at {path}; expected {target}"));
+            return Err(format!(
+                "touch identity mismatch at {path}; expected {target}"
+            ));
         }
         Ok(())
     }
@@ -61,7 +63,10 @@ fn strict_sysfs_identity() -> Result<(), String> {
     expected("/sys/bus/i2c/devices/4-0026/name", "ili2117")?;
     let event_device = fs::canonicalize("/sys/class/input/event0/device")
         .map_err(|e| format!("cannot resolve event0 sysfs parent: {e}"))?;
-    if !event_device.components().any(|part| part.as_os_str() == "4-0026") {
+    if !event_device
+        .components()
+        .any(|part| part.as_os_str() == "4-0026")
+    {
         return Err("event0 does not belong to physical I2C 4-0026".into());
     }
     let driver = fs::canonicalize("/sys/bus/i2c/devices/4-0026/driver")
@@ -71,7 +76,10 @@ fn strict_sysfs_identity() -> Result<(), String> {
     }
     let compatible = fs::read("/sys/bus/i2c/devices/4-0026/of_node/compatible")
         .map_err(|e| format!("cannot read touchscreen compatible: {e}"))?;
-    if !compatible.split(|b| *b == 0).any(|part| part == b"ilitek,ili2117") {
+    if !compatible
+        .split(|b| *b == 0)
+        .any(|part| part == b"ilitek,ili2117")
+    {
         return Err("I2C device-tree compatible mismatch; refusing to open event0".into());
     }
     Ok(())
@@ -112,11 +120,19 @@ fn parse_records(bytes: &[u8]) -> Result<Vec<Record>, String> {
         .map(|r| {
             let u32_at = |i: usize| u32::from_le_bytes([r[i], r[i + 1], r[i + 2], r[i + 3]]);
             let u16_at = |i: usize| u16::from_le_bytes([r[i], r[i + 1]]);
-            (u32_at(0), u32_at(4), u16_at(8), u16_at(10), u32_at(12) as i32)
+            (
+                u32_at(0),
+                u32_at(4),
+                u16_at(8),
+                u16_at(10),
+                u32_at(12) as i32,
+            )
         })
         .collect();
     if let Some(bad) = records.iter().find(|r| r.2 > EV_MAX || r.1 >= 1_000_000) {
-        return Err(format!("implausible input_event {bad:?}; record layout mismatch"));
+        return Err(format!(
+            "implausible input_event {bad:?}; record layout mismatch"
+        ));
     }
     Ok(records)
 }
@@ -238,7 +254,10 @@ mod tests {
     #[test]
     fn parses_whole_records_and_rejects_partial_ones() {
         assert!(self_test().is_ok());
-        assert!(parse_records(&[0u8; 24]).is_err(), "64-bit layout must not parse");
+        assert!(
+            parse_records(&[0u8; 24]).is_err(),
+            "64-bit layout must not parse"
+        );
         // Two 24-byte records are 48 bytes, a multiple of 16: the field
         // checks must still catch the misaligned layout.
         let mut wide = Vec::new();

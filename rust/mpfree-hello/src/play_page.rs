@@ -24,8 +24,8 @@
 //! takes the top of the view's first column ([`PlayView::quick_layout`]),
 //! so the pads don't move when it comes and goes.
 
-use mpfree_arp_ui::view as arp_view;
 use mpfree_arp::scale::pads::PadLayout;
+use mpfree_arp_ui::view as arp_view;
 use mpfree_time_ui::view::TRANSPORT;
 use mpfree_ui::qlink::{COLUMN_WIDTH, MASTER_WIDTH};
 use mpfree_ui::text::{Align, FontId};
@@ -42,9 +42,11 @@ pub const PADS_HEAD: &str = "pads-head";
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
 /// What the Beats view says until the step grid is in.
-pub const BEATS_LINES: [&str; 3] = ["The step grid comes here: the pattern playing, a lane",
-                                    "per pad, pages up to 64 steps (the sequencer's grid).",
-                                    "Until then, clips record and play on the Clips tab."];
+pub const BEATS_LINES: [&str; 3] = [
+    "The step grid comes here: the pattern playing, a lane",
+    "per pad, pages up to 64 steps (the sequencer's grid).",
+    "Until then, clips record and play on the Clips tab.",
+];
 
 /// The views, in the switch's order.
 pub const VIEWS: [&str; 4] = ["All", "Beats", "Loop", "Drum"];
@@ -68,7 +70,12 @@ pub enum PlayView {
 }
 
 impl PlayView {
-    pub const ALL: [PlayView; 4] = [PlayView::All, PlayView::Beats, PlayView::Loop, PlayView::Drum];
+    pub const ALL: [PlayView; 4] = [
+        PlayView::All,
+        PlayView::Beats,
+        PlayView::Loop,
+        PlayView::Drum,
+    ];
 
     pub fn index(self) -> usize {
         self as usize
@@ -97,15 +104,30 @@ impl PlayView {
     /// takes the top of the first column, so nothing else moves.
     fn body(self, band: bool) -> String {
         let first = |slot: &str| {
-            if band { format!("col({}:{}, {slot}:*):*", arp_view::MINI, arp_view::MINI_H) } else { format!("{slot}:*") }
+            if band {
+                format!("col({}:{}, {slot}:*):*", arp_view::MINI, arp_view::MINI_H)
+            } else {
+                format!("{slot}:*")
+            }
         };
         let strip = crate::looper_page::LOOP_STRIP;
         match self {
-            PlayView::All => format!("col({strip}:{STRIP_H}, row({}, {PADS}:{PADS_W}):*):*", first("kits")),
-            PlayView::Beats => format!("row({}, col({PADS}:{PADS_W}, kits:*):{PADS_W}):*", first(BEATS)),
-            PlayView::Loop => format!("col({strip}:*, lbuttons:64, row({}, {PADS}:{PADS_W}):{LOOP_ROW_H}):*",
-                                      first("lmeter")),
-            PlayView::Drum => format!("row({}, col({PADS}:{PADS_W}, kits:*):{PADS_W}):*", first("timing")),
+            PlayView::All => format!(
+                "col({strip}:{STRIP_H}, row({}, {PADS}:{PADS_W}):*):*",
+                first("kits")
+            ),
+            PlayView::Beats => format!(
+                "row({}, col({PADS}:{PADS_W}, kits:*):{PADS_W}):*",
+                first(BEATS)
+            ),
+            PlayView::Loop => format!(
+                "col({strip}:*, lbuttons:64, row({}, {PADS}:{PADS_W}):{LOOP_ROW_H}):*",
+                first("lmeter")
+            ),
+            PlayView::Drum => format!(
+                "row({}, col({PADS}:{PADS_W}, kits:*):{PADS_W}):*",
+                first("timing")
+            ),
         }
     }
 
@@ -122,8 +144,10 @@ impl PlayView {
 /// The Play frame around `body`: the transport bar and the view switch
 /// over it, the master bar and the Q-Link cards beside.
 pub fn frame(body: &str) -> String {
-    format!("col(header:60, row(col(row({TRANSPORT}:*, {SWITCH}:{SWITCH_W}):44, {body}):*, \
-             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26)")
+    format!(
+        "col(header:60, row(col(row({TRANSPORT}:*, {SWITCH}:{SWITCH_W}):44, {body}):*, \
+             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26)"
+    )
 }
 
 /// A layout written for the old Play page, `col(header:60, BODY, hint:26)`,
@@ -135,12 +159,20 @@ pub fn framed(layout: &str) -> String {
     if layout.contains(SWITCH) {
         return layout.to_string();
     }
-    let Some(body) = layout.strip_prefix("col(header:60, ").and_then(|r| r.strip_suffix(", hint:26)")) else {
+    let Some(body) = layout
+        .strip_prefix("col(header:60, ")
+        .and_then(|r| r.strip_suffix(", hint:26)"))
+    else {
         return layout.to_string();
     };
-    let side = body.strip_prefix("row(pads:*, ").and_then(|r| r.strip_suffix("):*")).and_then(|r| r.rsplit_once(':'));
+    let side = body
+        .strip_prefix("row(pads:*, ")
+        .and_then(|r| r.strip_suffix("):*"))
+        .and_then(|r| r.rsplit_once(':'));
     match side {
-        Some((column, width)) if width.parse::<i32>().is_ok() => frame(&format!("row({column}:*, {PADS}:{PADS_W}):*")),
+        Some((column, width)) if width.parse::<i32>().is_ok() => {
+            frame(&format!("row({column}:*, {PADS}:{PADS_W}):*"))
+        }
         _ => frame(body),
     }
 }
@@ -149,7 +181,11 @@ pub fn framed(layout: &str) -> String {
 /// presets (Jay, 12:22Z: the switch on Play and on the Synth tab).
 pub fn synth_with_pads(layout: &str) -> String {
     let presets = mpfree_synth_ui::view::PRESETS;
-    layout.replacen(&format!("{presets}:300"), &format!("col({SYNTH_PADS_HEAD}:30, {presets}:*):300"), 1)
+    layout.replacen(
+        &format!("{presets}:300"),
+        &format!("col({SYNTH_PADS_HEAD}:30, {presets}:*):300"),
+        1,
+    )
 }
 
 // ---------------------------------------------------------------- pads bar
@@ -180,9 +216,17 @@ const PILL_W: i32 = 184;
 impl PadsBar {
     /// The switch's two halves in the bar's rectangle `r`.
     pub fn halves(r: Rect) -> [Rect; 2] {
-        let pill = Rect::new(r.right() - PILL_W, r.y + 1, PILL_W.min(r.w), (r.h - 2).max(0));
+        let pill = Rect::new(
+            r.right() - PILL_W,
+            r.y + 1,
+            PILL_W.min(r.w),
+            (r.h - 2).max(0),
+        );
         let w = pill.w / 2;
-        [Rect::new(pill.x, pill.y, w, pill.h), Rect::new(pill.x + w, pill.y, pill.w - w, pill.h)]
+        [
+            Rect::new(pill.x, pill.y, w, pill.h),
+            Rect::new(pill.x + w, pill.y, pill.w - w, pill.h),
+        ]
     }
 }
 
@@ -192,13 +236,32 @@ impl Widget for PadsBar {
         cx.canvas.fill_rect(r, t.bg);
         let line = r.inset_xy(4, 0);
         let Some(s) = self.synth else {
-            cx.text(FontId::Bold, t.size_small, line, Align::Left, t.text_dim, &self.title.to_uppercase());
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                line,
+                Align::Left,
+                t.text_dim,
+                &self.title.to_uppercase(),
+            );
             return;
         };
         let halves = PadsBar::halves(r);
         let title = Rect::new(line.x, line.y, (halves[0].x - 8 - line.x).max(0), line.h);
-        cx.text(FontId::Bold, t.size_small, title, Align::Left, t.text_dim, &self.title.to_uppercase());
-        let pill = Rect::new(halves[0].x, halves[0].y, halves[0].w + halves[1].w, halves[0].h);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            title,
+            Align::Left,
+            t.text_dim,
+            &self.title.to_uppercase(),
+        );
+        let pill = Rect::new(
+            halves[0].x,
+            halves[0].y,
+            halves[0].w + halves[1].w,
+            halves[0].h,
+        );
         cx.canvas.fill_round_rect(pill, pill.h / 2, t.raised);
         let on = match s.layout {
             PadLayout::Chromatic => Some(0),
@@ -208,10 +271,24 @@ impl Widget for PadsBar {
         for (i, (half, name)) in halves.iter().zip(LAYOUT_SWITCH).enumerate() {
             let lit = on == Some(i);
             if lit {
-                cx.canvas.fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
+                cx.canvas
+                    .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
             }
-            let ink = if lit { t.bg } else if i == 1 && !s.scale { t.text_faint } else { t.text_dim };
-            cx.text(if lit { FontId::Bold } else { FontId::Sans }, t.size_small, *half, Align::Center, ink, name);
+            let ink = if lit {
+                t.bg
+            } else if i == 1 && !s.scale {
+                t.text_faint
+            } else {
+                t.text_dim
+            };
+            cx.text(
+                if lit { FontId::Bold } else { FontId::Sans },
+                t.size_small,
+                *half,
+                Align::Center,
+                ink,
+                name,
+            );
         }
     }
 
@@ -219,7 +296,10 @@ impl Widget for PadsBar {
         if phase != Touch::Down || self.synth.is_none() {
             return None;
         }
-        PadsBar::halves(r).iter().position(|h| h.contains(x, y)).map(EventKind::Tab)
+        PadsBar::halves(r)
+            .iter()
+            .position(|h| h.contains(x, y))
+            .map(EventKind::Tab)
     }
 }
 
@@ -229,20 +309,40 @@ mod tests {
     use mpfree_ui::layout;
 
     fn slots(spec: &str) -> Vec<(String, Rect)> {
-        layout::solve(&layout::parse(spec).unwrap(), Rect::new(12, 12, 1256, 776), 12)
+        layout::solve(
+            &layout::parse(spec).unwrap(),
+            Rect::new(12, 12, 1256, 776),
+            12,
+        )
     }
 
     fn rect(spec: &str, name: &str) -> Rect {
-        slots(spec).into_iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("{name} in {spec}")).1
+        slots(spec)
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} in {spec}"))
+            .1
     }
 
     #[test]
     fn every_view_keeps_the_frame() {
         for v in PlayView::ALL {
             for spec in [v.layout(), v.quick_layout()] {
-                assert_eq!(rect(&spec, TRANSPORT), Rect::new(12, 84, 998 - SWITCH_W - 12, 44), "{spec}");
-                assert_eq!(rect(&spec, MASTER), Rect::new(1022, 84, MASTER_WIDTH, 666), "{spec}");
-                assert_eq!(rect(&spec, QLINKS), Rect::new(1100, 84, COLUMN_WIDTH, 666), "{spec}");
+                assert_eq!(
+                    rect(&spec, TRANSPORT),
+                    Rect::new(12, 84, 998 - SWITCH_W - 12, 44),
+                    "{spec}"
+                );
+                assert_eq!(
+                    rect(&spec, MASTER),
+                    Rect::new(1022, 84, MASTER_WIDTH, 666),
+                    "{spec}"
+                );
+                assert_eq!(
+                    rect(&spec, QLINKS),
+                    Rect::new(1100, 84, COLUMN_WIDTH, 666),
+                    "{spec}"
+                );
                 assert_eq!(rect(&spec, SWITCH).right(), 1010, "{spec}");
                 assert_eq!(rect(&spec, "hint").y, 762, "{spec}");
             }
@@ -265,7 +365,10 @@ mod tests {
     fn the_arp_panel_takes_the_left_and_the_pads_stay_right() {
         let spec = framed(arp_view::ARP_LAYOUT);
         let pads = rect(&spec, "pads");
-        assert_eq!((pads.x, pads.w), (rect(&PlayView::All.layout(), "pads").x, PADS_W));
+        assert_eq!(
+            (pads.x, pads.w),
+            (rect(&PlayView::All.layout(), "pads").x, PADS_W)
+        );
         let list = rect(&spec, arp_view::LIST);
         assert!(list.right() < pads.x && list.w >= 460, "{list:?}");
         assert_eq!(rect(&spec, QLINKS), Rect::new(1100, 84, COLUMN_WIDTH, 666));
@@ -289,13 +392,34 @@ mod tests {
     #[test]
     fn the_switch_halves_tap_chromatic_or_in_key() {
         let r = Rect::new(570, 140, 440, 30);
-        let mut bar = PadsBar { title: "Synth · Bank A".into(), synth: None };
+        let mut bar = PadsBar {
+            title: "Synth · Bank A".into(),
+            synth: None,
+        };
         let [chromatic, in_key] = PadsBar::halves(r);
-        assert_eq!(bar.touch(1, Touch::Down, in_key.x + 5, in_key.y + 5, r), None, "no switch for a kit");
-        bar.synth = Some(SynthPads { layout: PadLayout::Chromatic, scale: true, bank: 0 });
-        assert_eq!(bar.touch(1, Touch::Down, in_key.x + 5, in_key.y + 5, r), Some(EventKind::Tab(1)));
-        assert_eq!(bar.touch(1, Touch::Down, chromatic.x + 5, chromatic.y + 5, r), Some(EventKind::Tab(0)));
-        assert_eq!(bar.touch(1, Touch::Down, r.x + 5, r.y + 5, r), None, "the title is not the switch");
+        assert_eq!(
+            bar.touch(1, Touch::Down, in_key.x + 5, in_key.y + 5, r),
+            None,
+            "no switch for a kit"
+        );
+        bar.synth = Some(SynthPads {
+            layout: PadLayout::Chromatic,
+            scale: true,
+            bank: 0,
+        });
+        assert_eq!(
+            bar.touch(1, Touch::Down, in_key.x + 5, in_key.y + 5, r),
+            Some(EventKind::Tab(1))
+        );
+        assert_eq!(
+            bar.touch(1, Touch::Down, chromatic.x + 5, chromatic.y + 5, r),
+            Some(EventKind::Tab(0))
+        );
+        assert_eq!(
+            bar.touch(1, Touch::Down, r.x + 5, r.y + 5, r),
+            None,
+            "the title is not the switch"
+        );
         assert_eq!(in_key.right(), r.right());
     }
 }

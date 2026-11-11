@@ -41,7 +41,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         if rendered == 44_100 {
             sampler.note_off(60); // 64-frame declicked release at 1 second
         }
-        let until_release = if rendered < 44_100 { 44_100 - rendered } else { 128 };
+        let until_release = if rendered < 44_100 {
+            44_100 - rendered
+        } else {
+            128
+        };
         let count = (frames - rendered).min(128).min(until_release);
         sampler.render(&mut l[..count], &mut r[..count])?;
         for i in 0..count {

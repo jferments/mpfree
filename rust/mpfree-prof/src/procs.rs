@@ -78,13 +78,22 @@ pub fn policy_name(policy: u64, rt_priority: u64) -> String {
 /// (busy, total) ticks for each `cpu` line of /proc/stat: the total first,
 /// then each core.
 pub fn parse_cpu_lines(text: &str) -> Vec<(u64, u64)> {
-    text.lines().filter(|l| l.starts_with("cpu")).filter_map(|l| {
-        let v: Vec<u64> = l.split_whitespace().skip(1).filter_map(|x| x.parse().ok()).collect();
-        if v.len() < 4 { return None; }
-        let total: u64 = v.iter().take(8).sum();
-        let idle = v[3] + v.get(4).copied().unwrap_or(0);
-        Some((total - idle, total))
-    }).collect()
+    text.lines()
+        .filter(|l| l.starts_with("cpu"))
+        .filter_map(|l| {
+            let v: Vec<u64> = l
+                .split_whitespace()
+                .skip(1)
+                .filter_map(|x| x.parse().ok())
+                .collect();
+            if v.len() < 4 {
+                return None;
+            }
+            let total: u64 = v.iter().take(8).sum();
+            let idle = v[3] + v.get(4).copied().unwrap_or(0);
+            Some((total - idle, total))
+        })
+        .collect()
 }
 
 /// One row of the process page.
@@ -117,12 +126,36 @@ pub struct ProcView {
 impl ProcView {
     /// The busiest `n` as a log line.
     pub fn line(&self, n: usize) -> String {
-        let top: Vec<String> = self.rows.iter().take(n)
-            .map(|r| format!("{} ({}) {:.1} % {} MB", r.name, r.pid, r.cpu_pct, r.rss_kb / 1024)).collect();
-        let cores: Vec<String> = self.core_cpu_pct.iter().map(|c| format!("{c:.0}")).collect();
-        format!("procs: system {}, cores {} %, top: {}",
-                self.total_cpu_pct.map_or("-".to_string(), |c| format!("{c:.1} %")),
-                if cores.is_empty() { "-".to_string() } else { cores.join("/") }, top.join(", "))
+        let top: Vec<String> = self
+            .rows
+            .iter()
+            .take(n)
+            .map(|r| {
+                format!(
+                    "{} ({}) {:.1} % {} MB",
+                    r.name,
+                    r.pid,
+                    r.cpu_pct,
+                    r.rss_kb / 1024
+                )
+            })
+            .collect();
+        let cores: Vec<String> = self
+            .core_cpu_pct
+            .iter()
+            .map(|c| format!("{c:.0}"))
+            .collect();
+        format!(
+            "procs: system {}, cores {} %, top: {}",
+            self.total_cpu_pct
+                .map_or("-".to_string(), |c| format!("{c:.1} %")),
+            if cores.is_empty() {
+                "-".to_string()
+            } else {
+                cores.join("/")
+            },
+            top.join(", ")
+        )
     }
 }
 
@@ -136,24 +169,37 @@ pub struct ProcTable {
 }
 
 impl Default for ProcTable {
-    fn default() -> ProcTable { ProcTable::new() }
+    fn default() -> ProcTable {
+        ProcTable::new()
+    }
 }
 
 impl ProcTable {
-    pub fn new() -> ProcTable { ProcTable::at("/proc") }
+    pub fn new() -> ProcTable {
+        ProcTable::at("/proc")
+    }
 
     pub fn at(root: &str) -> ProcTable {
-        ProcTable { root: root.trim_end_matches('/').to_string(), last_ticks: Vec::new(), last_cpu: Vec::new(), last_at: None }
+        ProcTable {
+            root: root.trim_end_matches('/').to_string(),
+            last_ticks: Vec::new(),
+            last_cpu: Vec::new(),
+            last_at: None,
+        }
     }
 
     fn stats(dir: &str) -> Vec<Stat> {
-        let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
-        let mut v: Vec<Stat> = entries.filter_map(|e| {
-            let e = e.ok()?;
-            e.file_name().to_str()?.parse::<u32>().ok()?;
-            // A process can end between the listing and the read.
-            parse_stat(&fs::read_to_string(e.path().join("stat")).ok()?)
-        }).collect();
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut v: Vec<Stat> = entries
+            .filter_map(|e| {
+                let e = e.ok()?;
+                e.file_name().to_str()?.parse::<u32>().ok()?;
+                // A process can end between the listing and the read.
+                parse_stat(&fs::read_to_string(e.path().join("stat")).ok()?)
+            })
+            .collect();
         v.sort_by_key(|s| s.pid);
         v
     }
@@ -162,25 +208,55 @@ impl ProcTable {
     pub fn sample(&mut self) -> ProcView {
         let now = std::time::Instant::now();
         let stats = ProcTable::stats(&self.root);
-        let cpu = fs::read_to_string(format!("{}/stat", self.root)).map(|t| parse_cpu_lines(&t)).unwrap_or_default();
-        let dt = self.last_at.map(|t| now.duration_since(t).as_secs_f64().max(1e-3));
-        let mut rows: Vec<ProcRow> = stats.iter().map(|s| {
-            let cpu_pct = match (dt, self.last_ticks.binary_search_by_key(&s.pid, |p| p.0)) {
-                (Some(dt), Ok(i)) => s.ticks.saturating_sub(self.last_ticks[i].1) as f64 / TICKS_PER_S / dt * 100.0,
-                _ => 0.0,
-            };
-            ProcRow { pid: s.pid, name: s.name.clone(), state: s.state, cpu_pct, rss_kb: s.rss_pages * PAGE_BYTES / 1024,
-                      threads: s.threads, policy: policy_name(s.policy, s.rt_priority), nice: s.nice }
-        }).collect();
-        rows.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct).then(b.rss_kb.cmp(&a.rss_kb)));
+        let cpu = fs::read_to_string(format!("{}/stat", self.root))
+            .map(|t| parse_cpu_lines(&t))
+            .unwrap_or_default();
+        let dt = self
+            .last_at
+            .map(|t| now.duration_since(t).as_secs_f64().max(1e-3));
+        let mut rows: Vec<ProcRow> = stats
+            .iter()
+            .map(|s| {
+                let cpu_pct = match (dt, self.last_ticks.binary_search_by_key(&s.pid, |p| p.0)) {
+                    (Some(dt), Ok(i)) => {
+                        s.ticks.saturating_sub(self.last_ticks[i].1) as f64 / TICKS_PER_S / dt
+                            * 100.0
+                    }
+                    _ => 0.0,
+                };
+                ProcRow {
+                    pid: s.pid,
+                    name: s.name.clone(),
+                    state: s.state,
+                    cpu_pct,
+                    rss_kb: s.rss_pages * PAGE_BYTES / 1024,
+                    threads: s.threads,
+                    policy: policy_name(s.policy, s.rt_priority),
+                    nice: s.nice,
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.cpu_pct
+                .total_cmp(&a.cpu_pct)
+                .then(b.rss_kb.cmp(&a.rss_kb))
+        });
         let pct = |now: &(u64, u64), was: &(u64, u64)| {
             let total = now.1.saturating_sub(was.1);
             (total > 0).then(|| now.0.saturating_sub(was.0) as f64 / total as f64 * 100.0)
         };
-        let mut view = ProcView { over_s: dt.unwrap_or(0.0), rows, ..ProcView::default() };
+        let mut view = ProcView {
+            over_s: dt.unwrap_or(0.0),
+            rows,
+            ..ProcView::default()
+        };
         if dt.is_some() && cpu.len() == self.last_cpu.len() && !cpu.is_empty() {
             view.total_cpu_pct = pct(&cpu[0], &self.last_cpu[0]);
-            view.core_cpu_pct = cpu[1..].iter().zip(&self.last_cpu[1..]).filter_map(|(n, w)| pct(n, w)).collect();
+            view.core_cpu_pct = cpu[1..]
+                .iter()
+                .zip(&self.last_cpu[1..])
+                .filter_map(|(n, w)| pct(n, w))
+                .collect();
         }
         self.last_ticks = stats.iter().map(|s| (s.pid, s.ticks)).collect();
         self.last_cpu = cpu;
@@ -190,7 +266,9 @@ impl ProcTable {
 
     /// The threads of one process, with their total CPU ticks so far (the
     /// caller diffs two calls for a rate, as [`ProcTable::sample`] does).
-    pub fn threads(&self, pid: u32) -> Vec<Stat> { ProcTable::stats(&format!("{}/{pid}/task", self.root)) }
+    pub fn threads(&self, pid: u32) -> Vec<Stat> {
+        ProcTable::stats(&format!("{}/{pid}/task", self.root))
+    }
 }
 
 #[cfg(test)]
@@ -215,7 +293,18 @@ mod tests {
     #[test]
     fn parses_stat_lines_with_awkward_names() {
         let s = parse_stat(&stat(42, "MPC (audio) x", 250, 1000, 1, 80)).unwrap();
-        assert_eq!((s.pid, s.name.as_str(), s.state, s.ticks, s.nice, s.threads, s.rss_pages), (42, "MPC (audio) x", 'S', 250, -5, 3, 1000));
+        assert_eq!(
+            (
+                s.pid,
+                s.name.as_str(),
+                s.state,
+                s.ticks,
+                s.nice,
+                s.threads,
+                s.rss_pages
+            ),
+            (42, "MPC (audio) x", 'S', 250, -5, 3, 1000)
+        );
         assert_eq!(policy_name(s.policy, s.rt_priority), "FIFO 80");
         assert_eq!(policy_name(0, 0), "normal");
         assert!(parse_stat("nonsense").is_none());
@@ -235,14 +324,30 @@ mod tests {
     fn a_table_reads_a_fixture_tree() {
         let root = std::env::temp_dir().join(format!("mpfree-procs-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        for (pid, name, rss, pol, rt) in [(1u32, "init", 100u64, 0u64, 0u64), (300, "MPC", 250_000, 1, 80), (400, "mpfree-hello", 10_000, 0, 0)] {
+        for (pid, name, rss, pol, rt) in [
+            (1u32, "init", 100u64, 0u64, 0u64),
+            (300, "MPC", 250_000, 1, 80),
+            (400, "mpfree-hello", 10_000, 0, 0),
+        ] {
             fs::create_dir_all(root.join(pid.to_string())).unwrap();
-            fs::write(root.join(format!("{pid}/stat")), stat(pid, name, 100, rss, pol, rt)).unwrap();
+            fs::write(
+                root.join(format!("{pid}/stat")),
+                stat(pid, name, 100, rss, pol, rt),
+            )
+            .unwrap();
         }
         fs::create_dir_all(root.join("400/task/401")).unwrap();
-        fs::write(root.join("400/task/401/stat"), stat(401, "audio", 50, 10_000, 1, 70)).unwrap();
+        fs::write(
+            root.join("400/task/401/stat"),
+            stat(401, "audio", 50, 10_000, 1, 70),
+        )
+        .unwrap();
         fs::create_dir_all(root.join("self")).unwrap();
-        fs::write(root.join("stat"), "cpu  10 0 0 90 0 0 0 0\ncpu0 5 0 0 45 0 0 0 0\ncpu1 5 0 0 45 0 0 0 0\n").unwrap();
+        fs::write(
+            root.join("stat"),
+            "cpu  10 0 0 90 0 0 0 0\ncpu0 5 0 0 45 0 0 0 0\ncpu1 5 0 0 45 0 0 0 0\n",
+        )
+        .unwrap();
         let r = root.to_str().unwrap();
         let mut t = ProcTable::at(r);
         let first = t.sample();
@@ -250,17 +355,37 @@ mod tests {
         assert_eq!(first.rows[0].name, "MPC", "no CPU yet, so by memory");
         assert_eq!(first.rows[0].rss_kb, 1_000_000);
         assert_eq!(first.total_cpu_pct, None);
-        fs::write(root.join("400/stat"), stat(400, "mpfree-hello", 150, 10_000, 0, 0)).unwrap();
-        fs::write(root.join("stat"), "cpu  60 0 0 140 0 0 0 0\ncpu0 50 0 0 50 0 0 0 0\ncpu1 10 0 0 90 0 0 0 0\n").unwrap();
+        fs::write(
+            root.join("400/stat"),
+            stat(400, "mpfree-hello", 150, 10_000, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            root.join("stat"),
+            "cpu  60 0 0 140 0 0 0 0\ncpu0 50 0 0 50 0 0 0 0\ncpu1 10 0 0 90 0 0 0 0\n",
+        )
+        .unwrap();
         let second = t.sample();
         assert_eq!(second.rows[0].name, "mpfree-hello");
         assert!(second.rows[0].cpu_pct > 0.0);
         assert_eq!(second.total_cpu_pct, Some(50.0));
         assert_eq!(second.core_cpu_pct, vec![90.0, 10.0]);
-        assert_eq!(second.rows.iter().find(|r| r.pid == 300).unwrap().policy, "FIFO 80");
-        assert!(second.line(2).starts_with("procs: system 50.0 %, cores 90/10 %, top: mpfree-hello (400) "), "{}", second.line(2));
+        assert_eq!(
+            second.rows.iter().find(|r| r.pid == 300).unwrap().policy,
+            "FIFO 80"
+        );
+        assert!(
+            second
+                .line(2)
+                .starts_with("procs: system 50.0 %, cores 90/10 %, top: mpfree-hello (400) "),
+            "{}",
+            second.line(2)
+        );
         let th = t.threads(400);
-        assert_eq!((th.len(), th[0].name.as_str(), th[0].rt_priority), (1, "audio", 70));
+        assert_eq!(
+            (th.len(), th[0].name.as_str(), th[0].rt_priority),
+            (1, "audio", 70)
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

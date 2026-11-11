@@ -32,10 +32,17 @@ pub enum SynthItem {
 
 /// The options menu opened from the Synth tab: the synth's own rows, then
 /// the Play rows as before.
-pub(super) const SYNTH_OPTIONS: [Item; 9] = [Item::Synth(SynthItem::Engine), Item::Synth(SynthItem::Scale),
-                                             Item::Synth(SynthItem::Root), Item::Synth(SynthItem::Layout),
-                                             Item::Synth(SynthItem::Rows), Item::Rate, Item::Tempo, Item::PadLevel,
-                                             Item::Latch];
+pub(super) const SYNTH_OPTIONS: [Item; 9] = [
+    Item::Synth(SynthItem::Engine),
+    Item::Synth(SynthItem::Scale),
+    Item::Synth(SynthItem::Root),
+    Item::Synth(SynthItem::Layout),
+    Item::Synth(SynthItem::Rows),
+    Item::Rate,
+    Item::Tempo,
+    Item::PadLevel,
+    Item::Latch,
+];
 
 fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
     let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
@@ -54,55 +61,85 @@ impl App {
         match i {
             0 => None,
             i if i < SCALES.len() => Some((SCALES[i].name, SCALES[i].mask, SCALES[i].down)),
-            i => self.custom_scales.get(i - SCALES.len()).map(|(n, u, d)| (n.as_str(), *u, *d)),
+            i => self
+                .custom_scales
+                .get(i - SCALES.len())
+                .map(|(n, u, d)| (n.as_str(), *u, *d)),
         }
     }
 
     fn pad_scale_choice(&self) -> usize {
-        if self.synth_pads.scale.is_some() { self.pad_scale_pick } else { 0 }
+        if self.synth_pads.scale.is_some() {
+            self.pad_scale_pick
+        } else {
+            0
+        }
     }
 
     pub(super) fn synth_item_text(&self, item: SynthItem) -> (&'static str, String) {
         let p = &self.synth_pads;
         match item {
             SynthItem::Engine => ("Engine", p.engine.name().to_string()),
-            SynthItem::Scale => ("Scale", match self.pad_scale_entry(self.pad_scale_choice()) {
-                None => "Off".to_string(),
-                Some((name, ..)) => name.to_string(),
-            }),
-            SynthItem::Root => ("Scale root", NOTE_NAMES[usize::from(self.pad_scale_root % 12)].to_string()),
-            SynthItem::Layout => ("Pad layout", if p.scale.is_some() {
-                format!("{} (bank {})", p.layout().label(), super::bank_letter(p.bank))
-            } else {
-                "Chromatic (no scale)".to_string()
-            }),
+            SynthItem::Scale => (
+                "Scale",
+                match self.pad_scale_entry(self.pad_scale_choice()) {
+                    None => "Off".to_string(),
+                    Some((name, ..)) => name.to_string(),
+                },
+            ),
+            SynthItem::Root => (
+                "Scale root",
+                NOTE_NAMES[usize::from(self.pad_scale_root % 12)].to_string(),
+            ),
+            SynthItem::Layout => (
+                "Pad layout",
+                if p.scale.is_some() {
+                    format!(
+                        "{} (bank {})",
+                        p.layout().label(),
+                        super::bank_letter(p.bank)
+                    )
+                } else {
+                    "Chromatic (no scale)".to_string()
+                },
+            ),
             SynthItem::Rows => ("In key rows", p.rows.label().to_string()),
         }
     }
 
     pub(super) fn synth_item_help(item: SynthItem) -> Vec<&'static str> {
         match item {
-            SynthItem::Engine => vec!["The synth the pads play: Poly (subtractive)",
-                                      "or FM (six operators). A note still ringing",
-                                      "on the other one finishes its release. The",
-                                      "Synth tab shows the engine picked."],
-            SynthItem::Scale => vec!["The pads' own scale (the arp has its own).",
-                                     "Off: pad 1 is C3 and each pad a semitone up.",
-                                     "With a scale, Pad layout picks how the pads",
-                                     "use it. Scales from your patterns file come",
-                                     "after the built-in ones."],
-            SynthItem::Root => vec!["The scale's first note. In key and Chord pads",
-                                    "start on it, in octave 3."],
-            SynthItem::Layout => vec!["Chromatic: a semitone a pad, the scale lit",
-                                      "(root, in the scale, outside it). In key:",
-                                      "only scale notes. Chord pads: triads on the",
-                                      "bottom rows, sevenths on the top rows. Each",
-                                      "pad bank keeps its own layout: A Chromatic,",
-                                      "B In key, C Chord pads, D In key an octave up."],
-            SynthItem::Rows => vec!["In key: the pads climb the scale in sequence,",
-                                    "or each row starts a fourth (three scale",
-                                    "notes) above the row below, so a chord keeps",
-                                    "one shape."],
+            SynthItem::Engine => vec![
+                "The synth the pads play: Poly (subtractive)",
+                "or FM (six operators). A note still ringing",
+                "on the other one finishes its release. The",
+                "Synth tab shows the engine picked.",
+            ],
+            SynthItem::Scale => vec![
+                "The pads' own scale (the arp has its own).",
+                "Off: pad 1 is C3 and each pad a semitone up.",
+                "With a scale, Pad layout picks how the pads",
+                "use it. Scales from your patterns file come",
+                "after the built-in ones.",
+            ],
+            SynthItem::Root => vec![
+                "The scale's first note. In key and Chord pads",
+                "start on it, in octave 3.",
+            ],
+            SynthItem::Layout => vec![
+                "Chromatic: a semitone a pad, the scale lit",
+                "(root, in the scale, outside it). In key:",
+                "only scale notes. Chord pads: triads on the",
+                "bottom rows, sevenths on the top rows. Each",
+                "pad bank keeps its own layout: A Chromatic,",
+                "B In key, C Chord pads, D In key an octave up.",
+            ],
+            SynthItem::Rows => vec![
+                "In key: the pads climb the scale in sequence,",
+                "or each row starts a fourth (three scale",
+                "notes) above the row below, so a chord keeps",
+                "one shape.",
+            ],
         }
     }
 
@@ -110,23 +147,32 @@ impl App {
     pub(super) fn step_synth_item(&mut self, item: SynthItem, d: i32) -> Vec<Effect> {
         let before = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
         match item {
-            SynthItem::Engine => self.synth_pads.engine = step_in(&Engine::ALL, self.synth_pads.engine, d),
+            SynthItem::Engine => {
+                self.synth_pads.engine = step_in(&Engine::ALL, self.synth_pads.engine, d)
+            }
             SynthItem::Scale => {
-                self.pad_scale_pick = (self.pad_scale_choice() as i32 + d).clamp(0, self.pad_scale_choices() as i32 - 1)
+                self.pad_scale_pick = (self.pad_scale_choice() as i32 + d)
+                    .clamp(0, self.pad_scale_choices() as i32 - 1)
                     as usize;
-                self.synth_pads.scale = self.pad_scale_entry(self.pad_scale_pick)
+                self.synth_pads.scale = self
+                    .pad_scale_entry(self.pad_scale_pick)
                     .map(|(_, up, down)| Scale::with_down(self.pad_scale_root, up, down));
             }
             SynthItem::Root => {
                 self.pad_scale_root = (i32::from(self.pad_scale_root) + d).clamp(0, 11) as u8;
                 let root = self.pad_scale_root;
-                self.synth_pads.scale = self.synth_pads.scale.map(|s| Scale::with_down(root, s.mask, s.down));
+                self.synth_pads.scale = self
+                    .synth_pads
+                    .scale
+                    .map(|s| Scale::with_down(root, s.mask, s.down));
             }
             SynthItem::Layout => {
                 let l = step_in(&PadLayout::ALL, self.synth_pads.layout(), d);
                 self.synth_pads.set_layout(l);
             }
-            SynthItem::Rows => self.synth_pads.rows = step_in(&InKeyRows::ALL, self.synth_pads.rows, d),
+            SynthItem::Rows => {
+                self.synth_pads.rows = step_in(&InKeyRows::ALL, self.synth_pads.rows, d)
+            }
         }
         if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
             return Vec::new();
@@ -139,9 +185,15 @@ impl App {
     /// without one the pads stay Chromatic and a note says so.
     pub fn synth_pick_layout(&mut self, in_key: bool) -> Vec<Effect> {
         if in_key && self.synth_pads.scale.is_none() {
-            return vec![Effect::Note("pads: pick a scale first (MENU on the Synth tab, Scale)".to_string())];
+            return vec![Effect::Note(
+                "pads: pick a scale first (MENU on the Synth tab, Scale)".to_string(),
+            )];
         }
-        let want = if in_key { PadLayout::InKey } else { PadLayout::Chromatic };
+        let want = if in_key {
+            PadLayout::InKey
+        } else {
+            PadLayout::Chromatic
+        };
         if self.synth_pads.layout() == want {
             return Vec::new();
         }

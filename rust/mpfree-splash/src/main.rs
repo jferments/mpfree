@@ -58,7 +58,11 @@ enum Mode {
 }
 
 enum MidiSource {
-    Alsa { card: u32, device: u32, subdevice: u32 },
+    Alsa {
+        card: u32,
+        device: u32,
+        subdevice: u32,
+    },
     File(PathBuf),
 }
 
@@ -126,9 +130,14 @@ fn parse_args() -> Result<Options, String> {
             }
             _ => {}
         }
-        let value = args.next().ok_or_else(|| format!("{arg} needs a value\n{USAGE}"))?;
+        let value = args
+            .next()
+            .ok_or_else(|| format!("{arg} needs a value\n{USAGE}"))?;
         let number = |what: &str| -> Result<f32, String> {
-            value.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0)
+            value
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= 0.0)
                 .ok_or_else(|| format!("{what} needs a number, not {value:?}"))
         };
         match arg.as_str() {
@@ -141,24 +150,41 @@ fn parse_args() -> Result<Options, String> {
             "--every" => o.every = number("--every")?,
             "--menu-seconds" => o.menu_seconds = number("--menu-seconds")?.clamp(1.0, 120.0),
             "--rotation" => {
-                o.rotation = value.parse::<u32>().ok().and_then(Rotation::from_degrees)
+                o.rotation = value
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(Rotation::from_degrees)
                     .ok_or_else(|| format!("--rotation must be 0, 90, 180 or 270, not {value}"))?
             }
             "--fb" => o.fb = PathBuf::from(value),
             "--sysfs" => o.sysfs = PathBuf::from(value),
             "--preview" => o.mode = Mode::Preview(PathBuf::from(value)),
             "--midi" => {
-                let parts: Vec<u32> = value.split(',').map(|p| p.trim().parse::<u32>()).collect::<Result<_, _>>()
-                    .map_err(|_| format!("--midi needs CARD,DEVICE,SUBDEVICE numbers, not {value:?}"))?;
+                let parts: Vec<u32> = value
+                    .split(',')
+                    .map(|p| p.trim().parse::<u32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| {
+                        format!("--midi needs CARD,DEVICE,SUBDEVICE numbers, not {value:?}")
+                    })?;
                 let [card, device, subdevice] = parts[..] else {
                     return Err(format!("--midi needs CARD,DEVICE,SUBDEVICE, not {value:?}"));
                 };
-                o.midi = Some(MidiSource::Alsa { card, device, subdevice });
+                o.midi = Some(MidiSource::Alsa {
+                    card,
+                    device,
+                    subdevice,
+                });
             }
             "--midi-file" => o.midi = Some(MidiSource::File(PathBuf::from(value))),
             "--font" => o.font = Some(PathBuf::from(value)),
-            "--tracking" => o.tracking = value.parse::<f32>().ok().filter(|v| v.is_finite())
-                .ok_or_else(|| format!("--tracking needs a number, not {value:?}"))?,
+            "--tracking" => {
+                o.tracking = value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| format!("--tracking needs a number, not {value:?}"))?
+            }
             _ => return Err(format!("unknown option {arg}\n{USAGE}")),
         }
     }
@@ -173,10 +199,12 @@ fn parse_args() -> Result<Options, String> {
 fn make_galaxy(o: &Options) -> Galaxy {
     let font = match &o.font {
         None => TitleFont::Block,
-        Some(path) => TitleFont::load(path).map(|f| f.with_tracking(o.tracking)).unwrap_or_else(|e| {
-            eprintln!("mpfree-splash: {e}; using the built-in block letters");
-            TitleFont::Block
-        }),
+        Some(path) => TitleFont::load(path)
+            .map(|f| f.with_tracking(o.tracking))
+            .unwrap_or_else(|e| {
+                eprintln!("mpfree-splash: {e}; using the built-in block letters");
+                TitleFont::Block
+            }),
     };
     eprintln!("mpfree-splash: title font: {}", font.name());
     Galaxy::with_font(font)
@@ -191,8 +219,14 @@ enum Input {
 /// Reads the controller in a thread and sends wheel turns and PLAY/pad presses.
 fn start_midi(source: &MidiSource) -> Result<mpsc::Receiver<Input>, String> {
     let mut reader: Box<dyn Read + Send> = match source {
-        MidiSource::Alsa { card, device, subdevice } => Box::new(midi_in::open_rawmidi(*card, *device, *subdevice)?),
-        MidiSource::File(path) => Box::new(fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?),
+        MidiSource::Alsa {
+            card,
+            device,
+            subdevice,
+        } => Box::new(midi_in::open_rawmidi(*card, *device, *subdevice)?),
+        MidiSource::File(path) => {
+            Box::new(fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?)
+        }
     };
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -208,7 +242,10 @@ fn start_midi(source: &MidiSource) -> Result<mpsc::Receiver<Input>, String> {
                 let input = match mpc_one::decode(&msg) {
                     Some(ControlEvent::DataWheel { delta }) => Input::Wheel(delta as i32),
                     Some(ControlEvent::PadDown { .. }) => Input::Confirm,
-                    Some(ControlEvent::Button { note: mpc_one::button::PLAY, pressed: true }) => Input::Confirm,
+                    Some(ControlEvent::Button {
+                        note: mpc_one::button::PLAY,
+                        pressed: true,
+                    }) => Input::Confirm,
                     _ => continue,
                 };
                 if tx.send(input).is_err() {
@@ -239,7 +276,9 @@ fn run_terminal(o: &Options) -> Result<Option<Choice>, String> {
     let mut terminal = ratatui::init();
     let start = Instant::now();
     let frame = Duration::from_secs_f32(1.0 / o.fps);
-    let mut menu = o.menu.then(|| BootMenu::new(o.mpfree_available, o.menu_seconds, 0.0));
+    let mut menu = o
+        .menu
+        .then(|| BootMenu::new(o.mpfree_available, o.menu_seconds, 0.0));
     let midi = match (&o.midi, o.menu) {
         (Some(source), true) => Some(start_midi(source)),
         _ => None,
@@ -265,7 +304,17 @@ fn run_terminal(o: &Options) -> Result<Option<Choice>, String> {
                 }
                 if let Some(choice) = m.tick(t) {
                     let text = m.lines(t);
-                    terminal.draw(|f| f.render_widget(GalaxyWidget { galaxy: &galaxy, seconds: t, menu: Some(&text) }, f.area()))
+                    terminal
+                        .draw(|f| {
+                            f.render_widget(
+                                GalaxyWidget {
+                                    galaxy: &galaxy,
+                                    seconds: t,
+                                    menu: Some(&text),
+                                },
+                                f.area(),
+                            )
+                        })
                         .map_err(|e| e.to_string())?;
                     thread::sleep(Duration::from_millis(600));
                     return Ok(Some(choice));
@@ -274,13 +323,24 @@ fn run_terminal(o: &Options) -> Result<Option<Choice>, String> {
                 return Ok(None);
             }
             let text = menu.as_ref().map(|m| m.lines(t));
-            terminal.draw(|f| f.render_widget(GalaxyWidget { galaxy: &galaxy, seconds: t, menu: text.as_ref() }, f.area()))
+            terminal
+                .draw(|f| {
+                    f.render_widget(
+                        GalaxyWidget {
+                            galaxy: &galaxy,
+                            seconds: t,
+                            menu: text.as_ref(),
+                        },
+                        f.area(),
+                    )
+                })
                 .map_err(|e| e.to_string())?;
             if event::poll(frame).map_err(|e| e.to_string())?
                 && let Event::Key(k) = event::read().map_err(|e| e.to_string())?
                 && k.kind == KeyEventKind::Press
             {
-                let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL);
+                let ctrl_c =
+                    k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL);
                 if ctrl_c || matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
                     return Ok(None);
                 }
@@ -308,10 +368,14 @@ fn run_preview(o: &Options, dir: &Path) -> Result<(), String> {
     let mut term = Terminal::new(backend).map_err(|e| e.to_string())?;
     let (lw, lh) = g.logical_size(o.rotation);
     let size = term.size().map_err(|e| e.to_string())?;
-    println!("MPC One framebuffer {}x{} (stride {}), rotation {:?}: the viewer sees {lw}x{lh}, {}x{} cells",
-             g.width, g.height, g.stride, o.rotation, size.width, size.height);
+    println!(
+        "MPC One framebuffer {}x{} (stride {}), rotation {:?}: the viewer sees {lw}x{lh}, {}x{} cells",
+        g.width, g.height, g.stride, o.rotation, size.width, size.height
+    );
     // With --menu, the frames walk through the menu: countdown, wheel turned to Factory OS.
-    let mut menu = o.menu.then(|| BootMenu::new(o.mpfree_available, o.menu_seconds.max(60.0), 0.0));
+    let mut menu = o
+        .menu
+        .then(|| BootMenu::new(o.mpfree_available, o.menu_seconds.max(60.0), 0.0));
     for i in 0..o.frames.max(1) {
         let t = i as f32 * o.every;
         if let Some(m) = menu.as_mut()
@@ -321,8 +385,17 @@ fn run_preview(o: &Options, dir: &Path) -> Result<(), String> {
         }
         let text = menu.as_ref().map(|m| m.lines(t));
         let started = Instant::now();
-        term.draw(|f| f.render_widget(GalaxyWidget { galaxy: &galaxy, seconds: t, menu: text.as_ref() }, f.area()))
-            .map_err(|e| e.to_string())?;
+        term.draw(|f| {
+            f.render_widget(
+                GalaxyWidget {
+                    galaxy: &galaxy,
+                    seconds: t,
+                    menu: text.as_ref(),
+                },
+                f.area(),
+            )
+        })
+        .map_err(|e| e.to_string())?;
         let took = started.elapsed();
         let b = term.backend();
         let mut pixels = Vec::with_capacity(lw * lh);
@@ -332,16 +405,26 @@ fn run_preview(o: &Options, dir: &Path) -> Result<(), String> {
             }
         }
         let path = dir.join(format!("mpc-one-splash-{i:02}-t{t:05.1}s.png"));
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        file.write_all(&png::encode(lw, lh, &pixels)).map_err(|e| format!("{}: {e}", path.display()))?;
-        println!("wrote {} (frame drawn in {:.1} ms on this machine)", path.display(), took.as_secs_f64() * 1000.0);
+        file.write_all(&png::encode(lw, lh, &pixels))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        println!(
+            "wrote {} (frame drawn in {:.1} ms on this machine)",
+            path.display(),
+            took.as_secs_f64() * 1000.0
+        );
     }
     Ok(())
 }
 
 fn read_trimmed(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The visible size from `modes` ("U:800x1280p-0"), and the stride and depth.
@@ -349,11 +432,18 @@ fn geometry_from_sysfs(dir: &Path) -> Result<Geometry, String> {
     let modes = read_trimmed(&dir.join("modes"))?;
     let first = modes.lines().next().unwrap_or("");
     let size = first.split(':').nth(1).unwrap_or("");
-    let digits: String = size.chars().take_while(|c| c.is_ascii_digit() || *c == 'x').collect();
-    let (w, h) = digits.split_once('x').ok_or_else(|| format!("cannot read a size from modes {first:?}"))?;
+    let digits: String = size
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == 'x')
+        .collect();
+    let (w, h) = digits
+        .split_once('x')
+        .ok_or_else(|| format!("cannot read a size from modes {first:?}"))?;
     let num = |s: &str, what: &str| s.parse::<usize>().map_err(|_| format!("bad {what} {s:?}"));
     let stride = num(&read_trimmed(&dir.join("stride"))?, "stride")?;
-    let bpp = read_trimmed(&dir.join("bits_per_pixel"))?.parse::<u32>().map_err(|e| format!("bits_per_pixel: {e}"))?;
+    let bpp = read_trimmed(&dir.join("bits_per_pixel"))?
+        .parse::<u32>()
+        .map_err(|e| format!("bits_per_pixel: {e}"))?;
     Geometry::new(num(w, "width")?, num(h, "height")?, stride, bpp)
 }
 
@@ -361,7 +451,11 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
     let start = Instant::now();
     while !(o.fb.exists() && o.sysfs.join("modes").exists()) {
         if start.elapsed() > WAIT_FOR_FB {
-            return Err(format!("{} did not appear within {} s", o.fb.display(), WAIT_FOR_FB.as_secs()));
+            return Err(format!(
+                "{} did not appear within {} s",
+                o.fb.display(),
+                WAIT_FOR_FB.as_secs()
+            ));
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -369,13 +463,20 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
     let backend = FramebufferBackend::new(g, o.rotation)?;
     let mut term = Terminal::new(backend).map_err(|e| e.to_string())?;
     let size = term.size().map_err(|e| e.to_string())?;
-    eprintln!("mpfree-splash: {}x{} pixels, stride {}, {:?}, rotation {:?}: {}x{} cells, {} fps",
-              g.width, g.height, g.stride, g.format, o.rotation, size.width, size.height, o.fps);
+    eprintln!(
+        "mpfree-splash: {}x{} pixels, stride {}, {:?}, rotation {:?}: {}x{} cells, {} fps",
+        g.width, g.height, g.stride, g.format, o.rotation, size.width, size.height, o.fps
+    );
     // Write only: no create, no truncate. Each frame goes to offset 0, the shown page.
-    let mut fbdev = OpenOptions::new().write(true).open(&o.fb).map_err(|e| format!("{}: {e}", o.fb.display()))?;
+    let mut fbdev = OpenOptions::new()
+        .write(true)
+        .open(&o.fb)
+        .map_err(|e| format!("{}: {e}", o.fb.display()))?;
     let galaxy = make_galaxy(o);
     let frame = Duration::from_secs_f32(1.0 / o.fps);
-    let mut menu = o.menu.then(|| BootMenu::new(o.mpfree_available, o.menu_seconds, 0.0));
+    let mut menu = o
+        .menu
+        .then(|| BootMenu::new(o.mpfree_available, o.menu_seconds, 0.0));
     let midi = match (&o.midi, o.menu) {
         (Some(source), true) => Some(start_midi(source)?),
         (None, true) if o.mpfree_available => {
@@ -404,7 +505,9 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
             if let Some(choice) = m.tick(t) {
                 match chosen {
                     // Keep "Starting ..." on screen briefly before handing over.
-                    Some((_, at)) if at.elapsed() >= Duration::from_millis(600) => return Ok(Some(choice)),
+                    Some((_, at)) if at.elapsed() >= Duration::from_millis(600) => {
+                        return Ok(Some(choice));
+                    }
                     None => chosen = Some((choice, Instant::now())),
                     _ => {}
                 }
@@ -413,9 +516,20 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
             break;
         }
         let text = menu.as_ref().map(|m| m.lines(t));
-        term.draw(|f| f.render_widget(GalaxyWidget { galaxy: &galaxy, seconds: t, menu: text.as_ref() }, f.area()))
-            .map_err(|e| e.to_string())?;
-        fbdev.seek(SeekFrom::Start(0)).and_then(|_| fbdev.write_all(term.backend().frame()))
+        term.draw(|f| {
+            f.render_widget(
+                GalaxyWidget {
+                    galaxy: &galaxy,
+                    seconds: t,
+                    menu: text.as_ref(),
+                },
+                f.area(),
+            )
+        })
+        .map_err(|e| e.to_string())?;
+        fbdev
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| fbdev.write_all(term.backend().frame()))
             .map_err(|e| format!("writing {}: {e}", o.fb.display()))?;
         if !shown {
             show_framebuffer(&o.sysfs);
@@ -426,24 +540,34 @@ fn run_framebuffer(o: &Options) -> Result<Option<Choice>, String> {
         busy += took;
         worst = worst.max(took);
         if report.elapsed() >= Duration::from_secs(5) {
-            eprintln!("mpfree-splash: {frames} frames, average {:.1} ms, worst {:.1} ms per frame",
-                      busy.as_secs_f64() * 1000.0 / frames as f64, worst.as_secs_f64() * 1000.0);
+            eprintln!(
+                "mpfree-splash: {frames} frames, average {:.1} ms, worst {:.1} ms per frame",
+                busy.as_secs_f64() * 1000.0 / frames as f64,
+                worst.as_secs_f64() * 1000.0
+            );
             report = Instant::now();
         }
         if let Some(rest) = frame.checked_sub(took) {
             thread::sleep(rest);
         }
     }
-    eprintln!("mpfree-splash: done: {frames} frames in {:.1} s, average {:.1} ms, worst {:.1} ms per frame",
-              begin.elapsed().as_secs_f64(), busy.as_secs_f64() * 1000.0 / frames.max(1) as f64,
-              worst.as_secs_f64() * 1000.0);
+    eprintln!(
+        "mpfree-splash: done: {frames} frames in {:.1} s, average {:.1} ms, worst {:.1} ms per frame",
+        begin.elapsed().as_secs_f64(),
+        busy.as_secs_f64() * 1000.0 / frames.max(1) as f64,
+        worst.as_secs_f64() * 1000.0
+    );
     Ok(None)
 }
 
 fn show_framebuffer(sysfs: &Path) {
     // Writing the pan offset makes the kernel's framebuffer emulation commit its
     // mode, which lights the panel. Without a text console nothing else does.
-    match OpenOptions::new().write(true).open(sysfs.join("pan")).and_then(|mut f| f.write_all(b"0,0\n")) {
+    match OpenOptions::new()
+        .write(true)
+        .open(sysfs.join("pan"))
+        .and_then(|mut f| f.write_all(b"0,0\n"))
+    {
         Ok(()) => eprintln!("mpfree-splash: asked the kernel to show the framebuffer (pan 0,0)"),
         Err(e) => eprintln!("mpfree-splash: pan 0,0 failed: {e}"),
     }

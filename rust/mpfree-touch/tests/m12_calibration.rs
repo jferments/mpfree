@@ -52,9 +52,21 @@ fn assemble(blocks: &[(String, Vec<String>)]) -> String {
 fn edit_step(text: &str, step: &str, f: impl Fn(Vec<String>) -> Vec<String>) -> String {
     let mut b = blocks(text);
     let lines = &mut b.iter_mut().find(|(n, _)| n == step).unwrap().1;
-    let head: Vec<String> = lines.iter().take_while(|l| !l.starts_with("E ")).cloned().collect();
-    let events: Vec<String> = lines.iter().filter(|l| l.starts_with("E ")).cloned().collect();
-    let tail: Vec<String> = lines.iter().filter(|l| l.starts_with(LOG_END)).cloned().collect();
+    let head: Vec<String> = lines
+        .iter()
+        .take_while(|l| !l.starts_with("E "))
+        .cloned()
+        .collect();
+    let events: Vec<String> = lines
+        .iter()
+        .filter(|l| l.starts_with("E "))
+        .cloned()
+        .collect();
+    let tail: Vec<String> = lines
+        .iter()
+        .filter(|l| l.starts_with(LOG_END))
+        .cloned()
+        .collect();
     *lines = head.into_iter().chain(f(events)).chain(tail).collect();
     assemble(&b)
 }
@@ -69,7 +81,11 @@ fn every_orientation_is_recovered_with_and_without_ten_fingers() {
             assert_eq!(r.steps.len(), if last == 10 { 10 } else { 9 });
             assert_eq!(r.multi.len(), if last == 10 { 3 } else { 2 });
             assert_eq!(r.multi.last().unwrap().max_contacts, last);
-            let fitting = r.candidates.iter().filter(|c| c.corners_ok && c.drags_ok).count();
+            let fitting = r
+                .candidates
+                .iter()
+                .filter(|c| c.corners_ok && c.drags_ok)
+                .count();
             assert_eq!(fitting, 1);
         }
     }
@@ -77,10 +93,17 @@ fn every_orientation_is_recovered_with_and_without_ten_fingers() {
 
 #[test]
 fn report_has_expected_measurements_and_profile() {
-    let o = Orientation { swap_xy: true, flip_x: false, flip_y: true };
+    let o = Orientation {
+        swap_xy: true,
+        flip_x: false,
+        flip_y: true,
+    };
     let r = run(&synthetic_log(o, &cfg(), 10));
     let (cx, cy) = r.centre_logical.unwrap();
-    assert!((cx - 639.5).abs() < 5.0 && (cy - 399.5).abs() < 5.0, "{cx},{cy}");
+    assert!(
+        (cx - 639.5).abs() < 5.0 && (cy - 399.5).abs() < 5.0,
+        "{cx},{cy}"
+    );
     let m = r.margins.unwrap();
     assert!(m.iter().all(|&g| g > 0.03 && g < 0.07), "{m:?}");
     // Synthetic jitter is +/-2 raw units.
@@ -103,8 +126,11 @@ fn report_has_expected_measurements_and_profile() {
 fn corners_far_from_the_edges_fail_reach() {
     let mut c = cfg();
     c.max_corner_margin = 0.03; // synthetic corners sit 4-5% in
-    let r = analyze(&parse_log(&synthetic_log(Orientation::default(), &cfg(), 5)).unwrap(), &c)
-        .unwrap();
+    let r = analyze(
+        &parse_log(&synthetic_log(Orientation::default(), &cfg(), 5)).unwrap(),
+        &c,
+    )
+    .unwrap();
     assert!(!r.pass);
     assert_eq!(r.orientation, Some(Orientation::default()));
     assert!(r.failures.iter().any(|f| f.contains("from an edge")));
@@ -125,20 +151,38 @@ fn a_missing_step_is_reported_not_guessed() {
 fn a_wrong_step_is_named() {
     let text = synthetic_log(Orientation::default(), &cfg(), 5);
     // Two touches in a corner step.
-    let doubled = edit_step(&text, "top_right", |ev| ev.iter().chain(ev.iter()).cloned().collect());
+    let doubled = edit_step(&text, "top_right", |ev| {
+        ev.iter().chain(ev.iter()).cloned().collect()
+    });
     let r = run(&doubled);
     assert!(!r.pass);
-    assert!(r.failures[0].starts_with("step top_right: expected one finger"), "{:?}", r.failures);
+    assert!(
+        r.failures[0].starts_with("step top_right: expected one finger"),
+        "{:?}",
+        r.failures
+    );
     // A drag step where the finger never moved.
     let b = blocks(&text);
     let corner = b.iter().find(|(n, _)| n == "top_left").unwrap().1.clone();
     let mut swapped = b.clone();
-    swapped.iter_mut().find(|(n, _)| n == "drag_left_to_right").unwrap().1 = corner;
+    swapped
+        .iter_mut()
+        .find(|(n, _)| n == "drag_left_to_right")
+        .unwrap()
+        .1 = corner;
     let r = run(&assemble(&swapped));
-    assert!(r.failures[0].starts_with("step drag_left_to_right: drag too short"), "{:?}", r.failures);
+    assert!(
+        r.failures[0].starts_with("step drag_left_to_right: drag too short"),
+        "{:?}",
+        r.failures
+    );
     // A step with no touch at all.
     let r = run(&edit_step(&text, "bottom_left", |_| Vec::new()));
-    assert!(r.failures[0].contains("saw 0 touch(es)"), "{:?}", r.failures);
+    assert!(
+        r.failures[0].contains("saw 0 touch(es)"),
+        "{:?}",
+        r.failures
+    );
 }
 
 #[test]
@@ -159,7 +203,13 @@ fn a_sync_drop_mid_hold_is_counted_and_tolerated() {
     let with_drop = edit_step(&text, "centre", |mut ev| {
         // Insert SYN_DROPPED + SYN_REPORT late in the centre hold (frame ~250
         // of 300), keeping its timestamp.
-        let idx = ev.iter().enumerate().filter(|(_, l)| l.ends_with(" 0 0 0")).nth(250).unwrap().0;
+        let idx = ev
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.ends_with(" 0 0 0"))
+            .nth(250)
+            .unwrap()
+            .0;
         let stamp: Vec<&str> = ev[idx].split(' ').collect();
         let (s, u) = (stamp[1].to_string(), stamp[2].to_string());
         ev.insert(idx + 1, format!("E {s} {u} 0 3 0"));
@@ -192,15 +242,21 @@ fn malformed_logs_are_rejected() {
     // Steps footer count, unknown, repeated and out-of-order steps.
     let n = good.lines().filter(|l| l.starts_with("STEP ")).count();
     assert!(parse_log(&good.replace(&format!("steps={n}"), "steps=3")).is_err());
-    assert!(parse_log(&good.replacen("STEP top_left", "STEP top_middle", 1))
-        .unwrap_err()
-        .contains("unknown step"));
-    assert!(parse_log(&good.replacen("STEP top_right", "STEP top_left", 1))
-        .unwrap_err()
-        .contains("out of order"));
+    assert!(
+        parse_log(&good.replacen("STEP top_left", "STEP top_middle", 1))
+            .unwrap_err()
+            .contains("unknown step")
+    );
+    assert!(
+        parse_log(&good.replacen("STEP top_right", "STEP top_left", 1))
+            .unwrap_err()
+            .contains("out of order")
+    );
     let mut b = blocks(&good);
     b.swap(1, 2);
-    assert!(parse_log(&assemble(&b)).unwrap_err().contains("out of order"));
+    assert!(parse_log(&assemble(&b))
+        .unwrap_err()
+        .contains("out of order"));
     // Anything after the footer.
     assert!(parse_log(&format!("{good}STEP centre\n")).is_err());
 }

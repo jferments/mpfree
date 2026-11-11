@@ -22,7 +22,10 @@ pub struct Chip {
 
 impl Chip {
     pub fn new(text: impl Into<String>, tone: Tone) -> Chip {
-        Chip { text: text.into(), tone }
+        Chip {
+            text: text.into(),
+            tone,
+        }
     }
 }
 
@@ -55,21 +58,32 @@ const TABS_W: i32 = 6 * (TAB_W + TAB_GAP);
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
-        Header { tabs: tabs.iter().map(|s| s.to_string()).collect(), active: 0, chips: Vec::new(),
-                 drawn_chips: RefCell::new(Vec::new()) }
+        Header {
+            tabs: tabs.iter().map(|s| s.to_string()).collect(),
+            active: 0,
+            chips: Vec::new(),
+            drawn_chips: RefCell::new(Vec::new()),
+        }
     }
 
     /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
     /// (none if it is not one of them, as on Prefs).
     pub fn app(active: &str) -> Header {
         let mut h = Header::new(&APP_TABS);
-        h.active = APP_TABS.iter().position(|t| *t == active).unwrap_or(usize::MAX);
+        h.active = APP_TABS
+            .iter()
+            .position(|t| *t == active)
+            .unwrap_or(usize::MAX);
         h
     }
 
     /// Where chip `i` was last drawn, if it fitted.
     pub fn chip_rect(&self, i: usize) -> Option<Rect> {
-        self.drawn_chips.borrow().iter().find(|(c, _)| *c == i).map(|(_, r)| *r)
+        self.drawn_chips
+            .borrow()
+            .iter()
+            .find(|(c, _)| *c == i)
+            .map(|(_, r)| *r)
     }
 
     /// Up to six tabs are TAB_W wide. More tabs share the same width, so the
@@ -77,7 +91,12 @@ impl Header {
     pub fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
         let pitch = TABS_W / self.tabs.len().max(6) as i32;
-        Rect::new(r.x + LEFT_W + i as i32 * pitch, r.y + (r.h - h) / 2, pitch - TAB_GAP, h)
+        Rect::new(
+            r.x + LEFT_W + i as i32 * pitch,
+            r.y + (r.h - h) / 2,
+            pitch - TAB_GAP,
+            h,
+        )
     }
 }
 
@@ -93,7 +112,14 @@ impl Widget for Header {
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
             }
             let color = if on { t.text } else { t.text_dim };
-            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_title, tr, Align::Center, color, name);
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_title,
+                tr,
+                Align::Center,
+                color,
+                name,
+            );
         }
         // Chips from the right edge leftwards; stop before the tabs.
         let limit = self.tab_rect(r, self.tabs.len()).x;
@@ -113,7 +139,14 @@ impl Widget for Header {
             let dot = Rect::new(cr.x + 14, cr.y + h / 2 - 4, 8, 8);
             cx.canvas.fill_round_rect(dot, 4, t.tone(chip.tone));
             let text = Rect::new(cr.x + 28, cr.y, tw + 4, h);
-            cx.text(FontId::Sans, t.size_small, text, Align::Left, t.text, &chip.text);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                text,
+                Align::Left,
+                t.text,
+                &chip.text,
+            );
             right -= w + 8;
         }
     }
@@ -127,7 +160,10 @@ impl Widget for Header {
             return Some(EventKind::Tab(i));
         }
         let drawn = self.drawn_chips.borrow();
-        drawn.iter().find(|(_, cr)| cr.contains(x, y)).map(|(i, _)| EventKind::Select(*i))
+        drawn
+            .iter()
+            .find(|(_, cr)| cr.contains(x, y))
+            .map(|(i, _)| EventKind::Select(*i))
     }
 }
 
@@ -162,7 +198,12 @@ const SMALL_PAD_H: i32 = 70;
 impl PadGrid {
     pub fn new(count: usize, cols: usize) -> PadGrid {
         assert!(cols > 0 && count > 0 && count.is_multiple_of(cols));
-        PadGrid { pads: vec![Pad::default(); count], cols, fingers: Vec::new(), drawn: RefCell::new(None) }
+        PadGrid {
+            pads: vec![Pad::default(); count],
+            cols,
+            fingers: Vec::new(),
+            drawn: RefCell::new(None),
+        }
     }
 
     fn rows(&self) -> usize {
@@ -214,7 +255,12 @@ impl Widget for PadGrid {
         if *at != r || old.len() != self.pads.len() {
             return None;
         }
-        Some((0..self.pads.len()).filter(|&i| old[i] != self.pads[i]).map(|i| self.cell(r, i)).collect())
+        Some(
+            (0..self.pads.len())
+                .filter(|&i| old[i] != self.pads[i])
+                .map(|i| self.cell(r, i))
+                .collect(),
+        )
     }
 
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
@@ -233,18 +279,35 @@ impl Widget for PadGrid {
                     let fill = t.surface.mix(c, 0.20 + 0.80 * lit);
                     let bright = lit > 0.45;
                     let ink = if bright { t.bg } else { t.text };
-                    (fill, ink, if bright { t.bg.with_alpha(170) } else { c.mix(t.text, 0.35) })
+                    (
+                        fill,
+                        ink,
+                        if bright {
+                            t.bg.with_alpha(170)
+                        } else {
+                            c.mix(t.text, 0.35)
+                        },
+                    )
                 }
                 None => (t.surface, t.text_faint, t.text_faint),
             };
             if let (Some(c), true) = (pad.color, lit > 0.0) {
-                cx.canvas.stroke_round_rect(cell, t.radius + 3, 3, c.with_alpha((150.0 * lit) as u8));
+                cx.canvas.stroke_round_rect(
+                    cell,
+                    t.radius + 3,
+                    3,
+                    c.with_alpha((150.0 * lit) as u8),
+                );
             }
             cx.canvas.fill_round_rect(body, t.radius, fill);
             if pad.color.is_none() {
                 cx.canvas.stroke_round_rect(body, t.radius, 1, t.outline);
             }
-            let label = if pad.label.is_empty() { "—" } else { pad.label.as_str() };
+            let label = if pad.label.is_empty() {
+                "—"
+            } else {
+                pad.label.as_str()
+            };
             if body.h < SMALL_PAD_H {
                 // A small pad (the Play page's pads panel): the name only.
                 let inner = body.inset_xy(8, 4);
@@ -252,14 +315,22 @@ impl Widget for PadGrid {
             } else {
                 let inner = body.inset(12);
                 let (top, rest) = inner.take_top(22);
-                cx.text(FontId::Bold, t.size_small, top, Align::Left, sub, &format!("{}", i + 1));
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    top,
+                    Align::Left,
+                    sub,
+                    &format!("{}", i + 1),
+                );
                 let (bottom, _) = rest.take_bottom(26);
                 cx.text(FontId::Sans, t.size_body, bottom, Align::Left, ink, label);
             }
             if lit > 0.0 && pad.velocity > 0 {
                 let w = ((body.w - 24) as f32 * pad.velocity as f32 / 127.0) as i32;
                 let bar = Rect::new(body.x + 12, body.bottom() - 9, w.max(4), 4);
-                cx.canvas.fill_round_rect(bar, 2, ink.with_alpha((200.0 * lit) as u8));
+                cx.canvas
+                    .fill_round_rect(bar, 2, ink.with_alpha((200.0 * lit) as u8));
             }
         }
     }
@@ -269,13 +340,19 @@ impl Widget for PadGrid {
             Touch::Down => {
                 let i = (0..self.pads.len()).find(|&i| self.cell(r, i).contains(x, y))?;
                 self.fingers.push((finger, i));
-                Some(EventKind::Pad { index: i, down: true })
+                Some(EventKind::Pad {
+                    index: i,
+                    down: true,
+                })
             }
             Touch::Move => None,
             Touch::Up | Touch::Cancel => {
                 let k = self.fingers.iter().position(|(f, _)| *f == finger)?;
                 let (_, i) = self.fingers.remove(k);
-                Some(EventKind::Pad { index: i, down: false })
+                Some(EventKind::Pad {
+                    index: i,
+                    down: false,
+                })
             }
         }
     }
@@ -301,7 +378,11 @@ const ROW_H: i32 = 46;
 
 impl ListView {
     pub fn new(title: &str) -> ListView {
-        ListView { title: title.to_string(), items: Vec::new(), selected: 0 }
+        ListView {
+            title: title.to_string(),
+            items: Vec::new(),
+            selected: 0,
+        }
     }
 
     /// The area for rows: the panel without its title line.
@@ -315,36 +396,71 @@ impl ListView {
             return 0;
         }
         let half = visible / 2;
-        self.selected.saturating_sub(half).min(self.items.len() - visible)
+        self.selected
+            .saturating_sub(half)
+            .min(self.items.len() - visible)
     }
 }
 
 impl Widget for ListView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let count = if self.items.is_empty() { String::new() } else { format!("{} / {}", self.selected + 1, self.items.len()) };
+        let count = if self.items.is_empty() {
+            String::new()
+        } else {
+            format!("{} / {}", self.selected + 1, self.items.len())
+        };
         let body = cx.titled_panel(r, &self.title, &count);
         let visible = (body.h / ROW_H).max(0) as usize;
         let first = self.first(visible);
         for (k, item) in self.items.iter().enumerate().skip(first).take(visible) {
-            let row = Rect::new(body.x, body.y + (k - first) as i32 * ROW_H, body.w, ROW_H - 4);
+            let row = Rect::new(
+                body.x,
+                body.y + (k - first) as i32 * ROW_H,
+                body.w,
+                ROW_H - 4,
+            );
             if k == self.selected {
                 cx.canvas.fill_round_rect(row, 10, t.raised);
-                cx.canvas.fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
+                cx.canvas
+                    .fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
             }
             let mut text = row.inset_xy(14, 0);
             if let Some(c) = item.color {
-                cx.canvas.fill_round_rect(Rect::new(text.x, row.y + row.h / 2 - 6, 12, 12), 4, c);
+                cx.canvas
+                    .fill_round_rect(Rect::new(text.x, row.y + row.h / 2 - 6, 12, 12), 4, c);
                 text = text.take_left(22).1;
             }
-            let dw = if item.detail.is_empty() { 0 } else { cx.measure(FontId::Sans, t.size_small, &item.detail) + 12 };
+            let dw = if item.detail.is_empty() {
+                0
+            } else {
+                cx.measure(FontId::Sans, t.size_small, &item.detail) + 12
+            };
             let (detail, name) = text.take_right(dw);
-            let font = if k == self.selected { FontId::Bold } else { FontId::Sans };
+            let font = if k == self.selected {
+                FontId::Bold
+            } else {
+                FontId::Sans
+            };
             cx.text(font, t.size_body, name, Align::Left, t.text, &item.text);
-            cx.text(FontId::Sans, t.size_small, detail, Align::Right, t.text_dim, &item.detail);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                detail,
+                Align::Right,
+                t.text_dim,
+                &item.detail,
+            );
         }
         if self.items.is_empty() {
-            cx.text(FontId::Sans, t.size_body, body.take_top(ROW_H).0, Align::Left, t.text_faint, "nothing here");
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                body.take_top(ROW_H).0,
+                Align::Left,
+                t.text_faint,
+                "nothing here",
+            );
         }
     }
 
@@ -379,7 +495,11 @@ pub struct Fader {
 
 impl Fader {
     pub fn new(label: &str) -> Fader {
-        Fader { label: label.to_string(), value: 0.0, text: String::new() }
+        Fader {
+            label: label.to_string(),
+            value: 0.0,
+            text: String::new(),
+        }
     }
 
     fn track(r: Rect) -> Rect {
@@ -396,15 +516,30 @@ impl Widget for Fader {
         cx.panel(r);
         let inner = r.inset(t.pad);
         let (head, _) = inner.take_top(26);
-        cx.text(FontId::Bold, t.size_small, head, Align::Left, t.text_dim, &self.label.to_uppercase());
-        cx.text(FontId::Bold, t.size_body, head, Align::Right, t.text, &self.text);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            head,
+            Align::Left,
+            t.text_dim,
+            &self.label.to_uppercase(),
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            head,
+            Align::Right,
+            t.text,
+            &self.text,
+        );
         let tr = Fader::track(r);
         cx.canvas.fill_round_rect(tr, 5, t.raised);
         let v = self.value.clamp(0.0, 1.0);
         let fill = Rect::new(tr.x, tr.y, ((tr.w as f32) * v) as i32, tr.h);
         cx.canvas.fill_round_rect(fill, 5, t.accent);
         let kx = tr.x + fill.w;
-        cx.canvas.fill_round_rect(Rect::new(kx - 11, tr.y - 6, 22, 22), 11, t.text);
+        cx.canvas
+            .fill_round_rect(Rect::new(kx - 11, tr.y - 6, 22, 22), 11, t.text);
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, _y: i32, r: Rect) -> Option<EventKind> {
@@ -427,7 +562,10 @@ pub struct StatList {
 
 impl StatList {
     pub fn new(title: &str) -> StatList {
-        StatList { title: title.to_string(), rows: Vec::new() }
+        StatList {
+            title: title.to_string(),
+            rows: Vec::new(),
+        }
     }
 
     pub fn set(&mut self, rows: Vec<(String, String, Tone)>) {
@@ -446,7 +584,14 @@ impl Widget for StatList {
             }
             cx.text(FontId::Sans, t.size_small, line, Align::Left, t.text_dim, k);
             let kw = cx.measure(FontId::Sans, t.size_small, k) + 16;
-            cx.text(FontId::Bold, t.size_small, line.take_left(kw).1, Align::Right, t.tone(*tone), v);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                line.take_left(kw).1,
+                Align::Right,
+                t.tone(*tone),
+                v,
+            );
             body = rest;
         }
     }
@@ -465,14 +610,23 @@ pub struct LogPanel {
 
 impl LogPanel {
     pub fn new(title: &str, mono: bool, max: usize) -> LogPanel {
-        LogPanel { title: title.to_string(), right: String::new(), mono, lines: VecDeque::new(), max: max.max(1) }
+        LogPanel {
+            title: title.to_string(),
+            right: String::new(),
+            mono,
+            lines: VecDeque::new(),
+            max: max.max(1),
+        }
     }
 
     pub fn push(&mut self, line: &str, tone: Tone) {
         if self.lines.len() >= self.max {
             self.lines.pop_front();
         }
-        let clean: String = line.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let clean: String = line
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         self.lines.push_back((clean, tone));
     }
 
@@ -485,7 +639,11 @@ impl Widget for LogPanel {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let body = cx.titled_panel(r, &self.title, &self.right);
-        let (font, px) = if self.mono { (FontId::Mono, t.size_mono) } else { (FontId::Sans, t.size_small) };
+        let (font, px) = if self.mono {
+            (FontId::Mono, t.size_mono)
+        } else {
+            (FontId::Sans, t.size_small)
+        };
         let lh = (px * 1.45).round() as i32;
         let visible = (body.h / lh).max(0) as usize;
         let skip = self.lines.len().saturating_sub(visible);
@@ -507,17 +665,27 @@ pub struct Label {
 
 impl Label {
     pub fn new(text: &str, tone: Tone, align: Align) -> Label {
-        Label { text: text.to_string(), tone, align }
+        Label {
+            text: text.to_string(),
+            tone,
+            align,
+        }
     }
 }
 
 impl Widget for Label {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let (px, c) = (cx.theme.size_small, cx.theme.tone(self.tone));
-        cx.text(FontId::Sans, px, r.inset_xy(6, 0), self.align, c, &self.text);
+        cx.text(
+            FontId::Sans,
+            px,
+            r.inset_xy(6, 0),
+            self.align,
+            c,
+            &self.text,
+        );
     }
 }
-
 
 // ---------------------------------------------------------------- loading
 
@@ -547,9 +715,18 @@ const CARD_H: i32 = 128;
 
 impl Loading {
     pub fn new(title: &str, subtitle: &str) -> Loading {
-        Loading { backdrop: None, backdrop_version: 0, title: title.to_string(), subtitle: subtitle.to_string(),
-                  message: String::new(), detail: String::new(), progress: 0.0, failed: false, hint: String::new(),
-                  drawn: RefCell::new(None) }
+        Loading {
+            backdrop: None,
+            backdrop_version: 0,
+            title: title.to_string(),
+            subtitle: subtitle.to_string(),
+            message: String::new(),
+            detail: String::new(),
+            progress: 0.0,
+            failed: false,
+            hint: String::new(),
+            drawn: RefCell::new(None),
+        }
     }
 
     /// Show `img` (the size of the page) behind the card, or the starry
@@ -582,7 +759,8 @@ impl Loading {
         let rows = r.intersect(clip);
         for y in rows.y..rows.bottom() {
             let k = (y - r.y) as f32 / r.h.max(1) as f32;
-            cx.canvas.fill_rect(Rect::new(rows.x, y, rows.w, 1), top.mix(bottom, k));
+            cx.canvas
+                .fill_rect(Rect::new(rows.x, y, rows.w, 1), top.mix(bottom, k));
         }
         // Stars at fixed places (a small hash, so every frame matches).
         let mut seed: u32 = 0x9E37_79B9;
@@ -594,20 +772,46 @@ impl Loading {
             let y = r.y + ((seed >> 11) % r.h.max(1) as u32) as i32;
             let size = 1 + (seed >> 27) as i32 % 2;
             let glow = 90 + (seed >> 20) % 150;
-            cx.canvas.fill_rect(Rect::new(x, y, size, size), t.text.with_alpha(glow as u8));
+            cx.canvas
+                .fill_rect(Rect::new(x, y, size, size), t.text.with_alpha(glow as u8));
         }
         if !title.is_empty() {
             let mid = Rect::new(r.x, r.y + r.h / 2 - 150, r.w, 120);
             let tw = cx.measure(FontId::Bold, 96.0, title);
             // "MP" in the text colour and the rest in the accent.
-            let split = title.char_indices().nth(2).map(|(i, _)| i).unwrap_or(title.len());
+            let split = title
+                .char_indices()
+                .nth(2)
+                .map(|(i, _)| i)
+                .unwrap_or(title.len());
             let (a, b) = title.split_at(split);
             let aw = cx.measure(FontId::Bold, 96.0, a);
             let x0 = mid.x + (mid.w - tw) / 2;
-            cx.text(FontId::Bold, 96.0, Rect::new(x0, mid.y, aw + 4, mid.h), Align::Left, t.text, a);
-            cx.text(FontId::Bold, 96.0, Rect::new(x0 + aw, mid.y, tw - aw + 8, mid.h), Align::Left, t.accent, b);
+            cx.text(
+                FontId::Bold,
+                96.0,
+                Rect::new(x0, mid.y, aw + 4, mid.h),
+                Align::Left,
+                t.text,
+                a,
+            );
+            cx.text(
+                FontId::Bold,
+                96.0,
+                Rect::new(x0 + aw, mid.y, tw - aw + 8, mid.h),
+                Align::Left,
+                t.accent,
+                b,
+            );
             let sub = Rect::new(r.x, mid.bottom(), r.w, 40);
-            cx.text(FontId::Sans, t.size_title + 3.0, sub, Align::Center, t.text_dim, subtitle);
+            cx.text(
+                FontId::Sans,
+                t.size_title + 3.0,
+                sub,
+                Align::Center,
+                t.text_dim,
+                subtitle,
+            );
         }
     }
 }
@@ -615,7 +819,9 @@ impl Loading {
 impl Widget for Loading {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         match *self.drawn.borrow() {
-            Some((at, version)) if at == r && version == self.backdrop_version => Some(vec![Loading::changing_part(r)]),
+            Some((at, version)) if at == r && version == self.backdrop_version => {
+                Some(vec![Loading::changing_part(r)])
+            }
             _ => None,
         }
     }
@@ -631,30 +837,66 @@ impl Widget for Loading {
             None => Loading::starry(cx, r, &self.title, &self.subtitle),
         }
         let card = Loading::card(r);
-        cx.canvas.fill_round_rect(card, t.radius + 4, t.surface.with_alpha(232));
-        cx.canvas.stroke_round_rect(card, t.radius + 4, 1, t.outline);
+        cx.canvas
+            .fill_round_rect(card, t.radius + 4, t.surface.with_alpha(232));
+        cx.canvas
+            .stroke_round_rect(card, t.radius + 4, 1, t.outline);
         let inner = card.inset_xy(28, 22);
         let (head, rest) = inner.take_top(30);
         let pct = format!("{:.0} %", (self.progress.clamp(0.0, 1.0) * 100.0).floor());
         let pw = cx.measure(FontId::Sans, t.size_body, &pct) + 16;
         let (pct_r, msg_r) = head.take_right(pw);
         let ink = if self.failed { t.bad } else { t.text };
-        cx.text(FontId::Bold, t.size_title + 3.0, msg_r, Align::Left, ink, &self.message);
+        cx.text(
+            FontId::Bold,
+            t.size_title + 3.0,
+            msg_r,
+            Align::Left,
+            ink,
+            &self.message,
+        );
         if !self.failed {
-            cx.text(FontId::Sans, t.size_body, pct_r, Align::Right, t.text_dim, &pct);
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                pct_r,
+                Align::Right,
+                t.text_dim,
+                &pct,
+            );
         }
         let (_, rest) = rest.take_top(12);
         let (bar, rest) = rest.take_top(10);
         cx.canvas.fill_round_rect(bar, 5, t.raised);
-        let fill = Rect::new(bar.x, bar.y, ((bar.w as f32) * self.progress.clamp(0.0, 1.0)) as i32, bar.h);
+        let fill = Rect::new(
+            bar.x,
+            bar.y,
+            ((bar.w as f32) * self.progress.clamp(0.0, 1.0)) as i32,
+            bar.h,
+        );
         if fill.w > 0 {
-            cx.canvas.fill_round_rect(fill, 5, if self.failed { t.bad } else { t.accent });
+            cx.canvas
+                .fill_round_rect(fill, 5, if self.failed { t.bad } else { t.accent });
         }
         let (_, rest) = rest.take_top(12);
         let (detail, _) = rest.take_top(24);
-        cx.text(FontId::Sans, t.size_small + 1.0, detail, Align::Left, t.text_dim, &self.detail);
+        cx.text(
+            FontId::Sans,
+            t.size_small + 1.0,
+            detail,
+            Align::Left,
+            t.text_dim,
+            &self.detail,
+        );
         let hint = Rect::new(r.x, card.bottom() + 14, r.w, 26);
-        cx.text(FontId::Sans, t.size_small + 1.0, hint, Align::Center, t.text_dim, &self.hint);
+        cx.text(
+            FontId::Sans,
+            t.size_small + 1.0,
+            hint,
+            Align::Center,
+            t.text_dim,
+            &self.hint,
+        );
     }
 }
 
@@ -674,12 +916,22 @@ const BUTTON_H: i32 = 54;
 
 impl Card {
     pub fn new(title: &str) -> Card {
-        Card { title: title.to_string(), heading: String::new(), lines: Vec::new(), buttons: Vec::new() }
+        Card {
+            title: title.to_string(),
+            heading: String::new(),
+            lines: Vec::new(),
+            buttons: Vec::new(),
+        }
     }
 
     pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
         let inner = r.inset(14);
-        Rect::new(inner.x + i as i32 * (BUTTON_W + 12), inner.bottom() - BUTTON_H, BUTTON_W, BUTTON_H)
+        Rect::new(
+            inner.x + i as i32 * (BUTTON_W + 12),
+            inner.bottom() - BUTTON_H,
+            BUTTON_W,
+            BUTTON_H,
+        )
     }
 }
 
@@ -690,13 +942,24 @@ impl Widget for Card {
         let (head, mut rest) = body.take_top(52);
         cx.text(FontId::Bold, 32.0, head, Align::Left, t.text, &self.heading);
         rest = rest.take_top(8).1;
-        let limit = if self.buttons.is_empty() { r.bottom() } else { self.button_rect(r, 0).y - 8 };
+        let limit = if self.buttons.is_empty() {
+            r.bottom()
+        } else {
+            self.button_rect(r, 0).y - 8
+        };
         for (line, tone) in &self.lines {
             let (row, after) = rest.take_top(30);
             if row.bottom() > limit || row.h < 24 {
                 break;
             }
-            cx.text(FontId::Sans, t.size_body, row, Align::Left, t.tone(*tone), line);
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                row,
+                Align::Left,
+                t.tone(*tone),
+                line,
+            );
             rest = after;
         }
         for (i, label) in self.buttons.iter().enumerate() {
@@ -710,7 +973,9 @@ impl Widget for Card {
         if phase != Touch::Down {
             return None;
         }
-        (0..self.buttons.len()).find(|&i| self.button_rect(r, i).contains(x, y)).map(EventKind::Tab)
+        (0..self.buttons.len())
+            .find(|&i| self.button_rect(r, i).contains(x, y))
+            .map(EventKind::Tab)
     }
 }
 
@@ -738,7 +1003,12 @@ const ARROW_W: i32 = 64;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
-        OptionList { title: title.to_string(), right: String::new(), rows: Vec::new(), selected: 0 }
+        OptionList {
+            title: title.to_string(),
+            right: String::new(),
+            rows: Vec::new(),
+            selected: 0,
+        }
     }
 
     fn body(r: Rect) -> Rect {
@@ -750,7 +1020,9 @@ impl OptionList {
         if self.rows.len() <= visible || visible == 0 {
             return 0;
         }
-        self.selected.saturating_sub(visible / 2).min(self.rows.len() - visible)
+        self.selected
+            .saturating_sub(visible / 2)
+            .min(self.rows.len() - visible)
     }
 
     /// Row `k`'s rectangle (if it is in view) and its value box.
@@ -761,8 +1033,18 @@ impl OptionList {
         if k < first || k >= first + visible || k >= self.rows.len() {
             return None;
         }
-        let row = Rect::new(body.x, body.y + (k - first) as i32 * OPTION_H, body.w, OPTION_H - 6);
-        let value = Rect::new(row.right() - VALUE_W.min(row.w / 2), row.y, VALUE_W.min(row.w / 2), row.h);
+        let row = Rect::new(
+            body.x,
+            body.y + (k - first) as i32 * OPTION_H,
+            body.w,
+            OPTION_H - 6,
+        );
+        let value = Rect::new(
+            row.right() - VALUE_W.min(row.w / 2),
+            row.y,
+            VALUE_W.min(row.w / 2),
+            row.h,
+        );
         Some((row, value))
     }
 }
@@ -772,27 +1054,64 @@ impl Widget for OptionList {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);
         for k in 0..self.rows.len() {
-            let Some((row, value)) = self.row_rects(r, k) else { continue };
+            let Some((row, value)) = self.row_rects(r, k) else {
+                continue;
+            };
             let on = k == self.selected;
             if on {
                 cx.canvas.fill_round_rect(row, 10, t.raised);
-                cx.canvas.fill_round_rect(Rect::new(row.x, row.y + 12, 4, row.h - 24), 2, t.accent);
+                cx.canvas
+                    .fill_round_rect(Rect::new(row.x, row.y + 12, 4, row.h - 24), 2, t.accent);
             }
             let name = Rect::new(row.x + 16, row.y, (value.x - row.x - 24).max(0), row.h);
-            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_body, name, Align::Left, t.text,
-                    &self.rows[k].name);
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_body,
+                name,
+                Align::Left,
+                t.text,
+                &self.rows[k].name,
+            );
             let boxr = value.inset_xy(0, 7);
-            cx.canvas.fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
+            cx.canvas
+                .fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
             let (left, mid) = boxr.take_left(ARROW_W);
             let (right, mid) = mid.take_right(ARROW_W);
-            cx.text(FontId::Bold, t.size_title + 4.0, left, Align::Center, t.text_dim, "‹");
-            cx.text(FontId::Bold, t.size_title + 4.0, right, Align::Center, t.text_dim, "›");
-            cx.text(FontId::Bold, t.size_body, mid, Align::Center, if on { t.accent } else { t.text },
-                    &self.rows[k].value);
+            cx.text(
+                FontId::Bold,
+                t.size_title + 4.0,
+                left,
+                Align::Center,
+                t.text_dim,
+                "‹",
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_title + 4.0,
+                right,
+                Align::Center,
+                t.text_dim,
+                "›",
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                mid,
+                Align::Center,
+                if on { t.accent } else { t.text },
+                &self.rows[k].value,
+            );
         }
         if self.rows.is_empty() {
             let body = OptionList::body(r);
-            cx.text(FontId::Sans, t.size_body, body.take_top(OPTION_H).0, Align::Left, t.text_faint, "nothing here");
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                body.take_top(OPTION_H).0,
+                Align::Left,
+                t.text_faint,
+                "nothing here",
+            );
         }
     }
 
@@ -800,11 +1119,17 @@ impl Widget for OptionList {
         if phase != Touch::Down {
             return None;
         }
-        let k = (0..self.rows.len()).find(|&k| self.row_rects(r, k).is_some_and(|(row, _)| row.contains(x, y)))?;
+        let k = (0..self.rows.len()).find(|&k| {
+            self.row_rects(r, k)
+                .is_some_and(|(row, _)| row.contains(x, y))
+        })?;
         let (_, value) = self.row_rects(r, k)?;
         self.selected = k;
         if value.contains(x, y) && x < value.x + ARROW_W {
-            Some(EventKind::Step { index: k, delta: -1 })
+            Some(EventKind::Step {
+                index: k,
+                delta: -1,
+            })
         } else if value.contains(x, y) && x >= value.right() - ARROW_W {
             Some(EventKind::Step { index: k, delta: 1 })
         } else {
@@ -835,9 +1160,21 @@ mod tests {
         let mut g = PadGrid::new(16, 4);
         let r = Rect::new(0, 0, 400, 400);
         let c = g.cell(r, 5);
-        assert_eq!(g.touch(3, Touch::Down, c.x + 5, c.y + 5, r), Some(EventKind::Pad { index: 5, down: true }));
+        assert_eq!(
+            g.touch(3, Touch::Down, c.x + 5, c.y + 5, r),
+            Some(EventKind::Pad {
+                index: 5,
+                down: true
+            })
+        );
         assert_eq!(g.touch(3, Touch::Move, 0, 0, r), None);
-        assert_eq!(g.touch(3, Touch::Up, 0, 0, r), Some(EventKind::Pad { index: 5, down: false }));
+        assert_eq!(
+            g.touch(3, Touch::Up, 0, 0, r),
+            Some(EventKind::Pad {
+                index: 5,
+                down: false
+            })
+        );
         assert_eq!(g.touch(3, Touch::Up, 0, 0, r), None);
         // The gap between pads plays nothing.
         assert_eq!(g.touch(4, Touch::Down, c.right() + 2, c.y + 5, r), None);
@@ -875,15 +1212,26 @@ mod tests {
     #[test]
     fn list_rows_select_and_scroll() {
         let mut l = ListView::new("Kits");
-        l.items = (0..20).map(|i| ListItem { text: format!("kit {i}"), ..Default::default() }).collect();
+        l.items = (0..20)
+            .map(|i| ListItem {
+                text: format!("kit {i}"),
+                ..Default::default()
+            })
+            .collect();
         let r = Rect::new(0, 0, 300, 14 * 2 + 34 + ROW_H * 5);
         let body = ListView::body(r);
-        assert_eq!(l.touch(1, Touch::Down, body.x + 5, body.y + ROW_H + 5, r), Some(EventKind::Select(1)));
+        assert_eq!(
+            l.touch(1, Touch::Down, body.x + 5, body.y + ROW_H + 5, r),
+            Some(EventKind::Select(1))
+        );
         l.selected = 15;
         assert_eq!(l.first(5), 13);
         l.selected = 19;
         assert_eq!(l.first(5), 15);
-        assert_eq!(l.touch(1, Touch::Down, body.x + 5, body.y + 5, r), Some(EventKind::Select(15)));
+        assert_eq!(
+            l.touch(1, Touch::Down, body.x + 5, body.y + 5, r),
+            Some(EventKind::Select(15))
+        );
     }
 
     #[test]
@@ -891,8 +1239,14 @@ mod tests {
         let mut f = Fader::new("Level");
         let r = Rect::new(0, 0, 300, 90);
         let tr = Fader::track(r);
-        assert_eq!(f.touch(1, Touch::Down, tr.x, 50, r), Some(EventKind::Value(0.0)));
-        assert_eq!(f.touch(1, Touch::Move, tr.right() + 50, 50, r), Some(EventKind::Value(1.0)));
+        assert_eq!(
+            f.touch(1, Touch::Down, tr.x, 50, r),
+            Some(EventKind::Value(0.0))
+        );
+        assert_eq!(
+            f.touch(1, Touch::Move, tr.right() + 50, 50, r),
+            Some(EventKind::Value(1.0))
+        );
         assert_eq!(f.touch(1, Touch::Up, 0, 50, r), None);
     }
 
@@ -908,7 +1262,10 @@ mod tests {
         let mut h = Header::new(&["Play", "Debug"]);
         let r = Rect::new(0, 0, 1280, 60);
         let t1 = h.tab_rect(r, 1);
-        assert_eq!(h.touch(1, Touch::Down, t1.x + 3, t1.y + 3, r), Some(EventKind::Tab(1)));
+        assert_eq!(
+            h.touch(1, Touch::Down, t1.x + 3, t1.y + 3, r),
+            Some(EventKind::Tab(1))
+        );
         assert_eq!(h.active, 1);
         assert_eq!(h.touch(1, Touch::Down, 5, 5, r), None);
     }
@@ -926,15 +1283,34 @@ mod tests {
     #[test]
     fn option_rows_select_and_step() {
         let mut o = OptionList::new("Prefs");
-        o.rows = (0..12).map(|i| OptionRow { name: format!("option {i}"), value: "a".into() }).collect();
+        o.rows = (0..12)
+            .map(|i| OptionRow {
+                name: format!("option {i}"),
+                value: "a".into(),
+            })
+            .collect();
         let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
         let (row, value) = o.row_rects(r, 2).unwrap();
-        assert_eq!(o.touch(1, Touch::Down, row.x + 20, row.y + 10, r), Some(EventKind::Select(2)));
-        assert_eq!(o.touch(1, Touch::Down, value.x + 5, value.y + 10, r), Some(EventKind::Step { index: 2, delta: -1 }));
-        assert_eq!(o.touch(1, Touch::Down, value.right() - 5, value.y + 10, r),
-                   Some(EventKind::Step { index: 2, delta: 1 }));
+        assert_eq!(
+            o.touch(1, Touch::Down, row.x + 20, row.y + 10, r),
+            Some(EventKind::Select(2))
+        );
+        assert_eq!(
+            o.touch(1, Touch::Down, value.x + 5, value.y + 10, r),
+            Some(EventKind::Step {
+                index: 2,
+                delta: -1
+            })
+        );
+        assert_eq!(
+            o.touch(1, Touch::Down, value.right() - 5, value.y + 10, r),
+            Some(EventKind::Step { index: 2, delta: 1 })
+        );
         assert_eq!(o.selected, 2);
-        assert_eq!(o.touch(1, Touch::Up, value.right() - 5, value.y + 10, r), None);
+        assert_eq!(
+            o.touch(1, Touch::Up, value.right() - 5, value.y + 10, r),
+            None
+        );
         // Rows out of view cannot be hit; the selected row is kept in view.
         o.selected = 11;
         assert!(o.row_rects(r, 0).is_none() && o.row_rects(r, 11).is_some());
@@ -946,7 +1322,10 @@ mod tests {
         c.buttons = vec!["Skip".into(), "Skip all".into()];
         let r = Rect::new(0, 0, 700, 400);
         let b1 = c.button_rect(r, 1);
-        assert_eq!(c.touch(1, Touch::Down, b1.x + 5, b1.y + 5, r), Some(EventKind::Tab(1)));
+        assert_eq!(
+            c.touch(1, Touch::Down, b1.x + 5, b1.y + 5, r),
+            Some(EventKind::Tab(1))
+        );
         assert_eq!(c.touch(1, Touch::Down, 300, 100, r), None);
     }
 
@@ -965,7 +1344,9 @@ mod tests {
         // A new backdrop redraws everything.
         let mut img = Image::new(640, 400);
         img.px.fill(0x123456);
-        ui.get_mut::<Loading>("loading").unwrap().set_backdrop(Some(Arc::new(img)));
+        ui.get_mut::<Loading>("loading")
+            .unwrap()
+            .set_backdrop(Some(Arc::new(img)));
         assert_eq!(ui.paint(&mut c), vec![r]);
         assert_eq!(c.pixel(5, 5), Color::rgb(0x123456));
     }
@@ -977,10 +1358,20 @@ mod tests {
         h.chips.push(Chip::new("session", Tone::Good));
         ui.add("header", h);
         let mut g = PadGrid::new(16, 4);
-        g.pads[0] = Pad { label: "Kick".into(), color: Some(Color::rgb(0xFF0000)), level: 1.0, held: true, velocity: 90 };
+        g.pads[0] = Pad {
+            label: "Kick".into(),
+            color: Some(Color::rgb(0xFF0000)),
+            level: 1.0,
+            held: true,
+            velocity: 90,
+        };
         ui.add("pads", g);
         let mut l = ListView::new("Kits");
-        l.items.push(ListItem { text: "House".into(), detail: "16 pads".into(), color: Some(Color::rgb(0x00FF00)) });
+        l.items.push(ListItem {
+            text: "House".into(),
+            detail: "16 pads".into(),
+            color: Some(Color::rgb(0x00FF00)),
+        });
         ui.add("kits", l);
         ui.add("level", Fader::new("Level"));
         let mut s = StatList::new("Timing");
@@ -996,7 +1387,10 @@ mod tests {
         card.buttons.push("Skip".into());
         ui.add("card", card);
         let mut opts = OptionList::new("Prefs");
-        opts.rows.push(OptionRow { name: "Velocity curve".into(), value: "Linear".into() });
+        opts.rows.push(OptionRow {
+            name: "Velocity curve".into(),
+            value: "Linear".into(),
+        });
         ui.add("opts", opts);
         ui.add_page("p", "col(header:60, row(pads:*, col(kits, level:90, stats, log), col(card, opts)):*, hint:24)")
             .unwrap();
@@ -1014,7 +1408,10 @@ mod tests {
     fn a_tap_on_a_chip_names_it() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         let mut h = Header::new(&["Play", "Debug"]);
-        h.chips = vec![Chip::new("Akai session", Tone::Good), Chip::new("Arp off", Tone::Dim)];
+        h.chips = vec![
+            Chip::new("Akai session", Tone::Good),
+            Chip::new("Arp off", Tone::Dim),
+        ];
         ui.add("header", h);
         ui.add_full_page("p", "col(header:60)").unwrap();
         let mut c = SoftCanvas::new(1280, 800);
@@ -1029,6 +1426,10 @@ mod tests {
         // The first tab starts at the left edge: there is no name before it.
         assert_eq!(ev(&mut ui, LEFT_W + 20), Some(EventKind::Tab(0)));
         ui.touch(1, Touch::Up, LEFT_W + 20, 30);
-        assert_eq!(ev(&mut ui, first.x - 20), None, "between the chips and the tabs");
+        assert_eq!(
+            ev(&mut ui, first.x - 20),
+            None,
+            "between the chips and the tabs"
+        );
     }
 }

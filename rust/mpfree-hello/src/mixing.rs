@@ -31,9 +31,9 @@
 
 use std::time::{Duration, Instant};
 
+use mpfree_fx::ids::mixer::output;
 use mpfree_fx::ids::mixer::{self as mx, monitor, source};
 use mpfree_fx::{Mixer, MixerConfig, StripId};
-use mpfree_fx::ids::mixer::output;
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
 use mpfree_node::Ctx;
 use mpfree_sampler::engine::PadOut;
@@ -86,7 +86,13 @@ impl MixHost {
     /// Made before the sound starts (it allocates). `level_db` is the
     /// Level now, `max_db` the most it goes to.
     pub fn new(rate: u32, level_db: f32, max_db: f32) -> MixHost {
-        let cfg = MixerConfig { inputs: 1, pads: PADS, tracks: TRACKS, slots: SLOTS, max_latency_ms: 50.0 };
+        let cfg = MixerConfig {
+            inputs: 1,
+            pads: PADS,
+            tracks: TRACKS,
+            slots: SLOTS,
+            max_latency_ms: 50.0,
+        };
         let mut mixer = Mixer::new(cfg, rate, PERIOD);
         for p in 0..PADS {
             mixer.set_now(StripId::Pad(p), mx::OUTPUT, output::TRACK);
@@ -95,31 +101,66 @@ impl MixHost {
         mixer.set_now(StripId::Master, mx::VOLUME, level_db.min(max_db));
         mixer.set_now(LINE, mx::SOURCE, source::OFF);
         mixer.set_now(LINE, mx::MONITOR, monitor::OFF);
-        MixHost { mixer, max_db, monitor: false, line_open: false, overs: 0, shown: None, selected: None, state_at: None }
+        MixHost {
+            mixer,
+            max_db,
+            monitor: false,
+            line_open: false,
+            overs: 0,
+            shown: None,
+            selected: None,
+            state_at: None,
+        }
     }
 
     /// The Level (Q-Link 1, the slider): the master fader.
-    pub fn set_level(&mut self, db: f32) { self.mixer.set(StripId::Master, mx::VOLUME, db.min(self.max_db)); }
+    pub fn set_level(&mut self, db: f32) {
+        self.mixer
+            .set(StripId::Master, mx::VOLUME, db.min(self.max_db));
+    }
 
     /// The master fader now, dB.
     #[cfg(test)]
-    pub fn level(&self) -> f32 { self.mixer.param(StripId::Master, mx::VOLUME) }
+    pub fn level(&self) -> f32 {
+        self.mixer.param(StripId::Master, mx::VOLUME)
+    }
 
     /// Follows the looper: whether the line input is open, and whether it
     /// is heard (Monitor). Cheap to call every period.
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
         if line_open != self.line_open {
             self.line_open = line_open;
-            self.mixer.set(LINE, mx::SOURCE, if line_open { source::STEREO } else { source::OFF });
+            self.mixer.set(
+                LINE,
+                mx::SOURCE,
+                if line_open {
+                    source::STEREO
+                } else {
+                    source::OFF
+                },
+            );
         }
         if monitor_on != self.monitor {
             self.monitor = monitor_on;
-            self.mixer.set(LINE, mx::MONITOR, if monitor_on { monitor::ON } else { monitor::OFF });
+            self.mixer.set(
+                LINE,
+                mx::MONITOR,
+                if monitor_on {
+                    monitor::ON
+                } else {
+                    monitor::OFF
+                },
+            );
         }
     }
 
     /// The pad channels for the sampler's `render_routed` this period.
-    pub fn pads(&mut self) -> Pads<'_> { Pads { mixer: &mut self.mixer, played: 0 } }
+    pub fn pads(&mut self) -> Pads<'_> {
+        Pads {
+            mixer: &mut self.mixer,
+            played: 0,
+        }
+    }
 
     /// The drums as the sampler made them: the pads that played (`played`,
     /// from [`Pads::played`]) summed from their channels' inputs into
@@ -141,8 +182,15 @@ impl MixHost {
     /// into the input (the pads are in already: [`MixHost::pads`]), the
     /// master out into `left` and `right`. Returns the output's peak and
     /// whether master safety caught anything.
-    pub fn period(&mut self, ctx: &Ctx, synth: Stereo, looped: Stereo, line: Stereo, left: &mut [f32; PERIOD],
-                  right: &mut [f32; PERIOD]) -> (f32, bool) {
+    pub fn period(
+        &mut self,
+        ctx: &Ctx,
+        synth: Stereo,
+        looped: Stereo,
+        line: Stereo,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> (f32, bool) {
         for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped)] {
             if let Some((dl, dr)) = self.mixer.track_input(t) {
                 dl[..PERIOD].copy_from_slice(l);
@@ -155,7 +203,10 @@ impl MixHost {
             hr[..PERIOD].copy_from_slice(line.1);
         }
         self.mixer.process(ctx, left, right);
-        let peak = left.iter().chain(right.iter()).fold(0f32, |m, s| m.max(s.abs()));
+        let peak = left
+            .iter()
+            .chain(right.iter())
+            .fold(0f32, |m, s| m.max(s.abs()));
         let overs = self.mixer.safety().stats().overs;
         let caught = overs != self.overs;
         self.overs = overs;
@@ -172,7 +223,11 @@ impl MixHost {
     /// moved, so the Play page's Level follows.
     pub fn action(&mut self, a: &MixAction) -> Option<f32> {
         match *a {
-            MixAction::Set { strip: StripId::Master, id: mx::VOLUME, value } => {
+            MixAction::Set {
+                strip: StripId::Master,
+                id: mx::VOLUME,
+                value,
+            } => {
                 let db = value.min(self.max_db);
                 self.mixer.set(StripId::Master, mx::VOLUME, db);
                 self.state_at = None;
@@ -200,7 +255,10 @@ impl MixHost {
     /// passed (at once after a change).
     pub fn poll_state(&mut self, now: Instant) -> Option<MixState> {
         let view = self.shown?;
-        if self.state_at.is_some_and(|t| now.duration_since(t) < STATE_EVERY) {
+        if self
+            .state_at
+            .is_some_and(|t| now.duration_since(t) < STATE_EVERY)
+        {
             return None;
         }
         self.state_at = Some(now);
@@ -219,7 +277,9 @@ pub struct Pads<'a> {
 
 impl Pads<'_> {
     /// The pads that played this period, a bit each.
-    pub fn played(&self) -> u32 { self.played }
+    pub fn played(&self) -> u32 {
+        self.played
+    }
 }
 
 impl PadOut for Pads<'_> {
@@ -252,7 +312,9 @@ mod tests {
     const RATE: u32 = 44_100;
 
     fn tone(f: f32, amp: f32, at: usize) -> [f32; PERIOD] {
-        std::array::from_fn(|i| amp * (std::f32::consts::TAU * f * (at + i) as f32 / RATE as f32).sin())
+        std::array::from_fn(|i| {
+            amp * (std::f32::consts::TAU * f * (at + i) as f32 / RATE as f32).sin()
+        })
     }
 
     /// Pad 1 plays `drums` (as the sampler would, into its channel), the
@@ -326,14 +388,37 @@ mod tests {
         h.show(Some(MixView::Tracks));
         run(&mut h, 20, 0.5, 0.0);
         let st = h.poll_state(t0).expect("at once when opened");
-        assert_eq!(st.strips.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Drums", "Synth", "Loop"]);
+        assert_eq!(
+            st.strips
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Drums", "Synth", "Loop"]
+        );
         assert!(st.strips[0].peak[0] > 0.1);
         assert_eq!(st.master.volume_db, -6.0);
-        assert!(h.poll_state(t0 + STATE_EVERY / 2).is_none(), "not again so soon");
+        assert!(
+            h.poll_state(t0 + STATE_EVERY / 2).is_none(),
+            "not again so soon"
+        );
         assert!(h.poll_state(t0 + STATE_EVERY).is_some());
         // A fader on the panel; the master fader is the Level.
-        assert_eq!(h.action(&MixAction::Set { strip: StripId::Track(DRUMS), id: mx::MUTE, value: 1.0 }), None);
-        assert_eq!(h.action(&MixAction::Set { strip: StripId::Master, id: mx::VOLUME, value: 3.0 }), Some(-6.0));
+        assert_eq!(
+            h.action(&MixAction::Set {
+                strip: StripId::Track(DRUMS),
+                id: mx::MUTE,
+                value: 1.0
+            }),
+            None
+        );
+        assert_eq!(
+            h.action(&MixAction::Set {
+                strip: StripId::Master,
+                id: mx::VOLUME,
+                value: 3.0
+            }),
+            Some(-6.0)
+        );
         assert_eq!(h.action(&MixAction::Select(StripId::Track(SYNTH))), None);
         run(&mut h, 200, 0.5, 0.0);
         let st = h.poll_state(t0 + STATE_EVERY * 3).unwrap();
@@ -342,10 +427,17 @@ mod tests {
         // The meter held the mute's fade until that read; now it is silent.
         run(&mut h, 20, 0.5, 0.0);
         let st = h.poll_state(t0 + STATE_EVERY * 4).unwrap();
-        assert_eq!(st.strip(StripId::Track(DRUMS)).unwrap().peak, [0.0; 2], "muted");
+        assert_eq!(
+            st.strip(StripId::Track(DRUMS)).unwrap().peak,
+            [0.0; 2],
+            "muted"
+        );
         h.action(&MixAction::View(MixView::Inputs));
         let st = h.poll_state(t0 + STATE_EVERY * 4).unwrap();
-        assert_eq!((st.view, st.strips[0].name.as_str()), (MixView::Inputs, "Line in"));
+        assert_eq!(
+            (st.view, st.strips[0].name.as_str()),
+            (MixView::Inputs, "Line in")
+        );
         h.show(None);
         assert!(h.poll_state(t0 + STATE_EVERY * 10).is_none());
         assert_eq!(h.level(), -6.0);
@@ -363,18 +455,33 @@ mod tests {
         assert_eq!(played, 0b101);
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
         h.drums(played, &mut l, &mut r);
-        assert_eq!((l[0], l[PERIOD - 1], r[0]), (0.75, 0.75, 0.0), "what the looper records");
+        assert_eq!(
+            (l[0], l[PERIOD - 1], r[0]),
+            (0.75, 0.75, 0.0),
+            "what the looper records"
+        );
         // Pad 1 muted on Pad Mix: the rest still reach the master through Drums.
-        h.action(&MixAction::Set { strip: StripId::Pad(0), id: mx::MUTE, value: 1.0 });
+        h.action(&MixAction::Set {
+            strip: StripId::Pad(0),
+            id: mx::MUTE,
+            value: 1.0,
+        });
         h.show(Some(MixView::Pads));
         let st = h.poll_state(Instant::now()).unwrap();
         assert_eq!(st.strips.len(), PADS);
-        assert_eq!((st.strips[0].name.as_str(), st.strips[0].output_label()), ("Pad 1", "Track 1".to_string()));
+        assert_eq!(
+            (st.strips[0].name.as_str(), st.strips[0].output_label()),
+            ("Pad 1", "Track 1".to_string())
+        );
         // (Master safety's DC blocker is still forgetting the first block's
         // DC: about -100 dBFS.)
         let muted = run(&mut h, 200, 0.5, 0.0).0;
         assert!(muted < 1e-4, "pad 1 muted: {muted}");
-        h.action(&MixAction::Set { strip: StripId::Pad(0), id: mx::MUTE, value: 0.0 });
+        h.action(&MixAction::Set {
+            strip: StripId::Pad(0),
+            id: mx::MUTE,
+            value: 0.0,
+        });
         let (peak, _) = run(&mut h, 200, 0.5, 0.0);
         assert!((0.49..0.51).contains(&peak), "{peak}");
     }
@@ -383,6 +490,9 @@ mod tests {
     fn the_context_follows_the_transport() {
         let block = mpfree_transport::Block::default();
         let c = ctx(RATE, 128, 97.0, &block);
-        assert_eq!((c.rate, c.frame, c.bpm, c.playing), (RATE, 128, 97.0, false));
+        assert_eq!(
+            (c.rate, c.frame, c.bpm, c.playing),
+            (RATE, 128, 97.0, false)
+        );
     }
 }

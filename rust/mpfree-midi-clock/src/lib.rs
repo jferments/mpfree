@@ -42,13 +42,21 @@ pub struct Message {
 
 impl Message {
     pub const fn one(offset: u32, status: u8) -> Self {
-        Self { offset, bytes: [status, 0, 0], len: 1 }
+        Self {
+            offset,
+            bytes: [status, 0, 0],
+            len: 1,
+        }
     }
 
     /// Song Position: `sixteenths` from the start, at most 16383.
     pub fn song_position(offset: u32, sixteenths: u16) -> Self {
         let s = sixteenths.min(MAX_SONG_POSITION);
-        Self { offset, bytes: [SONG_POSITION, (s & 0x7F) as u8, (s >> 7) as u8], len: 3 }
+        Self {
+            offset,
+            bytes: [SONG_POSITION, (s & 0x7F) as u8, (s >> 7) as u8],
+            len: 3,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -76,7 +84,11 @@ impl Default for Messages {
 
 impl Messages {
     pub const fn new() -> Self {
-        Self { buf: [Message::one(0, CLOCK); MAX_MESSAGES], len: 0, dropped: 0 }
+        Self {
+            buf: [Message::one(0, CLOCK); MAX_MESSAGES],
+            len: 0,
+            dropped: 0,
+        }
     }
 
     pub fn clear(&mut self) {
@@ -105,7 +117,8 @@ fn ceil_to(t: i64, step: i64) -> i64 {
 /// The Song Position for a tick: the next sixteenth at or after it (the
 /// first pulse after Continue plays that sixteenth), never below 0.
 fn sixteenths(tick: i64) -> u16 {
-    (ceil_to(tick.max(0), SIXTEENTH_TICKS) / SIXTEENTH_TICKS).min(i64::from(MAX_SONG_POSITION)) as u16
+    (ceil_to(tick.max(0), SIXTEENTH_TICKS) / SIXTEENTH_TICKS).min(i64::from(MAX_SONG_POSITION))
+        as u16
 }
 
 /// MIDI clock out of the transport.
@@ -209,14 +222,20 @@ impl ClockOut {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InEvent {
     /// A pulse, at this position (ticks from the top).
-    Pulse { tick: i64 },
+    Pulse {
+        tick: i64,
+    },
     /// Start: play from the top at the next pulse.
     Started,
     /// Continue: play from the Song Position at the next pulse.
-    Continued { tick: i64 },
+    Continued {
+        tick: i64,
+    },
     Stopped,
     /// A Song Position: where Continue will play from.
-    Located { tick: i64 },
+    Located {
+        tick: i64,
+    },
 }
 
 /// The other device's clock, as [`ClockIn`] reads it.
@@ -280,7 +299,9 @@ impl ClockIn {
             }
             CONTINUE => {
                 self.playing = true;
-                Some(InEvent::Continued { tick: self.next_tick })
+                Some(InEvent::Continued {
+                    tick: self.next_tick,
+                })
             }
             STOP => {
                 self.playing = false;
@@ -339,17 +360,22 @@ impl ClockIn {
             self.last_tick = self.next_tick;
             self.next_tick += PULSE_TICKS;
         }
-        InEvent::Pulse { tick: self.last_tick }
+        InEvent::Pulse {
+            tick: self.last_tick,
+        }
     }
 
     fn last_frame(&self) -> Option<u64> {
-        (self.count > 0).then(|| self.frames[(self.head + self.frames.len() - 1) % self.frames.len()])
+        (self.count > 0)
+            .then(|| self.frames[(self.head + self.frames.len() - 1) % self.frames.len()])
     }
 
     /// The clock as of `now` (a frame at or after the last byte).
     pub fn state(&self, now: u64) -> InState {
         let last = self.last_frame();
-        let lost = last.is_none_or(|l| now.saturating_sub(l) as f64 > Self::LOST_SECONDS * f64::from(self.rate));
+        let lost = last.is_none_or(|l| {
+            now.saturating_sub(l) as f64 > Self::LOST_SECONDS * f64::from(self.rate)
+        });
         let bpm = if self.count >= 2 && !lost {
             let n = self.frames.len();
             let first = self.frames[(self.head + n - self.count) % n];
@@ -358,7 +384,12 @@ impl ClockIn {
         } else {
             None
         };
-        InState { bpm, playing: self.playing, tick: self.last_tick, pulse_frame: last }
+        InState {
+            bpm,
+            playing: self.playing,
+            tick: self.last_tick,
+            pulse_frame: last,
+        }
     }
 }
 
@@ -392,7 +423,9 @@ mod tests {
             let mut from = start;
             if let Some((at, to)) = jump.filter(|&(at, _)| at >= start && at < start + PERIOD) {
                 // Pulses before the jump, then the jump, then pulses after.
-                for t in (ceil_to(tick_at(f0, tick0, bpm, from), PULSE_TICKS)..).step_by(PULSE_TICKS as usize) {
+                for t in (ceil_to(tick_at(f0, tick0, bpm, from), PULSE_TICKS)..)
+                    .step_by(PULSE_TICKS as usize)
+                {
                     let f = frame_of(f0, tick0, bpm, t);
                     if f >= at {
                         break;
@@ -402,7 +435,9 @@ mod tests {
                 c.located((at - start) as u32, to, &mut out);
                 (f0, tick0, from) = (at, to, at);
             }
-            for t in (ceil_to(tick_at(f0, tick0, bpm, from), PULSE_TICKS)..).step_by(PULSE_TICKS as usize) {
+            for t in (ceil_to(tick_at(f0, tick0, bpm, from), PULSE_TICKS)..)
+                .step_by(PULSE_TICKS as usize)
+            {
                 let f = frame_of(f0, tick0, bpm, t);
                 if f >= start + PERIOD {
                     break;
@@ -411,7 +446,11 @@ mod tests {
                     c.pulse(t, (f - start) as u32, &mut out);
                 }
             }
-            got.extend(out.as_slice().iter().map(|m| (start + u64::from(m.offset), m.bytes().to_vec())));
+            got.extend(
+                out.as_slice()
+                    .iter()
+                    .map(|m| (start + u64::from(m.offset), m.bytes().to_vec())),
+            );
         }
         got
     }
@@ -425,11 +464,17 @@ mod tests {
         let got = run(0, 120.0, 2000, None);
         assert_eq!(got[0], (0, vec![START]));
         assert_eq!(got[1], (0, vec![CLOCK]));
-        let pulses: Vec<u64> = got.iter().filter(|(_, b)| b == &[CLOCK]).map(|(f, _)| *f).collect();
+        let pulses: Vec<u64> = got
+            .iter()
+            .filter(|(_, b)| b == &[CLOCK])
+            .map(|(f, _)| *f)
+            .collect();
         // 120 BPM: a beat is 22050 frames, a pulse 918.75.
         assert_eq!(pulses[24], 22_050);
         assert_eq!(pulses[48], 44_100);
-        assert!(pulses.windows(2).all(|w| (918..=919).contains(&(w[1] - w[0]))));
+        assert!(pulses
+            .windows(2)
+            .all(|w| (918..=919).contains(&(w[1] - w[0]))));
     }
 
     #[test]
@@ -440,8 +485,14 @@ mod tests {
         assert_eq!(got[1], (0, vec![CONTINUE]));
         // The first pulse is tick 1200, 200 ticks in: 2296.875 frames.
         assert_eq!(got[2], (frame_of(0, 1000, 120.0, 1200), vec![CLOCK]));
-        assert_eq!(Message::song_position(0, 200).bytes(), &[SONG_POSITION, 200 - 128, 1]);
-        assert_eq!(Message::song_position(0, 60_000).bytes(), &[SONG_POSITION, 0x7F, 0x7F]);
+        assert_eq!(
+            Message::song_position(0, 200).bytes(),
+            &[SONG_POSITION, 200 - 128, 1]
+        );
+        assert_eq!(
+            Message::song_position(0, 60_000).bytes(),
+            &[SONG_POSITION, 0x7F, 0x7F]
+        );
     }
 
     #[test]
@@ -454,7 +505,11 @@ mod tests {
         let mut out = Messages::new();
         c.started(0, -960, &mut out);
         c.stopped(5, &mut out);
-        assert_eq!(out.as_slice(), &[], "stopped in the count-in: nothing was started, nothing to stop");
+        assert_eq!(
+            out.as_slice(),
+            &[],
+            "stopped in the count-in: nothing was started, nothing to stop"
+        );
     }
 
     #[test]
@@ -462,8 +517,15 @@ mod tests {
         // Loop back to bar 1 (tick 0) at frame 50000 (the transport's wrap).
         let got = run(0, 120.0, 600, Some((50_000, 0)));
         let i = got.iter().position(|(f, _)| *f == 50_000).unwrap();
-        assert_eq!(got[i..i + 4], [(50_000, vec![STOP]), (50_000, vec![SONG_POSITION, 0, 0]), (50_000, vec![CONTINUE]),
-                                   (50_000, vec![CLOCK])]);
+        assert_eq!(
+            got[i..i + 4],
+            [
+                (50_000, vec![STOP]),
+                (50_000, vec![SONG_POSITION, 0, 0]),
+                (50_000, vec![CONTINUE]),
+                (50_000, vec![CLOCK])
+            ]
+        );
         assert!(got[..i].iter().all(|(f, _)| *f < 50_000));
     }
 
@@ -478,9 +540,18 @@ mod tests {
         c.stopped(1000, &mut out);
         c.pulse(2 * PULSE_TICKS, 1800, &mut out);
         c.located(1900, 3840, &mut out);
-        let want = [Message::one(0, START), Message::one(0, CLOCK), Message::one(900, CLOCK), Message::one(1000, STOP),
-                    Message::song_position(1900, 16)];
-        assert_eq!(out.as_slice(), &want, "a pulse sent once; none while stopped");
+        let want = [
+            Message::one(0, START),
+            Message::one(0, CLOCK),
+            Message::one(900, CLOCK),
+            Message::one(1000, STOP),
+            Message::song_position(1900, 16),
+        ];
+        assert_eq!(
+            out.as_slice(),
+            &want,
+            "a pulse sent once; none while stopped"
+        );
     }
 
     #[test]
@@ -498,7 +569,9 @@ mod tests {
         let mut seed = 12345u64;
         let mut f = from;
         for i in 0..pulses {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let j = ((seed >> 33) % (2 * jitter + 1)) as i64 - jitter as i64;
             f = (from as i64 + (i as f64 * per).round() as i64 + j).max(0) as u64;
             c.byte(f, CLOCK);
@@ -515,7 +588,11 @@ mod tests {
         // About 1 ms of jitter on every pulse.
         let mut c = ClockIn::new(RATE);
         let last = feed(&mut c, 0, 200, 93.5, 44);
-        assert!((c.state(last).bpm.unwrap() - 93.5).abs() < 0.5, "{:?}", c.state(last).bpm);
+        assert!(
+            (c.state(last).bpm.unwrap() - 93.5).abs() < 0.5,
+            "{:?}",
+            c.state(last).bpm
+        );
         // The pulses stop: the tempo is unknown again.
         assert_eq!(c.state(last + RATE as u64).bpm, None);
     }
@@ -527,17 +604,39 @@ mod tests {
         c.bytes(0, &[START], |e| ev.push(e));
         c.bytes(10, &[CLOCK], |e| ev.push(e));
         c.bytes(20, &[CLOCK], |e| ev.push(e));
-        assert_eq!(ev, [InEvent::Started, InEvent::Pulse { tick: 0 }, InEvent::Pulse { tick: 40 }]);
+        assert_eq!(
+            ev,
+            [
+                InEvent::Started,
+                InEvent::Pulse { tick: 0 },
+                InEvent::Pulse { tick: 40 }
+            ]
+        );
         assert!(c.state(20).playing);
         ev.clear();
         // Stop, then a Song Position of 2 bars (32 sixteenths), split by a
         // real-time byte, then Continue.
         c.bytes(30, &[STOP, SONG_POSITION, 32, 0xFE, 0], |e| ev.push(e));
         assert_eq!(ev, [InEvent::Stopped, InEvent::Located { tick: 7680 }]);
-        assert_eq!(c.state(30), InState { bpm: c.state(30).bpm, playing: false, tick: 7680, pulse_frame: Some(20) });
+        assert_eq!(
+            c.state(30),
+            InState {
+                bpm: c.state(30).bpm,
+                playing: false,
+                tick: 7680,
+                pulse_frame: Some(20)
+            }
+        );
         ev.clear();
         c.bytes(40, &[CONTINUE, CLOCK, CLOCK], |e| ev.push(e));
-        assert_eq!(ev, [InEvent::Continued { tick: 7680 }, InEvent::Pulse { tick: 7680 }, InEvent::Pulse { tick: 7720 }]);
+        assert_eq!(
+            ev,
+            [
+                InEvent::Continued { tick: 7680 },
+                InEvent::Pulse { tick: 7680 },
+                InEvent::Pulse { tick: 7720 }
+            ]
+        );
         // Pulses while stopped keep the tempo but not the position.
         ev.clear();
         c.bytes(50, &[STOP, CLOCK], |e| ev.push(e));
@@ -545,7 +644,9 @@ mod tests {
         // Notes and other messages are skipped; a status byte cancels a
         // Song Position half read.
         ev.clear();
-        c.bytes(60, &[0x90, 60, 100, SONG_POSITION, 5, 0x80, 60, 0], |e| ev.push(e));
+        c.bytes(60, &[0x90, 60, 100, SONG_POSITION, 5, 0x80, 60, 0], |e| {
+            ev.push(e)
+        });
         assert_eq!(ev, []);
     }
 
@@ -559,7 +660,9 @@ mod tests {
         assert!(s.playing);
         assert!((s.bpm.unwrap() - 140.0).abs() < 0.05, "{:?}", s.bpm);
         // After the wrap to 0 at frame 100000, the position follows the frames.
-        let ticks = ((s.pulse_frame.unwrap() - 100_000) as f64 * 140.0 * PPQ as f64 / (60.0 * f64::from(RATE))).round() as i64;
+        let ticks = ((s.pulse_frame.unwrap() - 100_000) as f64 * 140.0 * PPQ as f64
+            / (60.0 * f64::from(RATE)))
+        .round() as i64;
         assert_eq!(s.tick, ticks.div_euclid(PULSE_TICKS) * PULSE_TICKS);
     }
 }

@@ -142,9 +142,13 @@ pub mod ids {
     /// [`output::TRACK`], 0 to [`super::MAX_TRACKS`] - 1.
     pub const OUTPUT_TRACK: u16 = 5;
     /// The send level to return `r` (0 to 3, A to D), dB.
-    pub const fn send(r: usize) -> u16 { 6 + r as u16 }
+    pub const fn send(r: usize) -> u16 {
+        6 + r as u16
+    }
     /// Where send `r` is taken: 0 after the fader, 1 before it.
-    pub const fn send_pre(r: usize) -> u16 { 10 + r as u16 }
+    pub const fn send_pre(r: usize) -> u16 {
+        10 + r as u16
+    }
     /// What an input strip hears, one of [`source`].
     pub const SOURCE: u16 = 14;
     /// When an input strip is heard, one of [`monitor`].
@@ -157,7 +161,9 @@ pub mod ids {
     pub mod output {
         pub const MASTER: f32 = 0.0;
         /// Submix `b`, 0 to [`crate::mixer::BUSES`] - 1.
-        pub fn bus(b: usize) -> f32 { 1.0 + b as f32 }
+        pub fn bus(b: usize) -> f32 {
+            1.0 + b as f32
+        }
         /// The track in [`super::OUTPUT_TRACK`] (inputs and pads only).
         pub const TRACK: f32 = 9.0;
         /// Nowhere: only the sends go on.
@@ -184,7 +190,10 @@ pub mod ids {
     }
 }
 
-const OUTPUTS: &[&str] = &["Master", "Sub 1", "Sub 2", "Sub 3", "Sub 4", "Sub 5", "Sub 6", "Sub 7", "Sub 8", "Track", "None"];
+const OUTPUTS: &[&str] = &[
+    "Master", "Sub 1", "Sub 2", "Sub 3", "Sub 4", "Sub 5", "Sub 6", "Sub 7", "Sub 8", "Track",
+    "None",
+];
 const TAPS: &[&str] = &["Post", "Pre"];
 const SOURCES: &[&str] = &["Off", "In 1+2", "In 1", "In 2"];
 const MONITORS: &[&str] = &["Off", "On", "Auto"];
@@ -192,20 +201,100 @@ const OUT_TRACK: u8 = 9;
 const OUT_NONE: u8 = 10;
 
 const fn send_param(r: usize, name: &'static str) -> ParamInfo {
-    ParamInfo { id: ids::send(r), name, group: "Sends", min: SILENT_DB, max: 6.0, default: SILENT_DB, unit: Unit::Db, curve: Curve::Linear, readonly: false }
+    ParamInfo {
+        id: ids::send(r),
+        name,
+        group: "Sends",
+        min: SILENT_DB,
+        max: 6.0,
+        default: SILENT_DB,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    }
 }
 
 const fn tap_param(r: usize, name: &'static str) -> ParamInfo {
-    ParamInfo { id: ids::send_pre(r), name, group: "Sends", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(TAPS), readonly: false }
+    ParamInfo {
+        id: ids::send_pre(r),
+        name,
+        group: "Sends",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TAPS),
+        readonly: false,
+    }
 }
 
 static PARAMS: [ParamInfo; 17] = [
-    ParamInfo { id: ids::VOLUME, name: "Volume", group: "Fader", min: SILENT_DB, max: 6.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: ids::PAN, name: "Pan", group: "Fader", min: -100.0, max: 100.0, default: 0.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: ids::MUTE, name: "Mute", group: "Fader", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: ids::SOLO, name: "Solo", group: "Fader", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: ids::OUTPUT, name: "Output", group: "Output", min: 0.0, max: 10.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(OUTPUTS), readonly: false },
-    ParamInfo { id: ids::OUTPUT_TRACK, name: "Output track", group: "Output", min: 0.0, max: (MAX_TRACKS - 1) as f32, default: 0.0, unit: Unit::None, curve: Curve::Stepped, readonly: false },
+    ParamInfo {
+        id: ids::VOLUME,
+        name: "Volume",
+        group: "Fader",
+        min: SILENT_DB,
+        max: 6.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::PAN,
+        name: "Pan",
+        group: "Fader",
+        min: -100.0,
+        max: 100.0,
+        default: 0.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::MUTE,
+        name: "Mute",
+        group: "Fader",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::SOLO,
+        name: "Solo",
+        group: "Fader",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::OUTPUT,
+        name: "Output",
+        group: "Output",
+        min: 0.0,
+        max: 10.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(OUTPUTS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::OUTPUT_TRACK,
+        name: "Output track",
+        group: "Output",
+        min: 0.0,
+        max: (MAX_TRACKS - 1) as f32,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Stepped,
+        readonly: false,
+    },
     send_param(0, "Send A"),
     send_param(1, "Send B"),
     send_param(2, "Send C"),
@@ -214,14 +303,46 @@ static PARAMS: [ParamInfo; 17] = [
     tap_param(1, "Send B from"),
     tap_param(2, "Send C from"),
     tap_param(3, "Send D from"),
-    ParamInfo { id: ids::SOURCE, name: "Source", group: "Input", min: 0.0, max: 3.0, default: 1.0, unit: Unit::None, curve: Curve::Choice(SOURCES), readonly: false },
-    ParamInfo { id: ids::MONITOR, name: "Monitor", group: "Input", min: 0.0, max: 2.0, default: 2.0, unit: Unit::None, curve: Curve::Choice(MONITORS), readonly: false },
-    ParamInfo { id: ids::ARM, name: "Armed", group: "Input", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
+    ParamInfo {
+        id: ids::SOURCE,
+        name: "Source",
+        group: "Input",
+        min: 0.0,
+        max: 3.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SOURCES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::MONITOR,
+        name: "Monitor",
+        group: "Input",
+        min: 0.0,
+        max: 2.0,
+        default: 2.0,
+        unit: Unit::None,
+        curve: Curve::Choice(MONITORS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::ARM,
+        name: "Armed",
+        group: "Input",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
 ];
 
 /// The parameters of a mixer strip, for a generic page (filter them with
 /// [`param_applies`]).
-pub fn strip_params() -> &'static [ParamInfo] { &PARAMS }
+pub fn strip_params() -> &'static [ParamInfo] {
+    &PARAMS
+}
 
 /// Whether a strip of this kind uses a parameter: returns have no solo,
 /// output or sends, the master only volume, pan and mute, only inputs and
@@ -247,7 +368,9 @@ pub fn param_applies(s: StripId, id: u16) -> bool {
 
 /// Mute, solo and output change what other strips do, so they are
 /// gathered across the mixer and replayed by every strip.
-fn is_global(id: u16) -> bool { matches!(id, ids::MUTE | ids::SOLO | ids::OUTPUT | ids::OUTPUT_TRACK) }
+fn is_global(id: u16) -> bool {
+    matches!(id, ids::MUTE | ids::SOLO | ids::OUTPUT | ids::OUTPUT_TRACK)
+}
 
 /// One strip of the mixer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -290,25 +413,48 @@ pub struct MixerConfig {
 }
 
 impl Default for MixerConfig {
-    fn default() -> Self { MixerConfig { inputs: 2, pads: 32, tracks: 16, slots: 8, max_latency_ms: 50.0 } }
+    fn default() -> Self {
+        MixerConfig {
+            inputs: 2,
+            pads: 32,
+            tracks: 16,
+            slots: 8,
+            max_latency_ms: 50.0,
+        }
+    }
 }
 
 /// A change to a strip's inserts while the mixer plays. See the module docs.
 pub enum Edit {
     /// Puts `insert` in at slot `at` (0 to the number of slots).
-    Insert { strip: StripId, at: usize, insert: Insert },
+    Insert {
+        strip: StripId,
+        at: usize,
+        insert: Insert,
+    },
     /// Swaps the insert at `at` for `insert`; the old one is retired.
-    Replace { strip: StripId, at: usize, insert: Insert },
+    Replace {
+        strip: StripId,
+        at: usize,
+        insert: Insert,
+    },
     /// Takes the insert at `at` out; it is retired.
     Remove { strip: StripId, at: usize },
     /// Moves the insert at `from` to `to`, with its state and its key.
-    Move { strip: StripId, from: usize, to: usize },
+    Move {
+        strip: StripId,
+        from: usize,
+        to: usize,
+    },
 }
 
 impl Edit {
     pub fn strip(&self) -> StripId {
         match self {
-            Edit::Insert { strip, .. } | Edit::Replace { strip, .. } | Edit::Remove { strip, .. } | Edit::Move { strip, .. } => *strip,
+            Edit::Insert { strip, .. }
+            | Edit::Replace { strip, .. }
+            | Edit::Remove { strip, .. }
+            | Edit::Move { strip, .. } => *strip,
         }
     }
 }
@@ -342,7 +488,9 @@ enum Role {
 
 impl Role {
     /// Strips with sends, solo and an output.
-    fn has_sends(self) -> bool { self < Role::Return }
+    fn has_sends(self) -> bool {
+        self < Role::Return
+    }
 }
 
 /// A set of strips.
@@ -351,15 +499,23 @@ struct Bits([u64; MAX_STRIPS.div_ceil(64)]);
 
 impl Bits {
     #[inline]
-    fn get(&self, k: usize) -> bool { (self.0[k / 64] >> (k % 64)) & 1 == 1 }
+    fn get(&self, k: usize) -> bool {
+        (self.0[k / 64] >> (k % 64)) & 1 == 1
+    }
 
     #[inline]
     fn set(&mut self, k: usize, on: bool) {
         let m = 1u64 << (k % 64);
-        if on { self.0[k / 64] |= m } else { self.0[k / 64] &= !m }
+        if on {
+            self.0[k / 64] |= m
+        } else {
+            self.0[k / 64] &= !m
+        }
     }
 
-    fn any(&self) -> bool { self.0.iter().any(|&w| w != 0) }
+    fn any(&self) -> bool {
+        self.0.iter().any(|&w| w != 0)
+    }
 }
 
 /// Mute, solo and output for the whole mixer, as of one frame.
@@ -372,7 +528,14 @@ struct Switches {
 }
 
 impl Switches {
-    fn new() -> Switches { Switches { mute: Bits::default(), solo: Bits::default(), out: [0; MAX_STRIPS], out_track: [0; MAX_STRIPS] } }
+    fn new() -> Switches {
+        Switches {
+            mute: Bits::default(),
+            solo: Bits::default(),
+            out: [0; MAX_STRIPS],
+            out_track: [0; MAX_STRIPS],
+        }
+    }
 }
 
 /// Where each stage starts in the strip order.
@@ -384,12 +547,24 @@ struct Topo {
 }
 
 impl Topo {
-    fn pad(&self, p: usize) -> usize { self.inputs + p }
-    fn track(&self, t: usize) -> usize { self.inputs + self.pads + t }
-    fn bus(&self, b: usize) -> usize { self.inputs + self.pads + self.tracks + b }
-    fn ret(&self, r: usize) -> usize { self.bus(BUSES) + r }
-    fn master(&self) -> usize { self.ret(RETURNS) }
-    fn len(&self) -> usize { self.master() + 1 }
+    fn pad(&self, p: usize) -> usize {
+        self.inputs + p
+    }
+    fn track(&self, t: usize) -> usize {
+        self.inputs + self.pads + t
+    }
+    fn bus(&self, b: usize) -> usize {
+        self.inputs + self.pads + self.tracks + b
+    }
+    fn ret(&self, r: usize) -> usize {
+        self.bus(BUSES) + r
+    }
+    fn master(&self) -> usize {
+        self.ret(RETURNS)
+    }
+    fn len(&self) -> usize {
+        self.master() + 1
+    }
 
     fn order(&self, s: StripId) -> Option<usize> {
         match s {
@@ -453,9 +628,18 @@ impl Topo {
             OUT_NONE => None,
             1..=8 => {
                 let b = out as usize - 1;
-                Some(if role == Role::Bus && b <= i { self.master() } else { self.bus(b) })
+                Some(if role == Role::Bus && b <= i {
+                    self.master()
+                } else {
+                    self.bus(b)
+                })
             }
-            OUT_TRACK if matches!(role, Role::Input | Role::Pad) && (out_track as usize) < self.tracks => Some(self.track(out_track as usize)),
+            OUT_TRACK
+                if matches!(role, Role::Input | Role::Pad)
+                    && (out_track as usize) < self.tracks =>
+            {
+                Some(self.track(out_track as usize))
+            }
             _ => Some(self.master()),
         }
     }
@@ -484,7 +668,9 @@ impl Topo {
         let mut down = sw.solo;
         for k in (0..n).rev() {
             if let Some(d) = self.resolve(k, sw.out[k], sw.out_track[k]) {
-                if down.get(d) { down.set(k, true); }
+                if down.get(d) {
+                    down.set(k, true);
+                }
             }
         }
         for k in 0..n {
@@ -546,10 +732,16 @@ struct Plan {
 impl Plan {
     /// The delay on the path from strip `j` into strip `d`, uncapped.
     fn raw_delay(&self, j: usize, d: usize) -> usize {
-        if self.topo.role(j).0 == Role::Input { 0 } else { self.arrive[d].saturating_sub(self.out[j]) as usize }
+        if self.topo.role(j).0 == Role::Input {
+            0
+        } else {
+            self.arrive[d].saturating_sub(self.out[j]) as usize
+        }
     }
 
-    fn delay(&self, j: usize, d: usize) -> usize { self.raw_delay(j, d).min(self.max_comp) }
+    fn delay(&self, j: usize, d: usize) -> usize {
+        self.raw_delay(j, d).min(self.max_comp)
+    }
 }
 
 /// A stereo ring buffer for latency compensation, read at any delay up to
@@ -561,7 +753,13 @@ struct Line {
 }
 
 impl Line {
-    fn new(size: usize) -> Line { Line { buf: [vec![0.0; size], vec![0.0; size]], mask: size.saturating_sub(1), w: 0 } }
+    fn new(size: usize) -> Line {
+        Line {
+            buf: [vec![0.0; size], vec![0.0; size]],
+            mask: size.saturating_sub(1),
+            w: 0,
+        }
+    }
 
     fn write(&mut self, l: &[f32], r: &[f32]) {
         let n = l.len();
@@ -584,9 +782,13 @@ impl Line {
 
     /// Frame `i` of the chunk just written, `d` frames back.
     #[inline]
-    fn at(&self, ch: usize, i: usize, d: usize) -> f32 { self.buf[ch][(self.w + i).wrapping_sub(d) & self.mask] }
+    fn at(&self, ch: usize, i: usize, d: usize) -> f32 {
+        self.buf[ch][(self.w + i).wrapping_sub(d) & self.mask]
+    }
 
-    fn advance(&mut self, n: usize) { self.w = (self.w + n) & self.mask; }
+    fn advance(&mut self, n: usize) {
+        self.w = (self.w + n) & self.mask;
+    }
 
     fn clear(&mut self) {
         for b in &mut self.buf {
@@ -605,18 +807,28 @@ struct Tap {
 }
 
 impl Tap {
-    const ZERO: Tap = Tap { d: 0, from: 0, x: 1.0 };
+    const ZERO: Tap = Tap {
+        d: 0,
+        from: 0,
+        x: 1.0,
+    };
 
     fn set(&mut self, d: usize, snap: bool) {
         if snap {
             *self = Tap { d, from: d, x: 1.0 };
         } else if d != self.d {
             // A change during a crossfade starts from the newer length.
-            *self = Tap { d, from: self.d, x: 0.0 };
+            *self = Tap {
+                d,
+                from: self.d,
+                x: 0.0,
+            };
         }
     }
 
-    fn fading(&self) -> bool { self.x < 1.0 }
+    fn fading(&self) -> bool {
+        self.x < 1.0
+    }
 
     /// The crossfade weight for each frame of a chunk, then moves on.
     fn weights(&mut self, step: f32, out: &mut [f32]) {
@@ -649,7 +861,9 @@ struct Route {
 }
 
 impl Route {
-    fn idle(&self) -> bool { self.dest == NONE || (self.g.settled() && self.g.value == 0.0) }
+    fn idle(&self) -> bool {
+        self.dest == NONE || (self.g.settled() && self.g.value == 0.0)
+    }
 }
 
 struct Capture {
@@ -739,7 +953,11 @@ impl Strip {
             out_track: 0,
             vp: [sm(1.0), sm(1.0)],
             aud: sm(1.0),
-            routes: [Route { dest: NONE, g: sm(0.0), tap: Tap::ZERO }; ROUTES],
+            routes: [Route {
+                dest: NONE,
+                g: sm(0.0),
+                tap: Tap::ZERO,
+            }; ROUTES],
             send: std::array::from_fn(|_| [sm(0.0), sm(0.0)]),
             duck: Duck::Idle,
             duck_g: 1.0,
@@ -760,11 +978,17 @@ impl Strip {
 
     /// A strip's own (not global) parameter change.
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         match id {
             ids::VOLUME | ids::PAN => {
-                if id == ids::VOLUME { self.vol_db = v } else { self.pan = v }
+                if id == ids::VOLUME {
+                    self.vol_db = v
+                } else {
+                    self.pan = v
+                }
                 let g = level(self.vol_db);
                 let (bl, br) = balance(self.pan * 0.01);
                 self.vol_bal = [g * bl, g * br];
@@ -784,14 +1008,19 @@ impl Strip {
     /// Points every smoother at where the settings say, given whether the
     /// mixer hears this strip, and picks up a new destination.
     fn targets(&mut self, plan: &Plan, k: usize, heard: bool) {
-        let monitored = self.role != Role::Input || self.monitor == ids::monitor::ON as u8 || (self.monitor == ids::monitor::AUTO as u8 && self.arm);
+        let monitored = self.role != Role::Input
+            || self.monitor == ids::monitor::ON as u8
+            || (self.monitor == ids::monitor::AUTO as u8 && self.arm);
         self.aud.target = if heard && monitored { 1.0 } else { 0.0 };
         self.vp[0].target = self.vol_bal[0];
         self.vp[1].target = self.vol_bal[1];
         if self.role == Role::Master {
             return;
         }
-        let want = plan.topo.resolve(k, self.out, self.out_track).map_or(NONE, |d| d as u16);
+        let want = plan
+            .topo
+            .resolve(k, self.out, self.out_track)
+            .map_or(NONE, |d| d as u16);
         let mut have = false;
         for r in &mut self.routes {
             let on = want != NONE && r.dest == want;
@@ -803,7 +1032,9 @@ impl Strip {
                 // Three changes inside one glide: take over the quietest.
                 let mut m = 0;
                 for (i, r) in self.routes.iter().enumerate() {
-                    if r.g.value < self.routes[m].g.value { m = i; }
+                    if r.g.value < self.routes[m].g.value {
+                        m = i;
+                    }
                 }
                 m
             });
@@ -830,7 +1061,9 @@ impl Strip {
         self.send.iter_mut().flatten().for_each(snap);
         for r in &mut self.routes {
             snap(&mut r.g);
-            if r.g.value == 0.0 { r.dest = NONE; }
+            if r.g.value == 0.0 {
+                r.dest = NONE;
+            }
         }
     }
 
@@ -843,7 +1076,9 @@ impl Strip {
             && !self.tap_in.fading()
     }
 
-    fn silent(&self) -> bool { matches!(self.duck, Duck::Wait | Duck::Hold(_)) }
+    fn silent(&self) -> bool {
+        matches!(self.duck, Duck::Wait | Duck::Hold(_))
+    }
 }
 
 /// Steps an edit's duck by one frame and returns its gain.
@@ -872,13 +1107,29 @@ fn duck_next(duck: &mut Duck, g: &mut f32, step: f32) -> f32 {
 }
 
 /// Gain for a level in dB, with the bottom of the range silent.
-fn level(db: f32) -> f32 { if db <= SILENT_DB { 0.0 } else { db_to_gain(db) } }
+fn level(db: f32) -> f32 {
+    if db <= SILENT_DB {
+        0.0
+    } else {
+        db_to_gain(db)
+    }
+}
 
 /// Balance gains for a pan of -1 to 1: the far side follows a quarter
 /// cosine down to nothing, the near side stays at unity.
 fn balance(p: f32) -> (f32, f32) {
-    let fade = |x: f32| if x >= 1.0 { 0.0 } else { (FRAC_PI_2 * x).cos().max(0.0) };
-    if p >= 0.0 { (fade(p), 1.0) } else { (1.0, fade(-p)) }
+    let fade = |x: f32| {
+        if x >= 1.0 {
+            0.0
+        } else {
+            (FRAC_PI_2 * x).cos().max(0.0)
+        }
+    };
+    if p >= 0.0 {
+        (fade(p), 1.0)
+    } else {
+        (1.0, fade(-p))
+    }
 }
 
 #[inline]
@@ -930,18 +1181,30 @@ impl Mixer {
     pub fn new(cfg: MixerConfig, rate: u32, max_block: usize) -> Mixer {
         let rate = rate.max(1);
         let max_block = max_block.clamp(1, mpfree_node::MAX_BLOCK);
-        let topo = Topo { inputs: cfg.inputs.min(MAX_INPUTS), pads: cfg.pads.min(MAX_PADS), tracks: cfg.tracks.clamp(1, MAX_TRACKS) };
+        let topo = Topo {
+            inputs: cfg.inputs.min(MAX_INPUTS),
+            pads: cfg.pads.min(MAX_PADS),
+            tracks: cfg.tracks.clamp(1, MAX_TRACKS),
+        };
         let slots = cfg.slots.min(MAX_SLOTS);
         let max_comp = (cfg.max_latency_ms.max(0.0) * 0.001 * rate as f32).round() as usize;
         let line_len = (max_comp + CHUNK + 1).next_power_of_two();
-        let strips = (0..topo.len()).map(|k| Strip::new(topo.role(k).0, slots, rate, max_block, line_len)).collect();
+        let strips = (0..topo.len())
+            .map(|k| Strip::new(topo.role(k).0, slots, rate, max_block, line_len))
+            .collect();
         let mut safety = MasterSafety::new();
         mpfree_node::Node::prepare(&mut safety, rate, max_block);
         let block = || [vec![0.0; max_block], vec![0.0; max_block]];
         let mut m = Mixer {
             rate,
             max_block,
-            plan: Plan { topo, arrive: vec![0; topo.len()], out: vec![0; topo.len()], lats: vec![0; topo.len()], max_comp },
+            plan: Plan {
+                topo,
+                arrive: vec![0; topo.len()],
+                out: vec![0; topo.len()],
+                lats: vec![0; topo.len()],
+                max_comp,
+            },
             strips,
             order: Vec::with_capacity(topo.len()),
             sw: Switches::new(),
@@ -958,7 +1221,12 @@ impl Mixer {
                 w_send: vec![0.0; CHUNK],
             },
             hw: block(),
-            caps: (0..CAPTURES).map(|_| Capture { src: None, buf: block() }).collect(),
+            caps: (0..CAPTURES)
+                .map(|_| Capture {
+                    src: None,
+                    buf: block(),
+                })
+                .collect(),
             line_len,
             tap_step: 1.0 / (TAP_FADE_MS * 0.001 * rate as f32),
             duck_step: 1.0 / (DUCK_MS * 0.001 * rate as f32),
@@ -976,22 +1244,38 @@ impl Mixer {
         m
     }
 
-    pub fn rate(&self) -> u32 { self.rate }
-    pub fn max_block(&self) -> usize { self.max_block }
-    pub fn inputs(&self) -> usize { self.plan.topo.inputs }
-    pub fn pads(&self) -> usize { self.plan.topo.pads }
-    pub fn tracks(&self) -> usize { self.plan.topo.tracks }
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+    pub fn max_block(&self) -> usize {
+        self.max_block
+    }
+    pub fn inputs(&self) -> usize {
+        self.plan.topo.inputs
+    }
+    pub fn pads(&self) -> usize {
+        self.plan.topo.pads
+    }
+    pub fn tracks(&self) -> usize {
+        self.plan.topo.tracks
+    }
 
     /// Every strip, by stage: inputs, pads, tracks, submixes, returns,
     /// master.
-    pub fn strips(&self) -> impl Iterator<Item = StripId> + '_ { (0..self.plan.topo.len()).map(|k| self.plan.topo.id(k)) }
+    pub fn strips(&self) -> impl Iterator<Item = StripId> + '_ {
+        (0..self.plan.topo.len()).map(|k| self.plan.topo.id(k))
+    }
 
     /// A strip's insert chain.
-    pub fn chain(&self, s: StripId) -> Option<&Chain> { self.plan.topo.order(s).map(|k| &self.strips[k].chain) }
+    pub fn chain(&self, s: StripId) -> Option<&Chain> {
+        self.plan.topo.order(s).map(|k| &self.strips[k].chain)
+    }
 
     /// A strip's insert chain, to set up before playing (control thread:
     /// [`Chain::push`] allocates). While playing, use [`Mixer::edit`].
-    pub fn chain_mut(&mut self, s: StripId) -> Option<&mut Chain> { self.plan.topo.order(s).map(|k| &mut self.strips[k].chain) }
+    pub fn chain_mut(&mut self, s: StripId) -> Option<&mut Chain> {
+        self.plan.topo.order(s).map(|k| &mut self.strips[k].chain)
+    }
 
     /// A track's or pad channel's input for the next block, both sides
     /// `max_block` long. Add the block's frames into the start; the mixer
@@ -1008,10 +1292,14 @@ impl Mixer {
     }
 
     /// A track's input for the next block (see [`Mixer::strip_input`]).
-    pub fn track_input(&mut self, t: usize) -> Option<(&mut [f32], &mut [f32])> { self.strip_input(StripId::Track(t)) }
+    pub fn track_input(&mut self, t: usize) -> Option<(&mut [f32], &mut [f32])> {
+        self.strip_input(StripId::Track(t))
+    }
 
     /// A pad channel's input for the next block (see [`Mixer::strip_input`]).
-    pub fn pad_input(&mut self, p: usize) -> Option<(&mut [f32], &mut [f32])> { self.strip_input(StripId::Pad(p)) }
+    pub fn pad_input(&mut self, p: usize) -> Option<(&mut [f32], &mut [f32])> {
+        self.strip_input(StripId::Pad(p))
+    }
 
     /// The line input (inputs 1 and 2) for the next block, both sides
     /// `max_block` long. Write the block's frames into the start; every
@@ -1024,7 +1312,9 @@ impl Mixer {
     /// Sets a strip parameter at once, with no glide: for setting the
     /// mixer up before it plays.
     pub fn set_now(&mut self, s: StripId, id: u16, value: f32) {
-        let Some(k) = self.plan.topo.order(s) else { return };
+        let Some(k) = self.plan.topo.order(s) else {
+            return;
+        };
         let topo = self.plan.topo;
         if is_global(id) {
             topo.apply(&mut self.sw, k, id, value);
@@ -1044,7 +1334,9 @@ impl Mixer {
     /// (offsets at or past its end apply right after it). False, and
     /// counted, when the strip's queue is full or the strip is not there.
     pub fn queue(&mut self, s: StripId, t: Timed) -> bool {
-        let Some(k) = self.plan.topo.order(s) else { return false };
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
         let q = &mut self.strips[k].events;
         if q.len() == q.capacity() {
             self.stats.dropped_events += 1;
@@ -1056,11 +1348,15 @@ impl Mixer {
     }
 
     /// Sets a strip parameter from the start of the next block (with a glide).
-    pub fn set(&mut self, s: StripId, id: u16, value: f32) -> bool { self.queue(s, Timed::new(0, NodeEvent::Param { id, value })) }
+    pub fn set(&mut self, s: StripId, id: u16, value: f32) -> bool {
+        self.queue(s, Timed::new(0, NodeEvent::Param { id, value }))
+    }
 
     /// A strip parameter as it stands after the last block.
     pub fn param(&self, s: StripId, id: u16) -> f32 {
-        let Some(k) = self.plan.topo.order(s) else { return f32::NAN };
+        let Some(k) = self.plan.topo.order(s) else {
+            return f32::NAN;
+        };
         let st = &self.strips[k];
         match id {
             ids::VOLUME => st.vol_db,
@@ -1081,24 +1377,38 @@ impl Mixer {
     /// Where a strip's output goes now, if anywhere.
     pub fn destination(&self, s: StripId) -> Option<StripId> {
         let k = self.plan.topo.order(s)?;
-        self.plan.topo.resolve(k, self.sw.out[k], self.sw.out_track[k]).map(|d| self.plan.topo.id(d))
+        self.plan
+            .topo
+            .resolve(k, self.sw.out[k], self.sw.out_track[k])
+            .map(|d| self.plan.topo.id(d))
     }
 
     /// Whether a strip is heard now: not muted, not left out by a solo,
     /// and (an input) monitored.
-    pub fn is_audible(&self, s: StripId) -> bool { self.plan.topo.order(s).is_some_and(|k| self.aud.get(k) && self.strips[k].aud.target > 0.0) }
+    pub fn is_audible(&self, s: StripId) -> bool {
+        self.plan
+            .topo
+            .order(s)
+            .is_some_and(|k| self.aud.get(k) && self.strips[k].aud.target > 0.0)
+    }
 
     /// Queues a sample-timed event for an insert (see [`Chain::queue`]).
     pub fn queue_insert(&mut self, s: StripId, slot: usize, t: Timed) -> bool {
-        let Some(k) = self.plan.topo.order(s) else { return false };
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
         let ok = self.strips[k].chain.queue(slot, t);
-        if !ok { self.stats.dropped_events += 1; }
+        if !ok {
+            self.stats.dropped_events += 1;
+        }
         ok
     }
 
     /// Bypasses an insert or switches it back on (see [`Chain::set_on`]).
     pub fn set_on(&mut self, s: StripId, slot: usize, on: bool) {
-        if let Some(k) = self.plan.topo.order(s) { self.strips[k].chain.set_on(slot, on); }
+        if let Some(k) = self.plan.topo.order(s) {
+            self.strips[k].chain.set_on(slot, on);
+        }
     }
 
     /// Keys the insert in `slot` of strip `s` (a compressor's sidechain)
@@ -1133,7 +1443,10 @@ impl Mixer {
     /// The strip an insert is keyed from.
     pub fn key(&self, s: StripId, slot: usize) -> Option<StripId> {
         let k = self.plan.topo.order(s)?;
-        self.strips[k].chain.key(slot).map(|j| self.plan.topo.id(j as usize))
+        self.strips[k]
+            .chain
+            .key(slot)
+            .map(|j| self.plan.topo.id(j as usize))
     }
 
     /// Queues an edit to a strip's inserts. It is applied at the next
@@ -1150,23 +1463,39 @@ impl Mixer {
     }
 
     /// Edits not applied yet.
-    pub fn edits_pending(&self) -> usize { self.edits.len() }
+    pub fn edits_pending(&self) -> usize {
+        self.edits.len()
+    }
 
     /// An insert an edit took out, to drop or reuse off the audio thread.
-    pub fn pop_retired(&mut self) -> Option<Insert> { self.retired.pop() }
+    pub fn pop_retired(&mut self) -> Option<Insert> {
+        self.retired.pop()
+    }
 
     /// Frames from a track's input to the output: the slowest compensated
     /// path plus the master's inserts and Master safety.
-    pub fn latency(&self) -> u32 { self.latency }
+    pub fn latency(&self) -> u32 {
+        self.latency
+    }
 
     /// The loudest sample on each side of a strip's output since the last
     /// call (the master's is after Master safety), and starts again.
-    pub fn take_peaks(&mut self, s: StripId) -> [f32; 2] { self.plan.topo.order(s).map_or([0.0; 2], |k| std::mem::take(&mut self.strips[k].peak)) }
+    pub fn take_peaks(&mut self, s: StripId) -> [f32; 2] {
+        self.plan
+            .topo
+            .order(s)
+            .map_or([0.0; 2], |k| std::mem::take(&mut self.strips[k].peak))
+    }
 
     /// The loudest sample on each side of a strip after its inserts and
     /// before its fader (an input's level whether or not it is monitored)
     /// since the last call, and starts again.
-    pub fn take_input_peaks(&mut self, s: StripId) -> [f32; 2] { self.plan.topo.order(s).map_or([0.0; 2], |k| std::mem::take(&mut self.strips[k].peak_in)) }
+    pub fn take_input_peaks(&mut self, s: StripId) -> [f32; 2] {
+        self.plan
+            .topo
+            .order(s)
+            .map_or([0.0; 2], |k| std::mem::take(&mut self.strips[k].peak_in))
+    }
 
     /// Points capture `slot` (0 to [`CAPTURES`] - 1) at a strip, or frees
     /// it. Takes effect from the next block. False if the slot or strip is
@@ -1176,11 +1505,15 @@ impl Mixer {
         let src = match src {
             None => None,
             Some((s, p)) => match self.plan.topo.order(s) {
-                Some(k) if p != CapturePoint::AfterSafety || s == StripId::Master => Some((k as u16, p)),
+                Some(k) if p != CapturePoint::AfterSafety || s == StripId::Master => {
+                    Some((k as u16, p))
+                }
                 _ => return false,
             },
         };
-        let Some(c) = self.caps.get_mut(slot) else { return false };
+        let Some(c) = self.caps.get_mut(slot) else {
+            return false;
+        };
         c.src = src;
         true
     }
@@ -1215,28 +1548,50 @@ impl Mixer {
         }
     }
 
-    pub fn profiling(&self) -> bool { self.profiling }
+    pub fn profiling(&self) -> bool {
+        self.profiling
+    }
 
     /// The whole mixer's time per block, while profiling.
-    pub fn probe(&self) -> &Probe { &self.probe }
-    pub fn probe_mut(&mut self) -> &mut Probe { &mut self.probe }
+    pub fn probe(&self) -> &Probe {
+        &self.probe
+    }
+    pub fn probe_mut(&mut self) -> &mut Probe {
+        &mut self.probe
+    }
 
     /// A strip's time per block (its inserts, fader and routing; a strip
     /// that skipped its work while quiet still records its scan), while
     /// profiling.
-    pub fn strip_probe(&self, s: StripId) -> Option<&Probe> { self.plan.topo.order(s).map(|k| &self.strips[k].probe) }
-    pub fn strip_probe_mut(&mut self, s: StripId) -> Option<&mut Probe> { self.plan.topo.order(s).map(|k| &mut self.strips[k].probe) }
+    pub fn strip_probe(&self, s: StripId) -> Option<&Probe> {
+        self.plan.topo.order(s).map(|k| &self.strips[k].probe)
+    }
+    pub fn strip_probe_mut(&mut self, s: StripId) -> Option<&mut Probe> {
+        self.plan.topo.order(s).map(|k| &mut self.strips[k].probe)
+    }
 
     /// Master safety, for its meters and [`MasterSafety::stats`].
-    pub fn safety(&self) -> &MasterSafety { &self.safety }
+    pub fn safety(&self) -> &MasterSafety {
+        &self.safety
+    }
 
     /// Master safety, to set its mode, trim and ceiling.
-    pub fn safety_mut(&mut self) -> &mut MasterSafety { &mut self.safety }
+    pub fn safety_mut(&mut self) -> &mut MasterSafety {
+        &mut self.safety
+    }
 
     pub fn stats(&self) -> MixerStats {
         let mut s = self.stats;
-        s.nan_resets = self.strips.iter().map(|st| st.chain.stats().nan_resets).sum();
-        s.dropped_events += self.strips.iter().map(|st| st.chain.stats().dropped_events).sum::<u64>();
+        s.nan_resets = self
+            .strips
+            .iter()
+            .map(|st| st.chain.stats().nan_resets)
+            .sum();
+        s.dropped_events += self
+            .strips
+            .iter()
+            .map(|st| st.chain.stats().dropped_events)
+            .sum::<u64>();
         s
     }
 
@@ -1245,7 +1600,9 @@ impl Mixer {
     pub fn reset(&mut self) {
         for st in &mut self.strips {
             for n in 0..st.chain.len() {
-                if let Some(node) = st.chain.node_mut(n) { node.reset(); }
+                if let Some(node) = st.chain.node_mut(n) {
+                    node.reset();
+                }
             }
             st.pre_line.clear();
             st.post_line.clear();
@@ -1261,10 +1618,14 @@ impl Mixer {
     }
 
     fn retarget(&mut self, snap: bool) {
-        let Mixer { plan, strips, aud, .. } = self;
+        let Mixer {
+            plan, strips, aud, ..
+        } = self;
         for (k, st) in strips.iter_mut().enumerate() {
             st.targets(plan, k, aud.get(k));
-            if snap { st.snap(); }
+            if snap {
+                st.snap();
+            }
         }
     }
 
@@ -1272,7 +1633,12 @@ impl Mixer {
     /// ordered so every key runs before the strips it keys. False on a loop
     /// (the order is then incomplete).
     fn reorder(&mut self) -> bool {
-        let Mixer { plan, strips, order, .. } = self;
+        let Mixer {
+            plan,
+            strips,
+            order,
+            ..
+        } = self;
         order.clear();
         let mut state = [0u8; MAX_STRIPS];
         for (lo, hi, free) in plan.topo.stages() {
@@ -1290,7 +1656,13 @@ impl Mixer {
     /// Works out every compensation delay from the chains' latencies (only
     /// when one changed, unless `force`).
     fn align(&mut self, force: bool) {
-        let Mixer { plan, strips, safety, started, .. } = self;
+        let Mixer {
+            plan,
+            strips,
+            safety,
+            started,
+            ..
+        } = self;
         let mut changed = force;
         for (st, l) in strips.iter().zip(plan.lats.iter_mut()) {
             let now = st.chain.latency();
@@ -1304,7 +1676,8 @@ impl Mixer {
         let lats = &plan.lats;
         let lat = |k: usize| lats[k];
         let n = topo.len();
-        let span = |lo: usize, hi: usize, out: &[u32]| out[lo..hi].iter().copied().max().unwrap_or(0);
+        let span =
+            |lo: usize, hi: usize, out: &[u32]| out[lo..hi].iter().copied().max().unwrap_or(0);
         for k in 0..topo.track(0) {
             plan.arrive[k] = 0;
             plan.out[k] = lat(k);
@@ -1391,11 +1764,20 @@ impl Mixer {
                 }
                 Edit::Move { from, to, .. } => (None, chain.move_slot(from, to)),
             };
-            if !ok { self.stats.bad_edits += 1; }
-            if let Some(ins) = out { self.retired.push(ins); }
+            if !ok {
+                self.stats.bad_edits += 1;
+            }
+            if let Some(ins) = out {
+                self.retired.push(ins);
+            }
         }
         for k in 0..self.strips.len() {
-            if self.strips[k].duck == Duck::Wait && !self.edits.iter().any(|e| self.plan.topo.order(e.strip()) == Some(k)) {
+            if self.strips[k].duck == Duck::Wait
+                && !self
+                    .edits
+                    .iter()
+                    .any(|e| self.plan.topo.order(e.strip()) == Some(k))
+            {
                 let st = &mut self.strips[k];
                 st.duck = Duck::Hold(st.chain.latency());
             }
@@ -1405,7 +1787,9 @@ impl Mixer {
     /// Starts ducking the strips that have edits waiting.
     fn start_ducks(&mut self) {
         for e in &self.edits {
-            let Some(k) = self.plan.topo.order(e.strip()) else { continue };
+            let Some(k) = self.plan.topo.order(e.strip()) else {
+                continue;
+            };
             let st = &mut self.strips[k];
             st.duck = match st.duck {
                 Duck::Idle | Duck::In => Duck::Out,
@@ -1423,22 +1807,37 @@ impl Mixer {
         for (k, st) in self.strips.iter().enumerate() {
             for (q, e) in st.events.iter().enumerate() {
                 if let NodeEvent::Param { id, value } = e.ev {
-                    if !is_global(id) { continue; }
+                    if !is_global(id) {
+                        continue;
+                    }
                     if self.globals.len() == self.globals.capacity() {
                         self.stats.dropped_events += 1;
                         continue;
                     }
-                    self.globals.push(Global { offset: e.offset, strip: k as u16, seq: q as u16, id, value });
+                    self.globals.push(Global {
+                        offset: e.offset,
+                        strip: k as u16,
+                        seq: q as u16,
+                        id,
+                        value,
+                    });
                 }
             }
         }
-        self.globals.sort_unstable_by_key(|g| (g.offset, g.strip, g.seq));
+        self.globals
+            .sort_unstable_by_key(|g| (g.offset, g.strip, g.seq));
         let topo = self.plan.topo;
         let mut sw = self.sw;
         for g in &self.globals {
             let k = g.strip as usize;
             topo.apply(&mut sw, k, g.id, g.value);
-            self.epochs.push(Epoch { offset: g.offset, aud: topo.audible(&sw), strip: g.strip, out: sw.out[k], out_track: sw.out_track[k] });
+            self.epochs.push(Epoch {
+                offset: g.offset,
+                aud: topo.audible(&sw),
+                strip: g.strip,
+                out: sw.out[k],
+                out_track: sw.out_track[k],
+            });
         }
         sw
     }
@@ -1456,12 +1855,35 @@ impl Mixer {
         self.align(false);
         self.start_ducks();
         let sw_end = self.gather_globals();
-        let Mixer { plan, strips, order, aud, epochs, scratch, stats, caps, hw, safety, tap_step, duck_step, line_len, profiling, .. } = self;
+        let Mixer {
+            plan,
+            strips,
+            order,
+            aud,
+            epochs,
+            scratch,
+            stats,
+            caps,
+            hw,
+            safety,
+            tap_step,
+            duck_step,
+            line_len,
+            profiling,
+            ..
+        } = self;
         let profiling = *profiling;
         let (topo, tap_step, duck_step, line_len) = (plan.topo, *tap_step, *duck_step, *line_len);
         // With no capture point in use, nothing needs to look for one.
-        let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) { caps } else { &mut [] };
-        let base = Ctx { sidechain: None, ..*ctx };
+        let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) {
+            caps
+        } else {
+            &mut []
+        };
+        let base = Ctx {
+            sidechain: None,
+            ..*ctx
+        };
         let (left, right) = (&mut left[..len], &mut right[..len]);
         for st in strips.iter_mut().take(topo.inputs) {
             fill_input(st, hw, len);
@@ -1474,37 +1896,88 @@ impl Mixer {
         for &k in order.iter() {
             let k = k as usize;
             let (lo, rest) = strips.split_at_mut(k);
-            let Some((st, hi)) = rest.split_first_mut() else { break };
+            let Some((st, hi)) = rest.split_first_mut() else {
+                break;
+            };
             let span = profiling.then(Span::start);
             let fed = guard(st, len, stats);
             take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
             {
                 let key = |j: u16| {
                     let j = j as usize;
-                    let s = if j < k { lo.get(j) } else { hi.get(j.checked_sub(k + 1)?) }?;
+                    let s = if j < k {
+                        lo.get(j)
+                    } else {
+                        hi.get(j.checked_sub(k + 1)?)
+                    }?;
                     Some((&s.buf[0][..len], &s.buf[1][..len]))
                 };
                 let [bl, br] = &mut st.buf;
-                st.chain.process_keyed(&base, key, &mut bl[..len], &mut br[..len]);
+                st.chain
+                    .process_keyed(&base, key, &mut bl[..len], &mut br[..len]);
             }
             take(caps, k, CapturePoint::BeforeFader, &st.buf, 0, len);
             if st.role == Role::Master {
-                run_strip(st, k, hi, len, epochs, aud.get(k), plan, scratch, caps, tap_step, duck_step, Some((&mut *left, &mut *right)));
-                if let Some(span) = span { st.probe.stop(span, len as u32); }
+                run_strip(
+                    st,
+                    k,
+                    hi,
+                    len,
+                    epochs,
+                    aud.get(k),
+                    plan,
+                    scratch,
+                    caps,
+                    tap_step,
+                    duck_step,
+                    Some((&mut *left, &mut *right)),
+                );
+                if let Some(span) = span {
+                    st.probe.stop(span, len as u32);
+                }
                 continue;
             }
             // An empty chain leaves the block as it came in.
-            let silent = if st.chain.is_empty() { !fed } else { !sounding(&st.buf[0][..len], &st.buf[1][..len]) };
+            let silent = if st.chain.is_empty() {
+                !fed
+            } else {
+                !sounding(&st.buf[0][..len], &st.buf[1][..len])
+            };
             st.clean = silent;
-            if silent && st.quiet >= line_len && epochs.is_empty() && st.events.is_empty() && st.duck == Duck::Idle && st.settled() {
+            if silent
+                && st.quiet >= line_len
+                && epochs.is_empty()
+                && st.events.is_empty()
+                && st.duck == Duck::Idle
+                && st.settled()
+            {
                 // Nothing in, nothing in its delay lines, nothing moving:
                 // the strip would only add zeros.
                 take_zeros(caps, k, CapturePoint::AfterFader, len);
             } else {
-                run_strip(st, k, hi, len, epochs, aud.get(k), plan, scratch, caps, tap_step, duck_step, None);
+                run_strip(
+                    st,
+                    k,
+                    hi,
+                    len,
+                    epochs,
+                    aud.get(k),
+                    plan,
+                    scratch,
+                    caps,
+                    tap_step,
+                    duck_step,
+                    None,
+                );
             }
-            st.quiet = if silent { st.quiet.saturating_add(len) } else { 0 };
-            if let Some(span) = span { st.probe.stop(span, len as u32); }
+            st.quiet = if silent {
+                st.quiet.saturating_add(len)
+            } else {
+                0
+            };
+            if let Some(span) = span {
+                st.probe.stop(span, len as u32);
+            }
         }
         mpfree_node::Node::process(safety, &base, &[], left, right);
         let m = topo.master();
@@ -1531,12 +2004,21 @@ impl Mixer {
         self.aud = topo.audible(&sw_end);
         self.started = true;
         self.last_len = len;
-        if let Some(span) = whole { self.probe.stop(span, len as u32); }
+        if let Some(span) = whole {
+            self.probe.stop(span, len as u32);
+        }
     }
 }
 
 /// Visits strip `k` and, first, the keys inside its stage `lo..hi`.
-fn visit(strips: &[Strip], k: usize, lo: usize, hi: usize, state: &mut [u8; MAX_STRIPS], order: &mut Vec<u16>) -> bool {
+fn visit(
+    strips: &[Strip],
+    k: usize,
+    lo: usize,
+    hi: usize,
+    state: &mut [u8; MAX_STRIPS],
+    order: &mut Vec<u16>,
+) -> bool {
     match state[k] {
         2 => return true,
         1 => return false,
@@ -1619,14 +2101,26 @@ fn fill_input(st: &mut Strip, hw: &[Vec<f32>; 2], len: usize) {
     let mut ei = 0;
     while at < len {
         while let Some(e) = st.events.get(ei).filter(|e| e.offset as usize <= at) {
-            if let NodeEvent::Param { id: ids::SOURCE, value } = e.ev {
+            if let NodeEvent::Param {
+                id: ids::SOURCE,
+                value,
+            } = e.ev
+            {
                 st.source = PARAMS[ids::SOURCE as usize].clamp(value) as u8;
             }
             ei += 1;
         }
         let next = st.events[ei..]
             .iter()
-            .find(|e| matches!(e.ev, NodeEvent::Param { id: ids::SOURCE, .. }))
+            .find(|e| {
+                matches!(
+                    e.ev,
+                    NodeEvent::Param {
+                        id: ids::SOURCE,
+                        ..
+                    }
+                )
+            })
             .map_or(len, |e| (e.offset as usize).min(len));
         let (l, r) = (&hw[0][at..next], &hw[1][at..next]);
         let [bl, br] = &mut st.buf;
@@ -1652,7 +2146,11 @@ fn fill_input(st: &mut Strip, hw: &[Vec<f32>; 2], len: usize) {
         at = next;
     }
     for e in &st.events[ei..] {
-        if let NodeEvent::Param { id: ids::SOURCE, value } = e.ev {
+        if let NodeEvent::Param {
+            id: ids::SOURCE,
+            value,
+        } = e.ev
+        {
             st.source = PARAMS[ids::SOURCE as usize].clamp(value) as u8;
         }
     }
@@ -1678,14 +2176,19 @@ fn hold_input(st: &mut Strip, len: usize, tap_step: f32, sc: &mut Scratch) {
         let w = &mut sc.w_send[..n];
         let tap = &mut st.tap_in;
         let fading = tap.fading();
-        if fading { tap.weights(tap_step, w); }
+        if fading {
+            tap.weights(tap_step, w);
+        }
         let [bl, br] = &mut st.buf;
         st.in_line.write(&bl[a..b], &br[a..b]);
         let line = &st.in_line;
         for i in 0..n {
             let (l, r) = if fading {
                 let x = w[i];
-                (line.at(0, i, tap.from) + (line.at(0, i, tap.d) - line.at(0, i, tap.from)) * x, line.at(1, i, tap.from) + (line.at(1, i, tap.d) - line.at(1, i, tap.from)) * x)
+                (
+                    line.at(0, i, tap.from) + (line.at(0, i, tap.d) - line.at(0, i, tap.from)) * x,
+                    line.at(1, i, tap.from) + (line.at(1, i, tap.d) - line.at(1, i, tap.from)) * x,
+                )
             } else {
                 (line.at(0, i, tap.d), line.at(1, i, tap.d))
             };
@@ -1699,7 +2202,14 @@ fn hold_input(st: &mut Strip, len: usize, tap_step: f32, sc: &mut Scratch) {
 
 /// Copies frames `a..a + n` of `src` into every capture point on strip `k`
 /// at `point`.
-fn take(caps: &mut [Capture], k: usize, point: CapturePoint, src: &[Vec<f32>; 2], a: usize, b: usize) {
+fn take(
+    caps: &mut [Capture],
+    k: usize,
+    point: CapturePoint,
+    src: &[Vec<f32>; 2],
+    a: usize,
+    b: usize,
+) {
     for c in caps.iter_mut() {
         if c.src == Some((k as u16, point)) {
             c.buf[0][a..b].copy_from_slice(&src[0][a..b]);
@@ -1721,7 +2231,20 @@ fn take_zeros(caps: &mut [Capture], k: usize, point: CapturePoint, len: usize) {
 /// split at its own events, the mixer's mute, solo and output changes and
 /// every [`CHUNK`] frames.
 #[allow(clippy::too_many_arguments)]
-fn run_strip(st: &mut Strip, k: usize, hi: &mut [Strip], len: usize, epochs: &[Epoch], heard: bool, plan: &Plan, sc: &mut Scratch, caps: &mut [Capture], tap_step: f32, duck_step: f32, mut out: Option<(&mut [f32], &mut [f32])>) {
+fn run_strip(
+    st: &mut Strip,
+    k: usize,
+    hi: &mut [Strip],
+    len: usize,
+    epochs: &[Epoch],
+    heard: bool,
+    plan: &Plan,
+    sc: &mut Scratch,
+    caps: &mut [Capture],
+    tap_step: f32,
+    duck_step: f32,
+    mut out: Option<(&mut [f32], &mut [f32])>,
+) {
     let mut heard = heard;
     st.targets(plan, k, heard);
     let (mut ei, mut gi, mut at) = (0usize, 0usize, 0usize);
@@ -1729,7 +2252,9 @@ fn run_strip(st: &mut Strip, k: usize, hi: &mut [Strip], len: usize, epochs: &[E
         let mut moved = false;
         while ei < st.events.len() && st.events[ei].offset as usize <= at {
             if let NodeEvent::Param { id, value } = st.events[ei].ev {
-                if !is_global(id) { st.apply(id, value); }
+                if !is_global(id) {
+                    st.apply(id, value);
+                }
             }
             ei += 1;
             moved = true;
@@ -1744,17 +2269,27 @@ fn run_strip(st: &mut Strip, k: usize, hi: &mut [Strip], len: usize, epochs: &[E
             gi += 1;
             moved = true;
         }
-        if moved { st.targets(plan, k, heard); }
+        if moved {
+            st.targets(plan, k, heard);
+        }
         let mut next = (at + CHUNK).min(len);
-        if let Some(e) = st.events.get(ei) { next = next.min(e.offset as usize); }
-        if let Some(g) = epochs.get(gi) { next = next.min(g.offset as usize); }
-        let o = out.as_mut().map(|(l, r)| (&mut l[at..next], &mut r[at..next]));
+        if let Some(e) = st.events.get(ei) {
+            next = next.min(e.offset as usize);
+        }
+        if let Some(g) = epochs.get(gi) {
+            next = next.min(g.offset as usize);
+        }
+        let o = out
+            .as_mut()
+            .map(|(l, r)| (&mut l[at..next], &mut r[at..next]));
         run_chunk(st, k, hi, at, next, sc, caps, tap_step, duck_step, o);
         at = next;
     }
     for q in ei..st.events.len() {
         if let NodeEvent::Param { id, value } = st.events[q].ev {
-            if !is_global(id) { st.apply(id, value); }
+            if !is_global(id) {
+                st.apply(id, value);
+            }
         }
     }
     for e in &epochs[gi..] {
@@ -1767,12 +2302,33 @@ fn run_strip(st: &mut Strip, k: usize, hi: &mut [Strip], len: usize, epochs: &[E
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_chunk(st: &mut Strip, k: usize, hi: &mut [Strip], a: usize, b: usize, sc: &mut Scratch, caps: &mut [Capture], tap_step: f32, duck_step: f32, out: Option<(&mut [f32], &mut [f32])>) {
+fn run_chunk(
+    st: &mut Strip,
+    k: usize,
+    hi: &mut [Strip],
+    a: usize,
+    b: usize,
+    sc: &mut Scratch,
+    caps: &mut [Capture],
+    tap_step: f32,
+    duck_step: f32,
+    out: Option<(&mut [f32], &mut [f32])>,
+) {
     let n = b - a;
-    let Scratch { post, pre, w_route, w_send } = sc;
+    let Scratch {
+        post,
+        pre,
+        w_route,
+        w_send,
+    } = sc;
     let [post_l, post_r] = post;
     let [pre_l, pre_r] = pre;
-    let (post_l, post_r, pre_l, pre_r) = (&mut post_l[..n], &mut post_r[..n], &mut pre_l[..n], &mut pre_r[..n]);
+    let (post_l, post_r, pre_l, pre_r) = (
+        &mut post_l[..n],
+        &mut post_r[..n],
+        &mut pre_l[..n],
+        &mut pre_r[..n],
+    );
     let (in_l, in_r) = (&st.buf[0][a..b], &st.buf[1][a..b]);
     peak(&mut st.peak_in, in_l, in_r);
     // The fader: volume and balance, mute, solo and monitoring, and any
@@ -1809,18 +2365,35 @@ fn run_chunk(st: &mut Strip, k: usize, hi: &mut [Strip], a: usize, b: usize, sc:
     }
     peak(&mut st.peak, post_l, post_r);
     let sends = st.role.has_sends();
-    if sends { st.pre_line.write(pre_l, pre_r); }
+    if sends {
+        st.pre_line.write(pre_l, pre_r);
+    }
     st.post_line.write(post_l, post_r);
     for (r, w) in st.routes.iter_mut().zip(w_route.iter_mut()) {
-        if r.tap.fading() { r.tap.weights(tap_step, &mut w[..n]); }
+        if r.tap.fading() {
+            r.tap.weights(tap_step, &mut w[..n]);
+        }
     }
     let ws = &mut w_send[..n];
-    if sends && st.tap_send.fading() { st.tap_send.weights(tap_step, ws); }
+    if sends && st.tap_send.fading() {
+        st.tap_send.weights(tap_step, ws);
+    }
     for (r, w) in st.routes.iter_mut().zip(w_route.iter()) {
-        if r.idle() { continue; }
+        if r.idle() {
+            continue;
+        }
         let dst = &mut hi[r.dest as usize - k - 1];
         dst.touched = true;
-        add(&st.post_line, &r.tap, &w[..n], post_l, post_r, &mut r.g, &mut dst.buf, a);
+        add(
+            &st.post_line,
+            &r.tap,
+            &w[..n],
+            post_l,
+            post_r,
+            &mut r.g,
+            &mut dst.buf,
+            a,
+        );
     }
     if sends {
         for r in 0..RETURNS {
@@ -1829,10 +2402,28 @@ fn run_chunk(st: &mut Strip, k: usize, hi: &mut [Strip], a: usize, b: usize, sc:
             let [gp, gq] = &mut st.send[r];
             hi[j].touched |= !(gp.settled() && gp.value == 0.0 && gq.settled() && gq.value == 0.0);
             if !(gp.settled() && gp.value == 0.0) {
-                add(&st.pre_line, &st.tap_send, ws, pre_l, pre_r, gp, &mut hi[j].buf, a);
+                add(
+                    &st.pre_line,
+                    &st.tap_send,
+                    ws,
+                    pre_l,
+                    pre_r,
+                    gp,
+                    &mut hi[j].buf,
+                    a,
+                );
             }
             if !(gq.settled() && gq.value == 0.0) {
-                add(&st.post_line, &st.tap_send, ws, post_l, post_r, gq, &mut hi[j].buf, a);
+                add(
+                    &st.post_line,
+                    &st.tap_send,
+                    ws,
+                    post_l,
+                    post_r,
+                    gq,
+                    &mut hi[j].buf,
+                    a,
+                );
             }
         }
         st.pre_line.advance(n);
@@ -1845,7 +2436,16 @@ fn run_chunk(st: &mut Strip, k: usize, hi: &mut [Strip], a: usize, b: usize, sc:
 /// common case of no delay.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn add(line: &Line, tap: &Tap, w: &[f32], now_l: &[f32], now_r: &[f32], g: &mut Smooth, dst: &mut [Vec<f32>; 2], a: usize) {
+fn add(
+    line: &Line,
+    tap: &Tap,
+    w: &[f32],
+    now_l: &[f32],
+    now_r: &[f32],
+    g: &mut Smooth,
+    dst: &mut [Vec<f32>; 2],
+    a: usize,
+) {
     let n = now_l.len();
     let [dl, dr] = dst;
     let (dl, dr) = (&mut dl[a..a + n], &mut dr[a..a + n]);
@@ -1880,7 +2480,11 @@ fn add(line: &Line, tap: &Tap, w: &[f32], now_l: &[f32], now_r: &[f32], g: &mut 
         } else {
             for i in 0..n {
                 let v = g.next();
-                let (a, b) = if i < m { (l0[i], r0[i]) } else { (l1[i - m], r1[i - m]) };
+                let (a, b) = if i < m {
+                    (l0[i], r0[i])
+                } else {
+                    (l1[i - m], r1[i - m])
+                };
                 dl[i] += a * v;
                 dr[i] += b * v;
             }
@@ -1901,9 +2505,17 @@ fn add(line: &Line, tap: &Tap, w: &[f32], now_l: &[f32], now_r: &[f32], g: &mut 
 mod tests {
     use super::*;
 
-    fn topo() -> Topo { Topo { inputs: 2, pads: 4, tracks: 4 } }
+    fn topo() -> Topo {
+        Topo {
+            inputs: 2,
+            pads: 4,
+            tracks: 4,
+        }
+    }
 
-    fn sw() -> Switches { Switches::new() }
+    fn sw() -> Switches {
+        Switches::new()
+    }
 
     #[test]
     fn strip_params_are_valid() {
@@ -1951,7 +2563,9 @@ mod tests {
         assert_eq!(t.resolve(t.master(), 0, 0), None);
         for k in 0..t.len() {
             for out in 0..=10 {
-                if let Some(d) = t.resolve(k, out, 1) { assert!(d > k); }
+                if let Some(d) = t.resolve(k, out, 1) {
+                    assert!(d > k);
+                }
             }
         }
     }
