@@ -18,6 +18,7 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{GuideView, MenuView, PadLevel, Settings, Status, View, TABS};
+use crate::touchlab_page::TouchLabView;
 use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
@@ -179,6 +180,8 @@ pub enum ToUi {
     Settings(Settings),
     ClearLogs,
     ClearConsole,
+    /// Open the Touch lab page; any `Show` closes it again.
+    TouchLab,
     Quit,
 }
 
@@ -217,6 +220,8 @@ pub struct Player {
     /// timed step there is none, so the step's own lines go there.
     console_from_lines: bool,
     console_backlog: VecDeque<String>,
+    /// The Touch lab page is on screen (over `view`, which it returns to).
+    lab_open: bool,
 }
 
 impl Player {
@@ -249,6 +254,8 @@ impl Player {
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT).expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        ui.add("touchlab", TouchLabView::new());
+        ui.add_full_page("Touch lab", "touchlab").expect("touch lab layout");
         let _ = ui.show("Loading");
         let status = Status { shift: false, pad_level: PadLevel::Off, repeat: false, latched: false, rate: "1/16",
                               bpm: 120.0 };
@@ -256,7 +263,7 @@ impl Player {
                              timing: Timing { last_ms: f32::NAN, ..Timing::default() }, screen_row: "-".to_string(),
                              timed, ready: false, view: View::Play, status, settings: Settings::default(),
                              session: ("Starting".to_string(), Tone::Dim),
-                             console_from_lines: timed, console_backlog: VecDeque::new() };
+                             console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false };
         p.show_timing();
         p.refresh_chips();
         p.refresh_hint();
@@ -534,11 +541,69 @@ impl Player {
                 self.ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
+            ToUi::TouchLab => {
+                self.ready = true;
+                if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+                    lab.reset();
+                }
+                let _ = self.ui.show("Touch lab");
+                self.lab_open = true;
+            }
             ToUi::Quit => {}
         }
     }
 
+    /// Close the Touch lab if it is open (a step in progress is logged).
+    fn close_lab(&mut self) {
+        if !self.lab_open {
+            return;
+        }
+        self.lab_open = false;
+        if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+            lab.leave();
+        }
+        self.print_lab_lines();
+    }
+
+    fn print_lab_lines(&mut self) {
+        if !self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.has_lines()) {
+            return;
+        }
+        let lines = self.ui.get_mut::<TouchLabView>("touchlab").map(|l| l.take_lines()).unwrap_or_default();
+        for l in lines {
+            println!("{l}");
+            if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
+                e.push(&l, Tone::Dim);
+            }
+        }
+        let _ = io::stdout().flush();
+    }
+
+    /// True while the Touch lab page is on screen.
+    #[cfg(test)]
+    pub fn lab_open(&self) -> bool {
+        self.lab_open
+    }
+
+    /// The touchscreen reader's latest state line, for the Touch lab's top bar.
+    pub fn set_touch_status(&mut self, line: &str) {
+        if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+            lab.set_reader(line);
+        }
+    }
+
+    /// The kernel's timestamp of the finger event about to be passed to
+    /// `touch` (the Touch lab measures speeds and jitter with it).
+    pub fn set_touch_time(&mut self, time_us: u64) {
+        if self.lab_open {
+            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+                lab.set_event_time(time_us);
+            }
+        }
+    }
+
     fn show_view(&mut self, v: View) {
+        self.close_lab();
         let page = match v {
             View::Play => "Play",
             View::Debug => "Debug",
@@ -572,6 +637,15 @@ impl Player {
             }
             return None;
         }
+        if self.lab_open {
+            // The lab page takes every finger and means nothing to the app.
+            let _ = self.ui.touch(finger, phase, x, y);
+            self.print_lab_lines();
+            if self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.wants_exit()) {
+                self.show_view(self.view);
+            }
+            return None;
+        }
         let ev = self.ui.touch(finger, phase, x, y)?;
         self.on_event(ev)
     }
@@ -602,6 +676,12 @@ impl Player {
             if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
                 g.fade(dt);
             }
+        }
+        if self.lab_open && self.ui.get::<TouchLabView>("touchlab").is_some_and(mpfree_ui::Widget::animating) {
+            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+                lab.tick();
+            }
+            self.print_lab_lines();
         }
     }
 
@@ -667,8 +747,8 @@ impl TouchIn {
         line
     }
 
-    /// Everything that happened since the last call: (finger, phase, x, y).
-    pub fn read(&mut self) -> io::Result<Vec<(u64, Touch, i32, i32)>> {
+    /// Everything that happened since the last call.
+    pub fn read(&mut self) -> io::Result<Vec<FingerEvent>> {
         self.events.clear();
         self.reader.read_into(&mut self.events)?;
         self.contacts = self.reader.stats().contacts;
@@ -679,10 +759,17 @@ impl TouchIn {
                 Phase::Up => Touch::Up,
                 Phase::Cancel => Touch::Cancel,
             };
-            (p.id.0, phase, p.x.round() as i32, p.y.round() as i32)
+            (p.id.0, phase, p.x.round() as i32, p.y.round() as i32, p.time_us)
         }).collect())
     }
 }
+
+/// One finger event in screen pixels: (finger, phase, x, y, the kernel's
+/// timestamp in microseconds).
+pub type FingerEvent = (u64, Touch, i32, i32, u64);
+
+/// Opens the touchscreen for the screen thread (tried again while it fails).
+pub type OpenTouch = Box<dyn FnMut() -> Result<TouchIn, String> + Send>;
 
 /// How often the screen thread tries to open the touchscreen while it has
 /// none: at power-on the app can start before the ILI2117 driver has probed.
@@ -711,7 +798,7 @@ pub struct ScreenReport {
 /// second while there is none (the driver may not have probed yet at power-on,
 /// or a read failed), so touch comes back by itself.
 pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
-             mut open_touch: Option<Box<dyn FnMut() -> Result<TouchIn, String> + Send>>, rx: Receiver<ToUi>,
+             mut open_touch: Option<OpenTouch>, rx: Receiver<ToUi>,
              tx: SyncSender<FromUi>) -> io::Result<JoinHandle<ScreenReport>> {
     thread::Builder::new().name("mpfree-screen".into()).spawn(move || {
         let mut touch: Option<TouchIn> = None;
@@ -742,12 +829,14 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
                     match open() {
                         Ok(t) => {
                             println!("{}", t.status_line());
+                            player.set_touch_status(&t.status_line());
                             touch_status = (Instant::now(), t.raw_events());
                             touch = Some(t);
                         }
                         // Say why once, and again only if the reason changes.
                         Err(e) if first || e != touch_error => {
                             println!("touchscreen: not available yet ({e}); trying every second");
+                            player.set_touch_status(&format!("touchscreen: not available yet ({e})"));
                             touch_error = e;
                         }
                         Err(_) => {}
@@ -757,7 +846,8 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
             if let Some(t) = touch.as_mut() {
                 match t.read() {
                     Ok(list) => {
-                        for (finger, phase, x, y) in list {
+                        for (finger, phase, x, y, time_us) in list {
+                            player.set_touch_time(time_us);
                             if let Some(a) = player.touch(finger, phase, x, y) {
                                 let _ = tx.try_send(a);
                             }
@@ -767,12 +857,14 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
                             if t.raw_events() != touch_status.1 {
                                 println!("{}", t.status_line());
                             }
+                            player.set_touch_status(&t.status_line());
                             touch_status = (Instant::now(), t.raw_events());
                         }
                     }
                     Err(e) => {
                         println!("touch: {e} (reopening)");
                         println!("{}", t.status_line());
+                        player.set_touch_status(&format!("touch: {e} (reopening); {}", t.status_line()));
                         touch_total += t.contacts;
                         touch = None;
                     }
@@ -949,6 +1041,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     out.push(("guide", guide));
+    let mut lab = sample_player(fonts());
+    lab.apply(ToUi::Show(View::Prefs));
+    lab.apply(ToUi::TouchLab);
+    lab.set_touch_status("touch-reader: seeded=1 slot=0 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=4 events=212");
+    out.push(("touchlab", lab));
     out
 }
 
@@ -971,6 +1068,45 @@ mod tests {
         assert!(p.ui.rect_of("options").unwrap().h > 600);
         let c = Console::new(Fonts::embedded(), "touch", None);
         assert!(c.ui.rect_of("log").unwrap().h > 600);
+    }
+
+    #[test]
+    fn the_touch_lab_opens_from_prefs_and_exit_or_a_page_change_closes_it() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = crate::app::App::new(44_100, false);
+        app.map.menu = Some(1);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let mut fx = app.button(1, true, 0.0);
+        app.button(1, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        // The Touch lab is the last Prefs row; + on it opens the lab.
+        fx.extend(app.step_item(usize::MAX, 1));
+        assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
+        for e in fx {
+            match e {
+                crate::app::Effect::Menu(m) => p.apply(ToUi::Menu(m)),
+                crate::app::Effect::Show(v) => p.apply(ToUi::Show(v)),
+                crate::app::Effect::TouchLab => p.apply(ToUi::TouchLab),
+                _ => {}
+            }
+        }
+        assert_eq!(p.page(), "Touch lab");
+        assert!(p.lab_open());
+        // Touches go to the lab, not the app. Exit (top right) goes back to Prefs.
+        assert_eq!(p.touch(1, Touch::Down, 1280 - 80, 38), None);
+        assert_eq!(p.touch(1, Touch::Up, 1280 - 80, 38), None);
+        assert_eq!(p.page(), "Prefs");
+        assert!(!p.lab_open());
+        // Open again; a page change from the app (a hardware button) closes it.
+        p.apply(ToUi::TouchLab);
+        assert_eq!(p.page(), "Touch lab");
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!(p.page(), "Play");
+        assert!(!p.lab_open());
+        // Kernel times reach the lab without upsetting ordinary touches.
+        p.set_touch_time(123);
+        let pads = p.ui.rect_of("pads").unwrap();
+        assert_eq!(p.touch(2, Touch::Down, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: true }));
     }
 
     #[test]
@@ -1121,7 +1257,7 @@ mod tests {
         let mut t2 = TouchIn::from_source(Box::new(FakeTouch(VecDeque::from([Vec::new(), evs]))), SCREEN).unwrap();
         let got = t2.read().unwrap();
         assert_eq!(got.len(), 1);
-        let (_, phase, x, y) = got[0];
+        let (_, phase, x, y, _) = got[0];
         assert_eq!(phase, Touch::Down);
         // Raw Y runs right to left (2048 = left edge); raw X runs top to bottom.
         assert_eq!((x, y), (0, 400));
