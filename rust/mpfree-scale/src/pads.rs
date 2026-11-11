@@ -135,6 +135,12 @@ impl Pad {
         &self.notes[..usize::from(self.len)]
     }
 
+    /// A pad that plays one note (none outside 0..=127), with no role: a
+    /// drum kit's pads, one note each.
+    pub fn single(note: i16) -> Pad {
+        Pad::of(&[note], PadRole::Plain)
+    }
+
     fn of(notes: &[i16], role: PadRole) -> Pad {
         let mut p = Pad {
             role,
@@ -313,6 +319,14 @@ mod tests {
 
     fn mains(setup: &PadSetup) -> Vec<String> {
         pad_names(setup).iter().map(|(a, _)| a.clone()).collect()
+    }
+
+    #[test]
+    fn a_single_pad_plays_its_note_or_none_outside_midi() {
+        assert_eq!(Pad::single(36).notes(), &[36]);
+        assert_eq!(Pad::single(36).role, PadRole::Plain);
+        assert!(Pad::single(128).notes().is_empty());
+        assert!(Pad::single(-1).notes().is_empty());
     }
 
     #[test]
