@@ -263,6 +263,15 @@ impl Default for Drive {
 }
 
 impl Drive {
+    /// The shaper's curve at the mode, drive and bias set: what a sample
+    /// at `x` becomes before the tone, mix, auto-gain and output, with the
+    /// bias's DC taken off as the DC blocker does. For drawing.
+    pub fn curve(&self, x: f32) -> f32 {
+        let mode = self.v[ids::MODE as usize] as usize;
+        let g = db_to_gain(self.v[ids::DRIVE as usize]);
+        shape(mode, x * g, self.v[ids::BIAS as usize] / 100.0)
+    }
+
     /// Allocates the oversamplers (control thread).
     pub fn new() -> Drive {
         let v = defaults(&PARAMS);

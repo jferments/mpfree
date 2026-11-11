@@ -3,12 +3,15 @@
 //! inside it, live tempo changes, punch in and out, locates, stop and
 //! panic) plays five tracks: polymeter, 3/4 speed, double speed with its
 //! own swing, quantised notes, long overlapping notes that play by
-//! chance (40, 70 and 100 %) and a muted track.
+//! chance (40, 70 and 100 %) and a muted track. Parameter locks ride
+//! along: on notes, between them (trigless), on a pad, after swing and
+//! quantise, and on the muted track (which sends none).
 //! It is cut into periods of 1 to 8192 frames and random sizes; every
 //! event must match. Every note must also end before it starts again.
 
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink};
-use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
+use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::{Segment, Swing, TempoMap};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Command, Transport};
@@ -54,6 +57,11 @@ fn session() -> PlayView {
     // Drums: 1/16s for a bar, three pads.
     let mut c = Clip::new("", 3840);
     c.notes = notes(240, 16, 120, |i| [0u8, 2, 1, 2][i as usize % 4]);
+    c.locks = vec![
+        Lock::new(240, Some(2), RelAddr::new(OnTrack::Pad(2), 0), 5.0),
+        Lock::new(600, None, RelAddr::new(OnTrack::Inst, 3), 0.5),
+        Lock::new(1440, Some(1), RelAddr::new(OnTrack::Strip, 0), 0.8),
+    ];
     launches.push(add("drums", c, 0, false));
     // A 7/16 clip at 3/4 speed against it.
     let mut c = Clip::new("", 1680);
@@ -65,6 +73,10 @@ fn session() -> PlayView {
     c.speed = Speed::new(2, 1).unwrap();
     c.swing = Some(Swing::new(480, 61).unwrap());
     c.notes = notes(160, 12, 80, |i| 60 + (i % 5) as u8);
+    c.locks = vec![
+        Lock::new(320, None, RelAddr::new(OnTrack::Inst, 12), 900.0),
+        Lock::new(480, None, RelAddr::new(OnTrack::Inst, 12), 450.0),
+    ];
     launches.push(add("fast", c, -3840, false));
     // Loose notes, quantised at 70 %, long and overlapping on one pitch,
     // each with a chance of 40, 70 or 100 %.
@@ -79,10 +91,17 @@ fn session() -> PlayView {
             chance: 40 + (i % 3) as u8 * 30,
         })
         .collect();
+    c.locks = vec![Lock::new(
+        3 * 383 + 17,
+        None,
+        RelAddr::new(OnTrack::Inst, 1),
+        2.0,
+    )];
     launches.push(add("loose", c, 0, false));
     // A muted track.
     let mut c = Clip::new("", 960);
     c.notes = notes(120, 8, 60, |_| 9);
+    c.locks = vec![Lock::new(0, None, RelAddr::new(OnTrack::Inst, 1), 2.0)];
     launches.push(add("muted", c, 0, true));
     PlayView::compile(&p, &launches).unwrap()
 }
@@ -188,9 +207,28 @@ fn the_same_events_for_every_period_size() {
     );
     assert_eq!(on(4), 0);
     assert!(reference.windows(2).all(|w| w[0].0 <= w[1].0));
+    let locks = |track| {
+        reference
+            .iter()
+            .filter(|e| e.1 == track && matches!(e.3, Event::Lock { .. }))
+            .count()
+    };
+    assert!(
+        locks(0) > 10 && locks(2) > 10 && locks(3) > 0,
+        "{} {} {}",
+        locks(0),
+        locks(2),
+        locks(3)
+    );
+    assert_eq!(locks(4), 0, "the muted track locks nothing");
+    let mut locked = std::collections::HashSet::new();
     let mut sounding = std::collections::HashSet::new();
     for e in &reference {
         match e.3 {
+            Event::Lock { addr, .. } => {
+                locked.insert((e.1, addr));
+            }
+            Event::Unlock { addr } => assert!(locked.remove(&(e.1, addr)), "{e:?} was not locked"),
             Event::NoteOn { note, .. } => assert!(
                 sounding.insert((e.1, e.2, note)),
                 "{e:?} starts while sounding"
