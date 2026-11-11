@@ -157,3 +157,26 @@ fn the_chop_tool_runs_its_demo_and_passes_the_rebuild_check() {
     let bad = std::process::Command::new(env!("CARGO_BIN_EXE_mpfree-chop")).arg("--demo").output().unwrap();
     assert!(!bad.status.success(), "usage error without an output folder");
 }
+
+#[test]
+fn root_pitch_of_the_source_and_of_each_slice() {
+    // Half a second each of A3 then E4, with a few harmonics.
+    let note = |hz: f32| (0..RATE as usize / 2).map(move |i| {
+        let t = i as f32 / RATE as f32;
+        0.3 * ((std::f32::consts::TAU * hz * t).sin() + 0.4 * (std::f32::consts::TAU * 2.0 * hz * t).sin())
+    });
+    let data: Vec<f32> = note(220.0).chain(note(329.63)).collect();
+    let s = Source::new("two notes", RATE, 1, data).unwrap();
+    let a = SourceAnalysis::analyse(&s);
+    let whole = a.pitch().expect("pitched");
+    assert!(["A3", "E4"].contains(&mpfree_analysis::note_name(whole.note).as_str()));
+    let half = RATE as u64 / 2;
+    let first = a.pitch_of(0, half).unwrap();
+    let second = a.pitch_of(half, 2 * half).unwrap();
+    assert_eq!(mpfree_analysis::note_name(first.note), "A3");
+    assert_eq!(mpfree_analysis::note_name(second.note), "E4");
+    assert!(first.cents.abs() < 3.0 && second.cents.abs() < 3.0);
+    assert!(second.frame >= half, "frames count from the source start");
+    assert_eq!(a.pitch_of(half, half), None);
+    assert_eq!(a.pitch_of(10 * half, 11 * half), None);
+}
