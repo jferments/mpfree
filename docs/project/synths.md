@@ -196,7 +196,7 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 
 ## Next
 
-- A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
+- A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
 - A drum synth for the pads.
 - Plugin hosting: CLAP first, in a sandbox process.
