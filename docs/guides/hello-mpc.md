@@ -227,6 +227,24 @@ From the owner's results zip (clone at `38905af`). The owner's summary: "That wo
 - **Menus and console:** MENU was pressed 8 times, SHIFT + MENU (Prefs) once, and SHIFT + STOP (console) twice. The app doesn't log page changes, so these rest on the owner's summary.
 - **Not tested this round:** FULL LEVEL (button 39) was never pressed, so Full and Half Level are untested. No screen pad hit or kit tap was recorded ("0 from the screen"), and the owner skipped the check's paced phases, so touch in the pad player is still unconfirmed.
 
+## Round 6: the looper, the synth and the sampler in one pad player
+
+The owner asked (2026-11-11) for the next round to bring together what the other threads built: the looper (the time engine's clips, record, overdub and undo), the synth and the sampler, all in the GUI. Then also for a debug mode in Prefs with tools for measuring performance and for mapping the remaining buttons at his own pace, and for pad banks A-H with all the transport buttons.
+
+**New in the pad player** (none of it tried on the MPC yet):
+
+- **The sampler engine** ([`mpfree-sampler`](../../rust/mpfree-sampler)) plays the kits, plus a Grains kit (the first kit as grain clouds; pressure changes them by row). STOP fades everything out.
+- **The synth** ([`mpfree-synth`](../project/synths.md)): the last entry in the kit list, "Synth: Poly", plays notes from the pads (pad 1 = C3), and the **Synth** tab edits it (Q-Links 1-4 on the marked knobs, the wheel on the selected knob, − / + for pages). SHIFT + wheel on Play moves the pads by octaves.
+- **The time engine** (the table under Round 5): the transport bar, the **Clips** tab, recording, overdub and undo. Clips recorded while the synth has the pads play the synth back.
+- **Debug mode** (Prefs, off by default) adds the **Debug** tab, with a strip for its three pages; SHIFT + wheel steps through them, and − / + on the first two:
+  - **MIDI**: the MIDI log, events and timing (the round 5 Debug page).
+  - **Performance**: CPU per thread and for the whole program, memory, load, temperature and clock (read-only from `/proc` and `/sys` by the screen thread every 2 s; [`perf.rs`](../../rust/mpfree-hello/src/perf.rs)), and the audio loop's render time for the sampler and the synth against the 2.9 ms period, the worst period, steals, dropped events and grains, with the last minute drawn. While debug mode is on, a `perf:` line goes to the system log every 30 s.
+  - **Map controls** ([`app/mapper.rs`](../../rust/mpfree-hello/src/app/mapper.rs)): every button of the MPC One in a list, found, skipped or still to find, with a count of each. Tap one (or pick it with the wheel and press +) and press it on the MPC: `map: REC = button 73` goes to the log. While MPFree listens, buttons do nothing else; STOP stops listening and − skips a control that isn't there. A channel 1 CC that isn't the wheel or a Q-Link is taken too, for knobs. Other 1-10 hold buttons the list doesn't name. Leaving the page logs a `map summary:` line. Prefs > Map controls opens it directly, so it works without touch. The names in the list come from the MPC One's panel as MPFree expects it, so they are assumptions until each is found.
+- **REC, OVERDUB, UNDO, PLAY START and the PAD BANK buttons** work as soon as the mapper finds them. The button guide no longer runs at power-on (Prefs > Find the buttons again still has it).
+- **Pad banks A-H**: banks A-H are kits 1-8 (from kit 9 they start again at A). PAD BANK A/E to D/H pick A-D; SHIFT, or pressing the button of the bank playing again, picks E-H (an assumption from other MPCs). The kit chip shows the bank, the bank playing is lit (when Akai's app was seen lighting that button), and `bank: B (kit 2: …)` goes to the log. Clips play whichever bank is playing; a bank of its own per clip note is next, with 128-pad programs.
+
+**The check** (`MPFREE_HELLO_STEPS=app`, still **read-only**) has nine phases: debug mode and Map controls; Performance; kits, pad banks, Full and Half Level; Grains; the synth; Note Repeat and the arp; the looper; the Touch lab; menus, console and STOP. At the end it reads the whole session from power-on, so a skipped phase or free play still counts, and it shows the touch interrupt count, the latest status lines and the latest `perf:` line.
+
 ### The factory drum kits
 
 [`offline-factory-kit.py`](../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):

@@ -360,23 +360,39 @@ def check_controller(mpc, out):
 # ended by Enter; the app's log lines from that time are shown. A skipped phase loses nothing: the
 # summary at the end reads the whole session.
 APP_PHASES = (
-    ("Button guide",
-     ["If the button guide is on the screen, press each button it asks for: REC, OVERDUB, UNDO and",
-      "PLAY START. Press STOP for one you cannot find. If the guide has gone already, press Enter twice."],
-     "Did each button you pressed show its number? Any you could not find?"),
-    ("Kits, Full Level and Half Level",
-     ["Hit pad 1 softly, medium and hard a few times: it should feel like round 5.",
+    ("Debug mode and Map controls",
+     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on debug mode",
+      "and opens the list of the MPC's buttons: found (green), skipped (grey) or still to find.",
+      "Tap a control in the list (or pick it with the wheel and press +), then press that button on the MPC:",
+      "its number appears. Start with REC, OVERDUB, PLAY START, UNDO and the four PAD BANK buttons (they",
+      "work as soon as they are found), then as many others as you like, at your pace. - skips one that is",
+      "not on your MPC; Other 1-10 take buttons that are not listed. STOP stops listening."],
+     "Which controls could you not find, and did any name in the list not match your MPC's panel?"),
+    ("Performance",
+     ["SHIFT + wheel steps through the Debug tab's pages: go to Performance. It shows CPU per thread,",
+      "memory, temperature, and the audio loop's render time against its 2.9 ms period, with the last",
+      "minute drawn. Play some pads and the Grains kit for about 30 s and watch the numbers move."],
+     "Did the Performance page fill in, and what did the render time and CPU look like?"),
+    ("Kits, pad banks, Full Level and Half Level",
+     ["Tap the Play tab (or press MENU twice). Hit pad 1 softly, medium and hard: it should feel like round 5.",
       "Press FULL LEVEL (it lights) and hit pad 1 softly twice: both loud. SHIFT + FULL LEVEL is",
       "Half Level: soft hits come out medium. Press FULL LEVEL until its light goes out.",
+      "Press PAD BANK A to D: banks A-D are kits 1-4, and the kit chip shows the bank. Press the same",
+      "bank button again (or SHIFT + it) for E-H, kits 5-8 if the stick has them. Go back to bank A.",
       "Hold a long sound, turn the wheel to the next kit: the sound finishes rather than cutting off.",
       "Hit a few pads and press STOP while they ring: they fade out quickly, with no click."],
-     "Did Full and Half Level work and light FULL LEVEL? Did kit switching and STOP sound clean?"),
+     "Did the banks, Full and Half Level work? Did the bank buttons light? Did kit switching and STOP sound clean?"),
     ("Grains",
-     ["Turn the wheel to the last kit, \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
+     ["Turn the wheel to the kit called \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
       "pads 1-4 get denser, 5-8 longer grains, 9-12 move where they read, 13-16 rise up to an octave.",
-      "Let go: it fades out. Then hold NOTE REPEAT and 8 pads together for about 10 s, and let go.",
-      "Turn the wheel back to kit 1."],
+      "Let go: it fades out. Then hold NOTE REPEAT and 8 pads together for about 10 s, and let go."],
      "Did the grains respond to pressure and fade out? Any crackles or dropouts in the 8-pad test?"),
+    ("Synth",
+     ["Turn the wheel to the last entry, \"Synth: Poly\": the pads play notes from C3 up. SHIFT + wheel on",
+      "Play moves them by octaves. Tap the Synth tab: Q-Links 1-4 turn the marked knobs, the wheel turns the",
+      "selected knob, - / + change pages. Pick the Supersaw preset, hold 8 pads for about 10 s (the hardest",
+      "case for the CPU), let go, and press STOP. Then turn the wheel back to kit 1."],
+     "Did Poly play from the pads, did the knobs change the sound, any crackles in the 8-pad test?"),
     ("Note Repeat and the arp",
      ["Hold NOTE REPEAT: the quick band shows the rates and Latch. While holding it, - / + switch",
       "Repeat, Arp and Pattern, the wheel changes the rate, order or pattern, and Q-Links 1-4 set",
@@ -385,11 +401,11 @@ APP_PHASES = (
       "pads play through it. NOTE REPEAT + MENU again closes it. STOP silences and unlatches."],
      "Did the quick band and the Arp panel show up and change what the pads played?"),
     ("Looper: record, overdub and undo clips",
-     ["Press PLAY: the transport bar counts bars and beats. Press REC, play a short beat on the pads",
-      "for a bar or two, and press REC again: the take loops. Press OVERDUB (it switches Overdub and",
-      "Replace), REC, and add more hits on the next pass; REC again. UNDO takes the last take back,",
-      "SHIFT + UNDO puts it back. Tap the Clips tab: + makes a 2-bar clip and records into it, and",
-      "tapping a clip launches or stops it on the next bar. PLAY START plays from bar 1. STOP stops."],
+     ["Uses the buttons found in phase 1. Press PLAY: the transport bar counts bars and beats. Press REC,",
+      "play a short beat on the pads for a bar or two, and press REC again: the take loops. Press OVERDUB",
+      "(it switches Overdub and Replace), REC, and add more hits on the next pass; REC again. UNDO takes the",
+      "last take back, SHIFT + UNDO puts it back. Tap the Clips tab: + makes a 2-bar clip and records into",
+      "it, and tapping a clip launches or stops it on the next bar. PLAY START plays from bar 1. STOP stops."],
      "Did recording, overdub, undo and the clips loop in time? Anything out of time or lost?"),
     ("Touch lab",
      ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch lab, and press +.",
@@ -404,9 +420,10 @@ APP_PHASES = (
 )
 # The session summary at the end of the app step: every line that starts with one of these, from
 # power-on to the end (the last two status lines only).
-SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "pad level: ",
-                    "kit ", "Latch ", "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ",
-                    "time: ", "tempo ", "touch-lab-open", "touch-lab: ", "touch-lab-exit", "STOP: ")
+SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "debug mode: ",
+                    "map: ", "map summary: ", "bank", "pad level: ", "kit ", "synth: ", "pads: ", "Latch ",
+                    "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
+                    "touch-lab-open", "touch-lab: ", "touch-lab-exit", "STOP: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
 SHOWN_PER_PHASE = 60
@@ -549,6 +566,9 @@ def session_summary(mpc, out):
     statuses = [m for _, m in lines if m.startswith("status: ")]
     for message in statuses[-2:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
         out.say(f"    {message}")
+    perf = [m for _, m in lines if m.startswith("perf: ")]
+    out.say(f"  Debug mode's process numbers ({len(perf)} perf lines; the latest):")
+    out.say(f"    {perf[-1] if perf else '(none: debug mode was not on, or not for 30 s)'}")
 
 
 def copy_program(mpc, out, total, program, digest, kit, kit_digest):
