@@ -269,7 +269,10 @@ impl Out {
     }
 
     /// Like `show`, but a message that finds no room comes back, so the
-    /// audio thread can keep it (and not free it) and try again.
+    /// audio thread can keep it (and not free it) and try again. The message
+    /// comes back by value on purpose: boxing it would allocate on the audio
+    /// thread.
+    #[allow(clippy::result_large_err)]
     fn try_show(&mut self, msg: gui::ToUi) -> Result<(), gui::ToUi> {
         match self.sink.as_ref() {
             Some(s) => s.try_send(msg).map_err(|e| match e {

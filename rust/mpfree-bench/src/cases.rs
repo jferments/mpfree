@@ -5,22 +5,32 @@
 use mpfree_fx::ids;
 use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId};
 use mpfree_grain::GrainNode;
+use mpfree_looper::{Command as LooperCommand, Looper};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_synth::params::{POLYPHONY, UNISON};
 use mpfree_synth::{Poly, PRESETS};
+use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
+use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
+use mpfree_transport::time::{Swing, PPQ};
+use mpfree_transport::{Block as TBlock, Command as T, Transport};
+use mpfree_prof::alloc;
 
 pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
 
 pub struct Case {
     pub name: String,
-    /// The budget it counts against (see `mpfree_prof::budget`).
+    /// The budget it counts against (see `mpfree_prof::budget`); "period"
+    /// is the whole audio thread.
     pub module: &'static str,
     /// What it plays, for the report.
     pub what: &'static str,
     pub block: Block,
+    /// Bytes the engine holds (allocated while it was built and not freed),
+    /// when the counting allocator is installed; else 0.
+    pub mem_bytes: i64,
 }
 
 /// A small deterministic noise source.
@@ -64,6 +74,7 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
             input(rate, f0, &mut seed, l, r);
             n.process(&Ctx::new(rate, f0), &[], l, r);
         }),
+        mem_bytes: 0,
     }
 }
 
@@ -102,6 +113,7 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
             r.fill(0.0);
             s.process(&Ctx::new(rate, f0), &events, l, r);
         }),
+        mem_bytes: 0,
     }
 }
 
@@ -155,6 +167,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
             r.fill(0.0);
             e.render(l, r);
         }),
+        mem_bytes: 0,
     }
 }
 
@@ -222,6 +235,7 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Ca
             }
             m.process(&Ctx::new(rate, f0), out_l, out_r);
         }),
+        mem_bytes: 0,
     }
 }
 
@@ -229,42 +243,92 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Ca
 pub fn all(rate: u32) -> Vec<Case> {
     let mut v = Vec::new();
     for preset in PRESETS {
-        v.push(synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8));
+        v.push(measured(|| synth(format!("Poly {}, 8 voices", preset.name), rate, preset.values, 8)));
     }
-    v.push(synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16));
-    v.push(sampler("Sampler, 20 pads", rate, false));
-    v.push(sampler("Sampler, 20 pads + master grains", rate, true));
-    v.push(effect("Multi filter (LP 12)", rate, Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)]));
-    v.push(effect("Multi filter (LP 24, drive)", rate, Box::new(MultiFilter::new()),
-                  &[(ids::filter::CUTOFF, 800.0), (ids::filter::SLOPE, 1.0), (ids::filter::DRIVE, 12.0)]));
-    v.push(effect("DJ filter", rate, Box::new(DjFilter::new()), &[(ids::dj_filter::POSITION, -40.0)]));
-    v.push(effect("Drive (Eco 2x)", rate, Box::new(Drive::new()), &[]));
-    v.push(effect("Drive (HQ 4x)", rate, Box::new(Drive::new()), &[(ids::drive::QUALITY, 1.0)]));
-    v.push(effect("Crush", rate, Box::new(Crush::new()), &[]));
-    v.push(effect("Delay", rate, Box::new(Delay::new()), &[]));
-    v.push(effect("Compressor", rate, Box::new(Compressor::new()), &[]));
-    v.push(effect("EQ (4 bands and both cuts)", rate, Box::new(Eq::new()), &[
+    v.push(measured(|| synth("Poly Init, 16 voices, unison 4".to_string(), rate, &[(UNISON, 4.0)], 16)));
+    v.push(measured(|| sampler("Sampler, 20 pads", rate, false)));
+    v.push(measured(|| sampler("Sampler, 20 pads + master grains", rate, true)));
+    v.push(measured(|| effect("Multi filter (LP 12)", rate, Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)])));
+    v.push(measured(|| effect("Multi filter (LP 24, drive)", rate, Box::new(MultiFilter::new()),
+                  &[(ids::filter::CUTOFF, 800.0), (ids::filter::SLOPE, 1.0), (ids::filter::DRIVE, 12.0)])));
+    v.push(measured(|| effect("DJ filter", rate, Box::new(DjFilter::new()), &[(ids::dj_filter::POSITION, -40.0)])));
+    v.push(measured(|| effect("Drive (Eco 2x)", rate, Box::new(Drive::new()), &[])));
+    v.push(measured(|| effect("Drive (HQ 4x)", rate, Box::new(Drive::new()), &[(ids::drive::QUALITY, 1.0)])));
+    v.push(measured(|| effect("Crush", rate, Box::new(Crush::new()), &[])));
+    v.push(measured(|| effect("Delay", rate, Box::new(Delay::new()), &[])));
+    v.push(measured(|| effect("Compressor", rate, Box::new(Compressor::new()), &[])));
+    v.push(measured(|| effect("EQ (4 bands and both cuts)", rate, Box::new(Eq::new()), &[
         (ids::eq::LOW_SLOPE, 2.0), (ids::eq::HIGH_SLOPE, 2.0),
         (ids::eq::gain(0), 3.0), (ids::eq::gain(1), -4.0), (ids::eq::gain(2), 5.0), (ids::eq::gain(3), 2.0),
-    ]));
-    v.push(effect("Chorus (2 voices)", rate, Box::new(Chorus::new()), &[]));
-    v.push(effect("Chorus (4 voices)", rate, Box::new(Chorus::new()), &[(ids::chorus::VOICES, 4.0)]));
-    v.push(effect("Flanger", rate, Box::new(Flanger::new()), &[]));
-    v.push(effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[]));
-    v.push(effect("Phaser (12 stages)", rate, Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)]));
-    v.push(effect("Lo-fi", rate, Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)]));
-    v.push(effect("Master safety", rate, Box::new(MasterSafety::new()), &[]));
+    ])));
+    v.push(measured(|| effect("Chorus (2 voices)", rate, Box::new(Chorus::new()), &[])));
+    v.push(measured(|| effect("Chorus (4 voices)", rate, Box::new(Chorus::new()), &[(ids::chorus::VOICES, 4.0)])));
+    v.push(measured(|| effect("Flanger", rate, Box::new(Flanger::new()), &[])));
+    v.push(measured(|| effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[])));
+    v.push(measured(|| effect("Phaser (12 stages)", rate, Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)])));
+    v.push(measured(|| effect("Lo-fi", rate, Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)])));
+    v.push(measured(|| effect("Master safety", rate, Box::new(MasterSafety::new()), &[])));
     for (k, c) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
-        v.push(effect(&format!("Cloud reverb ({c})"), rate, Box::new(Cloud::new()),
-                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)]));
+        v.push(measured(|| effect(&format!("Cloud reverb ({c})"), rate, Box::new(Cloud::new()),
+                      &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)])));
     }
-    v.push(effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
+    v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
                   &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
-                    (mpfree_grain::node::param::SPRAY, 50.0)]));
-    v.push(mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, false));
-    v.push(mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, false));
-    v.push(mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, false));
-    v.push(mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, true));
+                    (mpfree_grain::node::param::SPRAY, 50.0)])));
+    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, false)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, false)));
+    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, false)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, true)));
+    v.push(measured(|| chain(rate)));
+    v.push(measured(|| time(rate, 8)));
+    v.push(measured(|| looper(rate, 60)));
+    v.push(measured(|| song(rate)));
+    v
+}
+
+/// A busy song on one audio thread, against the whole thread's budget: the
+/// sampler with the master grains, two synths (an 8-voice Supersaw and a
+/// 4-voice Sub Bass), the mixer with a song's inserts, the time engine and
+/// the looper, each run every block in that order. Running them together
+/// also shows what they cost each other in the caches.
+fn song(rate: u32) -> Case {
+    let preset = |name: &str| PRESETS.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("preset {name}")).values;
+    let mut parts = [
+        sampler("sampler", rate, true),
+        synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
+        synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
+        mixer("mixer", rate, 12, 8, true),
+        time(rate, 8),
+        looper(rate, 60),
+    ];
+    let mut bufs: Vec<(Vec<f32>, Vec<f32>)> = parts.iter().map(|_| (vec![0.0f32; MAX_BLOCK], vec![0.0f32; MAX_BLOCK])).collect();
+    Case {
+        name: "Song: sampler, 2 synths, mixer+FX, time, looper".to_string(),
+        module: "period",
+        what: "every engine of a busy song in one block",
+        block: Box::new(move |b, l, r| {
+            let n = l.len();
+            for (part, (bl, br)) in parts.iter_mut().zip(bufs.iter_mut()) {
+                (part.block)(b, &mut bl[..n], &mut br[..n]);
+            }
+            // The mixer's output (part 3) plus the loop is what is heard.
+            for i in 0..n {
+                l[i] = bufs[3].0[i] + bufs[5].0[i];
+                r[i] = bufs[3].1[i] + bufs[5].1[i];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Builds a case and records the bytes it holds.
+fn measured(f: impl FnOnce() -> Case) -> Case {
+    let (mut c, bytes) = alloc::bytes_in(f);
+    c.mem_bytes = bytes;
+    c
+}
+
+fn chain(rate: u32) -> Case {
     let mut chain = Chain::new();
     chain.prepare(rate, MAX_BLOCK);
     chain.push(Box::new(Drive::new()));
@@ -273,7 +337,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     chain.push(Box::new(Compressor::new()));
     chain.set_param(1, ids::filter::CUTOFF, 800.0);
     let mut seed = Lcg(5);
-    v.push(Case {
+    Case {
         name: "Chain: drive, filter, delay, comp".to_string(),
         module: "fx",
         what: "one track's inserts",
@@ -282,6 +346,177 @@ pub fn all(rate: u32) -> Vec<Case> {
             input(rate, f0, &mut seed, l, r);
             chain.process(&Ctx::new(rate, f0), l, r);
         }),
-    });
-    v
+        mem_bytes: 0,
+    }
+}
+
+/// Where the player's notes go in the time case: track 0 to the arp, the
+/// rest counted (in the pad player they become sampler and synth events,
+/// whose cost is in those cases).
+struct TimeSink {
+    arp: ArpHost,
+    notes: u64,
+}
+
+impl Sink for TimeSink {
+    fn send(&mut self, o: Out) {
+        self.notes += 1;
+        if o.dest == 0 || o.dest == ALL {
+            self.arp.input(o.offset, o.event);
+        }
+    }
+}
+
+/// The time engine as a busy song uses it: the transport looping 4 bars at
+/// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
+/// one at 3:2 speed, one swung and quantised), the first through the arp
+/// at 32nds over 2 octaves.
+fn time(rate: u32, tracks: usize) -> Case {
+    let ppq = i64::from(PPQ);
+    let mut song = Song::new();
+    let mut launches = Vec::new();
+    for i in 0..tracks {
+        let mut t = Track::new("t", i as u16);
+        let mut c = Clip::new("c", 8 * ppq);
+        c.notes = (0..32i64)
+            .flat_map(|k| (0..3i64).map(move |n| Note { tick: k * ppq / 4, len: ppq / 4 - 10, note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8, velocity: 100 }))
+            .collect();
+        if i == 1 {
+            c.speed = Speed::new(3, 2).expect("speed");
+        }
+        if i == 2 {
+            c.swing = Some(Swing::new(ppq as u32 / 4, 62).expect("swing"));
+            c.quantise = Quantise::new(ppq as u32 / 4, 80);
+        }
+        t.slots[0] = Some(c);
+        song.tracks.push(t);
+        launches.push(Launch { track: i, slot: 0, origin: 0 });
+    }
+    let view = PlayView::compile(&song, &launches).expect("view");
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(0, T::SetLoop(Some((0, 16 * ppq))));
+    t.command(0, T::Play);
+    let mut engine = mpfree_arp::Engine::new(rate, 128.0);
+    engine.set_settings(mpfree_arp::Settings { mode: mpfree_arp::Mode::Arp, rate: mpfree_arp::Rate::ThirtySecond, octaves: 2, ..mpfree_arp::Settings::default() });
+    let mut sink = TimeSink { arp: ArpHost::new(engine), notes: 0 };
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    let mut arp_notes = 0u64;
+    Case {
+        name: format!("Time: transport, {tracks} clips, arp"),
+        module: "time",
+        what: "16ths with chords on every track, looping 4 bars",
+        block: Box::new(move |_, l, r| {
+            t.process(l.len() as u32, &mut block);
+            player.process(&view, &block, &mut sink);
+            sink.arp.process(&block, &mut |_, _| arp_notes += 1);
+            // Silent, except the notes so far in the first sample, so the
+            // self-test can see that notes flowed.
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = (sink.notes + arp_notes) as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The audio looper with `seconds` of memory, recording a 2-bar first pass
+/// from the input at 120 BPM, then overdubbing layer after layer, with an
+/// undo now and then, so the first-pass writer, the overdub writer, the
+/// loop-point crossfade and playback of every layer all run.
+fn looper(rate: u32, seconds: u32) -> Case {
+    let mut t = Transport::new(rate, 120.0).expect("transport");
+    t.command(0, T::Play);
+    let mut lp = Looper::new(rate, seconds);
+    lp.command(LooperCommand::Record);
+    let mut block = TBlock::new();
+    let frames = MAX_BLOCK;
+    let (mut line_in, mut out) = (vec![0.0f32; 2 * frames], vec![0.0f32; 2 * frames]);
+    let mut seed = Lcg(13);
+    // 2 bars at 120 BPM: 4 s. Overdub from 5 s, toggled every 4 s; undo
+    // every 30 s once there are layers (so it never fills up).
+    let block_of = |s: f64| (s * f64::from(rate) / 128.0) as u64;
+    let (od_start, od_every, undo_every) = (block_of(5.0), block_of(4.0), block_of(30.0));
+    Case {
+        name: format!("Looper ({seconds} s), overdubbing"),
+        module: "looper",
+        what: "a 2-bar loop with layer after layer overdubbed",
+        block: Box::new(move |b, l, r| {
+            let n = l.len();
+            if b >= od_start && (b - od_start) % od_every == 0 {
+                lp.command(LooperCommand::Overdub);
+            }
+            if b > od_start && b % undo_every == 0 {
+                lp.command(LooperCommand::Undo);
+            }
+            input(rate, b * n as u64, &mut seed, l, r);
+            for (i, (a, c)) in l.iter().zip(r.iter()).enumerate() {
+                input_frame(&mut line_in, i, *a, *c);
+            }
+            out[..2 * n].fill(0.0);
+            t.process(n as u32, &mut block);
+            lp.process(&block, &line_in[..2 * n], &mut out[..2 * n]);
+            for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+                *a = out[2 * i];
+                *c = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+fn input_frame(buf: &mut [f32], i: usize, l: f32, r: f32) {
+    buf[2 * i] = l;
+    buf[2 * i + 1] = r;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(c: &mut Case, blocks: u64) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        for b in 0..blocks {
+            (c.block)(b, &mut l, &mut r);
+        }
+        (l, r)
+    }
+
+    #[test]
+    fn the_time_case_plays_notes_through_the_arp() {
+        let mut c = measured(|| time(44_100, 8));
+        let (l, _) = run(&mut c, 3_000);
+        // 8 s at 128 BPM is about 17 beats: 8 tracks x 3 notes x 4 per beat
+        // as note-ons and offs, plus the arp's notes.
+        assert!(l[0] > 1_000.0, "{}", l[0]);
+        assert!(c.mem_bytes > 0 || !alloc::installed());
+    }
+
+    #[test]
+    fn the_looper_case_plays_its_loop_back() {
+        let mut c = measured(|| looper(44_100, 20));
+        // Past the first pass (4 s) and into the overdubs.
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let mut energy = 0.0f64;
+        for b in 0..2_500u64 {
+            (c.block)(b, &mut l, &mut r);
+            if b > 1_600 {
+                energy += l.iter().chain(r.iter()).map(|v| f64::from(v.abs())).sum::<f64>();
+            }
+        }
+        assert!(energy > 100.0, "{energy}");
+        if alloc::installed() {
+            // 20 s of stereo f32.
+            assert!(c.mem_bytes >= 20 * 44_100 * 2 * 4, "{}", c.mem_bytes);
+        }
+    }
+
+    #[test]
+    fn every_case_says_what_it_holds() {
+        let cases = all(44_100);
+        assert!(cases.iter().any(|c| c.module == "looper") && cases.iter().any(|c| c.module == "time"));
+        if alloc::installed() {
+            assert!(cases.iter().all(|c| c.mem_bytes > 0), "{:?}", cases.iter().map(|c| (&c.name, c.mem_bytes)).collect::<Vec<_>>());
+        }
+    }
 }
