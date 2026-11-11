@@ -16,9 +16,8 @@
 
 use std::error::Error;
 use std::fmt::Write as _;
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 
 use mpfree_analysis::SilenceSettings;
 use mpfree_sampler::chop::{demo_beat, SourceAnalysis};
@@ -27,6 +26,10 @@ use mpfree_sampler::model::{ChopSet, Project, Source};
 use mpfree_sampler::PreparedSample;
 
 /// Rate of the --demo loop.
+#[path = "shared/wav_out.rs"]
+mod wav_out;
+use wav_out::write_wav;
+
 const DEMO_RATE: u32 = 44_100;
 const USAGE: &str = "\
 Usage: mpfree-chop INPUT.wav OUTPUT_DIR [options]
@@ -81,32 +84,6 @@ fn parse() -> Result<Options, Box<dyn Error>> {
     if !["transient", "beat", "grid", "silence"].contains(&o.mode.as_str()) { return Err(format!("unknown mode {}\n\n{USAGE}", o.mode).into()); }
     if !(0.0..=1.0).contains(&o.sensitivity) { return Err("--sensitivity must be between 0 and 1".into()); }
     Ok(o)
-}
-
-/// 16-bit stereo PCM WAV.
-fn write_wav(path: &Path, rate: u32, left: &[f32], right: &[f32]) -> Result<(), Box<dyn Error>> {
-    let frames = left.len().min(right.len());
-    let data_bytes = u32::try_from(frames * 4)?;
-    let mut w = BufWriter::new(File::create(path)?);
-    w.write_all(b"RIFF")?;
-    w.write_all(&(36 + data_bytes).to_le_bytes())?;
-    w.write_all(b"WAVEfmt ")?;
-    w.write_all(&16u32.to_le_bytes())?;
-    w.write_all(&1u16.to_le_bytes())?; // PCM
-    w.write_all(&2u16.to_le_bytes())?;
-    w.write_all(&rate.to_le_bytes())?;
-    w.write_all(&(rate * 4).to_le_bytes())?;
-    w.write_all(&4u16.to_le_bytes())?;
-    w.write_all(&16u16.to_le_bytes())?;
-    w.write_all(b"data")?;
-    w.write_all(&data_bytes.to_le_bytes())?;
-    let q = |x: f32| (x.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-    for i in 0..frames {
-        w.write_all(&q(left[i]).to_le_bytes())?;
-        w.write_all(&q(right[i]).to_le_bytes())?;
-    }
-    w.flush()?;
-    Ok(())
 }
 
 /// Plays note-ons at the given frames through a fresh engine running at
