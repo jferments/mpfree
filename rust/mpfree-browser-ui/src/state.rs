@@ -47,6 +47,91 @@ impl Source {
     }
 }
 
+/// A focused picker: the browser narrowed to one kind of thing, opened
+/// from where that thing is used (Jay, 2026-11-11 23:16Z: BROWSE stays the
+/// full file manager, and pickers open from the Synth page, the Sample page
+/// or a pad, and Open project). Only Load (or Open), Audition, Favourite
+/// and Cancel are offered; nothing is renamed, moved or deleted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// One engine's presets (its folder under Instruments, `"FM"`).
+    /// Moving the selection tries each preset on the track
+    /// ([`BrowseAction::TryPreset`]); Cancel puts the old sound back.
+    Preset { engine: String },
+    /// Sounds for the pad the picker was opened for: Load hands the file
+    /// over with [`BrowseAction::LoadSample`].
+    Sample,
+    /// Projects. Opening one replaces the work in progress, so it asks
+    /// first when that has changed since it was last saved.
+    Project,
+}
+
+impl Pick {
+    /// The places it offers, top to bottom (indices into [`SOURCES`]).
+    pub fn sources(&self) -> Vec<usize> {
+        let places: &[Place] = match self {
+            Pick::Preset { .. } => &[Place::Instruments],
+            Pick::Sample => &[Place::Samples, Place::Recordings],
+            Pick::Project => &[Place::Projects],
+        };
+        SOURCES
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| match s {
+                Source::Place(p) => places.contains(p),
+                Source::Recent | Source::Favourites => true,
+                Source::Factory => false,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The folder it opens on and never goes above.
+    pub fn root(&self) -> Loc {
+        match self {
+            Pick::Preset { engine } => Loc::top(Place::Instruments)
+                .join(engine)
+                .unwrap_or_else(|_| Loc::top(Place::Instruments)),
+            Pick::Sample => Loc::top(Place::Samples),
+            Pick::Project => Loc::top(Place::Projects),
+        }
+    }
+
+    /// The title over its places.
+    pub fn title(&self) -> String {
+        match self {
+            Pick::Preset { engine } if !engine.is_empty() => format!("{engine} presets"),
+            Pick::Preset { .. } => "Presets".into(),
+            Pick::Sample => "Load a sound".into(),
+            Pick::Project => "Open a project".into(),
+        }
+    }
+
+    /// Whether a row belongs in it.
+    fn shows(&self, r: &Row) -> bool {
+        let Some(loc) = &r.loc else { return false };
+        match self {
+            Pick::Preset { engine } => {
+                matches!(r.kind, Kind::Folder | Kind::Preset)
+                    && loc.place == Place::Instruments
+                    && (engine.is_empty() || preset_engine(loc) == *engine)
+            }
+            Pick::Sample => {
+                matches!(r.kind, Kind::Folder | Kind::Audio(_))
+                    && matches!(loc.place, Place::Samples | Place::Recordings)
+            }
+            Pick::Project => r.kind == Kind::Project,
+        }
+    }
+
+    fn allows(&self, b: Button) -> bool {
+        matches!(
+            b,
+            Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
+        )
+    }
+}
+
 /// What the list shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
@@ -110,6 +195,8 @@ pub enum Button {
     Delete,
     Restore,
     EmptyTrash,
+    /// Closes a picker without loading.
+    Cancel,
 }
 
 impl Button {
@@ -128,6 +215,7 @@ impl Button {
             Button::Delete => "Delete",
             Button::Restore => "Put back",
             Button::EmptyTrash => "Empty Trash",
+            Button::Cancel => "Cancel",
         }
     }
 }
@@ -186,6 +274,21 @@ pub enum BrowseAction {
         path: PathBuf,
         engine: String,
     },
+    /// The preset picker moved to this preset: put it on the track to be
+    /// played, keeping what was there to go back to.
+    TryPreset {
+        loc: Loc,
+        path: PathBuf,
+        engine: String,
+    },
+    /// The preset picker was cancelled after trying presets: put back the
+    /// sound the track had when it opened.
+    RevertPreset,
+    /// A picker closed (`loaded`: by loading or opening something, else
+    /// by Cancel). The app hides the overlay.
+    PickerClosed {
+        loaded: bool,
+    },
     /// A kit from kits.bin, by index; `to_pad` for Load to pad.
     LoadFactoryKit {
         index: usize,
@@ -218,6 +321,8 @@ pub enum BrowseAction {
 pub enum Confirm {
     Delete(Loc),
     EmptyTrash,
+    /// Open this project over unsaved changes.
+    Open(Loc),
 }
 
 /// What the keyboard is typing.
@@ -279,6 +384,14 @@ pub struct Screen {
     pub modal: Modal,
     /// `"Copied: Kick.wav"` while something is on the clipboard.
     pub clipboard: Option<String>,
+    /// The places column's title ("Library", or a picker's).
+    pub title: String,
+    /// The places shown, top to bottom (indices into [`SOURCES`]).
+    pub sources: Vec<usize>,
+    /// The filter chips shown (none in a picker).
+    pub filters: Vec<Filter>,
+    /// The picker this is, if it is one.
+    pub pick: Option<Pick>,
 }
 
 impl Screen {
@@ -299,6 +412,10 @@ impl Screen {
             busy: false,
             modal: Modal::None,
             clipboard: None,
+            title: "Library".into(),
+            sources: (0..SOURCES.len()).collect(),
+            filters: FILTERS.to_vec(),
+            pick: None,
         }
     }
 }
@@ -354,6 +471,13 @@ pub struct Browser {
     /// When it was first saved.
     created: u64,
     actions: Vec<BrowseAction>,
+    /// The picker open, if any, and where the full browser was before it.
+    pick: Option<Pick>,
+    before_pick: Option<(usize, Loc, Filter)>,
+    /// A preset was tried since the preset picker opened.
+    tried: bool,
+    /// The work in progress changed since it was last saved or opened.
+    unsaved: bool,
 }
 
 impl Browser {
@@ -396,6 +520,10 @@ impl Browser {
             project: None,
             created: 0,
             actions: Vec::new(),
+            pick: None,
+            before_pick: None,
+            tried: false,
+            unsaved: false,
         };
         b.refresh();
         b
@@ -442,7 +570,20 @@ impl Browser {
 
     fn apply(&mut self, d: Done) {
         match d.result {
-            Err(e) => self.status = Some((e, true)),
+            Err(e) => {
+                // A preset picker for an engine with no presets saved yet:
+                // its folder isn't there, which is not a fault.
+                if let Some(Pick::Preset { engine }) = &self.pick {
+                    if self.at_pick_root() && self.rows.is_empty() {
+                        self.status = Some((
+                            format!("No {engine} presets yet: save one from the Synth page"),
+                            false,
+                        ));
+                        return;
+                    }
+                }
+                self.status = Some((e, true))
+            }
             Ok(Outcome::Listed(loc, entries)) => {
                 if loc == self.folder && self.current_source().is_place() {
                     self.entries = entries;
@@ -482,6 +623,7 @@ impl Browser {
             }
             Ok(Outcome::Saved(loc)) => {
                 self.status = Some((format!("Saved {}", loc.name()), false));
+                self.unsaved = false;
                 self.project = Some(loc.clone());
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectSaved { loc });
@@ -491,8 +633,12 @@ impl Browser {
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
                 self.created = snap.meta.created;
+                self.unsaved = false;
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                if self.pick.is_some() {
+                    self.close_pick(true);
+                }
             }
         }
     }
@@ -592,6 +738,9 @@ impl Browser {
                 .collect(),
         };
         rows.retain(|r| self.filter.shows(r.kind));
+        if let Some(p) = &self.pick {
+            rows.retain(|r| p.shows(r));
+        }
         self.rows = rows;
         self.selected = keep
             .and_then(|n| self.rows.iter().position(|r| r.name == n))
@@ -638,6 +787,16 @@ impl Browser {
             Kind::Project => {
                 if let Ok(f) = loc.join(mpfree_library::PROJECT_FILE) {
                     self.send(Job::Read(f, 64 * 1024));
+                }
+            }
+            Kind::Preset if by_hand && matches!(self.pick, Some(Pick::Preset { .. })) => {
+                if let Ok(path) = self.library().file_path(&loc) {
+                    self.tried = true;
+                    self.actions.push(BrowseAction::TryPreset {
+                        engine: preset_engine(&loc),
+                        loc,
+                        path,
+                    });
                 }
             }
             _ => {}
@@ -710,16 +869,25 @@ impl Browser {
     // ------------------------------------------------------------ moving around
 
     pub fn go_source(&mut self, i: usize) {
-        if i >= SOURCES.len() {
+        if i >= SOURCES.len()
+            || self
+                .pick
+                .as_ref()
+                .is_some_and(|p| !p.sources().contains(&i))
+        {
             return;
         }
         self.source = i;
         if let Source::Place(p) = SOURCES[i] {
-            self.folder = Loc::top(p);
+            self.folder = match &self.pick {
+                Some(pk) if pk.root().place == p => pk.root(),
+                _ => Loc::top(p),
+            };
         }
         self.top = 0;
         self.selected = None;
         self.entries.clear();
+        self.rows.clear();
         self.trash.clear();
         self.modal = Modal::None;
         self.refresh();
@@ -737,11 +905,17 @@ impl Browser {
         self.top = 0;
         self.selected = None;
         self.entries.clear();
+        // Not the last folder's rows under this one's name, even if
+        // listing it fails.
+        self.rows.clear();
         self.refresh();
     }
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
+        if self.at_pick_root() {
+            return;
+        }
         if let Some(parent) = self.folder.parent() {
             if self.current_source().is_place() {
                 let name = self.folder.name().to_string();
@@ -781,9 +955,75 @@ impl Browser {
 
     /// SHIFT + the data dial: moves through the places.
     pub fn dial_places(&mut self, delta: i32) {
-        let n = SOURCES.len() as i32;
-        let i = (self.source as i32 + delta).rem_euclid(n) as usize;
-        self.go_source(i);
+        let shown = self.shown_sources();
+        let at = shown.iter().position(|s| *s == self.source).unwrap_or(0) as i32;
+        let i = (at + delta).rem_euclid(shown.len() as i32) as usize;
+        self.go_source(shown[i]);
+    }
+
+    fn at_pick_root(&self) -> bool {
+        self.pick.as_ref().is_some_and(|p| p.root() == self.folder)
+    }
+
+    fn shown_sources(&self) -> Vec<usize> {
+        match &self.pick {
+            Some(p) => p.sources(),
+            None => (0..SOURCES.len()).collect(),
+        }
+    }
+
+    // ------------------------------------------------------------ pickers
+
+    /// Opens the browser as a focused picker (see [`Pick`]). The full
+    /// browser's place and folder come back when it closes.
+    pub fn open_picker(&mut self, p: Pick) {
+        if self.pick.is_none() {
+            self.before_pick = Some((self.source, self.folder.clone(), self.filter));
+        }
+        let root = p.root();
+        self.pick = Some(p);
+        self.tried = false;
+        self.filter = Filter::All;
+        self.modal = Modal::None;
+        self.status = None;
+        self.go_folder(root);
+    }
+
+    /// The picker open, if any.
+    pub fn picking(&self) -> Option<&Pick> {
+        self.pick.as_ref()
+    }
+
+    /// Cancel (or BROWSE, or the app closing it): nothing is loaded, and a
+    /// tried preset is taken back.
+    pub fn cancel_picker(&mut self) {
+        if self.pick.is_some() {
+            if self.tried {
+                self.actions.push(BrowseAction::RevertPreset);
+            }
+            self.close_pick(false);
+        }
+    }
+
+    fn close_pick(&mut self, loaded: bool) {
+        self.pick = None;
+        self.tried = false;
+        self.modal = Modal::None;
+        self.actions.push(BrowseAction::PickerClosed { loaded });
+        if let Some((source, folder, filter)) = self.before_pick.take() {
+            self.filter = filter;
+            if matches!(SOURCES[source], Source::Place(_)) {
+                self.go_folder(folder);
+            } else {
+                self.go_source(source);
+            }
+        }
+    }
+
+    /// The app says whether the work in progress has changed since it was
+    /// last saved or opened (opening a project over it then asks first).
+    pub fn set_unsaved(&mut self, unsaved: bool) {
+        self.unsaved = unsaved;
     }
 
     /// The dial's push: open a folder or project, load anything else, or
@@ -868,9 +1108,13 @@ impl Browser {
     }
 
     fn button(&mut self, b: Button) {
+        if self.pick.as_ref().is_some_and(|p| !p.allows(b)) {
+            return;
+        }
         let row = self.selected_row().cloned();
         let loc = row.as_ref().and_then(|r| r.loc.clone());
         match b {
+            Button::Cancel => self.cancel_picker(),
             Button::Load | Button::LoadToPad => {
                 let to_pad = b == Button::LoadToPad;
                 let Some(r) = row else { return };
@@ -916,6 +1160,9 @@ impl Browser {
                             false,
                         ));
                         self.remember(loc);
+                        if self.pick.is_some() {
+                            self.close_pick(true);
+                        }
                     }
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
@@ -925,6 +1172,15 @@ impl Browser {
                 let Some(loc) = loc else { return };
                 match r.kind {
                     Kind::Folder => self.go_folder(loc),
+                    Kind::Project if self.unsaved => {
+                        self.modal = Modal::Confirm {
+                            text: format!(
+                                "Unsaved changes. Open \u{201c}{}\u{201d} anyway?",
+                                r.name
+                            ),
+                            what: Confirm::Open(loc),
+                        };
+                    }
                     Kind::Project => self.send(Job::OpenProject(loc)),
                     _ => self.button(Button::Load),
                 }
@@ -1058,6 +1314,7 @@ impl Browser {
                     self.send(Job::Delete(loc));
                 }
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
+                Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
             }
         }
     }
@@ -1199,13 +1456,15 @@ impl Browser {
             },
             can_go_back: src != Source::Place(Place::Trash)
                 && self.current_source().is_place()
-                && !self.folder.is_top(),
+                && !self.folder.is_top()
+                && !self.at_pick_root(),
             rows: self.rows.clone(),
             selected: self.selected,
             top: self.top,
             filter: self.filter,
             detail: self.detail(),
             list_buttons: match src {
+                _ if self.pick.is_some() => vec![Button::Cancel],
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
                     // Projects are made by saving, so no New folder there.
@@ -1229,6 +1488,17 @@ impl Browser {
                 Clip::Copy(l) => format!("Copied: {}", l.name()),
                 Clip::Cut(l) => format!("Cut: {}", l.name()),
             }),
+            title: self
+                .pick
+                .as_ref()
+                .map_or_else(|| "Library".into(), Pick::title),
+            sources: self.shown_sources(),
+            filters: if self.pick.is_some() {
+                Vec::new()
+            } else {
+                FILTERS.to_vec()
+            },
+            pick: self.pick.clone(),
         }
     }
 
@@ -1374,6 +1644,9 @@ impl Browser {
             // Recent and Favourites point at things: no cut or rename there.
             d.buttons
                 .retain(|b| !matches!(b, Button::Cut | Button::Rename));
+        }
+        if let Some(p) = &self.pick {
+            d.buttons.retain(|b| p.allows(*b));
         }
         d
     }

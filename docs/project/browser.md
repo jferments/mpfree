@@ -24,6 +24,18 @@ BROWSE opens the browser over the current page, under the top bar, as Prefs and 
 | ERASE | Delete (asks first) |
 | Q-Links 1 to 4 | Scroll, filter, preview level, place |
 
+## Pickers
+
+Jay, 2026-11-11 23:16Z: BROWSE stays the full file manager, and each kind of thing also gets a focused picker opened from where it is used. A picker is the same browser narrowed (`Browser::open_picker(Pick)`), in the same place under the top bar. It offers only Load (Open for projects), Audition, Favourite and Cancel; nothing is renamed, moved or deleted there. When it closes, the full browser is back where it was.
+
+| Picker | Opened from | Shows | Does |
+|---|---|---|---|
+| `Pick::Preset { engine }` | the Synth page | `Instruments/<engine>/`, and that engine's presets in Recent and Favourites | Each turn of the dial sends `TryPreset` so the preset can be played on the pads; Load sends `LoadPreset`; Cancel sends `RevertPreset` |
+| `Pick::Sample` | the Sample page or a pad | Samples, Recordings, and sounds in Recent and Favourites | Auditions as you move; Load sends `LoadSample` for the pad it was opened for |
+| `Pick::Project` | Open project | Projects | Opening asks first while `set_unsaved(true)`: "Unsaved changes. Open ... anyway?" (the full browser asks too) |
+
+Every picker ends with `PickerClosed { loaded }`. BROWSE while a picker is open should call `cancel_picker`. The hint line is `PICKER_HINT`. Screens 12 to 14 in the previews.
+
 ## Where files go (rule zero)
 
 Everything is written to `library/` inside the data folder the app is given with `--data`, which is the test stick's MPFREE-DATA partition (`/run/mpfree-data`). The eMMC and the SD card are never written. The storage spec's "Proposed" section adds `library/` beside the store's `settings/` and `files/` and grows the partition. That needs Jay's go.
@@ -68,7 +80,7 @@ for a in mpfree_browser_ui::step(&mut ui, &mut browser) { /* BrowseAction */ }
 browser.save(Snapshot::from_parts(meta, &[&transport, &sampler, ...]), now_utc);
 ```
 
-`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
+`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
 
 When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_hello_mpc.py` needs `rust/mpfree-library/src` in `LINKED_SRC`, and its write sites (all in `lib.rs` and `project.rs`, all under the library folder) added to the reviewed list.
 

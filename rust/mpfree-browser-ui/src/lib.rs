@@ -36,7 +36,7 @@ pub mod sample;
 pub mod state;
 pub mod view;
 
-pub use state::{BrowseAction, Browser, Button, Filter, Input, Screen, Source};
+pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Source};
 pub use view::BrowserView;
 
 use mpfree_ui::Ui;
@@ -49,6 +49,9 @@ pub const BROWSER_PAGE: &str = "browser";
 pub const BROWSER_LAYOUT: &str = "col(header:60, browser:*, hint:26)";
 /// The hint line while the browser is open.
 pub const BROWSER_HINT: &str = "Dial: move  ·  push: open or load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  ERASE: to Trash  ·  BROWSE closes  ·  SHIFT + BROWSE: save project";
+
+/// The hint line while a picker is open ([`Browser::open_picker`]).
+pub const PICKER_HINT: &str = "Dial: move  ·  push: load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  BROWSE or Cancel: close without loading";
 
 /// Adds the browser widget and its page. The app's `header` and `hint`
 /// widgets are added if they are not there yet.
@@ -137,7 +140,7 @@ pub enum QLinkEffect {
 pub fn qlink_turn(browser: &mut Browser, knob: usize, detents: i32) -> QLinkEffect {
     match knob {
         0 => browser.dial(detents),
-        1 => {
+        1 if browser.picking().is_none() => {
             let f = browser.screen().filter;
             let i = state::FILTERS.iter().position(|x| *x == f).unwrap_or(0) as i32;
             let n = state::FILTERS.len() as i32;

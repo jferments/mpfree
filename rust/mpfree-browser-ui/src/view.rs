@@ -3,7 +3,7 @@
 //! when one is open. It draws a [`Screen`] and turns touches into
 //! [`Input`]s; it never touches the library itself.
 
-use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Source, FILTERS, SOURCES};
+use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
@@ -55,8 +55,9 @@ impl Geo {
         let pb = card_body(places);
         let mut place_rows = Vec::new();
         let mut y = pb.y;
-        for (i, src) in SOURCES.iter().enumerate() {
-            if i > 0 && matches!(src, Source::Recent | Source::Place(Place::Trash)) {
+        for (k, &i) in s.sources.iter().enumerate() {
+            let src = &SOURCES[i];
+            if k > 0 && matches!(src, Source::Recent | Source::Place(Place::Trash)) {
                 y += 14;
             }
             place_rows.push(Rect::new(pb.x, y, pb.w, PLACE_H - 4));
@@ -80,7 +81,7 @@ impl Geo {
         let path = right.inset_xy(if s.can_go_back { 10 } else { 4 }, 0);
         let mut filters = Vec::new();
         let mut x = foot.x;
-        for f in FILTERS {
+        for &f in &s.filters {
             let w = 34 + 11 * f.label().len() as i32;
             filters.push((f, Rect::new(x, foot.y + 8, w, foot.h - 12)));
             x += w + 8;
@@ -298,8 +299,8 @@ impl BrowserView {
             Modal::None => {}
         }
         let g = Geo::new(r, s);
-        if let Some(i) = g.place_rows.iter().position(|pr| pr.contains(x, y)) {
-            return Some(Input::Source(i));
+        if let Some(k) = g.place_rows.iter().position(|pr| pr.contains(x, y)) {
+            return Some(Input::Source(s.sources[k]));
         }
         if s.can_go_back && g.back.contains(x, y) {
             return Some(Input::Back);
@@ -330,8 +331,9 @@ impl Widget for BrowserView {
         let g = Geo::new(r, s);
         let t = cx.theme.clone();
         // Places.
-        draw::card(cx, g.places, "Library", "");
-        for (i, (src, pr)) in SOURCES.iter().zip(&g.place_rows).enumerate() {
+        draw::card(cx, g.places, &s.title, "");
+        for (&i, pr) in s.sources.iter().zip(&g.place_rows) {
+            let src = &SOURCES[i];
             let on = i == s.source;
             if on {
                 cx.canvas.fill_round_rect(*pr, 10, t.raised);
@@ -557,6 +559,7 @@ impl Widget for BrowserView {
                 let yes = match what {
                     crate::state::Confirm::Delete(_) => "Move to Trash",
                     crate::state::Confirm::EmptyTrash => "Delete for good",
+                    crate::state::Confirm::Open(_) => "Open",
                 };
                 button(cx, a.yes, yes, false, true);
             }
