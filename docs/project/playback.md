@@ -1,6 +1,6 @@
 # Playback: clips on the transport
 
-**Status:** roadmap step T2, 2026-11-11. The code is [`rust/mpfree-seq`](../../rust/mpfree-seq) (the model) and [`rust/mpfree-play`](../../rust/mpfree-play) (the playback engine). Both are host-only and tested. They are not yet wired to the audio thread, the pads or the arp. Nothing here has run on the MPC.
+**Status:** roadmap step T2 (merged in #47), plus a track through the arp, 2026-11-11. The code is [`rust/mpfree-seq`](../../rust/mpfree-seq) (the model) and [`rust/mpfree-play`](../../rust/mpfree-play) (the playback engine). Both are host-only and tested. They are not yet wired to the audio thread or the pads. Nothing here has run on the MPC.
 
 This builds on the [transport](transport.md). The full plan is the time engine design document. Its mockups and skill tree are in the mpfree-claude notes (`sequencer/`).
 
@@ -45,6 +45,15 @@ Each period the player walks the transport's spans and sends events in frame ord
 - **Count-in and mute.** Nothing plays during a count-in, or on a muted track.
 - **Real-time safe.** There is no allocation, lock or panic in `process`. A full table is counted in `Stats::dropped`, never dropped silently: 256 sounding notes, 256 note starts per span.
 
+## Through the arp (`ArpHost`)
+
+A track whose destination is an arpeggiator plays its notes into an `mpfree-arp` engine instead of a sound. The held notes press and release keys on the arp, and the arp's own notes go on to the sampler (or any other destination).
+
+- The host's sink passes the arp track's events to `ArpHost::input`, with their offsets, plus a panic's `AllOff` (sent to every destination). After `Player::process`, `ArpHost::process(block, out)` runs the engine over the same period and gives every note it plays, with its offset, in time order.
+- Before every engine call the host gives the engine the span's clock with `Engine::sync` (the hook from #42): the span's anchor, tempo, play state, meter and swing. A loop jump or a locate at the start of a span says `jumped`, so the arp lands on the grid again. Transport swing above 50 swings the arp's steps. Straight transport swing leaves the arp's own swing setting in charge.
+- The host splits a span at each note from the player, so a press lands on its exact frame. The engine's timing does not depend on how its calls are cut, so the arp plays the same notes on the same frames for any period size.
+- No allocation: up to 256 player notes a period. `ArpHost::dropped()` counts player notes that did not fit and engine notes past its 128 per call. It should stay 0.
+
 ## Tests
 
 - `tests/play.rs` has 12 behaviour tests:
@@ -57,21 +66,25 @@ Each period the player walks the transport's spans and sends events in frame ord
   - the tracks cover polymeter, 3/4 speed, double speed with its own swing, quantised overlapping notes, and a muted track
 
   It cuts the session into periods of 1 to 8192 frames and three random sequences, and every event must match. It also checks that each note ends before it starts again and that the final stop ends every note. With the swing look-back window removed, the test fails.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks with loops, tempo changes, locates, stop and panic. It sees no allocation and no free.
+- `tests/arp.rs` plays a held chord through the arp:
+  - it arpeggiates on the transport's 1/16s, with the gate, and the chord's end stops it
+  - it follows the transport's swing
+  - a busy session (a loop, swing, a tempo change, a locate, stop, panic and a restart) gives the same arp notes at periods of 1 to 8192 frames and two random sequences. With the span not split at the player's notes, period 8192 differs and the test fails.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s, with loops, tempo changes, locates, stop and panic. It sees no allocation and no free.
 
 ## Listening
 
-`cargo run --release -p mpfree-play --example render` plays a demo song through the transport, the player and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The song is 92 BPM with 1/16 swing, a four-bar loop played twice:
+`cargo run --release -p mpfree-play --example render` plays a demo song through the transport, the player, the arp and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The song is 92 BPM with 1/16 swing, a four-bar loop played twice:
 
 - drums
 - hats at double speed with their own swing
 - a bass line on gated pads, so note lengths matter
 - a 7/16 pluck clip that drifts against the bar
+- a chord held for each bar, played through the arp in swung 1/16s on gated pads
 
-All the sounds are synthesised in the tool. It prints an events hash, which is the same on every computer, and checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames.
+All the sounds are synthesised in the tool. It prints an events hash for the player's and the arp's notes, which is the same on every computer, and checks that the events are identical at periods of 1, 128 and 4096 frames. On the build host the WAV bytes are also identical at 128 and 1000 frames.
 
 ## Next
 
-- Feed a track's notes through the arp (`Engine::sync` per span, PR #42) once #40 and #42 merge.
-- Then the clip recorder (T3) and the looper (T4).
+- The clip recorder (T3) and the looper (T4).
 - Device work waits for the pad player's round 5 (PR #31).
