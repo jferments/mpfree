@@ -1240,3 +1240,7 @@ bash tools/ghidra/run_full_p3_analysis.sh
 ```
 
 If Ghidra is installed at an unusual location, use `GHIDRA_HOME=/absolute/ghidra/installation bash tools/ghidra/run_full_p3_analysis.sh`. The only program changes are made to a new *local* Ghidra project (and the generated local payload/report), never to the original Akai eMMC. No root access is needed.
+
+### 27.1 Headless Thumb pre-analysis ordering fix
+
+The launcher now runs `-preScript MPFreeFinishBootChain.py pre` **before** Ghidra's default auto-analysis and `-postScript MPFreeFinishBootChain.py post` **after** it. This avoids auto-disassembling the raw ARM/Thumb mixed binary in the wrong instruction state before seed instructions establish Thumb context. Running the same script from GUI Script Manager without arguments performs rebase + seed + explicit auto-analysis + report in one operation. Runtime compatibility is still unverified until the owner's Ghidra executes it.
