@@ -37,8 +37,8 @@ use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
 };
 use crate::model::{
-    ChannelPick, Fade, GrainParams, Keys, LayerSelect, LoopMode, MasterFx, PadsPlay, PlayMode,
-    PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx, PadsPlay,
+    PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::Warps;
 
@@ -49,8 +49,59 @@ pub const KILL_FRAMES: u16 = 64;
 pub const STEAL_FRAMES: u16 = 32;
 /// Events that can wait for the next render.
 pub const MAX_EVENTS: usize = 256;
+/// What a hit on a pad plays.
+#[derive(Clone, Copy)]
+enum Target {
+    /// The pad's own sound.
+    Own(u8),
+    /// A note, through the keygroups.
+    Key(u8),
+    /// Pad `pad` at 16 Levels step `k` of `by`.
+    Level { pad: u8, by: Levels, k: u8 },
+}
+
+impl Target {
+    /// Whether voice `v` was started by a hit of this pad.
+    fn played(&self, v: &Voice) -> bool {
+        match *self {
+            Target::Own(pad) => v.pad == pad && v.note == NO_NOTE,
+            Target::Key(note) => v.note == note,
+            Target::Level { pad, k, .. } => v.pad == pad && v.note == LEVEL_NOTE + k,
+        }
+    }
+}
+
+/// What a hit changes in the voices it starts: a keygroup's semitones, or
+/// a 16 Levels step.
+#[derive(Clone, Copy, Default)]
+struct Vary {
+    semis: i32,
+    velocity: Option<u8>,
+    /// From 0 to 1 of the region (a granular voice's grain position).
+    start: Option<f32>,
+    cutoff_hz: Option<f32>,
+    decay_ms: Option<f32>,
+}
+
+impl Vary {
+    fn level(by: Levels, k: u8) -> Vary {
+        let k = usize::from(k);
+        let mut v = Vary::default();
+        match by {
+            Levels::Velocity => v.velocity = Some(Levels::velocity(k)),
+            Levels::Tune => v.semis = Levels::semitones(k),
+            Levels::Cutoff => v.cutoff_hz = Some(Levels::cutoff_hz(k)),
+            Levels::Decay => v.decay_ms = Some(Levels::decay_ms(k)),
+            Levels::Start => v.start = Some(Levels::start(k)),
+        }
+        v
+    }
+}
+
 /// A voice's note when its pad was hit, not played as a keygroup.
 const NO_NOTE: u8 = 255;
+/// A 16 Levels voice's note: this plus the pad (0 to 15) that played it.
+const LEVEL_NOTE: u8 = 128;
 /// Grains alive at once across every granular voice. Past it, new grains
 /// are skipped. A first guess, to be set by measurement on the MPC.
 pub const GRAIN_BUDGET: usize = 256;
@@ -175,6 +226,8 @@ impl EngineView {
                                 .is_some_and(|k| k.contains(note as u8))
                     })
             }
+            // With 16 Levels: every pad plays the one pad.
+            PadsPlay::Levels { pad, .. } => self.pads.get(usize::from(pad)).is_some_and(sounds),
         }
     }
 
@@ -732,25 +785,25 @@ impl Engine {
     /// Applies an event now (before the next rendered frame).
     pub fn apply(&mut self, ev: Event) {
         match ev {
-            // With the pads playing notes, a pad is the note it plays.
-            Event::NoteOn { pad, velocity } => match self.pad_note(pad) {
-                Some(note) => self.key(note, velocity),
-                None => self.note_on(pad, velocity, NO_NOTE, 0),
+            // With the pads playing notes, a pad is the note it plays;
+            // with 16 Levels, the one pad at its level.
+            Event::NoteOn { pad, velocity } => match self.target(pad) {
+                Target::Own(_) => self.note_on(pad, velocity, NO_NOTE, Vary::default()),
+                Target::Key(note) => self.key(note, velocity),
+                Target::Level { pad: p, by, k } => {
+                    self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
+                }
             },
-            Event::NoteOff { pad } => match self.pad_note(pad) {
-                Some(note) => self.release(|v| v.note == note),
-                None => self.release(|v| v.pad == pad && v.note == NO_NOTE),
-            },
+            Event::NoteOff { pad } => {
+                let t = self.target(pad);
+                self.release(|v| t.played(v));
+            }
             Event::Key { note, velocity } => self.key(note.min(127), velocity),
             Event::KeyOff { note } => self.release(|v| v.note == note),
             Event::Pressure { pad, value } => {
-                let note = self.pad_note(pad);
+                let t = self.target(pad);
                 for v in &mut self.voices {
-                    let this = match note {
-                        Some(n) => v.note == n,
-                        None => v.pad == pad && v.note == NO_NOTE,
-                    };
-                    if v.active && this && v.kill_left == 0 {
+                    if v.active && t.played(v) && v.kill_left == 0 {
                         v.press_target = f32::from(value.min(127)) / 127.0;
                     }
                 }
@@ -783,11 +836,16 @@ impl Engine {
         }
     }
 
-    /// The note pad `pad` plays, when the pads play notes.
-    fn pad_note(&self, pad: u8) -> Option<u8> {
+    /// What a hit on pad `pad` plays.
+    fn target(&self, pad: u8) -> Target {
         match self.view.pads_play {
-            PadsPlay::Keys { from } => Some(from.saturating_add(pad).min(127)),
-            PadsPlay::Pads => None,
+            PadsPlay::Pads => Target::Own(pad),
+            PadsPlay::Keys { from } => Target::Key(from.saturating_add(pad).min(127)),
+            PadsPlay::Levels { pad: p, by } => Target::Level {
+                pad: p,
+                by,
+                k: pad % 16,
+            },
         }
     }
 
@@ -803,7 +861,15 @@ impl Engine {
             };
             if k.contains(note) {
                 let semis = i32::from(note) - i32::from(k.root);
-                self.note_on(p as u8, velocity, note, semis);
+                self.note_on(
+                    p as u8,
+                    velocity,
+                    note,
+                    Vary {
+                        semis,
+                        ..Vary::default()
+                    },
+                );
             }
         }
     }
@@ -838,14 +904,17 @@ impl Engine {
         }
     }
 
-    /// Pad `pad` plays: hit (`note` is [`NO_NOTE`]) or as the keygroup
-    /// for `note`, `semis` semitones from its root.
-    fn note_on(&mut self, pad: u8, velocity: u8, note: u8, semis: i32) {
+    /// Pad `pad` plays: hit (`note` is [`NO_NOTE`]), as the keygroup for
+    /// `note`, or at a 16 Levels step, with what `vary` changes.
+    fn note_on(&mut self, pad: u8, velocity: u8, note: u8, vary: Vary) {
         if velocity == 0 {
             self.release(|v| v.pad == pad && v.note == note);
             return;
         }
-        let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
+        // 16 Levels of velocity are the pads' own, whatever Full Level says.
+        let velocity = vary
+            .velocity
+            .unwrap_or(self.fixed_velocity.unwrap_or(velocity.min(127)));
         let p = usize::from(pad);
         let Some(Some(vp)) = self.view.pads.get(p) else {
             return;
@@ -944,11 +1013,12 @@ impl Engine {
                     None => break,
                 }
             }
-            self.start_voice(p, li, level, vel, note, semis);
+            self.start_voice(p, li, level, vel, note, vary);
         }
     }
 
-    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, semis: i32) {
+    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, vary: Vary) {
+        let semis = vary.semis;
         let Some(vp) = self.view.pads[p].as_ref() else {
             return;
         };
@@ -986,7 +1056,8 @@ impl Engine {
         let skip = if l.reverse {
             0
         } else {
-            ((vp.vel_to_start * (1.0 - vel)) as f64 * frames as f64) as i64
+            let from = vary.start.unwrap_or(vp.vel_to_start * (1.0 - vel));
+            (from as f64 * frames as f64) as i64
         };
         let start_frame = if l.reverse {
             l.end - 1
@@ -995,6 +1066,29 @@ impl Engine {
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
         let lp = l.sustain_loop.as_ref();
+        let mut amp = vp.amp;
+        if let Some(ms) = vary.decay_ms {
+            (amp.decay_ms, amp.sustain) = (ms, 0.0);
+        }
+        let filter = match vary.cutoff_hz {
+            Some(hz) if vp.filter.kind == FilterKind::Off => Some(Filter {
+                kind: FilterKind::LowPass,
+                poles: 2,
+                cutoff_hz: hz,
+                resonance: 0.0,
+                env_octaves: 0.0,
+            }),
+            Some(hz) => Some(Filter {
+                cutoff_hz: hz,
+                ..vp.filter
+            }),
+            None => (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
+        };
+        let mut grain = l.grain;
+        grain.pitch += semis as f32;
+        if let Some(at) = vary.start {
+            grain.position = (at * 16.0 / 15.0).min(1.0);
+        }
         // A keygroup a few semitones from its root reads that much faster.
         let plain = if semis == 0 {
             l.step
@@ -1037,10 +1131,9 @@ impl Engine {
             mode: Some(l.mode),
             held: true,
             age: self.clock,
-            amp: Some(Envelope::start(&vp.amp, self.rate)),
-            fenv: (vp.filter.kind != FilterKind::Off)
-                .then(|| Envelope::start(&vp.filter_env, self.rate)),
-            filter: (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
+            amp: Some(Envelope::start(&amp, self.rate)),
+            fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
+            filter,
             svf: [Svf::default(); 2],
             filter_count: 0,
             filter_key: None,
@@ -1052,10 +1145,7 @@ impl Engine {
             last_r: 0.0,
             granular,
             src_rate: l.src_rate,
-            grain_base: GrainParams {
-                pitch: l.grain.pitch + semis as f32,
-                ..l.grain
-            },
+            grain_base: grain,
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -1071,8 +1161,6 @@ impl Engine {
         };
         if granular {
             let g = &mut self.grains[slot];
-            let mut grain = l.grain;
-            grain.pitch += semis as f32;
             g.set_params(grain);
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
