@@ -13,6 +13,9 @@ mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
 
+[dev-dependencies]
+mpfree-synth = { path = "../mpfree-synth" }
+
 [[bin]]
 name = "mpfree-sampler"
 path = "src/main.rs"
