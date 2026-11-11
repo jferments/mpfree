@@ -67,20 +67,20 @@ Today `mpfree-hello --theme NAME|FILE` picks the theme (for `--preview` and on t
 | --- | --- | --- | --- |
 | Default | The current dark studio look, blue accent. | none | Synthwave's startup screen (Jay, 2026-11-11, from round 8). The app keeps the default look. The spiral galaxy (`mpfree-splash`) stays available. |
 | Console | Phosphor green on near-black, in the normal UI font. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | A chaotic swirl of characters in many shades of green settles, arm by arm, into "MPFree" and "OS v0.1" drawn in characters with a terminal font (VT323), shaded by character density and colour; then a prompt types out. Scanlines and bloom. |
-| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree OS" in a brush-marker face (Permanent Marker), stretched, leaning hard and wavering, its strokes torn into sharp points, is slashed on over the sun with speed streaks beside it; then "v0.1" flickers on below. No palm trees, no stripes in the letters. |
-| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | A purple spiral galaxy in open space with a sci-fi computer overlay analysing it (no ship in view): heading tape, corner brackets, translucent panels (radar scanner, spectrum, navigation, target), a scan line that tags stars with callouts, a reticle that locks on the core; then "MPFree OS" in the same brush face, white to violet, and "v0.1". |
+| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree OS" in MPFree's own blade letters (angular, leaning strokes with torn, jagged starts and knife-point ends), yellow to pink over a hard drop shadow, is cut on over the sun and a pink slash whips under it; then "v0.1" flickers on below. No palm trees, no stripes in the letters. |
+| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | A purple spiral galaxy in open space with a sci-fi computer overlay analysing it (no ship in view): heading tape, corner brackets, translucent panels (radar scanner, spectrum, navigation, target), a scan line that tags stars with callouts, a reticle that locks on the core; then "MPFree OS" in the same blade letters, white to violet, and "v0.1". |
 
 ## Startup screens and the CPU
 
-Two display fonts are bundled for the startup screens only, unmodified and with their licences in [`mpfree-startup/fonts`](../../rust/mpfree-startup/fonts): VT323 (SIL OFL 1.1) for Console's character art and Permanent Marker (Apache 2.0) for the Synthwave title. The UI itself keeps its one font in every theme.
+One display font is bundled for the startup screens only, unmodified and with its licence in [`mpfree-startup/fonts`](../../rust/mpfree-startup/fonts): VT323 (SIL OFL 1.1) for Console's character art. The Synthwave and Spaceship titles use MPFree's own blade letters, drawn as polygons in [`blade.rs`](../../rust/mpfree-startup/src/blade.rs), so no font file or licence comes with them. The UI itself keeps its one font in every theme.
 
 Each scene draws everything that never moves once (sky, mountains, palm trees, the galaxy's glow, text) and per frame only copies those layers and draws what moves. Time per 1280x800 frame on the workstation (one core, release build):
 
 | Scene | Set-up | Frame (average) |
 | --- | --- | --- |
 | Console | 7 ms | 8.0 ms |
-| Synthwave | 20 ms | 4.4 ms |
-| Spaceship | 34 ms | 4.8 ms |
+| Synthwave | 17 ms | 4.4 ms |
+| Spaceship | 35 ms | 4.9 ms |
 
 The RK3288 is several times slower per core; the estimate is 10 to 50 ms a frame, inside a 20 fps budget. `mpfree-startup --bench` measures it on the device (it only computes, no screen or storage access); that run is still to do. Scenes are deterministic (same time, same pixels), so previews and tests are exact.
 

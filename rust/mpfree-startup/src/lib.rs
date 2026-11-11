@@ -8,9 +8,9 @@
 //!   into "MPFree OS" drawn in characters (VT323 terminal font), shaded by
 //!   character density and colour, then a prompt types out.
 //! - [`synthwave::Synthwave`]: a striped sun rising over wavy neon hills and
-//!   a racing grid, with a slashed brush-marker title over the sun.
-//! - [`spaceship::Spaceship`]: the view from a ship's bridge, a purple spiral
-//!   galaxy through the windshield while the dashboard and HUD boot.
+//!   a racing grid, with the title in blade letters ([`blade`]) over the sun.
+//! - [`spaceship::Spaceship`]: a purple spiral galaxy in open space under a
+//!   sci-fi overlay analysing it, then the same title, white to violet.
 //!
 //! A [`Scene`] draws the whole screen for a time in seconds. Everything that
 //! never moves is drawn once into layers when the scene is made; a frame
@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod blade;
 pub mod console;
 pub mod gfx;
 pub mod spaceship;
