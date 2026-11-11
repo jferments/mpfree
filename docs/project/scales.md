@@ -57,6 +57,18 @@ For a synth on the pads, as the owner decided on 2026-11-11 (09:55Z). `layout(&P
 
 `PadLayout::toggled` is the one quick switch between Chromatic and In key; which button or touch does it is the Hello MPC thread's proposal. `DEFAULT_BANKS`: A Chromatic, B In key, C Chord pads, D In key an octave up, E to H copies of A to D (approved for now, to be discussed again). With no scale every layout is plain Chromatic.
 
+## The arp on a pad layout (proposed hook, 2026-11-11)
+
+Without a layout the arp is fed pad slots 0..15 (a kit, or the plain chromatic synth pads: slot 0 counts as C), as before. When the synth is on the pads, the audio loop calls `App::set_pad_layout(Some(layout(&setup)))`, again on PAD BANK or any layout change, and `set_pad_layout(None)` when a kit goes back on the pads. Then:
+
+- A pad presses its layout notes into the arp. A chord pad presses every note of its chord, so the arp arpeggiates the chord the pad plays, and the arp's own Chord on each pad stays Off by default on top of a chord layout.
+- Two pads sharing a note (I and iii share E and G) are counted, so letting go of one keeps the shared notes held.
+- Each pad remembers what it pressed, so a layout change while a pad is down still lets go of the right notes. A change between slots and notes lets go of everything held.
+- Pad pressure goes to every note the pad pressed.
+- `App::arp_plays_notes()` says the arp's events now carry MIDI notes: the synth plays each note as it is (no `note(pad)` on top), and `App::pad_of_note(note)` gives the pad to flash. The arp's scale and scale run work on these notes unchanged, since note 48 is C as slot 0 was.
+
+The App side is built and tested (`a_pad_layout_feeds_the_arp_its_notes_and_chord_pads_share_notes`). Calling it from the audio loop, and a synth `note_on` by note rather than by pad, are the Hello and synth threads' wiring.
+
 ## Next
 
 - Arp: done (chord on each pad, scale run, chords taking turns; see [arpeggiator.md](arpeggiator.md)).
