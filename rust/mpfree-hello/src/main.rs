@@ -77,6 +77,8 @@ mod kit;
 mod looper_page;
 mod looping;
 mod perf;
+#[cfg(test)]
+mod rt_safety;
 mod sample_page;
 mod sampler;
 mod synth;
