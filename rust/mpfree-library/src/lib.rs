@@ -710,7 +710,11 @@ impl Library {
                 break;
             }
         }
-        out.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| b.id.cmp(&a.id)));
+        out.sort_by(|a, b| {
+            b.deleted
+                .cmp(&a.deleted)
+                .then_with(|| natural_cmp(&b.id, &a.id))
+        });
         Ok(out)
     }
 
@@ -1095,6 +1099,27 @@ pub(crate) mod tests {
         assert!(lib.empty_trash().unwrap() >= 3 + 3);
         assert!(lib.trash().unwrap().is_empty());
         assert!(lib.restore("../../etc").is_err());
+    }
+
+    #[test]
+    fn the_trash_lists_the_newest_first_even_in_the_same_second() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        // Twelve deletes in one second: the ids' counters pass 9 to 10,
+        // which a plain string compare would put out of order.
+        let mut want = Vec::new();
+        for i in 1..=12 {
+            let name = format!("Take {i}.wav");
+            let f = lib.write_new(&s, &name, b"x").unwrap();
+            lib.delete(&f).unwrap();
+            want.insert(0, name);
+        }
+        let t = lib.trash().unwrap();
+        if t.first().map(|x| x.deleted) == t.last().map(|x| x.deleted) {
+            let got: Vec<_> = t.iter().map(|x| x.name.clone()).collect();
+            assert_eq!(got, want);
+        }
     }
 
     #[test]
