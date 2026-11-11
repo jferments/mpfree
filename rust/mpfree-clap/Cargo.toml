@@ -12,3 +12,5 @@ libc = "0.2"
 [dev-dependencies]
 mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
 mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-track = { path = "../mpfree-track" }
+mpfree-fx = { path = "../mpfree-fx" }

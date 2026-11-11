@@ -58,14 +58,15 @@ CLAP names two threads. The main thread is the control thread that opened the fi
 - the synth is an instrument with its parameters mapped (names, groups, ranges, enum names, meters, hidden left out, CLAP ids both ways), and two instances share their descriptions;
 - a note adds into the buffers from its frame and dies away after its note-off;
 - the same notes, parameters, pressure, bend and `AllOff` give the same samples in blocks of 1, 7, 64, 100 and 1000 frames, and with blocks longer than the activation size;
-- a parameter change lands on its frame (exactly 2x from that frame for +6 dB), `set_param` clamps, and meters can't be set;
+- a parameter change lands on its frame (exactly 2x from that frame for +6 dB), `set_param` clamps, a change queued before a `prepare` survives it, and meters can't be set;
 - the plugin's meters (voices, tempo) reach `param()`;
 - state saved from one instance loads into another, junk state is refused, and `param_text` gives the plugin's names;
 - the gain is an effect, ignores notes, and a failed block leaves the input dry;
 - the `.clap` file loads with `dlopen` and sounds exactly like the linked copy; a missing file and a library without `clap_entry` are refused;
 - a callback request reaches `idle()` once;
 - the entry's `init` and `deinit` balance, and the file stays started while a plugin or its control handle lives (`tests/lifecycle.rs`);
-- no allocation on the audio thread's path (`tests/no_alloc.rs`).
+- no allocation on the audio thread's path (`tests/no_alloc.rs`);
+- the test synth as a track host instrument: it plays on its track, takes a parameter from the host, rings out after a swap and comes back to be dropped; the test gain as an insert in a mixer strip's chain (`tests/track.rs`).
 
 The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including the `dlopen` test.
 

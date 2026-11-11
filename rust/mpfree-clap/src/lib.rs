@@ -1244,6 +1244,10 @@ impl Node for ClapNode {
             };
         }
         self.inst.refresh_values(&self.map);
+        // Changes still queued for the plugin are what param() shows.
+        for &(id, v) in &self.pending {
+            self.inst.values[usize::from(id)].store(v.to_bits(), Ordering::Relaxed);
+        }
         self.held = [false; 128];
     }
 
