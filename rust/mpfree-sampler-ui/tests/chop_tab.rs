@@ -96,13 +96,8 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
     assert_eq!(
         buttons(&s),
         (
-            vec![
-                "Split".to_string(),
-                "Merge".into(),
-                "Chop to A2–A16".into(),
-                "To keys C2".into()
-            ],
-            vec![true, true, true, true]
+            vec!["Split".to_string(), "Merge".into(), "Chop to A2–A16".into()],
+            vec![true, true, true]
         )
     );
     let bar = s.ui.get::<PadBar>(chop_tab::BAR).unwrap();
@@ -327,7 +322,11 @@ fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
         step(&mut s, Row::Amount, -1);
     }
     let b = s.tab.bounds(&s.state);
-    let a = press(&mut s, Button::ToKeys).unwrap();
+    step(&mut s, Row::Put, 1);
+    let list = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert_eq!(list.rows[5].value, "Keys from C2");
+    assert_eq!(buttons(&s).0[2], "To keys C2–D#2");
+    let a = press(&mut s, Button::ToPads).unwrap();
     let ChopAction::ToPads { keys_from, .. } = a else {
         panic!("{a:?}")
     };
@@ -387,10 +386,8 @@ fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     assert_eq!(s.tab.slices(), 17);
     assert_eq!(s.tab.pads(&s.state), None);
     assert_eq!(press(&mut s, Button::ToPads), None);
-    assert_eq!(press(&mut s, Button::ToKeys), None);
     let (labels, enabled) = buttons(&s);
     assert_eq!((labels[2].as_str(), enabled[2]), ("Max 16 slices", false));
-    assert!(!enabled[3]);
     assert!(list_right(&s).contains("too many"));
     // The bar's Wave tab goes back to Wave.
     let bar = s.ui.rect_of(chop_tab::BAR).unwrap();

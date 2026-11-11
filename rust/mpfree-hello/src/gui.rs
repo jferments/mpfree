@@ -2703,6 +2703,73 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     play.take_actions();
     out.push(("sample-play", play));
+    // The Play tab with the pad a keygroup and the pads playing notes, the
+    // list on the Keys rows.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut keys = sample_sampler(fonts());
+        keys.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Keys, 1), (Row::LowKey, 36), (Row::HighKey, -43)] {
+            keys.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+            keys.apply(ToUi::SampleLift);
+        }
+        keys.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: index(Row::PadsPlay),
+                delta: 1,
+            },
+        });
+        // Pads play picked, as a tap on the row picks it.
+        if let Some(list) = keys.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index(Row::PadsPlay);
+        }
+        keys.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index(Row::PadsPlay)),
+        });
+        keys.take_actions();
+        out.push(("sample-play-keys", keys));
+    }
+    // The Chop tab putting four slices on keys.
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let mut keys = sample_sampler(fonts());
+        keys.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [
+            (Row::Method, 1),
+            (Row::Method, 1),
+            (Row::Amount, -4),
+            (Row::Put, 1i32),
+        ] {
+            for _ in 0..delta.abs() {
+                keys.on_event(UiEvent {
+                    widget: LIST.into(),
+                    kind: EventKind::Step {
+                        index: index(row),
+                        delta: delta.signum(),
+                    },
+                });
+            }
+        }
+        keys.take_actions();
+        out.push(("sample-chop-keys", keys));
+    }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -3437,8 +3504,9 @@ mod tests {
             step(&mut p, Row::Amount, -1);
         }
         p.apply(ToUi::SampleQLink(3, -16));
+        step(&mut p, Row::Put, 1);
         p.take_actions();
-        tap(&mut p, chop_tab::BUTTONS, 3);
+        tap(&mut p, chop_tab::BUTTONS, 2);
         let kit = p.sample.project(0).unwrap();
         assert_eq!(kit.pad(1).unwrap().keys, Some(Keys::one(37)));
         assert_eq!(kit.pads_play(), PadsPlay::Keys { from: 36 });
