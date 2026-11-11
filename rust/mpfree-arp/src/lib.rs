@@ -15,7 +15,10 @@ pub mod record;
 /// Scales come from the shared `mpfree-scale` crate (the synth pads use it too).
 pub use mpfree_scale as scale;
 
-pub use engine::{Clock, Engine, Event, EventKind, Events, Mode, Order, Ramp, Rate, Settings, SyncStart, Velocity, PPQ};
+pub use engine::{
+    step_notes, Chord, Clock, Engine, Event, EventKind, Events, Mode, Order, Ramp, Rate, Settings,
+    SyncStart, Velocity, PPQ,
+};
 pub use library::{Library, LibraryError};
 pub use midi::{midi_file, Message, MidiOut, NoteMap};
 pub use notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};

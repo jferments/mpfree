@@ -101,9 +101,17 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 9] = [Family::Chromatic, Family::MajorModes, Family::MelodicMinorModes,
-                                  Family::HarmonicMinorModes, Family::MoreSevenNote, Family::Symmetric, Family::Bebop,
-                                  Family::PentatonicAndBlues, Family::Japanese];
+    pub const ALL: [Family; 9] = [
+        Family::Chromatic,
+        Family::MajorModes,
+        Family::MelodicMinorModes,
+        Family::HarmonicMinorModes,
+        Family::MoreSevenNote,
+        Family::Symmetric,
+        Family::Bebop,
+        Family::PentatonicAndBlues,
+        Family::Japanese,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -132,7 +140,12 @@ pub struct ScaleDef {
 }
 
 const fn def(name: &'static str, family: Family, mask: u16) -> ScaleDef {
-    ScaleDef { name, family, mask, down: mask }
+    ScaleDef {
+        name,
+        family,
+        mask,
+        down: mask,
+    }
 }
 
 /// The built-in scales, Chromatic first, then by family.
@@ -147,18 +160,47 @@ pub const SCALES: [ScaleDef; 49] = [
     def("Locrian", Family::MajorModes, LOCRIAN),
     def("Melodic minor", Family::MelodicMinorModes, MELODIC_MINOR),
     def("Dorian b2", Family::MelodicMinorModes, DORIAN_FLAT_2),
-    def("Lydian augmented", Family::MelodicMinorModes, LYDIAN_AUGMENTED),
-    def("Lydian dominant", Family::MelodicMinorModes, LYDIAN_DOMINANT),
-    def("Mixolydian b6", Family::MelodicMinorModes, MIXOLYDIAN_FLAT_6),
-    def("Locrian natural 2", Family::MelodicMinorModes, LOCRIAN_NATURAL_2),
+    def(
+        "Lydian augmented",
+        Family::MelodicMinorModes,
+        LYDIAN_AUGMENTED,
+    ),
+    def(
+        "Lydian dominant",
+        Family::MelodicMinorModes,
+        LYDIAN_DOMINANT,
+    ),
+    def(
+        "Mixolydian b6",
+        Family::MelodicMinorModes,
+        MIXOLYDIAN_FLAT_6,
+    ),
+    def(
+        "Locrian natural 2",
+        Family::MelodicMinorModes,
+        LOCRIAN_NATURAL_2,
+    ),
     def("Altered", Family::MelodicMinorModes, ALTERED),
     // Up as melodic minor, down as natural minor, as taught in classical theory.
-    ScaleDef { name: "Melodic minor, classical", family: Family::MelodicMinorModes, mask: MELODIC_MINOR, down: MINOR },
+    ScaleDef {
+        name: "Melodic minor, classical",
+        family: Family::MelodicMinorModes,
+        mask: MELODIC_MINOR,
+        down: MINOR,
+    },
     def("Harmonic minor", Family::HarmonicMinorModes, HARMONIC_MINOR),
-    def("Locrian natural 6", Family::HarmonicMinorModes, LOCRIAN_NATURAL_6),
+    def(
+        "Locrian natural 6",
+        Family::HarmonicMinorModes,
+        LOCRIAN_NATURAL_6,
+    ),
     def("Ionian #5", Family::HarmonicMinorModes, IONIAN_SHARP_5),
     def("Dorian #4", Family::HarmonicMinorModes, DORIAN_SHARP_4),
-    def("Phrygian dominant", Family::HarmonicMinorModes, PHRYGIAN_DOMINANT),
+    def(
+        "Phrygian dominant",
+        Family::HarmonicMinorModes,
+        PHRYGIAN_DOMINANT,
+    ),
     def("Lydian #2", Family::HarmonicMinorModes, LYDIAN_SHARP_2),
     def("Ultralocrian", Family::HarmonicMinorModes, ULTRALOCRIAN),
     def("Harmonic major", Family::MoreSevenNote, HARMONIC_MAJOR),
@@ -170,14 +212,30 @@ pub const SCALES: [ScaleDef; 49] = [
     def("Persian", Family::MoreSevenNote, PERSIAN),
     def("Enigmatic", Family::MoreSevenNote, ENIGMATIC),
     def("Whole tone", Family::Symmetric, WHOLE_TONE),
-    def("Diminished, whole-half", Family::Symmetric, DIMINISHED_WHOLE_HALF),
-    def("Diminished, half-whole", Family::Symmetric, DIMINISHED_HALF_WHOLE),
+    def(
+        "Diminished, whole-half",
+        Family::Symmetric,
+        DIMINISHED_WHOLE_HALF,
+    ),
+    def(
+        "Diminished, half-whole",
+        Family::Symmetric,
+        DIMINISHED_HALF_WHOLE,
+    ),
     def("Augmented", Family::Symmetric, AUGMENTED),
     def("Bebop dominant", Family::Bebop, BEBOP_DOMINANT),
     def("Bebop major", Family::Bebop, BEBOP_MAJOR),
     def("Bebop dorian", Family::Bebop, BEBOP_DORIAN),
-    def("Major pentatonic", Family::PentatonicAndBlues, PENTATONIC_MAJOR),
-    def("Minor pentatonic", Family::PentatonicAndBlues, PENTATONIC_MINOR),
+    def(
+        "Major pentatonic",
+        Family::PentatonicAndBlues,
+        PENTATONIC_MAJOR,
+    ),
+    def(
+        "Minor pentatonic",
+        Family::PentatonicAndBlues,
+        PENTATONIC_MINOR,
+    ),
     def("Blues", Family::PentatonicAndBlues, BLUES),
     def("Major blues", Family::PentatonicAndBlues, MAJOR_BLUES),
     def("Egyptian", Family::PentatonicAndBlues, EGYPTIAN),
@@ -197,11 +255,17 @@ pub fn by_name(name: &str) -> Option<&'static ScaleDef> {
 }
 
 /// Note names, C = 0, with sharps.
-pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+pub const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 /// A note's name with its octave (middle C, 60, is C4).
 pub fn note_name(note: i16) -> String {
-    format!("{}{}", NOTE_NAMES[note.rem_euclid(12) as usize], note.div_euclid(12) - 1)
+    format!(
+        "{}{}",
+        NOTE_NAMES[note.rem_euclid(12) as usize],
+        note.div_euclid(12) - 1
+    )
 }
 
 /// What happens to a note outside the scale.
@@ -243,7 +307,11 @@ pub struct Scale {
 
 const fn clean(mask: u16) -> u16 {
     let mask = mask & CHROMATIC;
-    if mask == 0 { CHROMATIC } else { mask | 1 }
+    if mask == 0 {
+        CHROMATIC
+    } else {
+        mask | 1
+    }
 }
 
 impl Scale {
@@ -251,12 +319,20 @@ impl Scale {
     /// chromatic, and the root is always in it.
     pub const fn new(root: u8, mask: u16) -> Self {
         let mask = clean(mask);
-        Self { root: root % 12, mask, down: mask }
+        Self {
+            root: root % 12,
+            mask,
+            down: mask,
+        }
     }
 
     /// A scale with other notes coming down.
     pub const fn with_down(root: u8, up: u16, down: u16) -> Self {
-        Self { root: root % 12, mask: clean(up), down: clean(down) }
+        Self {
+            root: root % 12,
+            mask: clean(up),
+            down: clean(down),
+        }
     }
 
     /// A built-in scale on `root`.
@@ -322,7 +398,11 @@ impl Scale {
             Snap::Up => Some(self.snap_up(note)),
             Snap::Nearest => {
                 let (below, above) = (self.snap(note), self.snap_up(note));
-                Some(if above - note < note - below { above } else { below })
+                Some(if above - note < note - below {
+                    above
+                } else {
+                    below
+                })
             }
             Snap::Skip => None,
         }
@@ -383,7 +463,10 @@ pub struct PartScale {
 
 impl Default for PartScale {
     fn default() -> Self {
-        Self { own: None, follow_project: true }
+        Self {
+            own: None,
+            follow_project: true,
+        }
     }
 }
 
@@ -422,11 +505,20 @@ fn parse_set(text: &str) -> Result<u16, String> {
     if toks.is_empty() {
         return Err("no notes".to_string());
     }
-    let degrees = toks.iter().any(|t| t.starts_with(['b', '#'])) || (toks.contains(&"1") && !toks.contains(&"0"));
+    let degrees = toks.iter().any(|t| t.starts_with(['b', '#']))
+        || (toks.contains(&"1") && !toks.contains(&"0"));
     let mut m = 1u16;
     for tok in toks {
-        let n = if degrees { degree_of(tok) } else { tok.parse::<u8>().ok().filter(|&n| n <= 11) };
-        let what = if degrees { "a degree (1 to 7, with b or # before it)" } else { "a semitone (0 to 11)" };
+        let n = if degrees {
+            degree_of(tok)
+        } else {
+            tok.parse::<u8>().ok().filter(|&n| n <= 11)
+        };
+        let what = if degrees {
+            "a degree (1 to 7, with b or # before it)"
+        } else {
+            "a semitone (0 to 11)"
+        };
         m |= 1 << n.ok_or_else(|| format!("\"{tok}\" is not {what}"))?;
     }
     Ok(m)
@@ -435,7 +527,10 @@ fn parse_set(text: &str) -> Result<u16, String> {
 fn degree_of(tok: &str) -> Option<u8> {
     let degree = tok.trim_start_matches(['b', '#']);
     let accidentals = &tok[..tok.len() - degree.len()];
-    let shift: i16 = accidentals.chars().map(|c| if c == '#' { 1 } else { -1 }).sum();
+    let shift: i16 = accidentals
+        .chars()
+        .map(|c| if c == '#' { 1 } else { -1 })
+        .sum();
     let n: u8 = degree.parse().ok()?;
     let base: i16 = match n {
         1 => 0,
@@ -452,12 +547,20 @@ fn degree_of(tok: &str) -> Option<u8> {
 
 /// A mask as semitones above the root ("0 2 3 5 7 9 11"), for saving.
 pub fn steps_text(mask: u16) -> String {
-    (0..12).filter(|i| mask & (1 << i) != 0).map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+    (0..12)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A custom scale written back: up, and `/ down` when it differs.
 pub fn scale_text(up: u16, down: u16) -> String {
-    if up == down { steps_text(up) } else { format!("{} / {}", steps_text(up), steps_text(down)) }
+    if up == down {
+        steps_text(up)
+    } else {
+        format!("{} / {}", steps_text(up), steps_text(down))
+    }
 }
 
 #[cfg(test)]
@@ -476,18 +579,41 @@ mod tests {
         let a_minor_pent = Scale::new(9, PENTATONIC_MINOR);
         assert_eq!(a_minor_pent.step(57, 1), 60);
         assert_eq!(a_minor_pent.snap(59), 57);
-        assert_eq!(Scale::new(14, 0), Scale { root: 2, mask: CHROMATIC, down: CHROMATIC });
+        assert_eq!(
+            Scale::new(14, 0),
+            Scale {
+                root: 2,
+                mask: CHROMATIC,
+                down: CHROMATIC
+            }
+        );
     }
 
     #[test]
     fn the_library_is_whole_and_well_formed() {
         assert_eq!(SCALES[0].name, "Chromatic");
         for (i, d) in SCALES.iter().enumerate() {
-            assert!(d.mask & 1 == 1 && d.down & 1 == 1, "{} has its root", d.name);
+            assert!(
+                d.mask & 1 == 1 && d.down & 1 == 1,
+                "{} has its root",
+                d.name
+            );
             assert!(d.mask <= CHROMATIC && d.down <= CHROMATIC, "{}", d.name);
-            assert!(SCALES[..i].iter().all(|e| !e.name.eq_ignore_ascii_case(d.name)), "{} twice", d.name);
+            assert!(
+                SCALES[..i]
+                    .iter()
+                    .all(|e| !e.name.eq_ignore_ascii_case(d.name)),
+                "{} twice",
+                d.name
+            );
             // The built-ins are all distinct sets of notes.
-            assert!(SCALES[..i].iter().all(|e| (e.mask, e.down) != (d.mask, d.down)), "{} repeats another", d.name);
+            assert!(
+                SCALES[..i]
+                    .iter()
+                    .all(|e| (e.mask, e.down) != (d.mask, d.down)),
+                "{} repeats another",
+                d.name
+            );
         }
         // Families are in order, each one together.
         let fams: Vec<Family> = SCALES.iter().map(|d| d.family).collect();
@@ -501,19 +627,42 @@ mod tests {
         assert_eq!(seen, Family::ALL);
         // Every mode of major is a rotation of major (the same notes from
         // another root), and likewise for melodic and harmonic minor.
-        let rotations = |m: u16| (0..12).filter(|r| m & (1 << r) != 0)
-            .map(|r| ((m >> r) | (m << (12 - r))) & CHROMATIC).collect::<Vec<_>>();
-        for (family, parent) in [(Family::MajorModes, MAJOR), (Family::MelodicMinorModes, MELODIC_MINOR),
-                                 (Family::HarmonicMinorModes, HARMONIC_MINOR)] {
+        let rotations = |m: u16| {
+            (0..12)
+                .filter(|r| m & (1 << r) != 0)
+                .map(|r| ((m >> r) | (m << (12 - r))) & CHROMATIC)
+                .collect::<Vec<_>>()
+        };
+        for (family, parent) in [
+            (Family::MajorModes, MAJOR),
+            (Family::MelodicMinorModes, MELODIC_MINOR),
+            (Family::HarmonicMinorModes, HARMONIC_MINOR),
+        ] {
             let r = rotations(parent);
-            for d in SCALES.iter().filter(|d| d.family == family && d.mask == d.down) {
+            for d in SCALES
+                .iter()
+                .filter(|d| d.family == family && d.mask == d.down)
+            {
                 assert!(r.contains(&d.mask), "{} is a mode of its family", d.name);
             }
-            assert_eq!(SCALES.iter().filter(|d| d.family == family && d.mask == d.down).count(), 7, "{family:?}");
+            assert_eq!(
+                SCALES
+                    .iter()
+                    .filter(|d| d.family == family && d.mask == d.down)
+                    .count(),
+                7,
+                "{family:?}"
+            );
         }
         assert_eq!(by_name("dorian b2").map(|d| d.mask), Some(DORIAN_FLAT_2));
-        assert_eq!(by_name("Diminished half-whole").map(|d| d.mask), Some(DIMINISHED_HALF_WHOLE));
-        assert_eq!(by_name("harmonic_minor").map(|d| d.mask), Some(HARMONIC_MINOR));
+        assert_eq!(
+            by_name("Diminished half-whole").map(|d| d.mask),
+            Some(DIMINISHED_HALF_WHOLE)
+        );
+        assert_eq!(
+            by_name("harmonic_minor").map(|d| d.mask),
+            Some(HARMONIC_MINOR)
+        );
         assert!(by_name("klingon").is_none());
     }
 
@@ -522,7 +671,11 @@ mod tests {
         let c = Scale::new(0, MAJOR);
         assert_eq!(c.snapped(61, Snap::Down), Some(60));
         assert_eq!(c.snapped(61, Snap::Up), Some(62));
-        assert_eq!(c.snapped(61, Snap::Nearest), Some(60), "as near both ways: the one below");
+        assert_eq!(
+            c.snapped(61, Snap::Nearest),
+            Some(60),
+            "as near both ways: the one below"
+        );
         assert_eq!(c.snapped(61, Snap::Skip), None);
         assert_eq!(c.snapped(62, Snap::Skip), Some(62), "in the scale: kept");
         let blues = Scale::new(0, BLUES);
@@ -565,32 +718,85 @@ mod tests {
         let key = Scale::new(7, MAJOR);
         let off = PartScale::default();
         assert_eq!(off.resolve(None), None, "off by default, no forced key");
-        assert_eq!(off.resolve(Some(key)), Some(key), "a project with a key: parts follow it");
-        let mine = PartScale { own: Some(own), follow_project: true };
+        assert_eq!(
+            off.resolve(Some(key)),
+            Some(key),
+            "a project with a key: parts follow it"
+        );
+        let mine = PartScale {
+            own: Some(own),
+            follow_project: true,
+        };
         assert_eq!(mine.resolve(None), Some(own));
         assert_eq!(mine.resolve(Some(key)), Some(key));
-        let apart = PartScale { own: Some(own), follow_project: false };
-        assert_eq!(apart.resolve(Some(key)), Some(own), "switched back to its own");
+        let apart = PartScale {
+            own: Some(own),
+            follow_project: false,
+        };
+        assert_eq!(
+            apart.resolve(Some(key)),
+            Some(own),
+            "switched back to its own"
+        );
     }
 
     #[test]
     fn custom_scales_from_semitones_or_degrees() {
-        assert_eq!(parse_steps("0 2 3 5 7 9 11"), Ok((MELODIC_MINOR, MELODIC_MINOR)));
-        assert_eq!(parse_steps("1 2 b3 4 5 6 7 / 1 2 b3 4 5 b6 b7"), Ok((MELODIC_MINOR, MINOR)));
-        assert_eq!(parse_steps("2 b3 5"), Ok((mask(&[0, 2, 3, 7]), mask(&[0, 2, 3, 7]))), "the root is added");
-        assert_eq!(parse_steps("0 1 4 5 7 8 10 11"), Ok((mask(&[0, 1, 4, 5, 7, 8, 10, 11]), mask(&[0, 1, 4, 5, 7, 8, 10, 11]))));
-        assert_eq!(parse_steps("#4 bb7"), Ok((mask(&[0, 6, 9]), mask(&[0, 6, 9]))));
-        assert!(parse_steps("0 2 12").unwrap_err().contains("\"12\" is not a semitone"));
-        assert!(parse_steps("1 2 8").unwrap_err().contains("\"8\" is not a degree"));
-        assert_eq!(parse_steps("2 4 7").map(|p| p.0), Ok(mask(&[0, 2, 4, 7])), "no 1 and no accidentals: semitones");
-        assert_eq!(parse_steps("1 2 3 5 6").map(|p| p.0), Ok(PENTATONIC_MAJOR), "degrees");
+        assert_eq!(
+            parse_steps("0 2 3 5 7 9 11"),
+            Ok((MELODIC_MINOR, MELODIC_MINOR))
+        );
+        assert_eq!(
+            parse_steps("1 2 b3 4 5 6 7 / 1 2 b3 4 5 b6 b7"),
+            Ok((MELODIC_MINOR, MINOR))
+        );
+        assert_eq!(
+            parse_steps("2 b3 5"),
+            Ok((mask(&[0, 2, 3, 7]), mask(&[0, 2, 3, 7]))),
+            "the root is added"
+        );
+        assert_eq!(
+            parse_steps("0 1 4 5 7 8 10 11"),
+            Ok((
+                mask(&[0, 1, 4, 5, 7, 8, 10, 11]),
+                mask(&[0, 1, 4, 5, 7, 8, 10, 11])
+            ))
+        );
+        assert_eq!(
+            parse_steps("#4 bb7"),
+            Ok((mask(&[0, 6, 9]), mask(&[0, 6, 9])))
+        );
+        assert!(parse_steps("0 2 12")
+            .unwrap_err()
+            .contains("\"12\" is not a semitone"));
+        assert!(parse_steps("1 2 8")
+            .unwrap_err()
+            .contains("\"8\" is not a degree"));
+        assert_eq!(
+            parse_steps("2 4 7").map(|p| p.0),
+            Ok(mask(&[0, 2, 4, 7])),
+            "no 1 and no accidentals: semitones"
+        );
+        assert_eq!(
+            parse_steps("1 2 3 5 6").map(|p| p.0),
+            Ok(PENTATONIC_MAJOR),
+            "degrees"
+        );
         assert!(parse_steps("1 2 x").is_err());
         assert!(parse_steps("").is_err());
         assert!(parse_steps("0 2 /").is_err());
         assert_eq!(steps_text(MAJOR), "0 2 4 5 7 9 11");
-        assert_eq!(scale_text(MELODIC_MINOR, MINOR), "0 2 3 5 7 9 11 / 0 2 3 5 7 8 10");
+        assert_eq!(
+            scale_text(MELODIC_MINOR, MINOR),
+            "0 2 3 5 7 9 11 / 0 2 3 5 7 8 10"
+        );
         for d in SCALES {
-            assert_eq!(parse_steps(&scale_text(d.mask, d.down)), Ok((d.mask, d.down)), "{}", d.name);
+            assert_eq!(
+                parse_steps(&scale_text(d.mask, d.down)),
+                Ok((d.mask, d.down)),
+                "{}",
+                d.name
+            );
         }
         assert_eq!(note_name(60), "C4");
         assert_eq!(note_name(49), "C#3");
