@@ -49,30 +49,19 @@ fn view() -> PlayView {
     let mut c = Clip::new("chord", 3840);
     c.notes = [60u8, 64, 67]
         .iter()
-        .map(|&n| Note {
-            tick: 0,
-            len: 3840,
-            note: n,
-            velocity: 100,
-            chance: 100,
-        })
+        .map(|&n| Note::new(0, 3840, n, 100))
         .collect();
     keys.slots[0] = Some(c);
     let mut drums = Track::new("drums", 1);
     let mut k = Clip::new("kick", 3840);
-    k.notes = vec![Note {
-        tick: 0,
-        len: 100,
-        note: 36,
-        velocity: 120,
-        chance: 100,
-    }];
+    k.notes = vec![Note::new(0, 100, 36, 120)];
     drums.slots[0] = Some(k);
     p.tracks = vec![keys, drums];
     let launch = |track| Launch {
         track,
         slot: 0,
         origin: 0,
+        start: 0,
     };
     PlayView::compile(&p, &[launch(0), launch(1)]).unwrap()
 }
@@ -295,71 +284,54 @@ fn a_panic_clears_every_arp_and_passes_through() {
     );
 }
 
-/// An idle arp skips its periods; the notes it plays once a pad wakes it are
-/// the same as from an arp run every period, with the transport rolling or
-/// stopped.
+/// A through track's parameter locks skip its arp (which has no use for
+/// them) and reach the sink as the player sent them, ahead of the arp's
+/// notes on the same frame; its notes still go into the arp.
 #[test]
-fn an_idle_arp_that_skips_its_periods_plays_the_same_when_woken() {
-    for rolling in [true, false] {
-        let mut t = Transport::new(44_100, 120.0).unwrap();
-        if rolling {
-            t.command(0, Command::Play);
-        }
-        let mut arps = TrackArps::new(44_100, 120.0);
-        let bass = 3;
-        arps.engine(bass).unwrap().set_settings(up_sixteenths());
-        let mut reference = mpfree_play::ArpHost::new(mpfree_arp::Engine::new(44_100, 120.0));
-        reference.engine.set_settings(up_sixteenths());
-        let (mut block, mut got, mut want) = (Block::new(), Log::default(), Vec::new());
-        let mut periods = 0u32;
-        while t.frame() < 66_150 {
-            let n = 100 + (periods * 37) % 300;
-            periods += 1;
-            t.process(n, &mut block);
-            let start = block.start_frame;
-            // Pressed 0.7 s in (mid-period), let go 0.4 s later.
-            for (at, e) in [
-                (
-                    30_870u64,
-                    Event::NoteOn {
-                        note: 45,
-                        velocity: 100,
-                    },
-                ),
-                (48_510, Event::NoteOff { note: 45 }),
-            ] {
-                if (start..start + u64::from(n)).contains(&at) {
-                    arps.pad(bass, (at - start) as u32, e);
-                    reference.input((at - start) as u32, e);
+fn a_through_tracks_locks_go_around_its_arp() {
+    use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let mut block = Block::new();
+    t.process(256, &mut block);
+    let addr = RelAddr::new(OnTrack::Inst, 1).on(KEYS as u8);
+    let out = |offset, event| Out {
+        offset,
+        frame: u64::from(offset),
+        track: KEYS as u16,
+        dest: 0,
+        event,
+    };
+    let mut sink = arps.through_sink();
+    sink.send(out(0, Event::Lock { addr, value: 0.25 }));
+    sink.send(out(
+        0,
+        Event::NoteOn {
+            note: 60,
+            velocity: 100,
+        },
+    ));
+    sink.send(out(200, Event::Unlock { addr }));
+    let mut log = Log::default();
+    arps.finish(&block, &mut log);
+    let events: Vec<_> = log.0.iter().map(|o| (o.offset, o.event)).collect();
+    assert_eq!(
+        events,
+        [
+            (0, Event::Lock { addr, value: 0.25 }),
+            (
+                0,
+                Event::NoteOn {
+                    note: 60,
+                    velocity: 100
                 }
-            }
-            arps.through_sink();
-            arps.finish(&block, &mut got);
-            reference.process(&block, &mut |offset, kind| {
-                want.push((start + u64::from(offset), kind))
-            });
-        }
-        let got: Vec<_> = got
-            .0
-            .iter()
-            .filter(|o| usize::from(o.track) == bass)
-            .map(|o| (o.frame, o.event))
-            .collect();
-        let want: Vec<_> = want
-            .iter()
-            .map(|&(f, k)| {
-                (
-                    f,
-                    match k {
-                        mpfree_arp::EventKind::On { note, velocity } => {
-                            Event::NoteOn { note, velocity }
-                        }
-                        mpfree_arp::EventKind::Off { note } => Event::NoteOff { note },
-                    },
-                )
-            })
-            .collect();
-        assert!(want.len() >= 6, "rolling {rolling}: {want:?}");
-        assert_eq!(got, want, "rolling {rolling}");
-    }
+            ),
+            (200, Event::Unlock { addr }),
+        ],
+        "the lock first, then the arp's first step, then the unlock"
+    );
+    assert_eq!(arps.dropped(), 0);
 }
