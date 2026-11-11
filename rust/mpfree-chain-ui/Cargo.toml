@@ -1,0 +1,18 @@
+[package]
+name = "mpfree-chain-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The FX chain editor and the macros and morph panel for the MPC One: build a chain, assign parameters to macros, modulate them and bind them to the Q-Links, built on mpfree-ui over mpfree-fx's Chain and mpfree-mod"
+
+[dependencies]
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-mod = { path = "../mpfree-mod" }
+mpfree-param = { path = "../mpfree-param" }
+mpfree-synth-ui = { path = "../mpfree-synth-ui" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-chain-preview"
+path = "src/bin/preview.rs"
