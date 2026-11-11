@@ -94,7 +94,7 @@ ALIGN = 2048                        # 1 MiB, in sectors
 LOG_SIZE = 32 << 20
 ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
-# 0x001cc915, Realtek RTL8211E; docs/hardware/MPC_ONE_3_6_0_ETHERNET_USB_20261109.md).
+# 0x001cc915, Realtek RTL8211E; docs/hardware/ethernet-usb.md).
 PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
 PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
