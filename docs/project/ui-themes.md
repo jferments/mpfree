@@ -26,14 +26,14 @@ widget ──draws meaning──▶ PaintCx ──▶ Styled (theme effects) ─
                                           ├─ rounded box          → round / cut / square corners
                                           ├─ outline              → + glow halo
                                           └─ text mask            → + soft text glow
-Fonts: Sans / Bold roles → the theme's `face_body` / `face_title` (Console draws everything in mono)
+Fonts: Sans / Bold roles → the theme's `face_body` / `face_title` (every built-in theme keeps the same UI font)
 ```
 
 | Layer | What it holds | Code |
 | --- | --- | --- |
 | Tokens | Colours by meaning (`bg`, `surface`, `raised`, `outline`, `text`, `text_dim`, `text_faint`, `accent`, `accent2`, `on_accent`, `good`, `warn`, `bad`), eight `track` colours, sizes (`radius`, `gap`, `pad`, five text sizes). | [`theme.rs`](../../rust/mpfree-ui/src/theme.rs) |
 | Effects | `corners` (round, chamfer, square), `glow` (outline halo), `text_glow`, `backdrop` (solid, gradient, grid, dots, scanlines) with `backdrop_to`, `backdrop_line`, `backdrop_step`, and `tint` (how far kit and pad colours lean towards the accent on screen; pad lights are unchanged). | [`style.rs`](../../rust/mpfree-ui/src/style.rs) |
-| Faces | `face_body`, `face_title`: which of the three built-in faces (sans, bold, mono) the two text roles use. | [`text.rs`](../../rust/mpfree-ui/src/text.rs) `Fonts::set_roles` |
+| Faces | `face_body`, `face_title`: which of the three built-in faces (sans, bold, mono) the two text roles use. The owner wants one consistent UI font in every theme (2026-11-11), so the built-in themes all keep sans and bold; the hook stays for user themes. | [`text.rs`](../../rust/mpfree-ui/src/text.rs) `Fonts::set_roles` |
 | Startup | Which startup screen goes with the theme (`galaxy`, `console`, `synthwave`, `spaceship`). | [`mpfree-startup`](../../rust/mpfree-startup) |
 
 `Styled` draws the default theme pixel for pixel as before (a test checks this). The backdrop is laid out in screen coordinates, so a widget that redraws only part of itself lines up with the rest of the screen. `Ui::set_theme` switches theme at run time: tokens, effects and font roles change together and every page is laid out again with the new spacing.
@@ -66,25 +66,29 @@ Today `mpfree-hello --theme NAME|FILE` picks the theme (for `--preview` and on t
 | Theme | Look | Effects | Startup screen |
 | --- | --- | --- | --- |
 | Default | The current dark studio look, blue accent. | none | The spiral galaxy (`mpfree-splash`, its own thread) |
-| Console | Phosphor green on near-black, mono everywhere. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | ASCII rain and noise resolve, cell by cell, into "MPFree" in ASCII art; then a short log types out. Drawn at half resolution and doubled, with scanlines and bloom. |
-| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises behind neon mountains and palm trees over a racing grid; a chrome "MPFree" flickers on like a neon tube. |
-| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | The ship drops out of warp in front of a purple spiral galaxy; the HUD (heading tape, reticle, readouts) boots and the title is wiped on by a scan line. |
+| Console | Phosphor green on near-black, in the normal UI font. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | A chaotic swirl of characters in many shades of green settles, arm by arm, into "MPFree" and "OS v0.1" drawn in characters with a terminal font (VT323), shaded by character density and colour; then a prompt types out. Scanlines and bloom. |
+| Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree" in a slashed brush-marker face (Permanent Marker) with speed streaks is slashed on over the sun, then "OS v0.1" flickers on. No palm trees. |
+| Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | The view from a ship's bridge: a purple spiral galaxy fades up through the windshield, the dashboard boots (rim light, LED rows, sliders, a radar, a boot log, a spectrum), the windshield HUD locks onto the galaxy and "MPFree" is wiped onto the glass. |
 
 ## Startup screens and the CPU
+
+Two display fonts are bundled for the startup screens only, unmodified and with their licences in [`mpfree-startup/fonts`](../../rust/mpfree-startup/fonts): VT323 (SIL OFL 1.1) for Console's character art and Permanent Marker (Apache 2.0) for the Synthwave title. The UI itself keeps its one font in every theme.
 
 Each scene draws everything that never moves once (sky, mountains, palm trees, the galaxy's glow, text) and per frame only copies those layers and draws what moves. Time per 1280x800 frame on the workstation (one core, release build):
 
 | Scene | Set-up | Frame (average) |
 | --- | --- | --- |
-| Console | 5 ms | 5.6 ms |
-| Synthwave | 25 ms | 2.5 ms |
-| Spaceship | 25 ms | 1.1 ms |
+| Console | 8 ms | 8.2 ms |
+| Synthwave | 22 ms | 5.1 ms |
+| Spaceship | 46 ms | 2.4 ms |
 
-The RK3288 is several times slower per core; the estimate is 10 to 45 ms a frame, inside a 20 fps budget. `mpfree-startup --bench` measures it on the device (it only computes, no screen or storage access); that run is still to do. Scenes are deterministic (same time, same pixels), so previews and tests are exact.
+The RK3288 is several times slower per core; the estimate is 10 to 50 ms a frame, inside a 20 fps budget. `mpfree-startup --bench` measures it on the device (it only computes, no screen or storage access); that run is still to do. Scenes are deterministic (same time, same pixels), so previews and tests are exact.
 
 The galaxy for the default theme stays in `mpfree-splash`. The Spaceship galaxy is a different, cheaper particle galaxy seen through a HUD, so the two do not duplicate each other; if the splash thread wants one galaxy engine with a palette, Spaceship can switch to it.
 
 ## Layouts: rearranging pages
+
+The app's own layout (top bar, tab set and order, Play page, right-hand column, pad grid) is owned by the Hello MPC thread and set by its layout spec, which Jay approves (`/mnt/project-files/hello-mpc/layout-spec.md`). Themes never change it, and this PR ships no layout change. Layout files are a user's own rearrangement, read on top of the app's layouts.
 
 Pages are already layout specs over named widgets (`col(header:60, row(pads:*, side:480):*, hint:28)`, see [UI architecture](ui-architecture.md)). New:
 
