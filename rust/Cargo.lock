@@ -500,7 +500,9 @@ dependencies = [
  "mpfree-capture",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-fx",
  "mpfree-looper",
+ "mpfree-mixer-ui",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
@@ -644,6 +646,15 @@ dependencies = [
  "mpfree-controller",
  "mpfree-screen-log",
  "ratatui",
+]
+
+[[package]]
+name = "mpfree-startup"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "mpfree-screen-log",
+ "mpfree-ui",
 ]
 
 [[package]]

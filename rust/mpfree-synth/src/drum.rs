@@ -266,6 +266,226 @@ impl Voice {
     }
 }
 
+/// A hit of `pad` from its fields (`g` reads one field of the pad), at
+/// `rate`: what [`Drums`] plays and [`hit_shape`] draws.
+fn build(
+    g: impl Fn(u16) -> f32,
+    rate: f32,
+    pad: usize,
+    velocity: u8,
+    seed: u64,
+    clock: u64,
+) -> Voice {
+    use crate::drum_params::model::*;
+    let vel = f32::from(velocity.min(127)) / 127.0;
+    let model = g(field::MODEL) as u8;
+    let ratio = (g(field::TUNE) / 12.0).exp2();
+    let decay = g(field::DECAY) * 0.001;
+    let tone =
+        (g(field::TONE) / 100.0 - g(field::VEL_TONE) / 100.0 * (1.0 - vel) * 0.6).clamp(0.0, 1.0);
+    let snap = g(field::SNAP) / 100.0;
+    let nz = g(field::NOISE) / 100.0;
+    let vl = g(field::VEL_LEVEL) / 100.0;
+    let amp = (1.0 - vl + vl * vel * vel)
+        * if g(field::LEVEL) <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(g(field::LEVEL) / 20.0)
+        };
+    let pan = g(field::PAN) / 100.0;
+
+    let mut v = Voice {
+        state: State::On,
+        pad: pad as u8,
+        choke: g(field::CHOKE) as u8,
+        age: clock,
+        kill: 1.0,
+        rng: Rng::new(seed),
+        body: 1.0,
+        body_mul: t60(decay, rate),
+        noise: 1.0,
+        noise_mul: t60(decay, rate),
+        pitch: 1.0,
+        pitch_mul: (-4.6 / (g(field::SWEEP_TIME) * 0.001 * rate).max(1.0)).exp(),
+        sweep: g(field::SWEEP),
+        click: 1.0,
+        click_mul: t60(0.004, rate),
+        click_lvl: snap * 0.5,
+        drive: g(field::DRIVE) / 100.0,
+        ..Voice::default()
+    };
+    // How loud each model is at full velocity, so the defaults peak
+    // near -12 dBFS.
+    let norm;
+    match model {
+        KICK => {
+            v.f0 = 50.0 * ratio;
+            v.lvl_a = 1.0;
+            v.shape = tone * 4.0;
+            v.noise_lvl = nz * 0.3;
+            v.noise_mul = t60(decay * 0.3, rate);
+            v.f1.set(200.0 + tone * 4000.0, 0.7, rate);
+            v.o1 = Out::Lp;
+            v.click_lvl = snap * 0.6;
+            v.click_mul = t60(0.003, rate);
+            norm = 0.56;
+        }
+        SNARE => {
+            v.f0 = 185.0 * ratio;
+            v.lvl_a = 0.65 * (1.0 - nz * 0.4);
+            v.ratio_b = 1.56;
+            v.lvl_b = 0.45 * (1.0 - nz * 0.4);
+            v.body_mul = t60(decay * 0.6, rate);
+            v.noise_lvl = nz;
+            v.f1.set(1500.0 + tone * 6000.0, 0.6, rate);
+            v.o1 = Out::Bp;
+            v.f2.set(700.0, 0.7, rate);
+            v.o2 = Out::Hp;
+            norm = 0.38;
+        }
+        CLAP => {
+            v.clap = true;
+            v.noise_lvl = 1.0;
+            v.burst_mul = t60(0.004 + (1.0 - snap) * 0.012, rate);
+            v.f1.set(800.0 + tone * 2400.0, 1.2, rate);
+            v.o1 = Out::Bp;
+            v.f2.set(400.0, 0.7, rate);
+            v.o2 = Out::Hp;
+            v.click_lvl = 0.0;
+            norm = 0.75;
+        }
+        CLOSED_HAT | OPEN_HAT | CYMBAL => {
+            v.n_metal = 6;
+            for (k, hz) in METAL.iter().enumerate() {
+                v.dt_m[k] = hz * ratio / rate;
+                v.ph_m[k] = (k as f32 * 0.37) % 1.0;
+            }
+            v.metal_lvl = (1.0 - nz) / 3.0;
+            v.noise_lvl = nz * 0.6;
+            let (bp, hp) = if model == CYMBAL {
+                (5000.0 + tone * 5000.0, 3500.0)
+            } else {
+                (7000.0 + tone * 5000.0, 6000.0 + tone * 2000.0)
+            };
+            v.f1.set(bp * ratio.sqrt(), 0.9, rate);
+            v.o1 = Out::Bp;
+            v.f2.set(hp, 0.7, rate);
+            v.o2 = Out::Hp;
+            v.click_lvl = snap * 0.25;
+            norm = if model == CYMBAL { 0.9 } else { 1.6 };
+        }
+        TOM => {
+            v.f0 = 120.0 * ratio;
+            v.lvl_a = 1.0;
+            v.shape = tone * 1.5;
+            v.noise_lvl = nz * 0.5;
+            v.noise_mul = t60(decay * 0.25, rate);
+            v.f1.set(v.f0 * 3.0, 1.0, rate);
+            v.o1 = Out::Bp;
+            norm = 0.3;
+        }
+        RIM => {
+            v.f0 = 500.0 * ratio;
+            v.lvl_a = 0.6;
+            v.ratio_b = 3.3;
+            v.lvl_b = 0.4;
+            v.noise_lvl = nz * 0.8;
+            v.f1.set(2000.0 + tone * 3000.0, 2.0, rate);
+            v.o1 = Out::Bp;
+            v.click_lvl = snap * 0.8;
+            v.click_mul = t60(0.002, rate);
+            norm = 0.36;
+        }
+        COWBELL => {
+            v.n_metal = 2;
+            v.dt_m[0] = 540.0 * ratio / rate;
+            v.dt_m[1] = 800.0 * ratio / rate;
+            v.metal_lvl = 0.5;
+            v.noise_lvl = nz * 0.3;
+            v.f1.set(2640.0 * ratio * (0.7 + 0.6 * tone), 1.5, rate);
+            v.o1 = Out::Bp;
+            norm = 0.55;
+        }
+        ZAP => {
+            v.f0 = 90.0 * ratio;
+            v.lvl_a = 1.0;
+            v.shape = tone * 3.0;
+            v.noise_lvl = nz * 0.3;
+            v.f1.set(3000.0, 0.7, rate);
+            v.o1 = Out::Hp;
+            norm = 0.25;
+        }
+        _ => {
+            // FM perc: a sine modulated at an inharmonic ratio; Tone sets
+            // the index, which falls with the sweep time.
+            v.f0 = 220.0 * ratio;
+            v.lvl_a = 1.0;
+            v.fm_ratio = 1.41;
+            v.fm_index = 0.5 + tone * 8.0 + snap * 2.0;
+            v.click_lvl = 0.0;
+            v.noise_lvl = nz * 0.3;
+            v.f1.set(5000.0, 0.7, rate);
+            v.o1 = Out::Hp;
+            norm = 0.25;
+        }
+    }
+    let a = amp * norm;
+    v.gain_l = a * (1.0 - pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
+    v.gain_r = a * (1.0 + pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
+    v
+}
+
+/// What a full-velocity hit of one pad does over time, for drawing it
+/// (`mpfree-synth-ui`). Each part is (its level in the mix before the
+/// filters, the share of it left after each frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitShape {
+    /// The pad's model ("Kick").
+    pub model: &'static str,
+    /// The body's pitch once the sweep has settled, in Hz; 0 for a model
+    /// with no body (hats, clap, cowbell, cymbal).
+    pub hz: f32,
+    /// The body: the tuned sines (or FM).
+    pub body: (f32, f32),
+    /// The noise and metal, through the pad's filters.
+    pub noise: (f32, f32),
+    /// The snap's click.
+    pub click: (f32, f32),
+    /// The pitch sweep: semitones above `hz` at the start, and the share
+    /// of it left after each frame.
+    pub sweep: (f32, f32),
+    /// A clap: when each handclap starts, in seconds, and the share of a
+    /// burst left after each frame. The noise envelope carries the tail
+    /// at a third of the level.
+    pub bursts: Option<(&'static [f32], f32)>,
+    /// Drive, 0 to 1.
+    pub drive: f32,
+}
+
+/// The shape of a full-velocity hit of `pad` (0 to 15) at `rate`, with the
+/// values `value` gives by parameter id. Built by the same code as the
+/// hits [`Drums`] plays.
+pub fn hit_shape(value: impl Fn(u16) -> f32, pad: usize, rate: u32) -> HitShape {
+    let pad = pad.min(PADS - 1);
+    let get = |f: u16| value(pad_id(pad, f));
+    let model = MODELS[get(field::MODEL) as usize % MODELS.len()];
+    let v = build(get, rate as f32, pad, 127, 0, 0);
+    let body = v.lvl_a > 0.0;
+    HitShape {
+        model,
+        hz: if body { v.f0 } else { 0.0 },
+        body: (if body { v.lvl_a + v.lvl_b } else { 0.0 }, v.body_mul),
+        noise: (
+            v.noise_lvl + v.metal_lvl * (v.n_metal as f32).sqrt(),
+            v.noise_mul,
+        ),
+        click: (v.click_lvl, v.click_mul),
+        sweep: (if body { v.sweep } else { 0.0 }, v.pitch_mul),
+        bursts: v.clap.then_some((&CLAP_BURSTS[..], v.burst_mul)),
+        drive: v.drive,
+    }
+}
+
 /// The drum synth. See the module docs.
 pub struct Drums {
     rate: u32,
@@ -397,165 +617,14 @@ impl Drums {
 
     /// Builds a hit of `pad` from its settings.
     fn setup(&self, pad: usize, velocity: u8, seed: u64) -> Voice {
-        use crate::drum_params::model::*;
-        let rate = self.rate as f32;
-        let vel = f32::from(velocity.min(127)) / 127.0;
-        let g = |f: u16| self.pv(pad, f);
-        let model = g(field::MODEL) as u8;
-        let ratio = (g(field::TUNE) / 12.0).exp2();
-        let decay = g(field::DECAY) * 0.001;
-        let tone = (g(field::TONE) / 100.0 - g(field::VEL_TONE) / 100.0 * (1.0 - vel) * 0.6)
-            .clamp(0.0, 1.0);
-        let snap = g(field::SNAP) / 100.0;
-        let nz = g(field::NOISE) / 100.0;
-        let vl = g(field::VEL_LEVEL) / 100.0;
-        let amp = (1.0 - vl + vl * vel * vel)
-            * if g(field::LEVEL) <= -60.0 {
-                0.0
-            } else {
-                10f32.powf(g(field::LEVEL) / 20.0)
-            };
-        let pan = g(field::PAN) / 100.0;
-
-        let mut v = Voice {
-            state: State::On,
-            pad: pad as u8,
-            choke: g(field::CHOKE) as u8,
-            age: self.clock,
-            kill: 1.0,
-            rng: Rng::new(seed),
-            body: 1.0,
-            body_mul: t60(decay, rate),
-            noise: 1.0,
-            noise_mul: t60(decay, rate),
-            pitch: 1.0,
-            pitch_mul: (-4.6 / (g(field::SWEEP_TIME) * 0.001 * rate).max(1.0)).exp(),
-            sweep: g(field::SWEEP),
-            click: 1.0,
-            click_mul: t60(0.004, rate),
-            click_lvl: snap * 0.5,
-            drive: g(field::DRIVE) / 100.0,
-            ..Voice::default()
-        };
-        // How loud each model is at full velocity, so the defaults peak
-        // near -12 dBFS.
-        let norm;
-        match model {
-            KICK => {
-                v.f0 = 50.0 * ratio;
-                v.lvl_a = 1.0;
-                v.shape = tone * 4.0;
-                v.noise_lvl = nz * 0.3;
-                v.noise_mul = t60(decay * 0.3, rate);
-                v.f1.set(200.0 + tone * 4000.0, 0.7, rate);
-                v.o1 = Out::Lp;
-                v.click_lvl = snap * 0.6;
-                v.click_mul = t60(0.003, rate);
-                norm = 0.56;
-            }
-            SNARE => {
-                v.f0 = 185.0 * ratio;
-                v.lvl_a = 0.65 * (1.0 - nz * 0.4);
-                v.ratio_b = 1.56;
-                v.lvl_b = 0.45 * (1.0 - nz * 0.4);
-                v.body_mul = t60(decay * 0.6, rate);
-                v.noise_lvl = nz;
-                v.f1.set(1500.0 + tone * 6000.0, 0.6, rate);
-                v.o1 = Out::Bp;
-                v.f2.set(700.0, 0.7, rate);
-                v.o2 = Out::Hp;
-                norm = 0.38;
-            }
-            CLAP => {
-                v.clap = true;
-                v.noise_lvl = 1.0;
-                v.burst_mul = t60(0.004 + (1.0 - snap) * 0.012, rate);
-                v.f1.set(800.0 + tone * 2400.0, 1.2, rate);
-                v.o1 = Out::Bp;
-                v.f2.set(400.0, 0.7, rate);
-                v.o2 = Out::Hp;
-                v.click_lvl = 0.0;
-                norm = 0.75;
-            }
-            CLOSED_HAT | OPEN_HAT | CYMBAL => {
-                v.n_metal = 6;
-                for (k, hz) in METAL.iter().enumerate() {
-                    v.dt_m[k] = hz * ratio / rate;
-                    v.ph_m[k] = (k as f32 * 0.37) % 1.0;
-                }
-                v.metal_lvl = (1.0 - nz) / 3.0;
-                v.noise_lvl = nz * 0.6;
-                let (bp, hp) = if model == CYMBAL {
-                    (5000.0 + tone * 5000.0, 3500.0)
-                } else {
-                    (7000.0 + tone * 5000.0, 6000.0 + tone * 2000.0)
-                };
-                v.f1.set(bp * ratio.sqrt(), 0.9, rate);
-                v.o1 = Out::Bp;
-                v.f2.set(hp, 0.7, rate);
-                v.o2 = Out::Hp;
-                v.click_lvl = snap * 0.25;
-                norm = if model == CYMBAL { 0.9 } else { 1.6 };
-            }
-            TOM => {
-                v.f0 = 120.0 * ratio;
-                v.lvl_a = 1.0;
-                v.shape = tone * 1.5;
-                v.noise_lvl = nz * 0.5;
-                v.noise_mul = t60(decay * 0.25, rate);
-                v.f1.set(v.f0 * 3.0, 1.0, rate);
-                v.o1 = Out::Bp;
-                norm = 0.3;
-            }
-            RIM => {
-                v.f0 = 500.0 * ratio;
-                v.lvl_a = 0.6;
-                v.ratio_b = 3.3;
-                v.lvl_b = 0.4;
-                v.noise_lvl = nz * 0.8;
-                v.f1.set(2000.0 + tone * 3000.0, 2.0, rate);
-                v.o1 = Out::Bp;
-                v.click_lvl = snap * 0.8;
-                v.click_mul = t60(0.002, rate);
-                norm = 0.36;
-            }
-            COWBELL => {
-                v.n_metal = 2;
-                v.dt_m[0] = 540.0 * ratio / rate;
-                v.dt_m[1] = 800.0 * ratio / rate;
-                v.metal_lvl = 0.5;
-                v.noise_lvl = nz * 0.3;
-                v.f1.set(2640.0 * ratio * (0.7 + 0.6 * tone), 1.5, rate);
-                v.o1 = Out::Bp;
-                norm = 0.55;
-            }
-            ZAP => {
-                v.f0 = 90.0 * ratio;
-                v.lvl_a = 1.0;
-                v.shape = tone * 3.0;
-                v.noise_lvl = nz * 0.3;
-                v.f1.set(3000.0, 0.7, rate);
-                v.o1 = Out::Hp;
-                norm = 0.25;
-            }
-            _ => {
-                // FM perc: a sine modulated at an inharmonic ratio; Tone sets
-                // the index, which falls with the sweep time.
-                v.f0 = 220.0 * ratio;
-                v.lvl_a = 1.0;
-                v.fm_ratio = 1.41;
-                v.fm_index = 0.5 + tone * 8.0 + snap * 2.0;
-                v.click_lvl = 0.0;
-                v.noise_lvl = nz * 0.3;
-                v.f1.set(5000.0, 0.7, rate);
-                v.o1 = Out::Hp;
-                norm = 0.25;
-            }
-        }
-        let a = amp * norm;
-        v.gain_l = a * (1.0 - pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
-        v.gain_r = a * (1.0 + pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
-        v
+        build(
+            |f| self.pv(pad, f),
+            self.rate as f32,
+            pad,
+            velocity,
+            seed,
+            self.clock,
+        )
     }
 
     fn apply(&mut self, ev: &NodeEvent) {
