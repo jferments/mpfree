@@ -212,6 +212,158 @@ impl Down2 {
     }
 }
 
+/// Coefficients of a polyphase IIR half-band low-pass: `n` first-order
+/// all-pass sections, flat up to `0.25 - tbw` of the higher rate and
+/// stopping from `0.25 + tbw`. It is the elliptic design of Valenzuela and
+/// Constantinides, worked out in closed form (theta-function sums), once,
+/// on the control thread. Even-indexed coefficients make one branch, odd
+/// ones the other.
+pub(crate) fn iir_halfband(n: usize, tbw: f64) -> Vec<f32> {
+    use std::f64::consts::PI;
+    let tbw = tbw.clamp(1e-4, 0.24);
+    let k = ((1.0 - 2.0 * tbw) * PI / 4.0).tan().powi(2);
+    let kk = (1.0 - k * k).sqrt().sqrt();
+    let e = 0.5 * (1.0 - kk) / (1.0 + kk);
+    let e4 = e.powi(4);
+    let q = e * (1.0 + e4 * (2.0 + e4 * (15.0 + 150.0 * e4)));
+    let order = (2 * n + 1) as f64;
+    (1..=n)
+        .map(|c| {
+            let c = c as f64;
+            // The numerator's and the denominator's theta-function sums.
+            let mut num = 0.0;
+            let mut sign = 1.0;
+            for i in 0..64 {
+                let i = i as f64;
+                let t = q.powf(i * (i + 1.0)) * ((2.0 * i + 1.0) * c * PI / order).sin() * sign;
+                num += t;
+                sign = -sign;
+                if t.abs() < 1e-100 {
+                    break;
+                }
+            }
+            let mut den = 0.0;
+            let mut sign = -1.0;
+            for i in 1..64 {
+                let i = i as f64;
+                let t = q.powf(i * i) * (2.0 * i * c * PI / order).cos() * sign;
+                den += t;
+                sign = -sign;
+                if t.abs() < 1e-100 {
+                    break;
+                }
+            }
+            let ww = num * q.powf(0.25) / (den + 0.5);
+            let w2 = ww * ww;
+            let x = ((1.0 - w2 * k) * (1.0 - w2 / k)).sqrt() / (1.0 + w2);
+            ((1.0 - x) / (1.0 + x)) as f32
+        })
+        .collect()
+}
+
+/// One first-order all-pass at the lower rate, `y = a (x - y1) + x1`.
+#[derive(Clone, Copy, Debug, Default)]
+struct Ap1 {
+    a: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Ap1 {
+    #[inline(always)]
+    fn run(&mut self, x: f32) -> f32 {
+        let y = crate::flush(self.a * (x - self.y1) + self.x1);
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
+/// The two branches of an IIR half-band: the even coefficients' sections
+/// and the odd ones'.
+#[derive(Clone, Debug)]
+struct Branches {
+    even: Vec<Ap1>,
+    odd: Vec<Ap1>,
+}
+
+impl Branches {
+    fn new(n: usize, tbw: f64) -> Branches {
+        let c = iir_halfband(n, tbw);
+        let ap = |a: &f32| Ap1 {
+            a: *a,
+            ..Ap1::default()
+        };
+        Branches {
+            even: c.iter().step_by(2).map(ap).collect(),
+            odd: c.iter().skip(1).step_by(2).map(ap).collect(),
+        }
+    }
+    #[inline]
+    fn run(&mut self, e: f32, o: f32) -> (f32, f32) {
+        let (mut e, mut o) = (e, o);
+        for s in &mut self.even {
+            e = s.run(e);
+        }
+        for s in &mut self.odd {
+            o = s.run(o);
+        }
+        (e, o)
+    }
+    fn reset(&mut self) {
+        for s in self.even.iter_mut().chain(self.odd.iter_mut()) {
+            s.x1 = 0.0;
+            s.y1 = 0.0;
+        }
+    }
+}
+
+/// 2x up-sampler for one channel with an IIR half-band: a few multiplies
+/// a frame instead of a FIR's dozens, for paths where phase does not
+/// matter (a reverb's wet signal). Not linear phase.
+#[derive(Clone, Debug)]
+pub struct IirUp2(Branches);
+
+impl IirUp2 {
+    /// Allocates (control thread): `n` coefficients, transition `tbw`.
+    pub fn new(n: usize, tbw: f64) -> IirUp2 {
+        IirUp2(Branches::new(n, tbw))
+    }
+
+    /// One input sample in, two output samples out (in time order).
+    #[inline]
+    pub fn run(&mut self, x: f32) -> [f32; 2] {
+        let (e, o) = self.0.run(x, x);
+        [e, o]
+    }
+
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+/// 2x down-sampler for one channel with an IIR half-band (see [`IirUp2`]).
+#[derive(Clone, Debug)]
+pub struct IirDown2(Branches);
+
+impl IirDown2 {
+    /// Allocates (control thread): `n` coefficients, transition `tbw`.
+    pub fn new(n: usize, tbw: f64) -> IirDown2 {
+        IirDown2(Branches::new(n, tbw))
+    }
+
+    /// Two input samples in (in time order), one output sample out.
+    #[inline]
+    pub fn run(&mut self, x: [f32; 2]) -> f32 {
+        let (e, o) = self.0.run(x[1], x[0]);
+        0.5 * (e + o)
+    }
+
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +399,96 @@ mod tests {
                 x[i]
             );
         }
+    }
+
+    /// The magnitude of the IIR half-band's response at `f` (a fraction of
+    /// the higher rate), from its two branches.
+    fn iir_gain(c: &[f32], f: f64) -> f64 {
+        use std::f64::consts::PI;
+        // A first-order all-pass in z^2: (a + z^-2) / (1 + a z^-2).
+        let w = 2.0 * PI * f;
+        let ap = |a: f64| {
+            let (cr, ci) = ((2.0 * w).cos(), -(2.0 * w).sin());
+            let (nr, ni) = (a + cr, ci);
+            let (dr, di) = (1.0 + a * cr, a * ci);
+            let d = dr * dr + di * di;
+            ((nr * dr + ni * di) / d, (ni * dr - nr * di) / d)
+        };
+        let branch = |start: usize| {
+            c.iter()
+                .skip(start)
+                .step_by(2)
+                .fold((1.0, 0.0), |(r, i), &a| {
+                    let (br, bi) = ap(a as f64);
+                    (r * br - i * bi, r * bi + i * br)
+                })
+        };
+        let (er, ei) = branch(0);
+        let (or, oi) = branch(1);
+        // The odd branch is a frame later: times z^-1.
+        let (zr, zi) = (w.cos(), -w.sin());
+        let (or, oi) = (or * zr - oi * zi, or * zi + oi * zr);
+        0.5 * ((er + or).powi(2) + (ei + oi).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn iir_halfband_is_flat_then_stops() {
+        let c = iir_halfband(6, 0.06);
+        assert_eq!(c.len(), 6);
+        assert!(c.iter().all(|&a| a > 0.0 && a < 1.0), "{c:?}");
+        for k in 0..=190 {
+            let g = 20.0 * iir_gain(&c, k as f64 / 1000.0).log10();
+            assert!(g.abs() < 0.01, "{k}/1000: {g:.4} dB");
+        }
+        for k in 310..=500 {
+            let g = 20.0 * iir_gain(&c, k as f64 / 1000.0).log10();
+            assert!(g < -80.0, "{k}/1000: {g:.1} dB");
+        }
+    }
+
+    #[test]
+    fn iir_up_then_down_keeps_a_low_sine_and_its_level() {
+        let mut u = IirUp2::new(6, 0.06);
+        let mut d = IirDown2::new(6, 0.06);
+        let rate = 24_000.0f32;
+        let f = 500.0;
+        let x: Vec<f32> = (0..4000)
+            .map(|i| (2.0 * std::f32::consts::PI * f * i as f32 / rate).sin())
+            .collect();
+        let y: Vec<f32> = x.iter().map(|&s| d.run(u.run(s))).collect();
+        // A sine comes out a sine of the same level, a little later: the
+        // best fit of the output against the input's sine and cosine.
+        let (mut ps, mut pc, mut e) = (0.0f64, 0.0f64, 0.0f64);
+        for (i, &v) in y.iter().enumerate().skip(1000) {
+            let t = 2.0 * std::f64::consts::PI * f as f64 * i as f64 / rate as f64;
+            ps += v as f64 * t.sin();
+            pc += v as f64 * t.cos();
+            e += (v as f64).powi(2);
+        }
+        let n = (y.len() - 1000) as f64;
+        let amp = 2.0 * (ps * ps + pc * pc).sqrt() / n;
+        let rest = e / n - amp * amp / 2.0;
+        assert!((amp - 1.0).abs() < 1e-3, "level {amp}");
+        assert!(rest < 1e-6, "left over {rest}");
+    }
+
+    #[test]
+    fn iir_resamplers_go_back_to_silence() {
+        let mut u = IirUp2::new(6, 0.06);
+        let mut d = IirDown2::new(6, 0.06);
+        let mut last = 0;
+        for i in 0..400 {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            let [a, b] = u.run(x);
+            if a.abs().max(b.abs()) > 1e-5 {
+                last = i;
+            }
+            let _ = d.run([a, b]);
+        }
+        assert!(last < 128, "the up-sampler rings to {last}");
+        u.reset();
+        d.reset();
+        assert_eq!(u.run(0.0), [0.0, 0.0]);
+        assert_eq!(d.run([0.0, 0.0]), 0.0);
     }
 }
