@@ -1,5 +1,6 @@
 //! Renders a demo of the Cloud reverb's five characters in a heavy 90 BPM
-//! beat and writes `~/mpfree-work/cloud-demo.wav` (or the path given).
+//! beat and writes `~/mpfree-work/cloud-demo.wav` (or the path given;
+//! `light` after it renders every reverb at its Light quality).
 //!
 //! Each character sits on its own send (Mix 100 %, a factory preset), and
 //! the stems are sent to it for two bars at a time:
@@ -159,6 +160,7 @@ fn stems(total: usize) -> [Stem; 5] {
 }
 
 fn main() {
+    let light = std::env::args().nth(2).is_some_and(|a| a == "light");
     let out = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         std::path::Path::new(&home).join("mpfree-work").join("cloud-demo.wav")
@@ -176,6 +178,7 @@ fn main() {
             c.prepare(RATE, BLOCK);
             for &(id, v) in p.values { c.set_param(id, v); }
             c.set_param(ids::cloud::MIX, 100.0);
+            c.set_param(ids::cloud::QUALITY, if light { 1.0 } else { 0.0 });
             c
         })
         .collect();
