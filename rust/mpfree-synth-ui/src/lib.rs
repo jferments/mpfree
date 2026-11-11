@@ -11,6 +11,8 @@
 //!   grid of knobs, choices and switches, and the Q-Link strip.
 //! - [`visual`]: Poly's drawn visuals (oscillators, filter response,
 //!   envelopes, LFO), worked out from its values.
+//! - [`fm_visual`]: FM's: the algorithm diagram, operator envelopes,
+//!   keyboard scaling, the pitch envelope and the LFO.
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -20,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod draw;
+pub mod fm_visual;
 pub mod format;
 pub mod pages;
 pub mod sample;
