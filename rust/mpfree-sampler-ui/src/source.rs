@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use mpfree_analysis::{estimate_tempo, loop_tempo, note_name, root_pitch, Column, OnsetAnalysis, PeakPyramid, PitchSettings};
+use mpfree_analysis::{
+    estimate_tempo, loop_tempo, note_name, root_pitch, Column, OnsetAnalysis, PeakPyramid,
+    PitchSettings,
+};
 use mpfree_sampler::model::{Source, SourceId};
 use mpfree_ui::wave::{Peaks, WaveColumn};
 
@@ -41,8 +44,13 @@ impl Peaks for PyramidPeaks {
             return WaveColumn::default();
         }
         let mut out = [Column::default()];
-        self.pyramid.columns(Some(&self.audio), ch, f0, (f1 - f0).max(1e-6), &mut out);
-        WaveColumn { min: out[0].min, max: out[0].max, rms: out[0].rms }
+        self.pyramid
+            .columns(Some(&self.audio), ch, f0, (f1 - f0).max(1e-6), &mut out);
+        WaveColumn {
+            min: out[0].min,
+            max: out[0].max,
+            rms: out[0].rms,
+        }
     }
 }
 
@@ -76,12 +84,15 @@ impl SourceView {
             None => Arc::new(Silent),
         };
         let mono: Arc<[f32]> = mpfree_analysis::mono(data, ch).unwrap_or_default().into();
-        let onsets = OnsetAnalysis::analyse(data, ch, s.rate()).ok().map(Arc::new);
+        let onsets = OnsetAnalysis::analyse(data, ch, s.rate())
+            .ok()
+            .map(Arc::new);
         let tempo = onsets.as_deref().and_then(|o| {
             let est = estimate_tempo(o)?.bpm;
             // A loop cut to whole beats has an exact tempo; use it when it
             // agrees with the estimate.
-            let exact = loop_tempo(s.frames(), s.rate(), Some(est)).filter(|l| (l / est - 1.0).abs() < 0.03);
+            let exact = loop_tempo(s.frames(), s.rate(), Some(est))
+                .filter(|l| (l / est - 1.0).abs() < 0.03);
             Some(f64::from(exact.unwrap_or(est)))
         });
         let root = root_pitch(data, ch, s.rate(), PitchSettings::default())
@@ -89,7 +100,14 @@ impl SourceView {
             .flatten()
             .filter(|p| p.confidence >= ROOT_CONFIDENCE)
             .map(|p| note_name(p.note));
-        SourceView { id: s.id(), peaks, mono, tempo, root, onsets }
+        SourceView {
+            id: s.id(),
+            peaks,
+            mono,
+            tempo,
+            root,
+            onsets,
+        }
     }
 }
 

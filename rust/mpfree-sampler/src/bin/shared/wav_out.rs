@@ -6,7 +6,12 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// 16-bit stereo PCM WAV.
-pub fn write_wav(path: &Path, rate: u32, left: &[f32], right: &[f32]) -> Result<(), Box<dyn Error>> {
+pub fn write_wav(
+    path: &Path,
+    rate: u32,
+    left: &[f32],
+    right: &[f32],
+) -> Result<(), Box<dyn Error>> {
     let frames = left.len().min(right.len());
     let data_bytes = u32::try_from(frames * 4)?;
     let mut w = BufWriter::new(File::create(path)?);

@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn render(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mpfree-render")).args(args).output().expect("run mpfree-render")
+    Command::new(env!("CARGO_BIN_EXE_mpfree-render"))
+        .args(args)
+        .output()
+        .expect("run mpfree-render")
 }
 
 fn out_path(name: &str) -> PathBuf {
@@ -27,7 +30,11 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 fn one_second_is_a_44_1_khz_stereo_s32_wav_with_two_beats() {
     let path = out_path("one-second.wav");
     let out = render(&[path.to_str().unwrap(), "1", "120"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("44100 frames; 2 beat triggers"), "{stdout}");
 
@@ -47,7 +54,10 @@ fn one_second_is_a_44_1_khz_stereo_s32_wav_with_two_beats() {
     assert_eq!(&wav[36..40], b"data");
     assert_eq!(u32_at(&wav, 40) as usize, frames * 8);
     // The click is audible, and the same in both channels.
-    let samples: Vec<i32> = wav[44..].chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
+    let samples: Vec<i32> = wav[44..]
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
     assert!(samples.iter().any(|&s| s != 0));
     assert!(samples.chunks_exact(2).all(|lr| lr[0] == lr[1]));
 }

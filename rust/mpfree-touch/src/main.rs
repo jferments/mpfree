@@ -10,20 +10,20 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use mpfree_touch::{
-    ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID,
-    ABS_X, ABS_Y, AxisInfo, validate_fixture,
+    validate_fixture, AxisInfo, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT,
+    ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
 };
+use std::ffi::{c_int, c_ulong};
 use std::fs::{self, OpenOptions};
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
-use std::ffi::{c_int, c_ulong};
 
 #[cfg(target_os = "linux")]
 #[repr(C)]
 #[derive(Default)]
 struct LinuxInputAbsInfo {
-    value: i32,      // current value; never exposed or printed
+    value: i32, // current value; never exposed or printed
     minimum: i32,
     maximum: i32,
     fuzz: i32,
@@ -41,10 +41,8 @@ unsafe extern "C" {
 const fn eviocgabs(code: u8) -> c_ulong {
     // Linux asm-generic ioctl encoding: _IOR('E', 0x40 + code, 24).
     // On this platform input_absinfo has six signed 32-bit members.
-    let request: u64 = (2_u64 << 30)
-        | (24_u64 << 16)
-        | ((b'E' as u64) << 8)
-        | (0x40_u64 + code as u64);
+    let request: u64 =
+        (2_u64 << 30) | (24_u64 << 16) | ((b'E' as u64) << 8) | (0x40_u64 + code as u64);
     request as c_ulong
 }
 
@@ -63,8 +61,11 @@ fn get_axis(fd: c_int, code: u8) -> Result<AxisInfo, String> {
         ));
     }
     AxisInfo {
-        minimum: out.minimum, maximum: out.maximum,
-        fuzz: out.fuzz, flat: out.flat, resolution: out.resolution,
+        minimum: out.minimum,
+        maximum: out.maximum,
+        fuzz: out.fuzz,
+        flat: out.flat,
+        resolution: out.resolution,
     }
     .check()
     .map_err(|e| format!("invalid axis {code}: {e:?}"))
@@ -75,7 +76,9 @@ fn strict_sysfs_identity() -> Result<(), String> {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("cannot read exact touch metadata {path}: {e}"))?;
         if content.trim() != target {
-            return Err(format!("touch identity mismatch at {path}; expected {target}"));
+            return Err(format!(
+                "touch identity mismatch at {path}; expected {target}"
+            ));
         }
         Ok(())
     }
@@ -87,7 +90,10 @@ fn strict_sysfs_identity() -> Result<(), String> {
     // event device could reuse the same user-visible label.
     let event_device = fs::canonicalize("/sys/class/input/event0/device")
         .map_err(|e| format!("cannot resolve event0 sysfs parent: {e}"))?;
-    if !event_device.components().any(|part| part.as_os_str() == "4-0026") {
+    if !event_device
+        .components()
+        .any(|part| part.as_os_str() == "4-0026")
+    {
         return Err("event0 does not belong to physical I2C 4-0026".into());
     }
     // Inspect the actual physical I2C device's bound driver, not a fragile
@@ -101,7 +107,10 @@ fn strict_sysfs_identity() -> Result<(), String> {
     // necessarily copied into a vendor kernel's optional uevent metadata.
     let compatible = fs::read("/sys/bus/i2c/devices/4-0026/of_node/compatible")
         .map_err(|e| format!("cannot read actual touchscreen compatible: {e}"))?;
-    if !compatible.split(|b| *b == 0).any(|part| part == b"ilitek,ili2117") {
+    if !compatible
+        .split(|b| *b == 0)
+        .any(|part| part == b"ilitek,ili2117")
+    {
         return Err("I2C device-tree compatible mismatch; refusing evdev open".into());
     }
     Ok(())
@@ -123,7 +132,8 @@ fn arm_inspection_watchdog() -> Result<(), String> {
             std::process::abort();
         })
         .map_err(|e| format!("unable to start 5s child watchdog: {e}"))?;
-    receiver.recv_timeout(Duration::from_secs(1))
+    receiver
+        .recv_timeout(Duration::from_secs(1))
         .map_err(|_| "5s watchdog did not arm before touch inspection".to_string())?;
     eprintln!("MPFREE_TOUCH_IOCTL_WATCHDOG_5S_ARMED");
     Ok(())
@@ -160,7 +170,9 @@ fn metadata_mode() -> Result<(), String> {
         for (name, code) in codes {
             readings.push((name, get_axis(fd, code)?));
         }
-        let slots = readings[2].1.slot_count()
+        let slots = readings[2]
+            .1
+            .slot_count()
             .map_err(|e| format!("unsupported reported ABS_MT_SLOT bounds: {e:?}"))?;
         // After the query, the descriptor is already safe to drop; the
         // remaining code only prints metadata. No current touch values.
@@ -196,8 +208,7 @@ fn run() -> Result<(), String> {
         Some("--self-test") => {
             #[cfg(target_os = "linux")]
             {
-                if eviocgabs(ABS_X) != 0x80184540
-                    || eviocgabs(ABS_MT_TRACKING_ID) != 0x80184579 {
+                if eviocgabs(ABS_X) != 0x80184540 || eviocgabs(ABS_MT_TRACKING_ID) != 0x80184579 {
                     return Err("Linux EVIOCGABS ABI encoding mismatch".into());
                 }
             }

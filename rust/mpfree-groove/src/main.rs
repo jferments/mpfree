@@ -22,17 +22,36 @@ fn run() -> Result<(), Box<dyn Error>> {
     if !(2..=4).contains(&args.len()) {
         return Err("Usage: mpfree-groove <output.wav> [bpm=120] [bars=2]".into());
     }
-    let bpm = if args.len() > 2 { args[2].parse::<f64>()? } else { 120.0 };
-    let bars = if args.len() > 3 { args[3].parse::<u32>()? } else { 2 };
-    let config = GrooveConfig { bpm, bars, ..GrooveConfig::default() };
-    config.validate().map_err(|error| format!("invalid groove configuration: {error:?}"))?;
+    let bpm = if args.len() > 2 {
+        args[2].parse::<f64>()?
+    } else {
+        120.0
+    };
+    let bars = if args.len() > 3 {
+        args[3].parse::<u32>()?
+    } else {
+        2
+    };
+    let config = GrooveConfig {
+        bpm,
+        bars,
+        ..GrooveConfig::default()
+    };
+    config
+        .validate()
+        .map_err(|error| format!("invalid groove configuration: {error:?}"))?;
     let frames = config.duration_frames()?;
     if frames > u64::from(config.sample_rate) * 60 {
-        return Err("offline demo limited to 60 seconds; choose fewer bars or a faster tempo".into());
+        return Err(
+            "offline demo limited to 60 seconds; choose fewer bars or a faster tempo".into(),
+        );
     }
     let data_bytes = frames.checked_mul(8).ok_or("WAV payload overflow")?;
-    let payload_u32 = u32::try_from(data_bytes).map_err(|_| "WAV exceeds RIFF 32-bit size limit")?;
-    let riff_size = 36u32.checked_add(payload_u32).ok_or("RIFF header size overflow")?;
+    let payload_u32 =
+        u32::try_from(data_bytes).map_err(|_| "WAV exceeds RIFF 32-bit size limit")?;
+    let riff_size = 36u32
+        .checked_add(payload_u32)
+        .ok_or("RIFF header size overflow")?;
 
     let mut engine = GrooveEngine::new(&Pattern::basic(), config)?;
     let file = File::create(&args[1])?;
