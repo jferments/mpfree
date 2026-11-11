@@ -32,7 +32,12 @@ WRAPPER = os.path.join(TOOLS, "collect-over-ssh.sh")
 HELLO_SRC = os.path.join(REPO, "rust", "mpfree-hello", "src")
 UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
 # Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
-LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"))
+LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"),
+              os.path.join(REPO, "rust", "mpfree-prof", "src"))
+# mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
+# crate's counting-alloc feature, which mpfree-hello does not enable (mpfree-bench does), so it never
+# reaches the pad player and is left out of the scan.
+NOT_LINKED = ("mpfree-prof/alloc.rs",)
 NEW = "6.18.44-fake-rt6"
 APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod")
 
@@ -694,7 +699,7 @@ class StaticTests(unittest.TestCase):
         for d in LINKED_SRC:
             crate = os.path.basename(os.path.dirname(d))
             files += [(f"{crate}/{n}", os.path.join(d, n)) for n in sorted(os.listdir(d))
-                      if n.endswith(".rs") and n != "main.rs"]
+                      if n.endswith(".rs") and n != "main.rs" and f"{crate}/{n}" not in NOT_LINKED]
         out = []
         for name, path in files:
             with open(path) as fh:
