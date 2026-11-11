@@ -15,6 +15,9 @@
 //! - Pages are layouts written as short text specs ([`layout`]), such as
 //!   `col(header:60, row(pads:*, side:480):*)`. A widget can sit on several
 //!   pages; rearranging a page means editing its spec, not the widgets.
+//! - [`wave`] has the sampler's waveform widgets: a zoomable waveform with
+//!   marker tabs and playheads, and an overview strip, drawn from peaks
+//!   (min, max and RMS per pixel column) so any zoom costs the same.
 //! - [`Ui`] ties these together: the current page, which widgets changed
 //!   (only those are redrawn), and which widget owns each finger (the one it
 //!   first touched, until it lifts).
@@ -30,6 +33,7 @@ pub mod png;
 pub mod text;
 pub mod theme;
 pub mod ui;
+pub mod wave;
 pub mod widgets;
 
 pub use canvas::{Canvas, Image, SoftCanvas};
