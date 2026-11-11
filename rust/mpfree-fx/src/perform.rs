@@ -25,7 +25,7 @@
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
 use crate::svf::{Svf, SvfMode};
-use crate::{defaults, flush, Delay, Rng};
+use crate::{defaults, flush, Delay, DjFilter, Rng};
 
 /// How many pads (slots) the bank has.
 pub const SLOTS: usize = 16;
@@ -45,6 +45,13 @@ pub mod ids {
     pub const fn slot(k: usize) -> u16 {
         2 + 4 * k as u16
     }
+    /// After the pads: the DJ filter (-100 low-pass to 100 high-pass, off
+    /// in the middle), the echo (0 to 100 %: how much goes into the echo,
+    /// and its feedback with it) and the echo's time. The XY pad and the
+    /// DJ knob play these.
+    pub const DJ_FILTER: u16 = slot(super::SLOTS);
+    pub const ECHO: u16 = DJ_FILTER + 1;
+    pub const ECHO_TIME: u16 = DJ_FILTER + 2;
 }
 
 /// A slot's state, as its read-only STATE parameter reports it.
@@ -210,9 +217,48 @@ macro_rules! bank {
                     readonly: true,
                 },
             )*
+            ParamInfo {
+                id: ids::DJ_FILTER,
+                name: "DJ filter",
+                group: "Play",
+                min: -100.0,
+                max: 100.0,
+                default: 0.0,
+                unit: Unit::Percent,
+                curve: Curve::Linear,
+                readonly: false,
+            },
+            ParamInfo {
+                id: ids::ECHO,
+                name: "Echo",
+                group: "Play",
+                min: 0.0,
+                max: 100.0,
+                default: 0.0,
+                unit: Unit::Percent,
+                curve: Curve::Linear,
+                readonly: false,
+            },
+            ParamInfo {
+                id: ids::ECHO_TIME,
+                name: "Echo time",
+                group: "Play",
+                min: 0.0,
+                max: (LENGTHS.len() - 1) as f32,
+                default: L_8D as f32,
+                unit: Unit::None,
+                curve: Curve::Choice(LENGTHS),
+                readonly: false,
+            },
         ]
     };
 }
+
+/// How many parameters: the two globals, four per pad, then the DJ filter,
+/// the echo and its time.
+const COUNT: usize = 2 + 4 * SLOTS + 3;
+/// The ids from here on are not a pad's.
+const PADS_END: u16 = ids::slot(SLOTS);
 
 // Length choices by index, for the default bank below.
 const L_32: u8 = 1;
@@ -227,7 +273,7 @@ const L_4BARS: u8 = 13;
 /// The default bank follows the Perform FX mockup and the Play page's
 /// throws: stutters and repeats, stops, reverse, pitch, a gate, sweeps,
 /// crush, a riser and two echo throws.
-static PARAMS: [ParamInfo; 2 + 4 * SLOTS] = bank![
+static PARAMS: [ParamInfo; COUNT] = bank![
     (0, "Pad 1", Fx::Stutter, L_16, 100.0),
     (1, "Pad 2", Fx::Repeat, L_8, 100.0),
     (2, "Pad 3", Fx::TapeStop, L_4, 100.0),
@@ -426,7 +472,7 @@ impl Slot {
 /// sweeps, crush, echo throws and a noise riser, with quantised entry and
 /// click-free release.
 pub struct Perform {
-    v: [f32; 2 + 4 * SLOTS],
+    v: [f32; COUNT],
     rate: u32,
     slots: [Slot; SLOTS],
     seq: u32,
@@ -455,6 +501,10 @@ pub struct Perform {
     echo_awake: bool,
     echo_quiet: u64,
     send: [Vec<f32>; 2],
+    /// The continuous echo send (the ECHO parameter), gliding.
+    echo_amt: Smooth,
+    /// The DJ filter at the end of the path, before the echo's send.
+    dj: DjFilter,
 }
 
 impl Default for Perform {
@@ -503,6 +553,8 @@ impl Perform {
                 vec![0.0; mpfree_node::MAX_BLOCK],
                 vec![0.0; mpfree_node::MAX_BLOCK],
             ],
+            echo_amt: Smooth::new(0.0),
+            dj: DjFilter::new(),
         };
         p.prepare(48_000, mpfree_node::MAX_BLOCK);
         p
@@ -531,8 +583,13 @@ impl Perform {
         }
         let v = p.clamp(value);
         self.v[id as usize] = v;
-        if id >= 2 && (id - 2) % 4 == ids::AMOUNT {
-            self.slots[(id as usize - 2) / 4].amount.target = v / 100.0;
+        match id {
+            ids::DJ_FILTER => self.dj.set_param(crate::ids::dj_filter::POSITION, v),
+            ids::ECHO => self.echo_amt.target = v / 100.0,
+            2.. if id < PADS_END && (id - 2) % 4 == ids::AMOUNT => {
+                self.slots[(id as usize - 2) / 4].amount.target = v / 100.0;
+            }
+            _ => {}
         }
     }
 
@@ -632,27 +689,47 @@ impl Perform {
             if s.fx == Fx::Echo {
                 self.echo_on |= 1 << k;
                 self.echo_last = k;
-                echo_started = Some(s.len);
+                echo_started = Some(());
             }
             self.dirty = true;
         }
         self.next_at = next;
-        if let Some(len) = echo_started {
+        if echo_started.is_some() {
             // The delay takes the new time from this frame on.
             let [l, r] = out;
-            self.flush_echo(ctx, *piece, i, l, r);
-            *piece = i;
-            self.echo_awake = true;
-            self.echo_quiet = 0;
-            self.sync_echo(len);
+            self.wake_echo(ctx, piece, i, l, r);
         }
     }
 
-    /// Gives the delay the newest held echo's time and feedback.
-    fn sync_echo(&mut self, len: u64) {
-        let ms = (len as f64 * 1000.0 / self.rate as f64) as f32;
-        let k = self.echo_last;
-        let fb = self.v[(ids::slot(k) + ids::AMOUNT) as usize] * 0.95;
+    /// Wakes the echo at frame `i` and gives it its time and feedback from
+    /// there on.
+    fn wake_echo(&mut self, ctx: &Ctx, piece: &mut usize, i: usize, l: &mut [f32], r: &mut [f32]) {
+        self.flush_echo(ctx, *piece, i, l, r);
+        *piece = i;
+        self.echo_awake = true;
+        self.echo_quiet = 0;
+        self.sync_echo(ctx);
+    }
+
+    /// Gives the delay its time and feedback: the newest held throw's, or
+    /// else the ECHO parameter's while it is up (else they stay, so a
+    /// ringing tail keeps its time).
+    fn sync_echo(&mut self, ctx: &Ctx) {
+        let (len, fb) = if self.echo_on != 0 {
+            let k = self.echo_last;
+            (
+                self.slots[k].len as f64,
+                self.v[(ids::slot(k) + ids::AMOUNT) as usize] * 0.95,
+            )
+        } else if self.echo_amt.target > 0.0 {
+            let bpm = if ctx.bpm > 0.0 { ctx.bpm } else { 120.0 };
+            let choice = (self.v[ids::ECHO_TIME as usize] as usize).min(LENGTH_BEATS.len() - 1);
+            let len = LENGTH_BEATS[choice] * 60.0 / bpm * self.rate as f64;
+            (len.round(), 25.0 + 60.0 * self.echo_amt.target)
+        } else {
+            return;
+        };
+        let ms = (len * 1000.0 / self.rate as f64) as f32;
         if ms != self.echo_ms {
             self.echo_ms = ms;
             self.echo.set_param(crate::ids::delay::TIME, ms);
@@ -943,7 +1020,7 @@ impl Node for Perform {
         self.apply(id, value);
     }
     fn param(&self, id: u16) -> f32 {
-        if id >= 2 && (id - 2) % 4 == ids::STATE {
+        if (2..PADS_END).contains(&id) && (id - 2) % 4 == ids::STATE {
             let k = (id as usize - 2) / 4;
             return match self.slots.get(k) {
                 None => f32::NAN,
@@ -972,6 +1049,12 @@ impl Node for Perform {
             ];
             self.echo.prepare(rate, mpfree_node::MAX_BLOCK);
         }
+        self.dj.prepare(rate, mpfree_node::MAX_BLOCK);
+        self.dj.set_param(
+            crate::ids::dj_filter::POSITION,
+            self.v[ids::DJ_FILTER as usize],
+        );
+        self.echo_amt.set_time(rate, 20.0);
         for s in &mut self.slots {
             s.amount.set_time(rate, 20.0);
         }
@@ -1004,6 +1087,8 @@ impl Node for Perform {
         self.echo_on = 0;
         self.echo_awake = false;
         self.echo_quiet = u64::MAX;
+        self.echo_amt.snap(self.echo_amt.target);
+        self.dj.reset();
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len()).min(self.send[0].len());
@@ -1019,6 +1104,8 @@ impl Node for Perform {
             && !self.echo_awake
             && !self.dirty
             && self.next_at >= end
+            && self.dj.resting()
+            && self.echo_amt.target == 0.0
         {
             // Nothing playing: the input only goes into the ring (the same
             // output, frame for frame, as the full path below).
@@ -1038,10 +1125,8 @@ impl Node for Perform {
             if (f as u64).is_multiple_of(STEP) {
                 self.flush_echo(ctx, piece, i, left, right);
                 piece = i;
-                if self.echo_on != 0 {
-                    let k = self.echo_last;
-                    let len_k = self.slots[k].len;
-                    self.sync_echo(len_k);
+                if self.echo_awake {
+                    self.sync_echo(ctx);
                 }
                 if self.echo_awake && self.echo_quiet > self.echo.tail_frames() as u64 {
                     self.echo_awake = false;
@@ -1054,6 +1139,9 @@ impl Node for Perform {
             }
             if f >= self.next_at {
                 self.engage_due(ctx, f, &mut piece, i, [&mut left[..], &mut right[..]]);
+            }
+            if !self.echo_awake && self.echo_amt.target > 0.0 {
+                self.wake_echo(ctx, &mut piece, i, left, right);
             }
             if self.dirty {
                 self.pick(f);
@@ -1112,19 +1200,30 @@ impl Node for Perform {
                 }
             }
 
-            // The echo's send follows the held throws.
+            // The DJ filter (resting in the middle, it passes the frame as
+            // it is; its resonance never moves here, so skipping the call
+            // changes nothing).
+            if !self.dj.resting() {
+                let (a, b) = self.dj.frame(y[0], y[1]);
+                y = [a, b];
+            }
+
+            // The echo's send follows the held throws and the ECHO knob.
             if self.echo_on != 0 {
                 self.echo_env = (self.echo_env + step).min(1.0);
-                self.echo_quiet = 0;
             } else if self.echo_env > 0.0 {
                 self.echo_env = (self.echo_env - step).max(0.0);
+            }
+            let amt = self.echo_amt.next();
+            let send = self.echo_env.max(amt);
+            if send > 0.0 || self.echo_on != 0 {
                 self.echo_quiet = 0;
             } else {
                 self.echo_quiet = self.echo_quiet.saturating_add(1);
             }
             if self.echo_awake {
-                self.send[0][i] = y[0] * self.echo_env;
-                self.send[1][i] = y[1] * self.echo_env;
+                self.send[0][i] = y[0] * send;
+                self.send[1][i] = y[1] * send;
             }
 
             left[i] = flush(y[0]);

@@ -26,7 +26,9 @@
 //! - [`Perform`]: sixteen pads of performance effects (stutter, beat
 //!   repeat, reverse, half speed, tape stop, vinyl brake, pitch drop,
 //!   trance gate, filter sweeps, crush, echo throws, a noise riser) that
-//!   start on the next grid line and snap back when let go.
+//!   start on the next grid line and snap back when let go, with a DJ
+//!   filter and an echo knob for the XY pad and the DJ knob.
+//! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
 //!
@@ -62,6 +64,7 @@ mod modfx;
 mod oversample;
 mod perform;
 mod svf;
+mod xy;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
@@ -86,6 +89,7 @@ pub use perform::{
     SLOTS as PERFORM_SLOTS,
 };
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
+pub use xy::{XyAxis, XyPad};
 
 pub use mpfree_node;
 

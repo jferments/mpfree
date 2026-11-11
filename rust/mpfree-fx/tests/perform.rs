@@ -6,7 +6,9 @@
 use std::f32::consts::PI;
 
 use mpfree_fx::mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
-use mpfree_fx::{ids, perform_state, Perform, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_SLOTS};
+use mpfree_fx::{
+    ids, perform_state, Perform, XyPad, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_SLOTS,
+};
 
 const RATE: u32 = 48_000;
 /// 120 BPM: a beat is 24 000 frames and a 1/16 is 6 000.
@@ -145,7 +147,7 @@ fn assert_follows(
 fn the_description_is_valid_and_the_bank_is_full() {
     let p = Perform::new();
     check_params(p.params()).unwrap();
-    assert_eq!(p.params().len(), 2 + 4 * PERFORM_SLOTS);
+    assert_eq!(p.params().len(), 2 + 4 * PERFORM_SLOTS + 3);
     for k in 0..PERFORM_SLOTS {
         let fx = p.param(ids::perform::slot(k) + ids::perform::EFFECT);
         assert!(fx >= 1.0, "pad {} has an effect by default", k + 1);
@@ -475,12 +477,25 @@ fn the_same_output_for_any_block_size() {
     while at < n {
         at += 1 + (g.next() as usize % 9_000);
         let k = (g.next() % PERFORM_SLOTS as u64) as u8;
-        let ev = match g.next() % 5 {
+        let ev = match g.next() % 7 {
             0 | 1 => on(k),
             2 | 3 => off(k),
-            _ => NodeEvent::Param {
+            4 => NodeEvent::Param {
                 id: ids::perform::slot(k as usize) + (g.next() % 3) as u16,
                 value: g.unit() * 100.0,
+            },
+            // The XY pad and the DJ knob: the filter, the echo, its time.
+            5 => NodeEvent::Param {
+                id: ids::perform::DJ_FILTER,
+                value: g.unit() * 200.0 - 100.0,
+            },
+            _ => NodeEvent::Param {
+                id: ids::perform::ECHO + (g.next() % 2) as u16,
+                value: if g.next().is_multiple_of(3) {
+                    0.0
+                } else {
+                    g.unit() * 100.0
+                },
             },
         };
         events.push((at.min(n - 1), ev));
@@ -515,4 +530,86 @@ fn the_same_output_for_any_block_size() {
         }
     }
     assert!(reference.0.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn the_dj_filter_cuts_each_way_and_is_off_in_the_middle() {
+    // In the middle (the default) with nothing held: the input exactly.
+    let x = noise(BEAT, 12);
+    let y = run(&mut Perform::new(), &x, &[], true);
+    assert_eq!(x, y);
+    // All the way left, a low-pass takes 5 kHz away; right, a high-pass
+    // takes 60 Hz away.
+    for (pos, hz) in [(-100.0, 5_000.0), (100.0, 60.0)] {
+        let x = sine(hz, BEAT);
+        let set = NodeEvent::Param {
+            id: ids::perform::DJ_FILTER,
+            value: pos,
+        };
+        let y = run(&mut Perform::new(), &x, &[(0, set)], true);
+        let late = rms(&y.0[BEAT / 2..]);
+        assert!(late < 0.01, "DJ filter at {pos}: {hz} Hz left at {late}");
+    }
+}
+
+#[test]
+fn the_echo_knob_sends_into_the_echo_and_its_tail_rings_out() {
+    let mut p = Perform::new();
+    // A short burst with the echo up, then the knob back down.
+    let mut x = sine(440.0, 4 * BEAT);
+    x.0[BEAT / 4..].fill(0.0);
+    x.1[BEAT / 4..].fill(0.0);
+    let set = |v: f32| NodeEvent::Param {
+        id: ids::perform::ECHO,
+        value: v,
+    };
+    let y = run(&mut p, &x, &[(0, set(70.0)), (BEAT / 4, set(0.0))], true);
+    // The echo time is 1/8 dotted by default: 18 000 frames at 120 BPM.
+    let d = 3 * BEAT / 4;
+    assert_follows("dry", &y.0, |i| x.0[i], 0..BEAT / 8);
+    let first = rms(&y.0[d..d + BEAT / 4]);
+    // Ping-pong: the second repeat is on the right.
+    let second = rms(&y.1[2 * d..2 * d + BEAT / 4]);
+    let between = rms(&y.0[BEAT / 4 + 1_000..d - 1_000]);
+    assert!(first > 0.05, "first repeat {first}");
+    assert!(second > 0.01 && second < first, "second repeat {second}");
+    assert!(between < 1e-3, "nothing between {between}");
+}
+
+#[test]
+fn the_xy_pad_plays_two_parameters_and_snaps_back_or_holds() {
+    let mut xy = XyPad::perform();
+    assert!(xy.at_rest());
+    assert_eq!(
+        xy.values(),
+        [(ids::perform::DJ_FILTER, 0.0), (ids::perform::ECHO, 0.0)]
+    );
+    // A finger at the top right: high-pass all the way, echo full.
+    xy.touch(1.0, 1.0);
+    assert_eq!(
+        xy.values(),
+        [
+            (ids::perform::DJ_FILTER, 100.0),
+            (ids::perform::ECHO, 100.0)
+        ]
+    );
+    assert!(!xy.tick(10.0), "no glide under a finger");
+    // Lifted: back to rest within five glide times, a frame at a time.
+    xy.release();
+    let mut ms = 0.0;
+    while xy.tick(16.0) {
+        ms += 16.0;
+        assert!(ms < 5.0 * xy.snap_ms + 32.0, "still gliding after {ms} ms");
+    }
+    assert!(xy.at_rest());
+    // With Hold on it stays where the finger left it, until Hold goes off.
+    xy.set_hold(true);
+    xy.touch(0.25, 0.5);
+    xy.release();
+    assert!(!xy.tick(100.0));
+    assert_eq!(xy.values()[0], (ids::perform::DJ_FILTER, -50.0));
+    xy.set_hold(false);
+    assert!(xy.tick(16.0));
+    let (x, y) = xy.position();
+    assert!(x > 0.25 && x < 0.5 && y < 0.5, "gliding back: {x}, {y}");
 }

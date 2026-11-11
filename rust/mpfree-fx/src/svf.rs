@@ -575,22 +575,31 @@ impl DjFilter {
         }
     }
 
+    /// One stereo frame (Perform FX runs the filter inside its own loop).
+    #[inline]
+    pub(crate) fn frame(&mut self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.pos.next();
+        let q = self.res.next();
+        let wet = (p.abs() / 0.1).min(1.0);
+        if wet == 0.0 && self.pos.settled() {
+            // Off: keep the filter's state quiet so a later turn starts clean.
+            self.f.reset();
+            return (x, y);
+        }
+        self.coefs(p, q);
+        let fx = self.f.run(0, x);
+        let fy = self.f.run(1, y);
+        (crate::lerp(x, fx, wet), crate::lerp(y, fy, wet))
+    }
+
+    /// Off and staying off: the knob is in the middle and not moving.
+    pub(crate) fn resting(&self) -> bool {
+        self.pos.value == 0.0 && self.pos.settled()
+    }
+
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         for i in 0..l.len() {
-            let p = self.pos.next();
-            let q = self.res.next();
-            let wet = (p.abs() / 0.1).min(1.0);
-            if wet == 0.0 && self.pos.settled() {
-                // Off: keep the filter's state quiet so a later turn starts clean.
-                self.f.reset();
-                continue;
-            }
-            self.coefs(p, q);
-            let (x, y) = (l[i], r[i]);
-            let fx = self.f.run(0, x);
-            let fy = self.f.run(1, y);
-            l[i] = crate::lerp(x, fx, wet);
-            r[i] = crate::lerp(y, fy, wet);
+            (l[i], r[i]) = self.frame(l[i], r[i]);
         }
     }
 }
