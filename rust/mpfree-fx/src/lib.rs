@@ -13,6 +13,8 @@
 //!   and the exact response curve for drawing.
 //! - [`Chorus`], [`Flanger`], [`Phaser`]: modulation effects with a free
 //!   or tempo-synced LFO and stereo width.
+//! - [`LoFi`]: tape wow, flutter and saturation, vinyl crackle and hiss
+//!   that ride the music, tone and width, all under one Amount.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
@@ -46,6 +48,7 @@ mod crush;
 mod delay;
 mod drive;
 mod eq;
+mod lofi;
 mod master;
 mod modfx;
 mod oversample;
@@ -58,6 +61,7 @@ pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
 pub use eq::Eq;
+pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
@@ -74,6 +78,7 @@ pub mod ids {
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
     pub use crate::eq::ids as eq;
+    pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;

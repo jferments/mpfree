@@ -23,7 +23,7 @@ impl Lcg {
     fn range(&mut self, lo: usize, hi: usize) -> usize { lo + (self.next() as usize) % (hi - lo + 1) }
 }
 
-const NAMES: [&str; 12] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety", "cloud reverb", "eq", "chorus", "flanger", "phaser"];
+const NAMES: [&str; 13] = ["filter", "dj filter", "drive", "crush", "delay", "compressor", "master safety", "cloud reverb", "eq", "chorus", "flanger", "phaser", "lo-fi"];
 
 fn make(i: usize) -> Box<dyn Node> {
     match i {
@@ -38,7 +38,8 @@ fn make(i: usize) -> Box<dyn Node> {
         8 => Box::new(Eq::new()),
         9 => Box::new(Chorus::new()),
         10 => Box::new(Flanger::new()),
-        _ => Box::new(Phaser::new()),
+        11 => Box::new(Phaser::new()),
+        _ => Box::new(LoFi::new()),
     }
 }
 
@@ -519,6 +520,7 @@ fn full_chain() -> Chain {
     c.push(Box::new(Chorus::new()));
     c.push(Box::new(Flanger::new()));
     c.push(Box::new(Phaser::new()));
+    c.push(Box::new(LoFi::new()));
     c.push(Box::new(MasterSafety::new()));
     c
 }
