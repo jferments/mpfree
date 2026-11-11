@@ -125,6 +125,13 @@ pub const STARTUP_BUTTON_LIGHTS: [[u8; 2]; 58] = [
     [0x4C, 1], [0x4D, 1], [0x0C, 1], [0x5A, 3], [0x00, 3], [0x35, 1], [0x35, 3], [0x43, 3],
 ];
 
+/// True if Akai's app was seen lighting this button (its CC is in the startup lights), so a light for it
+/// sends only a message the app sends. A note learned by the button guide may be something else, such
+/// as a Q-Link's touch, whose CC the app never sent.
+pub fn app_lights(note: u8) -> bool {
+    STARTUP_BUTTON_LIGHTS.iter().any(|&[n, _]| n == note)
+}
+
 /// One button light message: B0 <note> <value>, for the Private port.
 pub fn button_light(note: u8, value: u8) -> [u8; 3] {
     [0xB0, note & 0x7F, value & 0x7F]
@@ -176,6 +183,16 @@ mod tests {
             }
         }
         assert!(STARTUP_BUTTON_LIGHTS.iter().all(|&[n, v]| n < 0x80 && (1..=4).contains(&v)));
+    }
+
+    #[test]
+    fn only_lights_the_app_was_seen_sending() {
+        for note in [0x27, 0x35, 0x51, 0x0B] {
+            assert!(app_lights(note), "{note}");
+        }
+        for note in [0x54, 0x01, 0x10, 0x64] {
+            assert!(!app_lights(note), "{note}");
+        }
     }
 
     #[test]

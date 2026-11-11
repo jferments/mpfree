@@ -1385,6 +1385,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let mut held = [false; 16];
     let mut awaiting = [false; 16];
     let mut lit = [false; 16];
+    // Buttons whose light is never sent, noted once each.
+    let mut unlit = [false; 128];
     // Repeats per second, for the log (the paced Latch check reads these).
     let (mut window_repeats, mut window_pads, mut last_repeat_note) = (0u64, [false; 16], Instant::now());
     let mut totals = AudioTotals::default();
@@ -1468,7 +1470,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         let mut stop = false;
         for e in fx.drain(..) {
             match e {
-                app::Effect::Light(note, value) => ports.send(true, &akai::button_light(note, value))?,
+                app::Effect::Light(note, value) if akai::app_lights(note) => {
+                    ports.send(true, &akai::button_light(note, value))?
+                }
+                app::Effect::Light(note, _) => {
+                    if !unlit[note as usize & 0x7F] {
+                        unlit[note as usize & 0x7F] = true;
+                        out.note(&format!("button {note}: no light sent (Akai's app was never seen lighting it)"));
+                    }
+                }
                 app::Effect::Kit(d) => {
                     let from = kit_to.unwrap_or(mixer.kit()) as i64;
                     kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
