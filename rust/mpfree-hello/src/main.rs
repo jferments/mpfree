@@ -79,10 +79,13 @@ mod kit;
 mod looper_page;
 mod looping;
 mod mixing;
+mod modmix;
 mod perf;
 mod perform;
 mod play_page;
 mod play_widgets;
+#[cfg(test)]
+mod rt_safety;
 mod sample_page;
 mod sampler;
 mod synth;
@@ -3023,6 +3026,12 @@ fn player_session(
         };
         time.period(PERIOD as u32, &mut seq);
         hits += seq.hits;
+        // The clips' parameter locks: to the mixer's mod engine, on their
+        // frames of this period.
+        for &(offset, addr, value) in time.locks() {
+            mix.lock(offset, addr, value);
+        }
+        time.clear_locks();
         // The Play page: where the hits fell (Drum view), and the pattern.
         for h in time.hits() {
             out.show(gui::ToUi::Hit(*h));
@@ -3272,6 +3281,7 @@ fn player_session(
                 looper.describe(),
                 loop_time.describe()
             ));
+            out.note(&format!("status: {}", mix.modu.describe()));
             out.note(&format!(
                 "status: {}",
                 engines::log_line(&engines.lifetime())
@@ -3373,6 +3383,7 @@ fn player_session(
         out.say(&looper.line.close());
     }
     out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
+    out.say(&mix.modu.describe());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }

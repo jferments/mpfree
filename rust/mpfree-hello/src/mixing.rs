@@ -27,6 +27,12 @@
 //! and XY pad (`perform.rs`) on the master, before Master safety. Each
 //! rests (costs next to nothing) until it is used.
 //!
+//! Parameter locks: the clips' locks on strip controls and inserts go
+//! through the mod engine ([`MixHost::lock`], `modmix.rs`), and once a
+//! control has been locked the host's own turns of it go through the
+//! engine too ([`MixHost::set`]), so the end of a lock puts back the last
+//! turn.
+//!
 //! The screen: while the mixer panel shows ([`MixHost::show`]), the audio
 //! loop sends a [`MixState`] every [`STATE_EVERY`] (it takes the meters),
 //! and applies what the panel sends ([`MixHost::action`]).
@@ -43,6 +49,7 @@ use mpfree_fx::ids::{delay, dj_filter};
 use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId};
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
 use crate::perform::ids as perf;
@@ -145,6 +152,8 @@ pub fn name(s: StripId) -> String {
 
 pub struct MixHost {
     pub mixer: Mixer,
+    /// The mod engine between the clips' locks and the mixer.
+    pub modu: crate::modmix::ModMix,
     /// The highest the master fader goes (`--gain-db`).
     max_db: f32,
     monitor: bool,
@@ -203,6 +212,7 @@ impl MixHost {
         }
         MixHost {
             mixer,
+            modu: crate::modmix::ModMix::new(rate),
             max_db,
             monitor: false,
             line_open: false,
@@ -219,7 +229,7 @@ impl MixHost {
     pub fn play(&mut self, fx: PlayFx) {
         match fx {
             PlayFx::Strip { strip, id, value } => {
-                self.mixer.set(strip, id, value);
+                self.set(strip, id, value);
             }
             PlayFx::Filter { strip, position } => {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
@@ -271,8 +281,31 @@ impl MixHost {
     }
 
     fn insert(&mut self, strip: StripId, slot: usize, id: u16, value: f32) {
+        let addr = crate::modmix::strip_of(strip).and_then(|s| {
+            let uid = self.mixer.chain(strip)?.uid(slot)?;
+            Some(ParamAddr::new(Owner::Insert(s, uid), id))
+        });
+        if addr.is_some_and(|a| self.modu.set(a, value)) {
+            return;
+        }
         self.mixer
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    /// Sets a strip control from the start of the next period: through the
+    /// mod engine once a lock has made it a target, else straight to the
+    /// mixer.
+    pub fn set(&mut self, strip: StripId, id: u16, value: f32) {
+        let addr = crate::modmix::strip_of(strip).map(|s| ParamAddr::new(Owner::Strip(s), id));
+        if !addr.is_some_and(|a| self.modu.set(a, value)) {
+            self.mixer.set(strip, id, value);
+        }
+    }
+
+    /// A clip's parameter lock (`value`) or its end (`None`), `offset`
+    /// frames into the coming period.
+    pub fn lock(&mut self, offset: u32, addr: ParamAddr, value: Option<f32>) {
+        self.modu.lock(&self.mixer, offset, addr, value);
     }
 
     fn apply_mutes(&mut self) {
@@ -280,7 +313,7 @@ impl MixHost {
             let on = (self.pad_mutes | self.dropped) & (1 << p) != 0;
             let want = if on { 1.0 } else { 0.0 };
             if self.mixer.param(StripId::Pad(p), mx::MUTE) != want {
-                self.mixer.set(StripId::Pad(p), mx::MUTE, want);
+                self.set(StripId::Pad(p), mx::MUTE, want);
             }
         }
     }
@@ -318,8 +351,7 @@ impl MixHost {
 
     /// The Level (Q-Link 1, the slider): the master fader.
     pub fn set_level(&mut self, db: f32) {
-        self.mixer
-            .set(StripId::Master, mx::VOLUME, db.min(self.max_db));
+        self.set(StripId::Master, mx::VOLUME, db.min(self.max_db));
     }
 
     /// The master fader now, dB.
@@ -333,7 +365,7 @@ impl MixHost {
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
         if line_open != self.line_open {
             self.line_open = line_open;
-            self.mixer.set(
+            self.set(
                 LINE,
                 mx::SOURCE,
                 if line_open {
@@ -345,7 +377,7 @@ impl MixHost {
         }
         if monitor_on != self.monitor {
             self.monitor = monitor_on;
-            self.mixer.set(
+            self.set(
                 LINE,
                 mx::MONITOR,
                 if monitor_on {
@@ -405,6 +437,7 @@ impl MixHost {
             hl[..PERIOD].copy_from_slice(line.0);
             hr[..PERIOD].copy_from_slice(line.1);
         }
+        self.modu.process(ctx, PERIOD, &mut self.mixer);
         self.mixer.process(ctx, left, right);
         let peak = left
             .iter()
@@ -432,7 +465,7 @@ impl MixHost {
                 value,
             } => {
                 let db = value.min(self.max_db);
-                self.mixer.set(StripId::Master, mx::VOLUME, db);
+                self.set(StripId::Master, mx::VOLUME, db);
                 self.state_at = None;
                 Some(db)
             }
@@ -449,7 +482,7 @@ impl MixHost {
                 None
             }
             MixAction::Set { strip, id, value } => {
-                self.mixer.set(strip, id, value);
+                self.set(strip, id, value);
                 None
             }
             MixAction::Select(s) => {
