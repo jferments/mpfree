@@ -9,6 +9,8 @@
 //! - [`Crush`]: bit depth and sample-rate reduction (aliasing on purpose).
 //! - [`Delay`]: free or tempo-synced echo with ping-pong, a filter and
 //!   saturation in the feedback, tape-style time changes and freeze.
+//! - [`Eq`]: four parametric bands (bell or shelf) with low and high cuts,
+//!   and the exact response curve for drawing.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
@@ -41,6 +43,7 @@ mod comp;
 mod crush;
 mod delay;
 mod drive;
+mod eq;
 mod master;
 mod oversample;
 mod svf;
@@ -51,6 +54,7 @@ pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
+pub use eq::Eq;
 pub use master::{MasterSafety, MasterStats};
 pub use oversample::{Down2, Up2};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
@@ -65,6 +69,7 @@ pub mod ids {
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
+    pub use crate::eq::ids as eq;
     pub use crate::master::ids as master;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
