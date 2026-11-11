@@ -458,6 +458,13 @@ pub struct Track {
     /// none of its own.
     pub swing: Option<Swing>,
     pub mute: bool,
+    /// "Clips through the arp": the track's clips play through its arp,
+    /// as the live pads do, and recording keeps the pads as pressed (on:
+    /// melodic tracks, which record the chord). Off (the default; drum
+    /// tracks), the clips play as recorded and recording keeps what the
+    /// arp played. Either way a part is never arpeggiated twice
+    /// (`mpfree_play::TrackArps`).
+    pub through_arp: bool,
     pub slots: [Option<Clip>; SLOTS],
 }
 
@@ -468,6 +475,7 @@ impl Track {
             dest,
             swing: None,
             mute: false,
+            through_arp: false,
             slots: Default::default(),
         }
     }

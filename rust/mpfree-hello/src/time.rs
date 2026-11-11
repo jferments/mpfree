@@ -11,6 +11,12 @@
 //! notes go into the clips and the take history. After the sampler renders,
 //! [`TimeHost::mix_click`] adds the click while counting in and recording.
 //!
+//! One arp per track ([`TrackArps`]) sits between the player and the
+//! pads. A track with "Clips through the arp" on (`Track::through_arp`)
+//! plays its clips through its arp, and records the pads as pressed
+//! ([`TimeHost::pad_pressed`]); with it off, the clips play as recorded
+//! and the track records what the arp played ([`TimeHost::pad`]).
+//!
 //! Every pad note also goes into the capture history, so CAPTURE
 //! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
 //! last phrase in the armed track even when nothing was recording, as an
@@ -27,7 +33,7 @@
 //! kit.
 
 use mpfree_capture::{keep, Capture, Now, Pending};
-use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
+use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
 use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, Project, Track, SLOTS};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
@@ -232,6 +238,8 @@ pub struct TimeHost {
     pending: Option<Pending>,
     block: Box<Block>,
     sink: Box<Collect>,
+    /// One arp per track, between the player and `sink`.
+    arps: Box<TrackArps>,
     view: PlayView,
     project: Project,
     launches: Vec<Launch>,
@@ -294,6 +302,7 @@ impl TimeHost {
                 n: 0,
                 dropped: 0,
             }),
+            arps: Box::new(TrackArps::new(rate, bpm)),
             view: PlayView::empty(),
             project,
             launches: Vec::new(),
@@ -357,7 +366,46 @@ impl TimeHost {
         self.changed = true;
         self.recorded = false;
         self.steps_changed = true;
+        self.sync_arps();
         Ok(())
+    }
+
+    /// Each track's arp plays into the track's destination, and takes its
+    /// clips when the track's "Clips through the arp" is on.
+    fn sync_arps(&mut self) {
+        for (t, track) in self.project.tracks.iter().enumerate() {
+            self.arps.set_through(t, track.through_arp);
+            self.arps.set_dest(t, track.dest);
+        }
+    }
+
+    /// "Clips through the arp" for `track` (see `Track::through_arp`).
+    /// Turning it either way clears the track's arp at the start of the
+    /// next period, so no note is left hanging. False if there is no
+    /// such track.
+    // The arp panel calls it (the arp thread's side, with the per-track
+    // arps in the app); until then only tests do.
+    #[allow(dead_code)]
+    pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
+        let Some(t) = self.project.tracks.get_mut(track) else {
+            return false;
+        };
+        if t.through_arp != on {
+            t.through_arp = on;
+            self.changed = true;
+        }
+        self.sync_arps();
+        true
+    }
+
+    /// The per-track arps: each track's settings, latch and pattern (change
+    /// them between periods), and [`TrackArps::pad`] for the live pads of
+    /// the focused track.
+    // The app moves its arp onto these (the arp thread's side); until then
+    // only tests use it.
+    #[allow(dead_code)]
+    pub fn arps_mut(&mut self) -> &mut TrackArps {
+        &mut self.arps
     }
 
     /// The clip the Play page's pattern edits: the armed track's (track 1
@@ -662,12 +710,35 @@ impl TimeHost {
         ))
     }
 
-    /// A pad note played in the coming period, at `offset`: recorded into
-    /// the armed track while the transport records, and kept in the
-    /// capture history always.
+    /// Whether the armed track records the pads as pressed (its clips
+    /// play through its arp) rather than what its arp played.
+    fn records_pressed(&self) -> bool {
+        self.armed.is_some_and(|t| self.arps.records_pads(t))
+    }
+
+    /// A pad note as pressed, before any arp, in the coming period at
+    /// `offset`. When the armed track's clips play through its arp, this
+    /// is what it records, and what the capture history keeps.
+    // The app calls it once its pads play through the per-track arps (the
+    // arp thread's side); until then only tests do.
+    #[allow(dead_code)]
+    pub fn pad_pressed(&mut self, offset: u32, event: Event) {
+        if self.records_pressed() {
+            self.recorder.input(offset, event);
+            self.capture.input(offset, event);
+        }
+    }
+
+    /// A pad note as heard (after the arp) in the coming period, at
+    /// `offset`: recorded into the armed track while the transport
+    /// records, and kept in the capture history always, unless the armed
+    /// track's clips play through its arp (then [`TimeHost::pad_pressed`]
+    /// gives those). It lights the pattern's step either way.
     pub fn pad(&mut self, offset: u32, event: Event) {
-        self.recorder.input(offset, event);
-        self.capture.input(offset, event);
+        if !self.records_pressed() {
+            self.recorder.input(offset, event);
+            self.capture.input(offset, event);
+        }
         let Event::NoteOn { note, velocity } = event else {
             return;
         };
@@ -791,8 +862,11 @@ impl TimeHost {
             self.changed = true;
         }
         self.sink.n = 0;
+        // The player's notes go through the per-track arps (a through
+        // track's into its arp, the rest as they are), then to the pads.
         self.player
-            .process(&self.view, &self.block, &mut *self.sink);
+            .process(&self.view, &self.block, &mut self.arps.through_sink());
+        self.arps.finish(&self.block, &mut *self.sink);
         for o in &self.sink.out[..self.sink.n] {
             match o.event {
                 Event::NoteOn { note, velocity } => {
@@ -912,6 +986,7 @@ impl TimeHost {
     /// Notes lost because a table was full (should stay 0).
     pub fn dropped(&self) -> u64 {
         self.sink.dropped
+            + self.arps.dropped()
             + self.recorder.dropped()
             + self.player.stats().dropped
             + self.capture.dropped()
@@ -1170,6 +1245,119 @@ mod tests {
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
         let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
+    }
+
+    /// Track `track`'s arp plays up in sixteenths.
+    fn arp_up(h: &mut TimeHost, track: usize) {
+        use mpfree_arp::{Mode, Order, Rate, Settings};
+        h.arps_mut().engine(track).unwrap().set_settings(Settings {
+            mode: Mode::Arp,
+            order: Order::Up,
+            rate: Rate::Sixteenth,
+            gate: 50,
+            ..Settings::default()
+        });
+    }
+
+    /// Records one bar into a new clip on track 3 (a two-bar loop): the
+    /// pads pressed the chord 4, 7, 9 at frame 1000 and held it to the bar
+    /// line, while the app's arp let pads 20 and 21 be heard. Then plays
+    /// the next pass and returns its pad hits as (frame, pad).
+    fn record_a_chord(h: &mut TimeHost) -> Vec<(u64, usize)> {
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        while pads.frame < 2 * BAR {
+            let f = pads.frame;
+            let at = |x: u64| {
+                (f..f + u64::from(PERIOD))
+                    .contains(&x)
+                    .then(|| (x - f) as u32)
+            };
+            if let Some(o) = at(1000) {
+                for note in [4, 7, 9] {
+                    h.pad_pressed(
+                        o,
+                        Event::NoteOn {
+                            note,
+                            velocity: 100,
+                        },
+                    );
+                }
+                h.pad(
+                    o,
+                    Event::NoteOn {
+                        note: 20,
+                        velocity: 100,
+                    },
+                );
+            }
+            if let Some(o) = at(1000 + 5512) {
+                h.pad(o, Event::NoteOff { note: 20 });
+                h.pad(
+                    o,
+                    Event::NoteOn {
+                        note: 21,
+                        velocity: 100,
+                    },
+                );
+            }
+            if let Some(o) = at(BAR - 100) {
+                for note in [4, 7, 9] {
+                    h.pad_pressed(o, Event::NoteOff { note });
+                }
+                h.pad(o, Event::NoteOff { note: 21 });
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(pads.hits.is_empty(), "the first pass only records");
+        run(h, &mut pads, 4 * BAR, &[]);
+        assert_eq!(h.dropped(), 0);
+        pads.hits.iter().map(|&(f, p, _)| (f, p)).collect()
+    }
+
+    /// "Clips through the arp" on: the track records the chord as pressed
+    /// (not what the app's arp played), and its clip plays back through
+    /// the track's arp, one note per sixteenth.
+    #[test]
+    fn a_through_track_records_the_chord_and_plays_it_through_its_arp() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.set_through_arp(2, true));
+        assert!(h.project.tracks[2].through_arp);
+        arp_up(&mut h, 2);
+        let hits = record_a_chord(&mut h);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        let mut kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+        kept.sort();
+        assert_eq!(kept, [4, 7, 9], "the chord, not the arp's notes");
+        let pads: Vec<usize> = hits.iter().map(|&(_, p)| p).collect();
+        assert!(pads.len() >= 12, "{hits:?}");
+        assert_eq!(&pads[..6], &[4, 7, 9, 4, 7, 9], "up, one at a time");
+        let sixteenth = BAR / 16;
+        for w in hits.windows(2) {
+            assert!(w[1].0.abs_diff(w[0].0 + sixteenth) <= 1, "{hits:?}");
+        }
+        assert!(hits[0].0 >= 2 * BAR + 1000 - 23 && hits[0].0 < 2 * BAR + 1000 + sixteenth);
+        // A set_through_arp past the last track says so.
+        assert!(!h.set_through_arp(99, true));
+    }
+
+    /// The switch off (the default, for drums): the track records what was
+    /// heard, and its clip plays as recorded even though its arp is set
+    /// to arpeggiate.
+    #[test]
+    fn a_track_with_the_switch_off_records_and_plays_what_was_heard() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        arp_up(&mut h, 2);
+        let hits = record_a_chord(&mut h);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        let kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+        assert_eq!(kept, [20, 21]);
+        let pads: Vec<usize> = hits.iter().map(|&(_, p)| p).collect();
+        assert_eq!(pads, [20, 21], "{hits:?}");
+        assert!(hits[0].0.abs_diff(2 * BAR + 1000) <= 23);
+        assert!(hits[1].0.abs_diff(2 * BAR + 1000 + 5512) <= 23);
     }
 
     /// A clip launched while the music plays waits for the next bar line,

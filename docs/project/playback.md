@@ -87,6 +87,17 @@ A track whose destination is an arpeggiator plays its notes into an `mpfree-arp`
 - Notes from several sources can come in any order in a period: the player's, and live pad notes for the track. They are kept in offset order. A note held by a pad and a clip at once is pressed on the engine once and released when the last of them lets go.
 - No allocation: up to 256 player notes a period. `ArpHost::dropped()` counts player notes that did not fit and engine notes past its 128 per call. It should stay 0.
 
+## One arp per track (`TrackArps`)
+
+The owner's arp decisions of 2026-11-11 give each track its own arp, and each track a switch, "Clips through the arp" (`Track::through_arp`, off by default). `TrackArps` (the arp thread's [`arps.rs`](../../rust/mpfree-play/src/arps.rs)) holds 16 `ArpHost`s and sits between the player and the host's sink.
+
+- **On (melodic tracks).** The track's clip notes go into its arp, as the live pads do. Recording keeps the pads as pressed (the chord), so the clip is arpeggiated again on playback.
+- **Off (drum tracks).** The clip notes skip the arp and play as recorded. Recording keeps what the arp played, so a roll becomes notes.
+- Either way a part is never arpeggiated twice. CAPTURE follows the same rule.
+- A through track's parameter locks skip its arp, which has no use for them. They reach the sink as the player sent them, ahead of the arp's notes on the same frame. A panic's `AllOff` clears every arp and passes through.
+- Each period: `player.process(view, block, &mut arps.through_sink())`, then `arps.finish(block, sink)`, which runs every arp over the block and sends everything in frame order.
+- **Cost.** Running 16 arps instead of one adds about 3,300 instructions a period on the bench's Time case (callgrind): 8,060 to 11,320 with no conditions, 7,580 to 10,860 with them. Most of that is the 15 arps with nothing to play, which still follow the transport each period. An idle arp could skip its period; that is the arp thread's call.
+
 ## Recording (`Recorder`, T3)
 
 Notes played while the transport records go into the armed track's playing clip.
@@ -148,6 +159,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - it follows the transport's swing
   - a busy session (a loop, swing, a tempo change, a locate, stop, panic and a restart) gives the same arp notes at periods of 1 to 8192 frames and two random sequences. With the span not split at the player's notes, period 8192 differs and the test fails.
 - `tests/arp.rs` also checks that live pad notes fed after the player's notes give the same arp output as notes fed in order, and that a note held by a pad and a clip waits for both.
+- `tests/arps.rs` (the arp thread's) checks one arp per track: a through track arpeggiates its clip and a drum track plays as recorded, a latched arp keeps running while the pads play another track, the same notes for any period size with no allocation, a panic clears every arp, and a through track's locks go around its arp.
+- In `mpfree-hello`'s `time.rs`, a through track records a chord as pressed and plays it back through its arp one note per 1/16, and a track with the switch off records and plays back what the app's arp let be heard.
 - `tests/trigs.rs` has 17 tests of trig conditions and ratchets, through the host's own steps (cues applied with `Started::apply` and compiled again):
   - A:B and 1ST count passes from the clip's start; passes before the start count backwards; a pass is one pass at the clip's own speed
   - a locate lands on the pass of the song position, and a locate back to the start plays 1ST again; a transport loop plays the same passes each time; a relaunch counts again from its new start
@@ -226,8 +239,8 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 `mpfree-hello`'s [`time.rs`](../../rust/mpfree-hello/src/time.rs) runs the engine in the audio loop:
 
-1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets.
-2. `TimeHost::period` runs the transport and the player. The clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15.
+1. Each period the loop hands `TimeHost::pad` the pad notes it is about to play, after the arp, at their frame offsets. Once the app plays the pads through the per-track arps, it also hands `TimeHost::pad_pressed` the pads as pressed, before any arp. The armed track records the pressed pads when its clips play through its arp, and the heard notes otherwise. The capture history keeps the same side.
+2. `TimeHost::period` runs the transport and the player. The player's notes go through the per-track arps (`TrackArps`; `TimeHost::arps_mut` gives the app each track's arp). Then the clips play the current kit's pads through the sampler (`hit_at`, `release_at`); a clip's note numbers are pad numbers, 0 to 15. Each compile gives every arp its track's destination and switch; `TimeHost::set_through_arp(track, on)` turns the switch, and nothing calls it yet (the arp panel will).
 3. The armed track records, and the taken and erased notes, and the recorded locks, go into the clips and the take history. `TimeHost::knob(offset, addr, value)` takes a knob move for recording; no knob calls it yet. `TimeHost::set_fill(on, offset)` turns FILL on or off for the trig conditions; no button calls it yet (the pad player picks the FILL button).
 4. While counting in and recording, a click plays on each beat: 1760 Hz on the bar and 1320 Hz on the other beats, at about −12 dBFS.
 
