@@ -8,3 +8,6 @@ description = "MPFree's native synth instruments on the shared mpfree-node inter
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
 mpfree-analysis = { path = "../mpfree-analysis" }
+
+[dev-dependencies]
+mpfree-tuning = { path = "../mpfree-tuning" }
