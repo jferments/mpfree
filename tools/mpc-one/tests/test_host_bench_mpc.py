@@ -43,6 +43,7 @@ case "$1" in
   --calibrate) echo "# mpfree-bench calibration: reference kernel, ns per call"; echo "biquad 9000.0" ;;
   --json) echo "Poly Init, 8 voices   400.0"; echo "{\"schema\": \"mpfree-bench/1\", \"build\": \"$build\"}" > "$2"
           echo "Wrote $2"; exit "$FAKE_BENCH_RC" ;;
+  --afford) echo "Poly Supersaw  18.4  7.40  16+ (75)" ;;
 esac
 '''
 
@@ -111,13 +112,13 @@ class BenchTests(unittest.TestCase):
     def test_copies_both_builds_and_runs_only_the_fixed_arguments(self):
         res = self.run_helper()
         self.assertEqual(res.returncode, 0, res.stdout)
-        for text in ("static ARM EABI5 hard-float", "CHECKS-OK", "default: copied; its hash on the MPC matches",
+        for text in ("static ARM EABI5 hard-float", "Poly Supersaw  18.4  7.40  16+ (75)", "CHECKS-OK", "default: copied; its hash on the MPC matches",
                      "a17: copied; its hash on the MPC matches", "biquad 9000.0", "Poly Init, 8 voices",
-                     "----- default.json -----", '{"schema": "mpfree-bench/1", "build": "a17"}',
+                     "----- default.json -----", "Poly Supersaw  18.4  7.40  16+ (75)", '{"schema": "mpfree-bench/1", "build": "a17"}',
                      "RESULT: both builds ran"):
             self.assertIn(text, res.stdout)
-        self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json",
-                                                 "a17 --calibrate", "a17 --json a17.json"])
+        self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json", "default --afford",
+                                                 "a17 --calibrate", "a17 --json a17.json", "a17 --afford"])
         # Read-only on services: only is-active, never a start or stop.
         self.assertTrue(all(c.startswith("is-active ") for c in self.lines("systemctl: ")), self.lines("systemctl: "))
         for name, path in self.programs.items():

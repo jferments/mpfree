@@ -138,6 +138,10 @@ impl Delay {
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         let pp = self.v[3] >= 0.5;
+        // The saturation's gain and its inverse, worked out again only
+        // while the amount glides (powf per sample is a library call on the
+        // MPC's ARM).
+        let (mut sat_was, mut drive, mut undrive) = (f32::NAN, 1.0, 1.0);
         for i in 0..l.len() {
             let d = self.frames.next();
             let fz = self.frozen.next();
@@ -146,14 +150,19 @@ impl Delay {
                 self.log_tone.next();
                 self.tone.set(SvfMode::LowPass, self.log_tone.value.exp2(), 0.707, 0.0, self.rate);
             }
-            let drive = db_to_gain(18.0 * self.sat.next());
+            let sat = self.sat.next();
+            if sat != sat_was {
+                sat_was = sat;
+                drive = db_to_gain(18.0 * sat);
+                undrive = 1.0 / drive;
+            }
             let mix = self.mix.next();
             let ya = self.lines[0].read(d);
             let yb = self.lines[1].read(d);
             let mut loopv = [ya, yb];
             for (c, y) in loopv.iter_mut().enumerate() {
                 let f = self.tone.run(c, self.hp.run(c, *y));
-                let s = soft(f * drive) / drive;
+                let s = soft(f * drive) * undrive;
                 // Frozen: the loop keeps the raw repeats, so it never decays.
                 *y = flush(s + fz * (*y - s));
             }
