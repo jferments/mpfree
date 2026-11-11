@@ -613,7 +613,7 @@ fn main() -> ExitCode {
     }
 
     println!();
-    println!("Budgets (worst block, share of the period; see docs/dev/design/profiling.md):");
+    println!("Budgets (worst block, share of the period; see docs/project/profiling.md):");
     for b in budget::MPC_BUDGETS {
         println!(
             "  {:<8} {:>5.1} %  {:>6.0} us  {}",

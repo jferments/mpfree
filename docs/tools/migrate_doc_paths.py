@@ -57,8 +57,23 @@ PLAIN = re.compile(r"docs/(project|decisions|guides|hardware|milestones|perf|res
 TEXT_EXT = (".md", ".rs", ".py", ".sh", ".yml", ".yaml", ".toml", ".txt", ".json", ".html")
 
 
+def old_path(new):
+    """Where a page under docs/dev lived before the move (the inverse of new_path)."""
+    for sub in ("design/", "project/"):
+        if new.startswith("docs/dev/" + sub):
+            return "docs/project/" + new[len("docs/dev/" + sub):]
+    for a, b in DIR_MOVES:
+        if new.startswith(b):
+            return a + new[len(b):]
+    if new == "docs/dev/README.md":
+        return "docs/README.md"
+    return new
+
+
 def rewrite_links(text, old_file, new_file, moved):
-    """Rewrite relative Markdown links in a file that moved from old_file to new_file."""
+    """Fix relative Markdown links in a page now at new_file. A link that works
+    from new_file stays; a broken one is read as written from old_file (where
+    the page, or the lines just merged into it, were written) and re-pointed."""
     old_dir = os.path.dirname(old_file)
     new_dir = os.path.dirname(new_file)
 
@@ -69,10 +84,14 @@ def rewrite_links(text, old_file, new_file, moved):
         path, frag = (target.split("#", 1) + [""])[:2]
         if not path:
             return m.group(0)
+        if os.path.exists(os.path.join(ROOT, new_dir, path)):
+            return m.group(0)
         resolved = os.path.normpath(os.path.join(old_dir, path))
         if resolved.startswith(".."):
             return m.group(0)
         dest = moved.get(resolved, new_path(resolved))
+        if not os.path.exists(os.path.join(ROOT, dest)):
+            return m.group(0)
         rel = os.path.relpath(dest, new_dir or ".")
         if path.endswith("/") and not rel.endswith("/"):
             rel += "/"
@@ -98,6 +117,8 @@ def main():
     # Link and path rewrites: every text file, at its (new) place.
     old_of = {b: a for a, b in moves}
     for f in (new_path(p) for p in files):
+        if f.startswith("docs/tools/") or f == "docs/agents/docs-system.md":
+            continue  # these name the old paths on purpose
         if not f.endswith(TEXT_EXT):
             continue
         cur = f if not check else old_of.get(f, f)
@@ -108,8 +129,16 @@ def main():
             text = fh.read()
         new = text
         if f.endswith(".md"):
-            new = rewrite_links(new, old_of.get(f, f), f, moved)
-        new = PLAIN.sub(lambda m: new_path(m.group(0)), new)
+            new = rewrite_links(new, old_of.get(f, old_path(f)), f, moved)
+        if f.endswith(".rs"):
+            # Only comments: a path inside a Rust string can be drawn on a
+            # screen or printed by a bench that golden checks compare, so
+            # those are changed by hand, with the goldens blessed.
+            new = "\n".join(PLAIN.sub(lambda m: new_path(m.group(0)), line)
+                             if line.lstrip().startswith(("//", "*")) else line
+                             for line in new.split("\n"))
+        else:
+            new = PLAIN.sub(lambda m: new_path(m.group(0)), new)
         if new != text:
             changes.append(f"rewrite {f}")
             if not check:
