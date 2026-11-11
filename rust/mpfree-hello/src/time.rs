@@ -29,7 +29,7 @@
 use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::{Clip, Project, Track};
+use mpfree_seq::{Clip, Project, Track, SLOTS};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -639,6 +639,29 @@ impl TimeHost {
         ))
     }
 
+    /// A clip made elsewhere (the Sample page's chop to a phrase) into the
+    /// first empty slot of the armed track (track 1 if none is armed), as
+    /// a take that UNDO on the Clips page takes away again. It isn't
+    /// launched: a tap on the Clips page plays it like any clip. Returns a
+    /// line for the log.
+    pub fn put_clip(&mut self, clip: Clip) -> Result<String, String> {
+        let track = self.armed.unwrap_or(0);
+        let t = self.project.tracks.get(track).ok_or("no such track")?;
+        let name = t.name.clone();
+        let slot = (0..SLOTS)
+            .find(|&s| t.slots[s].is_none())
+            .ok_or_else(|| format!("{name} has no empty slot for the phrase"))?;
+        let notes = clip.notes.len();
+        self.takes
+            .capture_clip(&mut self.project, track, slot, clip)
+            .map_err(|e| format!("phrase refused: {e:?}"))?;
+        self.compile()?;
+        Ok(format!(
+            "phrase: {notes} notes in slot {} of {name}",
+            slot + 1
+        ))
+    }
+
     /// A pad note played in the coming period, at `offset`: recorded into
     /// the armed track while the transport records, and kept in the
     /// capture history always.
@@ -920,6 +943,38 @@ fn take_name(row: Option<(bool, u32)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_put_from_elsewhere_lands_in_the_first_empty_slot_and_undo_takes_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut clip = Clip::new("Break phrase", 4 * 960);
+        for k in 0..4u8 {
+            clip.add_note(mpfree_seq::Note::new(i64::from(k) * 960, 480, k, 127))
+                .unwrap();
+        }
+        // Slot 1 of track 1 is taken: the phrase goes in slot 2.
+        h.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
+        let line = h.put_clip(clip.clone()).unwrap();
+        assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
+        assert_eq!(h.project.clip(0, 1), Some(&clip));
+        assert!(h.launches.is_empty(), "not launched");
+        // The armed track takes it.
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        assert!(h
+            .put_clip(clip.clone())
+            .unwrap()
+            .ends_with("slot 1 of Track 3"));
+        // UNDO on the Clips page takes the last one away, then the first.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(2, 0).is_none());
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(0, 1).is_none());
+        // A full track says so.
+        for s in 0..SLOTS {
+            h.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
+        }
+        assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
+    }
 
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;

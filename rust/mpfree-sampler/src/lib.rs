@@ -19,6 +19,7 @@ pub mod chop;
 pub mod dsp;
 pub mod engine;
 pub mod model;
+pub mod phrase;
 pub mod record;
 pub mod warp;
 
