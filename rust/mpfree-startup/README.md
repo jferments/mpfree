@@ -9,7 +9,7 @@ Each `mpfree-ui` theme names its startup screen; this crate draws three:
 | Synthwave | A striped sun rises behind neon mountains and palm trees over a racing grid; a chrome "MPFree" flickers on like a neon tube. |
 | Spaceship | The ship drops out of warp in front of a purple spiral galaxy; the HUD boots and the title is wiped on by a scan line. |
 
-The default theme's galaxy is `mpfree-splash` (PR #28).
+The default theme's galaxy is [`mpfree-splash`](../mpfree-splash).
 
 Everything that never moves is drawn once into layers; a frame copies them
 and draws only what moves. Scenes are deterministic: the same time gives the
