@@ -53,7 +53,7 @@ class RK3288RomTests(unittest.TestCase):
                         rom.inspect_idblock(backup, sha)
                     self.assertIn("baseline hash: VERIFIED", output.getvalue())
                     self.assertIn("First-stage identifier: RK32", output.getvalue())
-                    self.assertIn("No file or hardware was modified", output.getvalue())
+                    self.assertIn("no file or hardware was modified", output.getvalue())
 
     def test_idblock_bad_magic_and_wrong_hash(self):
         with tempfile.TemporaryDirectory() as root:
