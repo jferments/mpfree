@@ -127,6 +127,19 @@ pub enum ModEvent {
     Unlock {
         addr: ParamAddr,
     },
+    /// A hand on the control (a finger on the XY pad or the DJ knob, a
+    /// Q-Link turned over a lane or a lock): the target follows it, over
+    /// any lock, until [`ModEvent::Untouch`]. Locks and unlocks keep
+    /// landing underneath meanwhile, so the hand lets go to whatever
+    /// they hold by then. The last touch wins.
+    Touch {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// The hand let go.
+    Untouch {
+        addr: ParamAddr,
+    },
     /// A host source's value, 0 to 1.
     Source {
         n: u8,
@@ -168,8 +181,9 @@ pub struct ModStats {
     pub ticks: u64,
     /// Parameter events sent on.
     pub sent: u64,
-    /// Locks and sets for parameters that were not targets: passed on
-    /// as they came (an unlock of one cannot restore anything).
+    /// Sets, locks and touches for parameters that were not targets:
+    /// passed on as they came (an unlock of one cannot restore
+    /// anything).
     pub unregistered: u64,
 }
 
@@ -186,6 +200,8 @@ struct Target {
     log: Option<(f32, f32)>,
     /// A lock's value and knob position.
     lock: Option<(f32, f32)>,
+    /// A hand's value and knob position (over the lock).
+    touch: Option<(f32, f32)>,
     /// Scene A and B knob positions.
     scene: [Option<f32>; 2],
     /// The macro and map that move it.
@@ -211,6 +227,7 @@ impl Target {
             base_u: info.to_unit(base),
             log: log_consts(&info),
             lock: None,
+            touch: None,
             scene: [None; 2],
             mac: None,
             rows: 0,
@@ -454,12 +471,12 @@ impl ModEngine {
         true
     }
 
-    /// Targets with nothing moving them (no macro, row, lock or scene).
-    /// The host may remove them to make room.
+    /// Targets with nothing moving them (no macro, row, lock, touch or
+    /// scene). The host may remove them to make room.
     pub fn idle_targets(&self) -> impl Iterator<Item = ParamAddr> + '_ {
         self.targets[INTERNAL..]
             .iter()
-            .filter(|t| !t.moving() && t.lock.is_none())
+            .filter(|t| !t.moving() && t.lock.is_none() && t.touch.is_none())
             .map(|t| t.addr)
     }
 
@@ -494,6 +511,12 @@ impl ModEngine {
     pub fn is_locked(&self, addr: ParamAddr) -> bool {
         self.find(addr)
             .is_some_and(|i| self.targets[i].lock.is_some())
+    }
+
+    /// A hand holds it ([`ModEvent::Touch`] without its `Untouch` yet).
+    pub fn is_touched(&self, addr: ParamAddr) -> bool {
+        self.find(addr)
+            .is_some_and(|i| self.targets[i].touch.is_some())
     }
 
     /// How far modulation can move a target's knob now, as positions
@@ -868,6 +891,26 @@ impl ModEngine {
                     }
                 }
             }
+            ModEvent::Touch { addr, value } => match self.find(addr) {
+                Some(i) => {
+                    let t = &mut self.targets[i];
+                    let v = t.info.clamp(value);
+                    t.touch = Some((v, t.info.to_unit(v)));
+                    t.dirty = true;
+                }
+                None => {
+                    self.stats.unregistered += 1;
+                    self.pass = Some((addr, value));
+                }
+            },
+            ModEvent::Untouch { addr } => {
+                if let Some(i) = self.find(addr) {
+                    let t = &mut self.targets[i];
+                    if t.touch.take().is_some() {
+                        t.dirty = true;
+                    }
+                }
+            }
             ModEvent::Source { n, value } => {
                 if let Some(h) = self.host.get_mut(n as usize) {
                     *h = if value.is_finite() {
@@ -960,8 +1003,9 @@ impl ModEngine {
     }
 
     /// Target `i`'s knob position from its layers, and its exact value
-    /// when a single plain value decides it (the base or a lock with no
-    /// rows), so an unmodulated parameter goes out exactly as it was set.
+    /// when a single plain value decides it (the base, a lock or a touch
+    /// with no rows), so an unmodulated parameter goes out exactly as it
+    /// was set.
     #[inline]
     fn eval(&self, i: usize) -> (f32, Option<f32>) {
         let t = &self.targets[i];
@@ -981,6 +1025,10 @@ impl ModEngine {
         if let Some((l, lu)) = t.lock {
             u = lu;
             exact = Some(l);
+        }
+        if let Some((h, hu)) = t.touch {
+            u = hu;
+            exact = Some(h);
         }
         if t.rows > 0 {
             u += t.offset;
