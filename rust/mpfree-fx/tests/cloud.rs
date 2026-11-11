@@ -2,8 +2,10 @@
 //! rate, the tail estimate covers the ring-out, Freeze holds the tail and
 //! ignores new input, Width 0 is mono and full width is decorrelated, Mix 0
 //! is the input exactly, a reset forgets everything, a Character change
-//! dips and recovers, Light quality keeps the decay and level and wakes
-//! its lines silent, and the presets are in range. The node rules (valid
+//! dips and recovers, Light and Eco keep the decay and level (and Eco
+//! drops the top), a Quality change wakes its lines silent and a change of
+//! rate (to or from Eco) dips on the same frame at any block size, and the
+//! presets are in range. The node rules (valid
 //! description, any block size, every extreme, no allocation) are checked
 //! with the other effects in `fx.rs` and `no_alloc.rs`.
 
@@ -311,17 +313,46 @@ fn a_character_change_dips_the_wet_signal_and_recovers() {
     );
 }
 
+/// The energy between `lo` and `hi` Hz: Hann-windowed Goertzel bins every
+/// 50 Hz, so the strong band below cannot leak in.
+fn band(x: &[f32], lo: f32, hi: f32) -> f32 {
+    let n = x.len();
+    let w: Vec<f64> = (0..n)
+        .map(|i| {
+            x[i] as f64 * (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
+        })
+        .collect();
+    let mut sum = 0.0;
+    let mut f = lo;
+    while f <= hi {
+        let k = 2.0 * (2.0 * std::f64::consts::PI * f as f64 / RATE as f64).cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in &w {
+            let s0 = v + k * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        sum += s1 * s1 + s2 * s2 - k * s1 * s2;
+        f += 50.0;
+    }
+    sum.sqrt() as f32
+}
+
 #[test]
-fn light_quality_keeps_the_decay_and_the_level() {
-    // Light: half the lines and stages. The decay and the loudness stay
-    // (within the same 20 % and 3 dB) for every character.
+fn light_and_eco_keep_the_decay_the_level_and_the_band() {
+    // Light: half the lines and stages; Eco: the same at half the rate.
+    // The decay and the loudness stay (within 20 % and 3 dB of Full) for
+    // every character. Eco keeps Light's colour from 1 to 10 kHz (within
+    // 3 dB in each band: its stages and taps read their fractions with an
+    // all-pass, so half rate does not dull every pass) and has nothing
+    // left above 14 kHz.
     for character in 0..5 {
         let decay_ms = 2000.0;
         let mut v = OPEN.to_vec();
         v.extend([(CHARACTER, character as f32), (DECAY, decay_ms)]);
-        let render = |light: f32| {
+        let render = |quality: f32| {
             let mut v = v.clone();
-            v.push((QUALITY, light));
+            v.push((QUALITY, quality));
             let mut c = cloud(RATE, &v);
             let frames = (RATE as f32 * (decay_ms / 1000.0 * 1.5 + 0.5)) as usize;
             let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
@@ -331,20 +362,125 @@ fn light_quality_keeps_the_decay_and_the_level() {
             (l, r)
         };
         let (fl, fr) = render(0.0);
-        let (ll, lr) = render(1.0);
-        let (tf, tl) = (t60(&fl, &fr, RATE), t60(&ll, &lr, RATE));
+        let tf = t60(&fl, &fr, RATE);
         let w = RATE as usize / 5..RATE as usize;
-        let level = db(rms(&ll[w.clone()]) / rms(&fl[w]));
+        let mut light = Vec::new();
+        for (q, name) in [(1.0, "light"), (2.0, "eco")] {
+            let (ql, qr) = render(q);
+            let tq = t60(&ql, &qr, RATE);
+            let level = db(rms(&ql[w.clone()]) / rms(&fl[w.clone()]));
+            println!("character {character}: T60 full {tf:.2} s, {name} {tq:.2} s; {name} is {level:+.1} dB");
+            assert!(
+                (tq / tf - 1.0).abs() < 0.2,
+                "character {character}: T60 full {tf:.2} s, {name} {tq:.2} s"
+            );
+            assert!(
+                level.abs() < 3.0,
+                "character {character}: {name} is {level:+.1} dB"
+            );
+            if q == 1.0 {
+                light = ql;
+                continue;
+            }
+            for (lo, hi) in [(1000.0, 4000.0), (4000.0, 7000.0), (7000.0, 10_000.0)] {
+                let rel = db(band(&ql[w.clone()], lo, hi) / band(&light[w.clone()], lo, hi));
+                println!("character {character}: eco {lo}-{hi} Hz is {rel:+.1} dB against light");
+                assert!(
+                    rel.abs() < 3.0,
+                    "character {character}: eco {lo}-{hi} Hz is {rel:+.1} dB against light"
+                );
+            }
+            let top =
+                db(band(&ql[w.clone()], 14_000.0, 20_000.0)
+                    / band(&fl[w.clone()], 14_000.0, 20_000.0));
+            println!("character {character}: eco above 14 kHz is {top:+.1} dB against full");
+            assert!(
+                top < -50.0,
+                "character {character}: eco above 14 kHz is {top:+.1} dB against full"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_change_to_eco_and_back_dips_and_is_the_same_in_any_block_size() {
+    // Full to Eco at 0.5 s and back at 1.5 s, under steady noise: each
+    // change of rate dips the wet signal to silence, restarts the tail and
+    // recovers, on the same frames however the stream is cut into blocks.
+    let s = RATE as usize;
+    let x = noise(31, 2 * s + s / 2, 0.3);
+    let render = |block: usize| {
+        let mut c = cloud(
+            RATE,
+            &[
+                (MIX, 100.0),
+                (CHARACTER, 1.0),
+                (QUALITY, 0.0),
+                (DECAY, 800.0),
+            ],
+        );
+        let (mut l, mut r) = (x.clone(), x.clone());
+        let changes = [(s / 2, 2.0), (3 * s / 2, 0.0)];
+        let mut done = 0;
+        while done < l.len() {
+            let len = block.min(l.len() - done);
+            let ev: Vec<Timed> = changes
+                .iter()
+                .filter(|(at, _)| (done..done + len).contains(at))
+                .map(|&(at, q)| {
+                    Timed::new(
+                        (at - done) as u32,
+                        NodeEvent::Param {
+                            id: QUALITY,
+                            value: q,
+                        },
+                    )
+                })
+                .collect();
+            c.process(
+                &Ctx::new(RATE, done as u64),
+                &ev,
+                &mut l[done..done + len],
+                &mut r[done..done + len],
+            );
+            done += len;
+        }
+        (l, r)
+    };
+    let (l, r) = render(128);
+    for block in [1, 37, 512] {
+        let (bl, br) = render(block);
+        assert!(
+            l.iter()
+                .zip(&bl)
+                .chain(r.iter().zip(&br))
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "block {block}"
+        );
+    }
+    let win = |at: usize| rms(&l[at..at + s / 10]);
+    let steady = win(s / 2 - s / 10);
+    for (at, name) in [(s / 2, "to eco"), (3 * s / 2, "back to full")] {
+        // The quietest 2 ms within 60 ms of the change, and 400 ms later.
+        let quiet = (0..30)
+            .map(|k| rms(&l[at + k * s / 500..at + (k + 1) * s / 500]))
+            .fold(f32::MAX, f32::min);
+        let back = win(at + 2 * s / 5);
         println!(
-            "character {character}: T60 full {tf:.2} s, light {tl:.2} s; light is {level:+.1} dB"
+            "{name}: steady {:.1} dB, quietest {:.1} dB, 400 ms on {:.1} dB",
+            db(steady),
+            db(quiet),
+            db(back)
         );
         assert!(
-            (tl / tf - 1.0).abs() < 0.2,
-            "character {character}: T60 full {tf:.2} s, light {tl:.2} s"
+            db(quiet / steady) < -30.0,
+            "{name}: dips to {:.1} dB",
+            db(quiet / steady)
         );
         assert!(
-            level.abs() < 3.0,
-            "character {character}: light is {level:+.1} dB"
+            db(back / steady).abs() < 6.0,
+            "{name}: back within 6 dB: {:.1} dB",
+            db(back / steady)
         );
     }
 }
@@ -354,7 +490,15 @@ fn a_quality_change_dips_and_wakes_its_lines_silent() {
     // Full, then Light for a second (the lines Light drops hold their
     // tail), then Full again with no input: the dropped lines start from
     // silence, so nothing from before comes back.
-    let mut c = cloud(RATE, &[(MIX, 100.0), (CHARACTER, 0.0), (DECAY, 60_000.0)]);
+    let mut c = cloud(
+        RATE,
+        &[
+            (MIX, 100.0),
+            (CHARACTER, 0.0),
+            (DECAY, 60_000.0),
+            (QUALITY, 0.0),
+        ],
+    );
     let s = RATE as usize;
     let (mut l, mut r) = (noise(21, s, 0.3), noise(22, s, 0.3));
     run(&mut c, RATE, &mut l, &mut r);

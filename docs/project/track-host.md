@@ -47,6 +47,15 @@ mod matrix, automation ───────┘               slot 1: FM   ─> 
 - The output is the same, sample for sample, for any block size. The one exception is the moment a ringing-out instrument is retired, which falls on a block boundary; it is silent by then.
 - `stats(slot)` gives notes started, events dropped, stray note-offs, resets and swaps. With `set_profiling(true)` each instrument's render is timed into its probe (`probe_mut(slot)`, `mpfree-prof`), so the pad player can log each instrument's share of the period as it does for Poly today.
 
+## Cost
+
+`mpfree-bench` has two cases for the host (`--filter "track host"`):
+
+- **Track host alone, 16 tracks, 8 events each per block:** sixteen instruments that make no sound, each given four notes on and four off in every block, out of order. This is the host's own work: the queues, the sorting, the per-track sums and the clip guard.
+- **Track host, 4 Poly tracks of 4 voices:** four Poly (Init) tracks, each with a chord changing every half second, a beat apart. Most of this is Poly's own work, the same as in the Poly cases.
+
+On the 4-core cloud workstation VM (release build, 2026-11-11), the host alone took 3.3 us per block on average and 7 us at the 99th percentile, 0.25 % of the 2.9 ms period. The four Poly tracks took 71 us on average and 148 us at the 99th percentile, 5 % of the period. Neither allocates (`--check-allocs`). The MPC's numbers come from the next bench run on the device.
+
 ## Tests
 
 `cargo test --locked -p mpfree-track` (from `rust/`):
@@ -57,6 +66,5 @@ mod matrix, automation ───────┘               slot 1: FM   ─> 
 ## Next
 
 - Wire it into the pad player with the Hello MPC work: the Synth tab's instrument moves into a slot, the pads and the arp send to it, and the sequencer's tracks get their destinations.
-- A `mpfree-bench` case for the host with a song's instruments, after the bench's `--afford` change lands.
 - New engines (the drum and pluck synths, the wavetable synth) arrive as instruments in slots; the mod matrix and macros drive them through `param`.
-- Plugin hosting: a sandboxed plugin process behind an instrument node.
+- Plugin hosting: a CLAP plugin, in-process or sandboxed, in a slot ([Plugins](plugins.md)).
