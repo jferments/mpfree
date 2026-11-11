@@ -5,15 +5,25 @@ use std::collections::HashMap;
 use std::process::{Command, Output};
 
 fn session(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mpfree-session")).args(args).output().expect("run mpfree-session")
+    Command::new(env!("CARGO_BIN_EXE_mpfree-session"))
+        .args(args)
+        .output()
+        .expect("run mpfree-session")
 }
 
 fn report(out: &Output) -> HashMap<String, String> {
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
     assert_eq!(lines.next(), Some("MPFREE_SESSION_V1"));
-    lines.filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    lines
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 #[test]
@@ -54,7 +64,11 @@ fn paced_self_test_makes_the_same_audio_as_offline() {
 
 #[test]
 fn anything_but_one_mode_is_a_usage_error() {
-    for args in [vec![], vec!["--run"], vec!["--self-test", "--offline-check"]] {
+    for args in [
+        vec![],
+        vec!["--run"],
+        vec!["--self-test", "--offline-check"],
+    ] {
         let out = session(&args);
         assert_eq!(out.status.code(), Some(64), "{args:?}");
         assert!(String::from_utf8_lossy(&out.stderr).contains("Usage"));

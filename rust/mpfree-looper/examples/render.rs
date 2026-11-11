@@ -45,8 +45,19 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--period" => period = args.next().and_then(|v| v.parse().ok()).filter(|p| (1..=8192).contains(p)).unwrap_or_else(|| fail("--period takes 1 to 8192")),
-            "--out" => out = Some(args.next().unwrap_or_else(|| fail("--out takes a file name"))),
+            "--period" => {
+                period = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|p| (1..=8192).contains(p))
+                    .unwrap_or_else(|| fail("--period takes 1 to 8192"))
+            }
+            "--out" => {
+                out = Some(
+                    args.next()
+                        .unwrap_or_else(|| fail("--out takes a file name")),
+                )
+            }
             "-h" | "--help" => {
                 println!("render [--period N] [--out FILE]   (default FILE: ~/mpfree-work/looper-demo.wav)");
                 return;
@@ -76,11 +87,19 @@ fn main() {
         (4.0 * BAR_TICKS - 60.0, L::Overdub, "punch out"),
         (6.0 * BAR_TICKS - 240.0, L::Overdub, "overdub lead"),
         (8.0 * BAR_TICKS - 60.0, L::Overdub, "punch out"),
-        (8.0 * BAR_TICKS + 960.0, L::Undo, "undo (the lead fades out)"),
+        (
+            8.0 * BAR_TICKS + 960.0,
+            L::Undo,
+            "undo (the lead fades out)",
+        ),
         (10.0 * BAR_TICKS, L::Redo, "redo (the lead comes back)"),
         (12.0 * BAR_TICKS - 240.0, L::Overdub, "overdub stabs"),
         (14.0 * BAR_TICKS - 60.0, L::Overdub, "punch out"),
-        (16.0 * BAR_TICKS + 1_920.0, L::Clear, "clear (after the stop)"),
+        (
+            16.0 * BAR_TICKS + 1_920.0,
+            L::Clear,
+            "clear (after the stop)",
+        ),
     ];
     let mut next = 0;
 
@@ -105,7 +124,11 @@ fn main() {
         for i in 0..n {
             let g = f + i as u64;
             // What the player plays reaches the line input LATENCY late.
-            let x = if g >= LATENCY { player(g - LATENCY) } else { [0.0; 2] };
+            let x = if g >= LATENCY {
+                player(g - LATENCY)
+            } else {
+                [0.0; 2]
+            };
             input[2 * i] = x[0];
             input[2 * i + 1] = x[1];
             // They hear themselves at once (direct monitoring), and the
@@ -121,11 +144,18 @@ fn main() {
         if s.phase != last_phase {
             // Seen at the end of the period it happened in.
             let tick = tick_at(f + n as u64);
-            let when = if tick < -BAR_TICKS { "before Play".to_string() } else { format!("by {}", bar_beat(tick)) };
+            let when = if tick < -BAR_TICKS {
+                "before Play".to_string()
+            } else {
+                format!("by {}", bar_beat(tick))
+            };
             println!("looper: {:?} {when} ({} layers)", s.phase, s.layers);
             last_phase = s.phase;
         }
-        if first_pass_checked.is_none() && s.layers >= 1 && f > frame_at(2.0 * BAR_TICKS) + LATENCY + 2 * FADE as u64 {
+        if first_pass_checked.is_none()
+            && s.layers >= 1
+            && f > frame_at(2.0 * BAR_TICKS) + LATENCY + 2 * FADE as u64
+        {
             first_pass_checked = Some(check_first_pass(&looper));
         }
         for v in &mix[..2 * n] {
@@ -141,17 +171,30 @@ fn main() {
     let wav = wav(&pcm);
     if let Some(dir) = std::path::Path::new(&out).parent() {
         if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
         }
     }
     std::fs::write(&out, &wav).unwrap_or_else(|e| fail(&format!("cannot write {out}: {e}")));
     let st = looper.stats();
-    println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
-    println!("peak: {:.1} dBFS  clipped samples: {clipped}", 20.0 * peak.log10());
-    println!("looper stats: {} commands dropped, {} overdubs refused, {} first passes thrown away", st.dropped_commands, st.refused, st.aborted);
+    println!(
+        "wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames",
+        frames as f64 / f64::from(RATE)
+    );
+    println!(
+        "peak: {:.1} dBFS  clipped samples: {clipped}",
+        20.0 * peak.log10()
+    );
+    println!(
+        "looper stats: {} commands dropped, {} overdubs refused, {} first passes thrown away",
+        st.dropped_commands, st.refused, st.aborted
+    );
     let err = first_pass_checked.unwrap_or(f32::INFINITY);
     println!("first pass lines up with what was played (latency {LATENCY} made up for): max error {err:.6} ({})", if err < 1e-3 { "yes" } else { "NO" });
-    println!("audio  {:016x}  (repeats on this computer at this period size)", fnv(&wav));
+    println!(
+        "audio  {:016x}  (repeats on this computer at this period size)",
+        fnv(&wav)
+    );
     if err >= 1e-3 || clipped > 0 {
         std::process::exit(1);
     }
@@ -166,7 +209,9 @@ fn check_first_pass(looper: &Looper) -> f32 {
     (FADE..len - FADE)
         .map(|j| {
             let want = player(start + j as u64);
-            (layer[2 * j] - want[0]).abs().max((layer[2 * j + 1] - want[1]).abs())
+            (layer[2 * j] - want[0])
+                .abs()
+                .max((layer[2 * j + 1] - want[1]).abs())
         })
         .fold(0.0, f32::max)
 }
@@ -213,17 +258,28 @@ fn noise(f: u64, seed: u64) -> f32 {
 
 /// A saw from its first `n` harmonics (no aliasing).
 fn saw(phase: f32, n: usize) -> f32 {
-    (1..=n).map(|k| (TAU * phase * k as f32).sin() / k as f32).sum::<f32>() * 0.6
+    (1..=n)
+        .map(|k| (TAU * phase * k as f32).sin() / k as f32)
+        .sum::<f32>()
+        * 0.6
 }
 
 fn pulse(phase: f32, n: usize) -> f32 {
-    (1..=n).step_by(2).map(|k| (TAU * phase * k as f32).sin() / k as f32).sum::<f32>() * 0.9
+    (1..=n)
+        .step_by(2)
+        .map(|k| (TAU * phase * k as f32).sin() / k as f32)
+        .sum::<f32>()
+        * 0.9
 }
 
 /// Attack, then exponential decay, then a 10 ms release after `gate` s.
 fn env(t: f32, decay: f32, gate: f32) -> f32 {
     let a = (t / 0.003).min(1.0);
-    let r = if t > gate { (1.0 - (t - gate) / 0.01).max(0.0) } else { 1.0 };
+    let r = if t > gate {
+        (1.0 - (t - gate) / 0.01).max(0.0)
+    } else {
+        1.0
+    };
     a * (-t / decay).exp() * r
 }
 
@@ -271,7 +327,9 @@ fn player(f: u64) -> [f32; 2] {
             if let Some(t) = since(f, 2.0 * BAR_TICKS + h * 480.0) {
                 // High-passed noise, crushed to 16 levels: grit on purpose.
                 let n = (noise(f, 3) - noise(f.saturating_sub(1), 3)) * 0.5;
-                let v = (n * 8.0).round() / 8.0 * (-t / 0.03).exp() * if h % 2.0 == 1.0 { 0.09 } else { 0.06 };
+                let v = (n * 8.0).round() / 8.0
+                    * (-t / 0.03).exp()
+                    * if h % 2.0 == 1.0 { 0.09 } else { 0.06 };
                 l += v;
                 r += v * 0.7;
             }
@@ -280,7 +338,17 @@ fn player(f: u64) -> [f32; 2] {
     // Bars 7-8: the lead.
     if (6.0 * BAR_TICKS..8.0 * BAR_TICKS + 960.0).contains(&tick) {
         // (start in eighths from bar 7, length in eighths, semitones from E1)
-        const LEAD: [(u32, u32, i32); 9] = [(0, 2, 31), (2, 1, 34), (3, 1, 36), (4, 3, 38), (7, 1, 36), (8, 2, 34), (10, 2, 31), (12, 1, 29), (13, 3, 31)];
+        const LEAD: [(u32, u32, i32); 9] = [
+            (0, 2, 31),
+            (2, 1, 34),
+            (3, 1, 36),
+            (4, 3, 38),
+            (7, 1, 36),
+            (8, 2, 34),
+            (10, 2, 31),
+            (12, 1, 29),
+            (13, 3, 31),
+        ];
         let rel = tick - 6.0 * BAR_TICKS;
         if let Some(&(s, len, note)) = LEAD.iter().rev().find(|n| f64::from(n.0) * 480.0 <= rel) {
             if let Some(t) = since(f, 6.0 * BAR_TICKS + f64::from(s) * 480.0) {
@@ -304,7 +372,10 @@ fn player(f: u64) -> [f32; 2] {
         if (0.0..8.0).contains(&b) {
             if let Some(t) = since(f, 12.0 * BAR_TICKS + b * 960.0 + 480.0) {
                 let root = if b < 4.0 { 12 } else { 15 };
-                let chord: f32 = [root, root + 7, root + 12].iter().map(|&n| saw(t * hz(n), 10)).sum();
+                let chord: f32 = [root, root + 7, root + 12]
+                    .iter()
+                    .map(|&n| saw(t * hz(n), 10))
+                    .sum();
                 let v = (5.0 * chord * env(t, 0.5, 0.14)).tanh() * 0.13;
                 l += v;
                 r += v * 0.85;
@@ -356,7 +427,9 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 fn fail(msg: &str) -> ! {
