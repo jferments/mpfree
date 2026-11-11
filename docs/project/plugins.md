@@ -54,7 +54,9 @@ CLAP names two threads. The main thread is the control thread that opened the fi
 - **Main-thread work.** Prepare, state and a value's text go over a socket from the control thread. The process answers the plugin's own main-thread requests (`on_main_thread` callbacks) itself, after each message and every 100 ms.
 - **Counters.** `SandboxNode::stats()` gives blocks, misses, busy, down, crashes, restarts and the plugin's own failed blocks.
 
-Real time: the node's side of a block never allocates or locks. `tests/no_alloc.rs` checks this with the counting allocator, including a miss and busy blocks. Its wait is a futex wait, bounded by the deadline. The price is one round trip per block: a wake, two context switches, and copying the block in and out (an effect's input both ways). That isn't measured on the MPC yet; it comes with the plugin passports (P4).
+Real time: the node's side of a block never allocates or locks. `tests/no_alloc.rs` checks this with the counting allocator, including a miss and busy blocks. Its wait is a futex wait, bounded by the deadline. The price is one round trip per block: a wake, two context switches, and copying the block in and out (an effect's input both ways).
+
+`cargo run --release -p mpfree-plughost --example roundtrip` (from `rust/`) measures it with the test gain at the MPC's period (128 frames at 44.1 kHz), in-process and sandboxed. On the 4-core cloud workstation VM (2026-11-11) the round trip was 46 us on average and 110 us at the 99th percentile: 1.6 % and 3.8 % of the 2.9 ms period. The worst block took 3.6 ms, a scheduler stall in the VM, which at the default deadline would have been a miss. The MPC's numbers aren't measured yet. They come with the plugin passports (P4), with the process's audio thread at real-time priority.
 
 Not yet:
 
