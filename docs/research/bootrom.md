@@ -1466,3 +1466,93 @@ Independently parsed the previously extracted binary DTBs in the current project
 - U-Boot's pinctrl nodes /pinctrl/tsadc/otp-gpio and /pinctrl/tsadc/otp-out refer to the **temperature-sensor over-temperature protection** function. They are **NOT evidence of one-time-programmable eFuse power control**. Do not treat string-matches for "otp" as a fuse-programming mechanism.
 
 Next runtime test should enumerate live /sys/bus/nvmem/devices providers and /proc/device-tree/efuse@ffb40000 status/compatible, without writing to eFuse or disclosing unique hardware IDs. The secure-boot flag, if mapped, is at secure eFuse word 0 per Rockchip's 2020 guide; an absent NVMEM node or all-zero read is not proof of unsigned BootROM access. Any physical diagnosis of P19 VCC_EFUSE must be planned from board identification and schematics.
+
+
+## 32. Owner's live secure/nonsecure eFuse survey: secure enable word reads zero (2026-11-11)
+
+Owner ran the read-only eFuse script over Ethernet SSH on MPC One running `6.6.95-az01-2025-06-27-rt55`:
+
+| NVMEM provider | Live DT compatible | First four bytes |
+| --- | --- | --- |
+| `rockchip-efuse0` | `rockchip,rk3288-secure-efuse` | **00 00 00 00** |
+| `rockchip-efuse1` | `rockchip,rk3288-efuse` | **nonzero** (general eFuse) |
+
+The first four bytes of `efuse0` read as octal `000 000 000 000`. The secure provider has the **exact RK3288 secure-bank compatible**, and Rockchip Secure Boot Application Note v2.2 locates the enable flag in the low byte of 32-bit word 0 of its secure eFuse map. **This is strong evidence that the SoC's secure boot enable flag is presently unset**, provided the vendor NVMEM driver's offset zero corresponds to physical secure-bank offset zero. No secure key hash was dumped. The nonsecure bank being nonzero is expected and must not be confused with secure-boot enable status. The live `efuse@ffb40000` node compatible is rockchip,rk3288-efuse; the secure node is expected at `efuse@ffb10000` on related ACVA family DTBs.
+
+**Critical caveat:** standard mainline `drivers/nvmem/rockchip-efuse.c` handles `rockchip,rk3288-efuse` but does **not** list `rockchip,rk3288-secure-efuse` in the upstream compatible table checked. The Akai runtime apparently uses a vendor-added binding/driver or extension for its secure NVMEM provider. Therefore do **not** equate sysfs byte 0 with the raw silicon security word until that driver's actual mapping is checked, ideally against kernel source. A kernel security access filter could also hide some fuse bytes. A successful native owner SPL launch through true ROM USB/SD ultimately provides the more decisive test of unsigned acceptance.
+
+No sysfs regulator name contained `efuse` or `vqps`. This **does not establish** that the RK3288 P19 (1.5-V eFuse programming supply) is physically absent or disconnected: a factory-test-only rail might be unrepresented in the device tree, and a board LDO may have an unrelated name. A firmware upgrade's potential to burn a security key is still **UNKNOWN** until board wiring is inspected.
+
+### 32.1 Private-data-preserving read-only follow-up
+
+This command runs **on the MPC via SSH** and prints only counts of nonzero bytes in the documented secure regions. It does **not print** the public-key hash, chip identifiers, or full eFuse content. BusyBox uses `od -vb` (GNU `od -t` unavailable on the MPC); `awk` skips the byte offset column. An unexpected short read reports an error rather than silently assuming the region is blank.
+
+~~~bash
+mkdir -p ~/mpfree-work
+ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes   -i /home/jesse/.ssh/mpc_one_autorun_ed25519 -p 2222   root@10.42.0.141 'sh -s' <<'MPC_READONLY'   | tee ~/mpfree-work/mpc-secure-efuse-regions.txt
+set -eu
+S=/sys/bus/nvmem/devices/rockchip-efuse0
+echo "=== Exact secure eFuse provider ==="
+if [ ! -r "$S/of_node/compatible" ] ||
+   ! tr '\000' '\n' <"$S/of_node/compatible" |
+       grep -qx 'rockchip,rk3288-secure-efuse'; then
+    echo "STOP: secure provider compatible mismatch"
+    exit 1
+fi
+tr '\000' '\n' <"$S/of_node/compatible"
+readlink "$S/of_node" 2>/dev/null || true
+if [ -r "$S/of_node/rockchip,efuse-size" ]; then
+    echo "Declared eFuse size, big-endian DT cells (octal bytes):"
+    od -b "$S/of_node/rockchip,efuse-size"
+fi
+if [ ! -r "$S/nvmem" ]; then
+    echo "STOP: secure NVMEM unreadable"
+    exit 1
+fi
+
+region_summary() {
+    label="$1"; skip="$2"; count="$3"
+    printf '%s: ' "$label"
+    dd if="$S/nvmem" bs=1 skip="$skip" count="$count" 2>/dev/null |
+      od -vb |
+      awk -v expected="$count" '
+        NF > 1 {
+          for (i=2; i<=NF; i++) {
+            if ($i ~ /^[0-7][0-7][0-7]$/) {
+              bytes++
+              if ($i != "000") nonzero++
+            }
+          }
+        }
+        END {
+          if (bytes != expected) {
+            printf "INCOMPLETE (%d of %d bytes)\n",bytes,expected
+            exit 1
+          }
+          printf "%d/%d bytes nonzero\n",nonzero,bytes
+        }'
+}
+region_summary "Secure enable word" 0 4
+region_summary "Trusted-key hash region, bytes NOT printed" 32 32
+region_summary "Write-lock word" 124 4
+echo "=== Finished: read-only; no raw key/hash bytes disclosed ==="
+MPC_READONLY
+~~~
+
+The counts may demonstrate an unprovisioned security region (all zero) or a present trusted-key hash with the enable bit unset. They still do not alone prove BootROM accepts owner code, or that fuse programming cannot be enabled by a future update.
+
+### 32.2 A demonstrated RK3288 boot-source switch precedent (not an MPC schematic)
+
+PHYTEC's **phyCORE-RK3288 Hardware Manual L-826e_1**, pp. 33 and 129, documents the boot-order sequence eMMC -> SPI NOR -> SD/MM card -> USB and physical boot-disable controls on its own carrier board. Its S6 DIP switch disables eMMC boot via `X_nEMMC_BOOT_DIS`; S7 disables SPI flash, giving SD -> USB. This is an existing *RK3288 board manufacturer's engineering precedent* for a user-accessible recovery switch. Reference: https://www.phytec.eu/fileadmin/legacy/downloads/Manuals/L-826e_1.pdf .
+
+**The signal name `X_nEMMC_BOOT_DIS` is PHYTEC's carrier-board label, not proof of an RK3288 SoC boot strap exposed on Akai MPC One.** The MPC may have a different eMMC power/clock path. We must not suggest wiring this pin from a different board or shorting powered MPC hardware. If independent MPC board tracing establishes an electrically safe eMMC first-loader bypass, the same ROM fallback could support an owner-built SD-card SPL (no host) or MaskROM USB (host) without depending on any Akai Linux or U-Boot code. Booting from independent SD is especially useful for an owner-facing free OS; MaskROM USB remains the emergency recovery route.
+
+### 32.3 Reordered project gates
+
+1. **Secure fuse mapping + programming-power audit:** confirm nonzero counts, exact DT secure provider/driver address mapping, PCB P19 rail topology; avoid programming OTP.
+2. **Physical ROM boot-source override:** documentation/PCB images; no energized probing or eMMC shorts without explicit review/authorization.
+3. **Self-built ROM-loadable RK3288 SPL:** test with intact stock eMMC isolated non-destructively, either on SD or USB; identify secure signature policy by actual execution.
+4. **Full eMMC readback** in independent environment, compared against existing verified backup; no boot-critical writes before this demonstration.
+5. **Owner boot manager and stock fallback**, independent MPFree Linux on removable SD and/or tested A/B storage; upgrade compatibility profile as previously documented.
+
+No evidence yet that Akai is planning to block alternative OS software; engineering safeguards are being developed against that possible future state.
