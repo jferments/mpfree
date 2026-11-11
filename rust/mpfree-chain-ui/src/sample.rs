@@ -1,24 +1,37 @@
 //! Sample screens with a real chain and mod engine behind them, for the
 //! workstation preview (`mpfree-chain-preview`) and the tests: a drum bus
-//! (filter, drive, compressor, a bypassed EQ) and a keys track (chorus,
-//! lo-fi, delay), four macros across both, three matrix rows, and the
-//! morph between two scenes.
+//! (filter, drive, compressor, a bypassed EQ), a keys track (chorus,
+//! lo-fi, delay) and a kick pad (drive, compressor), four macros across
+//! them, three matrix rows, and the morph between two scenes.
+//!
+//! The screens are drawn where the Hello MPC thread proposes they open
+//! (layout spec, "The FX chain editor and macros"): the chain editor in the
+//! mixer's place with a Back to it, or in the Sample tab's FX sub-tab
+//! under the pad bar; the macros panel over the page under the top bar,
+//! no tab lit. The top bar and the Q-Link column are stand-ins for the
+//! app's own (see [`AppBar`] and [`QLinkColumn`]).
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, ParamInfo};
 use mpfree_fx::{strip_params, Chain, Chorus, Compressor, Delay, Drive, Eq, LoFi, MultiFilter};
-use mpfree_mod::{lfo, Binding, Bindings, MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK};
+use mpfree_mod::{lfo, Bindings, MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK};
 use mpfree_param::{Owner, ParamAddr, Strip};
-use mpfree_ui::widgets::{Chip, Header, Label};
-use mpfree_ui::{Align, EventKind, FontId, Fonts, PaintCx, Rect, Theme, Tone, Ui, Widget};
+use mpfree_sampler_ui::widgets::PadBar;
+use mpfree_ui::widgets::{Chip, Label};
+use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
+use mpfree_ui::Fonts;
 
 use crate::state::{macro_color, ChainState, MacrosState};
 use crate::{ChainView, MacrosView};
 
-/// The music tabs, as the approved layout spec lists them.
+/// The music tabs, as the approved layout spec lists them (round 7's
+/// `mpfree_ui::widgets::APP_TABS`).
 pub const TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+/// The Sample tab's pad bar tabs (`mpfree_sampler_ui::wave_tab::TABS`).
+pub const PAD_TABS: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"];
 pub const DRUMS: Strip = Strip::Bus(0);
 pub const KEYS: Strip = Strip::Track(4);
+pub const KICK: Strip = Strip::Pad(0);
 const RATE: u32 = 44_100;
 const BLOCK: usize = 128;
 
@@ -32,6 +45,7 @@ pub struct Sample {
 pub struct Song {
     pub drums: Chain,
     pub keys: Chain,
+    pub kick: Chain,
     pub engine: ModEngine,
     pub bindings: Bindings,
     pub names: Vec<String>,
@@ -52,6 +66,7 @@ impl Song {
     pub fn new() -> Song {
         let drums = chain(vec![Box::new(MultiFilter::new()), Box::new(Drive::new()), Box::new(Compressor::new()), Box::new(Eq::new())]);
         let keys = chain(vec![Box::new(Chorus::new()), Box::new(LoFi::new()), Box::new(Delay::new())]);
+        let kick = chain(vec![Box::new(Drive::new()), Box::new(Compressor::new())]);
         let mut e = ModEngine::new(RATE, DEFAULT_TICK);
         let add = |c: &Chain, strip: Strip, slot: usize, id: u16, e: &mut ModEngine| -> ParamAddr {
             let a = ParamAddr::new(Owner::Insert(strip, c.uid(slot).unwrap()), id);
@@ -72,6 +87,7 @@ impl Song {
         let fb = add(&keys, KEYS, 2, ids::delay::FEEDBACK, &mut e);
         let dtone = add(&keys, KEYS, 2, ids::delay::TONE, &mut e);
         let dlmix = add(&keys, KEYS, 2, ids::delay::MIX, &mut e);
+        let kdrive = add(&kick, KICK, 0, ids::drive::DRIVE, &mut e);
         let send = ParamAddr::new(Owner::Strip(KEYS), ids::mixer::send(0));
         e.add_target(send, *strip_params().iter().find(|p| p.id == ids::mixer::send(0)).unwrap(), -30.0).unwrap();
         let map = |e: &mut ModEngine, m: usize, target: ParamAddr, from: f32, to: f32| e.map(m, MacroMap { target, from, to, curve: MapCurve::Linear }).unwrap();
@@ -83,6 +99,7 @@ impl Song {
         map(&mut e, 1, drive, 0.0, 0.6);
         map(&mut e, 1, bias, 0.0, 0.4);
         map(&mut e, 1, lofi, 0.0, 0.55);
+        map(&mut e, 1, kdrive, 0.1, 0.5);
         map(&mut e, 2, thresh, 0.9, 0.55);
         map(&mut e, 2, crel, 0.2, 0.6);
         map(&mut e, 2, cmix, 0.2, 0.6);
@@ -119,13 +136,11 @@ impl Song {
         let mut start: Vec<ModEvent> = [0.62, 0.40, 0.55, 0.25].iter().enumerate().map(|(m, v)| ModEvent::Set { addr: ParamAddr::macro_value(m as u8), value: *v }).collect();
         start.push(ModEvent::Set { addr: ParamAddr::morph_pos(0), value: 0.64 });
         run(&mut e, &start, 40);
-        let mut bindings = Bindings::new();
-        bindings.bank_mut(0).name = "Macros 1-4".into();
-        for (m, name) in names.iter().enumerate().take(4) {
-            bindings.bind(0, m, Binding { colour: Some(m as u8), ..Binding::new(ParamAddr::macro_value(m as u8), mpfree_mod::macro_info(m), name) });
+        let mut bindings = Bindings::with_macros(&names);
+        for m in 0..mpfree_mod::MACROS {
             bindings.observe(ParamAddr::macro_value(m as u8), e.macro_value(m));
         }
-        Song { drums, keys, engine: e, bindings, names }
+        Song { drums, keys, kick, engine: e, bindings, names }
     }
 
     /// A parameter's name on the cards: "Drive (Drums)", "Send A (Keys)".
@@ -135,10 +150,10 @@ impl Song {
         }
         let (strip_name, node) = match a.owner {
             Owner::Insert(s, uid) => {
-                let c = if s == DRUMS { &self.drums } else { &self.keys };
-                (if s == DRUMS { "Drums" } else { "Keys" }, c.slot_of(uid).and_then(|i| c.node(i)))
+                let c = self.chain(s);
+                (self.strip_name(s), c.slot_of(uid).and_then(|i| c.node(i)))
             }
-            Owner::Strip(s) => (if s == DRUMS { "Drums" } else { "Keys" }, None),
+            Owner::Strip(s) => (self.strip_name(s), None),
             _ => ("", None),
         };
         let pname = match node {
@@ -152,11 +167,36 @@ impl Song {
         }
     }
 
+    pub fn chain(&self, s: Strip) -> &Chain {
+        match s {
+            DRUMS => &self.drums,
+            KICK => &self.kick,
+            _ => &self.keys,
+        }
+    }
+
+    pub fn strip_name(&self, s: Strip) -> &'static str {
+        match s {
+            DRUMS => "Drums",
+            KICK => "Pad 1",
+            _ => "Keys",
+        }
+    }
+
+    /// Where a Q-Link's target lives, for its card ("DRUMS", "MACRO 2").
+    pub fn place(&self, a: ParamAddr) -> String {
+        match a.owner {
+            Owner::Macro(n) => format!("Macro {}", n + 1),
+            Owner::Insert(s, _) | Owner::Strip(s) => self.strip_name(s).to_string(),
+            _ => String::new(),
+        }
+    }
+
     pub fn chain_state(&self, strip: Strip, selected: usize, group: usize, focus: Option<ParamAddr>) -> ChainState {
-        let (c, title) = if strip == DRUMS { (&self.drums, "Drums · FX chain") } else { (&self.keys, "Keys · FX chain") };
-        let mut st = ChainState::from_chain(c, strip, title, 8, &self.engine, Some(selected), group, focus);
+        let title = format!("{} FX", self.strip_name(strip));
+        let mut st = ChainState::from_chain(self.chain(strip), strip, &title, 8, &self.engine, Some(selected), group, focus);
         st.macro_names = self.names.clone();
-        st.cost_pct = Some(if strip == DRUMS { 6.2 } else { 4.8 });
+        st.cost_pct = Some(match strip { DRUMS => 6.2, KICK => 2.9, _ => 4.8 });
         st
     }
 
@@ -171,50 +211,158 @@ impl Default for Song {
     fn default() -> Self { Self::new() }
 }
 
-/// A stand-in for the app's Q-Link column (the Hello MPC thread draws the
-/// real one), showing the cards [`Bindings::cards`] gives.
-pub struct QLinkColumn {
-    pub cards: Vec<mpfree_mod::QLinkCard>,
-    pub bank: String,
+/// A stand-in for the app's top bar until round 7 (#85) lands, drawn as
+/// its `Header::app` is: the tabs from the left edge (no wordmark; the
+/// name is on the startup screen only), the lit tab if any, chips on the
+/// right. Swap for `Header::app` then.
+pub struct AppBar {
+    pub active: Option<usize>,
+    pub chips: Vec<Chip>,
 }
 
-impl Widget for QLinkColumn {
+impl Widget for AppBar {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_rect(r, t.bg);
-        let inner = r.inset_xy(8, 0);
-        cx.text(FontId::Bold, t.size_small - 1.0, inner.take_top(28).0, Align::Left, t.text_faint, &format!("Q-LINKS · {}", self.bank.to_uppercase()));
-        let h = (inner.h - 28 - 3 * 8) / 4;
-        for (k, c) in self.cards.iter().enumerate() {
-            let card = Rect::new(inner.x, inner.y + 28 + k as i32 * (h + 8), inner.w, h);
-            cx.canvas.fill_round_rect(card, t.radius, t.surface);
-            let col = c.colour.map_or(t.accent, |m| macro_color(&t, m as usize));
-            let d = 54.0;
-            let (kx, ky) = (card.x as f32 + 14.0 + d * 0.5, card.y as f32 + card.h as f32 * 0.5);
-            mpfree_synth_ui::widgets::knob(cx, kx, ky, d, c.pos, false, t.outline, col);
-            let text = Rect::new((kx + d * 0.5) as i32 + 10, card.y, card.right() - (kx + d * 0.5) as i32 - 14, card.h);
-            let (top, bottom) = text.take_top(card.h / 2);
-            cx.text(FontId::Bold, t.size_small - 2.0, top.take_bottom(22).0, Align::Left, t.text_dim, &format!("Q-LINK {} · {}", k + 1, c.label.to_uppercase()));
-            cx.text(FontId::Bold, t.size_title - 2.0, bottom.take_top(30).0, Align::Left, if c.enabled() { t.text } else { t.text_faint }, if c.enabled() { &c.text } else { "free" });
+        let (tab_w, gap, h) = (112, 6, 44.min(r.h));
+        for (i, name) in TABS.iter().enumerate() {
+            let tr = Rect::new(r.x + 8 + i as i32 * (tab_w + gap), r.y + (r.h - h) / 2, tab_w, h);
+            let on = self.active == Some(i);
+            if on {
+                cx.canvas.fill_round_rect(tr, 10, t.raised);
+                cx.canvas.fill_round_rect(Rect::new(tr.x + 20, tr.bottom() - 4, tr.w - 40, 3), 1, t.accent);
+            }
+            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_title, tr, Align::Center, if on { t.text } else { t.text_dim }, name);
+        }
+        let mut right = r.right();
+        let ch = 34.min(r.h);
+        for chip in &self.chips {
+            let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
+            let w = tw + 40;
+            let cr = Rect::new(right - w, r.y + (r.h - ch) / 2, w, ch);
+            cx.canvas.fill_round_rect(cr, ch / 2, t.surface);
+            cx.canvas.fill_round_rect(Rect::new(cr.x + 14, cr.y + ch / 2 - 4, 8, 8), 4, t.tone(chip.tone));
+            cx.text(FontId::Sans, t.size_small, Rect::new(cr.x + 28, cr.y, tw + 4, ch), Align::Left, t.text, &chip.text);
+            right -= w + 8;
         }
     }
 
     fn touch(&mut self, _f: u64, _p: mpfree_ui::Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> { None }
 }
 
-const PREVIEW_CHAIN: &str = "col(header:60, row(chain:*, qlinks:230):*, hint:26)";
-const PREVIEW_MACROS: &str = "col(header:60, row(macros:*, qlinks:230):*, hint:26)";
+/// A stand-in for the app's Q-Link column (the Hello MPC thread draws the
+/// real one), in the Play page's card shape: the knob's number and where
+/// its target lives, the target's name, a ring of dots with the value in
+/// it. It shows [`Bindings::cards`]; a macro's knob wears its colour.
+pub struct QLinkColumn {
+    pub cards: Vec<mpfree_mod::QLinkCard>,
+    /// Where each card's target lives ("DRUMS", "MACRO 1").
+    pub places: Vec<String>,
+    pub title: String,
+}
 
-/// The app's screen around a panel: the header (Sample tab lit for the
-/// chain, Play for the macros bank), the panel, a Q-Link column, the hint.
-pub fn screen(fonts: Fonts, song: &Song, chain: Option<ChainState>, macros: Option<MacrosState>) -> Result<Ui, String> {
+impl QLinkColumn {
+    pub fn new(song: &Song) -> QLinkColumn {
+        let cards = song.bindings.cards().to_vec();
+        let places = cards.iter().map(|c| c.target.map(|a| song.place(a)).unwrap_or_default()).collect();
+        let title = match song.bindings.title() {
+            "" => "Q-Links".to_string(),
+            t => format!("Q-Links · {t}"),
+        };
+        QLinkColumn { cards, places, title }
+    }
+}
+
+/// A knob's colour on the column when its binding has none of its own.
+fn knob_color(t: &Theme, k: usize) -> mpfree_ui::Color { [t.accent, t.good, t.warn, t.accent.mix(t.bad, 0.55)][k % 4] }
+
+impl Widget for QLinkColumn {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_rect(r, t.bg);
+        let (head, body) = r.take_top(26);
+        cx.text(FontId::Bold, t.size_small - 2.0, head.inset_xy(4, 0), Align::Left, t.text_faint, &self.title.to_uppercase());
+        let gap = 10;
+        let h = (body.h - 3 * gap) / 4;
+        for (k, c) in self.cards.iter().enumerate() {
+            let cr = Rect::new(body.x, body.y + k as i32 * (h + gap), body.w, h);
+            let col = c.colour.map_or(knob_color(&t, k), |m| macro_color(&t, m as usize));
+            cx.canvas.fill_round_rect(cr, t.radius, t.surface);
+            cx.canvas.fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, cr.h - 28), 2, col);
+            let inner = cr.inset_xy(14, 10);
+            let (top, rest) = inner.take_top(18);
+            cx.text(FontId::Bold, 13.0, top, Align::Left, col, &format!("Q{}", k + 1));
+            let place = self.places.get(k).map_or("", |p| p.as_str());
+            cx.text(FontId::Sans, 12.0, top, Align::Right, t.text_faint, &place.to_uppercase());
+            let (name, rest) = rest.take_top(24);
+            cx.text(FontId::Bold, 16.0, name, Align::Left, if c.enabled() { t.text } else { t.text_faint }, if c.enabled() { &c.label } else { "free" });
+            // The knob: 270 degrees of dots, open at the bottom.
+            let d = rest.h.min(rest.w - 10).max(20);
+            let (kx, ky) = (rest.x + rest.w / 2, rest.y + rest.h / 2 + 2);
+            let rad = d as f32 / 2.0 - 5.0;
+            let n = 33;
+            for i in 0..n {
+                let f = i as f32 / (n - 1) as f32;
+                let a = (135.0 + 270.0 * f).to_radians();
+                let (x, y) = (kx + (rad * a.cos()).round() as i32, ky + (rad * a.sin()).round() as i32);
+                let lit = c.enabled() && f <= c.pos;
+                let s = if lit { 3 } else { 2 };
+                cx.canvas.fill_round_rect(Rect::new(x - s, y - s, 2 * s, 2 * s), s, if lit { col } else { t.outline });
+            }
+            let vr = Rect::new(kx - rad as i32 + 4, ky - 12, 2 * rad as i32 - 8, 24);
+            let size = if cx.measure(FontId::Bold, 16.0, &c.text) <= vr.w { 16.0 } else { 13.0 };
+            cx.text(FontId::Bold, size, vr, Align::Center, t.text, &c.text);
+        }
+    }
+
+    fn touch(&mut self, _f: u64, _p: mpfree_ui::Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> { None }
+}
+
+/// Where a panel opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Place {
+    /// The chain editor in the mixer's place (no tab lit, Back to the mixer).
+    Mixer,
+    /// The chain editor in the Sample tab's FX sub-tab, under the pad bar.
+    SampleFx,
+    /// The macros panel over the page, under the top bar (no tab lit).
+    Over,
+}
+
+/// The pages: the top bar, the panel and the Q-Link column (under the
+/// pad bar on Sample), the hint line.
+const PREVIEW_SAMPLE: &str = "col(header:60, smp-bar:60, row(chain:*, qlinks:168):*, hint:26)";
+
+/// The app's screen around a panel. For the chain editor, the Q-Links
+/// show the selected effect's first four knobs (bank 0, the page's own);
+/// for the macros, the bank of the four shown.
+pub fn screen(fonts: Fonts, song: &mut Song, place: Place, chain: Option<ChainState>, macros: Option<MacrosState>) -> Result<Ui, String> {
     let mut ui = Ui::new(Theme::dark(), fonts, 1280, 800);
-    let mut header = Header::new(&TABS);
-    header.active = if chain.is_some() { 4 } else { 0 };
-    header.chips = vec![Chip::new("92 BPM", Tone::Normal), Chip::new("Night drive", Tone::Normal)];
-    ui.add("header", header);
-    ui.add("qlinks", QLinkColumn { cards: song.bindings.cards().to_vec(), bank: song.bindings.banks()[0].name.clone() });
-    let (hint, layout) = if chain.is_some() { (crate::CHAIN_HINT, PREVIEW_CHAIN) } else { (crate::MACROS_HINT, PREVIEW_MACROS) };
+    let active = (place == Place::SampleFx).then_some(4);
+    ui.add("header", AppBar { active, chips: vec![Chip::new("92 BPM", Tone::Normal), Chip::new("Night drive", Tone::Normal)] });
+    match (&chain, &macros) {
+        (Some(c), _) => {
+            let (name, knobs) = c.qlinks();
+            song.bindings.set_page(&name, knobs);
+            for p in &c.params {
+                song.bindings.observe(p.addr, p.value);
+            }
+            song.bindings.show(0);
+        }
+        (None, Some(m)) => song.bindings.show(1 + m.bank),
+        _ => {}
+    }
+    ui.add(QLINKS, QLinkColumn::new(song));
+    let (hint, layout) = match place {
+        Place::Mixer => (crate::CHAIN_HINT, crate::CHAIN_LAYOUT),
+        Place::SampleFx => (crate::CHAIN_HINT, PREVIEW_SAMPLE),
+        Place::Over => (crate::MACROS_HINT, crate::MACROS_LAYOUT),
+    };
+    let mut bar = PadBar::new(&PAD_TABS);
+    bar.color = Theme::dark().bad;
+    bar.title = "Pad 1 · Kick".into();
+    bar.subtitle = "kick_tight · 1 layer · Drums".into();
+    bar.active = 5;
+    ui.add("smp-bar", bar);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Left));
     ui.add(crate::CHAIN, ChainView::new());
     ui.add(crate::MACROS_W, MacrosView::new());
@@ -225,24 +373,37 @@ pub fn screen(fonts: Fonts, song: &Song, chain: Option<ChainState>, macros: Opti
     Ok(ui)
 }
 
+const QLINKS: &str = "qlinks";
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
-    let song = Song::new();
+    let mut song = Song::new();
     let drive_uid = song.drums.uid(1).unwrap();
     let filter_uid = song.drums.uid(0).unwrap();
     let delay_uid = song.keys.uid(2).unwrap();
-    let mut drive = song.chain_state(DRUMS, 1, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, drive_uid), ids::drive::TONE)));
+    let kick_uid = song.kick.uid(0).unwrap();
+    let from_mixer = |mut st: ChainState| {
+        st.back = Some("Mixer".into());
+        st
+    };
+    let mut drive = from_mixer(song.chain_state(DRUMS, 1, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, drive_uid), ids::drive::TONE))));
     drive.slots[3].on = false;
-    let filter = song.chain_state(DRUMS, 0, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, filter_uid), ids::filter::CUTOFF)));
-    let delay = song.chain_state(KEYS, 2, 2, Some(ParamAddr::new(Owner::Insert(KEYS, delay_uid), ids::delay::MIX)));
-    let empty = ChainState::from_chain(&chain(vec![]), Strip::Track(6), "Vocal chop · FX chain", 8, &song.engine, None, 0, None);
+    let filter = from_mixer(song.chain_state(DRUMS, 0, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, filter_uid), ids::filter::CUTOFF))));
+    let delay = from_mixer(song.chain_state(KEYS, 2, 2, Some(ParamAddr::new(Owner::Insert(KEYS, delay_uid), ids::delay::MIX))));
+    let mut kick = song.chain_state(KICK, 0, 0, Some(ParamAddr::new(Owner::Insert(KICK, kick_uid), ids::drive::DRIVE)));
+    kick.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
+    let mut empty = ChainState::from_chain(&chain(vec![]), Strip::Track(6), "Vocal chop FX", 8, &song.engine, None, 0, None);
+    empty.back = Some("Mixer".into());
+    let m0 = song.macros_state(0);
+    let m1 = song.macros_state(1);
     Ok(vec![
-        Sample { name: "chain-drums-drive", about: "The drum bus chain, Drive selected; Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &song, Some(drive), None)? },
-        Sample { name: "chain-drums-filter", about: "The drum bus filter: cutoff swept by LFO 2 scaled by the mod wheel; resonance on Air (macro 4)", ui: screen(fonts(), &song, Some(filter), None)? },
-        Sample { name: "chain-keys-delay", about: "The keys chain, Delay selected: Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &song, Some(delay), None)? },
-        Sample { name: "chain-empty", about: "A track with no effects yet: + Add effect", ui: screen(fonts(), &song, Some(empty), None)? },
-        Sample { name: "macros-1-4", about: "Macros 1-4 (Wash, Grit, Pump, Air) with their targets and ranges; the morph 64 % of the way from Dry verse to Wash drop and what it changes", ui: screen(fonts(), &song, None, Some(song.macros_state(0)))? },
-        Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned", ui: screen(fonts(), &song, None, Some(song.macros_state(1)))? },
+        Sample { name: "chain-mixer-drums-drive", about: "From the mixer (no tab lit, Back to the mixer): the drum bus chain, Drive selected; Q-Links on its first four knobs (Mode, Drive, Tone, Bias); Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
+        Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, cutoff swept by LFO 2 scaled by the mod wheel; resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
+        Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain, Delay's Mix page (Q-Links on that page's knobs): Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
+        Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
+        Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
+        Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
+        Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
     ])
 }
 
@@ -260,7 +421,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 6);
+        assert_eq!(s.len(), 7);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -282,8 +443,14 @@ mod tests {
 
     #[test]
     fn chain_touches_become_actions() {
-        let song = Song::new();
-        let mut ui = screen(Fonts::embedded(), &song, Some(song.chain_state(DRUMS, 1, 0, None)), None).unwrap();
+        let mut song = Song::new();
+        let mut st = song.chain_state(DRUMS, 1, 0, None);
+        st.back = Some("Mixer".into());
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        // The Q-Links show the drive's first four knobs.
+        let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
+        assert_eq!(q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Mode", "Drive", "Tone", "Bias"]);
+        assert_eq!((q.title.as_str(), q.places[0].as_str()), ("Q-Links · Drive", "Drums"));
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
         // Select the compressor, then bypass it.
@@ -314,12 +481,32 @@ mod tests {
         assert_eq!(acts[2], ChainAction::Move { from: 2, to: 1 });
         assert_eq!(acts.len(), 4, "{acts:?} {:?}", l.add_lfo);
         assert!(matches!(acts[3], ChainAction::AddRow { target, .. } if target == addr), "{acts:?}");
+        let b = l.back.unwrap();
+        tap(&mut ui, b.x + 5, b.y + 5);
+        assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Back]);
+    }
+
+    #[test]
+    fn the_sample_tab_chain_switches_between_pad_and_track() {
+        let mut song = Song::new();
+        let mut st = song.chain_state(KICK, 0, 0, None);
+        st.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::SampleFx, Some(st), None).unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
+        assert!(l.back.is_none());
+        tap(&mut ui, l.scopes[1].x + 5, l.scopes[1].y + 5);
+        assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Scope(1)]);
+        assert_eq!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().scope, 1);
     }
 
     #[test]
     fn macro_touches_become_actions() {
-        let song = Song::new();
-        let mut ui = screen(Fonts::embedded(), &song, None, Some(song.macros_state(0))).unwrap();
+        let mut song = Song::new();
+        let st = song.macros_state(0);
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Over, None, Some(st)).unwrap();
+        let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
+        assert_eq!(q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Wash", "Grit", "Pump", "Air"]);
         let r = ui.rect_of(crate::MACROS_W).unwrap();
         let l = crate::macros::layout(r);
         let (kx, ky, _) = l.knobs[1];
@@ -335,5 +522,13 @@ mod tests {
         assert!(matches!(acts[1], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
         assert_eq!(acts[2], MacroAction::Capture(1));
         assert_eq!(acts[3], MacroAction::Bank(1));
+        // Back closes the panel; a target row asks for its range editor.
+        tap(&mut ui, l.back.x + 5, l.back.y + 5);
+        tap(&mut ui, l.banks[0].x + 4, l.banks[0].y + 4);
+        let c = l.cards[0];
+        tap(&mut ui, c.x + 40, c.y + 80 + 30 + 10);
+        let acts = crate::take_macro_actions(&mut ui);
+        let target = song.engine.macro_maps(0).nth(1).unwrap().target;
+        assert_eq!(acts, [MacroAction::Back, MacroAction::Bank(0), MacroAction::EditTarget { m: 0, target }]);
     }
 }

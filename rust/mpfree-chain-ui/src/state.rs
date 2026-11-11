@@ -2,8 +2,8 @@
 //! chain and the mod engine (the `from_*` builders read them directly, for
 //! previews and tests).
 
-use mpfree_fx::Chain;
-use mpfree_mod::{value_text, ModEngine, Source, MACROS};
+use mpfree_fx::{Chain, StripId};
+use mpfree_mod::{value_text, Binding, ModEngine, Source, KNOBS, MACROS};
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_ui::{Color, Theme};
 use mpfree_fx::mpfree_node::{Curve, Node, ParamInfo};
@@ -16,6 +16,31 @@ pub const KNOBS_PER_PAGE: usize = 8;
 pub fn macro_color(t: &Theme, m: usize) -> Color {
     let palette = [t.accent.mix(t.bad, 0.55), t.warn.mix(t.bad, 0.35), t.good, t.warn, t.accent, t.bad, t.good.mix(t.accent, 0.5), t.text_dim];
     palette[m % palette.len()]
+}
+
+/// The parameter address's name for a mixer strip (`None` past 255).
+pub fn strip_of(id: StripId) -> Option<Strip> {
+    let n = |i: usize| u8::try_from(i).ok();
+    Some(match id {
+        StripId::Input(i) => Strip::Input(n(i)?),
+        StripId::Pad(i) => Strip::Pad(n(i)?),
+        StripId::Track(i) => Strip::Track(n(i)?),
+        StripId::Bus(i) => Strip::Bus(n(i)?),
+        StripId::Return(i) => Strip::Return(n(i)?),
+        StripId::Master => Strip::Master,
+    })
+}
+
+/// The mixer's id for a strip.
+pub fn strip_id(s: Strip) -> StripId {
+    match s {
+        Strip::Input(i) => StripId::Input(i.into()),
+        Strip::Pad(i) => StripId::Pad(i.into()),
+        Strip::Track(i) => StripId::Track(i.into()),
+        Strip::Bus(i) => StripId::Bus(i.into()),
+        Strip::Return(i) => StripId::Return(i.into()),
+        Strip::Master => StripId::Master,
+    }
 }
 
 /// Text on an accent-coloured fill. The theme system (PR #72) adds
@@ -70,7 +95,7 @@ pub struct RowView {
 /// The chain editor's state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainState {
-    /// "Bass · FX chain".
+    /// "Bass FX".
     pub title: String,
     pub strip: Strip,
     pub slots: Vec<SlotView>,
@@ -91,11 +116,18 @@ pub struct ChainState {
     pub learning: bool,
     /// The share of the period the chain costs (Dev tools on).
     pub cost_pct: Option<f32>,
+    /// A Back button in the list's corner and what it goes back to
+    /// ("Mixer"), when the editor took another screen's place.
+    pub back: Option<String>,
+    /// Chains the editor can switch between ("Pad 1", "Drums"), and the
+    /// one shown; empty for none.
+    pub scopes: Vec<String>,
+    pub scope: usize,
 }
 
 impl Default for ChainState {
     fn default() -> Self {
-        ChainState { title: String::new(), strip: Strip::Master, slots: Vec::new(), room: 0, selected: None, groups: Vec::new(), group: 0, params: Vec::new(), focus: None, rows: Vec::new(), macro_names: default_macro_names(), learning: false, cost_pct: None }
+        ChainState { title: String::new(), strip: Strip::Master, slots: Vec::new(), room: 0, selected: None, groups: Vec::new(), group: 0, params: Vec::new(), focus: None, rows: Vec::new(), macro_names: default_macro_names(), learning: false, cost_pct: None, back: None, scopes: Vec::new(), scope: 0 }
     }
 }
 
@@ -178,10 +210,18 @@ impl ChainState {
         }
         let focus = focus.filter(|f| params.iter().any(|p| p.addr == *f));
         let rows = focus.map(|f| engine.rows().enumerate().filter(|(_, r)| r.target == f).map(|(i, r)| RowView { index: i, source: source_name(r.source), depth: r.depth }).collect()).unwrap_or_default();
-        ChainState { title: title.to_string(), strip, slots, room, selected, groups, group: group_shown, params, focus, rows, macro_names: default_macro_names(), learning: false, cost_pct: None }
+        ChainState { title: title.to_string(), strip, slots, room, selected, groups, group: group_shown, params, focus, rows, macro_names: default_macro_names(), learning: false, cost_pct: None, back: None, scopes: Vec::new(), scope: 0 }
     }
 
     pub fn focused(&self) -> Option<&ParamView> { self.focus.and_then(|f| self.params.iter().find(|p| p.addr == f)) }
+
+    /// The page's own Q-Link knobs for [`mpfree_mod::Bindings::set_page`]:
+    /// the first four knobs of the effect page shown (Drive: Mode, Drive,
+    /// Tone, Bias), and the effect's name.
+    pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
+        let name = self.selected.and_then(|s| self.slots.get(s)).map(|s| s.name.clone()).unwrap_or_default();
+        (name, std::array::from_fn(|k| self.params.get(k).map(|p| Binding::new(p.addr, p.info, p.info.name))))
+    }
 }
 
 /// One target on a macro's card.

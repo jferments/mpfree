@@ -63,16 +63,21 @@ Macros and the morph position are targets too, so they can be locked on a step, 
 
 - `turn(knob, detents, fine)` gives the value to set (send it as `ModEvent::Set`). 100 detents cover a binding's range, 1000 with SHIFT; a choice moves one step per detent.
 - `to(knob, pos)` for a touch slider or a knob read as a position.
-- `card(knob)` gives the card to draw: label, value text, `pos` 0 to 1, colour slot, and the target (or `None`: the knob is free, so the page's own default shows). The same fields as the mixer's Q-Link cards.
-- **Learn:** `learn(addr, info, label)` when a parameter is touched on screen; the next knob turned takes it.
-- `save()` and `load()` as `key = value` lines for `mpfree-store`'s "mod" settings.
-
-The page owner sets a page's default knobs; a user binding overrides them. Where the macro and chain screens open is a layout proposal to the Hello MPC thread and Jay.
+- `card(knob)` gives the card to draw: label, value text, `pos` 0 to 1, colour slot, and the target (or `None`: the knob is free). The same fields as the mixer's Q-Link cards.
+- **Pages and banks:** the page on screen sets its own four knobs with `set_page(name, knobs)`; they show wherever the bank shown leaves a knob free, so a user binding overrides them. `Bindings::with_macros(names)` makes the usual banks: bank 0 with no bindings of its own (the page's knobs show), bank 1 Macros 1-4, bank 2 Macros 5-8; `next_bank()` steps through them and `title()` names what is shown ("Drive", "Macros 1-4"). In the chain editor the page's knobs are the first four knobs of the effect page shown (`ChainState::qlinks()`: Drive gives Mode, Drive, Tone, Bias).
+- **Learn:** `learn(addr, info, label)` when a parameter is touched on screen; the next knob turned takes it, in the bank shown, over the page's knob, on every page until it is unbound.
+- `save()` and `load()` as `key = value` lines for `mpfree-store`'s "mod" settings (the page's knobs are not saved).
 
 ## The chain editor and the macros panel (`mpfree-chain-ui`)
 
-Two panels on `mpfree-ui`, drawn with theme tokens only. Where they open is a **proposal** to the Hello MPC thread, which owns the layout (suggested: the chain editor from a mixer strip's insert row and from the Sample tab's FX sub-tab; the macros as a bank of the Play page's Q-Link column, with this panel as a later full view). Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder).
+Two panels on `mpfree-ui`, drawn with theme tokens only. Where they open is the Hello MPC thread's call and Jay's; Hello's proposal (layout spec, "The FX chain editor and macros"), which the previews follow:
+
+- The **chain editor** takes the mixer's place when a strip's insert is tapped (`MixAction::OpenInsert` / `AddInsert`), no tab lit, with "‹ Mixer" in the list's corner (`ChainState::back`, `ChainAction::Back`). In the Sample tab it sits in the FX sub-tab under the pad bar, with a switch between the pad's chain and the track's (`ChainState::scopes`, `ChainAction::Scope`); which one it shows first is to agree with the sampler thread.
+- **Macros 1-4 and 5-8** are banks of the Q-Link column; a long press on a macro card opens the **macros panel** over the page under the top bar, no tab lit, with "‹ Back" in its corner (`MacroAction::Back`).
+- The Q-Link column is the Play page's (168 px) beside the panel; the hint line says what the buttons do on the page.
+
+Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder). Until round 7 lands, the preview's top bar is a stand-in drawn as `Header::app` draws it (no wordmark), and its Q-Link column a stand-in in the Play mockups' card shape.
 
 - **Chain editor** (`ChainView`): the strip's inserts (number, name, a line about its settings, a dot per macro that moves it, `~` when the matrix does, a power button that bypasses with spillover; Up, Down, Remove, + Add effect); the selected effect's page (its parameter groups as tabs, up to eight knobs, each with a green ring for how far modulation moves it and a badge in its macro's colour); and the Modulate column for the knob last touched (macro 1 to 8, Learn to a Q-Link, matrix rows with a depth bar, + LFO, + Follower; a switch takes macros only).
-- **Macros and morph** (`MacrosView`): four macro cards at a time (drag the knob; each target shows its range as a bar, where it is now, and the range as text; a tap asks to edit its range and curve), and the morph: A to B slider, what changes and where each parameter is now, Snap back to A, Save A, Save B.
-- Touches become `ChainAction`s and `MacroAction`s for the app: parameter moves go to the mod engine as `ModEvent::Set`, chain edits to the mixer as `Edit`s, macro maps and rows to the engine.
+- **Macros and morph** (`MacrosView`): four macro cards at a time (drag the knob; each target shows its name, its range as a bar, where it is now, and the range as text; a tap asks to edit its range and curve), and the morph: A to B slider, what changes (each parameter's A and B values and where it is now), Snap back to A, Save A, Save B.
+- Touches become `ChainAction`s and `MacroAction`s for the app: parameter moves go to the mod engine as `ModEvent::Set`, chain edits to the mixer as `Edit`s, macro maps and rows to the engine. `strip_of` and `strip_id` convert between the mixer's `StripId` and the address's `Strip`.

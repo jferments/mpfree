@@ -58,6 +58,10 @@ pub enum ChainAction {
     /// Set row `row`'s depth (-1 to 1).
     Depth { row: usize, depth: f32 },
     RemoveRow(usize),
+    /// Back to the screen the editor took the place of (`ChainState::back`).
+    Back,
+    /// Show chain `i` of `ChainState::scopes` (the pad's or the track's).
+    Scope(usize),
 }
 
 /// The columns' widths (the effect column takes the rest).
@@ -73,6 +77,8 @@ const DRAG_TRAVEL: f32 = 300.0;
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
+    pub back: Option<Rect>,
+    pub scopes: Vec<Rect>,
     pub list: Rect,
     pub effect: Rect,
     pub side: Rect,
@@ -94,7 +100,14 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
     let effect = effect.inset_xy(GAP, 0);
     // Chain column.
     let inner = list.inset(12);
-    let (_, body) = inner.take_top(HEAD_H);
+    let (head, body) = inner.take_top(HEAD_H);
+    let back = st.back.is_some().then(|| Rect::new(head.x, head.y, 96, 34));
+    let sx = back.map_or(head.x, |b| b.right() + 8);
+    let n = st.scopes.len() as i32;
+    let scopes = (0..n).map(|i| {
+        let w = (head.right() - sx) / n.max(1);
+        Rect::new(sx + i * w, head.y, w - if i + 1 < n { 4 } else { 0 }, 34)
+    }).collect();
     let (foot, body) = body.take_bottom(BUTTON_H);
     let mut y = body.y;
     let mut rows = Vec::new();
@@ -120,7 +133,7 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
     let grid = grid.inset_xy(0, 8);
     // Four knobs a row where they fit, else three.
     let n = st.params.len().min(KNOBS_PER_PAGE) as i32;
-    let cols = if grid.w >= 520 { 4 } else { 3 };
+    let cols = if grid.w >= 440 { 4 } else { 3 };
     let rows_n = ((n + cols - 1) / cols).max(2);
     let (cw, ch) = (grid.w / cols, (grid.h / rows_n).min(250));
     let knobs = (0..n).map(|i| Rect::new(grid.x + (i % cols) * cw, grid.y + (i / cols) * ch, cw, ch).inset(4)).collect();
@@ -141,7 +154,7 @@ pub fn layout(r: Rect, st: &ChainState) -> Layout {
     let half = (sbody.w - 8) / 2;
     let add_lfo = Rect::new(sbody.x, ry + 4, half, 40);
     let add_follower = Rect::new(sbody.x + half + 8, ry + 4, half, 40);
-    Layout { list, effect, side, rows, add, buttons, tabs, knobs, macros, learn, depth_rows, add_lfo, add_follower }
+    Layout { back, scopes, list, effect, side, rows, add, buttons, tabs, knobs, macros, learn, depth_rows, add_lfo, add_follower }
 }
 
 enum Drag {
@@ -178,6 +191,7 @@ impl ChainView {
                 if let Some(s) = self.state.slots.get_mut(*slot) { s.on = *on; }
             }
             ChainAction::Group(g) => self.state.group = *g,
+            ChainAction::Scope(i) => self.state.scope = *i,
             ChainAction::Focus(addr) => self.state.focus = Some(*addr),
             ChainAction::Set { addr, value } => {
                 if let Some(p) = self.state.params.iter_mut().find(|p| p.addr == *addr) {
@@ -198,6 +212,14 @@ impl ChainView {
     }
 
     fn tap(&mut self, l: &Layout, x: i32, y: i32) {
+        if l.back.is_some_and(|b| b.contains(x, y)) {
+            self.push(ChainAction::Back);
+            return;
+        }
+        if let Some(i) = l.scopes.iter().position(|r| r.contains(x, y)) {
+            self.push(ChainAction::Scope(i));
+            return;
+        }
         let st = &self.state;
         for (i, r) in l.rows.iter().enumerate() {
             if r.contains(x, y) {
@@ -283,9 +305,29 @@ impl Widget for ChainView {
         cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
         let inner = l.list.inset(12);
         let (head, _) = inner.take_top(HEAD_H);
-        cx.text(FontId::Bold, t.size_small, head, Align::Left, t.text_dim, &st.title.to_uppercase());
-        if let Some(c) = st.cost_pct {
-            cx.text(FontId::Sans, t.size_small, head, Align::Right, t.text_faint, &format!("{c:.1} %"));
+        if let (Some(b), Some(to)) = (l.back, &st.back) {
+            cx.canvas.fill_round_rect(b, 9, t.raised);
+            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, &format!("‹  {to}"));
+        }
+        for (i, (r, name)) in l.scopes.iter().zip(&st.scopes).enumerate() {
+            let on = i == st.scope;
+            cx.canvas.fill_round_rect(*r, 9, if on { t.raised } else { t.surface.mix(t.raised, 0.35) });
+            if on {
+                cx.canvas.fill_round_rect(Rect::new(r.x + 16, r.bottom() - 3, r.w - 32, 2), 1, t.accent);
+            }
+            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_small, *r, Align::Center, if on { t.text } else { t.text_dim }, name);
+        }
+        if st.scopes.is_empty() {
+            let tx = l.back.map_or(head.x, |b| b.right() + 12);
+            let title = Rect::new(tx, head.y, head.right() - tx, 34);
+            let name = st.title.to_uppercase();
+            cx.text(FontId::Bold, t.size_small, title, Align::Left, t.text_dim, &name);
+            if let Some(c) = st.cost_pct {
+                let cost = format!("{c:.1} %");
+                if cx.measure(FontId::Bold, t.size_small, &name) + cx.measure(FontId::Sans, t.size_small, &cost) + 10 <= title.w {
+                    cx.text(FontId::Sans, t.size_small, title, Align::Right, t.text_faint, &cost);
+                }
+            }
         }
         for (i, (s, row)) in st.slots.iter().zip(&l.rows).enumerate() {
             let sel = st.selected == Some(i);
