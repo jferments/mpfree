@@ -221,7 +221,7 @@ impl GrainFx {
             }
             self.frame += k as u64;
             at += k;
-            if self.frame % chunk == 0 {
+            if self.frame.is_multiple_of(chunk) {
                 self.flush();
             }
         }
