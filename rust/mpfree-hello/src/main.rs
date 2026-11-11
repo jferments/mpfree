@@ -63,6 +63,7 @@ mod gui;
 mod kit;
 mod sampler;
 mod sys;
+mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
@@ -1221,22 +1222,20 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         },
         _ => None,
     };
-    let touch = match touchscreen().and_then(|(path, name)| gui::TouchIn::open(&path, size).map(|t| (t, path, name))) {
-        Ok((t, path, name)) => {
-            out.say(&format!("touchscreen: {path} ({name}); read-only, not grabbed"));
-            Some(t)
-        }
-        Err(e) => {
-            out.say(&format!("touchscreen: not used ({e})"));
-            None
-        }
-    };
+    // The screen thread opens the touchscreen, and keeps trying every second
+    // until it can: at power-on the app may start before the driver probes.
+    let open_touch: gui::OpenTouch = Box::new(move || {
+        let (path, name) = touchscreen()?;
+        let t = gui::TouchIn::open(&path, size)?;
+        println!("touchscreen: {path} ({name}); read-only, not grabbed");
+        Ok(t)
+    });
     let player = gui::Player::new(fonts, size, timed, backdrop);
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
     // The screen thread starts before this thread asks for real-time priority,
     // so it keeps normal priority.
-    let screen = gui::spawn(player, fb, touch, from_audio, to_audio).map_err(|e| format!("screen thread: {e}"))?;
+    let screen = gui::spawn(player, fb, Some(open_touch), from_audio, to_audio).map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
         follow_journal(to_ui.clone());
@@ -1531,6 +1530,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Settings(s) => out.show(gui::ToUi::Settings(s)),
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
+                app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
             }
         }
         if let Some(p) = audio_change {

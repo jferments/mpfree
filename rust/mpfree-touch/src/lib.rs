@@ -8,11 +8,13 @@
 //! MPC One profile as constants checked against its JSON. M14 adds swipes,
 //! release velocity and [`gesture::Fling`], [`route`] (a recognizer per
 //! on-screen owner) and [`jitter`] for hold analysis. M15 adds [`touchlab`],
-//! the owner-paced Touch lab steps and their journal lines. None of them read
+//! the owner-paced Touch lab steps and their journal lines. M16 adds
+//! [`corners`], the four-corner "calibrate touch" setup step. None of them read
 //! devices; the live reader is the separate `mpfree-touch-evdev` crate.
 #![forbid(unsafe_code)]
 
 pub mod calibrate;
+pub mod corners;
 pub mod gesture;
 pub mod jitter;
 pub mod mt;
