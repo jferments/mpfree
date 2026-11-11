@@ -209,6 +209,28 @@ impl ChopSet {
         Ok(c)
     }
 
+    /// A chop from any list of marker frames: sorted, duplicates and points
+    /// outside the source dropped (frame 0 is always a boundary already).
+    pub fn from_markers(name: &str, source: &Source, mode: ChopMode, markers: impl IntoIterator<Item = u64>) -> Result<ChopSet, ModelError> {
+        let mut c = ChopSet::new(name, source, mode);
+        c.markers = markers.into_iter().filter(|&m| m > 0 && m < c.frames).collect();
+        c.markers.sort_unstable();
+        c.markers.dedup();
+        if c.markers.len() + 1 > MAX_SLICES { return Err(ModelError::TooManySlices); }
+        Ok(c)
+    }
+
+    /// Slices of `beats_per_slice` beats at `bpm`, with the first beat at
+    /// `first_beat` (a marker goes there too when it isn't 0).
+    pub fn beats(name: &str, source: &Source, bpm: f64, beats_per_slice: f64, first_beat: u64) -> Result<ChopSet, ModelError> {
+        if !(bpm.is_finite() && bpm > 0.0 && beats_per_slice.is_finite() && beats_per_slice > 0.0) { return Err(ModelError::BadSlice); }
+        let step = 60.0 / bpm * beats_per_slice * f64::from(source.rate());
+        if step < 1.0 || (source.frames() as f64 / step) as usize >= MAX_SLICES { return Err(ModelError::TooManySlices); }
+        let first = first_beat as f64;
+        let count = ((source.frames() as f64 - first) / step).ceil().max(0.0) as usize;
+        ChopSet::from_markers(name, source, ChopMode::Beat, (0..count).map(|k| (first + k as f64 * step).round() as u64))
+    }
+
     pub fn markers(&self) -> &[u64] { &self.markers }
     pub fn slices(&self) -> usize { self.markers.len() + 1 }
 
@@ -322,6 +344,10 @@ impl Pad {
 enum Undo {
     Pad { index: usize, before: Option<Box<Pad>>, gesture: Option<u64> },
     AddSource { id: SourceId },
+    /// Undo pops the newest chop set (keeping it here); redo pushes it back.
+    AddChop { set: Option<Box<ChopSet>> },
+    /// Several steps made by one command (chop to pads), undone together.
+    Group(Vec<Undo>),
 }
 
 /// The sampler's project: its sources, chop sets, pads and undo history.
@@ -330,6 +356,8 @@ pub struct Project {
     sources: Vec<Source>,
     /// Sources taken out by undo, kept so redo can bring them back.
     removed: Vec<Source>,
+    /// Chop sets. Add them with [`Project::add_chop_set`] so the step can be
+    /// undone; undo removes the newest one.
     pub chop_sets: Vec<ChopSet>,
     pads: Vec<Option<Pad>>,
     undo: Vec<Undo>,
@@ -351,6 +379,14 @@ impl Project {
             self.push_undo(Undo::AddSource { id });
         }
         id
+    }
+
+    /// Adds a chop set (one undo step) and returns its index.
+    pub fn add_chop_set(&mut self, c: ChopSet) -> Result<usize, ModelError> {
+        if self.source(c.source).is_none() { return Err(ModelError::UnknownSource); }
+        self.chop_sets.push(c);
+        self.push_undo(Undo::AddChop { set: None });
+        Ok(self.chop_sets.len() - 1)
     }
 
     pub fn source(&self, id: SourceId) -> Option<&Source> { self.sources.iter().find(|s| s.id() == id) }
@@ -395,16 +431,26 @@ impl Project {
         self.set_pad(index, Some(p), gesture)
     }
 
-    /// Puts slices `first..first+count` of a chop set on consecutive pads from `to_pad`.
+    /// Puts slices `first..first+count` of a chop set on consecutive pads
+    /// from `to_pad`, as one undo step.
     pub fn slices_to_pads(&mut self, chop: usize, first: usize, count: usize, to_pad: usize) -> Result<(), ModelError> {
         let c = self.chop_sets.get(chop).ok_or(ModelError::BadSlice)?.clone();
         let s = self.source(c.source).ok_or(ModelError::UnknownSource)?.clone();
-        if first + count > c.slices() || to_pad + count > PADS { return Err(ModelError::BadSlice); }
+        if count == 0 || first + count > c.slices() || to_pad + count > PADS { return Err(ModelError::BadSlice); }
+        // Build and check every pad first, so a failure changes nothing.
+        let mut pads = Vec::with_capacity(count);
         for k in 0..count {
-            let r = c.region(&s, first + k)?;
             let name = format!("{} {}", c.name, first + k + 1);
-            self.set_pad(to_pad + k, Some(Pad::new(&name, Layer::new(r))), None)?;
+            let pad = Pad::new(&name, Layer::new(c.region(&s, first + k)?));
+            self.check_pad(&pad)?;
+            pads.push(pad);
         }
+        let mut steps = Vec::with_capacity(count);
+        for (k, pad) in pads.into_iter().enumerate() {
+            let before = self.pads[to_pad + k].replace(pad);
+            steps.push(Undo::Pad { index: to_pad + k, before: before.map(Box::new), gesture: None });
+        }
+        self.push_undo(Undo::Group(steps));
         Ok(())
     }
 
@@ -432,6 +478,12 @@ impl Project {
                 }
                 Undo::AddSource { id }
             }
+            Undo::AddChop { set: None } => Undo::AddChop { set: self.chop_sets.pop().map(Box::new) },
+            Undo::AddChop { set: Some(c) } => {
+                self.chop_sets.push(*c);
+                Undo::AddChop { set: None }
+            }
+            Undo::Group(steps) => Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect()),
         }
     }
 

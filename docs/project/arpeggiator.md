@@ -63,7 +63,7 @@ Built now:
 - **Orders** Up, Down, Up-down, Up-down inclusive, Converge, Diverge, As played, Random (seeded, so it is repeatable), Random with no repeats until every note has played, Random once (one shuffled order kept until the notes change), Chord; 1–4 octaves; notes past 127 are skipped.
 - **Feel** strum (spreads chord notes across up to the whole step, lowest first); retrigger (a new note restarts the order and pattern); repeat count (play N steps, then stop, for one-shot runs).
 - **Scales** ten scales (major, minor, harmonic minor, dorian, phrygian, mixolydian, both pentatonics, blues, chromatic) with any root, applied last so octave and degree offsets always land in key. Off by default and for drum pads.
-- **Timing** rates 1/4 to 1/32 with triplets, at 960 ticks per quarter; gate 1–100 %; swing 50–75 % on every second step. The first step plays on the press (there is no transport yet).
+- **Timing** rates 1/4 to 1/32 with triplets, at 960 ticks per quarter; gate 1–100 %; swing 50–75 % on every second step. Free-running, the first step plays on the press. Following a transport (`Engine::sync` with a `Clock`, called before each `process`), the steps sit on the transport's tick grid: notes start on the next step, beat or bar (`Settings::start`), tempo changes and loop jumps are followed, and a transport swing (grid and amount) bends the grid; when the transport stops, the engine free-runs again.
 - **Velocity** played (following pad pressure) or fixed; accent velocity.
 - **Patterns** up to 64 steps, written as text:
 
@@ -104,6 +104,11 @@ x x x x | oct 0 1 0 | vel 120 70 90 70 80     octave over 3, accents over 5, ste
 | `deg` | scale degrees (with a scale) or semitones (without), −24 to 24 |
 | `vel` | velocity 1–127; 0 = as played; an accent still wins |
 | `gate` | note length in percent; 0 = the step's or the engine's |
+| `nudge` | moves the step early (negative) or late, −50 to 50 percent of a step, on top of swing; a step never moves ahead of the one before it |
+
+**Random amounts per lane.** A lane name can carry `~N`: each time a step plays, a random number from −N to N is added to that lane's value, so `vel~20` varies velocity by up to 20, `gate~30` the length, `oct~1` the octave, `deg~2` the degree and `nudge~10` the timing. A lane with a random amount needs no values (`x x x x | vel~25` varies the played velocity). Accented steps keep their accent. The engine's seed picks the numbers, so a seed always plays the same way, and a pattern without `~` draws no random numbers at all.
+
+**Velocity ramp.** `Settings.ramp = Ramp { target, steps }` moves velocity from where it starts towards `target` over `steps` steps after the notes start, then holds it (Ableton's Decay and Target). With `retrigger` on, every new chord starts the ramp again. Accents are left alone.
 
 **Variation** that never loses the original: `Pattern::mutated(seed, amount)` returns a new pattern (the same seed gives the same variation; ties stay; at least one step plays) and `Pattern::rotated(n)` turns the steps. The app keeps the original and swaps back on "Original".
 
@@ -144,8 +149,10 @@ col(header:60, row(pads:*, col(mode:60, order:*, knobs:180):420):*, steps:150, h
 Three ways, all producing the same `Pattern`:
 
 1. **Tap on the step grid** (above).
-2. **Record on the pads** ("live mode", after Logic's): with a pattern armed, each pad press writes the next step. Pad 1 = "1st held note", pad 2 = "2nd" and so on; hitting several pads at once writes a chord step; a press of the rest pad (proposed: pad 16) writes a rest, and hold means tie. The step's velocity is the pad's velocity.
-3. **Text**, in a file or typed in Prefs, as above.
+2. **Record on the pads** (`mpfree_arp::Recorder`, engine side done): pads 1-9 write the 1st to 9th held note, several of them pressed together a chord (`*`), 13 the next note (`x`), 14 random (`?`), 15 a tie, 16 a rest; pads 10-12 do nothing yet. A hit at or above the accent velocity (110 by default) writes an accent. Two modes, as in the record mockup:
+   - **Step**: each press writes the next step, with no clock; Undo removes the last one; it stops when the pattern is full.
+   - **Free time**: the pattern keeps playing and each press lands on the nearest step (`Engine::position()` gives where the pattern is), overwriting what was there; holding a pad past the middle of the next step writes ties.
+3. **Text**, typed in Prefs or kept in a **pattern library file** (`mpfree_arp::Library`): one `Name = pattern` line each, `#` comments, written in any editor. Every bad line is reported with its line number, token and reason. [`rust/mpfree-arp/patterns/example.txt`](../../rust/mpfree-arp/patterns/example.txt) has eight original patterns and a summary of the syntax. Hear a whole file on the workstation with `mpfree-arp-render --patterns FILE`.
 
 Later: import a MIDI file the owner made (notes become note picks by their rank in the file's chord); export what the arp played as a MIDI file or to a sequencer track.
 
@@ -156,27 +163,30 @@ Patterns save to `/data/mpfree/patterns/` as text files once MPFree has persiste
 `mpfree-arp-render` is a workstation-only program in the same crate. It runs the real engine in 128-frame periods at 44.1 kHz, the same way the pad player will, and plays its notes through a small built-in synth (two detuned saws, a low-pass filter and an envelope) or, for drum demos, 16 simple drum sounds made in code (pad 1 kick, 2 snare, 3 closed hat and so on). It needs no samples and no MPC, and its output is the same on every run.
 
 ```sh
-# Every order, every starter pattern, drums, lanes, scale, strum and mutate: 29 WAVs
+# Every order, every starter pattern, drums, lanes, scale, strum, mutate, nudge, ramp and random lanes: 32 WAVs
 cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --demo
+
+# Every pattern in a library file of your own (copy rust/mpfree-arp/patterns/example.txt to start)
+cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- --patterns rust/mpfree-arp/patterns/example.txt
 
 # One of your own: a chord per bar, looped
 cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin mpfree-arp-render -- \
     --chords "57,60,64,67;53,57,60,64" --mode pattern --pattern "1 3 2 3 x:2 . 4 x | oct 0 0 1"
 ```
 
-It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and a hash. Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--bars`, `--seed`, `--name`.
+It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and two hashes: `events` (the notes played; the same on every computer, so it can be compared with Claude's run) and `audio` (the WAV bytes; repeats on one computer, but the synth's maths comes from the system library, so it can differ between computers). Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--ramp 30:16`, `--retrigger`, `--bars`, `--seed`, `--name`.
 
 ## Implementation plan
 
 | Step | What | Depends on | Device? |
 |---|---|---|---|
 | A (done, PR #33) | `mpfree-arp` engine: latch, repeat, arp orders, patterns, swing, ratchets, chance, ties; text format | nothing | no |
-| A2 (this PR) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
+| A2 (done, PR #37) | `mpfree-arp-render`: hear every order and pattern as WAV files on the workstation | A | no |
 | B | Wire into the pad player: NOTE REPEAT, Latch, TAP TEMPO; `Mixer::hit_at(offset)` so hits land on their frame instead of the period start; Arp page with mode tabs, order list, faders | PR #31 merged; round 5 button capture | yes, paced round |
-| C | `StepGrid` widget and the pattern editor (tap, record on pads); pattern files | B | yes |
-| D (engine done, PR #35) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate; scales applied last. Still to do: per-step swing/nudge lane, and the UI | C for the UI | no (engine), then yes |
-| E (engine mostly done, PR #35) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count. Still to do: per-lane random amounts, velocity ramp, retrigger on beat or bar (needs a transport) | D | no, then yes |
-| F | Transport and MIDI: sync to the sequencer's clock and MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
+| C (engine side done, this PR) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Still to do: the `StepGrid` widget, the pattern editor and record screens | B | yes |
+| D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
+| E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
+| F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`, waits for the transport crate to drive it), MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
 
@@ -186,7 +196,7 @@ The owner accepted all four proposals, and they apply to every live test from ro
 
 1. **Latch defaults to Reset:** a press with nothing held starts a new chord; Toggle is an option.
 2. **Latched pads keep repeating** after NOTE REPEAT is released, until Latch is turned off.
-3. **The generator starts on the press**, not on the next beat, until a transport exists; then it becomes a setting.
+3. **The generator starts on the press**, not on the next beat, until a transport exists; then it becomes a setting (`Settings::start`: Step, Beat or Bar, default Step).
 4. **Record-on-pads layout:** pads 1 to 9 are the 1st to 9th held note, several at once a chord, pad 13 the next note in the order, 14 random, 15 tie, 16 rest.
 
 ## Sources

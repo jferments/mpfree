@@ -353,6 +353,24 @@ jobs:
               assert needle not in hello_code, needle
           ui_fb = Path("rust/mpfree-ui/src/fb.rs").read_text()
           assert 'pub fn capture(' in ui_fb
+          # M13 live reader: read-only, never grabs, and its only unsafe code
+          # is two read-only ioctls (EVIOCGABS, EVIOCGMTSLOTS) in sys.rs.
+          evdev_lib = Path("rust/mpfree-touch-evdev/src/lib.rs").read_text()
+          evdev_sys = Path("rust/mpfree-touch-evdev/src/sys.rs").read_text()
+          assert '#![deny(unsafe_code)]' in evdev_lib
+          assert 'unsafe' not in evdev_lib.replace('#![deny(unsafe_code)]', '').replace(
+              '#![deny(unsafe_op_in_unsafe_fn)]', '').replace('The only unsafe code', '')
+          assert '.read(true)' in evdev_lib
+          evdev_code = "\n".join(x for x in (evdev_lib + evdev_sys).splitlines()
+              if not x.lstrip().startswith("//"))
+          for needle in ('EVIOCGRAB', 'EVIOCSABS', '.write(true)', '.append(true)', '.create(',
+                         'std::process::Command', 'std::net', 'fs::write', 'systemctl',
+                         '/dev/mmc', '/dev/i2c', '/dev/dri'):
+              assert needle not in evdev_code, needle
+          assert evdev_sys.count('unsafe {') == 2
+          assert evdev_sys.count('ioctl(fd, ') == 2
+          assert 'ioctl(fd, eviocgabs(code)' in evdev_sys
+          assert 'ioctl(fd, eviocgmtslots(len)' in evdev_sys
           session_source=Path("rust/mpfree-session/src/lib.rs").read_text()
           assert '#![forbid(unsafe_code)]' in session_source
           assert 'NullAudioBackend' in session_source

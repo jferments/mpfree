@@ -1,33 +1,49 @@
-//! The engine's real-time calls (render, apply, schedule) must not allocate
+//! The engine's real-time calls (render, apply, schedule) and the rolling
+//! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
 //! loops, layers, chokes, stealing, filters and sample-accurate events.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
 //! affect the library, which forbids unsafe code.
+//!
+//! Only the test's own thread is watched: the test harness's main thread
+//! can allocate at any moment (it did on a busy CI runner), and that is
+//! not the engine's doing.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
+use mpfree_sampler::record::rolling;
 
 struct Counting;
-static WATCH: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // A const-initialised Cell needs no allocation or destructor, so it is
+    // safe to read from inside the allocator.
+    static WATCH: Cell<bool> = const { Cell::new(false) };
+}
 static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn count() {
+    if WATCH.with(Cell::get) { CALLS.fetch_add(1, Ordering::Relaxed); }
+}
+fn watch(on: bool) { WATCH.with(|w| w.set(on)); }
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if WATCH.load(Ordering::Relaxed) { CALLS.fetch_add(1, Ordering::Relaxed); }
+        count();
         unsafe { System.realloc(p, l, n) }
     }
 }
@@ -63,14 +79,16 @@ fn render_and_events_never_allocate() {
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     e.render(&mut l, &mut r); // warm up outside the watch
+    // The rolling "skip back" buffer the audio thread fills every period.
+    let (mut rec, reader) = rolling(2, 44_100 * 2);
 
     // The counter itself works: one Vec is one allocation and one free.
-    WATCH.store(true, Ordering::SeqCst);
+    watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
-    WATCH.store(false, Ordering::SeqCst);
+    watch(false);
     assert_eq!(CALLS.swap(0, Ordering::SeqCst), 2);
 
-    WATCH.store(true, Ordering::SeqCst);
+    watch(true);
     for block in 0..2000u32 {
         let pad = (block * 7 % 16) as u8;
         e.apply(Event::NoteOn { pad, velocity: (block % 127 + 1) as u8 });
@@ -78,11 +96,13 @@ fn render_and_events_never_allocate() {
         e.schedule(block * 31 % 200, Event::NoteOff { pad: (pad + 5) % 16 });
         if block % 300 == 299 { e.apply(Event::AllOff); }
         e.render(&mut l, &mut r);
+        rec.push_planar(&l, &r);
     }
-    WATCH.store(false, Ordering::SeqCst);
+    watch(false);
     // Voices that end drop their handle to the audio; the project still holds
     // it, so that is a counter decrement, not a free.
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while rendering");
     assert!(e.stats().hits > 2000);
+    assert_eq!(reader.written(), 2000 * 128);
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
 }

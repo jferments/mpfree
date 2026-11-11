@@ -10,17 +10,25 @@
 //! mpfree-arp-render --demo                       every order, every starter pattern, drums, lanes, scales
 //! mpfree-arp-render --chords "60,63,67,70;65,68,72,75" --mode pattern --builtin Bounce
 //! mpfree-arp-render --pads 1,3,5,7 --mode pattern --pattern "x x:2 . x | vel 127 60 90"
+//! mpfree-arp-render --patterns my-patterns.txt   every pattern in a library file (see patterns/example.txt)
 //! ```
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/arp-render-<UTC>), `--mode
 //! repeat|arp|pattern`, `--order NAME`, `--pattern TEXT` or `--builtin NAME`,
 //! `--chords "n,n;n,n"` (one bar each, looped) or `--notes n,n` or `--pads
 //! 1,2` (drum sounds), `--bpm`, `--rate 1/16`, `--octaves`, `--gate`,
-//! `--swing`, `--strum`, `--scale d_dorian`, `--bars`, `--seed`, `--name`.
+//! `--swing`, `--strum`, `--scale d_dorian`, `--ramp TARGET:STEPS`, `--retrigger`,
+//! `--bars`, `--seed`, `--name`.
+//!
+//! The report gives two hashes per file. `events` covers the notes the
+//! engine played (frame, pitch, velocity) and is the same on every computer.
+//! `audio` covers the WAV bytes; it repeats on one computer, but the synth
+//! uses the system's maths library (exp, tanh, powf), so it can differ
+//! between computers.
 #![forbid(unsafe_code)]
 
 use mpfree_arp::scale::SCALES;
-use mpfree_arp::{Engine, EventKind, Events, LatchMode, Mode, Order, Pattern, Rate, Scale, Settings, BUILT_IN};
+use mpfree_arp::{Engine, EventKind, Events, LatchMode, Library, Mode, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN};
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -186,6 +194,9 @@ struct Job {
 
 struct Rendered {
     samples: Vec<f32>,
+    /// Every event as (absolute frame, kind) bytes, for a hash that does not
+    /// depend on floating-point maths.
+    events: Vec<u8>,
     notes: usize,
     peak: f32,
     dropped: u64,
@@ -206,6 +217,7 @@ fn render(job: &Job) -> Rendered {
     let mut frame = 0u64;
     let mut bar = u64::MAX;
     let mut notes = 0;
+    let mut log = Vec::new();
     while frame < total {
         let this_bar = frame / bar_frames;
         if this_bar != bar && this_bar < u64::from(job.bars) {
@@ -229,12 +241,17 @@ fn render(job: &Job) -> Rendered {
             let at = (ev.offset as usize).min(PERIOD as usize);
             synth.render(&mut buf[pos..at]);
             pos = at;
+            log.extend_from_slice(&(frame + u64::from(ev.offset)).to_le_bytes());
             match ev.kind {
                 EventKind::On { note, velocity } => {
                     synth.on(note, velocity);
                     notes += 1;
+                    log.extend_from_slice(&[1, note, velocity]);
                 }
-                EventKind::Off { note } => synth.off(note),
+                EventKind::Off { note } => {
+                    synth.off(note);
+                    log.extend_from_slice(&[0, note, 0]);
+                }
             }
         }
         synth.render(&mut buf[pos..]);
@@ -242,7 +259,7 @@ fn render(job: &Job) -> Rendered {
         frame += u64::from(PERIOD);
     }
     let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
-    Rendered { samples, notes, peak, dropped: events.dropped + e.overflow }
+    Rendered { samples, events: log, notes, peak, dropped: events.dropped + e.overflow }
 }
 
 fn wav_bytes(samples: &[f32]) -> Vec<u8> {
@@ -326,9 +343,33 @@ fn base(name: &str, about: &str, mode: Mode) -> Job {
     }
 }
 
+/// A minor, F major, G7, E minor: the loop the demos and `--patterns` play
+/// over unless notes are given.
+fn four_chord_loop() -> Vec<Vec<u8>> {
+    vec![vec![57, 60, 64, 67], vec![53, 57, 60, 64], vec![55, 59, 62, 65], vec![52, 55, 59, 64]]
+}
+
+/// One job per pattern in a library, with the other options as given.
+fn library_jobs(lib: &Library, job: &Job, chords: Option<Vec<Vec<u8>>>) -> Vec<Job> {
+    let chords = chords.unwrap_or_else(four_chord_loop);
+    lib.iter()
+        .enumerate()
+        .map(|(i, (name, pattern))| {
+            let mut j = job.clone();
+            j.name = format!("{:02}-{}", i + 1, slug(name));
+            j.about = format!("Pattern \"{name}\" ({})", pattern.to_text());
+            j.pattern = *pattern;
+            j.settings.mode = Mode::Pattern;
+            j.settings = j.settings.clamped();
+            j.chords = chords.clone();
+            j
+        })
+        .collect()
+}
+
 fn demo_jobs() -> Vec<Job> {
     let mut jobs = Vec::new();
-    let prog = vec![vec![57, 60, 64, 67], vec![53, 57, 60, 64], vec![55, 59, 62, 65], vec![52, 55, 59, 64]];
+    let prog = four_chord_loop();
     for (i, order) in Order::ALL.into_iter().enumerate() {
         let mut j = base(&format!("order-{:02}-{}", i + 1, slug(order.label())),
                          &format!("Arp, order {}, 2 octaves, 1/16, over a four-chord loop", order.label()), Mode::Arp);
@@ -393,6 +434,25 @@ fn demo_jobs() -> Vec<Job> {
     m.about = "The 40% mutation of \"Climb\" (seed 7) on its own".into();
     m.pattern = m.pattern.mutated(7, 40);
     jobs.push(m);
+    let groove = "1 2 2 2 1 2 2 1 | nudge 0 16 -6 10 0 18 -4 8 | vel 120 70 90 60";
+    let mut j = base("feel-04-nudge", &format!("Kick and hat (pads 1 and 3) with single steps pushed early and late: \"{groove}\""), Mode::Pattern);
+    j.drums = true;
+    j.chords = vec![vec![0, 2]];
+    j.pattern = Pattern::parse(groove).unwrap();
+    j.bpm = 94.0;
+    jobs.push(j);
+    let mut j = base("feel-05-ramp", "Arp Up, 2 octaves, velocity 120 falling to 25 over each bar (ramp 25:16, retrigger on each chord)", Mode::Arp);
+    j.settings.octaves = 2;
+    j.settings.velocity = mpfree_arp::Velocity::Fixed(120);
+    j.settings.ramp = Ramp { target: 25, steps: 16 };
+    j.settings.retrigger = true;
+    j.chords = prog.clone();
+    jobs.push(j);
+    let loose = "x x x x x x x x | vel~30 | gate~35 50 | nudge~8";
+    let mut j = base("lanes-02-random", &format!("The same eight steps varied every time they play: \"{loose}\""), Mode::Pattern);
+    j.pattern = Pattern::parse(loose).unwrap();
+    j.chords = prog.clone();
+    jobs.push(j);
     jobs
 }
 
@@ -430,6 +490,7 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     let mut out = None;
     let mut job = base("custom", "", Mode::Arp);
     let mut chords: Option<Vec<Vec<u8>>> = None;
+    let mut library: Option<Library> = None;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
         *i += 1;
@@ -465,6 +526,18 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                 job.pattern = Pattern::parse(text).unwrap();
                 job.settings.mode = Mode::Pattern;
             }
+            "--patterns" => {
+                let path = value(&mut i)?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("--patterns {path}: {e}"))?;
+                let lib = Library::parse(&text).map_err(|errors| {
+                    let lines: Vec<String> = errors.iter().map(|e| format!("  {path}: {e}")).collect();
+                    format!("--patterns: fix these lines:\n{}", lines.join("\n"))
+                })?;
+                if lib.is_empty() {
+                    return Err(format!("--patterns {path}: no patterns in the file"));
+                }
+                library = Some(lib);
+            }
             "--chords" => {
                 let v = value(&mut i)?;
                 chords = Some(v.split(';').map(|c| notes(c, false)).collect::<Result<_, _>>()?);
@@ -494,6 +567,18 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
             }
             "--bars" => job.bars = value(&mut i)?.parse::<u32>().map_err(|_| "--bars needs a number")?.clamp(1, 64),
             "--seed" => job.seed = value(&mut i)?.parse().map_err(|_| "--seed needs a number")?,
+            "--ramp" => {
+                let v = value(&mut i)?;
+                let bad = || format!("--ramp {v}: use TARGET:STEPS, e.g. 30:16 (velocity 30 after 16 steps)");
+                let (t, n) = v.split_once(':').ok_or_else(bad)?;
+                let target: u8 = t.parse().map_err(|_| bad())?;
+                let steps: u16 = n.parse().map_err(|_| bad())?;
+                if !(1..=127).contains(&target) {
+                    return Err(bad());
+                }
+                job.settings.ramp = Ramp { target, steps };
+            }
+            "--retrigger" => job.settings.retrigger = true,
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -501,6 +586,12 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     }
     if demo {
         return Ok((demo_jobs(), out));
+    }
+    if let Some(lib) = library {
+        if chords.as_ref().is_some_and(|c| c.iter().any(|c| c.is_empty())) {
+            return Err("a chord is empty".into());
+        }
+        return Ok((library_jobs(&lib, &job, chords), out));
     }
     let chords = chords.ok_or("give --demo, or notes with --chords, --notes or --pads")?;
     if chords.iter().any(|c| c.is_empty()) {
@@ -516,7 +607,9 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
 fn run(jobs: &[Job], dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut report = String::new();
-    let _ = writeln!(report, "mpfree-arp-render report ({} file{}, {} Hz, 16-bit stereo, {} frames per period)\nfolder: {}\n",
+    let _ = writeln!(report, "mpfree-arp-render report ({} file{}, {} Hz, 16-bit stereo, {} frames per period)\nfolder: {}\n\
+                              events = hash of the notes played, the same on every computer; \
+                              audio = hash of the WAV, which can differ between computers\n",
                      jobs.len(), if jobs.len() == 1 { "" } else { "s" }, RATE, PERIOD, dir.display());
     for job in jobs {
         let r = render(job);
@@ -524,9 +617,9 @@ fn run(jobs: &[Job], dir: &Path) -> Result<String, String> {
         let file = dir.join(format!("{}.wav", job.name));
         std::fs::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
         let line = format!(
-            "{}.wav  {:.1} s  {} notes  peak {:.1} dBFS  dropped {}  fnv {:016x}\n    {} ({} bpm, {} bars)\n",
+            "{}.wav  {:.1} s  {} notes  peak {:.1} dBFS  dropped {}  events {:016x}  audio {:016x}\n    {} ({} bpm, {} bars)\n",
             job.name, r.samples.len() as f64 / f64::from(RATE), r.notes, 20.0 * r.peak.max(1e-9).log10(), r.dropped,
-            fnv(&bytes), job.about, job.bpm, job.bars);
+            fnv(&r.events), fnv(&bytes), job.about, job.bpm, job.bars);
         print!("{line}");
         report.push_str(&line);
     }
@@ -544,8 +637,8 @@ fn main() {
             }
             eprintln!("usage: mpfree-arp-render --demo | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
                        [--mode repeat|arp|pattern] [--order NAME] [--pattern TEXT | --builtin NAME] [--bpm N] [--rate 1/16] \
-                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--bars N] [--seed N] \
-                       [--name NAME] [--out DIR]");
+                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
+                       [--name NAME] [--out DIR]\n       mpfree-arp-render --patterns FILE [the same options; --chords etc. replace the four-chord loop]");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
@@ -578,6 +671,7 @@ mod tests {
             let a = wav_bytes(&render(job).samples);
             let b = wav_bytes(&render(job).samples);
             assert_eq!(fnv(&a), fnv(&b), "{}", job.name);
+            assert!(!render(job).events.is_empty());
             assert_eq!(&a[..4], b"RIFF");
             assert_eq!(u32::from_le_bytes(a[40..44].try_into().unwrap()) as usize, a.len() - 44);
         }
@@ -600,10 +694,32 @@ mod tests {
         assert_eq!(jobs[0].settings.scale, Some(Scale::new(1, mpfree_arp::scale::MINOR)));
         assert_eq!(jobs[0].settings.order, Order::UpDown);
         assert_eq!(jobs[0].settings.rate, Rate::EighthTriplet);
+        let (jobs, _) = parse_args(&a("--notes 60 --mode arp --ramp 30:16 --retrigger")).unwrap();
+        assert_eq!(jobs[0].settings.ramp, Ramp { target: 30, steps: 16 });
+        assert!(jobs[0].settings.retrigger);
+        assert!(parse_args(&a("--notes 60 --ramp 0:16")).is_err());
+        assert!(parse_args(&a("--notes 60 --ramp 16")).is_err());
         let (jobs, _) = parse_args(&a("--pads 1,16 --mode repeat")).unwrap();
         assert!(jobs[0].drums);
         assert_eq!(jobs[0].chords, vec![vec![0, 15]]);
         assert!(parse_args(&a("--pads 17")).is_err());
+        let example = concat!(env!("CARGO_MANIFEST_DIR"), "/patterns/example.txt");
+        let (jobs, _) = parse_args(&a(&format!("--patterns {example} --bpm 96"))).unwrap();
+        assert_eq!(jobs.len(), 8);
+        assert_eq!(jobs[0].name, "01-skip");
+        assert_eq!(jobs[6].name, "07-loose-eight");
+        assert!(jobs.iter().all(|j| j.bpm == 96.0 && j.settings.mode == Mode::Pattern && j.chords.len() == 4));
+        let (jobs, _) = parse_args(&a(&format!("--pads 1,3 --patterns {example}"))).unwrap();
+        assert!(jobs.iter().all(|j| j.drums && j.chords == vec![vec![0, 2]]));
+        for job in &jobs {
+            let r = render(job);
+            assert!(r.notes > 0 && r.dropped == 0, "{}", job.name);
+        }
+        let bad = std::env::temp_dir().join(format!("mpfree-arp-render-bad-{}.txt", std::process::id()));
+        std::fs::write(&bad, "Ok = x\nBad = x y\n").unwrap();
+        let e = parse_args(&a(&format!("--patterns {}", bad.display()))).err().unwrap();
+        let _ = std::fs::remove_file(&bad);
+        assert!(e.contains("line 2: \"Bad\", token 2 \"y\""), "{e}");
         assert!(parse_args(&a("--notes 60 --order sideways")).is_err());
         assert!(parse_args(&a("--mode arp")).is_err());
         assert_eq!(order_by_name("Random once"), Some(Order::RandomOnce));
