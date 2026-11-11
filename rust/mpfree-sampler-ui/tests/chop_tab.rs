@@ -2,7 +2,7 @@
 //! do, and what Chop to pads does to a real project.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{ChopMode, PlayMode};
+use mpfree_sampler::model::{ChopMode, Keys, PadsPlay, PlayMode, SLICE_KEYS_FROM};
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
@@ -96,8 +96,13 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
     assert_eq!(
         buttons(&s),
         (
-            vec!["Split".to_string(), "Merge".into(), "Chop to A2–A16".into()],
-            vec![true, true, true]
+            vec![
+                "Split".to_string(),
+                "Merge".into(),
+                "Chop to A2–A16".into(),
+                "To keys C2".into()
+            ],
+            vec![true, true, true, true]
         )
     );
     let bar = s.ui.get::<PadBar>(chop_tab::BAR).unwrap();
@@ -315,6 +320,50 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
 }
 
 #[test]
+fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    let a = press(&mut s, Button::ToKeys).unwrap();
+    let ChopAction::ToPads { keys_from, .. } = a else {
+        panic!("{a:?}")
+    };
+    assert_eq!(keys_from, Some(SLICE_KEYS_FROM));
+    assert_eq!(apply(&mut s, &a), 5..9);
+    for k in 0..4 {
+        let pad = s.project.pad(5 + k).unwrap();
+        assert_eq!(pad.keys, Some(Keys::one(36 + k as u8)), "C2 up");
+        let r = &pad.layers[0].region;
+        assert_eq!((r.start, r.end), (b[k], b[k + 1]));
+    }
+    assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 36 });
+    // Pad 1 is now the first slice's note; pad 5 (A5's own) holds no note.
+    let view = EngineView::build(&s.project, RATE);
+    assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(4));
+    let mut e = Engine::new(RATE, 32);
+    e.set_view(view);
+    e.apply(Event::Key {
+        note: 37,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    assert!(
+        l.iter().any(|x| x.abs() > 0.01),
+        "C#2 plays the second slice"
+    );
+    // One undo takes it all back, the pads playing their sounds again.
+    assert!(s.project.undo());
+    assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+}
+
+#[test]
 fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     let mut s = chop();
     method(&mut s, Method::Grid);
@@ -338,8 +387,10 @@ fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     assert_eq!(s.tab.slices(), 17);
     assert_eq!(s.tab.pads(&s.state), None);
     assert_eq!(press(&mut s, Button::ToPads), None);
+    assert_eq!(press(&mut s, Button::ToKeys), None);
     let (labels, enabled) = buttons(&s);
     assert_eq!((labels[2].as_str(), enabled[2]), ("Max 16 slices", false));
+    assert!(!enabled[3]);
     assert!(list_right(&s).contains("too many"));
     // The bar's Wave tab goes back to Wave.
     let bar = s.ui.rect_of(chop_tab::BAR).unwrap();

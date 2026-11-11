@@ -121,6 +121,12 @@ fn render_and_events_never_allocate() {
         pad.select = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random][i % 3];
         pad.polyphony = 2;
         pad.mute_group = (i % 4 == 0).then_some(1);
+        // Some are keygroups too, played by notes below.
+        pad.keys = (i % 4 == 2).then_some(Keys {
+            lo: 40,
+            hi: 80,
+            root: 60,
+        });
         pad.chokes = vec![(i + 1) % 16];
         pad.filter = Filter {
             kind: FilterKind::LowPass,
@@ -256,6 +262,16 @@ fn render_and_events_never_allocate() {
         let pad = (block * 7 % 16) as u8;
         // The transport's tempo, moving now and then.
         e.set_tempo(120.0 + f64::from(block / 100 % 5) * 7.5);
+        if block % 6 == 0 {
+            let note = 38 + (block / 6 % 46) as u8;
+            e.schedule(block % 128, Event::Key { note, velocity: 90 });
+            e.schedule(
+                (block + 64) % 128,
+                Event::KeyOff {
+                    note: note.wrapping_sub(12),
+                },
+            );
+        }
         if block % 200 == 10 {
             wet = Some(e.set_view(wet.take().unwrap()));
         }

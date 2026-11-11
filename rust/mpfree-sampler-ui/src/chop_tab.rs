@@ -17,7 +17,9 @@
 //!   pad's bank as one undo step. Each new pad is the chopped pad (level,
 //!   envelopes, filter, its sound's gain, tune and channels) playing one
 //!   slice once. The button names the pads it fills; the list says how many
-//!   of them have a sound already.
+//!   of them have a sound already. **To keys** does the same with each
+//!   slice a keygroup of one note, from C2 up, and the kit's pads then
+//!   play those notes, so the slices are on the pads and on a keyboard.
 //! - **Q-Link 1** picks a slice, **Q-Link 2** moves its start (one pixel of
 //!   the current zoom per detent, snapped in the direction of the turn; with
 //!   SHIFT one frame), **Q-Link 3** turns the method's setting and **Q-Link
@@ -34,7 +36,9 @@ use std::sync::Arc;
 use mpfree_analysis::{
     nearest_zero_crossing, previous_zero_crossing, sound_spans, SilenceSettings,
 };
-use mpfree_sampler::model::{ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS};
+use mpfree_sampler::model::{
+    ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS, SLICE_KEYS_FROM,
+};
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{EventKind, Rect, Ui, UiEvent};
@@ -155,10 +159,13 @@ pub enum Button {
     Split,
     Merge,
     ToPads,
+    /// As [`Button::ToPads`], with the slices as keygroups of one note
+    /// each from [`SLICE_KEYS_FROM`], and the pads playing those notes.
+    ToKeys,
 }
 
 impl Button {
-    pub const ALL: [Button; 3] = [Button::Split, Button::Merge, Button::ToPads];
+    pub const ALL: [Button; 4] = [Button::Split, Button::Merge, Button::ToPads, Button::ToKeys];
 }
 
 /// Everything the tab chops: one layer of one pad, its source, and which
@@ -242,6 +249,9 @@ pub enum ChopAction {
         mode: ChopMode,
         bounds: Vec<u64>,
         to_pad: usize,
+        /// As keygroups of one note each from this note, the pads then
+        /// playing notes ([`Project::chop_to_keys`]).
+        keys_from: Option<u8>,
     },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
@@ -259,6 +269,7 @@ impl ChopAction {
             mode,
             bounds,
             to_pad,
+            keys_from,
         } = self
         else {
             return Ok(0..0);
@@ -281,7 +292,10 @@ impl ChopAction {
         {
             return Err(ModelError::BadSlice);
         }
-        p.chop_to_pads(c, first, count, *to_pad, Some(&template))?;
+        match keys_from {
+            Some(from) => p.chop_to_keys(c, first, count, *to_pad, *from, Some(&template))?,
+            None => p.chop_to_pads(c, first, count, *to_pad, Some(&template))?,
+        };
         Ok(*to_pad..*to_pad + count)
     }
 }
@@ -337,7 +351,7 @@ impl ChopTab {
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());
         ui.add(LIST, SettingList::new("Chop"));
-        let mut buttons = ButtonRow::new(&["Split", "Merge", "Chop to pads"]);
+        let mut buttons = ButtonRow::new(&["Split", "Merge", "Chop to pads", "To keys"]);
         buttons.primary = Some(2);
         ui.add(BUTTONS, buttons);
         let t = ui.theme.clone();
@@ -576,11 +590,13 @@ impl ChopTab {
                 s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
                 n > 1,
                 pads.is_some(),
+                pads.is_some(),
             ];
             b.labels[2] = match &range {
                 Some(t) => format!("Chop to {t}"),
                 None => format!("Max {BANK} slices"),
             };
+            b.labels[3] = format!("To keys {}", mpfree_analysis::note_name(SLICE_KEYS_FROM));
         }
         self.show_cards(ui, st);
     }
@@ -804,7 +820,7 @@ impl ChopTab {
                 self.show(ui, st);
                 None
             }
-            Button::ToPads => {
+            Button::ToPads | Button::ToKeys => {
                 let pads = self.pads(st)?;
                 Some(ChopAction::ToPads {
                     pad: st.pad,
@@ -814,6 +830,7 @@ impl ChopTab {
                     mode: self.method.mode(),
                     bounds,
                     to_pad: pads.start,
+                    keys_from: (b == Button::ToKeys).then_some(SLICE_KEYS_FROM),
                 })
             }
         }
