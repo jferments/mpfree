@@ -63,6 +63,7 @@ mod akai;
 mod app;
 mod alsa;
 mod debug_page;
+mod engines;
 mod gui;
 mod kit;
 mod looper_page;
@@ -91,6 +92,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use mpfree_prof::Span;
 
 const REPORT_DIR: &str = "/run/mpfree-hello";
 const PANEL_ROTATION: &str = "/proc/device-tree/mipi@ff960000/panel@0/rotation";
@@ -1650,9 +1653,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let (mut window_repeats, mut window_pads, mut last_repeat_note) = (0u64, [false; 16], Instant::now());
     let mut totals = AudioTotals::default();
     let mut render_time = RenderTime::default();
+    // CPU by engine: a probe per stage, published every 250 ms for the Dev
+    // tab's page (engines.rs). Made here, before the loop: nothing in the
+    // loop allocates for it.
+    let mut engines = engines::EngineProbes::new();
+    out.show(gui::ToUi::Engines(engines.shared()));
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
+        let period_span = Span::start();
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
@@ -1940,6 +1949,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
             }
         }
+        let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
         // The transport runs first, so the arp can follow this period's
@@ -1948,6 +1958,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         // The arp follows this period's transport (None while stopped: it runs on its own).
         app.set_clock(time.arp_clock());
         app.process(PERIOD as u32, &mut events);
+        engines.stop(engines::TIME, time_span);
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
@@ -2036,17 +2047,24 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         player.render_dry(&mut left, &mut right);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
+        engines.add(engines::SAMPLER, t_synth - t_render);
         synth.render(i * PERIOD as u64, app.settings.bpm, &mut left, &mut right);
-        synth_time.add(t_synth.elapsed());
+        let synth_took = t_synth.elapsed();
+        synth_time.add(synth_took);
+        engines.add(engines::SYNTH, synth_took);
+        let t_mix = Span::start();
         let p = sampler::master_out(&mut left, &mut right, 10f32.powf(level_db / 20.0));
         // What the looper records from the pads: before the click.
         looper.take_pads(&left, &right);
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
+        engines.stop(engines::MIX, t_mix);
         // The loop (and the input, with Monitor on) goes on top too.
         let t_loop = Instant::now();
         let (loop_peak, line_note) = looper.period(time.block(), &mut left, &mut right);
-        loop_time.add(t_loop.elapsed());
+        let loop_took = t_loop.elapsed();
+        loop_time.add(loop_took);
+        engines.add(engines::LOOPER, loop_took);
         let p = p.max(loop_peak);
         if let Some(note) = line_note {
             out.note(&note);
@@ -2076,6 +2094,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             frames[2 * f + 1] = float_to_s32(right[f]);
         }
         let xruns = play.xruns;
+        engines.stop(engines::PERIOD, period_span);
         play.write(&frames, i)?;
         if !pending.is_empty() {
             let written = Instant::now();
@@ -2122,6 +2141,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
             out.note(&format!("status: {}; {}", looper.describe(), loop_time.describe()));
+            out.note(&format!("status: {}", engines::log_line(&engines.lifetime())));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -2142,6 +2162,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 },
             }));
             window_peak = 0.0;
+            engines.publish();
             if app.view() != app::View::Looper {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
@@ -2181,6 +2202,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         out.say(&line);
     }
     out.say(&synth_status(&synth, &synth_time));
+    out.say(&engines::log_line(&engines.lifetime()));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }

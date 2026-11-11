@@ -257,6 +257,9 @@ pub enum ToUi {
     ClipsWheel { delta: i32, scroll: bool },
     /// The Map controls page (debug mode).
     Map(Box<MapView>),
+    /// The audio loop's CPU by engine numbers, sent once at the start; the
+    /// page reads them while it shows.
+    Engines(Arc<crate::engines::EngineShared>),
     /// What the Looper tab shows: the looper, the line input's meter.
     Looper(Box<LooperView>),
     /// The loop's waveform (no frames: the loop was cleared).
@@ -340,6 +343,8 @@ pub struct Player {
     pub time: TimeState,
     /// The Debug tab's Performance and Map controls pages.
     debug: DebugPages,
+    /// The audio loop's CPU by engine numbers (None until the loop starts).
+    engines: Option<Arc<crate::engines::EngineShared>>,
     /// The Looper tab, and what it shows.
     looper_page: LooperPage,
     pub looper: LooperView,
@@ -403,7 +408,7 @@ impl Player {
                              console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
                              synth: None, arp_panel, workspace, arp, qlink_focus: None, arp_chip: None,
                              fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default(), debug,
-                             looper_page, looper: LooperView::default() };
+                             engines: None, looper_page, looper: LooperView::default() };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
@@ -540,6 +545,10 @@ impl Player {
                                         Dev page   ·   MENU: options   ·   {stop}"),
                 View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
                                        the log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
+                View::Engines => format!("Each stage of the audio loop, every 0.25 s; a cpu by engine line goes to the \
+                                          log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
+                View::Procs => format!("Every process on the MPC, read from /proc once a second while this page \
+                                        shows   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
                               STOP: stop listening   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Console if self.settings.debug_mode => "The system log, as it comes   ·   MENU: pause or clear   ·   \
@@ -705,6 +714,7 @@ impl Player {
                 self.debug.set_audio(&mut self.ui, t.audio);
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
+            ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
                 self.looper = *v;
                 if self.view == View::Looper {
@@ -995,7 +1005,7 @@ impl Player {
             View::Looper => LOOPER_PAGE.to_string(),
             // Without the developer tools the Console (SHIFT + STOP) has no strip.
             View::Console if !self.settings.debug_mode => "Console".to_string(),
-            View::Debug | View::Perf | View::Map | View::Console => {
+            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);
                 DebugPages::page(v).unwrap_or("Debug").to_string()
             }
@@ -1053,6 +1063,24 @@ impl Player {
     /// Performance page and the `perf:` lines).
     pub fn debug_mode(&self) -> bool {
         self.settings.debug_mode
+    }
+
+    /// The page showing now.
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// The CPU by engine page shows: read the audio loop's latest numbers.
+    pub fn refresh_engines(&mut self) {
+        if let Some(shared) = self.engines.as_ref() {
+            let snap = crate::engines::read(shared);
+            DebugPages::set_engines(&mut self.ui, &snap);
+        }
+    }
+
+    /// One /proc sample for the Processes page.
+    pub fn set_procs(&mut self, v: &mpfree_prof::procs::ProcView) {
+        DebugPages::set_procs(&mut self.ui, v);
     }
 
     /// Process and system numbers, from the screen thread's sampler.
@@ -1248,6 +1276,10 @@ const TOUCH_STATUS_EVERY: Duration = Duration::from_secs(30);
 /// numbers go to the log.
 const PERF_EVERY: Duration = Duration::from_secs(2);
 const PERF_LINE_EVERY: Duration = Duration::from_secs(30);
+/// The Processes page reads /proc this often while it shows.
+const PROCS_EVERY: Duration = Duration::from_secs(1);
+/// The CPU by engine page reads the audio loop's numbers this often.
+const ENGINES_EVERY: Duration = Duration::from_millis(250);
 
 // ---------------------------------------------------------------- the screen thread
 
@@ -1286,6 +1318,11 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
         // Debug mode: /proc and /sys every 2 s, and a perf: line every 30 s.
         let mut perf = crate::perf::Sampler::new();
         let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
+        // The Processes page: /proc once a second, only while it shows (a
+        // fresh table each time the page opens, so CPU starts again).
+        let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
+        // The CPU by engine page: the audio loop's numbers every 250 ms.
+        let mut engines_at: Option<Instant> = None;
         let mut quit = false;
         while !quit {
             match rx.recv_timeout(Duration::from_millis(4)) {
@@ -1360,6 +1397,25 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
                     println!("{}", v.line());
                 }
                 player.set_proc(v);
+            }
+            if player.debug_mode() && player.view() == View::Procs {
+                let due = procs.as_ref().is_none_or(|(_, at)| at.elapsed() >= PROCS_EVERY);
+                if due {
+                    let (table, at) = procs.get_or_insert_with(|| (mpfree_prof::procs::ProcTable::new(), Instant::now()));
+                    *at = Instant::now();
+                    let v = table.sample();
+                    player.set_procs(&v);
+                }
+            } else {
+                procs = None;
+            }
+            if player.debug_mode() && player.view() == View::Engines {
+                if engines_at.is_none_or(|t| t.elapsed() >= ENGINES_EVERY) {
+                    engines_at = Some(Instant::now());
+                    player.refresh_engines();
+                }
+            } else {
+                engines_at = None;
             }
             let since = last_frame.elapsed();
             if since < Duration::from_millis(33) && !quit {
@@ -1758,6 +1814,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         load: Some("0.61 0.48 0.30".into()), temps: vec![("soc-thermal".into(), 47.8)], mhz: vec![1608, 1608, 1608, 1608],
     });
     out.push(("debug-perf", perf));
+    // Debug mode: CPU by engine, from made-up probe numbers shaped like
+    // round 6's (synth worst near 20 %, sampler near 24 %).
+    let mut eng = sample_player(fonts());
+    eng.apply(ToUi::Settings(Settings { debug_mode: true, ..Settings::default() }));
+    let mut probes = crate::engines::EngineProbes::new();
+    for k in 0..2_000u64 {
+        let spike = |every: u64, us: u64, base: u64| Duration::from_micros(if k % every == 0 { us } else { base + k % 7 });
+        let (s, y, l, t, m) = (spike(500, 690, 30), spike(400, 570, 55), spike(1000, 40, 6), spike(900, 25, 4),
+                               spike(800, 18, 3));
+        for (i, d) in [(crate::engines::SAMPLER, s), (crate::engines::SYNTH, y), (crate::engines::LOOPER, l),
+                       (crate::engines::TIME, t), (crate::engines::MIX, m),
+                       (crate::engines::PERIOD, s + y + l + t + m + Duration::from_micros(20))] {
+            probes.add(i, d);
+        }
+        if k == 1_000 {
+            probes.publish();
+        }
+    }
+    probes.publish();
+    eng.apply(ToUi::Engines(probes.shared()));
+    eng.apply(ToUi::Show(View::Engines));
+    eng.refresh_engines();
+    out.push(("debug-engines", eng));
+    // Debug mode: Processes, from a made-up /proc sample.
+    let mut pr = sample_player(fonts());
+    pr.apply(ToUi::Settings(Settings { debug_mode: true, ..Settings::default() }));
+    pr.apply(ToUi::Show(View::Procs));
+    let row = |pid: u32, name: &str, cpu: f64, mb: u64, threads: u64, policy: &str| mpfree_prof::procs::ProcRow {
+        pid, name: name.into(), state: 'S', cpu_pct: cpu, rss_kb: mb * 1024, threads, policy: policy.into(), nice: 0 };
+    pr.set_procs(&mpfree_prof::procs::ProcView {
+        over_s: 1.0,
+        rows: vec![row(812, "mpfree-hello", 31.5, 60, 6, "FIFO 70"), row(160, "kworker/u8:2", 2.0, 0, 1, "normal"),
+                   row(98, "irq/45-ff0c0000", 1.0, 0, 1, "FIFO 50"), row(1, "systemd", 0.0, 9, 1, "normal"),
+                   row(230, "systemd-journal", 0.0, 12, 1, "normal"), row(402, "dbus-daemon", 0.0, 3, 1, "normal"),
+                   row(415, "sshd", 0.0, 6, 1, "normal")],
+        total_cpu_pct: Some(9.1),
+        core_cpu_pct: vec![32.0, 2.5, 1.0, 1.0],
+    });
+    out.push(("debug-procs", pr));
     // Prefs > System info, with fixed rows (the host's own would differ).
     let mut system = sample_player(fonts());
     system.apply(ToUi::Show(View::System));

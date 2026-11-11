@@ -26,3 +26,5 @@ mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
+# Profiling (block timing, /proc process table). Not its counting-alloc feature.
+mpfree-prof = { path = "../mpfree-prof" }

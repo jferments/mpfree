@@ -73,6 +73,12 @@ pub enum View {
     Pattern,
     /// Debug mode: process, thread and audio numbers (on the Debug tab).
     Perf,
+    /// Debug mode: CPU by engine, each audio stage against its budget (on
+    /// the Debug tab; `engines.rs`).
+    Engines,
+    /// Debug mode: every process on the MPC, CPU and memory (on the Debug
+    /// tab; read from /proc only while the page shows).
+    Procs,
     /// Debug mode: the control mapper (on the Debug tab).
     Map,
     /// Prefs > System info: the program's version, the system and the
@@ -110,7 +116,7 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 4] = [View::Debug, View::Perf, View::Map, View::Console];
+pub const DEBUG_PAGES: [View; 6] = [View::Debug, View::Perf, View::Engines, View::Procs, View::Map, View::Console];
 
 impl View {
     /// The tab a page belongs to (the Arp panel to Play, the debug pages to
@@ -118,7 +124,7 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Map | View::Console => Some(View::Debug),
+            View::Perf | View::Engines | View::Procs | View::Map | View::Console => Some(View::Debug),
             View::Options | View::Guide | View::Prefs | View::System => None,
             v => Some(v),
         }
@@ -144,6 +150,8 @@ impl View {
             View::Arp => "Arp",
             View::Pattern => "Pattern",
             View::Perf => "Performance",
+            View::Engines => "CPU by engine",
+            View::Procs => "Processes",
             View::Map => "Map controls",
             View::System => "System info",
         }
@@ -843,7 +851,7 @@ impl App {
             } else if self.view == View::Map && !shift {
                 // + listens for the selected control, - skips it.
                 fx.extend(if d > 0 { self.map_listen() } else { self.map_skip() });
-            } else if matches!(self.view, View::Debug | View::Perf | View::Map | View::Console) {
+            } else if matches!(self.view, View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console) {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
@@ -932,7 +940,7 @@ impl App {
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
-            View::Debug | View::Perf | View::Map | View::Console if self.shift => self.debug_step(delta.signum()),
+            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console if self.shift => self.debug_step(delta.signum()),
             View::Map => {
                 self.mapper.move_by(delta);
                 vec![Effect::Map(self.mapper.view())]
@@ -958,7 +966,7 @@ impl App {
     fn show(&mut self, v: View) -> Vec<Effect> {
         if self.view != v
             && matches!(self.view, View::Play | View::Clips | View::Synth | View::Looper | View::Debug | View::Console
-                                   | View::Arp | View::Perf | View::Map)
+                                   | View::Arp | View::Perf | View::Engines | View::Procs | View::Map)
         {
             self.back = self.view;
         }
@@ -1055,7 +1063,7 @@ impl App {
             return Vec::new();
         }
         self.settings.debug_mode = on;
-        if !on && matches!(self.back, View::Debug | View::Perf | View::Map | View::Console) {
+        if !on && matches!(self.back, View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console) {
             self.back = View::Play;
         }
         vec![Effect::Note(format!("developer tools: {}", if on { "on" } else { "off" }))]
@@ -1224,7 +1232,7 @@ impl App {
                                Item::SystemInfo, Item::TouchLab],
             (_, View::Looper) => &[Item::LoopSource, Item::LineInput, Item::LoopMonitor, Item::LoopBars, Item::LoopLatency,
                                    Item::LoopLevel],
-            (_, View::Debug | View::Perf | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
+            (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -1361,7 +1369,7 @@ impl App {
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
-            (_, b @ (View::Perf | View::Map | View::Console)) => format!("{} options", b.name()),
+            (_, b @ (View::Perf | View::Engines | View::Procs | View::Map | View::Console)) => format!("{} options", b.name()),
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
         };
         let (name, _) = self.item_text(items[selected]);
@@ -1848,9 +1856,23 @@ mod tests {
         app.wheel(1);
         assert_eq!(app.view(), View::Perf);
         app.wheel(1);
+        assert_eq!(app.view(), View::Engines);
+        app.wheel(1);
+        assert_eq!(app.view(), View::Procs);
+        app.wheel(1);
         assert_eq!(app.view(), View::Map);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(app.debug_page(1), vec![Effect::Show(View::Perf)]);
+        assert_eq!(app.debug_page(3), vec![Effect::Show(View::Procs)]);
+        assert_eq!(View::Engines.tab_view(), Some(View::Debug));
+        assert_eq!(View::Procs.tab_view(), Some(View::Debug));
+        // Their options menus are titled after the page.
+        app.debug_page(2);
+        match app.button(MENU, true, 0.0).into_iter().find_map(|e| if let Effect::Menu(m) = e { Some(m) } else { None }) {
+            Some(m) => assert_eq!(m.title, "CPU by engine options"),
+            None => panic!("MENU opens the options"),
+        }
+        app.button(MENU, false, 0.0);
     }
 
     /// The looper records the pads until the line input is turned on, and
