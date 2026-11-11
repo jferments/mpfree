@@ -404,3 +404,44 @@ fn an_idle_arp_that_skips_its_periods_plays_the_same_when_woken() {
         assert_eq!(got, want, "rolling {rolling}");
     }
 }
+
+/// `finish_with` says which notes an arp played (the pads through it, or a
+/// through track's clip) and which the player passed on as recorded.
+#[test]
+fn finish_with_marks_what_the_arps_played() {
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let view = view();
+    let mut player = Player::new();
+    let mut block = Block::new();
+    let mut seen: Vec<(u16, u8, bool)> = Vec::new();
+    while t.frame() < 11_025 {
+        t.process(128, &mut block);
+        if block.start_frame == 0 {
+            // A live hit on track 3, through its (Direct) arp.
+            arps.pad(
+                3,
+                5,
+                Event::NoteOn {
+                    note: 7,
+                    velocity: 80,
+                },
+            );
+        }
+        player.process(&view, &block, &mut arps.through_sink());
+        arps.finish_with(&block, |o, arp| {
+            if let Event::NoteOn { note, .. } = o.event {
+                seen.push((o.track, note, arp));
+            }
+        });
+    }
+    // The keys' clip through its arp, the kick as recorded, the pad live.
+    assert!(seen.contains(&(KEYS as u16, 60, true)));
+    assert!(seen.contains(&(KEYS as u16, 64, true)));
+    assert!(seen.contains(&(DRUMS as u16, 36, false)));
+    assert!(seen.contains(&(3, 7, true)));
+    assert_eq!(seen.iter().filter(|s| !s.2).count(), 1, "{seen:?}");
+}

@@ -33,16 +33,16 @@ pub mod mapper;
 pub mod saved;
 mod synth_pads;
 
-pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
+pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
 use crate::looping::{LoopAction, LoopSource};
-use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
+use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
-use mpfree_play::TrackArps;
 use mpfree_looper::Command as LoopCommand;
+use mpfree_play::TrackArps;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
 
@@ -656,6 +656,9 @@ pub struct App {
     pub arps: TrackArps,
     /// The armed track: the one the pads and the arp screens play.
     track: usize,
+    /// Each track's arp panel state while another track is armed
+    /// ([`App::set_track`] swaps it in and out).
+    track_ui: [arp::TrackUi; mpfree_seq::MAX_TRACKS],
     /// The `play` step: STOP ends it. The app: STOP stops the sounds.
     timed: bool,
     shift: bool,
@@ -783,6 +786,7 @@ impl App {
             map: ButtonMap::measured(),
             arps,
             track: 0,
+            track_ui: [arp::TrackUi::default(); mpfree_seq::MAX_TRACKS],
             timed,
             shift: false,
             repeat_held: false,
@@ -830,7 +834,11 @@ impl App {
             save_dirty: false,
             saved: Default::default(),
         };
-        app.eng_mut().set_pattern(pattern);
+        // Every track's arp starts on the first pattern, as the panel does.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            app.arps.engine_at_mut(t).set_pattern(pattern);
+            app.track_ui[t].pattern = pattern;
+        }
         app.update_engine();
         app
     }
@@ -881,11 +889,13 @@ impl App {
     // ------------------------------------------------------------ pads
 
     /// The armed track's arp engine: the one the pads play.
-    pub fn eng(&self) -> &Engine {
+    #[cfg(test)]
+    pub fn eng(&self) -> &mpfree_arp::Engine {
         self.arps.engine_at(self.track)
     }
 
-    pub fn eng_mut(&mut self) -> &mut Engine {
+    #[cfg(test)]
+    pub fn eng_mut(&mut self) -> &mut mpfree_arp::Engine {
         self.arps.engine_at_mut(self.track)
     }
 
@@ -899,6 +909,30 @@ impl App {
         self.record_press(slot as u8, velocity)
     }
 
+    /// What a pad press gives the clip recorder "as pressed" (a track whose
+    /// clips play through its arp records the pads before the arp): the
+    /// pad, at the velocity it plays at. None while the pads only write
+    /// pattern steps (Free time).
+    pub fn pressed_event(
+        &self,
+        slot: usize,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() || slot >= 16 {
+            return None;
+        }
+        let note = slot as u8;
+        Some(if down {
+            mpfree_play::Event::NoteOn {
+                note,
+                velocity: self.live_map().velocity(velocity.max(1)),
+            }
+        } else {
+            mpfree_play::Event::NoteOff { note }
+        })
+    }
+
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
         if !self.free_time_recording() {
             self.release_pad(slot);
@@ -908,7 +942,9 @@ impl App {
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
         if self.pad_layout.is_none() {
-            self.arps.engine_at_mut(self.track).pressure(slot as u8, value);
+            self.arps
+                .engine_at_mut(self.track)
+                .pressure(slot as u8, value);
             return;
         }
         // Every note of a chord pad gets the pad's pressure.
@@ -931,10 +967,16 @@ impl App {
     /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
         match &self.pad_layout {
-            None => self.arps.engine_at(self.track).active().contains(slot as u8),
-            Some(l) => l
-                .get(slot)
-                .is_some_and(|p| p.notes().iter().any(|&n| self.arps.engine_at(self.track).active().contains(n))),
+            None => self
+                .arps
+                .engine_at(self.track)
+                .active()
+                .contains(slot as u8),
+            Some(l) => l.get(slot).is_some_and(|p| {
+                p.notes()
+                    .iter()
+                    .any(|&n| self.arps.engine_at(self.track).active().contains(n))
+            }),
         }
     }
 
@@ -962,7 +1004,13 @@ impl App {
         if self.arps.engine_at(self.track).latch() != latch {
             self.arps.engine_at_mut(self.track).set_latch(latch);
         }
-        self.arps.engine_at_mut(self.track).set_tempo(self.settings.bpm);
+        self.arps
+            .engine_at_mut(self.track)
+            .set_own_swing(!self.swing_from_transport);
+        // Every track's arp free-runs at the app's tempo while stopped.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            self.arps.engine_at_mut(t).set_tempo(self.settings.bpm);
+        }
         self.arp_dirty = true;
     }
 
@@ -2278,10 +2326,7 @@ mod tests {
         app.pad_down(2, 100);
         app.pad_up(0);
         for &n in &three {
-            assert!(
-                app.eng().active().contains(n),
-                "{n} is still held by pad 3"
-            );
+            assert!(app.eng().active().contains(n), "{n} is still held by pad 3");
         }
         assert!(!app.eng().active().contains(48), "C was only pad 1's");
         assert!(app.active(2) && !app.active(1));
@@ -2404,6 +2449,49 @@ mod tests {
         assert!(!app.repeating());
         let _ = ons(&mut app, 128);
         assert!(ons(&mut app, 20_000).is_empty());
+    }
+
+    /// One arp per track: arming another track gives the panel that
+    /// track's arp, and a latched arp on the old track keeps running.
+    #[test]
+    fn another_track_gets_its_own_arp_and_a_latched_one_keeps_running() {
+        let mut app = ready();
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, REPEAT);
+        app.button(button::SHIFT, false, 0.0);
+        app.pad_down(4, 90);
+        app.pad_up(4);
+        assert!(app.repeating() && app.active(4));
+        let fx = app.set_track(2);
+        assert!(fx.contains(&Effect::Note(format!(
+            "arp: track 3 ({})",
+            mode_label(app.arp_mode)
+        ))));
+        assert_eq!(app.track(), 2);
+        // Track 3's panel: not latched, nothing held.
+        assert!(!app.repeating() && !app.active(4));
+        assert!(ons(&mut app, 11_100).is_empty(), "track 3's arp is quiet");
+        // Track 1's arp still holds and plays its latched pad.
+        let old = app.arps.engine_at(0);
+        assert!(old.latch() != LatchMode::Off && old.active().contains(4));
+        let mut ev = Events::new();
+        let mut n = 0;
+        for _ in 0..100 {
+            app.arps.engine_at_mut(0).process(111, &mut ev);
+            n += ev
+                .as_slice()
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::On { .. }))
+                .count();
+        }
+        assert_eq!(n, 3, "still repeating");
+        // Back on track 1: its panel and latch again; STOP twice lets go.
+        app.set_track(0);
+        assert!(app.repeating() && app.active(4));
+        press(&mut app, button::STOP);
+        press(&mut app, button::STOP);
+        assert!(!app.repeating());
+        assert!(app.set_track(0).is_empty(), "same track: nothing to do");
     }
 
     #[test]
