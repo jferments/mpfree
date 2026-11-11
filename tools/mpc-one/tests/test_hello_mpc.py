@@ -33,7 +33,7 @@ HELLO_SRC = os.path.join(REPO, "rust", "mpfree-hello", "src")
 UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
 # Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
 LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"),
-              os.path.join(REPO, "rust", "mpfree-prof", "src"))
+              os.path.join(REPO, "rust", "mpfree-prof", "src"), os.path.join(REPO, "rust", "mpfree-store", "src"))
 # mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
 # crate's counting-alloc feature, which mpfree-hello does not enable (mpfree-bench does), so it never
 # reaches the pad player and is left out of the scan.
@@ -727,7 +727,12 @@ class StaticTests(unittest.TestCase):
         # file given with --save-patterns, and the .part removed if that fails. Only with that option, which
         # the test boot's start-app.sh never passes (checked below).
         reviewed = {("mpfree-hello/main.rs", "fs::rename(&part, path)"),
-                    ("mpfree-hello/main.rs", "let _ = fs::remove_file(&part);")}
+                    ("mpfree-hello/main.rs", "let _ = fs::remove_file(&part);"),
+                    # mpfree-store's save (storage-spec.md): NAME.part beside the file, synced, renamed over it,
+                    # and a .part left by a cut-off save removed first. Only under the folder given with --data.
+                    ("mpfree-store/lib.rs", "match fs::remove_file(&part) {"),
+                    ("mpfree-store/lib.rs", "fs::rename(&part, &path)?;"),
+                    ("mpfree-store/lib.rs", "let _ = fs::remove_file(&part);")}
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -760,10 +765,20 @@ class StaticTests(unittest.TestCase):
             "Direction::Output => opts.write(true),",
             # the arp's patterns file, only with --save-patterns FILE (never on the test boot, see above)
             "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;",
+            # mpfree-store's NAME.part, made new (never through a link) under the --data folder
+            "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&part)?;",
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
-        self.assertEqual(files, {"mpfree-hello/main.rs", "mpfree-hello/alsa.rs", "mpfree-ui/fb.rs"}, files)
+        self.assertEqual(files, {"mpfree-hello/main.rs", "mpfree-hello/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs"},
+                         files)
+        # Folders are made only by the store, and only start-app.sh names the folder it is given.
+        for name, code in self.program_sources():
+            if name != "mpfree-store/lib.rs":
+                self.assertNotIn("DirBuilder", code, name)
+            for line in code.splitlines():
+                if not line.lstrip().startswith("//"):
+                    self.assertNotIn("/run/mpfree-data", line, name)
 
     def test_the_only_program_it_starts_is_a_read_only_journalctl(self):
         code = "".join(c for _, c in self.program_sources())

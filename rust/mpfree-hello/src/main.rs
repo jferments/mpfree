@@ -27,14 +27,17 @@
 //!                      (Poly) as the kit list's last entry, its pages on the
 //!                      Synth tab with Q-Links 1-4 on the marked knobs; STOP
 //!                      ends it
-//!   app [--gain-db G] [--kits FILE] [--keep-screen]
+//!   app [--gain-db G] [--kits FILE] [--keep-screen] [--data DIR]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
 //!                      player; STOP silences, SHIFT + STOP shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
-//!                      startup screen's last frame behind the loading card
+//!                      startup screen's last frame behind the loading card;
+//!                      --data DIR keeps settings and found buttons there
+//!                      (mpfree-store; the test stick's partition 4, which
+//!                      start-app.sh mounts at /run/mpfree-data)
 //!   click --seconds N [--gain-db G]
 //!                      plays a 120 BPM click on the ACVA card (stereo S32_LE,
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
@@ -54,8 +57,9 @@
 //! copies it into its report). It reads the screen back once with
 //! --keep-screen, and `app` runs `journalctl -f` (read-only) for its console
 //! page. With --preview on the workstation it writes only new PNG files. It
-//! never touches storage, the eMMC is hidden from this kernel anyway, and
-//! nothing it does survives a power-cycle.
+//! never touches the MPC's storage (the eMMC is hidden from this kernel
+//! anyway). Only with `app --data DIR` does anything survive a power-cycle:
+//! settings and found buttons, saved through mpfree-store under DIR alone.
 
 #![deny(unsafe_code)] // the few C calls (and a test-only counting allocator) live in sys.rs, the only module allowed unsafe code
 
@@ -127,6 +131,8 @@ struct Options {
     patterns: Option<PathBuf>,
     /// Save in the pattern workspace also writes `patterns`.
     save_patterns: bool,
+    /// Where settings and found buttons are kept (`app` only; mpfree-store).
+    data: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -145,6 +151,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         keep_screen: false,
         patterns: None,
         save_patterns: false,
+        data: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -170,6 +177,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--keep-screen" => o.keep_screen = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
             "--save-patterns" => o.save_patterns = true,
+            "--data" => o.data = Some(PathBuf::from(value()?)),
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -193,6 +201,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.patterns.is_some() && o.command != "app" {
         return Err("--patterns goes with app".to_string());
+    }
+    if o.data.is_some() && o.command != "app" {
+        return Err("--data goes with app".to_string());
     }
     if o.save_patterns && o.patterns.is_none() {
         return Err("--save-patterns needs --patterns FILE (the file it writes)".to_string());
@@ -1594,6 +1605,29 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
+    // Saved settings and found buttons (--data: the stick's partition 4), read
+    // now, before the sound starts with the saved audio buffer. The store
+    // saves on its own thread and reports each save as a line.
+    let store = match &o.data {
+        Some(dir) => {
+            let sink = out.sink.clone();
+            mpfree_store::Store::at(dir, move |line| match &sink {
+                Some(s) => {
+                    let _ = s.try_send(gui::ToUi::Line(line));
+                }
+                None => println!("{line}"),
+            })
+        }
+        None => mpfree_store::Store::none(),
+    };
+    for line in app.restore(&store.settings(app::saved::APP), &store.settings(app::saved::MAP)) {
+        out.say(&line);
+    }
+    out.say(&match (&o.data, store.saves()) {
+        (None, _) => "saving: off (no --data); settings and found buttons reset at every start".to_string(),
+        (Some(d), true) => format!("saving: settings and found buttons are kept in {}", d.display()),
+        (Some(d), false) => format!("saving: off; {} cannot be used (see the storage line above)", d.display()),
+    });
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
     // The looper follows the transport; the line input stays closed until
@@ -2163,6 +2197,14 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             }));
             window_peak = 0.0;
             engines.publish();
+            // Prefs or found buttons changed: the store's thread writes them.
+            for (owner, settings) in app.take_saves() {
+                if store.saves() {
+                    if let Err(e) = store.save_settings(owner, &settings) {
+                        out.note(&format!("not saved: {owner}: {e}"));
+                    }
+                }
+            }
             if app.view() != app::View::Looper {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
@@ -2202,6 +2244,13 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         out.say(&line);
     }
     out.say(&synth_status(&synth, &synth_time));
+    // Whatever is still queued is written before the session ends.
+    for (owner, settings) in app.take_saves() {
+        if store.saves() {
+            let _ = store.save_settings(owner, &settings);
+        }
+    }
+    store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");

@@ -30,6 +30,7 @@
 
 mod arp;
 pub mod mapper;
+pub mod saved;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
@@ -604,6 +605,10 @@ pub struct App {
     swallowed: [bool; 128],
     /// The Looper tab's Mute.
     loop_muted: bool,
+    /// Prefs or a button changed since the last look (`saved.rs`), and
+    /// the text last handed to the store for "app" and "map".
+    save_dirty: bool,
+    saved: [String; 2],
 }
 
 impl App {
@@ -622,7 +627,8 @@ impl App {
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
-                            mapper: mapper::Mapper::default(), swallowed: [false; 128], loop_muted: false };
+                            mapper: mapper::Mapper::default(), swallowed: [false; 128], loop_muted: false,
+                            save_dirty: false, saved: Default::default() };
         app.engine.set_pattern(pattern);
         app.update_engine();
         app
@@ -1088,6 +1094,7 @@ impl App {
     fn map_input(&mut self, code: Code) -> Vec<Effect> {
         let mut fx = Vec::new();
         if let Some((line, learned)) = self.mapper.input(code) {
+            self.save_dirty = true;
             fx.push(Effect::Note(line));
             if let Some(l) = learned {
                 fx.extend(self.learn(l));
@@ -1099,6 +1106,7 @@ impl App {
 
     fn learn(&mut self, l: mapper::Learned) -> Vec<Effect> {
         self.map.learn(l.job, l.code);
+        self.save_dirty = true;
         let mut fx = Vec::new();
         if l.job == mapper::Job::NoteRepeat {
             fx.extend(self.repeat_light());
@@ -1147,6 +1155,7 @@ impl App {
 
     fn map_skip(&mut self) -> Vec<Effect> {
         let line = self.mapper.skip();
+        self.save_dirty = true;
         vec![Effect::Note(line), Effect::Map(self.mapper.view())]
     }
 
@@ -1411,6 +1420,7 @@ impl App {
         self.selected = i;
         let d = delta.signum();
         let mut fx = Vec::new();
+        self.save_dirty = true;
         fn cycle<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
             let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
             all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
@@ -1568,6 +1578,7 @@ impl App {
         }
         // Asked again from Prefs: what was pressed replaces what was known.
         self.map.set(step, note);
+        self.save_dirty = true;
         self.guide_note = format!("{} is button {note}.", step.short());
         let mut fx = vec![Effect::Note(format!("button guide: {} is button {note}", step.short()))];
         fx.extend(self.next_guide_step());
