@@ -715,6 +715,9 @@ pub struct Engine {
     /// Silenced by [`Engine::hush`]: the held and latched notes stay, but
     /// no steps play until [`Engine::resume`] or the next press.
     hushed: bool,
+    /// The arp's own swing even while the transport plays with swing
+    /// (Options > Swing from: Arp). [`Engine::set_own_swing`].
+    own_swing: bool,
 }
 
 impl Engine {
@@ -728,6 +731,7 @@ impl Engine {
             now: 0,
             running: false,
             hushed: false,
+            own_swing: false,
             next_step: 0.0,
             step: 0,
             arp_counter: 0,
@@ -817,6 +821,7 @@ impl Engine {
             anchor_tick: clock.anchor_tick,
             swing: clock
                 .swing
+                .filter(|_| !self.own_swing)
                 .map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
             bar_ticks: clock.bar_ticks.max(1),
         });
@@ -930,6 +935,13 @@ impl Engine {
             self.now += u64::from(frames);
             self.sync = None;
         }
+    }
+
+    /// True: the arp's own swing (`Settings::swing`) always, even while the
+    /// transport plays with swing. False (the default): the transport's
+    /// swing while it plays with some. Takes effect at the next sync.
+    pub fn set_own_swing(&mut self, own: bool) {
+        self.own_swing = own;
     }
 
     /// Silenced by [`Engine::hush`] and not resumed yet.
