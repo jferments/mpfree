@@ -269,6 +269,13 @@ impl Synth {
         switched
     }
 
+    /// Every pad's notes now, for the arp ([`crate::app::App::set_pad_layout`]):
+    /// with it the arp's events carry MIDI notes, played with
+    /// [`Synth::note_on_note`].
+    pub fn pad_layout(&self) -> [Pad; PADS] {
+        self.pads
+    }
+
     /// The notes pad `pad` plays now (a chord's root last); none past
     /// the 16 pads or outside MIDI's notes.
     pub fn notes(&self, pad: usize) -> &[u8] {

@@ -148,9 +148,8 @@ impl App {
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
-    /// The pads take bank `bank`'s layout (0 = A to 7 = H). For the PAD
-    /// BANK buttons while the synth has the pads (round 8, layout owner).
-    #[allow(dead_code)]
+    /// The pads take bank `bank`'s layout (0 = A to 7 = H): the PAD BANK
+    /// buttons while the synth has the pads (Jay, 09:55Z).
     pub fn synth_bank(&mut self, bank: usize) -> Vec<Effect> {
         let bank = bank % BANKS;
         if bank == self.synth_pads.bank {
