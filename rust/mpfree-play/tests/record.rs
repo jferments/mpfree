@@ -2,9 +2,10 @@
 //! track's clip at their exact ticks, with their lengths; punch out, loop
 //! jumps and stop end held notes; a recorded note never plays again right
 //! after it was heard; replace recording erases the old notes for one
-//! pass; and the notes are the same for any period size.
+//! pass; a take undoes and redoes as a whole; and the notes are the same
+//! for any period size.
 
-use mpfree_play::{Erased, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken};
+use mpfree_play::{Erased, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, Takes};
 use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::transport::MAX_PERIOD;
@@ -49,11 +50,13 @@ struct Run {
     erased: Vec<Erased>,
     played: Vec<Out>,
     project: Project,
+    takes: Takes,
 }
 
 /// Play the session in periods from `next`. After each period the control
-/// thread removes the erased notes from their clips, adds the recorded
-/// ones and compiles a new view.
+/// thread removes the erased notes from their clips and adds the recorded
+/// ones (through [`Takes`], which remembers them for undo), and compiles a
+/// new view.
 fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut t = Transport::new(44_100, 120.0).unwrap();
     for &(f, c) in &s.commands {
@@ -72,6 +75,7 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut log = Log::default();
     let mut taken = vec![];
     let mut erased = vec![];
+    let mut takes = Takes::default();
     let mut live = s.live.iter().peekable();
     while t.frame() < s.frames {
         let n = next().min((s.frames - t.frame()) as u32);
@@ -88,11 +92,11 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
         rec.process(&view, &block);
         if !rec.taken().is_empty() || !player.erased().is_empty() {
             for e in player.erased() {
-                assert!(project.tracks[e.track].slots[e.slot].as_mut().unwrap().remove_note(&e.note));
+                assert!(takes.erase(&mut project, e), "an erased note is in its clip");
                 erased.push(*e);
             }
             for k in rec.taken() {
-                project.tracks[k.track].slots[k.slot].as_mut().unwrap().add_note(k.note).unwrap();
+                takes.add(&mut project, k).unwrap();
                 taken.push(*k);
             }
             view = compile(&project);
@@ -100,7 +104,7 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     }
     assert_eq!(rec.dropped(), 0);
     assert_eq!(player.stats().dropped, 0);
-    Run { taken, erased, played: log.0, project }
+    Run { taken, erased, played: log.0, project, takes }
 }
 
 fn session(clip: Clip, origin: i64) -> Session {
@@ -329,6 +333,78 @@ fn a_muted_armed_track_is_still_replaced() {
     let r = run(&s, || 128);
     assert_eq!(r.erased.len(), 4);
     assert!(clip_notes(&r).is_empty() && r.played.is_empty());
+}
+
+#[test]
+fn a_take_undoes_and_redoes_as_a_whole() {
+    // The loop-jump session: take 1 erases bar 1 and records note 9, take 2
+    // erases note 9.
+    let mut c = Clip::new("two bars", 7680);
+    c.notes = (0..8).map(|i| Note { tick: i * 960, len: 100, note: 20 + i as u8, velocity: 100 }).collect();
+    let original = c.notes.clone();
+    let mut s = session(c, 0);
+    let bar = 88_200;
+    s.commands = vec![
+        (0, Command::SetLoop(Some((0, 3840)))),
+        (0, Command::Record),
+        (at(bar, 1500.0), Command::Record),
+        (at(2 * bar, 500.0), Command::Record),
+    ];
+    s.live = vec![(at(bar, 1200.0), on(9)), (at(bar, 1300.0), off(9))];
+    s.frames = 3 * bar;
+    let mut r = run(&s, || 333);
+    let shape: Vec<(u32, usize, usize)> = r.takes.done().iter().map(|t| (t.number, t.added.len(), t.erased.len())).collect();
+    assert_eq!(shape, vec![(1, 1, 4), (2, 0, 1)]);
+    let last = vec![(3840, 24), (4800, 25), (5760, 26), (6720, 27)];
+    assert_eq!(clip_notes(&r), last);
+
+    let with_9 = [vec![(1200, 9)], last.clone()].concat();
+    assert_eq!(r.takes.undo(&mut r.project), Some(2));
+    assert_eq!(clip_notes(&r), with_9, "note 9 is back");
+    assert_eq!(r.takes.undo(&mut r.project), Some(1));
+    let mut notes = r.project.tracks[0].slots[3].as_ref().unwrap().notes.clone();
+    notes.sort_by_key(|n| n.tick);
+    assert_eq!(notes, original, "the clip is as it was before recording, lengths and velocities too");
+    assert_eq!(r.takes.undo(&mut r.project), None);
+    assert_eq!(r.takes.redo(&mut r.project), Some(1));
+    assert_eq!(clip_notes(&r), with_9);
+    assert_eq!(r.takes.redo(&mut r.project), Some(2));
+    assert_eq!(clip_notes(&r), last);
+    assert_eq!(r.takes.redo(&mut r.project), None);
+}
+
+#[test]
+fn a_late_note_joins_its_own_take() {
+    // Note 1 is held at the punch out at 1905 and quantise moves it to
+    // 1920, so it waits for the playhead and arrives after take 2 has
+    // begun at 1910 and erased the old note at 1920. It still belongs to
+    // take 1, and undoing take 2 leaves it.
+    let mut c = Clip::new("bar", 3840);
+    c.quantise = Quantise::new(960, 100);
+    c.notes = vec![Note { tick: 0, len: 100, note: 30, velocity: 100 }, Note { tick: 1920, len: 100, note: 31, velocity: 100 }];
+    let mut s = session(c, 0);
+    s.commands = vec![(0, Command::Record), (at(0, 1905.0), Command::Record), (at(0, 1910.0), Command::Record)];
+    s.live = vec![(at(0, 1900.0), on(1)), (at(0, 2000.0), off(1)), (at(0, 2500.0), on(2)), (at(0, 2600.0), off(2))];
+    s.frames = at(0, 3500.0);
+    let reference = run(&s, || 128);
+    // Each take: its number, the notes it added, the notes it erased.
+    type Shape = Vec<(u32, Vec<(i64, u8)>, Vec<(i64, u8)>)>;
+    let takes = |r: &Run| -> Shape {
+        let keys = |v: &[(usize, usize, Note)]| v.iter().map(|(_, _, n)| (n.tick, n.note)).collect();
+        r.takes.done().iter().map(|t| (t.number, keys(&t.added), keys(&t.erased))).collect()
+    };
+    assert_eq!(takes(&reference), vec![(1, vec![(1900, 1)], vec![(0, 30)]), (2, vec![(2500, 2)], vec![(1920, 31)])]);
+    // The erase at 1920 comes before note 1 is handed over at 1922.
+    let order: Vec<u32> = reference.erased.iter().map(|e| e.take).chain(reference.taken.iter().map(|k| k.take)).collect();
+    assert_eq!(order, vec![1, 2, 1, 2]);
+    for n in [1u32, 7, 4096] {
+        assert_eq!(takes(&run(&s, || n)), takes(&reference), "period size {n}");
+    }
+    let mut r = reference;
+    assert_eq!(r.takes.undo(&mut r.project), Some(2));
+    assert_eq!(clip_notes(&r), vec![(1900, 1), (1920, 31)]);
+    assert_eq!(r.takes.undo(&mut r.project), Some(1));
+    assert_eq!(clip_notes(&r), vec![(0, 30), (1920, 31)]);
 }
 
 fn xorshift(seed: u64) -> impl FnMut() -> u64 {
