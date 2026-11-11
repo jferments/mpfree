@@ -21,7 +21,7 @@
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
-use mpfree_looper::{Command, Looper, Phase, Stats, Status};
+use mpfree_looper::{Command, LayerCommand, LayerInfo, Looper, Phase, Stats, Status, MAX_LAYERS};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::sync::Arc;
@@ -73,6 +73,9 @@ pub enum LoopAction {
     Monitor(bool),
     /// Open or close the capture device (a state change on the MPC).
     LineInput(bool),
+    /// A layer's control (its speaker): the layer by its id
+    /// ([`LayerInfo::id`]), which stays the same through undo and redo.
+    Layer(u8, LayerCommand),
 }
 
 /// What the line input counted since it was opened.
@@ -457,6 +460,9 @@ pub struct LooperView {
     /// beat at the tempo it was recorded at, for the bar lines.
     pub beats_per_bar: u32,
     pub frames_per_beat: f64,
+    /// The loop's layers in play order (the first pass first) with their
+    /// mix, for the speakers; None past the last.
+    pub layers: [Option<LayerInfo>; MAX_LAYERS],
 }
 
 impl Default for LooperView {
@@ -472,6 +478,7 @@ impl Default for LooperView {
             meter_db: [f32::NEG_INFINITY; 2],
             beats_per_bar: 4,
             frames_per_beat: 0.0,
+            layers: [None; MAX_LAYERS],
         }
     }
 }
@@ -582,6 +589,27 @@ impl LoopHost {
             return format!("looper: {what}: NOT done, the command queue is full");
         }
         format!("looper: {what}")
+    }
+
+    /// A layer's control, by the layer's id, with its `looper:` line for
+    /// the log ("layer 3 muted").
+    pub fn layer_command(&mut self, id: u8, c: LayerCommand) -> String {
+        let k = (0..MAX_LAYERS)
+            .find(|&k| self.looper.layer_info(k).is_some_and(|l| l.id == id))
+            .map_or_else(|| format!("layer id {id}"), |k| format!("layer {}", k + 1));
+        let what = match c {
+            LayerCommand::Mute(true) => "muted".to_string(),
+            LayerCommand::Mute(false) => "unmuted".to_string(),
+            LayerCommand::Solo(true) => "soloed".to_string(),
+            LayerCommand::Solo(false) => "solo off".to_string(),
+            LayerCommand::Level(v) => format!("level {:.1} dB", 20.0 * v.max(1e-6).log10()),
+            LayerCommand::Pan(p) => format!("pan {p:+.2}"),
+            LayerCommand::Delete => "deleted (Undo brings it back)".to_string(),
+        };
+        if !self.looper.layer_command(id, c) {
+            return format!("looper: {k} {what}: NOT done, the command queue is full");
+        }
+        format!("looper: {k} {what}")
     }
 
     /// The pad player's sound for this period (the drums and the synth as
@@ -738,6 +766,10 @@ impl LoopHost {
         } else {
             44_100.0 * 60.0 / bpm.max(1.0)
         };
+        let mut layers = [None; MAX_LAYERS];
+        for (k, l) in layers.iter_mut().enumerate() {
+            *l = self.looper.layer_info(k);
+        }
         LooperView {
             status: s,
             stats: self.looper.stats(),
@@ -748,6 +780,7 @@ impl LoopHost {
             meter_db: [db(m[0]), db(m[1])],
             beats_per_bar: self.beats_per_bar,
             frames_per_beat,
+            layers,
         }
     }
 
@@ -936,6 +969,51 @@ mod tests {
             h.describe()
         );
         assert!(h.describe().contains("line input off, monitor on"));
+    }
+
+    /// A layer's speaker: the mute goes to the layer by its id, the log
+    /// names it, and the next view shows it muted and not heard.
+    #[test]
+    fn a_layer_mutes_by_its_id_and_the_view_shows_it() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        assert!(h.command(Command::Overdub).contains("layer 2"));
+        run(&mut h, 4);
+        h.command(Command::Overdub);
+        run(&mut h, 2);
+        let v = h.view(120.0);
+        assert_eq!(v.status.layers, 2);
+        let second = v.layers[1].expect("two layers");
+        assert!(v.layers[2].is_none());
+        assert!(!second.muted && second.audible);
+        assert_eq!(
+            h.layer_command(second.id, LayerCommand::Mute(true)),
+            "looper: layer 2 muted"
+        );
+        run(&mut h, 1);
+        let v = h.view(120.0);
+        let (first, second) = (v.layers[0].unwrap(), v.layers[1].unwrap());
+        assert!(second.muted && !second.audible);
+        assert!(!first.muted && first.audible);
+        assert_eq!(
+            h.layer_command(second.id, LayerCommand::Mute(false)),
+            "looper: layer 2 unmuted"
+        );
+        run(&mut h, 1);
+        assert!(h.view(120.0).layers[1].unwrap().audible);
     }
 
     /// The pads' sound for song frame `n`: different every frame.

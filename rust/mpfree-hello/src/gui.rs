@@ -405,6 +405,12 @@ pub enum FromUi {
     MapButton(usize),
     /// A button on the Looper tab (`looper_page::BUTTONS`).
     Looper(usize),
+    /// A loop layer's control (its speaker on the Play page's loop), by the
+    /// layer's id.
+    LoopLayer {
+        id: u8,
+        command: mpfree_looper::LayerCommand,
+    },
     /// What a touch on the mixer panel (or a Q-Link while it is open)
     /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
     /// on the audio thread.
@@ -2141,6 +2147,13 @@ impl Player {
                 self.refresh_play();
                 Some(FromUi::PlayFx(fx))
             }
+            (crate::looper_page::LOOP_STRIP, EventKind::Toggle(k)) => {
+                let l = self.looper_page.layer_info(k)?;
+                Some(FromUi::LoopLayer {
+                    id: l.id,
+                    command: mpfree_looper::LayerCommand::Mute(!l.muted),
+                })
+            }
             (crate::looper_page::LOOP_STRIP, EventKind::Tab(i)) => {
                 match crate::looper_page::STRIP_TO_BUTTON.get(i).copied()? {
                     Some(b) => Some(FromUi::Looper(b)),
@@ -2958,6 +2971,15 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         bpm: 92.0,
     }));
     sample_loop(&mut p);
+    if v == PlayView::Loop {
+        // Mockup H: the chop layer muted from its speaker.
+        let mut view = recorded_loop().1.clone();
+        if let Some(l) = view.layers[2].as_mut() {
+            l.muted = true;
+            l.audible = false;
+        }
+        p.apply(ToUi::Looper(Box::new(view)));
+    }
     let at = match v {
         PlayView::All => 1,
         PlayView::Beats => 6,
@@ -3908,6 +3930,63 @@ mod tests {
             "Clips · slots 2–7 of 16"
         );
         assert!(p.take_actions().is_empty());
+    }
+
+    /// Mockup H: a speaker beside each loop layer's name; a tap mutes
+    /// that layer (by its id, for the looper), and the next view shows it
+    /// crossed out and grey.
+    #[test]
+    fn a_loop_layers_speaker_mutes_it() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        let mut p = sample_player(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card);
+        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        sample_loop(&mut p);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let strip = p.ui.rect_of(LOOP_STRIP).unwrap();
+        // The third layer's speaker: the strip's heading, right of the
+        // names; find it by tapping along the heading.
+        let y = strip.y + 19;
+        let mut hits = Vec::new();
+        for x in (strip.x..strip.x + strip.w / 2).step_by(4) {
+            if let Some(FromUi::LoopLayer { id, command }) = tap(&mut p, (x, y)) {
+                if hits.last().map(|h: &(i32, u8, _)| h.1) != Some(id) {
+                    hits.push((x, id, command));
+                }
+            }
+        }
+        let (_, view) = recorded_loop();
+        let ids: Vec<u8> = (0..3).map(|k| view.layers[k].unwrap().id).collect();
+        assert_eq!(
+            hits.iter().map(|h| (h.1, h.2)).collect::<Vec<_>>(),
+            ids.iter()
+                .map(|&id| (id, mpfree_looper::LayerCommand::Mute(true)))
+                .collect::<Vec<_>>(),
+            "one speaker per layer, in order"
+        );
+        // The looper says the third is muted: the strip crosses it out.
+        let mut v = view.clone();
+        if let Some(l) = v.layers[2].as_mut() {
+            l.muted = true;
+            l.audible = false;
+        }
+        p.apply(ToUi::Looper(Box::new(v)));
+        let st = p.ui.get::<LoopStrip>(LOOP_STRIP).unwrap();
+        assert_eq!(st.muted, [false, false, true]);
+        assert_eq!(st.heard, [true, true, false]);
+        // Its speaker now asks to unmute.
+        assert_eq!(
+            tap(&mut p, (hits[2].0, y)),
+            Some(FromUi::LoopLayer {
+                id: ids[2],
+                command: mpfree_looper::LayerCommand::Mute(false),
+            })
+        );
     }
 
     #[test]
