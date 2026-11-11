@@ -8,14 +8,17 @@ use mpfree_fx::{
     MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, StripId,
 };
 use mpfree_grain::GrainNode;
-use mpfree_looper::{Command as LooperCommand, Looper, Phase as LooperPhase, MAX_LOOPS};
+use mpfree_looper::{
+    Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
+};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_prof::alloc;
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
-use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
+use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
@@ -908,7 +911,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
-    v.push(measured(|| looper_loops(rate, 60)));
+    v.push(measured(|| looper_loops(rate, 60, false)));
+    v.push(measured(|| looper_loops(rate, 60, true)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1188,7 +1192,9 @@ impl Sink for TimeSink {
 /// The time engine as a busy song uses it: the transport looping 4 bars at
 /// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
 /// one at 3:2 speed, one swung and quantised), the first through the arp
-/// at 32nds over 2 octaves.
+/// at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// instrument's (a different one each step, so each ends at the next
+/// note) and one of the strip's.
 fn time(rate: u32, tracks: usize) -> Case {
     let ppq = i64::from(PPQ);
     let mut song = Song::new();
@@ -1205,6 +1211,24 @@ fn time(rate: u32, tracks: usize) -> Case {
                     velocity: 100,
                     chance: 100,
                 })
+            })
+            .collect();
+        c.locks = (0..32i64)
+            .flat_map(|k| {
+                [
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Inst, (k % 4) as u16),
+                        0.5,
+                    ),
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        RelAddr::new(OnTrack::Strip, 0),
+                        (k % 8) as f32 / 8.0,
+                    ),
+                ]
             })
             .collect();
         if i == 1 {
@@ -1243,7 +1267,7 @@ fn time(rate: u32, tracks: usize) -> Case {
     Case {
         name: format!("Time: transport, {tracks} clips, arp"),
         module: "time",
-        what: "16ths with chords on every track, looping 4 bars",
+        what: "16ths with chords and 2 locks a step on every track, looping 4 bars",
         block: Box::new(move |_, l, r| {
             t.process(l.len() as u32, &mut block);
             player.process(&view, &block, &mut sink);
@@ -1346,8 +1370,10 @@ impl LoopRig {
 }
 
 /// [`MAX_LOOPS`] one-bar loops (2 s at 120 BPM) of three layers each,
-/// all playing.
-fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
+/// all playing. `edited`: every other loop is edited, a quarter reversed
+/// and a quarter trimmed to three beats and nudged (two pieces and a cut
+/// with its seam fade, the dearest to play).
+fn loops_rig(rate: u32, seconds: u32, edited: bool) -> LoopRig {
     let mut g = LoopRig {
         t: Transport::new(rate, 120.0).expect("transport"),
         lp: Looper::new(rate, seconds),
@@ -1381,19 +1407,39 @@ fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
         g.lp.command(LooperCommand::Overdub);
         g.run(0.25);
     }
+    if edited {
+        let beat = i64::from(PPQ);
+        for k in (1..MAX_LOOPS).step_by(2) {
+            g.lp.select_loop(k);
+            if k % 4 == 1 {
+                g.lp.command(LooperCommand::Edit(LooperEdit::Reverse));
+            } else {
+                g.lp.command(LooperCommand::Edit(LooperEdit::Trim {
+                    from: 0,
+                    to: 3 * beat,
+                }));
+                g.run(0.05);
+                g.lp.command(LooperCommand::Edit(LooperEdit::Nudge(1)));
+            }
+            g.run(0.05);
+        }
+    }
     g
 }
 
 /// Every loop playing at once ([`loops_rig`]), recorded before the timing
 /// starts. Timed: an overdub every other 2 s, on one loop after another,
 /// so the block mixes every layer of every loop and writes one more.
-fn looper_loops(rate: u32, seconds: u32) -> Case {
-    let mut g = loops_rig(rate, seconds);
+fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
+    let mut g = loops_rig(rate, seconds, edited);
     let every = 2 * u64::from(rate);
     let mut next = g.frame + every;
     let mut turn = 0usize;
     Case {
-        name: format!("Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing"),
+        name: format!(
+            "Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing{}",
+            if edited { ", half edited" } else { "" }
+        ),
         module: "looper",
         what: "every loop playing, with an overdub on one loop after another",
         block: Box::new(move |_, l, r| {
@@ -1721,7 +1767,7 @@ mod tests {
 
     #[test]
     fn the_loops_case_has_every_loop_playing() {
-        let mut c = measured(|| looper_loops(44_100, 60));
+        let mut c = measured(|| looper_loops(44_100, 60, true));
         let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
         let mut energy = 0.0f64;
         for b in 0..1_500u64 {
@@ -1733,12 +1779,14 @@ mod tests {
                 .sum::<f64>();
         }
         assert!(energy > 1_000.0, "{energy}");
-        let g = loops_rig(44_100, 60);
+        let g = loops_rig(44_100, 60, true);
         for k in 0..MAX_LOOPS {
             let s = g.lp.loop_status(k).unwrap();
+            // Trimmed to three beats of the bar.
+            let frames = if k % 4 == 3 { 66_150 } else { 88_200 };
             assert_eq!(
                 (s.phase, s.layers, s.frames),
-                (LooperPhase::Playing, 3, 88_200),
+                (LooperPhase::Playing, 3, frames),
                 "loop {k}"
             );
         }

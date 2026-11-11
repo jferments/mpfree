@@ -17,7 +17,8 @@
 
 use std::ops::Range;
 
-use mpfree_seq::{DestId, ModelError, Note, Project, Quantise, Speed, MAX_TRACKS, SLOTS};
+use mpfree_param::RelAddr;
+use mpfree_seq::{DestId, Lock, ModelError, Note, Project, Quantise, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{ceil_to, Swing, Tick};
 
 /// A clip playing on a track: which slot, and the song tick where its first
@@ -114,6 +115,17 @@ pub(crate) struct NoteView {
     pub src: Note,
 }
 
+/// A parameter lock ready to play: where it sits in the clip (after
+/// quantise, like its note).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LockView {
+    pub local: f64,
+    pub addr: RelAddr,
+    pub value: f32,
+    /// As the clip stores it, to name it when replace recording erases it.
+    pub src: Lock,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
     pub slot: usize,
@@ -128,6 +140,8 @@ pub(crate) struct ClipView {
     pub swing: Option<Swing>,
     /// Sorted by `local`.
     pub notes: Vec<NoteView>,
+    /// Sorted by `local`; equal ones in the order the clip holds them.
+    pub locks: Vec<LockView>,
 }
 
 /// A waiting cue, compiled: the clip it starts (its origin comes when it
@@ -231,6 +245,15 @@ impl PlayView {
             .sum()
     }
 
+    /// Parameter locks in the playing clips.
+    pub fn locks(&self) -> usize {
+        self.tracks
+            .iter()
+            .filter_map(|t| t.clip.as_ref())
+            .map(|c| c.locks.len())
+            .sum()
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {
@@ -274,6 +297,22 @@ fn clip_view(
         })
         .collect();
     notes.sort_by(|a, b| a.local.total_cmp(&b.local));
+    let mut locks: Vec<LockView> = clip
+        .locks
+        .iter()
+        .map(|l| {
+            let at = clip
+                .quantise
+                .map_or(l.tick as f64, |q| q.apply(l.tick as f64));
+            LockView {
+                local: at.rem_euclid(length),
+                addr: l.addr,
+                value: l.value,
+                src: *l,
+            }
+        })
+        .collect();
+    locks.sort_by(|a, b| a.local.total_cmp(&b.local));
     Ok(ClipView {
         slot,
         origin,
@@ -283,6 +322,7 @@ fn clip_view(
         song_len: clip.speed.to_song(length),
         swing: clip.swing.or(t.swing),
         notes,
+        locks,
     })
 }
 

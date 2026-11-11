@@ -72,10 +72,22 @@ Adding, taking off or copying a page is one edit, so one UNDO takes the page bac
 
 A note left out is counted in `Stats::skipped`. It does not cut the same note still sounding.
 
+## Parameter locks (`Lock`)
+
+The owner chose the Elektron way on 11 Nov (12:21Z; design https://claude.ai/artifact/9gEoqcU5D4K6B47u7a3wgR). A step can set any parameter of its track for that step: the instrument's, a sampler pad's own, the track strip's, or an insert effect's. Parameters are named with `mpfree-param`'s `RelAddr` (the mod thread's crate, #102), relative to the clip's track, so a clip copied to another track locks that track.
+
+- **The model.** `Clip.locks` holds `Lock { tick, sound, addr, value }`, at most 8192 a clip (`MAX_LOCKS`). `tick` is the tick of the step's note, so the lock moves with the note's nudge; a step with no note puts it on the step's line (a trigless lock). `sound` is the row it shows on: a pad or note number, or None for the whole step (a chord on a melodic track). `value` is in the parameter's own units and must be finite. `Clip::add_lock` and `remove_lock` are checked like notes.
+- **How long it holds.** A lock plays on its tick, before the note there starts, and holds until the track plays a note that has no lock on that parameter on its own tick. Then the parameter goes back to where it was. A sampler pad's parameter (`OnTrack::Pad`) only ends at that pad's next note; anything else ends at any note of the track. A trigless lock holds until the next note in the same way. On a poly synth a lock sets the whole instrument, as on an Elektron. See [playback.md](playback.md#parameter-locks).
+- **Editing.** `Grid::lock(clip, sound, i, addr, value)` returns an `Edit` that locks `addr` on step `i` of row `sound` (None for the whole step), in place of a lock of the same parameter there. It sits on the row's first note in the step (the chord's earliest note for the whole step), or on the line if the step is empty. `unlock` takes one parameter off and `clear_locks` all of a step's. `Grid::locks(clip, sound, i)` reads a step's locks, and `lock_row(clip, sound)` counts each step's locks for the dots on the step screen.
+- **Locks go with their steps.** Toggling a step off, entering a chord over it, nudging it, or adding, copying or taking off a page carries the step's locks along with its notes, in the same `Edit` (`erase_locks`, `add_locks`). A nudge moves them with the note.
+- **Undo.** Lock edits are takes like note edits. A Q-Link turned on a held step passes `lock_key(sound, i, addr)` as the join key, so the whole turn is one UNDO.
+- **Recording.** Knob moves while recording become locks on the step they belong to. See [playback.md](playback.md#knob-moves-become-locks).
+
 ## Tests
 
-- `mpfree-seq` `steps` unit tests (12): every tick has one step and comes back from it, for every size and odd clip lengths; a row shows the first note of a step and counts the rest; toggle on and off; changes and their limits, nudging a group of notes together; nudges reaching back over the clip's end on step 0; `Clip::apply` is all or nothing, length changes too; pages added (empty and copied, up to 64 steps and on), taken off and set to 13 steps, with an early note staying before the end; a short clip repeating to fill a copied page; a page copied over another; a held chord entered on a step, read back and nudged as one.
-- `mpfree-play` `takes` unit tests: step edits are takes; a turn of velocity joins one edit; an edit after an undo starts a new one; a recorded note never joins an edit; pages added and taken off undo and redo to the clip exactly as it was.
+- `mpfree-seq` `steps` unit tests (15), three of them for locks: a lock sits on its step's note (a chord's earliest) or on the line, and replaces the one there; locks go with their steps when they are toggled off, nudged, entered over or copied with a page; a lock out of range is refused. The others: every tick has one step and comes back from it, for every size and odd clip lengths; a row shows the first note of a step and counts the rest; toggle on and off; changes and their limits, nudging a group of notes together; nudges reaching back over the clip's end on step 0; `Clip::apply` is all or nothing, length changes too; pages added (empty and copied, up to 64 steps and on), taken off and set to 13 steps, with an early note staying before the end; a short clip repeating to fill a copied page; a page copied over another; a held chord entered on a step, read back and nudged as one.
+- `mpfree-play` `takes` unit tests: step edits are takes; a turn of velocity joins one edit; an edit after an undo starts a new one; a recorded note never joins an edit; pages added and taken off undo and redo to the clip exactly as it was; locks undo and redo with their steps.
+- `mpfree-play` `tests/locks.rs` (9) checks how locks play, and `tests/record.rs` how knob moves are recorded: see [playback.md](playback.md#tests).
 - `tests/play.rs`: a note at 50 % is left out on some passes and not others, differently on every pass and the same at every period size.
 - `tests/period_size.rs` and `tests/no_alloc.rs` include notes with chance below 100 %.
 
@@ -93,6 +105,6 @@ It prints the grid, checks where every note was heard on every pass, checks on a
 ## Next
 
 - The step screen, once Jay picks where it goes: pads or a lane per sound, 16 steps a page with page buttons, Q-Links for velocity, length, nudge and chance.
-- Parameter locks: a step sets a synth, sampler or FX parameter for that step. They need one way to name a parameter across those engines, so they start as a design to agree with Jay and those threads.
+- Parameter locks reach the sound once the mod thread's resolver (`mpfree-mod`, #102) takes the player's `Event::Lock` and `Event::Unlock`. The pad player ignores them until then. The step screen shows them as dots (`lock_row`) and edits a held step's locks on the Q-Links.
 - Trig conditions (every 2nd pass, first pass only) and ratchets. They add fields to the note, like chance.
 - Ties: a held key in step entry stretching a note over the next steps.
