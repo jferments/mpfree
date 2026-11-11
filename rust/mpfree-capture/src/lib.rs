@@ -412,6 +412,8 @@ impl Capture {
                         note: x.note,
                         velocity: x.velocity.max(1),
                         chance: 100,
+                        cond: mpfree_seq::Cond::Always,
+                        ratchet: 1,
                     };
                     open[n] = Some((played.len(), x.at));
                     played.push(Played {
@@ -611,6 +613,8 @@ pub fn keep(
             track,
             slot,
             origin,
+            // Its passes count from where it was played.
+            start: phrase.song_start.unwrap_or(origin),
         }),
     })
 }
