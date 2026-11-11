@@ -4,6 +4,7 @@
 use crate::canvas::Canvas;
 use crate::geom::Rect;
 use crate::layout;
+use crate::style::Styled;
 use crate::text::{Align, FontId, Fonts};
 use crate::theme::Theme;
 use crate::Color;
@@ -92,6 +93,14 @@ pub enum EventKind {
     /// A frame of a sound picked: a tap on a waveform, or on an overview
     /// (where the view should centre).
     Frame(u64),
+    /// A cell of a grid tapped (a step of a pattern: `row` is the lane's
+    /// sound, `col` the step).
+    Cell { row: usize, col: usize },
+    /// Something switched on or off by a tap (a speaker's mute), by index.
+    Toggle(usize),
+    /// A finger on a two-way pad: 0 to 1 left to right (`x`) and bottom to
+    /// top (`y`), `down` until it lifts.
+    Xy { x: f32, y: f32, down: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +140,8 @@ pub trait Widget: Any + Send {
 
 struct Page {
     name: String,
+    spec: String,
+    margin: bool,
     slots: Vec<(usize, Rect)>,
 }
 
@@ -143,10 +154,14 @@ pub struct Ui {
     current: usize,
     full: bool,
     fingers: Vec<(u64, usize)>,
+    /// Layouts from a layout file, by page name or variant key: they win
+    /// over the spec the app passes whenever that page is added again.
+    overrides: Vec<(String, String)>,
 }
 
 impl Ui {
-    pub fn new(theme: Theme, fonts: Fonts, width: i32, height: i32) -> Ui {
+    pub fn new(theme: Theme, mut fonts: Fonts, width: i32, height: i32) -> Ui {
+        fonts.set_roles(theme.face_body, theme.face_title);
         Ui {
             theme,
             fonts,
@@ -156,6 +171,7 @@ impl Ui {
             current: 0,
             full: true,
             fingers: Vec::new(),
+            overrides: Vec::new(),
         }
     }
 
@@ -172,21 +188,45 @@ impl Ui {
     }
 
     /// Add a page from a layout spec. Every slot must name a widget added already.
+    /// A layout file's spec for this page wins, if it has one that fits.
     pub fn add_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        let margin = self.theme.gap;
+        self.add_page_overridable(name, spec, true)
+    }
+
+    fn add_page_overridable(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
+        if let Some(o) = self.override_for(name).map(str::to_string) {
+            if self.add_page_with_margin(name, &o, margin).is_ok() {
+                return Ok(());
+            }
+        }
         self.add_page_with_margin(name, spec, margin)
+    }
+
+    fn override_for(&self, key: &str) -> Option<&str> {
+        self.overrides
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The layout for a page variant (a key with a dot, such as
+    /// `Arp.pattern`): the layout file's spec if it gave one, else `default`.
+    /// For widgets that re-add a page with different layouts as their mode
+    /// changes: `ui.add_page("Arp", &ui.layout_for("Arp.pattern", SPEC))`.
+    pub fn layout_for(&self, key: &str, default: &str) -> String {
+        self.override_for(key).unwrap_or(default).to_string()
     }
 
     /// Like `add_page`, but the page fills the screen to its edges (no outer
     /// margin), for a full-screen picture such as the loading page.
     pub fn add_full_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        self.add_page_with_margin(name, spec, 0)
+        self.add_page_overridable(name, spec, false)
     }
 
-    fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: i32) -> Result<(), String> {
+    fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
         let node = layout::parse(spec)?;
         let g = self.theme.gap;
-        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(margin);
+        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(if margin { g } else { 0 });
         let mut slots = Vec::new();
         for (slot, r) in layout::solve(&node, area, g) {
             let i = self
@@ -198,6 +238,8 @@ impl Ui {
         }
         let page = Page {
             name: name.to_string(),
+            spec: spec.to_string(),
+            margin,
             slots,
         };
         match self.pages.iter().position(|p| p.name == name) {
@@ -206,6 +248,74 @@ impl Ui {
         }
         self.full = true;
         Ok(())
+    }
+
+    /// Rearrange an existing page: a new layout spec over the same widgets.
+    /// On an error the page keeps its old layout.
+    pub fn set_layout(&mut self, page: &str, spec: &str) -> Result<(), String> {
+        let p = self
+            .pages
+            .iter()
+            .find(|p| p.name == page)
+            .ok_or_else(|| format!("no page called '{page}'"))?;
+        let margin = p.margin;
+        self.add_page_with_margin(page, spec, margin)
+    }
+
+    /// The layout spec a page was made from.
+    pub fn layout_of(&self, page: &str) -> Option<&str> {
+        self.pages
+            .iter()
+            .find(|p| p.name == page)
+            .map(|p| p.spec.as_str())
+    }
+
+    /// Rearrange pages from a layout file: one `Page name = spec` per line
+    /// (see [`layout::parse_file`]). A plain name rearranges that page now
+    /// and stays in force when the app adds the page again. A name with a dot
+    /// (`Arp.pattern`) is a variant that the app asks for by key
+    /// ([`Ui::layout_for`]); its widget names are checked when it is used.
+    /// Every page is checked before any changes, so a mistake leaves the
+    /// screen as it was.
+    pub fn apply_layouts(&mut self, text: &str) -> Result<(), String> {
+        let entries = layout::parse_file(text)?;
+        let before: Vec<(String, String)> = self
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.spec.clone()))
+            .collect();
+        for (page, spec) in &entries {
+            if page.contains('.') {
+                continue;
+            }
+            if let Err(e) = self.set_layout(page, spec) {
+                for (name, spec) in &before {
+                    let _ = self.set_layout(name, spec);
+                }
+                return Err(e);
+            }
+        }
+        for (key, spec) in entries {
+            self.overrides.retain(|(k, _)| *k != key);
+            self.overrides.push((key, spec));
+        }
+        Ok(())
+    }
+
+    /// Switch theme: colours, effects and font roles change at once, and
+    /// pages are laid out again with the new spacing. Redraws everything.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.fonts.set_roles(theme.face_body, theme.face_title);
+        self.theme = theme;
+        let pages: Vec<(String, String)> = self
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.spec.clone()))
+            .collect();
+        for (name, spec) in pages {
+            let _ = self.set_layout(&name, &spec);
+        }
+        self.full = true;
     }
 
     pub fn page(&self) -> &str {
@@ -237,6 +347,16 @@ impl Ui {
     /// Where `name` sits on the current page.
     pub fn rect_of(&self, name: &str) -> Option<Rect> {
         let page = self.pages.get(self.current)?;
+        page.slots
+            .iter()
+            .find(|(i, _)| self.widgets[*i].0 == name)
+            .map(|(_, r)| *r)
+    }
+
+    /// Where `name` sits on page `page`, shown or not (for a widget that
+    /// sizes what it shows to its rectangle before its page is up).
+    pub fn rect_on(&self, page: &str, name: &str) -> Option<Rect> {
+        let page = self.pages.iter().find(|p| p.name == page)?;
         page.slots
             .iter()
             .find(|(i, _)| self.widgets[*i].0 == name)
@@ -321,18 +441,15 @@ impl Ui {
         };
         let mut damage = Vec::new();
         let screen = Rect::new(0, 0, self.size.0, self.size.1);
+        let mut styled = Styled::new(canvas, &self.theme);
+        let canvas: &mut dyn Canvas = &mut styled;
         if self.full {
             canvas.set_clip(screen);
             canvas.fill_rect(screen, self.theme.bg);
             damage.push(screen);
         }
-        let Ui {
-            theme,
-            fonts,
-            widgets,
-            full,
-            ..
-        } = self;
+        let theme = &self.theme;
+        let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
         for &(wi, r) in &page.slots {
             let (_, w, dirty) = &mut widgets[wi];
             if !(*full || *dirty || w.animating()) {
@@ -415,6 +532,30 @@ mod tests {
         ui.add_page("one", "row(a, b)").unwrap();
         ui.add_page("two", "col(b)").unwrap();
         ui
+    }
+
+    #[test]
+    fn layout_files_survive_pages_being_added_again() {
+        let mut ui = ui();
+        ui.apply_layouts("one = row(b, a)\none.wide = row(a:150, b)\n")
+            .unwrap();
+        assert_eq!(ui.layout_of("one"), Some("row(b, a)"));
+        // The app re-adds the page with its own spec: the file still wins.
+        ui.add_page("one", "row(a, b)").unwrap();
+        assert_eq!(ui.layout_of("one"), Some("row(b, a)"));
+        // Variants are asked for by key.
+        let spec = ui.layout_for("one.wide", "row(a, b)");
+        ui.add_page("one", &spec).unwrap();
+        assert_eq!(
+            ui.layout_of("one"),
+            Some("row(b, a)"),
+            "a page's own override beats a variant"
+        );
+        assert_eq!(ui.layout_for("one.wide", "x"), "row(a:150, b)");
+        assert_eq!(ui.layout_for("one.narrow", "row(a, b)"), "row(a, b)");
+        // A bad file changes nothing.
+        assert!(ui.apply_layouts("two = col(nope)\n").is_err());
+        assert_eq!(ui.layout_of("two"), Some("col(b)"));
     }
 
     #[test]

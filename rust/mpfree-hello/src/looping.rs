@@ -8,8 +8,9 @@
 //!   arrives goes through a small FIFO; a period with too little input is
 //!   filled with silence and counted.
 //! - [`LoopHost`] runs the looper on the transport's block each period and
-//!   mixes the loop (and the input, when Monitor is on) into the output after
-//!   the master level, next to the metronome. It records from a
+//!   gives the loop to the mixer's Loop track and the line input to its
+//!   input strip, which is heard when Monitor is on (see `mixing.rs`). It
+//!   records from a
 //!   [`LoopSource`]: the pad player's own sound (the default, which opens
 //!   nothing) or the line input. It logs a `looper:` line for each press and
 //!   each change, and builds the loop's waveform for the Looper tab a slice
@@ -20,7 +21,7 @@
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
-use mpfree_looper::{Command, Looper, Phase, Stats, Status};
+use mpfree_looper::{Command, LayerCommand, LayerInfo, Looper, Phase, Stats, Status, MAX_LAYERS};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::sync::Arc;
@@ -72,6 +73,9 @@ pub enum LoopAction {
     Monitor(bool),
     /// Open or close the capture device (a state change on the MPC).
     LineInput(bool),
+    /// A layer's control (its speaker): the layer by its id
+    /// ([`LayerInfo::id`]), which stays the same through undo and redo.
+    Layer(u8, LayerCommand),
 }
 
 /// What the line input counted since it was opened.
@@ -291,11 +295,14 @@ impl LineIn {
 }
 
 /// The loop's waveform for the Looper tab: min, max and RMS of the playing
-/// layers, summed, in [`WAVE_COLUMNS`] columns per channel.
-#[derive(Clone, Debug, PartialEq)]
+/// layers, summed, in [`WAVE_COLUMNS`] columns per channel; and for the
+/// Play page's strip, each layer's peak (either side) per column.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoopWave {
     pub frames: u64,
     pub columns: Vec<[WaveColumn; 2]>,
+    /// `layers[k][col]`: layer k's peak in that column, 0 to 1.
+    pub layers: Vec<Vec<f32>>,
 }
 
 impl Peaks for LoopWave {
@@ -338,6 +345,9 @@ struct WaveBuilder {
     at: usize,
     frames: usize,
     acc: Vec<[(f32, f32, f32, u32); 2]>,
+    /// Each layer's peak per column (made at the start, so the audio
+    /// thread never allocates for it).
+    peaks: Vec<Vec<f32>>,
     building: bool,
 }
 
@@ -348,6 +358,7 @@ impl WaveBuilder {
             at: 0,
             frames: 0,
             acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
+            peaks: vec![vec![0.0; WAVE_COLUMNS]; mpfree_looper::MAX_LAYERS],
             building: false,
         }
     }
@@ -360,6 +371,9 @@ impl WaveBuilder {
         for c in self.acc.iter_mut() {
             *c = [(f32::MAX, f32::MIN, 0.0, 0); 2];
         }
+        for l in self.peaks.iter_mut() {
+            l.fill(0.0);
+        }
     }
 
     /// One slice; the finished wave when the last slice is done.
@@ -369,6 +383,16 @@ impl WaveBuilder {
         }
         let len = self.frames;
         let end = (self.at + WAVE_FRAMES_PER_PERIOD).min(len);
+        for k in 0..layers.min(self.peaks.len()) {
+            if let Some(l) = looper.layer(k) {
+                let peaks = &mut self.peaks[k];
+                for f in self.at..end {
+                    let p = l[2 * f].abs().max(l[2 * f + 1].abs());
+                    let col = f * WAVE_COLUMNS / len;
+                    peaks[col] = peaks[col].max(p);
+                }
+            }
+        }
         for f in self.at..end {
             let col = f * WAVE_COLUMNS / len;
             for ch in 0..2 {
@@ -408,9 +432,14 @@ impl WaveBuilder {
                 [col(c[0]), col(c[1])]
             })
             .collect();
+        let layers = self.peaks[..self.of.1.min(self.peaks.len())]
+            .iter()
+            .map(|l| l.iter().map(|p| p.min(1.0)).collect())
+            .collect();
         Some(LoopWave {
             frames: len as u64,
             columns,
+            layers,
         })
     }
 }
@@ -431,6 +460,9 @@ pub struct LooperView {
     /// beat at the tempo it was recorded at, for the bar lines.
     pub beats_per_bar: u32,
     pub frames_per_beat: f64,
+    /// The loop's layers in play order (the first pass first) with their
+    /// mix, for the speakers; None past the last.
+    pub layers: [Option<LayerInfo>; MAX_LAYERS],
 }
 
 impl Default for LooperView {
@@ -446,6 +478,7 @@ impl Default for LooperView {
             meter_db: [f32::NEG_INFINITY; 2],
             beats_per_bar: 4,
             frames_per_beat: 0.0,
+            layers: [None; MAX_LAYERS],
         }
     }
 }
@@ -463,7 +496,8 @@ pub struct LoopHost {
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
-    /// Periods where the loop or the input had to be kept within ±1.
+    /// Periods where the loop or the input had to be kept within ±1
+    /// (without the mixer: [`LoopHost::period`]).
     pub clipped: u64,
     wave: WaveBuilder,
     /// The recorded source's peaks since the last view.
@@ -557,24 +591,91 @@ impl LoopHost {
         format!("looper: {what}")
     }
 
-    /// The pad player's sound for this period, after the master level and
-    /// before the click: what the looper records from [`LoopSource::Pads`].
-    /// Call it before [`LoopHost::period`] each period.
+    /// A layer's control, by the layer's id, with its `looper:` line for
+    /// the log ("layer 3 muted").
+    pub fn layer_command(&mut self, id: u8, c: LayerCommand) -> String {
+        let k = (0..MAX_LAYERS)
+            .find(|&k| self.looper.layer_info(k).is_some_and(|l| l.id == id))
+            .map_or_else(|| format!("layer id {id}"), |k| format!("layer {}", k + 1));
+        let what = match c {
+            LayerCommand::Mute(true) => "muted".to_string(),
+            LayerCommand::Mute(false) => "unmuted".to_string(),
+            LayerCommand::Solo(true) => "soloed".to_string(),
+            LayerCommand::Solo(false) => "solo off".to_string(),
+            LayerCommand::Level(v) => format!("level {:.1} dB", 20.0 * v.max(1e-6).log10()),
+            LayerCommand::Pan(p) => format!("pan {p:+.2}"),
+            LayerCommand::Delete => "deleted (Undo brings it back)".to_string(),
+        };
+        if !self.looper.layer_command(id, c) {
+            return format!("looper: {k} {what}: NOT done, the command queue is full");
+        }
+        format!("looper: {k} {what}")
+    }
+
+    /// The pad player's sound for this period (the drums and the synth as
+    /// the engines make them, before the mixer): what the looper records
+    /// from [`LoopSource::Pads`]. Call it before [`LoopHost::run`] each
+    /// period.
     pub fn take_pads(&mut self, left: &[f32; PERIOD], right: &[f32; PERIOD]) {
         self.pads_l = *left;
         self.pads_r = *right;
     }
 
-    /// One period: read the line input, run the looper on the transport's
-    /// `block` with the source's sound, and add the loop (and the line
-    /// input, with Monitor on) to the output, kept within ±1. Returns the
-    /// output's peak, and a note for the log if the input had a problem.
+    /// One period for the mixer: read the line input, run the looper on the
+    /// transport's `block` with the source's sound, and write the loop's
+    /// sound into `left` and `right` (the Loop track). The line input of
+    /// the period is [`LoopHost::input`]: the mixer's input strip hears it,
+    /// following [`LoopHost::monitor`]. A note comes back if the input had
+    /// a problem.
+    pub fn run(
+        &mut self,
+        block: &Block,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Option<String> {
+        let note = self.record(block);
+        for f in 0..PERIOD {
+            left[f] = self.out[2 * f];
+            right[f] = self.out[2 * f + 1];
+        }
+        note
+    }
+
+    /// The line input of the last period (silence while it is closed).
+    pub fn input(&self) -> (&[f32; PERIOD], &[f32; PERIOD]) {
+        (&self.input_l, &self.input_r)
+    }
+
+    /// One period without the mixer (the screen's samples): as
+    /// [`LoopHost::run`], then the loop (and the line input, with Monitor
+    /// on) added to the output, kept within ±1. Returns the output's peak,
+    /// and a note for the log if the input had a problem.
     pub fn period(
         &mut self,
         block: &Block,
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, Option<String>) {
+        let note = self.record(block);
+        let mut peak = 0f32;
+        let mut over = false;
+        let mon = if self.monitor { 1.0 } else { 0.0 };
+        for f in 0..PERIOD {
+            let l = left[f] + self.out[2 * f] + mon * self.input_l[f];
+            let r = right[f] + self.out[2 * f + 1] + mon * self.input_r[f];
+            over |= l.abs() > 1.0 || r.abs() > 1.0;
+            left[f] = l.clamp(-1.0, 1.0);
+            right[f] = r.clamp(-1.0, 1.0);
+            peak = peak.max(left[f].abs()).max(right[f].abs());
+        }
+        if over {
+            self.clipped += 1;
+        }
+        (peak, note)
+    }
+
+    /// Reads the line input and runs the looper into `self.out`.
+    fn record(&mut self, block: &Block) -> Option<String> {
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
             LoopSource::Pads => (&self.pads_l, &self.pads_r),
@@ -595,21 +696,7 @@ impl LoopHost {
         }
         self.out.fill(0.0);
         self.looper.process(block, &self.input, &mut self.out);
-        let mut peak = 0f32;
-        let mut over = false;
-        let mon = if self.monitor { 1.0 } else { 0.0 };
-        for f in 0..PERIOD {
-            let l = left[f] + self.out[2 * f] + mon * self.input_l[f];
-            let r = right[f] + self.out[2 * f + 1] + mon * self.input_r[f];
-            over |= l.abs() > 1.0 || r.abs() > 1.0;
-            left[f] = l.clamp(-1.0, 1.0);
-            right[f] = r.clamp(-1.0, 1.0);
-            peak = peak.max(left[f].abs()).max(right[f].abs());
-        }
-        if over {
-            self.clipped += 1;
-        }
-        (peak, note)
+        note
     }
 
     /// Lines for the log when the looper's phase or layers changed since
@@ -679,6 +766,10 @@ impl LoopHost {
         } else {
             44_100.0 * 60.0 / bpm.max(1.0)
         };
+        let mut layers = [None; MAX_LAYERS];
+        for (k, l) in layers.iter_mut().enumerate() {
+            *l = self.looper.layer_info(k);
+        }
         LooperView {
             status: s,
             stats: self.looper.stats(),
@@ -689,6 +780,7 @@ impl LoopHost {
             meter_db: [db(m[0]), db(m[1])],
             beats_per_bar: self.beats_per_bar,
             frames_per_beat,
+            layers,
         }
     }
 
@@ -704,12 +796,7 @@ impl LoopHost {
             if s.frames == 0 {
                 let was_empty = self.wave.of.0 == 0;
                 self.wave.start(0, of);
-                return (!was_empty).then(|| {
-                    Arc::new(LoopWave {
-                        frames: 0,
-                        columns: Vec::new(),
-                    })
-                });
+                return (!was_empty).then(|| Arc::new(LoopWave::default()));
             }
             self.wave.start(s.frames, of);
         }
@@ -805,6 +892,7 @@ mod tests {
     #[test]
     fn the_wave_covers_the_loop_and_answers_any_zoom() {
         let w = LoopWave {
+            layers: Vec::new(),
             frames: 1000,
             columns: (0..10)
                 .map(|i| {
@@ -881,6 +969,51 @@ mod tests {
             h.describe()
         );
         assert!(h.describe().contains("line input off, monitor on"));
+    }
+
+    /// A layer's speaker: the mute goes to the layer by its id, the log
+    /// names it, and the next view shows it muted and not heard.
+    #[test]
+    fn a_layer_mutes_by_its_id_and_the_view_shows_it() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        assert!(h.command(Command::Overdub).contains("layer 2"));
+        run(&mut h, 4);
+        h.command(Command::Overdub);
+        run(&mut h, 2);
+        let v = h.view(120.0);
+        assert_eq!(v.status.layers, 2);
+        let second = v.layers[1].expect("two layers");
+        assert!(v.layers[2].is_none());
+        assert!(!second.muted && second.audible);
+        assert_eq!(
+            h.layer_command(second.id, LayerCommand::Mute(true)),
+            "looper: layer 2 muted"
+        );
+        run(&mut h, 1);
+        let v = h.view(120.0);
+        let (first, second) = (v.layers[0].unwrap(), v.layers[1].unwrap());
+        assert!(second.muted && !second.audible);
+        assert!(!first.muted && first.audible);
+        assert_eq!(
+            h.layer_command(second.id, LayerCommand::Mute(false)),
+            "looper: layer 2 unmuted"
+        );
+        run(&mut h, 1);
+        assert!(h.view(120.0).layers[1].unwrap().audible);
     }
 
     /// The pads' sound for song frame `n`: different every frame.

@@ -26,10 +26,13 @@
 
 pub mod canvas;
 pub mod color;
+pub mod draw;
 pub mod fb;
 pub mod geom;
 pub mod layout;
 pub mod png;
+pub mod qlink;
+pub mod style;
 pub mod text;
 pub mod theme;
 pub mod ui;
@@ -39,6 +42,7 @@ pub mod widgets;
 pub use canvas::{Canvas, Image, SoftCanvas};
 pub use color::Color;
 pub use geom::Rect;
+pub use style::Styled;
 pub use text::{Align, FontId, Fonts};
-pub use theme::{Theme, Tone};
+pub use theme::{Backdrop, Corners, Startup, Theme, Tone};
 pub use ui::{EventKind, PaintCx, Touch, Ui, UiEvent, Widget};
