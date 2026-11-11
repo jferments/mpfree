@@ -63,12 +63,15 @@ mod gui;
 mod kit;
 mod sampler;
 mod sys;
+mod time;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_screen_log::Rotation;
+use mpfree_time_ui::{TimeAction, TransportInfo};
+use mpfree_transport::Command;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Fonts, SoftCanvas, Tone};
 use std::fs::{self, File, OpenOptions};
@@ -1340,6 +1343,52 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
             time.describe(), c.steals, c.dropped_events, c.peak_grains, c.skipped_grains)
 }
 
+/// How often the screen hears the song position while it moves (the bar
+/// shows bar.beat.tick; state changes go at once).
+const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+
+/// The sequencer's notes on the sampler's pads, noting each hit so the
+/// screen's pads can flash.
+struct SeqPads<'a> {
+    player: &'a mut sampler::Player,
+    flashes: [u8; 16],
+    hits: u64,
+}
+
+impl time::Pads for SeqPads<'_> {
+    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+        let sounded = self.player.hit_at(pad, velocity, offset);
+        if sounded {
+            self.hits += 1;
+            if let Some(f) = self.flashes.get_mut(pad) {
+                *f = velocity.max(1);
+            }
+        }
+        sounded
+    }
+    fn release_at(&mut self, pad: usize, offset: u32) {
+        self.player.release_at(pad, offset);
+    }
+    fn stop_all(&mut self) {
+        self.player.stop_all();
+    }
+}
+
+/// A touch or a button for the time engine. The tempo belongs to the app
+/// (Note Repeat and the arp follow it too), so the Clips page's tempo goes
+/// there; the transport follows it each period. Returns the app's effects.
+fn time_action(out: &mut Out, time: &mut time::TimeHost, app: &mut app::App, a: TimeAction) -> Vec<app::Effect> {
+    if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
+        return app.set_tempo(bpm);
+    }
+    match time.act(a) {
+        Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
+        Ok(_) => {}
+        Err(e) => out.note(&format!("time: {e}")),
+    }
+    Vec::new()
+}
+
 fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
     // 1. Kits.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
@@ -1385,6 +1434,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
+    // The time engine (transport, clips, takes) runs in this loop too.
+    let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    out.show(gui::ToUi::Time(Box::new(time.state())));
+    let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
@@ -1463,6 +1516,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
                 gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
+                gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
             }
         }
         ports.show_pressure = app.settings.show_pressure;
@@ -1514,6 +1568,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         fx.extend(app.tick(t));
         let mut stop = false;
+        let mut later = Vec::new();
         for e in fx.drain(..) {
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
@@ -1546,8 +1601,13 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
                 app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
                 app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
+                app::Effect::ClipsWheel { delta, scroll } => out.show(gui::ToUi::ClipsWheel { delta, scroll }),
+                // What it gives back (the tempo's status line and note) is
+                // handled with the next period's effects.
+                app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
             }
         }
+        fx.append(&mut later);
         if let Some(p) = audio_change {
             totals.periods += play.periods;
             totals.xruns += play.xruns;
@@ -1567,6 +1627,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             lit = [false; 16];
             out.show(gui::ToUi::Kit(k));
         }
+        app.set_rolling(time.info().state.rolling());
+        time.follow_tempo(app.settings.bpm);
         app.process(PERIOD as u32, &mut events);
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
@@ -1577,6 +1639,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 // A Grains pad stops when let go; one-shot sounds ignore it.
                 mpfree_arp::EventKind::Off { note } => {
                     player.release_at(note as usize, ev.offset);
+                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
                     continue;
                 }
             };
@@ -1585,6 +1648,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 continue;
             }
             let v = app.velocity(velocity);
+            // Recorded into the armed track while the transport records.
+            time.pad(ev.offset, mpfree_play::Event::NoteOn { note: slot, velocity: v });
             if player.hit_at(pad, v, ev.offset) {
                 hits += 1;
             } else {
@@ -1598,6 +1663,25 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 window_repeats += 1;
                 window_pads[pad] = true;
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
+            }
+        }
+        // The clips play the kit's pads; the screen's pads flash with them.
+        let mut seq = SeqPads { player: &mut player, flashes: [0; 16], hits: 0 };
+        time.period(PERIOD as u32, &mut seq);
+        hits += seq.hits;
+        for (pad, &v) in seq.flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
+            out.show(gui::ToUi::PadFlash { pad, velocity: v });
+        }
+        if time.take_changed() {
+            out.show(gui::ToUi::Time(Box::new(time.state())));
+            (shown_transport, transport_shown_at) = (time.info(), Instant::now());
+        } else {
+            let now = time.info();
+            let moved = now.position != shown_transport.position;
+            let changed = TransportInfo { position: shown_transport.position, ..now } != shown_transport;
+            if changed || moved && transport_shown_at.elapsed() >= TRANSPORT_EVERY {
+                out.show(gui::ToUi::Transport(now));
+                (shown_transport, transport_shown_at) = (now, Instant::now());
             }
         }
         // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
@@ -1624,6 +1708,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         voices = voices.max(player.playing());
         let t_render = Instant::now();
         let p = player.render(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        // The metronome goes on top; it keeps the samples within ±1 itself.
+        let p = p.max(time.mix_click(&mut left, &mut right));
         render_time.add(t_render.elapsed());
         peak = peak.max(p);
         window_peak = window_peak.max(p);
@@ -1675,10 +1761,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             last_status = Instant::now();
             out.note(&format!("status: {hits} hits ({screen_hits} from the screen), {repeats} repeats, {} underruns \
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
-                               clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}",
+                               clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
                               20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
-                              sampler_status(&player, &render_time)));
+                              sampler_status(&player, &render_time), time.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -1712,6 +1798,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                       peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {}",
                      kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
     out.say(&sampler_status(&player, &render_time));
+    out.say(&time.describe());
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
