@@ -20,6 +20,7 @@ pub mod dsp;
 pub mod engine;
 pub mod model;
 pub mod record;
+pub mod warp;
 
 use std::fs::File;
 use std::io::Read;
