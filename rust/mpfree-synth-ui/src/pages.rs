@@ -80,10 +80,49 @@ const FM_OP_Q: [[u16; 4]; 6] = {
     q
 };
 
+use mpfree_synth::drum_params::{field as df, pad_id, LEVEL as DRUM_LEVEL, BASE_NOTE};
+
+/// The drum synth's Q-Links on pad `n`'s page: tune, decay, tone, snap.
+const fn drum_q(n: usize) -> [u16; 4] { [pad_id(n, df::TUNE), pad_id(n, df::DECAY), pad_id(n, df::TONE), pad_id(n, df::SNAP)] }
+const DRUM_Q: [[u16; 4]; 16] = {
+    let mut q = [[0u16; 4]; 16];
+    let mut n = 0;
+    while n < 16 {
+        q[n] = drum_q(n);
+        n += 1;
+    }
+    q
+};
+
+/// Drums: a page per pad (its 14 knobs), then the kit.
+const DRUMS: &[PlanPage] = &[
+    pg("Pad 1", &["Pad 1"], &DRUM_Q[0]), pg("Pad 2", &["Pad 2"], &DRUM_Q[1]), pg("Pad 3", &["Pad 3"], &DRUM_Q[2]), pg("Pad 4", &["Pad 4"], &DRUM_Q[3]),
+    pg("Pad 5", &["Pad 5"], &DRUM_Q[4]), pg("Pad 6", &["Pad 6"], &DRUM_Q[5]), pg("Pad 7", &["Pad 7"], &DRUM_Q[6]), pg("Pad 8", &["Pad 8"], &DRUM_Q[7]),
+    pg("Pad 9", &["Pad 9"], &DRUM_Q[8]), pg("Pad 10", &["Pad 10"], &DRUM_Q[9]), pg("Pad 11", &["Pad 11"], &DRUM_Q[10]), pg("Pad 12", &["Pad 12"], &DRUM_Q[11]),
+    pg("Pad 13", &["Pad 13"], &DRUM_Q[12]), pg("Pad 14", &["Pad 14"], &DRUM_Q[13]), pg("Pad 15", &["Pad 15"], &DRUM_Q[14]), pg("Pad 16", &["Pad 16"], &DRUM_Q[15]),
+    pg("Kit", &["Kit"], &[DRUM_LEVEL, BASE_NOTE]),
+];
+
+/// The page that holds pad `pad`'s knobs (0 to 15), so an app can follow
+/// the last pad hit.
+pub fn drum_page(pad: usize) -> usize { pad.min(15) }
+
+use mpfree_synth::pluck_params as kp;
+
+/// Pluck: the string (with the model, decay and release), the mallet, and
+/// the voice.
+const PLUCK: &[PlanPage] = &[
+    pg("String", &["Model", "String"], &[kp::DECAY, kp::BRIGHTNESS, kp::PICK, kp::POSITION]),
+    pg("Mallet", &["Mallet"], &[kp::HARDNESS, kp::STRIKE, kp::STRETCH, kp::HIGH_DAMP]),
+    pg("Voice", &["Voice", "Output"], &[kp::VEL_TONE, kp::BEND_RANGE, kp::LEVEL, kp::SPREAD]),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
         "mpfree.fm" => Some(FM),
+        "mpfree.drums" => Some(DRUMS),
+        "mpfree.pluck" => Some(PLUCK),
         _ => None,
     }
 }
@@ -268,6 +307,43 @@ mod tests {
                 assert!(l.len() <= 20, "{}: {l}", p.name);
             }
         }
+    }
+
+    #[test]
+    fn drums_get_a_page_per_pad_and_the_kit() {
+        use mpfree_node::Node;
+        let d = mpfree_synth::Drums::new(48_000);
+        let params = d.params();
+        let pages = plan(d.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        let mut want: Vec<String> = (1..=16).map(|n| format!("Pad {n}")).collect();
+        want.push("Kit".into());
+        assert_eq!(names, want);
+        every_param_once(&pages, params.len());
+        for (n, p) in pages[..16].iter().enumerate() {
+            assert_eq!(p.params.len(), 14);
+            let q: Vec<&str> = qlink_targets(p, params).iter().map(|&i| params[i].name).collect();
+            assert_eq!(q, ["Tune", "Decay", "Tone", "Snap"], "{}", p.name);
+            assert_eq!(drum_page(n), n);
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn pluck_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Pluck::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["String", "Mallet", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params).iter().map(|&i| params[i].name).collect();
+        assert_eq!(q, ["Decay", "Brightness", "Pick", "Position"]);
+        let q: Vec<&str> = qlink_targets(&pages[1], params).iter().map(|&i| params[i].name).collect();
+        assert_eq!(q, ["Hardness", "Strike", "Stretch", "High damp"]);
     }
 
     #[test]

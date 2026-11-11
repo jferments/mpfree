@@ -13,7 +13,8 @@
 //!   `--calibration` (a file `--calibrate` printed on the MPC) it adds an
 //!   estimate for the MPC and a verdict against the module's budget.
 //! - On the MPC (an ARM build) the numbers are the device's own, and the
-//!   verdicts use them directly.
+//!   verdicts follow `budget::judge`: an engine on its p99.9 block, the whole
+//!   period on its worst.
 //! - `--check-allocs` exits with status 2 if any engine allocated inside a
 //!   block (the counting allocator is installed in this program).
 //! - `--calibrate` times the reference kernels and prints a calibration file.
@@ -111,9 +112,7 @@ struct Row {
 
 /// A module's budget, as a share of the period; "period" is the whole
 /// audio thread's.
-fn budget_pct(module: &str) -> Option<f64> {
-    if module == "period" { Some(budget::AUDIO_THREAD_WORST_PCT) } else { budget::for_module(module).map(|b| b.worst_pct) }
-}
+fn budget_pct(module: &str) -> Option<f64> { budget::pct_for(module) }
 
 /// Megabytes (2^20 bytes), for the memory column.
 fn mb(bytes: i64) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
@@ -241,7 +240,7 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         println!("MPC estimate: this machine x {factor:.1} (kernels range {lo:.1} to {hi:.1}); \"voices\" uses x {factor:.1}, the range gives \"(x-y)\".");
     }
     println!();
-    println!("{:<30} {:>9} {:>11}  {:<34}  {:>8}  voices that fit", "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget");
+    println!("{:<30} {:>9} {:>11}  {:<40}  {:>8}  voices that fit", "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget");
     for mut sc in cases::scaling(MPC.rate) {
         let mut pts = Vec::new();
         for (n, c) in sc.points.iter_mut() { pts.push((*n, time_case(c, blocks).p99_ns as f64)); }
@@ -259,13 +258,15 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         let range = if model.is_some() && !on_device { format!(" ({}-{})", show(fits(hi)), show(fits(lo))) } else { String::new() };
         let counts = pts.iter().map(|(n, ns)| format!("{n}:{:.0}", ns * factor / 1e3)).collect::<Vec<_>>().join(" ");
         let per_voice = if most == 1 { "-".to_string() } else { format!("{:.2}", b * factor / 1e3) };
-        println!("{:<30} {:>9.1} {:>11}  {:<34}  {:>4.0} us  {}{range}", sc.name, a * factor / 1e3, per_voice, counts,
+        println!("{:<30} {:>9.1} {:>11}  {:<40}  {:>4.0} us  {}{range}", sc.name, a * factor / 1e3, per_voice, counts,
                  budget_ns / 1e3, show(fits(factor)));
     }
     println!();
     println!("\"voices that fit\" is for that engine alone in its whole module budget (synth 20 %, sampler 25 % of a period, worst block);");
     println!("several synth tracks share the synth budget. \"16+ (87)\": every count measured fits, and the line runs out at 87 (Poly plays");
     println!("at most 16). A preset whose cost does not grow with voices shows a per-voice cost near 0: its p99 is set by something else.");
+    println!("In \"Sampler grains (per grain)\" a voice is one live grain (4 granular pads held, 16 to 256 grains alive): \"us / voice\" is");
+    println!("the cost of a grain, and 256 is the engine's grain budget, the most a burst can reach.");
 }
 
 fn main() -> ExitCode {
@@ -360,11 +361,12 @@ fn main() -> ExitCode {
             let pct = MPC.pct(worst_ns);
             format!("{:>5.1} % of {:>4.1} % {}: {}", pct, b, c.module, Verdict::of(pct, b).word())
         });
-        // The p99.9 block is the "worst" for verdicts: the single worst block
-        // on a desktop is usually the OS, not the engine. On the device both
-        // are shown and the max is what underruns.
+        // On the device the verdict follows budget::judge (Jay's rule: an
+        // engine on its p99.9 block, the whole period on its worst). A desktop
+        // estimate always uses the p99.9: the single worst block on a desktop
+        // is usually the OS, not the engine.
         let tail = if on_device {
-            verdict(s.max_ns as f64)
+            verdict(budget::judged_ns(c.module, &s) as f64)
         } else if let Some((m, _)) = &model {
             let (e, _, hi) = m.estimate(s.p999_ns as f64);
             format!("{} (up to {:.1} %)", verdict(e), MPC.pct(hi))
