@@ -16,6 +16,10 @@ use mpfree_store::Settings;
 
 pub const APP: &str = "app";
 pub const MAP: &str = "map";
+/// The arp's owner name in the store, and its pattern library file there
+/// (the patterns Save keeps and the owner's own scales).
+pub const ARP: &str = "arp";
+pub const ARP_PATTERNS: &str = "patterns.txt";
 
 /// A control's key in the "map" settings: its name in lower case, words
 /// joined by "-" ("PAD BANK A/E" is pad-bank-a-e).

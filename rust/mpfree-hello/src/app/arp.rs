@@ -527,7 +527,8 @@ impl App {
         fx
     }
 
-    /// Patterns from a library file (the `--patterns` option): one with a
+    /// Patterns from a library file (the store's arp/patterns.txt, or the
+    /// `--patterns` option): one with a
     /// built-in's name replaces it, the others come after the built-ins. A
     /// file with any bad line is not used, and every bad line is logged.
     pub fn load_patterns(&mut self, text: &str) -> Vec<Effect> {
@@ -790,7 +791,7 @@ impl App {
                 if self.pattern_file {
                     fx.push(Effect::SavePatterns(self.library_text()));
                 } else {
-                    fx.push(Effect::Note("the pattern stays in memory until the power goes off (no patterns file)"
+                    fx.push(Effect::Note("the pattern stays in memory until the power goes off (no --data folder to keep it in)"
                         .to_string()));
                 }
                 fx
