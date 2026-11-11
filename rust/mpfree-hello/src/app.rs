@@ -19,7 +19,7 @@
 
 mod arp;
 
-pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
+pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
@@ -261,6 +261,8 @@ pub enum Item {
     ClearLogs,
     ConsoleFollow,
     ClearConsole,
+    /// The arp's own settings (the Options menu opened from the Arp panel).
+    Arp(ArpItem),
 }
 
 /// The menu on screen: its rows (name, value), the selected row and help.
@@ -362,6 +364,8 @@ pub struct App {
     /// The arp's other settings (order, octaves, gate, swing); the rate is
     /// `settings.rate` and the mode follows the buttons and pages.
     arp: mpfree_arp::Settings,
+    /// The scale's root (0 = C), kept while the scale is Off.
+    scale_root: u8,
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
@@ -397,7 +401,7 @@ impl App {
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true };
@@ -729,6 +733,7 @@ impl App {
                                Item::TouchLab],
             (_, View::Debug) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
+            (_, View::Arp) => &arp::ARP_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
     }
@@ -758,6 +763,7 @@ impl App {
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
             Item::ConsoleFollow => ("Console", if s.console_paused { "Paused" } else { "Following" }.to_string()),
             Item::ClearConsole => ("Clear the console", "Clear".to_string()),
+            Item::Arp(a) => self.arp_item_text(a),
         }
     }
 
@@ -805,6 +811,7 @@ impl App {
             Item::ConsoleFollow => vec!["Pause the console to read it; it keeps",
                                         "collecting lines meanwhile."],
             Item::ClearConsole => vec!["Empty the console page."],
+            Item::Arp(a) => Self::arp_item_help(a),
         }
     }
 
@@ -813,6 +820,7 @@ impl App {
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
             (View::Prefs, _) => "Prefs".to_string(),
+            (_, View::Arp) => "Arp options".to_string(),
             (_, b) => format!("{} options", TABS[b.tab().unwrap_or(0)]),
         };
         let (name, _) = self.item_text(items[selected]);
@@ -895,6 +903,7 @@ impl App {
             Item::ClearLogs => fx.push(Effect::ClearLogs),
             Item::ConsoleFollow => s.console_paused = d > 0,
             Item::ClearConsole => fx.push(Effect::ClearConsole),
+            Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
         fx.push(self.menu_view());
@@ -1322,6 +1331,61 @@ mod tests {
         assert_eq!(app.view(), View::Play);
         assert!(!app.generating());
         assert_eq!(app.qlink(0, 1, None), None, "Q-Link 1 is the level again");
+    }
+
+    #[test]
+    fn menu_on_the_arp_panel_sets_accent_scale_strum_and_restart() {
+        use mpfree_arp::scale::{Scale, DORIAN, MINOR};
+        let mut app = ready();
+        app.toggle_panel();
+        let fx = press(&mut app, MENU);
+        let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else { panic!("no menu") };
+        assert_eq!(m.title, "Arp options");
+        assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                   ["Tempo", "Accent level", "Scale", "Scale root", "Strum", "New notes restart"]);
+        assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
+        assert!(app.generating(), "the arp plays on under its options");
+        let row = |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
+        // Accent level steps by 8, down from 127.
+        let fx = app.step_item(row(&app, ArpItem::Accent), -1);
+        assert_eq!(app.engine.settings().accent, 119);
+        assert!(fx.contains(&Effect::Note("arp accent level: 119".to_string())));
+        // Scale: Off, then the named scales; the root moves it.
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, MINOR)));
+        app.step_item(row(&app, ArpItem::Root), 1);
+        let fx = app.step_item(row(&app, ArpItem::Root), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, MINOR)));
+        assert!(fx.contains(&Effect::Note("arp scale: D Minor".to_string())));
+        assert!(matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Minor"));
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
+        // Off keeps the root for next time.
+        for _ in 0..5 {
+            app.step_item(row(&app, ArpItem::Scale), -1);
+        }
+        assert_eq!(app.engine.settings().scale, None);
+        assert_eq!(app.step_item(row(&app, ArpItem::Scale), -1).iter().filter(|e| matches!(e, Effect::Note(_))).count(),
+                   0, "nothing below Off");
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, mpfree_arp::scale::MAJOR)));
+        // Strum in tens of percent; New notes restart on and off.
+        app.step_item(row(&app, ArpItem::Strum), 1);
+        assert_eq!(app.engine.settings().strum, 10);
+        app.step_item(row(&app, ArpItem::Retrigger), 1);
+        assert!(app.engine.settings().retrigger);
+        // The panel's own settings leave them alone.
+        app.arp_action(ArpAction::Settings(mpfree_arp::Settings { gate: 80, ..app.arp }));
+        let s = app.engine.settings();
+        assert_eq!((s.accent, s.strum, s.retrigger, s.gate), (119, 10, true, 80));
+        // MENU goes back to the panel; the Play page's options are as before.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Arp);
+        app.toggle_panel();
+        press(&mut app, MENU);
+        assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4));
     }
 
     #[test]
