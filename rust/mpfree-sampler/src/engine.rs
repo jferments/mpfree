@@ -101,6 +101,9 @@ pub struct EngineView {
 }
 
 impl EngineView {
+    /// Whether pad `i` has something to play.
+    pub fn has_pad(&self, i: usize) -> bool { self.pads.get(i).is_some_and(|p| p.as_ref().is_some_and(|p| !p.layers.is_empty())) }
+
     pub fn empty() -> EngineView { EngineView { revision: 0, pads: vec![None; PADS], master: MasterFx::default() } }
 
     /// Resolves every pad of a project for an engine running at `rate`.

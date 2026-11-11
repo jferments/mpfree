@@ -13,6 +13,11 @@
 //! - Every engine view is built here, before the sound starts. Picking a kit
 //!   swaps views, so the audio loop never builds, allocates or frees one;
 //!   sounds already playing finish, as before.
+//! - The kits' projects go to the screen thread for the Sample tab
+//!   ([`Player::take_projects`]). An edit there builds the kit's view again
+//!   on the screen thread and sends it here in a [`ViewSwap`];
+//!   [`Player::swap_view`] puts it in place and hands the old view back in
+//!   the same box, so the screen thread frees it.
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event};
@@ -51,6 +56,47 @@ pub struct Player {
     /// Pads with a sound, per kit.
     sounds: Vec<[bool; 16]>,
     peak_grains: usize,
+    /// Each kit's project, until the screen thread takes them.
+    projects: Vec<Project>,
+}
+
+/// A kit's engine view, built again after an edit on the Sample tab, on its
+/// way to the audio thread; then the view it replaced, on its way back to
+/// the screen thread, which frees it. It travels boxed, so the channels
+/// move a pointer and the audio thread never frees anything.
+#[derive(Clone, Debug)]
+pub struct ViewSwap {
+    pub kit: usize,
+    pub view: Option<EngineView>,
+}
+
+impl PartialEq for ViewSwap {
+    /// The same kit and the same project revision.
+    fn eq(&self, other: &ViewSwap) -> bool {
+        self.kit == other.kit && self.view.as_ref().map(|v| v.revision) == other.view.as_ref().map(|v| v.revision)
+    }
+}
+
+/// How many playheads [`Playheads`] holds.
+pub const PLAYHEADS: usize = 8;
+
+/// Where the playing kit's voices are, in source frames (first layers
+/// only), for the playheads on the Sample tab. Small and fixed, so the
+/// audio thread sends it without allocating.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Playheads {
+    pub kit: u16,
+    pub len: u8,
+    pub pad: [u8; PLAYHEADS],
+    pub frame: [u32; PLAYHEADS],
+}
+
+impl Playheads {
+    /// The frames of pad `pad`'s voices.
+    pub fn of(&self, pad: usize) -> impl Iterator<Item = u64> + '_ {
+        let n = usize::from(self.len).min(PLAYHEADS);
+        self.pad[..n].iter().zip(&self.frame[..n]).filter(move |(p, _)| usize::from(**p) == pad).map(|(_, f)| u64::from(*f))
+    }
 }
 
 /// The sound's audio as interleaved stereo floats at full scale ±1.
@@ -100,6 +146,7 @@ impl Player {
         }
         let mut views = Vec::with_capacity(kits.len() + 1);
         let mut sounds = Vec::with_capacity(kits.len() + 1);
+        let mut projects = Vec::with_capacity(kits.len() + 1);
         let mut first: Vec<(usize, Source)> = Vec::new();
         for (k, kit) in kits.iter_mut().enumerate() {
             let mut project = Project::new();
@@ -118,6 +165,7 @@ impl Player {
             }
             views.push(Some(EngineView::build(&project, rate)));
             sounds.push(has);
+            projects.push(project);
         }
         if kits.len() < MAX_KITS {
             let mut project = Project::new();
@@ -132,11 +180,12 @@ impl Player {
             }
             views.push(Some(EngineView::build(&project, rate)));
             sounds.push(has);
+            projects.push(project);
             kits.push(Kit { name: format!("Grains: {}", kits[0].name), sounds: grain_sounds });
         }
         let mut engine = Engine::new(rate, MAX_VOICES);
         engine.set_view(views[0].take().expect("built above"));
-        Ok(Player { engine, views, kit: 0, sounds, peak_grains: 0 })
+        Ok(Player { engine, views, kit: 0, sounds, peak_grains: 0, projects })
     }
 
     #[cfg(test)]
@@ -148,6 +197,11 @@ impl Player {
         self.kit
     }
 
+    /// Which of kit `kit`'s 16 pads have a sound (none past the last kit).
+    pub fn sounds(&self, kit: usize) -> [bool; 16] {
+        self.sounds.get(kit).copied().unwrap_or([false; 16])
+    }
+
     /// Play kit `k` from the next hit on. Sounds already playing finish.
     /// Swaps views: it never allocates or frees.
     pub fn select(&mut self, k: usize) {
@@ -157,6 +211,53 @@ impl Player {
         let Some(view) = self.views[k].take() else { return };
         self.views[self.kit] = Some(self.engine.set_view(view));
         self.kit = k;
+    }
+
+    /// Every kit's project, in kit order (the Grains kit last), for the
+    /// Sample tab. The audio is shared with the engine's views, not copied.
+    /// Afterwards the player holds none.
+    pub fn take_projects(&mut self) -> Vec<Project> {
+        std::mem::take(&mut self.projects)
+    }
+
+    /// Puts `swap`'s view in place for kit `swap.kit` (in the engine, if
+    /// that kit is playing) and leaves the view it replaces in `swap`, to
+    /// be freed off the audio thread. Sounds already playing finish as they
+    /// started; the next hit plays the new view, and the pads with a sound
+    /// are the view's (a chop adds some). Never allocates or frees.
+    /// Returns false, leaving `swap` as it was, if there is no such kit.
+    pub fn swap_view(&mut self, swap: &mut ViewSwap) -> bool {
+        let Some(view) = swap.view.take() else { return false };
+        // A chop can put sounds on pads that had none (and undo take them away).
+        if let Some(has) = self.sounds.get_mut(swap.kit) {
+            for (p, h) in has.iter_mut().enumerate() {
+                *h = view.has_pad(p);
+            }
+        }
+        if swap.kit == self.kit {
+            swap.view = Some(self.engine.set_view(view));
+        } else if let Some(slot) = self.views.get_mut(swap.kit) {
+            swap.view = slot.replace(view);
+        } else {
+            swap.view = Some(view);
+            return false;
+        }
+        true
+    }
+
+    /// Where the playing kit's voices are. Never allocates.
+    pub fn playheads(&self) -> Playheads {
+        let mut p = Playheads { kit: self.kit.min(usize::from(u16::MAX)) as u16, ..Playheads::default() };
+        for (pad, layer, at) in self.engine.playheads() {
+            let n = usize::from(p.len);
+            if layer != 0 || n >= PLAYHEADS {
+                continue;
+            }
+            p.pad[n] = pad;
+            p.frame[n] = at.min(u64::from(u32::MAX)) as u32;
+            p.len += 1;
+        }
+        p
     }
 
     /// Starts pad `pad`'s sound `offset` frames into the next render.
@@ -383,6 +484,79 @@ mod tests {
         let mut ks = kit::parse_kits(&kit::build_kits(&all)).unwrap();
         let p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         assert_eq!((ks.len(), p.kits()), (MAX_KITS, MAX_KITS));
+    }
+
+    #[test]
+    fn an_edited_view_swaps_in_without_allocating_and_the_old_one_goes_back() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        let mut projects = p.take_projects();
+        assert_eq!(projects.len(), 3, "two kits and Grains");
+        assert!(p.take_projects().is_empty());
+        let (whole, _) = { p.hit_at(0, 127, 0); run(&mut p, 30) };
+        // The kick's start moves 1000 frames on: the sound starts later in the audio.
+        projects[0].edit_pad(0, None, |pad| pad.layers[0].region.start = 1000).unwrap();
+        let revision = projects[0].revision();
+        let mut swap = Box::new(ViewSwap { kit: 0, view: Some(EngineView::build(&projects[0], 44_100)) });
+        let (ok, calls) = crate::sys::alloc_count::calls(|| p.swap_view(&mut swap));
+        assert!(ok);
+        assert_eq!(calls, 0, "the swap allocates and frees nothing");
+        assert_ne!(swap.view.as_ref().unwrap().revision, revision, "the old view comes back in the box");
+        p.hit_at(0, 127, 0);
+        let (trimmed, _) = run(&mut p, 30);
+        assert_ne!(whole, trimmed);
+        assert_eq!(&whole[2000..2100], &trimmed[..100], "plays from frame 1000");
+        // A kit not playing takes it in its place; out of range gives it back.
+        let mut other = Box::new(ViewSwap { kit: 1, view: Some(EngineView::build(&projects[1], 44_100)) });
+        assert!(p.swap_view(&mut other));
+        assert!(other.view.is_some());
+        let mut none = Box::new(ViewSwap { kit: 7, view: Some(EngineView::build(&projects[1], 44_100)) });
+        assert!(!p.swap_view(&mut none));
+        assert_eq!(none.view.as_ref().map(|v| v.revision), Some(projects[1].revision()));
+        p.select(1);
+        assert!(p.hit_at(0, 127, 0));
+    }
+
+    #[test]
+    fn a_chopped_kit_plays_its_new_pads_once_its_view_swaps_in() {
+        use mpfree_sampler::model::ChopSet;
+        let mut kits = kits();
+        let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
+        let mut projects = player.take_projects();
+        let empty = (0..16).find(|&p| !player.sounds(0)[p]).expect("a pad without a sound in kit 1");
+        assert!(!player.hit_at(empty, 100, 0));
+        let from = (0..16).find(|&p| player.sounds(0)[p]).unwrap();
+        let project = &mut projects[0];
+        let source = project.source(project.pad(from).unwrap().layers[0].region.source).unwrap().clone();
+        let c = ChopSet::grid("chop", &source, 2).unwrap();
+        let template = project.pad(from).cloned();
+        project.chop_to_pads(c, 0, 1, empty, template.as_ref()).unwrap();
+        let mut swap = ViewSwap { kit: 0, view: Some(EngineView::build(project, 44_100)) };
+        assert!(player.swap_view(&mut swap));
+        assert!(player.sounds(0)[empty] && player.hit_at(empty, 100, 0));
+        // Undone, the pad is silent again.
+        project.undo();
+        let mut swap = ViewSwap { kit: 0, view: Some(EngineView::build(project, 44_100)) };
+        assert!(player.swap_view(&mut swap));
+        assert!(!player.hit_at(empty, 100, 0));
+    }
+
+    #[test]
+    fn playheads_follow_the_playing_kits_voices() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        assert_eq!(p.playheads().len, 0);
+        p.hit_at(0, 127, 0);
+        p.hit_at(5, 127, 64);
+        run(&mut p, 4);
+        let (heads, calls) = crate::sys::alloc_count::calls(|| p.playheads());
+        assert_eq!(calls, 0);
+        assert_eq!((heads.kit, heads.len), (0, 2));
+        let kick: Vec<u64> = heads.of(0).collect();
+        let snare: Vec<u64> = heads.of(5).collect();
+        assert_eq!((kick.len(), snare.len()), (1, 1));
+        assert!(kick[0] > snare[0] && kick[0] <= 512, "{kick:?} {snare:?}");
+        assert_eq!(heads.of(3).count(), 0);
     }
 
     #[test]
