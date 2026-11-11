@@ -128,6 +128,46 @@ fn stretch_repitches_until_its_copy_is_made_then_keeps_the_pitch() {
 }
 
 #[test]
+fn a_slice_tap_on_a_stretched_pad_plays_that_slice_of_its_copy() {
+    // A second of 220 Hz, then a second of 440 Hz, warped from 100 to 120
+    // BPM: the copy is 1/1.2 as long, so each second is 36750 frames of it.
+    let mut v = sine(1.0, 220.0).data().to_vec();
+    v.extend_from_slice(&sine(1.0, 440.0).data()[..]);
+    let s = Source::new("two", RATE, 2, v).unwrap();
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let mut warps = Warps::new(120.0);
+    assert_eq!(make_copies(&p, &mut warps), 1);
+    for (slice, hz) in [((0, 44_100), 220.0), ((44_100, 88_200), 440.0)] {
+        let mut e = engine_at(&p, &mut warps);
+        // The slice in source frames, as the Chop tab gives it.
+        e.apply(Event::Audition {
+            pad: 0,
+            layer: 0,
+            start: slice.0,
+            end: slice.1,
+            velocity: 127,
+        });
+        let mut out = Vec::new();
+        let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+        while e.active_voices() > 0 && out.len() < 4 * RATE as usize {
+            e.render(&mut l, &mut r);
+            out.extend_from_slice(&l);
+        }
+        let end = out
+            .iter()
+            .rposition(|v| v.abs() > 1e-6)
+            .map_or(0, |i| i + 1);
+        out.truncate(end);
+        assert!(
+            near(out.len() as f64, 36_750.0, 300.0),
+            "{slice:?}: {}",
+            out.len()
+        );
+        assert!((pitch(&out) - hz).abs() < 2.0, "{slice:?}: {}", pitch(&out));
+    }
+}
+
+#[test]
 fn a_stretched_copy_carries_the_tune_and_keeps_the_length() {
     let s = sine(1.0, 220.0);
     let mut pad = warped_pad(&s, 120.0, WarpMethod::Stretch);
