@@ -443,12 +443,20 @@ name = "mpfree-hello"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-arp-ui",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-node",
+ "mpfree-play",
  "mpfree-sampler",
  "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-synth",
+ "mpfree-synth-ui",
+ "mpfree-time-ui",
  "mpfree-touch",
  "mpfree-touch-evdev",
+ "mpfree-transport",
  "mpfree-ui",
 ]
 

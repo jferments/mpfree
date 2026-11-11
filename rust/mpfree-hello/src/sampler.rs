@@ -206,17 +206,30 @@ impl Player {
     /// Renders the next period into `left` and `right`, scaled by `master`.
     /// Returns the largest absolute sample, before clamping to −1..1 (as the
     /// old mixer did).
+    #[cfg(test)]
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
+        self.render_dry(left, right);
+        master_out(left, right, master)
+    }
+
+    /// The engine's sound alone, before the level: the pad player adds the
+    /// synth to it, then calls [`master_out`].
+    pub fn render_dry(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
-        let mut peak = 0f32;
-        for s in left.iter_mut().chain(right.iter_mut()) {
-            *s *= master;
-            peak = peak.max(s.abs());
-            *s = s.clamp(-1.0, 1.0);
-        }
-        peak
     }
+}
+
+/// The level, then the clip to full scale. Returns the peak before the
+/// clip (above 1.0 means the period clipped).
+pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
+    let mut peak = 0f32;
+    for s in left.iter_mut().chain(right.iter_mut()) {
+        *s *= master;
+        peak = peak.max(s.abs());
+        *s = s.clamp(-1.0, 1.0);
+    }
+    peak
 }
 
 #[cfg(test)]
