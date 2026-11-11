@@ -1,22 +1,29 @@
 //! Preview and time the themed startup screens on the workstation.
 //!
 //! Usage:
-//!   mpfree-startup --preview DIR [--theme NAME] [--fps N] [--seconds S]
+//!   mpfree-startup --preview DIR [--theme NAME | --data DIR] [--fps N] [--seconds S]
 //!       Draws every frame and saves them as PNG files in DIR (new files
 //!       only; DIR must be new or empty). Without --theme: console,
 //!       synthwave and spaceship, each in its own folder.
-//!   mpfree-startup --bench [--theme NAME] [--frames N]
+//!   mpfree-startup --bench [--theme NAME | --data DIR] [--frames N]
 //!       Draws frames as fast as it can and prints the time per frame.
 //!       Touches no device and writes nothing.
-//!   mpfree-startup --framebuffer [--theme NAME] [--fb DEVICE] [--sysfs DIR]
+//!   mpfree-startup --framebuffer [--theme NAME | --data DIR] [--fb DEVICE] [--sysfs DIR]
 //!                  [--rotation 0|90|180|270] [--seconds N] [--fps N]
 //!       On the MPC One: plays the startup screen on /dev/fb0 for --seconds
 //!       (default: the scene's own length), then exits and leaves its last
 //!       frame on the screen for the app's loading page (`app --keep-screen`).
-//!       Without --theme, the default theme's startup screen (synthwave).
+//!       Without --theme, the theme saved in --data, else the default
+//!       theme's startup screen (synthwave).
 //!       It writes only to the framebuffer device and to the framebuffer's
 //!       sysfs `pan` file (which asks the kernel to show the framebuffer;
 //!       nothing is stored), like mpfree-splash. It never writes storage.
+//!
+//! --data DIR (any mode): the app's data folder (`app --data`, on the stick
+//!       /run/mpfree-data). When --theme is not given, the startup screen is
+//!       the theme picked in Prefs > Appearance (`settings/app.conf`, key
+//!       `theme`). Only that one file is read; nothing in DIR is written or
+//!       made. If it is missing or odd, the default (synthwave) shows.
 //!
 //! --preview writes only PNG files in DIR.
 
@@ -32,9 +39,9 @@ use std::time::{Duration, Instant};
 
 const SCREEN: (i32, i32) = (1280, 800);
 const THEMES: [&str; 3] = ["console", "synthwave", "spaceship"];
-const USAGE: &str = "usage: mpfree-startup --preview DIR [--theme NAME] [--fps N] [--seconds S]\n       \
-    mpfree-startup --bench [--theme NAME] [--frames N]\n       \
-    mpfree-startup --framebuffer [--theme NAME] [--fb DEVICE] [--sysfs DIR] [--rotation 0|90|180|270] [--seconds N] [--fps N]";
+const USAGE: &str = "usage: mpfree-startup --preview DIR [--theme NAME | --data DIR] [--fps N] [--seconds S]\n       \
+    mpfree-startup --bench [--theme NAME | --data DIR] [--frames N]\n       \
+    mpfree-startup --framebuffer [--theme NAME | --data DIR] [--fb DEVICE] [--sysfs DIR] [--rotation 0|90|180|270] [--seconds N] [--fps N]";
 
 fn make(name: &str) -> Result<Box<dyn Scene>, String> {
     make_sized(name, SCREEN)
@@ -139,6 +146,7 @@ fn bench(names: &[&str], frames: usize) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir: Option<PathBuf> = None;
+    let mut data: Option<PathBuf> = None;
     let (mut theme, mut fps, mut seconds, mut frames, mut do_bench) =
         (None, 30.0f32, None, 120usize, false);
     let mut on_fb = false;
@@ -161,6 +169,7 @@ fn main() {
             match a {
                 "--preview" => dir = Some(PathBuf::from(val()?)),
                 "--theme" => theme = Some(val()?),
+                "--data" => data = Some(PathBuf::from(val()?)),
                 "--fps" => fps = val()?.parse().map_err(|_| "--fps: a number".to_string())?,
                 "--seconds" => {
                     seconds = Some(
@@ -189,6 +198,19 @@ fn main() {
                 _ => return Err(format!("unknown option {a}\n{USAGE}")),
             }
             i += 1;
+        }
+        if let (None, Some(d)) = (&theme, &data) {
+            let saved = mpfree_startup::saved_theme(d);
+            eprintln!(
+                "mpfree-startup: theme {} ({})",
+                saved.as_deref().unwrap_or("default"),
+                if saved.is_some() {
+                    "saved in --data"
+                } else {
+                    "nothing saved in --data"
+                }
+            );
+            theme = Some(saved.unwrap_or_else(|| "default".into()));
         }
         if on_fb {
             if dir.is_some() || do_bench {
