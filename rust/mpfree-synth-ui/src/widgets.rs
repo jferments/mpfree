@@ -172,9 +172,41 @@ pub struct Card {
     pub bars: Vec<f32>,
     /// The bars' colour.
     pub bar_color: Option<Color>,
+    /// A colour per bar, over `bar_color` (carriers and modulators).
+    pub bar_colors: Vec<Color>,
+    /// A label under each bar ("1" to "6").
+    pub bar_labels: Vec<String>,
+    /// Boxes drawn over the curves (an FM algorithm's operators). A tap on
+    /// one gives `Select(k)`, `k` counted across the strip's cards.
+    pub nodes: Vec<CardNode>,
     /// The card belongs to the page shown.
     pub active: bool,
 }
+
+/// A labelled box on a card, centred at `(x, y)` in the unit box.
+#[derive(Clone, Debug)]
+pub struct CardNode {
+    pub x: f32,
+    pub y: f32,
+    pub label: String,
+    pub fill: Color,
+    pub text: Color,
+    /// Drawn with a ring in this colour: the operator the page is about (on
+    /// a keyboard page, the colour of its curve).
+    pub ring: Option<Color>,
+    /// Faded: switched off or silent.
+    pub dim: bool,
+    /// A feedback loop from this box back into node `k` of the same card
+    /// (itself for a self loop).
+    pub feedback: Option<usize>,
+}
+
+/// A card node's box, in pixels.
+pub const NODE_W: i32 = 28;
+pub const NODE_H: i32 = 15;
+/// How far from a node's centre a tap still picks it (a box is small for a
+/// finger).
+const NODE_HIT: f32 = 22.0;
 
 /// The strip of drawn visuals over the tiles. A tap on card `i` gives
 /// `Tab(i)`.
@@ -239,13 +271,19 @@ impl Widget for Visuals {
             if !card.bars.is_empty() {
                 let n = card.bars.len() as i32;
                 let slot = (p.w / n).max(1);
-                let bw = (slot * 2 / 3).max(2);
-                let color = card.bar_color.unwrap_or(t.accent);
+                let bw = (slot * 2 / 3).clamp(2, 40);
+                let labels = if card.bar_labels.is_empty() { 0 } else { 16 };
+                let (under, bars) = p.take_bottom(labels);
                 for (k, &b) in card.bars.iter().enumerate() {
-                    let h = ((b.clamp(0.0, 1.0) * p.h as f32).round() as i32).max(2);
+                    let h = ((b.clamp(0.0, 1.0) * bars.h as f32).round() as i32).max(2);
                     let x = p.x + k as i32 * slot + (slot - bw) / 2;
+                    let color = card.bar_colors.get(k).copied().or(card.bar_color).unwrap_or(t.accent);
                     let c = if b > 0.0 { color } else { t.outline };
-                    cx.canvas.fill_rect(Rect::new(x, p.bottom() - h, bw, h), c);
+                    cx.canvas.fill_rect(Rect::new(x, bars.bottom() - h, bw, h), c);
+                    if let Some(l) = card.bar_labels.get(k) {
+                        let lr = Rect::new(p.x + k as i32 * slot, under.y + 2, slot, under.h - 2);
+                        cx.text(FontId::Sans, 11.0, lr, Align::Center, t.text_faint, l);
+                    }
                 }
             }
             let clip = cx.canvas.clip();
@@ -273,6 +311,7 @@ impl Widget for Visuals {
                     m.draw(cx.canvas, t.text);
                 }
             }
+            paint_nodes(cx, p, &card.nodes);
             cx.canvas.set_clip(clip);
         }
     }
@@ -281,7 +320,56 @@ impl Widget for Visuals {
         if phase != Touch::Down {
             return None;
         }
-        (0..self.cards.len()).find(|&i| self.card_rect(r, i).contains(x, y)).map(EventKind::Tab)
+        let i = (0..self.cards.len()).find(|&i| self.card_rect(r, i).contains(x, y))?;
+        // A node near the finger, else the card.
+        let p = Visuals::plot_rect(self.card_rect(r, i));
+        let first: usize = self.cards[..i].iter().map(|c| c.nodes.len()).sum();
+        let near = self.cards[i]
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(k, n)| {
+                let (nx, ny) = to_screen(p, &[(n.x, n.y)])[0];
+                (k, (nx - x as f32).hypot(ny - y as f32))
+            })
+            .filter(|&(_, d)| d <= NODE_HIT)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        Some(match near {
+            Some((k, _)) => EventKind::Select(first + k),
+            None => EventKind::Tab(i),
+        })
+    }
+}
+
+/// A node's box on screen.
+pub fn node_rect(plot: Rect, n: &CardNode) -> Rect {
+    let (x, y) = to_screen(plot, &[(n.x, n.y)])[0];
+    Rect::new(x.round() as i32 - NODE_W / 2, y.round() as i32 - NODE_H / 2, NODE_W, NODE_H)
+}
+
+/// Draws a card's boxes and their feedback loops: a loop leaves a box's
+/// right side, runs up past the box it feeds and comes down into its top.
+fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode]) {
+    let t = cx.theme.clone();
+    for n in nodes {
+        let Some(to) = n.feedback.and_then(|k| nodes.get(k)) else { continue };
+        let (a, b) = (node_rect(p, n), node_rect(p, to));
+        let right = (a.right().max(b.right()) + 7) as f32;
+        let (ay, top) = ((a.y + a.h / 2) as f32, (b.y - 5) as f32);
+        let bx = (b.x + b.w / 2) as f32;
+        let pts = [(a.right() as f32, ay), (right, ay), (right, top), (bx, top), (bx, b.y as f32)];
+        let mut m = Mask::new(p.inset_xy(-12, -12));
+        m.polyline(&pts, 1.5);
+        m.draw(cx.canvas, if n.dim { t.text_faint } else { t.text_dim });
+    }
+    for n in nodes {
+        let b = node_rect(p, n);
+        let (fill, text) = if n.dim { (t.raised, t.text_faint) } else { (n.fill, n.text) };
+        if let Some(c) = n.ring {
+            cx.canvas.stroke_round_rect(b.inset(-3), 7, 2, c);
+        }
+        cx.canvas.fill_round_rect(b, 5, fill);
+        cx.text(FontId::Bold, 11.0, b, Align::Center, text, &n.label);
     }
 }
 
