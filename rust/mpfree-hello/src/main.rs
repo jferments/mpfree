@@ -83,6 +83,8 @@ mod perf;
 mod perform;
 mod play_page;
 mod play_widgets;
+#[cfg(test)]
+mod rt_safety;
 mod sample_page;
 mod sampler;
 mod synth;

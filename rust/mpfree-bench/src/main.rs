@@ -49,6 +49,8 @@
 //! with it.
 
 mod cases;
+#[cfg(test)]
+mod golden;
 mod vg;
 
 use std::fmt::Write as _;

@@ -637,12 +637,16 @@ jobs:
       - name: Per-crate table in the run summary
         run: |
           python3 tools/ci/coverage_summary.py "$RUNNER_TEMP/coverage.json" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Keep the lcov report for 14 days
+      - name: Keep the lcov report for 7 days
+        # Report only: when the account's artifact storage is full ("Artifact
+        # storage quota has been hit", 2026-11-11) the upload fails, and that
+        # must not turn main red. The summary above is the report.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: rust-lcov
           path: ${{ runner.temp }}/lcov.info
-          retention-days: 14
+          retention-days: 7
 
   rust:
     name: Rust host parity and ARMv7 hard-float cross-build
