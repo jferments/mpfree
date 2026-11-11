@@ -7,11 +7,21 @@ use mpfree_grain::*;
 
 fn main() {
     let rate = 44_100u32;
-    let data: Vec<f32> = (0..rate as usize * 20).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect();
+    let data: Vec<f32> = (0..rate as usize * 20)
+        .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+        .collect();
     let clip = Clip::new(&data, 2, rate).unwrap();
     let mut live = LiveBuffer::new(2, rate, rate as usize * 8).unwrap();
     live.write(&data[..rate as usize * 16]);
-    let p = Params { spray: 0.5, size_ms: 1000.0, density: 400.0, pitch_spray: 7.0, reverse: 0.3, spread: 1.0, ..Params::default() };
+    let p = Params {
+        spray: 0.5,
+        size_ms: 1000.0,
+        density: 400.0,
+        pitch_spray: 7.0,
+        reverse: 0.3,
+        spread: 1.0,
+        ..Params::default()
+    };
     for (name, is_live) in [("clip", false), ("live", true)] {
         let mut v = GrainVoice::new(rate, 1);
         v.set_params(p);
@@ -22,7 +32,11 @@ fn main() {
         let mut grain_frames = 0u64;
         let t = Instant::now();
         for i in 0..periods {
-            if is_live { v.render(&live, &mut budget, i * 128, &mut l, &mut r) } else { v.render(&clip, &mut budget, i * 128, &mut l, &mut r) }
+            if is_live {
+                v.render(&live, &mut budget, i * 128, &mut l, &mut r)
+            } else {
+                v.render(&clip, &mut budget, i * 128, &mut l, &mut r)
+            }
             grain_frames += v.stats().active as u64 * 128;
         }
         let secs = t.elapsed().as_secs_f64();

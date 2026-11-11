@@ -18,7 +18,9 @@ use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp};
 
-const SYNCS: &[&str] = &["Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars"];
+const SYNCS: &[&str] = &[
+    "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars",
+];
 /// Beats per LFO cycle for each sync choice (0 is free).
 const SYNC_BEATS: [f64; 9] = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
 
@@ -34,7 +36,9 @@ fn sine(phase: f32) -> f32 {
 /// `phase + off` (never negative), wrapped into 0 to 1. Truncation is floor
 /// here, with no library call.
 #[inline]
-fn wrap(p: f32) -> f32 { p - (p as u32) as f32 }
+fn wrap(p: f32) -> f32 {
+    p - (p as u32) as f32
+}
 
 /// Cubic Hermite (Catmull-Rom) interpolation between `x1` (t = 0) and `x2`.
 #[inline]
@@ -56,27 +60,42 @@ struct Lfo {
 }
 
 impl Default for Lfo {
-    fn default() -> Lfo { Lfo { phase: 0.0, inc: 0.0, bpm: 120.0, playing: false } }
+    fn default() -> Lfo {
+        Lfo {
+            phase: 0.0,
+            inc: 0.0,
+            bpm: 120.0,
+            playing: false,
+        }
+    }
 }
 
 impl Lfo {
     /// At the start of a block: follow the tempo, and when synced, put the
     /// phase where the bar says as the transport starts.
     fn begin(&mut self, ctx: &Ctx, sync: usize) {
-        if ctx.bpm > 0.0 { self.bpm = ctx.bpm; }
+        if ctx.bpm > 0.0 {
+            self.bpm = ctx.bpm;
+        }
         if sync > 0 && ctx.playing && !self.playing {
             self.phase = (ctx.beats / SYNC_BEATS[sync]).rem_euclid(1.0);
         }
         self.playing = ctx.playing;
     }
     fn set(&mut self, hz: f32, sync: usize, rate: u32) {
-        let cps = if sync > 0 { self.bpm / 60.0 / SYNC_BEATS[sync] } else { f64::from(hz) };
+        let cps = if sync > 0 {
+            self.bpm / 60.0 / SYNC_BEATS[sync]
+        } else {
+            f64::from(hz)
+        };
         self.inc = cps / f64::from(rate.max(1));
     }
     #[inline]
     fn next(&mut self) -> f32 {
         self.phase += self.inc;
-        if self.phase >= 1.0 { self.phase -= 1.0; }
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+        }
         self.phase as f32
     }
     fn reset(&mut self) {
@@ -97,7 +116,11 @@ impl ModLine {
     /// Room for `frames` of delay (control thread).
     fn new(frames: usize) -> ModLine {
         let n = (frames + 4).next_power_of_two();
-        ModLine { buf: vec![0.0; n], mask: n - 1, w: 0 }
+        ModLine {
+            buf: vec![0.0; n],
+            mask: n - 1,
+            w: 0,
+        }
     }
     #[inline]
     fn push(&mut self, x: f32) {
@@ -122,7 +145,9 @@ impl ModLine {
 }
 
 fn smooth_all(list: &mut [&mut Smooth], rate: u32, ms: f32) {
-    for s in list { s.set_time(rate, ms); }
+    for s in list {
+        s.set_time(rate, ms);
+    }
 }
 
 // ---------------------------------------------------------------- chorus
@@ -139,16 +164,100 @@ pub mod chorus {
     pub const MIX: u16 = 7;
 }
 
-static CHORUS_INFO: NodeInfo = NodeInfo { id: "mpfree.fx.chorus", name: "Chorus", kind: Kind::Effect };
+static CHORUS_INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.chorus",
+    name: "Chorus",
+    kind: Kind::Effect,
+};
 static CHORUS_PARAMS: [ParamInfo; 8] = [
-    ParamInfo { id: 0, name: "Rate", group: "LFO", min: 0.05, max: 10.0, default: 0.6, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 1, name: "Sync", group: "LFO", min: 0.0, max: 8.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SYNCS), readonly: false },
-    ParamInfo { id: 2, name: "Depth", group: "LFO", min: 0.0, max: 100.0, default: 40.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 3, name: "Delay", group: "Chorus", min: 2.0, max: 40.0, default: 12.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 4, name: "Voices", group: "Chorus", min: 1.0, max: 4.0, default: 2.0, unit: Unit::None, curve: Curve::Stepped, readonly: false },
-    ParamInfo { id: 5, name: "Width", group: "Chorus", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Tone", group: "Output", min: 1_000.0, max: 20_000.0, default: 9_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 7, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 50.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Rate",
+        group: "LFO",
+        min: 0.05,
+        max: 10.0,
+        default: 0.6,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Sync",
+        group: "LFO",
+        min: 0.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SYNCS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Depth",
+        group: "LFO",
+        min: 0.0,
+        max: 100.0,
+        default: 40.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Delay",
+        group: "Chorus",
+        min: 2.0,
+        max: 40.0,
+        default: 12.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Voices",
+        group: "Chorus",
+        min: 1.0,
+        max: 4.0,
+        default: 2.0,
+        unit: Unit::None,
+        curve: Curve::Stepped,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Width",
+        group: "Chorus",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Tone",
+        group: "Output",
+        min: 1_000.0,
+        max: 20_000.0,
+        default: 9_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 50.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// LFO phase offsets per voice: any count of voices starts from the same
@@ -179,7 +288,9 @@ pub struct Chorus {
 }
 
 impl Default for Chorus {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Chorus {
@@ -210,11 +321,15 @@ impl Chorus {
     fn voices(&mut self) {
         let n = self.v[4] as usize;
         let g = 1.0 / (n as f32).sqrt();
-        for (k, s) in self.gains.iter_mut().enumerate() { s.target = if k < n { g } else { 0.0 }; }
+        for (k, s) in self.gains.iter_mut().enumerate() {
+            s.target = if k < n { g } else { 0.0 };
+        }
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = CHORUS_PARAMS.get(id as usize) else { return };
+        let Some(p) = CHORUS_PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -248,7 +363,9 @@ impl Chorus {
             let off_r = 0.25 * self.width.next();
             let mix = self.mix.next();
             let mut g = [0.0f32; 4];
-            for (g, s) in g.iter_mut().zip(&mut self.gains) { *g = s.next(); }
+            for (g, s) in g.iter_mut().zip(&mut self.gains) {
+                *g = s.next();
+            }
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
@@ -256,7 +373,9 @@ impl Chorus {
                 let off = if ch == 0 { 0.0 } else { off_r };
                 let mut wet = 0.0;
                 for k in 0..4 {
-                    if g[k] == 0.0 { continue; }
+                    if g[k] == 0.0 {
+                        continue;
+                    }
                     let d = self.base + self.swing * sine(wrap(ph + VOICE_PHASE[k] + off));
                     wet += g[k] * self.lines[ch].read(d);
                 }
@@ -270,10 +389,18 @@ impl Chorus {
 }
 
 impl Node for Chorus {
-    fn info(&self) -> &'static NodeInfo { &CHORUS_INFO }
-    fn params(&self) -> &'static [ParamInfo] { &CHORUS_PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &CHORUS_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &CHORUS_PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.rate {
@@ -281,15 +408,39 @@ impl Node for Chorus {
             self.lines = [ModLine::new(frames), ModLine::new(frames)];
         }
         self.rate = rate;
-        smooth_all(&mut [&mut self.depth, &mut self.log_delay, &mut self.width, &mut self.log_tone, &mut self.mix], rate, 30.0);
-        for s in &mut self.gains { s.set_time(rate, 20.0); }
+        smooth_all(
+            &mut [
+                &mut self.depth,
+                &mut self.log_delay,
+                &mut self.width,
+                &mut self.log_tone,
+                &mut self.mix,
+            ],
+            rate,
+            30.0,
+        );
+        for s in &mut self.gains {
+            s.set_time(rate, 20.0);
+        }
         self.lfo.set(self.v[0], self.v[1] as usize, rate);
         self.update();
     }
     fn reset(&mut self) {
-        for s in [&mut self.depth, &mut self.log_delay, &mut self.width, &mut self.log_tone, &mut self.mix] { s.snap(s.target); }
-        for s in &mut self.gains { s.snap(s.target); }
-        for line in &mut self.lines { line.clear(); }
+        for s in [
+            &mut self.depth,
+            &mut self.log_delay,
+            &mut self.width,
+            &mut self.log_tone,
+            &mut self.mix,
+        ] {
+            s.snap(s.target);
+        }
+        for s in &mut self.gains {
+            s.snap(s.target);
+        }
+        for line in &mut self.lines {
+            line.clear();
+        }
         self.tone = [0.0; 2];
         self.lfo.reset();
         self.update();
@@ -299,7 +450,11 @@ impl Node for Chorus {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
@@ -323,15 +478,89 @@ pub mod flanger {
     pub const MIX: u16 = 6;
 }
 
-static FLANGER_INFO: NodeInfo = NodeInfo { id: "mpfree.fx.flanger", name: "Flanger", kind: Kind::Effect };
+static FLANGER_INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.flanger",
+    name: "Flanger",
+    kind: Kind::Effect,
+};
 static FLANGER_PARAMS: [ParamInfo; 7] = [
-    ParamInfo { id: 0, name: "Rate", group: "LFO", min: 0.02, max: 10.0, default: 0.2, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 1, name: "Sync", group: "LFO", min: 0.0, max: 8.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SYNCS), readonly: false },
-    ParamInfo { id: 2, name: "Depth", group: "LFO", min: 0.0, max: 100.0, default: 60.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 3, name: "Delay", group: "Flanger", min: 0.1, max: 10.0, default: 1.5, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 4, name: "Feedback", group: "Flanger", min: -95.0, max: 95.0, default: 50.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Width", group: "Flanger", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 50.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Rate",
+        group: "LFO",
+        min: 0.02,
+        max: 10.0,
+        default: 0.2,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Sync",
+        group: "LFO",
+        min: 0.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SYNCS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Depth",
+        group: "LFO",
+        min: 0.0,
+        max: 100.0,
+        default: 60.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Delay",
+        group: "Flanger",
+        min: 0.1,
+        max: 10.0,
+        default: 1.5,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Feedback",
+        group: "Flanger",
+        min: -95.0,
+        max: 95.0,
+        default: 50.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Width",
+        group: "Flanger",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 50.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// The sweep at full depth: two octaves of delay each way.
@@ -354,7 +583,9 @@ pub struct Flanger {
 }
 
 impl Default for Flanger {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Flanger {
@@ -378,7 +609,9 @@ impl Flanger {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = FLANGER_PARAMS.get(id as usize) else { return };
+        let Some(p) = FLANGER_PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -419,10 +652,18 @@ impl Flanger {
 }
 
 impl Node for Flanger {
-    fn info(&self) -> &'static NodeInfo { &FLANGER_INFO }
-    fn params(&self) -> &'static [ParamInfo] { &FLANGER_PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &FLANGER_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &FLANGER_PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.rate {
@@ -431,13 +672,33 @@ impl Node for Flanger {
             self.lines = [ModLine::new(frames), ModLine::new(frames)];
         }
         self.rate = rate;
-        smooth_all(&mut [&mut self.depth, &mut self.log_delay, &mut self.feedback, &mut self.width, &mut self.mix], rate, 30.0);
+        smooth_all(
+            &mut [
+                &mut self.depth,
+                &mut self.log_delay,
+                &mut self.feedback,
+                &mut self.width,
+                &mut self.mix,
+            ],
+            rate,
+            30.0,
+        );
         self.lfo.set(self.v[0], self.v[1] as usize, rate);
         self.base = self.log_delay.value.exp2() * 0.001 * rate as f32;
     }
     fn reset(&mut self) {
-        for s in [&mut self.depth, &mut self.log_delay, &mut self.feedback, &mut self.width, &mut self.mix] { s.snap(s.target); }
-        for line in &mut self.lines { line.clear(); }
+        for s in [
+            &mut self.depth,
+            &mut self.log_delay,
+            &mut self.feedback,
+            &mut self.width,
+            &mut self.mix,
+        ] {
+            s.snap(s.target);
+        }
+        for line in &mut self.lines {
+            line.clear();
+        }
         self.lfo.reset();
         self.base = self.log_delay.value.exp2() * 0.001 * self.rate as f32;
     }
@@ -446,15 +707,24 @@ impl Node for Flanger {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
     fn tail_frames(&self) -> u32 {
         // The longest loop, rung down 80 dB by the feedback.
-        let longest = self.v[3] * 0.001 * (FLANGE_OCTAVES * self.v[2] / 100.0).exp2() * self.rate as f32;
+        let longest =
+            self.v[3] * 0.001 * (FLANGE_OCTAVES * self.v[2] / 100.0).exp2() * self.rate as f32;
         let fb = (self.v[4] / 100.0).abs();
-        let rings = if fb > 0.0 { (1e-4f32).ln() / fb.ln() } else { 0.0 };
+        let rings = if fb > 0.0 {
+            (1e-4f32).ln() / fb.ln()
+        } else {
+            0.0
+        };
         (longest * (1.0 + rings)) as u32 + 2
     }
 }
@@ -479,16 +749,100 @@ const MAX_STAGES: usize = 12;
 /// The sweep at full depth: two and a half octaves each way.
 const PHASE_OCTAVES: f32 = 2.5;
 
-static PHASER_INFO: NodeInfo = NodeInfo { id: "mpfree.fx.phaser", name: "Phaser", kind: Kind::Effect };
+static PHASER_INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.phaser",
+    name: "Phaser",
+    kind: Kind::Effect,
+};
 static PHASER_PARAMS: [ParamInfo; 8] = [
-    ParamInfo { id: 0, name: "Rate", group: "LFO", min: 0.02, max: 10.0, default: 0.3, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 1, name: "Sync", group: "LFO", min: 0.0, max: 8.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SYNCS), readonly: false },
-    ParamInfo { id: 2, name: "Depth", group: "LFO", min: 0.0, max: 100.0, default: 70.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 3, name: "Center", group: "Phaser", min: 100.0, max: 8_000.0, default: 700.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 4, name: "Stages", group: "Phaser", min: 0.0, max: 4.0, default: 1.0, unit: Unit::None, curve: Curve::Choice(STAGE_NAMES), readonly: false },
-    ParamInfo { id: 5, name: "Feedback", group: "Phaser", min: -95.0, max: 95.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Width", group: "Phaser", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 7, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 50.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Rate",
+        group: "LFO",
+        min: 0.02,
+        max: 10.0,
+        default: 0.3,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Sync",
+        group: "LFO",
+        min: 0.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SYNCS),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Depth",
+        group: "LFO",
+        min: 0.0,
+        max: 100.0,
+        default: 70.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Center",
+        group: "Phaser",
+        min: 100.0,
+        max: 8_000.0,
+        default: 700.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Stages",
+        group: "Phaser",
+        min: 0.0,
+        max: 4.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(STAGE_NAMES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Feedback",
+        group: "Phaser",
+        min: -95.0,
+        max: 95.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Width",
+        group: "Phaser",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 50.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// A stereo phaser: 2 to 12 first-order all-pass stages (zero-delay
@@ -523,7 +877,9 @@ pub struct Phaser {
 const CTL: u32 = 16;
 
 impl Default for Phaser {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Phaser {
@@ -554,11 +910,15 @@ impl Phaser {
 
     fn stages(&mut self) {
         let pick = self.v[4] as usize;
-        for (k, t) in self.taps.iter_mut().enumerate() { t.target = if k == pick { 1.0 } else { 0.0 }; }
+        for (k, t) in self.taps.iter_mut().enumerate() {
+            t.target = if k == pick { 1.0 } else { 0.0 };
+        }
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PHASER_PARAMS.get(id as usize) else { return };
+        let Some(p) = PHASER_PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -583,9 +943,14 @@ impl Phaser {
             let off_r = 0.25 * self.width.next();
             let mix = self.mix.next();
             let mut w = [0.0f32; 5];
-            for (w, t) in w.iter_mut().zip(&mut self.taps) { *w = t.next(); }
+            for (w, t) in w.iter_mut().zip(&mut self.taps) {
+                *w = t.next();
+            }
             // Stages past the last tap in use rest, cleared.
-            let used = (0..5).rev().find(|&k| w[k] != 0.0).map_or(0, |k| STAGE_COUNTS[k]);
+            let used = (0..5)
+                .rev()
+                .find(|&k| w[k] != 0.0)
+                .map_or(0, |k| STAGE_COUNTS[k]);
             let ph = self.lfo.next();
             if self.ctl == 0 {
                 // The coefficient now; the stages glide to it over the next
@@ -625,7 +990,9 @@ impl Phaser {
                         tap += 1;
                     }
                 }
-                for s in &mut st[used..] { *s = 0.0; }
+                for s in &mut st[used..] {
+                    *s = 0.0;
+                }
                 self.last[ch] = flush(out);
                 y[ch] = lerp(x[ch], out, mix);
             }
@@ -636,19 +1003,49 @@ impl Phaser {
 }
 
 impl Node for Phaser {
-    fn info(&self) -> &'static NodeInfo { &PHASER_INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PHASER_PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &PHASER_INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PHASER_PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
-        smooth_all(&mut [&mut self.depth, &mut self.log_center, &mut self.feedback, &mut self.width, &mut self.mix], self.rate, 30.0);
-        for t in &mut self.taps { t.set_time(self.rate, 20.0); }
+        smooth_all(
+            &mut [
+                &mut self.depth,
+                &mut self.log_center,
+                &mut self.feedback,
+                &mut self.width,
+                &mut self.mix,
+            ],
+            self.rate,
+            30.0,
+        );
+        for t in &mut self.taps {
+            t.set_time(self.rate, 20.0);
+        }
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
     }
     fn reset(&mut self) {
-        for s in [&mut self.depth, &mut self.log_center, &mut self.feedback, &mut self.width, &mut self.mix] { s.snap(s.target); }
-        for t in &mut self.taps { t.snap(t.target); }
+        for s in [
+            &mut self.depth,
+            &mut self.log_center,
+            &mut self.feedback,
+            &mut self.width,
+            &mut self.mix,
+        ] {
+            s.snap(s.target);
+        }
+        for t in &mut self.taps {
+            t.snap(t.target);
+        }
         self.state = [[0.0; MAX_STAGES]; 2];
         self.last = [0.0; 2];
         self.gg_step = [0.0; 2];
@@ -661,7 +1058,11 @@ impl Node for Phaser {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
@@ -672,7 +1073,11 @@ impl Node for Phaser {
         let stages = STAGE_COUNTS[self.v[4] as usize] as f32;
         let lp = stages / (2.0 * PI * low);
         let fb = (self.v[5] / 100.0).abs();
-        let rings = if fb > 0.0 { (1e-4f32).ln() / fb.ln() } else { 0.0 };
+        let rings = if fb > 0.0 {
+            (1e-4f32).ln() / fb.ln()
+        } else {
+            0.0
+        };
         // At least 8 time constants of the slowest stage, plus the rings.
         ((8.0 / (2.0 * PI * low) + lp * rings) * self.rate as f32) as u32 + 2
     }
@@ -693,7 +1098,9 @@ mod tests {
     #[test]
     fn a_mod_line_reads_whole_and_fractional_delays() {
         let mut m = ModLine::new(16);
-        for k in 0..40 { m.push(k as f32); }
+        for k in 0..40 {
+            m.push(k as f32);
+        }
         assert_eq!(m.read(1.0), 38.0);
         assert_eq!(m.read(5.0), 34.0);
         // A ramp interpolates exactly.
@@ -703,7 +1110,12 @@ mod tests {
     #[test]
     fn a_synced_lfo_lands_on_the_bar_when_the_transport_starts() {
         let mut lfo = Lfo::default();
-        let ctx = Ctx { bpm: 120.0, beats: 6.0, playing: true, ..Ctx::new(48_000, 0) };
+        let ctx = Ctx {
+            bpm: 120.0,
+            beats: 6.0,
+            playing: true,
+            ..Ctx::new(48_000, 0)
+        };
         // One cycle a bar, starting two beats into the bar: half a cycle.
         lfo.begin(&ctx, 5);
         assert!((lfo.phase - 0.5).abs() < 1e-12);

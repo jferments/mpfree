@@ -21,7 +21,11 @@ fn synth(max_block: usize) -> ClapNode {
 /// The test plugins' shared library, built next to this test.
 fn plugin_file() -> PathBuf {
     let exe = std::env::current_exe().expect("test exe");
-    let name = format!("{}mpfree_clap_testplug{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let name = format!(
+        "{}mpfree_clap_testplug{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
     let deps = exe.parent().expect("deps dir");
     for dir in [deps.to_path_buf(), deps.join("..")] {
         let p = dir.join(&name);
@@ -37,7 +41,12 @@ fn index(n: &ClapNode, clap: u32) -> u16 {
 }
 
 /// Renders `blocks` blocks of `block` frames with `events` (absolute frames).
-fn render(n: &mut ClapNode, events: &[(u64, NodeEvent)], frames: usize, block: usize) -> (Vec<f32>, Vec<f32>) {
+fn render(
+    n: &mut ClapNode,
+    events: &[(u64, NodeEvent)],
+    frames: usize,
+    block: usize,
+) -> (Vec<f32>, Vec<f32>) {
     let (mut l, mut r) = (vec![0f32; frames], vec![0f32; frames]);
     let mut at = 0usize;
     let mut buf = Vec::new();
@@ -49,7 +58,10 @@ fn render(n: &mut ClapNode, events: &[(u64, NodeEvent)], frames: usize, block: u
                 buf.push(Timed::new((f - at as u64) as u32, e));
             }
         }
-        let c = Ctx { bpm: 97.0, ..Ctx::new(RATE, at as u64) };
+        let c = Ctx {
+            bpm: 97.0,
+            ..Ctx::new(RATE, at as u64)
+        };
         n.process(&c, &buf, &mut l[at..at + len], &mut r[at..at + len]);
         at += len;
     }
@@ -65,10 +77,16 @@ fn a_library_lists_its_plugins_and_refuses_unknown_ones() {
     let l = lib();
     let p = l.plugins();
     assert_eq!(p.len(), 2);
-    assert_eq!((p[0].id.as_str(), p[0].name.as_str(), p[0].vendor.as_str()), (SYNTH_ID, "MPFree Test Synth", "MPFree"));
+    assert_eq!(
+        (p[0].id.as_str(), p[0].name.as_str(), p[0].vendor.as_str()),
+        (SYNTH_ID, "MPFree Test Synth", "MPFree")
+    );
     assert_eq!(p[0].features, vec!["instrument", "synthesizer", "stereo"]);
     assert_eq!(p[1].features, vec!["audio-effect", "stereo"]);
-    assert_eq!(l.create("org.nobody.nothing").err(), Some(Error::NoPlugin("org.nobody.nothing".into())));
+    assert_eq!(
+        l.create("org.nobody.nothing").err(),
+        Some(Error::NoPlugin("org.nobody.nothing".into()))
+    );
 }
 
 #[test]
@@ -80,9 +98,18 @@ fn the_synth_is_an_instrument_with_its_parameters_mapped() {
     assert_eq!(n.info().name, "MPFree Test Synth");
     let p = n.params();
     // The hidden parameter is left out; ids are indices.
-    assert_eq!(p.iter().map(|p| p.name).collect::<Vec<_>>(), vec!["Gain", "Decay", "Wave", "Voices", "Tempo"]);
-    assert_eq!(p.iter().map(|p| p.id).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
-    assert_eq!((p[0].group, p[0].min, p[0].max, p[0].default), ("Amp", -60.0, 6.0, -12.0));
+    assert_eq!(
+        p.iter().map(|p| p.name).collect::<Vec<_>>(),
+        vec!["Gain", "Decay", "Wave", "Voices", "Tempo"]
+    );
+    assert_eq!(
+        p.iter().map(|p| p.id).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4]
+    );
+    assert_eq!(
+        (p[0].group, p[0].min, p[0].max, p[0].default),
+        ("Amp", -60.0, 6.0, -12.0)
+    );
     assert_eq!(p[2].curve, Curve::Choice(&["Sine", "Saw", "Square"]));
     assert_eq!(p[3].curve, Curve::Stepped);
     assert!(p[3].readonly && p[4].readonly && !p[0].readonly);
@@ -104,23 +131,61 @@ fn the_synth_is_an_instrument_with_its_parameters_mapped() {
 fn a_note_adds_into_the_buffers_and_ends_with_its_release() {
     let mut n = synth(256);
     let (mut l, mut r) = (vec![0.25f32; 256], vec![0.25f32; 256]);
-    n.process(&Ctx::new(RATE, 0), &[Timed::new(10, NodeEvent::NoteOn { note: 69, velocity: 127 })], &mut l, &mut r);
-    assert!(l[..10].iter().all(|&x| x == 0.25), "nothing before the note");
-    assert!(l[10..].iter().any(|&x| (x - 0.25).abs() > 0.01), "the note adds on top");
+    n.process(
+        &Ctx::new(RATE, 0),
+        &[Timed::new(
+            10,
+            NodeEvent::NoteOn {
+                note: 69,
+                velocity: 127,
+            },
+        )],
+        &mut l,
+        &mut r,
+    );
+    assert!(
+        l[..10].iter().all(|&x| x == 0.25),
+        "nothing before the note"
+    );
+    assert!(
+        l[10..].iter().any(|&x| (x - 0.25).abs() > 0.01),
+        "the note adds on top"
+    );
     // Off, and it dies away (four times faster than held).
     let ev = [(0, NodeEvent::NoteOff { note: 69 })];
     let (l, _) = render(&mut n, &ev, RATE as usize, 256);
-    assert!(peak(&l[RATE as usize - 256..]) < 1e-4, "quiet within a second of the release");
+    assert!(
+        peak(&l[RATE as usize - 256..]) < 1e-4,
+        "quiet within a second of the release"
+    );
     assert_eq!(n.stats().errors, 0);
 }
 
 #[test]
 fn the_same_events_sound_the_same_in_any_block_size() {
     let events = [
-        (0, NodeEvent::NoteOn { note: 60, velocity: 100 }),
-        (333, NodeEvent::NoteOn { note: 67, velocity: 80 }),
+        (
+            0,
+            NodeEvent::NoteOn {
+                note: 60,
+                velocity: 100,
+            },
+        ),
+        (
+            333,
+            NodeEvent::NoteOn {
+                note: 67,
+                velocity: 80,
+            },
+        ),
         (700, NodeEvent::Param { id: 2, value: 1.0 }),
-        (1500, NodeEvent::Pressure { note: 60, value: 90 }),
+        (
+            1500,
+            NodeEvent::Pressure {
+                note: 60,
+                value: 90,
+            },
+        ),
         (2100, NodeEvent::Bend { value: 0.5 }),
         (2600, NodeEvent::NoteOff { note: 60 }),
         (3000, NodeEvent::AllOff),
@@ -141,9 +206,29 @@ fn a_parameter_lands_on_its_frame() {
     let mut a = synth(512);
     let mut b = synth(512);
     let gain = index(&a, synth_params::GAIN);
-    let on = (0, NodeEvent::NoteOn { note: 69, velocity: 127 });
+    let on = (
+        0,
+        NodeEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        },
+    );
     let (la, _) = render(&mut a, &[on], 512, 512);
-    let (lb, _) = render(&mut b, &[on, (200, NodeEvent::Param { id: gain, value: -6.0 })], 512, 512);
+    let (lb, _) = render(
+        &mut b,
+        &[
+            on,
+            (
+                200,
+                NodeEvent::Param {
+                    id: gain,
+                    value: -6.0,
+                },
+            ),
+        ],
+        512,
+        512,
+    );
     assert_eq!(la[..200], lb[..200]);
     // -12 dB to -6 dB is twice as loud from frame 200.
     for i in 200..512 {
@@ -161,7 +246,10 @@ fn a_parameter_lands_on_its_frame() {
     b.prepare(RATE, 512);
     assert_eq!(b.param(gain), -30.0);
     b.process(&Ctx::new(RATE, 576), &[], &mut l, &mut r);
-    assert_eq!(b.control().param_text(gain, b.param(gain)).as_deref(), Some("-30"));
+    assert_eq!(
+        b.control().param_text(gain, b.param(gain)).as_deref(),
+        Some("-30")
+    );
     // Read-only parameters can't be set.
     // (The prepare reactivated the synth, so no voice sounds now.)
     b.set_param(index(&b, synth_params::VOICES), 9.0);
@@ -173,10 +261,29 @@ fn values_the_plugin_sends_back_reach_param() {
     let mut n = synth(256);
     let voices = index(&n, synth_params::VOICES);
     let tempo = index(&n, synth_params::TEMPO);
-    let ev = [(0, NodeEvent::NoteOn { note: 60, velocity: 100 }), (5, NodeEvent::NoteOn { note: 64, velocity: 100 })];
+    let ev = [
+        (
+            0,
+            NodeEvent::NoteOn {
+                note: 60,
+                velocity: 100,
+            },
+        ),
+        (
+            5,
+            NodeEvent::NoteOn {
+                note: 64,
+                velocity: 100,
+            },
+        ),
+    ];
     render(&mut n, &ev, 256, 256);
     assert_eq!(n.param(voices), 2.0);
-    assert_eq!(n.param(tempo), 97.0, "the transport's tempo reached the plugin");
+    assert_eq!(
+        n.param(tempo),
+        97.0,
+        "the transport's tempo reached the plugin"
+    );
 }
 
 #[test]
@@ -208,12 +315,26 @@ fn the_gain_is_an_effect_and_a_failed_block_stays_dry() {
     g.set_param(gain, 20.0 * 2f32.log10());
     let (mut l, mut r) = (vec![0.1f32; 128], vec![-0.2f32; 128]);
     // Notes mean nothing to an effect.
-    g.process(&Ctx::new(RATE, 0), &[Timed::new(0, NodeEvent::NoteOn { note: 60, velocity: 1 })], &mut l, &mut r);
+    g.process(
+        &Ctx::new(RATE, 0),
+        &[Timed::new(
+            0,
+            NodeEvent::NoteOn {
+                note: 60,
+                velocity: 1,
+            },
+        )],
+        &mut l,
+        &mut r,
+    );
     assert!(l.iter().all(|&x| (x - 0.2).abs() < 1e-6) && r.iter().all(|&x| (x + 0.4).abs() < 1e-6));
     g.set_param(index(&g, gain_params::FAIL), 1.0);
     let (mut l, mut r) = (vec![0.1f32; 128], vec![-0.2f32; 128]);
     g.process(&Ctx::new(RATE, 128), &[], &mut l, &mut r);
-    assert!(l.iter().all(|&x| x == 0.1) && r.iter().all(|&x| x == -0.2), "dry on an error");
+    assert!(
+        l.iter().all(|&x| x == 0.1) && r.iter().all(|&x| x == -0.2),
+        "dry on an error"
+    );
     assert_eq!(g.stats().errors, 1);
 }
 
@@ -224,7 +345,16 @@ fn the_plugin_file_loads_with_dlopen_and_sounds_the_same() {
     assert_eq!(file.plugins().len(), 2);
     let mut a = file.create(SYNTH_ID).expect("synth from the file");
     a.prepare(RATE, 256);
-    let ev = [(0, NodeEvent::NoteOn { note: 57, velocity: 110 }), (900, NodeEvent::NoteOff { note: 57 })];
+    let ev = [
+        (
+            0,
+            NodeEvent::NoteOn {
+                note: 57,
+                velocity: 110,
+            },
+        ),
+        (900, NodeEvent::NoteOff { note: 57 }),
+    ];
     let from_file = render(&mut a, &ev, 2048, 256);
     let linked = render(&mut synth(256), &ev, 2048, 256);
     assert_eq!(from_file, linked);

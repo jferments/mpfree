@@ -21,7 +21,11 @@ pub struct clap_version {
     pub revision: u32,
 }
 
-pub const CLAP_VERSION: clap_version = clap_version { major: 1, minor: 2, revision: 2 };
+pub const CLAP_VERSION: clap_version = clap_version {
+    major: 1,
+    minor: 2,
+    revision: 2,
+};
 
 /// The rule from `version.h`: every 1.x plugin talks to every 1.x host.
 pub fn clap_version_is_compatible(v: clap_version) -> bool {
@@ -43,10 +47,18 @@ pub const CLAP_PLUGIN_FACTORY_ID: &[u8] = b"clap.plugin-factory\0";
 #[repr(C)]
 pub struct clap_plugin_factory {
     pub get_plugin_count: Option<unsafe extern "C" fn(factory: *const clap_plugin_factory) -> u32>,
-    pub get_plugin_descriptor:
-        Option<unsafe extern "C" fn(factory: *const clap_plugin_factory, index: u32) -> *const clap_plugin_descriptor>,
+    pub get_plugin_descriptor: Option<
+        unsafe extern "C" fn(
+            factory: *const clap_plugin_factory,
+            index: u32,
+        ) -> *const clap_plugin_descriptor,
+    >,
     pub create_plugin: Option<
-        unsafe extern "C" fn(factory: *const clap_plugin_factory, host: *const clap_host, plugin_id: *const c_char) -> *const clap_plugin,
+        unsafe extern "C" fn(
+            factory: *const clap_plugin_factory,
+            host: *const clap_host,
+            plugin_id: *const c_char,
+        ) -> *const clap_plugin,
     >,
 }
 
@@ -73,13 +85,27 @@ pub struct clap_plugin {
     pub plugin_data: *mut c_void,
     pub init: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> bool>,
     pub destroy: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
-    pub activate: Option<unsafe extern "C" fn(plugin: *const clap_plugin, sample_rate: f64, min_frames: u32, max_frames: u32) -> bool>,
+    pub activate: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            sample_rate: f64,
+            min_frames: u32,
+            max_frames: u32,
+        ) -> bool,
+    >,
     pub deactivate: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
     pub start_processing: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> bool>,
     pub stop_processing: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
     pub reset: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
-    pub process: Option<unsafe extern "C" fn(plugin: *const clap_plugin, process: *const clap_process) -> clap_process_status>,
-    pub get_extension: Option<unsafe extern "C" fn(plugin: *const clap_plugin, id: *const c_char) -> *const c_void>,
+    pub process: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            process: *const clap_process,
+        ) -> clap_process_status,
+    >,
+    pub get_extension: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, id: *const c_char) -> *const c_void,
+    >,
     pub on_main_thread: Option<unsafe extern "C" fn(plugin: *const clap_plugin)>,
 }
 
@@ -93,7 +119,9 @@ pub struct clap_host {
     pub vendor: *const c_char,
     pub url: *const c_char,
     pub version: *const c_char,
-    pub get_extension: Option<unsafe extern "C" fn(host: *const clap_host, extension_id: *const c_char) -> *const c_void>,
+    pub get_extension: Option<
+        unsafe extern "C" fn(host: *const clap_host, extension_id: *const c_char) -> *const c_void,
+    >,
     pub request_restart: Option<unsafe extern "C" fn(host: *const clap_host)>,
     pub request_process: Option<unsafe extern "C" fn(host: *const clap_host)>,
     pub request_callback: Option<unsafe extern "C" fn(host: *const clap_host)>,
@@ -245,13 +273,23 @@ pub struct clap_event_midi {
 pub struct clap_input_events {
     pub ctx: *mut c_void,
     pub size: Option<unsafe extern "C" fn(list: *const clap_input_events) -> u32>,
-    pub get: Option<unsafe extern "C" fn(list: *const clap_input_events, index: u32) -> *const clap_event_header>,
+    pub get: Option<
+        unsafe extern "C" fn(
+            list: *const clap_input_events,
+            index: u32,
+        ) -> *const clap_event_header,
+    >,
 }
 
 #[repr(C)]
 pub struct clap_output_events {
     pub ctx: *mut c_void,
-    pub try_push: Option<unsafe extern "C" fn(list: *const clap_output_events, event: *const clap_event_header) -> bool>,
+    pub try_push: Option<
+        unsafe extern "C" fn(
+            list: *const clap_output_events,
+            event: *const clap_event_header,
+        ) -> bool,
+    >,
 }
 
 // ------------------------------------------------------------------ streams
@@ -259,13 +297,17 @@ pub struct clap_output_events {
 #[repr(C)]
 pub struct clap_istream {
     pub ctx: *mut c_void,
-    pub read: Option<unsafe extern "C" fn(stream: *const clap_istream, buffer: *mut c_void, size: u64) -> i64>,
+    pub read: Option<
+        unsafe extern "C" fn(stream: *const clap_istream, buffer: *mut c_void, size: u64) -> i64,
+    >,
 }
 
 #[repr(C)]
 pub struct clap_ostream {
     pub ctx: *mut c_void,
-    pub write: Option<unsafe extern "C" fn(stream: *const clap_ostream, buffer: *const c_void, size: u64) -> i64>,
+    pub write: Option<
+        unsafe extern "C" fn(stream: *const clap_ostream, buffer: *const c_void, size: u64) -> i64,
+    >,
 }
 
 // ------------------------------------------------------------------ extensions
@@ -303,12 +345,40 @@ pub struct clap_param_info {
 #[repr(C)]
 pub struct clap_plugin_params {
     pub count: Option<unsafe extern "C" fn(plugin: *const clap_plugin) -> u32>,
-    pub get_info: Option<unsafe extern "C" fn(plugin: *const clap_plugin, index: u32, info: *mut clap_param_info) -> bool>,
-    pub get_value: Option<unsafe extern "C" fn(plugin: *const clap_plugin, id: clap_id, out: *mut f64) -> bool>,
-    pub value_to_text:
-        Option<unsafe extern "C" fn(plugin: *const clap_plugin, id: clap_id, value: f64, out: *mut c_char, capacity: u32) -> bool>,
-    pub text_to_value: Option<unsafe extern "C" fn(plugin: *const clap_plugin, id: clap_id, text: *const c_char, out: *mut f64) -> bool>,
-    pub flush: Option<unsafe extern "C" fn(plugin: *const clap_plugin, input: *const clap_input_events, output: *const clap_output_events)>,
+    pub get_info: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            index: u32,
+            info: *mut clap_param_info,
+        ) -> bool,
+    >,
+    pub get_value: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, id: clap_id, out: *mut f64) -> bool,
+    >,
+    pub value_to_text: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            id: clap_id,
+            value: f64,
+            out: *mut c_char,
+            capacity: u32,
+        ) -> bool,
+    >,
+    pub text_to_value: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            id: clap_id,
+            text: *const c_char,
+            out: *mut f64,
+        ) -> bool,
+    >,
+    pub flush: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            input: *const clap_input_events,
+            output: *const clap_output_events,
+        ),
+    >,
 }
 
 #[repr(C)]
@@ -333,12 +403,20 @@ pub struct clap_audio_port_info {
 #[repr(C)]
 pub struct clap_plugin_audio_ports {
     pub count: Option<unsafe extern "C" fn(plugin: *const clap_plugin, is_input: bool) -> u32>,
-    pub get: Option<unsafe extern "C" fn(plugin: *const clap_plugin, index: u32, is_input: bool, info: *mut clap_audio_port_info) -> bool>,
+    pub get: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            index: u32,
+            is_input: bool,
+            info: *mut clap_audio_port_info,
+        ) -> bool,
+    >,
 }
 
 #[repr(C)]
 pub struct clap_host_audio_ports {
-    pub is_rescan_flag_supported: Option<unsafe extern "C" fn(host: *const clap_host, flag: u32) -> bool>,
+    pub is_rescan_flag_supported:
+        Option<unsafe extern "C" fn(host: *const clap_host, flag: u32) -> bool>,
     pub rescan: Option<unsafe extern "C" fn(host: *const clap_host, flags: u32)>,
 }
 
@@ -358,7 +436,14 @@ pub struct clap_note_port_info {
 #[repr(C)]
 pub struct clap_plugin_note_ports {
     pub count: Option<unsafe extern "C" fn(plugin: *const clap_plugin, is_input: bool) -> u32>,
-    pub get: Option<unsafe extern "C" fn(plugin: *const clap_plugin, index: u32, is_input: bool, info: *mut clap_note_port_info) -> bool>,
+    pub get: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            index: u32,
+            is_input: bool,
+            info: *mut clap_note_port_info,
+        ) -> bool,
+    >,
 }
 
 #[repr(C)]
@@ -369,8 +454,12 @@ pub struct clap_host_note_ports {
 
 #[repr(C)]
 pub struct clap_plugin_state {
-    pub save: Option<unsafe extern "C" fn(plugin: *const clap_plugin, stream: *const clap_ostream) -> bool>,
-    pub load: Option<unsafe extern "C" fn(plugin: *const clap_plugin, stream: *const clap_istream) -> bool>,
+    pub save: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, stream: *const clap_ostream) -> bool,
+    >,
+    pub load: Option<
+        unsafe extern "C" fn(plugin: *const clap_plugin, stream: *const clap_istream) -> bool,
+    >,
 }
 
 #[repr(C)]
@@ -408,7 +497,8 @@ pub const CLAP_LOG_PLUGIN_MISBEHAVING: i32 = 6;
 
 #[repr(C)]
 pub struct clap_host_log {
-    pub log: Option<unsafe extern "C" fn(host: *const clap_host, severity: i32, msg: *const c_char)>,
+    pub log:
+        Option<unsafe extern "C" fn(host: *const clap_host, severity: i32, msg: *const c_char)>,
 }
 
 #[repr(C)]
@@ -447,10 +537,31 @@ mod tests {
             size_of::<clap_note_port_info>(),
             size_of::<clap_plugin_entry>(),
         ];
-        let want = [16, 40, 40, 24, 104, w(56, 48), 20, 1320, w(32, 24), 12, w(64, 40), w(96, 48), w(88, 48), w(88, 48), w(288, 276), 268, w(40, 24)];
+        let want = [
+            16,
+            40,
+            40,
+            24,
+            104,
+            w(56, 48),
+            20,
+            1320,
+            w(32, 24),
+            12,
+            w(64, 40),
+            w(96, 48),
+            w(88, 48),
+            w(88, 48),
+            w(288, 276),
+            268,
+            w(40, 24),
+        ];
         assert_eq!(got, want);
         assert_eq!(std::mem::offset_of!(clap_event_note, velocity), 32);
-        assert_eq!(std::mem::offset_of!(clap_event_param_value, value), w(48, 40));
+        assert_eq!(
+            std::mem::offset_of!(clap_event_param_value, value),
+            w(48, 40)
+        );
         assert_eq!(std::mem::offset_of!(clap_event_transport, tempo), 40);
         assert_eq!(std::mem::offset_of!(clap_param_info, min_value), 1296);
         assert_eq!(align_of::<clap_event_transport>(), 8);

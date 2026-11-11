@@ -12,10 +12,10 @@
 //! top pixel and whose background colour is the bottom pixel. That works the
 //! same in a desktop terminal and on the MPC's framebuffer backend.
 
+use crate::menu;
 use crate::title::{self, TitleFont, TitleMask};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use crate::menu;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 use std::cell::RefCell;
@@ -151,20 +151,32 @@ impl Galaxy {
                 [0.9, 0.92, 1.0]
             };
             let weight = (0.15 + 0.6 * rng.unit().powi(2)) * (1.25 - rn);
-            particles.push(Particle { place: Place::Disc { rn, offset }, rgb, weight });
+            particles.push(Particle {
+                place: Place::Disc { rn, offset },
+                rgb,
+                weight,
+            });
         }
         // Older, dimmer stars everywhere on the disc.
         for _ in 0..4000 {
             let rn = rng.unit().powf(1.5);
             let offset = rng.unit() * TAU;
             let weight = 0.12 + 0.2 * rng.unit();
-            particles.push(Particle { place: Place::Disc { rn, offset }, rgb: [0.8, 0.75, 0.75], weight });
+            particles.push(Particle {
+                place: Place::Disc { rn, offset },
+                rgb: [0.8, 0.75, 0.75],
+                weight,
+            });
         }
         // Gold stars swirling in the heart, behind the title.
         for _ in 0..1800 {
             let r = (rng.gauss() * 0.5).abs().min(1.2);
             let angle = rng.unit() * TAU;
-            particles.push(Particle { place: Place::Heart { r, angle }, rgb: [1.0, 0.8, 0.5], weight: 0.4 * rng.unit() });
+            particles.push(Particle {
+                place: Place::Heart { r, angle },
+                rgb: [1.0, 0.8, 0.5],
+                weight: 0.4 * rng.unit(),
+            });
         }
         let stars = (0..420)
             .map(|_| Star {
@@ -175,7 +187,12 @@ impl Galaxy {
                 phase: rng.unit() * TAU,
             })
             .collect();
-        Galaxy { particles, stars, font, layout: RefCell::new(None) }
+        Galaxy {
+            particles,
+            stars,
+            font,
+            layout: RefCell::new(None),
+        }
     }
 
     fn layout(&self, width: usize, height: usize) -> Layout {
@@ -200,7 +217,8 @@ impl Galaxy {
                 disc[i] = (-rn.max(0.0) * 2.0).exp()
                     * smoothstep(heart * 0.75, heart * 1.1, r)
                     * (1.0 - smoothstep(0.85, 1.15, rn));
-                arm_phase[i] = dy.atan2(dx) - WIND * (1.0 + rn.max(0.0) * (radius / heart - 1.0)).ln();
+                arm_phase[i] =
+                    dy.atan2(dx) - WIND * (1.0 + rn.max(0.0) * (radius / heart - 1.0)).ln();
                 let g = r / (heart * 0.95);
                 glow[i] = (-g * g).exp() * 1.25;
             }
@@ -214,7 +232,9 @@ impl Galaxy {
                     let a = offset + WIND * (r / heart).ln();
                     (r * a.cos(), r * a.sin(), false)
                 }
-                Place::Heart { r, angle } => (r * heart * angle.cos(), r * heart * angle.sin(), true),
+                Place::Heart { r, angle } => {
+                    (r * heart * angle.cos(), r * heart * angle.sin(), true)
+                }
             })
             .collect();
         Layout {
@@ -257,7 +277,11 @@ impl Galaxy {
                 let width = arm_width(l.out[i]) * 1.15;
                 // A smooth bump across the arm, close to exp(-q) and cheaper.
                 let q = (d / width) * (d / width);
-                let bump = if q < 4.0 { (1.0 - q * 0.25).powi(4) } else { 0.0 };
+                let bump = if q < 4.0 {
+                    (1.0 - q * 0.25).powi(4)
+                } else {
+                    0.0
+                };
                 let arm = ARMS[(k as i64).rem_euclid(4) as usize] * bump;
                 let v = disc * 0.95;
                 c[0] += v * (0.10 + 0.42 * arm);
@@ -295,7 +319,8 @@ impl Galaxy {
         let mut out: Vec<[u8; 3]> = acc
             .iter()
             .map(|c| {
-                let tone = |v: f32| ((1.0 - (-v * 1.4).exp()) * 255.0).round().clamp(0.0, 255.0) as u8;
+                let tone =
+                    |v: f32| ((1.0 - (-v * 1.4).exp()) * 255.0).round().clamp(0.0, 255.0) as u8;
                 // A faint deep-blue sky rather than pure black.
                 [tone(c[0] + 0.012), tone(c[1] + 0.008), tone(c[2] + 0.035)]
             })
@@ -306,11 +331,24 @@ impl Galaxy {
 }
 
 /// Adds a point of light at (x, y), shared among the four nearest pixels.
-fn splat(acc: &mut [[f32; 3]], width: usize, height: usize, x: f32, y: f32, rgb: [f32; 3], weight: f32) {
+fn splat(
+    acc: &mut [[f32; 3]],
+    width: usize,
+    height: usize,
+    x: f32,
+    y: f32,
+    rgb: [f32; 3],
+    weight: f32,
+) {
     let (x, y) = (x - 0.5, y - 0.5);
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
-    for (dx, dy, f) in [(0, 0, (1.0 - fx) * (1.0 - fy)), (1, 0, fx * (1.0 - fy)), (0, 1, (1.0 - fx) * fy), (1, 1, fx * fy)] {
+    for (dx, dy, f) in [
+        (0, 0, (1.0 - fx) * (1.0 - fy)),
+        (1, 0, fx * (1.0 - fy)),
+        (0, 1, (1.0 - fx) * fy),
+        (1, 1, fx * fy),
+    ] {
         let (px, py) = (x0 as i64 + dx, y0 as i64 + dy);
         if px >= 0 && py >= 0 && (px as usize) < width && (py as usize) < height {
             let c = &mut acc[py as usize * width + px as usize];
@@ -338,7 +376,11 @@ pub fn title_layout(font: &TitleFont, width: usize, height: usize) -> (Vec<&'sta
     };
     let one = fit(&[TITLE]);
     let two = fit(&TITLE_LINES);
-    if one >= two { (vec![TITLE], one) } else { (TITLE_LINES.to_vec(), two) }
+    if one >= two {
+        (vec![TITLE], one)
+    } else {
+        (TITLE_LINES.to_vec(), two)
+    }
 }
 
 /// The heart's radius (where the arms start) and the galaxy's radius, in
@@ -369,14 +411,21 @@ fn draw_title(out: &mut [[u8; 3]], l: &Layout, seconds: f32) {
             }
             let at = sy as usize * l.width + sx as usize;
             let v = y as f32 / t.height as f32;
-            let shimmer = ((x as f32 / t.width as f32 - seconds * 0.22).rem_euclid(1.0) - 0.5).abs();
+            let shimmer =
+                ((x as f32 / t.width as f32 - seconds * 0.22).rem_euclid(1.0) - 0.5).abs();
             let glint = (1.0 - shimmer * 8.0).max(0.0) * 0.35 * 255.0;
-            let letter = [255.0 + (90.0 - 255.0) * v + glint, 255.0 + (225.0 - 255.0) * v + glint, 255.0];
+            let letter = [
+                255.0 + (90.0 - 255.0) * v + glint,
+                255.0 + (225.0 - 255.0) * v + glint,
+                255.0,
+            ];
             let outline = [6.0, 4.0, 20.0];
             let p = &mut out[at];
             for k in 0..3 {
                 let under = p[k] as f32 * (1.0 - halo) + outline[k] * halo;
-                p[k] = (under * (1.0 - ink) + letter[k].min(255.0) * ink).round().clamp(0.0, 255.0) as u8;
+                p[k] = (under * (1.0 - ink) + letter[k].min(255.0) * ink)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -415,11 +464,30 @@ impl Widget for GalaxyWidget<'_> {
         if let (Some(m), false) = (self.menu, pixel_menu) {
             // Too small for the pixel font: plain text near the bottom.
             let mut lines: Vec<(String, Style)> = Vec::new();
-            let options: Vec<String> =
-                m.options.iter().map(|(l, on)| if *on { format!("[ {l} ]") } else { format!("  {l}  ") }).collect();
-            lines.push((options.join("  "), Style::new().fg(Color::Rgb(90, 225, 255)).bg(Color::Rgb(5, 10, 30))));
+            let options: Vec<String> = m
+                .options
+                .iter()
+                .map(|(l, on)| {
+                    if *on {
+                        format!("[ {l} ]")
+                    } else {
+                        format!("  {l}  ")
+                    }
+                })
+                .collect();
+            lines.push((
+                options.join("  "),
+                Style::new()
+                    .fg(Color::Rgb(90, 225, 255))
+                    .bg(Color::Rgb(5, 10, 30)),
+            ));
             for hint in &m.hints {
-                lines.push((hint.clone(), Style::new().fg(Color::Rgb(230, 230, 240)).bg(Color::Rgb(5, 10, 30))));
+                lines.push((
+                    hint.clone(),
+                    Style::new()
+                        .fg(Color::Rgb(230, 230, 240))
+                        .bg(Color::Rgb(5, 10, 30)),
+                ));
             }
             let top = area.y + area.height.saturating_sub(lines.len() as u16 + 1);
             for (i, (text, style)) in lines.iter().enumerate() {
@@ -456,13 +524,26 @@ mod tests {
 
     #[test]
     fn the_title_fits_inside_the_heart() {
-        for (w, h) in [(320, 200), (160, 100), (80, 48), (250, 128), (40, 20), (1000, 600)] {
+        for (w, h) in [
+            (320, 200),
+            (160, 100),
+            (80, 48),
+            (250, 128),
+            (40, 20),
+            (1000, 600),
+        ] {
             let font = TitleFont::Block;
             let (heart, radius) = galaxy_size(&font, w, h);
             let (lines, cap) = title_layout(&font, w, h);
             let (tw, th) = title::size(&font, &lines, cap);
-            assert!(heart >= tw as f32 / 2.0 + 1.0, "{w}x{h}: heart {heart}, title {tw}");
-            assert!(heart * TILT >= th as f32 / 2.0 + 1.0, "{w}x{h}: heart {heart}, title {th}");
+            assert!(
+                heart >= tw as f32 / 2.0 + 1.0,
+                "{w}x{h}: heart {heart}, title {tw}"
+            );
+            assert!(
+                heart * TILT >= th as f32 / 2.0 + 1.0,
+                "{w}x{h}: heart {heart}, title {th}"
+            );
             assert!(radius >= heart * 2.0, "{w}x{h}: arms need room");
         }
     }
@@ -496,7 +577,12 @@ mod tests {
         let g = Galaxy::new();
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
-        GalaxyWidget { galaxy: &g, seconds: 1.0, menu: None }.render(area, &mut buf);
+        GalaxyWidget {
+            galaxy: &g,
+            seconds: 1.0,
+            menu: None,
+        }
+        .render(area, &mut buf);
         for y in 0..24 {
             for x in 0..80 {
                 assert_eq!(buf[(x, y)].symbol(), "\u{2580}");

@@ -23,7 +23,9 @@ pub trait GrainSource {
     /// twice. Sources override this with a faster path; it must give the
     /// same result as this default.
     #[inline]
-    fn read(&self, frame: i64, t: f32) -> [f32; 2] { read_slow(self, frame, t) }
+    fn read(&self, frame: i64, t: f32) -> [f32; 2] {
+        read_slow(self, frame, t)
+    }
 }
 
 /// Interpolates four interleaved frames that are known to be in range.
@@ -31,7 +33,10 @@ pub trait GrainSource {
 fn read4(w: &[f32], channels: usize, t: f32) -> [f32; 2] {
     if channels == 2 {
         let w: &[f32; 8] = w.try_into().expect("four stereo frames");
-        [hermite(w[0], w[2], w[4], w[6], t), hermite(w[1], w[3], w[5], w[7], t)]
+        [
+            hermite(w[0], w[2], w[4], w[6], t),
+            hermite(w[1], w[3], w[5], w[7], t),
+        ]
     } else {
         let w: &[f32; 4] = w.try_into().expect("four mono frames");
         let l = hermite(w[0], w[1], w[2], w[3], t);
@@ -57,7 +62,13 @@ impl<'a> Clip<'a> {
             return None;
         }
         let end = (data.len() / channels) as i64;
-        Some(Clip { data, channels, rate, start: 0, end })
+        Some(Clip {
+            data,
+            channels,
+            rate,
+            start: 0,
+            end,
+        })
     }
 
     /// Limits grains to frames `start..end` (a region), clamped to the data.
@@ -70,9 +81,15 @@ impl<'a> Clip<'a> {
 }
 
 impl GrainSource for Clip<'_> {
-    fn rate(&self) -> u32 { self.rate }
-    fn channels(&self) -> usize { self.channels }
-    fn span(&self) -> (i64, i64) { (self.start, self.end) }
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+    fn channels(&self) -> usize {
+        self.channels
+    }
+    fn span(&self) -> (i64, i64) {
+        (self.start, self.end)
+    }
     #[inline]
     fn sample(&self, ch: usize, frame: i64) -> f32 {
         if frame < self.start || frame >= self.end {
@@ -93,7 +110,15 @@ impl GrainSource for Clip<'_> {
 
 /// The trait's default read, for the edges.
 fn read_slow<S: GrainSource + ?Sized>(src: &S, frame: i64, t: f32) -> [f32; 2] {
-    let at = |ch| hermite(src.sample(ch, frame - 1), src.sample(ch, frame), src.sample(ch, frame + 1), src.sample(ch, frame + 2), t);
+    let at = |ch| {
+        hermite(
+            src.sample(ch, frame - 1),
+            src.sample(ch, frame),
+            src.sample(ch, frame + 1),
+            src.sample(ch, frame + 2),
+            t,
+        )
+    };
     let l = at(0);
     [l, if src.channels() == 2 { at(1) } else { l }]
 }
@@ -136,19 +161,31 @@ impl LiveBuffer {
     }
 
     /// Sets how many of the oldest frames stay out of the span while writing.
-    pub fn set_reserve(&mut self, frames: usize) { self.reserve = (frames as u64).min(self.capacity - 1); }
+    pub fn set_reserve(&mut self, frames: usize) {
+        self.reserve = (frames as u64).min(self.capacity - 1);
+    }
 
-    pub fn capacity(&self) -> usize { self.capacity as usize }
+    pub fn capacity(&self) -> usize {
+        self.capacity as usize
+    }
     /// Frames written so far (the absolute frame of the next write).
-    pub fn written(&self) -> u64 { self.written }
-    pub fn frozen(&self) -> bool { self.frozen }
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+    pub fn frozen(&self) -> bool {
+        self.frozen
+    }
     /// Freeze on: writes are ignored and the span stops moving.
-    pub fn set_frozen(&mut self, on: bool) { self.frozen = on; }
+    pub fn set_frozen(&mut self, on: bool) {
+        self.frozen = on;
+    }
 
     /// Forgets everything written (the span becomes empty) without touching
     /// the memory, so it is cheap enough for the audio thread. Freeze stays
     /// as it was.
-    pub fn clear(&mut self) { self.written = 0; }
+    pub fn clear(&mut self) {
+        self.written = 0;
+    }
 
     /// Appends interleaved frames (in this buffer's channel count). Ignored
     /// while frozen. A trailing partial frame is dropped.
@@ -189,8 +226,12 @@ impl LiveBuffer {
 }
 
 impl GrainSource for LiveBuffer {
-    fn rate(&self) -> u32 { self.rate }
-    fn channels(&self) -> usize { self.channels }
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+    fn channels(&self) -> usize {
+        self.channels
+    }
     fn span(&self) -> (i64, i64) {
         let (oldest, end) = self.held();
         let start = if self.frozen {
