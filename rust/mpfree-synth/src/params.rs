@@ -106,21 +106,21 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC1_OCT, -1.0), (OSC2_WAVE, 1.0), (OSC2_OCT, -1.0), (OSC2_FINE, -9.0), (OSC2_LEVEL, 70.0), (SUB_LEVEL, 70.0),
             (CUTOFF, 260.0), (RESONANCE, 35.0), (DRIVE, 18.0), (FENV_AMOUNT, 3.2), (FENV_D, 220.0), (FENV_S, 10.0),
-            (AMP_D, 400.0), (AMP_S, 70.0), (AMP_R, 90.0), (VOICE_MODE, 2.0), (GLIDE, 40.0), (KEY_TRACK, 30.0),
+            (AMP_D, 400.0), (AMP_S, 70.0), (AMP_R, 90.0), (VOICE_MODE, 2.0), (GLIDE, 40.0), (KEY_TRACK, 30.0), (LEVEL, 6.0),
         ],
     },
     Preset {
         name: "Acid",
         values: &[
             (OSC2_LEVEL, 0.0), (OSC1_OCT, -1.0), (CUTOFF, 380.0), (RESONANCE, 82.0), (DRIVE, 12.0), (FENV_AMOUNT, 3.8),
-            (FENV_D, 180.0), (FENV_S, 0.0), (AMP_S, 90.0), (AMP_R, 40.0), (VOICE_MODE, 2.0), (GLIDE, 70.0), (VEL_CUTOFF, 2.0),
+            (FENV_D, 180.0), (FENV_S, 0.0), (AMP_S, 90.0), (AMP_R, 40.0), (VOICE_MODE, 2.0), (GLIDE, 70.0), (VEL_CUTOFF, 2.0), (LEVEL, 5.0),
         ],
     },
     Preset {
         name: "Supersaw",
         values: &[
             (UNISON, 4.0), (UNISON_DETUNE, 28.0), (UNISON_SPREAD, 90.0), (OSC2_OCT, 1.0), (OSC2_FINE, 4.0), (OSC2_LEVEL, 45.0),
-            (CUTOFF, 6_000.0), (RESONANCE, 10.0), (FENV_AMOUNT, 0.8), (AMP_A, 5.0), (AMP_R, 500.0), (FILTER_MODE, 1.0),
+            (CUTOFF, 6_000.0), (RESONANCE, 10.0), (FENV_AMOUNT, 0.8), (AMP_A, 5.0), (AMP_R, 500.0), (FILTER_MODE, 1.0), (LEVEL, -3.0),
         ],
     },
     Preset {
@@ -128,7 +128,7 @@ pub static PRESETS: &[Preset] = &[
         values: &[
             (OSC1_WAVE, 1.0), (OSC1_PW, 35.0), (OSC2_FINE, 11.0), (OSC2_LEVEL, 80.0), (NOISE_LEVEL, 8.0), (UNISON, 2.0), (UNISON_DETUNE, 12.0),
             (CUTOFF, 900.0), (RESONANCE, 25.0), (FENV_AMOUNT, 1.2), (FENV_A, 900.0), (FENV_D, 2_000.0), (FENV_S, 50.0), (FENV_R, 1_500.0),
-            (AMP_A, 700.0), (AMP_D, 1_500.0), (AMP_S, 85.0), (AMP_R, 1_800.0), (LFO_SHAPE, 1.0), (LFO_RATE, 0.3), (LFO_PW, 20.0), (LFO_CUTOFF, 0.6),
+            (AMP_A, 700.0), (AMP_D, 1_500.0), (AMP_S, 85.0), (AMP_R, 1_800.0), (LFO_SHAPE, 1.0), (LFO_RATE, 0.3), (LFO_PW, 20.0), (LFO_CUTOFF, 0.6), (LEVEL, -6.0),
         ],
     },
     Preset {
@@ -156,7 +156,7 @@ pub static PRESETS: &[Preset] = &[
         name: "Lead",
         values: &[
             (OSC1_WAVE, 1.0), (OSC1_PW, 40.0), (OSC2_FINE, 12.0), (OSC2_LEVEL, 80.0), (CUTOFF, 1_800.0), (RESONANCE, 40.0), (DRIVE, 9.0),
-            (FENV_AMOUNT, 1.8), (FENV_D, 300.0), (FENV_S, 40.0), (VOICE_MODE, 2.0), (GLIDE, 90.0), (LFO_PITCH, 0.3), (LFO_RATE, 5.8), (BEND_RANGE, 12.0),
+            (FENV_AMOUNT, 1.8), (FENV_D, 300.0), (FENV_S, 40.0), (VOICE_MODE, 2.0), (GLIDE, 90.0), (LFO_PITCH, 0.3), (LFO_RATE, 5.8), (BEND_RANGE, 12.0), (LEVEL, 3.0),
         ],
     },
 ];
