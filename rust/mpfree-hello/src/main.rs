@@ -63,6 +63,8 @@ mod gui;
 mod kit;
 mod sampler;
 mod sys;
+#[allow(dead_code)] // Wired into the audio loop in the next step.
+mod time;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
