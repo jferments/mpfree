@@ -502,6 +502,10 @@ pub const THEMES: [(&str, &str); 4] = [
     ("spaceship", "Spaceship"),
 ];
 
+/// The store owner whose files are the themes folder: theme files the
+/// user puts in `files/themes/` on the data partition, named `NAME.theme`.
+pub const THEMES_FOLDER: &str = "themes";
+
 /// Which part of Prefs is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrefsSection {
@@ -693,6 +697,10 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// Theme files found in the themes folder at start (`files/themes/` in
+    /// `--data`): the file name, which is what `settings.theme` holds, and
+    /// the theme's own name for the Appearance row. After [`THEMES`].
+    pub theme_files: Vec<(String, String)>,
     /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
     /// when it is Direct.
     arp_mode: Mode,
@@ -841,6 +849,7 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            theme_files: Vec::new(),
             loop_muted: false,
             save_dirty: false,
             saved: Default::default(),
@@ -1664,6 +1673,23 @@ impl App {
         }
     }
 
+    /// Every theme Prefs > Appearance offers, in order: (what
+    /// `settings.theme` holds, the row's text). The built-in themes, then
+    /// the themes folder's files.
+    pub fn theme_choices(&self) -> impl Iterator<Item = (&str, &str)> {
+        THEMES.iter().copied().chain(
+            self.theme_files
+                .iter()
+                .map(|(f, n)| (f.as_str(), n.as_str())),
+        )
+    }
+
+    /// True when `theme` is one Appearance offers (built in or in the
+    /// themes folder), so it is kept and restored.
+    pub fn offers_theme(&self, theme: &str) -> bool {
+        self.theme_choices().any(|t| t.0 == theme)
+    }
+
     fn item_text(&self, item: Item) -> (&'static str, String) {
         let s = &self.settings;
         match item {
@@ -1688,8 +1714,7 @@ impl App {
             Item::TouchSection => ("Touch screen", "Open".to_string()),
             Item::Appearance => (
                 "Appearance",
-                THEMES
-                    .iter()
+                self.theme_choices()
                     .find(|t| t.0 == s.theme)
                     .map(|t| t.1)
                     .unwrap_or("Theme file")
@@ -1976,6 +2001,12 @@ impl App {
             let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
             all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
         }
+        // Appearance steps through these (the theme files can't be borrowed
+        // while the settings are).
+        let themes: Vec<String> = match items[i] {
+            Item::Appearance => self.theme_choices().map(|t| t.0.to_string()).collect(),
+            _ => Vec::new(),
+        };
         let s = &mut self.settings;
         match items[i] {
             Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
@@ -2014,12 +2045,12 @@ impl App {
             }
             Item::Appearance => {
                 // A theme file from --theme counts as before the first.
-                let at = THEMES.iter().position(|t| t.0 == s.theme);
+                let at = themes.iter().position(|t| *t == s.theme);
                 let next = match at {
-                    Some(i) => (i as i32 + d).clamp(0, THEMES.len() as i32 - 1) as usize,
+                    Some(i) => (i as i32 + d).clamp(0, themes.len() as i32 - 1) as usize,
                     None => 0,
                 };
-                s.theme = THEMES[next].0.to_string();
+                s.theme = themes[next].clone();
             }
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
@@ -2495,6 +2526,43 @@ mod tests {
         let mut next = App::new(44_100, false);
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "synthwave");
+    }
+
+    #[test]
+    fn appearance_offers_the_themes_folder_after_the_built_ins() {
+        let mut app = App::new(44_100, false);
+        app.theme_files = vec![("sunrise.theme".into(), "Sunrise".into())];
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        for _ in 0..3 {
+            app.step_item(at, 1);
+        }
+        // Past Spaceship: the theme file, by its own name, then the end.
+        assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
+        assert_eq!(app.settings.theme, "sunrise.theme");
+        assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
+        // Kept by its file name, and restored while the file is there.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("theme"), Some("sunrise.theme"));
+        let mut next = App::new(44_100, false);
+        next.theme_files = app.theme_files.clone();
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.theme, "sunrise.theme");
+        // Gone from the folder: the default theme, and the log says so.
+        let mut gone = App::new(44_100, false);
+        let notes = gone.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(gone.settings.theme, "default");
+        assert!(
+            notes.iter().any(|n| n.contains("theme = sunrise.theme")),
+            "{notes:?}"
+        );
     }
 
     #[test]

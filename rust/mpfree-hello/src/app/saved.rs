@@ -78,8 +78,9 @@ impl App {
         );
         out.set_i64("audio-buffer", s.periods as i64);
         out.set_bool("developer-tools", s.debug_mode);
-        // A theme file given with --theme is for that run only.
-        if super::THEMES.iter().any(|t| t.0 == s.theme) {
+        // A built-in theme or one from the themes folder; a theme file given
+        // with --theme is for that run only.
+        if self.offers_theme(&s.theme) {
             out.set_str("theme", &s.theme);
         }
         out
@@ -110,6 +111,7 @@ impl App {
     pub fn restore(&mut self, app: &Settings, map: &Settings) -> Vec<String> {
         let mut notes = Vec::new();
         let mut skipped = Vec::new();
+        let themes: Vec<String> = self.theme_choices().map(|t| t.0.to_string()).collect();
         let s = &mut self.settings;
         for (k, v) in app.iter() {
             let ok = match k {
@@ -141,10 +143,11 @@ impl App {
                     })
                     .is_some(),
                 "developer-tools" => app.get_bool(k).map(|b| s.debug_mode = b).is_some(),
-                "theme" => super::THEMES
+                // Built in, or in the themes folder (listed before restore).
+                "theme" => themes
                     .iter()
-                    .find(|t| t.0 == v)
-                    .map(|t| s.theme = t.0.to_string())
+                    .find(|t| *t == v)
+                    .map(|t| s.theme = t.clone())
                     .is_some(),
                 _ => false,
             };

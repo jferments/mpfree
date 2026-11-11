@@ -56,19 +56,48 @@ pub fn scene(kind: Startup, w: i32, h: i32) -> Option<Box<dyn Scene>> {
     }
 }
 
-/// The theme the user picked in Prefs > Appearance, read from the data
-/// folder the app saves to (`--data`, docs/project/storage-spec.md):
-/// `settings/app.conf`, key `theme`. Only reads, and only that one file;
-/// never makes a folder, never writes. Anything missing, unreadable, a
-/// symlink, too big, or a theme that isn't built in gives None, so the
-/// caller shows the default: a startup screen must always come up.
+/// The startup screen for the theme the user picked in Prefs > Appearance,
+/// read from the data folder the app saves to (`--data`,
+/// docs/project/storage-spec.md): `settings/app.conf`, key `theme`. That is
+/// a built-in name, or a theme file in the themes folder
+/// (`files/themes/NAME.theme`), whose `startup` (or its base's) is used.
+/// Gives the built-in theme whose startup screen that is ("console",
+/// "synthwave", "spaceship"; "default" for synthwave).
+///
+/// Only reads, and only those two files; follows no symlinks, never makes
+/// a folder, never writes. Anything missing, unreadable, too big, not a
+/// theme, or the galaxy (which is mpfree-splash) gives None, so the caller
+/// shows the default: a startup screen must always come up.
 pub fn saved_theme(data: &Path) -> Option<String> {
-    let mut path = data.to_path_buf();
-    for part in ["settings", "app.conf"] {
+    let app = read_plain(data, &["settings", "app.conf"])?;
+    let name = mpfree_store::Settings::parse(&app)
+        .get_str("theme")?
+        .trim()
+        .to_ascii_lowercase();
+    if Theme::builtin(&name).is_some() {
+        return Some(name);
+    }
+    if !name.ends_with(".theme") || !mpfree_store::valid_name(&name) {
+        return None;
+    }
+    let text = read_plain(data, &["files", "themes", &name])?;
+    match Theme::parse(&text).ok()?.startup {
+        Startup::Galaxy => None,
+        Startup::Console => Some("console".into()),
+        Startup::Synthwave => Some("synthwave".into()),
+        Startup::Spaceship => Some("spaceship".into()),
+    }
+}
+
+/// A plain text file under `dir` (folders, then the file; no symlinks),
+/// at most the store's largest file.
+fn read_plain(dir: &Path, parts: &[&str]) -> Option<String> {
+    let mut path = dir.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
         path.push(part);
-        // symlink_metadata: follow no links out of the data folder.
         let m = fs::symlink_metadata(&path).ok()?;
-        if part == "settings" && !m.is_dir() || part == "app.conf" && !m.is_file() {
+        let last = i + 1 == parts.len();
+        if last && !m.is_file() || !last && !m.is_dir() {
             return None;
         }
     }
@@ -81,12 +110,7 @@ pub fn saved_theme(data: &Path) -> Option<String> {
     if bytes.len() > mpfree_store::MAX_FILE {
         return None;
     }
-    let text = String::from_utf8(bytes).ok()?;
-    let name = mpfree_store::Settings::parse(&text)
-        .get_str("theme")?
-        .trim()
-        .to_ascii_lowercase();
-    Theme::builtin(&name).map(|_| name)
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -111,6 +135,31 @@ mod tests {
         assert_eq!(saved_theme(&d).as_deref(), Some("console"));
         fs::write(d.join("settings/app.conf"), "theme = Spaceship\n").unwrap();
         assert_eq!(saved_theme(&d).as_deref(), Some("spaceship"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn saved_theme_follows_a_themes_folder_file() {
+        let d = folder("file");
+        fs::create_dir_all(d.join("files/themes")).unwrap();
+        fs::write(d.join("settings/app.conf"), "theme = sunrise.theme\n").unwrap();
+        assert_eq!(saved_theme(&d), None, "the file is not there");
+        fs::write(
+            d.join("files/themes/sunrise.theme"),
+            "base = spaceship\nname = Sunrise\n",
+        )
+        .unwrap();
+        assert_eq!(saved_theme(&d).as_deref(), Some("spaceship"));
+        fs::write(
+            d.join("files/themes/sunrise.theme"),
+            "base = spaceship\nstartup = console\n",
+        )
+        .unwrap();
+        assert_eq!(saved_theme(&d).as_deref(), Some("console"));
+        fs::write(d.join("files/themes/sunrise.theme"), "startup = galaxy\n").unwrap();
+        assert_eq!(saved_theme(&d), None, "the galaxy is mpfree-splash");
+        fs::write(d.join("files/themes/sunrise.theme"), "accent = blue\n").unwrap();
+        assert_eq!(saved_theme(&d), None, "not a theme");
         let _ = fs::remove_dir_all(&d);
     }
 
