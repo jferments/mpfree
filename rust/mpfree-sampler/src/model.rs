@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+pub use mpfree_grain::{Params as GrainParams, TempoSync, Window as GrainWindow};
+
 pub use crate::dsp::{Ahdsr, Filter, FilterKind};
 
 /// Pads in a program: 8 banks of 16.
@@ -136,6 +138,43 @@ pub enum PlayMode {
     /// Loops between the loop points while held; lifting the pad leaves the
     /// loop and plays the tail to the region's end.
     Loop,
+    /// Plays the region as a grain cloud (the region's `grain` settings)
+    /// while held; lifting the pad stops new grains and starts the amp
+    /// envelope's release. Tune adds to the grain pitch, and reverse makes
+    /// every grain play backwards. The source's channels play as they are
+    /// (the channel pick doesn't apply).
+    Granular,
+}
+
+/// What pressing harder on a held pad changes. The MPC's pads send
+/// pressure (polyphonic aftertouch) for each pad; 0 is a light touch and
+/// full pressure gives the whole `depth`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PressureTarget {
+    #[default]
+    Off,
+    /// Level, up to ±12 dB.
+    Level,
+    /// Pitch, up to ±12 semitones (grains too).
+    Pitch,
+    /// Filter cutoff, up to ±4 octaves (needs the pad's filter on).
+    Filter,
+    /// Grains per second, up to ×16 or ÷16 (granular regions).
+    GrainDensity,
+    /// Grain length, up to ×8 or ÷8 (granular regions).
+    GrainSize,
+    /// Where grains read, moved by up to the whole region, wrapping.
+    GrainPosition,
+    /// Grain spray, up to ±100 %.
+    GrainSpray,
+}
+
+/// A pad's pressure routing: one target and how far full pressure moves
+/// it, from −1 (down) to +1 (up).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PressureRoute {
+    pub target: PressureTarget,
+    pub depth: f32,
 }
 
 /// A recipe on part of a source. The source's audio is never changed.
@@ -152,6 +191,9 @@ pub struct Region {
     pub channels: ChannelPick,
     pub tune_cents: i32,
     pub mode: PlayMode,
+    /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
+    /// with the region in every mode, so switching modes loses nothing.
+    pub grain: GrainParams,
 }
 
 impl Region {
@@ -159,7 +201,7 @@ impl Region {
     pub fn whole(source: &Source) -> Region {
         Region { source: source.id(), start: 0, end: source.frames(), sustain_loop: None,
             fade_in: Fade::NONE, fade_out: Fade::NONE, gain_db: 0.0, reverse: false,
-            channels: ChannelPick::Stereo, tune_cents: 0, mode: PlayMode::OneShot }
+            channels: ChannelPick::Stereo, tune_cents: 0, mode: PlayMode::OneShot, grain: GrainParams::default() }
     }
 
     pub fn frames(&self) -> u64 { self.end.saturating_sub(self.start) }
@@ -176,6 +218,10 @@ impl Region {
         if self.mode == PlayMode::Loop && self.sustain_loop.is_none() { return Err(ModelError::BadRegion("loop mode needs loop points")); }
         if u64::from(self.fade_in.frames) + u64::from(self.fade_out.frames) > self.frames() { return Err(ModelError::BadRegion("fades longer than the region")); }
         if !self.gain_db.is_finite() || self.tune_cents.abs() > 4800 { return Err(ModelError::BadRegion("gain/tune")); }
+        let g = &self.grain;
+        let numbers = [g.position, g.spray, g.size_ms, g.density, g.pitch, g.pitch_spray, g.scan, g.reverse, g.spread, g.gain];
+        let sync_ok = g.sync.is_none_or(|t| t.frames_per_beat.is_finite() && t.grains_per_beat.is_none_or(f32::is_finite) && t.size_beats.is_none_or(f32::is_finite));
+        if numbers.iter().any(|x| !x.is_finite()) || !sync_ok { return Err(ModelError::BadRegion("grain settings")); }
         Ok(())
     }
 }
@@ -328,13 +374,16 @@ pub struct Pad {
     pub level_db: f32,
     pub pan: f32,
     pub tune_cents: i32,
+    /// What pressure on this pad changes.
+    pub pressure: PressureRoute,
 }
 
 impl Pad {
     pub fn new(name: &str, layer: Layer) -> Pad {
         Pad { name: name.to_string(), layers: vec![layer], select: LayerSelect::All, polyphony: 8,
             mute_group: None, chokes: Vec::new(), amp: Ahdsr::OPEN, filter: Filter::default(),
-            filter_env: Ahdsr::OPEN, vel_to_level: 1.0, vel_to_start: 0.0, level_db: 0.0, pan: 0.0, tune_cents: 0 }
+            filter_env: Ahdsr::OPEN, vel_to_level: 1.0, vel_to_start: 0.0, level_db: 0.0, pan: 0.0, tune_cents: 0,
+            pressure: PressureRoute::default() }
     }
 }
 
@@ -401,7 +450,9 @@ impl Project {
 
     fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
         if pad.layers.len() > MAX_LAYERS { return Err(ModelError::TooManyLayers); }
-        if pad.polyphony == 0 || pad.chokes.iter().any(|&c| c >= PADS) || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g)) {
+        let depth = pad.pressure.depth;
+        if pad.polyphony == 0 || pad.chokes.iter().any(|&c| c >= PADS) || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
+            || !depth.is_finite() || depth.abs() > 1.0 {
             return Err(ModelError::BadPad);
         }
         for l in &pad.layers {

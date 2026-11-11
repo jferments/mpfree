@@ -5,7 +5,7 @@
 //! applies quantise and speed, and resolves which swing each clip uses, so
 //! playback is a binary search and a few multiplications per clip.
 
-use mpfree_seq::{DestId, ModelError, Project, Speed, SLOTS};
+use mpfree_seq::{DestId, ModelError, Note, Project, Quantise, Speed, SLOTS};
 use mpfree_transport::time::{Swing, Tick};
 
 /// A clip playing on a track: which slot, and the song tick where its first
@@ -35,12 +35,18 @@ pub(crate) struct NoteView {
     pub len: f64,
     pub note: u8,
     pub velocity: u8,
+    /// The clip's note as stored, to name it when replace recording erases it.
+    pub src: Note,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
+    pub slot: usize,
     pub origin: Tick,
+    /// One pass, in the clip's own ticks.
+    pub length: Tick,
     pub speed: Speed,
+    pub quantise: Option<Quantise>,
     /// One pass, in song ticks.
     pub song_len: f64,
     /// The clip's own swing, else the track's; `None` follows the transport.
@@ -61,6 +67,7 @@ pub(crate) struct TrackView {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayView {
     pub(crate) tracks: Vec<TrackView>,
+    pub(crate) armed: Option<usize>,
 }
 
 impl PlayView {
@@ -97,19 +104,34 @@ impl PlayView {
                         len: clip.speed.to_song(n.len as f64),
                         note: n.note,
                         velocity: n.velocity,
+                        src: *n,
                     }
                 })
                 .collect();
             notes.sort_by(|a, b| a.local.total_cmp(&b.local));
             tracks[l.track].clip = Some(ClipView {
+                slot: l.slot,
                 origin: l.origin,
+                length: clip.length,
                 speed: clip.speed,
+                quantise: clip.quantise,
                 song_len: clip.speed.to_song(length),
                 swing: clip.swing.or(track.swing),
                 notes,
             });
         }
-        Ok(PlayView { tracks })
+        Ok(PlayView { tracks, armed: None })
+    }
+
+    /// Arm `track` for recording, or none. The recorder records into its
+    /// playing clip, and replace recording erases from it. Set it before
+    /// swapping the view in.
+    pub fn set_armed(&mut self, track: Option<usize>) {
+        self.armed = track;
+    }
+
+    pub fn armed(&self) -> Option<usize> {
+        self.armed
     }
 
     pub fn tracks(&self) -> usize {

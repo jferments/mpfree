@@ -81,6 +81,9 @@ jobs:
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hello_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_factory_kit.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
       - name: Check the remote survey contains no known destructive operations
         run: |
@@ -337,6 +340,20 @@ jobs:
           # Owner presses Enter per step: the helper must stay in the terminal's
           # foreground process group so it can read Enter and receive Ctrl-C.
           assert 'timeout --foreground 1800 python3 "$SCRIPT_DIR/host_touch_capture.py"' in wrapper
+          # The pad player (test boot only): the one program it starts is a
+          # read-only `journalctl -f` for its Console page; it never names a
+          # block device, systemctl or the network, and it only reads the
+          # framebuffer it captures as a backdrop.
+          hello_code = ""
+          for f in sorted(Path("rust/mpfree-hello/src").glob("*.rs")):
+              hello_code += "\n".join(x for x in f.read_text().splitlines()
+                  if not x.lstrip().startswith("//")) + "\n"
+          assert hello_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in hello_code
+          assert '.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])' in hello_code
+          for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'remove_file', 'kexec'):
+              assert needle not in hello_code, needle
+          ui_fb = Path("rust/mpfree-ui/src/fb.rs").read_text()
+          assert 'pub fn capture(' in ui_fb
           # M13 live reader: read-only, never grabs, and its only unsafe code
           # is two read-only ioctls (EVIOCGABS, EVIOCGMTSLOTS) in sys.rs.
           evdev_lib = Path("rust/mpfree-touch-evdev/src/lib.rs").read_text()
@@ -848,6 +865,32 @@ jobs:
           assert any(data), "nothing was drawn"
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
+      - name: Build and check the static Hello MPC program for the kexec test boot (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          # Its ALSA and input layouts against the kernel's own headers for 32-bit ARM (compile only).
+          arm-linux-gnueabihf-gcc -c rust/mpfree-hello/abi-check.c -o "$RUNNER_TEMP/abi-check.o"
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-hello
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-hello
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-hello must be statically linked"; exit 1
+          fi
+          # Its unit tests and the GUI's as 32-bit ARM (the parameter blocks, event layout, drawing), under qemu.
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
+          # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
+          timeout 120 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
+          for n in console loading loading-failed play debug syslog prefs options guide; do
+            head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
+          done
+          echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."
 
       - name: Build and check the static startup screen program (do not deploy)
         env:

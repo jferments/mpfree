@@ -148,3 +148,67 @@ fn the_arp_track_is_the_same_for_every_period_size() {
         assert!(go(&mut r) == reference, "random sizes (seed {seed}) differ");
     }
 }
+
+#[test]
+fn live_pad_notes_mix_with_clip_notes_in_any_order() {
+    // The player's notes, then live pad notes for the same period, come in
+    // two batches; the arp plays them in offset order either way.
+    let fed = [
+        (300, Event::NoteOn { note: 60, velocity: 100 }),
+        (900, Event::NoteOff { note: 64 }),
+        (40, Event::NoteOn { note: 64, velocity: 90 }),
+        (300, Event::NoteOn { note: 67, velocity: 80 }),
+    ];
+    let sorted = [fed[2], fed[0], fed[3], fed[1]];
+    let play = |notes: &[(u32, Event)]| {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Play);
+        let mut host = ArpHost::new(Engine::new(44_100, 120.0));
+        host.engine.set_settings(Settings { rate: Rate::ThirtySecond, ..arp_settings() });
+        let mut block = Block::new();
+        let mut out = vec![];
+        for period in 0..40 {
+            t.process(1024, &mut block);
+            if period == 0 {
+                for &(offset, event) in notes {
+                    host.input(offset, event);
+                }
+            }
+            let start = block.start_frame;
+            host.process(&block, &mut |offset, kind| out.push((start + u64::from(offset), kind)));
+        }
+        out
+    };
+    let out = play(&fed);
+    assert!(out.len() > 10, "{out:?}");
+    assert_eq!(out, play(&sorted));
+}
+
+#[test]
+fn a_note_held_by_a_pad_and_a_clip_waits_for_both() {
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let mut host = ArpHost::new(Engine::new(44_100, 120.0));
+    host.engine.set_settings(arp_settings());
+    let mut block = Block::new();
+    let mut period = |host: &mut ArpHost, notes: &[(u32, Event)]| {
+        t.process(512, &mut block);
+        for &(offset, event) in notes {
+            host.input(offset, event);
+        }
+        host.process(&block, &mut |_, _| {});
+    };
+    // The pad presses 60, the clip plays 60 and ends it: the pad still holds it.
+    period(&mut host, &[(0, Event::NoteOn { note: 60, velocity: 100 }), (100, Event::NoteOn { note: 60, velocity: 80 })]);
+    period(&mut host, &[(200, Event::NoteOff { note: 60 })]);
+    assert!(host.engine.active().contains(60));
+    // The pad lets go: released. A stray release changes nothing.
+    period(&mut host, &[(0, Event::NoteOff { note: 60 }), (10, Event::NoteOff { note: 60 })]);
+    assert!(!host.engine.active().contains(60));
+    period(&mut host, &[(0, Event::NoteOn { note: 60, velocity: 100 })]);
+    assert!(host.engine.active().contains(60), "one press presses again");
+    // A panic forgets every press.
+    period(&mut host, &[(0, Event::NoteOn { note: 62, velocity: 100 }), (5, Event::AllOff)]);
+    period(&mut host, &[(0, Event::NoteOn { note: 62, velocity: 100 })]);
+    assert!(host.engine.active().contains(62) && !host.engine.active().contains(60));
+}
