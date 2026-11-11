@@ -13,7 +13,7 @@
 
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
-use crate::scale::Scale;
+use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
@@ -92,6 +92,133 @@ pub enum Order {
     RandomOnce,
     /// All notes together on every step.
     Chord,
+}
+
+/// A chord built on each held note from the scale (stacked scale steps), so
+/// one pad can play a whole chord for the arp to run over. Without a scale,
+/// it is built from the major scale on the held note.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Chord {
+    #[default]
+    Off,
+    /// 1 and 5.
+    Power,
+    /// 1 3 5.
+    Triad,
+    /// 1 2 5.
+    Sus2,
+    /// 1 4 5.
+    Sus4,
+    /// 1 3 5 7.
+    Seventh,
+    /// 1 3 5 7 9.
+    Ninth,
+}
+
+impl Chord {
+    pub const ALL: [Chord; 7] = [
+        Chord::Off,
+        Chord::Power,
+        Chord::Triad,
+        Chord::Sus2,
+        Chord::Sus4,
+        Chord::Seventh,
+        Chord::Ninth,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Chord::Off => "Off",
+            Chord::Power => "Power (1 5)",
+            Chord::Triad => "Triad (1 3 5)",
+            Chord::Sus2 => "Sus2 (1 2 5)",
+            Chord::Sus4 => "Sus4 (1 4 5)",
+            Chord::Seventh => "Seventh (1 3 5 7)",
+            Chord::Ninth => "Ninth (1 3 5 7 9)",
+        }
+    }
+
+    /// Scale steps above the held note.
+    pub fn steps(self) -> &'static [i16] {
+        match self {
+            Chord::Off => &[0],
+            Chord::Power => &[0, 4],
+            Chord::Triad => &[0, 2, 4],
+            Chord::Sus2 => &[0, 1, 4],
+            Chord::Sus4 => &[0, 3, 4],
+            Chord::Seventh => &[0, 2, 4, 6],
+            Chord::Ninth => &[0, 2, 4, 6, 8],
+        }
+    }
+}
+
+/// The notes a step works from: the held notes, sorted, each grown into a
+/// chord ([`Settings::chord`]), then, for the Arp and Pattern modes, every
+/// scale note between the lowest and the highest ([`Settings::run`]; one
+/// octave up from a single note). `list[..n]` in, the new count out, still
+/// sorted. The screens use it too, to show what the steps will play.
+pub fn step_notes(s: &Settings, list: &mut [Held; MAX_NOTES], n: usize) -> usize {
+    let mut n = n.min(MAX_NOTES);
+    if s.chord != Chord::Off {
+        let mut out = [Held::default(); MAX_NOTES];
+        let mut m = 0;
+        for h in &list[..n] {
+            let scale = s.scale.unwrap_or(Scale::new(h.note % 12, MAJOR));
+            let Some(root) = scale.snapped(i16::from(h.note), s.snap) else {
+                continue;
+            };
+            for &step in s.chord.steps() {
+                let note = scale.walk(root, step);
+                if m < MAX_NOTES
+                    && (0..=127).contains(&note)
+                    && !out[..m].iter().any(|x| i16::from(x.note) == note)
+                {
+                    out[m] = Held {
+                        note: note as u8,
+                        velocity: h.velocity,
+                    };
+                    m += 1;
+                }
+            }
+        }
+        out[..m].sort_unstable_by_key(|h| h.note);
+        list[..m].copy_from_slice(&out[..m]);
+        n = m;
+    }
+    if s.run && n > 0 && matches!(s.mode, Mode::Arp | Mode::Pattern) {
+        let scale = s.scale.unwrap_or(Scale::new(0, CHROMATIC));
+        let lo = i16::from(list[0].note);
+        let hi = if n == 1 {
+            lo + 11
+        } else {
+            i16::from(list[n - 1].note)
+        };
+        let mut out = [Held::default(); MAX_NOTES];
+        let mut m = 0;
+        let mut k = 0;
+        while m < MAX_NOTES {
+            let note = scale.nth(lo, k);
+            if note > hi || note > 127 {
+                break;
+            }
+            // Each run note takes the velocity of the held note at or below it.
+            let velocity = list[..n]
+                .iter()
+                .rev()
+                .find(|h| i16::from(h.note) <= note)
+                .unwrap_or(&list[0])
+                .velocity;
+            out[m] = Held {
+                note: note as u8,
+                velocity,
+            };
+            m += 1;
+            k += 1;
+        }
+        list[..m].copy_from_slice(&out[..m]);
+        n = m;
+    }
+    n
 }
 
 impl Order {
@@ -304,6 +431,15 @@ pub struct Settings {
     pub accent: u8,
     /// Keeps generated notes in key, applied last. None for drum pads.
     pub scale: Option<Scale>,
+    /// What happens to a note outside the scale: the scale note below
+    /// (the default), above, the nearest, or not played.
+    pub snap: Snap,
+    /// Each held note plays a chord built from the scale.
+    pub chord: Chord,
+    /// Arp and Pattern modes: the steps run through every scale note
+    /// between the lowest and the highest held note (one octave from a
+    /// single note), in the order's order.
+    pub run: bool,
     /// Spreads the notes of a chord step across 0..=100 % of the step,
     /// lowest first, like a strum.
     pub strum: u8,
@@ -329,6 +465,9 @@ impl Default for Settings {
             velocity: Velocity::Played,
             accent: 127,
             scale: None,
+            snap: Snap::Down,
+            chord: Chord::Off,
+            run: false,
             strum: 0,
             retrigger: false,
             repeats: 0,
@@ -859,6 +998,7 @@ impl Engine {
     fn fire_step(&mut self, at: f64, len: f64) {
         let mut sorted = [Held::default(); MAX_NOTES];
         let n = self.notes.active().sorted(&mut sorted);
+        let n = step_notes(&self.settings, &mut sorted, n);
         if n == 0 {
             return;
         }
@@ -928,7 +1068,9 @@ impl Engine {
             return;
         }
         let mut played = [Held::default(); MAX_NOTES];
-        let base: &[Held] = if order == Order::Played {
+        // A chord or a run has no press order: As played goes up.
+        let grown = self.settings.chord != Chord::Off || self.settings.run;
+        let base: &[Held] = if order == Order::Played && !grown {
             played[..n].copy_from_slice(self.notes.active().as_slice());
             &played[..n]
         } else {
@@ -979,12 +1121,15 @@ impl Engine {
         self.play(h, Hit { octave: hit.octave + (i / n) as i16, ..hit }, at, len);
     }
 
-    /// Works out the pitch and queues the note; notes outside 0..=127 are
-    /// skipped.
+    /// Works out the pitch and queues the note; notes outside 0..=127, and
+    /// notes the scale skips, are not played.
     fn play(&mut self, h: Held, hit: Hit, at: f64, len: f64) {
-        let mut note = i16::from(h.note) + 12 * hit.octave;
-        note = match self.settings.scale {
-            Some(scale) => scale.step(note, hit.degree),
+        let note = i16::from(h.note) + 12 * hit.octave;
+        let note = match self.settings.scale {
+            Some(scale) => match scale.fit(note, hit.degree, self.settings.snap) {
+                Some(n) => n,
+                None => return,
+            },
             None => note + hit.degree,
         };
         if (0..=127).contains(&note) {
@@ -1403,6 +1548,134 @@ mod tests {
         e.set_pattern(Pattern::parse("1 1 | deg 0 3").unwrap());
         e.press(61, 100); // no scale: semitones
         assert_eq!(notes_of(&mut e, 2), [61, 64]);
+    }
+
+    #[test]
+    fn one_pad_plays_a_chord_from_the_scale_for_the_arp() {
+        let arp = |chord: Chord, scale: Option<Scale>, held: &[u8], steps: u64| {
+            let mut e = engine(Mode::Arp);
+            e.set_settings(Settings {
+                mode: Mode::Arp,
+                scale,
+                chord,
+                ..Settings::default()
+            });
+            for &n in held {
+                e.press(n, 100);
+            }
+            notes_of(&mut e, steps)
+        };
+        let c_major = Some(Scale::new(0, crate::scale::MAJOR));
+        // D in C major: D F A (a minor triad, from the scale).
+        assert_eq!(arp(Chord::Triad, c_major, &[62], 4), [62, 65, 69, 62]);
+        assert_eq!(
+            arp(Chord::Seventh, c_major, &[67], 4),
+            [67, 71, 74, 77],
+            "G7 in C"
+        );
+        assert_eq!(arp(Chord::Sus4, c_major, &[60], 3), [60, 65, 67]);
+        // Without a scale: built from the major scale on the held note.
+        assert_eq!(arp(Chord::Triad, None, &[62], 3), [62, 66, 69]);
+        // Two pads: both chords, shared notes once, lowest first.
+        assert_eq!(arp(Chord::Power, c_major, &[60, 64], 4), [60, 64, 67, 71]);
+        // Repeat mode plays the whole chord on every step.
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            mode: Mode::Repeat,
+            scale: c_major,
+            chord: Chord::Triad,
+            ..Settings::default()
+        });
+        e.press(57, 100);
+        assert_eq!(notes_of(&mut e, 1), [57, 60, 64], "A minor in C major");
+    }
+
+    #[test]
+    fn a_scale_run_fills_in_between_the_held_notes() {
+        let run = |order: Order, scale: Option<Scale>, held: &[u8], steps: u64| {
+            let mut e = engine(Mode::Arp);
+            e.set_settings(Settings {
+                mode: Mode::Arp,
+                order,
+                scale,
+                run: true,
+                ..Settings::default()
+            });
+            for &n in held {
+                e.press(n, 100);
+            }
+            notes_of(&mut e, steps)
+        };
+        let a_minor_pent = Some(Scale::new(9, crate::scale::PENTATONIC_MINOR));
+        // From A3 to A4 held: the pentatonic notes between, up.
+        assert_eq!(
+            run(Order::Up, a_minor_pent, &[57, 69], 7),
+            [57, 60, 62, 64, 67, 69, 57]
+        );
+        assert_eq!(run(Order::Down, a_minor_pent, &[57, 69], 3), [69, 67, 64]);
+        // One note: an octave of the scale from it.
+        let d_dorian = Some(Scale::new(2, crate::scale::DORIAN));
+        assert_eq!(
+            run(Order::Up, d_dorian, &[62], 8),
+            [62, 64, 65, 67, 69, 71, 72, 62]
+        );
+        // No scale: every semitone (on drum pads, every pad between).
+        assert_eq!(run(Order::Up, None, &[0, 3], 5), [0, 1, 2, 3, 0]);
+        // Repeat mode is left alone: it plays the held notes.
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings {
+            mode: Mode::Repeat,
+            run: true,
+            ..Settings::default()
+        });
+        e.press(0, 100);
+        e.press(3, 100);
+        assert_eq!(notes_of(&mut e, 1), [0, 3]);
+        // A chord, then a run over it: one pad, the scale from root to seventh.
+        let mut s = [Held::default(); MAX_NOTES];
+        s[0] = Held {
+            note: 60,
+            velocity: 90,
+        };
+        let set = Settings {
+            mode: Mode::Arp,
+            scale: Some(Scale::new(0, crate::scale::MAJOR)),
+            chord: Chord::Seventh,
+            run: true,
+            ..Settings::default()
+        };
+        let n = step_notes(&set, &mut s, 1);
+        assert_eq!(
+            s[..n].iter().map(|h| h.note).collect::<Vec<_>>(),
+            [60, 62, 64, 65, 67, 69, 71]
+        );
+        assert!(s[..n].iter().all(|h| h.velocity == 90));
+    }
+
+    #[test]
+    fn out_of_key_notes_go_up_to_the_nearest_or_are_skipped() {
+        let run_with = |snap: Snap, held: &[u8]| {
+            let mut e = engine(Mode::Arp);
+            e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap,
+                                      ..Settings::default() });
+            for &n in held {
+                e.press(n, 100);
+            }
+            notes_of(&mut e, 4)
+        };
+        // C, D# and G held in C major, played up.
+        assert_eq!(run_with(Snap::Down, &[60, 63, 67]), [60, 62, 67, 60]);
+        assert_eq!(run_with(Snap::Up, &[60, 63, 67]), [60, 64, 67, 60]);
+        assert_eq!(run_with(Snap::Nearest, &[60, 63, 66, 67]), [60, 62, 65, 67], "D# and F# are halfway: down");
+        // Skip: D# is not played, so its step is silent.
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings { mode: Mode::Arp, scale: Some(Scale::new(0, crate::scale::MAJOR)), snap: Snap::Skip,
+                                  ..Settings::default() });
+        for n in [60, 63, 67] {
+            e.press(n, 100);
+        }
+        let got: Vec<u8> = ons(&run(&mut e, 3 * STEP, 128)).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(got, [60, 67]);
     }
 
     #[test]
