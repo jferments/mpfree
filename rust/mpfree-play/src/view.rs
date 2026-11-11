@@ -34,6 +34,10 @@ pub struct Launch {
     pub track: usize,
     pub slot: usize,
     pub origin: Tick,
+    /// The song tick the clip started on: its trig conditions count
+    /// passes from here (pass 1 starts on it). The origin, unless the
+    /// origin was [`anchored`] on a later bar line.
+    pub start: Tick,
 }
 
 /// A launch waiting for the next bar line the playhead plays: the clip in
@@ -66,6 +70,7 @@ impl Started {
                 track: self.track,
                 slot,
                 origin: self.origin,
+                start: self.at,
             });
         }
         if let Some(i) = cues
@@ -134,6 +139,8 @@ pub(crate) struct LockView {
 pub(crate) struct ClipView {
     pub slot: usize,
     pub origin: Tick,
+    /// The song tick the clip started on: its pass 1 (see [`Launch`]).
+    pub start: Tick,
     /// One pass, in the clip's own ticks.
     pub length: Tick,
     pub speed: Speed,
@@ -296,7 +303,7 @@ impl PlayView {
             })
             .collect();
         for l in launches {
-            let clip = clip_view(project, l.track, l.slot, l.origin)?;
+            let clip = clip_view(project, l.track, l.slot, l.origin, l.start)?;
             if tracks[l.track].clip.is_some() {
                 return Err(CompileError::TwoClips(l.track));
             }
@@ -309,7 +316,7 @@ impl PlayView {
             }
             let clip = c
                 .slot
-                .map(|slot| clip_view(project, c.track, slot, 0))
+                .map(|slot| clip_view(project, c.track, slot, 0, 0))
                 .transpose()?;
             tracks[c.track].cue = Some(CueView { slot: c.slot, clip });
         }
@@ -451,6 +458,7 @@ fn clip_view(
     track: usize,
     slot: usize,
     origin: Tick,
+    start: Tick,
 ) -> Result<ClipView, CompileError> {
     let t = project
         .tracks
@@ -465,6 +473,7 @@ fn clip_view(
     let mut view = ClipView {
         slot,
         origin,
+        start,
         length: clip.length,
         speed: clip.speed,
         quantise: clip.quantise,
@@ -485,6 +494,8 @@ fn clip_view(
 struct Switch {
     slot: Option<usize>,
     origin: Tick,
+    /// The tick it started on.
+    start: Tick,
 }
 
 /// The cues carried out on each track until the view shows them. The
@@ -543,6 +554,7 @@ impl Switches {
         *self.0.get_mut(track)? = Some(Switch {
             slot: cue.slot,
             origin,
+            start: at,
         });
         Some(Started {
             track,
@@ -554,10 +566,25 @@ impl Switches {
 
     /// The clip `track` plays now, and its origin.
     pub fn playing<'a>(&self, view: &'a PlayView, track: usize) -> Option<(&'a ClipView, Tick)> {
+        self.playing_from(view, track)
+            .map(|(c, origin, _)| (c, origin))
+    }
+
+    /// The clip `track` plays now, its origin, and the tick it started on.
+    pub fn playing_from<'a>(
+        &self,
+        view: &'a PlayView,
+        track: usize,
+    ) -> Option<(&'a ClipView, Tick, Tick)> {
         let t = view.tracks.get(track)?;
         match self.0.get(track).copied().flatten() {
-            Some(sw) => t.cue.as_ref()?.clip.as_ref().map(|c| (c, sw.origin)),
-            None => t.clip.as_ref().map(|c| (c, c.origin)),
+            Some(sw) => t
+                .cue
+                .as_ref()?
+                .clip
+                .as_ref()
+                .map(|c| (c, sw.origin, sw.start)),
+            None => t.clip.as_ref().map(|c| (c, c.origin, c.start)),
         }
     }
 }
@@ -578,6 +605,8 @@ mod tests {
                 note: 1,
                 velocity: 90,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
             Note {
                 tick: 0,
@@ -585,6 +614,8 @@ mod tests {
                 note: 0,
                 velocity: 100,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
             Note {
                 tick: 950,
@@ -592,6 +623,8 @@ mod tests {
                 note: 2,
                 velocity: 80,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
         ];
         c.quantise = Quantise::new(240, 100);
@@ -610,6 +643,7 @@ mod tests {
                 track: 0,
                 slot: 2,
                 origin: 3840,
+                start: 3840,
             }],
         )
         .unwrap();
@@ -631,6 +665,7 @@ mod tests {
             track,
             slot,
             origin: 0,
+            start: 0,
         };
         assert_eq!(
             PlayView::compile(&p, &[l(5, 0)]),
@@ -703,11 +738,13 @@ mod tests {
                 track: 0,
                 slot: 1,
                 origin: 0,
+                start: 0,
             },
             Launch {
                 track: 1,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
         ];
         let mut cues = vec![
@@ -733,12 +770,14 @@ mod tests {
                 Launch {
                     track: 1,
                     slot: 0,
-                    origin: 0
+                    origin: 0,
+                    start: 0,
                 },
                 Launch {
                     track: 0,
                     slot: 2,
-                    origin: -100
+                    origin: -100,
+                    start: 7680,
                 }
             ]
         );
@@ -754,7 +793,8 @@ mod tests {
             vec![Launch {
                 track: 0,
                 slot: 2,
-                origin: -100
+                origin: -100,
+                start: 7680,
             }]
         );
         assert!(cues.is_empty());

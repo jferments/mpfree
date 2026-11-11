@@ -372,6 +372,7 @@ pub fn clips_after(
             track,
             slot,
             origin: anchored(bar, clip.length, clip.speed),
+            start: bar,
         });
     }
     (launches, cues)
@@ -400,6 +401,7 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
                 track,
                 slot,
                 origin: launch_origin(t),
+                start: launch_origin(t),
             });
         }
         TimeAction::StopClip(track) => out.retain(|l| l.track != track),
@@ -882,6 +884,8 @@ mod tests {
                 note: 1,
                 velocity: 100,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
             .unwrap();
             t.slots[0] = Some(c);
@@ -893,11 +897,13 @@ mod tests {
                 track: 0,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
             Launch {
                 track: 1,
                 slot: 1,
                 origin: 5 * BAR,
+                start: 5 * BAR,
             },
         ];
         let t = TransportInfo {
@@ -965,6 +971,7 @@ mod tests {
             track: 2,
             slot: 0,
             origin: 0,
+            start: 0,
         });
         assert_eq!(cell_of(&st, 2, 0).state, CellState::Playing);
         st.transport.state = State::Recording;
@@ -1162,7 +1169,8 @@ mod tests {
                 Some(&Launch {
                     track: 2,
                     slot: 4,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 }),
                 0
             )
@@ -1198,12 +1206,14 @@ mod tests {
                 Launch {
                     track: 1,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 },
                 Launch {
                     track: 0,
                     slot: 1,
-                    origin
+                    origin,
+                    start: 3 * BAR,
                 }
             ]
         );
@@ -1213,7 +1223,8 @@ mod tests {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin
+                origin,
+                start: 3 * BAR,
             }]
         );
     }
@@ -1235,6 +1246,7 @@ mod tests {
             track: 2,
             slot: 0,
             origin: 0,
+            start: 0,
         });
         let q = cell_of(&st, 0, 1);
         assert_eq!((q.state, q.foot.as_str()), (CellState::Queued, "from 6.1"));
@@ -1276,12 +1288,14 @@ mod tests {
                 Launch {
                     track: 1,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 },
                 Launch {
                     track: 0,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 }
             ]
         );
@@ -1291,7 +1305,8 @@ mod tests {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin: 5 * BAR
+                origin: 5 * BAR,
+                start: 5 * BAR,
             }]
         );
         // On a bar line: now. Stopped: from the start of the bar.

@@ -680,6 +680,8 @@ fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
             note,
             velocity,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect()
 }
@@ -765,6 +767,8 @@ fn song() -> (Project, Vec<Launch>) {
                 note: n,
                 velocity: 85,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
         })
         .collect();
@@ -786,6 +790,7 @@ fn song() -> (Project, Vec<Launch>) {
             track,
             slot: 0,
             origin: origin[track],
+            start: origin[track],
         })
         .collect();
     (p, launches)

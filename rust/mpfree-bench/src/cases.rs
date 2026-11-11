@@ -820,7 +820,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| modulation(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
-    v.push(measured(|| time(rate, 8)));
+    v.push(measured(|| time(rate, 8, false)));
+    v.push(measured(|| time(rate, 8, true)));
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
@@ -1028,7 +1029,7 @@ fn song(rate: u32) -> Case {
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
         mixer("mixer", rate, 12, 8, Inserts::Song),
-        time(rate, 8),
+        time(rate, 8, false),
         looper(rate, 60),
     ];
     let mut bufs: Vec<(Vec<f32>, Vec<f32>)> = parts
@@ -1105,8 +1106,23 @@ impl Sink for TimeSink {
 /// one at 3:2 speed, one swung and quantised), the first through the arp
 /// at 32nds over 2 octaves. Every step has two parameter locks: one of the
 /// instrument's (a different one each step, so each ends at the next
-/// note) and one of the strip's.
-fn time(rate: u32, tracks: usize) -> Case {
+/// note) and one of the strip's. With `trigs`, every note also has a trig
+/// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
+/// every fourth step is a ratchet of 3, and FILL turns on and off every
+/// 64 blocks.
+fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
+    use mpfree_seq::Cond;
+    const CONDS: [Cond; 9] = [
+        Cond::Always,
+        Cond::Every { a: 1, b: 2 },
+        Cond::Pre,
+        Cond::NotPre,
+        Cond::Fill,
+        Cond::NotFill,
+        Cond::Nei,
+        Cond::NotFirst,
+        Cond::Every { a: 3, b: 4 },
+    ];
     let ppq = i64::from(PPQ);
     let mut song = Song::new();
     let mut launches = Vec::new();
@@ -1121,6 +1137,12 @@ fn time(rate: u32, tracks: usize) -> Case {
                     note: (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8,
                     velocity: 100,
                     chance: 100,
+                    cond: if trigs {
+                        CONDS[(k * 3 + n) as usize % CONDS.len()]
+                    } else {
+                        Cond::Always
+                    },
+                    ratchet: if trigs && k % 4 == 3 { 3 } else { 1 },
                 })
             })
             .collect();
@@ -1155,6 +1177,7 @@ fn time(rate: u32, tracks: usize) -> Case {
             track: i,
             slot: 0,
             origin: 0,
+            start: 0,
         });
     }
     let view = PlayView::compile(&song, &launches).expect("view");
@@ -1176,10 +1199,21 @@ fn time(rate: u32, tracks: usize) -> Case {
     let mut block = TBlock::new();
     let mut arp_notes = 0u64;
     Case {
-        name: format!("Time: transport, {tracks} clips, arp"),
+        name: if trigs {
+            format!("Time with trig conditions and ratchets, {tracks} clips, arp")
+        } else {
+            format!("Time: transport, {tracks} clips, arp")
+        },
         module: "time",
-        what: "16ths with chords and 2 locks a step on every track, looping 4 bars",
-        block: Box::new(move |_, l, r| {
+        what: if trigs {
+            "as the Time case, with a trig condition on every note and ratchets"
+        } else {
+            "16ths with chords and 2 locks a step on every track, looping 4 bars"
+        },
+        block: Box::new(move |b, l, r| {
+            if trigs && b % 64 == 0 {
+                player.set_fill(b % 128 == 0, 0);
+            }
             t.process(l.len() as u32, &mut block);
             player.process(&view, &block, &mut sink);
             sink.arp.process(&block, &mut |_, _| arp_notes += 1);
@@ -1633,12 +1667,16 @@ mod tests {
 
     #[test]
     fn the_time_case_plays_notes_through_the_arp() {
-        let mut c = measured(|| time(44_100, 8));
+        let mut c = measured(|| time(44_100, 8, false));
         let (l, _) = run(&mut c, 3_000);
         // 8 s at 128 BPM is about 17 beats: 8 tracks x 3 notes x 4 per beat
         // as note-ons and offs, plus the arp's notes.
         assert!(l[0] > 1_000.0, "{}", l[0]);
         assert!(c.mem_bytes > 0 || !alloc::installed());
+        // With trig conditions some notes are left out, and ratchets add hits.
+        let mut t = measured(|| time(44_100, 8, true));
+        let (lt, _) = run(&mut t, 3_000);
+        assert!(lt[0] > 500.0 && lt[0] != l[0], "{} against {}", lt[0], l[0]);
     }
 
     #[test]

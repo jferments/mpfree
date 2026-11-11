@@ -34,6 +34,8 @@ fn notes(step: i64, count: i64, len: i64, pitch: impl Fn(i64) -> u8) -> Vec<Note
             note: pitch(i),
             velocity: 1 + (i * 37 % 127) as u8,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect()
 }
@@ -51,6 +53,7 @@ fn session() -> PlayView {
             track: p.tracks.len() - 1,
             slot,
             origin,
+            start: origin,
         }
     };
     let mut launches = vec![];
@@ -89,6 +92,8 @@ fn session() -> PlayView {
             note: 36,
             velocity: 90,
             chance: 40 + (i % 3) as u8 * 30,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect();
     c.locks = vec![Lock::new(
