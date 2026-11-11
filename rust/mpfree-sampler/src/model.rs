@@ -1,5 +1,5 @@
-//! The sampler's project model: sources, regions, chop sets, layers, pads
-//! and the undo log. Owned by the control thread; never touched by the
+//! The sampler's project model: sources, regions, chop sets, layers, pads,
+//! the master effect and the undo log. Owned by the control thread; never touched by the
 //! audio thread, which gets an [`crate::engine::EngineView`] built from it.
 //! Design: `docs/project/sampler-design.md` and `sampler-architecture.md`.
 
@@ -25,6 +25,7 @@ pub enum ModelError {
     TooManyLayers,
     TooManySlices,
     BadSlice,
+    BadMasterFx,
 }
 
 impl std::fmt::Display for ModelError {
@@ -218,10 +219,47 @@ impl Region {
         if self.mode == PlayMode::Loop && self.sustain_loop.is_none() { return Err(ModelError::BadRegion("loop mode needs loop points")); }
         if u64::from(self.fade_in.frames) + u64::from(self.fade_out.frames) > self.frames() { return Err(ModelError::BadRegion("fades longer than the region")); }
         if !self.gain_db.is_finite() || self.tune_cents.abs() > 4800 { return Err(ModelError::BadRegion("gain/tune")); }
-        let g = &self.grain;
-        let numbers = [g.position, g.spray, g.size_ms, g.density, g.pitch, g.pitch_spray, g.scan, g.reverse, g.spread, g.gain];
-        let sync_ok = g.sync.is_none_or(|t| t.frames_per_beat.is_finite() && t.grains_per_beat.is_none_or(f32::is_finite) && t.size_beats.is_none_or(f32::is_finite));
-        if numbers.iter().any(|x| !x.is_finite()) || !sync_ok { return Err(ModelError::BadRegion("grain settings")); }
+        if !grain_ok(&self.grain) { return Err(ModelError::BadRegion("grain settings")); }
+        Ok(())
+    }
+}
+
+/// Grain settings are usable when every number in them is finite.
+fn grain_ok(g: &GrainParams) -> bool {
+    let numbers = [g.position, g.spray, g.size_ms, g.density, g.pitch, g.pitch_spray, g.scan, g.reverse, g.spread, g.gain];
+    let sync_ok = g.sync.is_none_or(|t| t.frames_per_beat.is_finite() && t.grains_per_beat.is_none_or(f32::is_finite) && t.size_beats.is_none_or(f32::is_finite));
+    numbers.iter().all(|x| x.is_finite()) && sync_ok
+}
+
+/// The granular effect on everything the sampler plays (its master output),
+/// in the spirit of Clouds or the S-4's Mosaic: grains from the last few
+/// seconds of the output, mixed back over it. Freezing it is something you
+/// play, not a setting ([`crate::engine::Event::Freeze`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MasterFx {
+    /// From 0 (only the dry output, and no grains) to 1 (only grains),
+    /// equal power.
+    pub mix: f32,
+    /// The grains. `position` 0 is the oldest audio the effect remembers
+    /// ([`crate::engine::MASTER_MEMORY_S`] seconds back) and 1 the newest;
+    /// `scan` 0 keeps reading the same distance behind the live output.
+    pub grain: GrainParams,
+}
+
+impl Default for MasterFx {
+    /// Fully dry, with a cloud about a second behind the output ready for
+    /// when the mix comes up.
+    fn default() -> Self {
+        MasterFx {
+            mix: 0.0,
+            grain: GrainParams { position: 0.85, spray: 0.1, size_ms: 120.0, density: 20.0, pitch_spray: 0.1, spread: 0.6, ..GrainParams::default() },
+        }
+    }
+}
+
+impl MasterFx {
+    pub fn check(&self) -> Result<(), ModelError> {
+        if !(0.0..=1.0).contains(&self.mix) || !grain_ok(&self.grain) { return Err(ModelError::BadMasterFx); }
         Ok(())
     }
 }
@@ -387,11 +425,12 @@ impl Pad {
     }
 }
 
-/// One step that can be undone: a pad replaced, or a source added. Each
-/// carries what is needed to reverse it.
+/// One step that can be undone: a pad replaced, a source added, or the
+/// master effect changed. Each carries what is needed to reverse it.
 #[derive(Clone, Debug)]
 enum Undo {
     Pad { index: usize, before: Option<Box<Pad>>, gesture: Option<u64> },
+    Master { before: MasterFx, gesture: Option<u64> },
     AddSource { id: SourceId },
     /// Undo pops the newest chop set (keeping it here); redo pushes it back.
     AddChop { set: Option<Box<ChopSet>> },
@@ -409,6 +448,7 @@ pub struct Project {
     /// undone; undo removes the newest one.
     pub chop_sets: Vec<ChopSet>,
     pads: Vec<Option<Pad>>,
+    master: MasterFx,
     undo: Vec<Undo>,
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
@@ -482,6 +522,18 @@ impl Project {
         self.set_pad(index, Some(p), gesture)
     }
 
+    pub fn master(&self) -> &MasterFx { &self.master }
+
+    /// Changes the master effect. One undo step, unless `gesture` is the
+    /// same as the previous step's (a knob turn), which merges into it.
+    pub fn set_master(&mut self, fx: MasterFx, gesture: Option<u64>) -> Result<(), ModelError> {
+        fx.check()?;
+        let before = std::mem::replace(&mut self.master, fx);
+        let merge = matches!(self.undo.last(), Some(Undo::Master { gesture: Some(g), .. }) if gesture == Some(*g));
+        if !merge { self.push_undo(Undo::Master { before, gesture }); } else { self.redo.clear(); self.revision += 1; }
+        Ok(())
+    }
+
     /// Puts slices `first..first+count` of a chop set on consecutive pads
     /// from `to_pad`, as one undo step.
     pub fn slices_to_pads(&mut self, chop: usize, first: usize, count: usize, to_pad: usize) -> Result<(), ModelError> {
@@ -517,6 +569,7 @@ impl Project {
                 let now = std::mem::replace(&mut self.pads[index], before.map(|b| *b));
                 Undo::Pad { index, before: now.map(Box::new), gesture }
             }
+            Undo::Master { before, gesture } => Undo::Master { before: std::mem::replace(&mut self.master, before), gesture },
             Undo::AddSource { id } => {
                 // Undoing an add removes the source only when nothing uses it,
                 // which holds because later pad steps are undone first.

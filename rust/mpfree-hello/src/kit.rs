@@ -170,11 +170,16 @@ impl Mixer {
         Mixer { kits, kit: 0, voices: Vec::with_capacity(MAX_VOICES), hits: 0 }
     }
 
+    // The pad player plays kits through the sampler engine (sampler.rs) from
+    // round 6; the drums step keeps this mixer, which plays one kit, so
+    // switching and stopping are left only for the tests.
+    #[cfg(test)]
     pub fn kit(&self) -> usize {
         self.kit
     }
 
     /// Play kit `k` from the next hit on. Sounds already playing finish.
+    #[cfg(test)]
     pub fn select(&mut self, k: usize) {
         if k < self.kits.len() {
             self.kit = k;
@@ -208,6 +213,7 @@ impl Mixer {
     }
 
     /// Stop every sound at once.
+    #[cfg(test)]
     pub fn stop_all(&mut self) {
         self.voices.clear();
     }

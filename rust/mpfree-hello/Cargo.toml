@@ -15,3 +15,4 @@ mpfree-arp = { path = "../mpfree-arp" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }
 mpfree-touch = { path = "../mpfree-touch" }
 mpfree-ui = { path = "../mpfree-ui" }
+mpfree-sampler = { path = "../mpfree-sampler" }
