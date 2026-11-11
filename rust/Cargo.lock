@@ -89,3 +89,10 @@ version = "0.1.0"
 dependencies = [
  "mpfree-touch",
 ]
+
+[[package]]
+name = "mpfree-transport"
+version = "0.1.0"
+dependencies = [
+ "mpfree-core",
+]

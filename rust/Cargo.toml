@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-touch-evdev", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-arp", "mpfree-screen-log", "mpfree-analysis"]
+members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-touch-evdev", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-arp", "mpfree-screen-log", "mpfree-analysis", "mpfree-transport"]
 resolver = "2"
 
 [profile.release]
