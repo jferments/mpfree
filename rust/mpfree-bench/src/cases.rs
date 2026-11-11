@@ -1324,7 +1324,7 @@ fn live_arps(rate: u32, n: usize) -> Case {
     t.command(
         0,
         T::SetSwing(mpfree_transport::Swing {
-            grid: PPQ as u32 / 4,
+            grid: PPQ / 4,
             amount: 58,
         }),
     );
