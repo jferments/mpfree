@@ -1,0 +1,9 @@
+# An example user theme: synthwave's grid and glow with an orange accent,
+# cut corners and a dot backdrop. A theme file only lists what it changes.
+base       = synthwave
+name       = Sunrise
+accent     = #FF6C11
+outline    = #FF6C11AA
+backdrop   = dots
+backdrop_line = #FF6C1166
+corners    = chamfer

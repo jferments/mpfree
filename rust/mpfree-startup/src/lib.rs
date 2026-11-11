@@ -1,8 +1,8 @@
 //! MPFree's themed startup screens.
 //!
-//! This crate draws three startup screens; synthwave is the default. (When
-//! the theme system lands, each theme names its own; the spiral galaxy stays
-//! in `mpfree-splash`.)
+//! Each theme in `mpfree-ui` names a startup screen ([`Startup`]). This crate
+//! draws three of them (synthwave is the default theme's); the fourth, the
+//! spiral galaxy, is `mpfree-splash`.
 //!
 //! - [`console::Console`]: a chaotic swirl of green characters that settles
 //!   into "MPFree OS" drawn in characters (VT323 terminal font), shaded by
@@ -27,7 +27,7 @@ pub mod gfx;
 pub mod spaceship;
 pub mod synthwave;
 
-use mpfree_ui::SoftCanvas;
+use mpfree_ui::{SoftCanvas, Startup};
 
 /// The name every startup screen shows.
 pub const TITLE: &str = "MPFree";
@@ -42,44 +42,13 @@ pub trait Scene {
     fn length(&self) -> f32;
 }
 
-/// The startup screens this crate draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Console,
-    Synthwave,
-    Spaceship,
-}
-
-impl Kind {
-    /// The startup screen MPFree shows (Jay, 2026-11-11, from round 8).
-    pub const DEFAULT: Kind = Kind::Synthwave;
-    pub const ALL: [Kind; 3] = [Kind::Console, Kind::Synthwave, Kind::Spaceship];
-
-    /// By name: console, synthwave, spaceship, or default.
-    pub fn from_name(name: &str) -> Option<Kind> {
-        match name {
-            "console" => Some(Kind::Console),
-            "synthwave" => Some(Kind::Synthwave),
-            "spaceship" => Some(Kind::Spaceship),
-            "default" => Some(Kind::DEFAULT),
-            _ => None,
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Console => "console",
-            Kind::Synthwave => "synthwave",
-            Kind::Spaceship => "spaceship",
-        }
-    }
-}
-
-/// The scene for a startup screen, sized for a w x h screen.
-pub fn scene(kind: Kind, w: i32, h: i32) -> Box<dyn Scene> {
+/// The scene for a theme's startup screen, or None for the galaxy (which is
+/// `mpfree-splash`).
+pub fn scene(kind: Startup, w: i32, h: i32) -> Option<Box<dyn Scene>> {
     match kind {
-        Kind::Console => Box::new(console::Console::new(w, h)),
-        Kind::Synthwave => Box::new(synthwave::Synthwave::new(w, h)),
-        Kind::Spaceship => Box::new(spaceship::Spaceship::new(w, h)),
+        Startup::Galaxy => None,
+        Startup::Console => Some(Box::new(console::Console::new(w, h))),
+        Startup::Synthwave => Some(Box::new(synthwave::Synthwave::new(w, h))),
+        Startup::Spaceship => Some(Box::new(spaceship::Spaceship::new(w, h))),
     }
 }
