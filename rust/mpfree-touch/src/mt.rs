@@ -273,14 +273,22 @@ impl MtDecoder {
             (EV_ABS, ABS_MT_POSITION_X | ABS_MT_POSITION_Y) => {
                 let is_x = ev.code == ABS_MT_POSITION_X;
                 match self.slot_mut() {
-                    Some(slot) if !slot.stale => {
+                    Some(slot) => {
+                        // A stale slot's values are still the kernel's true
+                        // per-slot state, so keep them: the kernel will not
+                        // resend a value a later contact happens to share.
+                        // They are never published while the slot is stale.
+                        let stale = slot.stale;
                         if is_x {
                             slot.x = Some(ev.value);
                         } else {
                             slot.y = Some(ev.value);
                         }
+                        if stale {
+                            self.stats.ignored_events += 1;
+                        }
                     }
-                    _ => self.stats.ignored_events += 1,
+                    None => self.stats.ignored_events += 1,
                 }
                 Step::Pending
             }
@@ -323,6 +331,49 @@ impl MtDecoder {
         self.sync = SyncState::InSync;
         self.commit(time_us);
         Step::Frame
+    }
+
+    /// Seed a decoder from the device's state as read at open
+    /// (`EVIOCGABS(ABS_MT_SLOT).value` plus `EVIOCGMTSLOTS`).
+    ///
+    /// A fresh decoder otherwise assumes slot 0 is selected and every slot is
+    /// empty, but the kernel sends `ABS_MT_SLOT` only when the slot changes
+    /// and filters repeated per-slot values, so a reader that opens while the
+    /// kernel's current slot is not 0 would file the next contact under the
+    /// wrong slot. Seeding fixes the current slot and each slot's last
+    /// position.
+    ///
+    /// Fingers already on the screen at open are not published: their slots
+    /// are ignored until they lift and a fresh contact starts there, so a
+    /// resting finger cannot press whatever lies under it when the reader
+    /// starts. Any contacts this decoder had already published are cancelled;
+    /// the result is `Frame` if there were some (read [`Self::events`]),
+    /// otherwise `Pending`.
+    pub fn seed(&mut self, snapshot: &MtSnapshot, time_us: u64) -> Step {
+        let had_contacts = !self.contacts.is_empty();
+        self.cancel_all_into_pending(time_us);
+        // The cancels (if any) are this call's own result, not carried.
+        self.carry_events = false;
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let snap = snapshot.slots.get(index).copied();
+            *slot = Slot {
+                live: None,
+                tracking_id: snap.and_then(|s| (s.tracking_id >= 0).then_some(s.tracking_id)),
+                ended: false,
+                x: snap.map(|s| s.raw_x),
+                y: snap.map(|s| s.raw_y),
+                stale: snap.is_some_and(|s| s.tracking_id >= 0),
+            };
+        }
+        self.current_slot = usize::try_from(snapshot.current_slot)
+            .ok()
+            .filter(|&s| s < self.slots.len());
+        self.sync = SyncState::InSync;
+        if had_contacts {
+            Step::Frame
+        } else {
+            Step::Pending
+        }
     }
 
     /// Recover when no snapshot can be read: Cancel every live contact and

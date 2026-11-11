@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-transport"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-first transport for the time engine: one sample-accurate clock (tempo map, meter, loop, count-in, punch) that cuts every audio period into spans; same output for any period size, no allocation while running"
+
+[lib]
+name = "mpfree_transport"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+mpfree-core = { path = "../mpfree-core" }
