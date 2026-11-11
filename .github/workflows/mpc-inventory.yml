@@ -630,6 +630,10 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
           cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
+      - name: No allocation on any engine's audio path (mpfree-bench)
+        # Exits 2 if an engine allocates inside its audio callback. The timings
+        # it prints are for reading, not a gate: a shared VM is too noisy.
+        run: cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench -- --quick --check-allocs
       - name: Test host-native Rust MPC userspace coexistence self-test
         run: |
           cargo run --manifest-path rust/Cargo.toml --release --locked \
