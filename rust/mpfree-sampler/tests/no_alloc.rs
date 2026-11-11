@@ -2,6 +2,7 @@
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
 //! loops, layers, chokes, stealing, filters, sample-accurate events,
+//! slice auditions,
 //! granular pads, pad pressure, and swapping prebuilt views (the pad player
 //! switches kits that way).
 //!
@@ -348,6 +349,18 @@ fn render_and_events_never_allocate() {
                 value: (block * 37 % 128) as u8,
             },
         );
+        if block % 7 == 3 {
+            e.schedule(
+                block % 128,
+                Event::Audition {
+                    pad: (block % 20) as u8,
+                    layer: 0,
+                    start: 1000 + block,
+                    end: 6000,
+                    velocity: 100,
+                },
+            );
+        }
         if block % 300 == 299 {
             e.apply(Event::AllOff);
         }
