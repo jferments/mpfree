@@ -2405,7 +2405,7 @@ fn player_session(
                         });
                     }
                 }
-                gui::FromUi::MixerShown(v) => mix.show(v),
+                gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
                 gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
@@ -2507,7 +2507,12 @@ fn player_session(
                     let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
                     // On the Sample page they move Start, End and the loop.
                     let page = app.view();
-                    if matches!(page, app::View::Synth | app::View::Sample) && knob < 4 {
+                    // While the mixer is open they move the selected strip.
+                    if matches!(
+                        page,
+                        app::View::Synth | app::View::Sample | app::View::Mixer
+                    ) && knob < 4
+                    {
                         let k = knob as usize;
                         let ticks = if public {
                             let was = qlink_at[k].replace(m.bytes[2]);
@@ -2517,6 +2522,8 @@ fn player_session(
                         };
                         if ticks != 0 && page == app::View::Synth {
                             out.show(gui::ToUi::SynthQLink(k, ticks));
+                        } else if ticks != 0 && page == app::View::Mixer {
+                            out.show(gui::ToUi::MixerQLink(k, ticks));
                         } else if ticks != 0 {
                             out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
@@ -2640,6 +2647,10 @@ fn player_session(
                         lit = [false; 16];
                         bank_lights = true;
                     }
+                }
+                app::Effect::Mixer(v) => mix.show(v),
+                app::Effect::MixerTurn { knob, delta } => {
+                    out.show(gui::ToUi::MixerQLink(knob, delta))
                 }
                 app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),

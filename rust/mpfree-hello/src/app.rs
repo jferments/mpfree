@@ -91,6 +91,9 @@ pub enum View {
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
+    /// The mixer (mpfree-mixer-ui), over the page under the top bar: TRACK
+    /// MIX or the bar's mixer icon (Jay, 09:17Z). Not a tab.
+    Mixer,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -147,7 +150,7 @@ impl View {
             View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 Some(View::Debug)
             }
-            View::Options | View::Guide | View::Prefs | View::System => None,
+            View::Options | View::Guide | View::Prefs | View::System | View::Mixer => None,
             v => Some(v),
         }
     }
@@ -177,6 +180,7 @@ impl View {
             View::Procs => "Processes",
             View::Map => "Map controls",
             View::System => "System info",
+            View::Mixer => "Mixer",
         }
     }
 }
@@ -284,6 +288,8 @@ pub struct ButtonMap {
     pub play_start: Option<u8>,
     /// PAD BANK A/E to D/H, found with the control mapper.
     pub bank: [Option<u8>; 4],
+    /// TRACK MIX (SHIFT: PAD MIX), found with the control mapper.
+    pub track_mix: Option<u8>,
 }
 
 impl ButtonMap {
@@ -377,6 +383,7 @@ impl ButtonMap {
             Job::Undo => self.undo,
             Job::PlayStart => self.play_start,
             Job::Bank(k) => self.bank[k as usize & 3],
+            Job::TrackMix => self.track_mix,
         }
     }
 
@@ -395,6 +402,7 @@ impl ButtonMap {
             Job::Undo => &mut self.undo,
             Job::PlayStart => &mut self.play_start,
             Job::Bank(k) => &mut self.bank[k as usize & 3],
+            Job::TrackMix => &mut self.track_mix,
         };
         *slot = code;
     }
@@ -566,6 +574,15 @@ pub enum Effect {
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
+    /// The mixer opened on a view, or closed (`None`): the audio thread
+    /// sends the panel its state only while it is open.
+    Mixer(Option<mpfree_mixer_ui::MixView>),
+    /// While the mixer is open: Q-Link `knob` (or the wheel, as Q-Link 1)
+    /// turned by `delta`, for the panel's selected strip.
+    MixerTurn {
+        knob: usize,
+        delta: i32,
+    },
     /// The wheel on the Synth page: turn the selected knob.
     SynthWheel(i32),
     /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
@@ -1043,6 +1060,8 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start {
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.track_mix {
+            fx.extend(self.toggle_mixer(shift));
         } else if self.view == View::Looper && Some(note) == self.map.rec {
             fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
         } else if self.view == View::Looper && Some(note) == self.map.overdub {
@@ -1212,6 +1231,8 @@ impl App {
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
+            // The mixer: the wheel is the selected strip's volume (Q-Link 1).
+            View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
@@ -1267,6 +1288,9 @@ impl App {
             self.back = self.view;
         }
         let mut fx = Vec::new();
+        if self.view == View::Mixer && v != View::Mixer {
+            fx.push(Effect::Mixer(None));
+        }
         if self.view == View::Map && v != View::Map {
             self.mapper.listening = false;
             if self.mapper.changed {
@@ -1290,6 +1314,27 @@ impl App {
     }
 
     /// Open `v`, or go back if it is open already.
+    /// TRACK MIX, SHIFT + TRACK MIX (PAD MIX) or the bar's mixer icon: the
+    /// mixer opens over the page on Track Mix (or Pad Mix); again, it closes
+    /// back to the page. A tab closes it too.
+    pub fn toggle_mixer(&mut self, pads: bool) -> Vec<Effect> {
+        use mpfree_mixer_ui::MixView;
+        if self.view == View::Guide {
+            return Vec::new();
+        }
+        if self.view == View::Mixer {
+            let mut fx = vec![Effect::Mixer(None)];
+            fx.extend(self.toggle(View::Mixer));
+            return fx;
+        }
+        let mut fx = self.show(View::Mixer);
+        fx.insert(
+            0,
+            Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
+        );
+        fx
+    }
+
     fn toggle(&mut self, v: View) -> Vec<Effect> {
         if self.view == v {
             let back = if self.back == v {
