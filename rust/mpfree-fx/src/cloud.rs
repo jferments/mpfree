@@ -327,8 +327,8 @@ impl Read {
     /// `frames` back, kept between `lo` and the buffer's end.
     fn new(frames: f32, lo: f32, len: usize) -> Read {
         let f = frames.clamp(lo, (len - 2) as f32);
-        let d = f.floor();
-        Read { d: d as usize, t: f - d }
+        let d = f as usize;
+        Read { d, t: f - d as f32 }
     }
 }
 
@@ -469,8 +469,10 @@ impl Line {
             // The read point depends only on the frame's place in the
             // update interval, so any chunking rounds it the same way.
             let r = self.from + glide * (at + k + 1) as f32;
-            let d = r.floor();
-            *y = self.buf.cubic(d as usize - k - 1, r - d);
+            // Truncation is floor here (r > 0) and, unlike floor, needs
+            // no library call on targets without a rounding instruction.
+            let d = r as usize;
+            *y = self.buf.cubic(d - k - 1, r - d as f32);
         }
         let mut z = y;
         for st in &mut self.stages[..c.late_stages] { st.run(&mut z[..n], &f.late_fb[..n]); }
