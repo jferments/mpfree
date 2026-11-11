@@ -47,5 +47,5 @@ A set with a `b` or `#`, or with `1` and no `0`, is read as degrees. The root is
 
 ## Next
 
-- Arp: a scale-run order and a chord from one pad.
-- Synth pads: in-key, chromatic-with-the-scale-lit and chord layouts, and pad banks. These change the pads, which the Hello MPC thread owns, so they go to the owner as a proposal first.
+- Arp: done (chord on each pad, scale run, chords taking turns; see [arpeggiator.md](arpeggiator.md)).
+- Synth pads (owner approved 2026-11-11 09:55Z): chromatic by default with the scale lit, one quick action to switch to In key (the Hello MPC thread proposes which), In key rows in sequence (or a fourth apart), chord pads (triads on the bottom two rows, sevenths on the top two), and each pad bank holding its own layout while the synth is on the pads. This crate gives each layout's notes, colour roles and names; the synth thread plays them and the Hello MPC thread draws them.

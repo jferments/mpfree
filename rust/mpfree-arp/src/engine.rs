@@ -152,6 +152,62 @@ impl Chord {
     }
 }
 
+/// Held notes taking turns instead of sounding together: with two or more
+/// held, each step plays from one of them (grown into its chord when
+/// [`Settings::chord`] is on), in the order they were pressed, for a beat or
+/// a bar each. Holding Am, F, C and G then arpeggiates a progression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Turns {
+    #[default]
+    Off,
+    Beat,
+    TwoBeats,
+    Bar,
+    TwoBars,
+}
+
+impl Turns {
+    pub const ALL: [Turns; 5] = [Turns::Off, Turns::Beat, Turns::TwoBeats, Turns::Bar, Turns::TwoBars];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Turns::Off => "Off",
+            Turns::Beat => "Every beat",
+            Turns::TwoBeats => "Every 2 beats",
+            Turns::Bar => "Every bar",
+            Turns::TwoBars => "Every 2 bars",
+        }
+    }
+
+    /// Quarter notes per turn (a bar is 4/4), 0 for Off.
+    pub fn beats(self) -> u32 {
+        match self {
+            Turns::Off => 0,
+            Turns::Beat => 1,
+            Turns::TwoBeats => 2,
+            Turns::Bar => 4,
+            Turns::TwoBars => 8,
+        }
+    }
+}
+
+/// Steps each held note plays for while they take turns, at the current
+/// rate (at least 1); 0 when they don't.
+pub fn turn_steps(s: &Settings) -> u64 {
+    match s.turns.beats() {
+        0 => 0,
+        b => (u64::from(b * PPQ) / u64::from(s.rate.ticks().max(1))).max(1),
+    }
+}
+
+/// Which held note, by press order, step `step` plays from when held notes
+/// take turns: None when they don't, in Direct mode, or with fewer than two
+/// held.
+pub fn turn_of(s: &Settings, held: usize, step: u64) -> Option<usize> {
+    let len = turn_steps(s);
+    (len > 0 && held >= 2 && s.mode != Mode::Direct).then(|| ((step / len) % held as u64) as usize)
+}
+
 /// The notes a step works from: the held notes, sorted, each grown into a
 /// chord ([`Settings::chord`]), then, for the Arp and Pattern modes, every
 /// scale note between the lowest and the highest ([`Settings::run`]; one
@@ -440,6 +496,9 @@ pub struct Settings {
     /// between the lowest and the highest held note (one octave from a
     /// single note), in the order's order.
     pub run: bool,
+    /// Held notes take turns, one chord at a time, instead of sounding
+    /// together.
+    pub turns: Turns,
     /// Spreads the notes of a chord step across 0..=100 % of the step,
     /// lowest first, like a strum.
     pub strum: u8,
@@ -468,6 +527,7 @@ impl Default for Settings {
             snap: Snap::Down,
             chord: Chord::Off,
             run: false,
+            turns: Turns::Off,
             strum: 0,
             retrigger: false,
             repeats: 0,
@@ -997,7 +1057,20 @@ impl Engine {
 
     fn fire_step(&mut self, at: f64, len: f64) {
         let mut sorted = [Held::default(); MAX_NOTES];
-        let n = self.notes.active().sorted(&mut sorted);
+        let active = self.notes.active();
+        let n = match turn_of(&self.settings, active.len(), self.step) {
+            Some(k) => {
+                sorted[0] = active.as_slice()[k];
+                // Each turn starts the order again, from its first note.
+                if self.step.checked_rem(turn_steps(&self.settings)) == Some(0) {
+                    self.arp_counter = 0;
+                    self.bag = 0;
+                    self.once_len = 0;
+                }
+                1
+            }
+            None => active.sorted(&mut sorted),
+        };
         let n = step_notes(&self.settings, &mut sorted, n);
         if n == 0 {
             return;
@@ -1070,7 +1143,7 @@ impl Engine {
         let mut played = [Held::default(); MAX_NOTES];
         // A chord or a run has no press order: As played goes up.
         let grown = self.settings.chord != Chord::Off || self.settings.run;
-        let base: &[Held] = if order == Order::Played && !grown {
+        let base: &[Held] = if order == Order::Played && !grown && n == self.notes.active().len() {
             played[..n].copy_from_slice(self.notes.active().as_slice());
             &played[..n]
         } else {
@@ -1588,6 +1661,47 @@ mod tests {
         });
         e.press(57, 100);
         assert_eq!(notes_of(&mut e, 1), [57, 60, 64], "A minor in C major");
+    }
+
+    #[test]
+    fn held_chords_take_turns_for_a_progression() {
+        let a_minor = Some(Scale::new(9, crate::scale::MINOR));
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings { mode: Mode::Arp, scale: a_minor, chord: Chord::Triad, turns: Turns::Beat,
+                                  ..Settings::default() });
+        // Pressed Am, F, C, G: a beat (4 sixteenths) of each, in that order,
+        // each starting again from its root.
+        for n in [57, 53, 60, 55] {
+            e.press(n, 100);
+        }
+        assert_eq!(notes_of(&mut e, 20),
+                   [57, 60, 64, 57, 53, 57, 60, 53, 60, 64, 67, 60, 55, 59, 62, 55, 57, 60, 64, 57]);
+        // Without a chord, the held notes themselves take turns, even As
+        // played.
+        let mut e = engine(Mode::Arp);
+        e.set_settings(Settings { mode: Mode::Arp, order: Order::Played, turns: Turns::Beat, octaves: 2,
+                                  ..Settings::default() });
+        for n in [64, 60] {
+            e.press(n, 100);
+        }
+        assert_eq!(notes_of(&mut e, 8), [64, 76, 64, 76, 60, 72, 60, 72]);
+        // Repeat mode: the whole chord on each step, a chord per turn.
+        let mut e = engine(Mode::Repeat);
+        e.set_settings(Settings { mode: Mode::Repeat, scale: a_minor, chord: Chord::Triad, turns: Turns::Beat,
+                                  ..Settings::default() });
+        for n in [57, 53] {
+            e.press(n, 100);
+        }
+        let got = notes_of(&mut e, 5);
+        assert_eq!((&got[..3], &got[12..15]), (&[57, 60, 64][..], &[53, 57, 60][..]));
+        // The length of a turn follows the rate; one note held, or Direct
+        // mode, has no turns.
+        let s = Settings { mode: Mode::Arp, turns: Turns::Bar, rate: Rate::Eighth, ..Settings::default() };
+        assert_eq!(turn_steps(&s), 8);
+        assert_eq!(turn_steps(&Settings { turns: Turns::Off, ..s }), 0);
+        assert_eq!(turn_of(&s, 3, 17), Some(2));
+        assert_eq!(turn_of(&s, 1, 17), None);
+        assert_eq!(turn_of(&Settings { mode: Mode::Direct, ..s }, 3, 17), None);
     }
 
     #[test]
