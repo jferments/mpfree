@@ -349,3 +349,35 @@ fn hits_near_the_grid_are_pinned_onto_it() {
         }]
     );
 }
+
+#[test]
+fn a_stretched_voice_reports_its_place_in_the_source() {
+    let (s, at) = loose();
+    let p = project(&s, pinned(&at));
+    let mut warps = Warps::new(60.0);
+    make_copies(&p, &mut warps);
+    let mut e = Engine::new(RATE, 8);
+    e.set_tempo(warps.tempo());
+    e.set_view(EngineView::build_warped(&p, RATE, &mut warps));
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    // Two beats at 60 BPM in: the copy is on beat 2, made from the third
+    // hit (pinned there), not from half way through the source.
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    let mut done = 0;
+    while done < 2 * 2 * BEAT as usize {
+        e.render(&mut l, &mut r);
+        done += 128;
+    }
+    let heads: Vec<_> = e.playheads().collect();
+    assert_eq!(heads.len(), 1);
+    let (pad, layer, frame) = heads[0];
+    assert_eq!((pad, layer), (0, 0));
+    assert!(
+        (frame as i64 - at[2] as i64).abs() < 200,
+        "{frame} vs {}",
+        at[2]
+    );
+}

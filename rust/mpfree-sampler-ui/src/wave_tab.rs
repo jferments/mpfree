@@ -57,9 +57,9 @@ pub const LAYOUT: &str =
 
 /// The pad editor's tabs: Pads (the kit's pads, to pick one and set it
 /// up) first, then the editors for the pad picked.
-pub const TABS: [&str; 7] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX", "Rec"];
+pub const TABS: [&str; 8] = ["Pads", "Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "Rec"];
+pub const BUILT: [&str; 7] = ["Pads", "Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 1;
 
@@ -216,7 +216,7 @@ pub enum WaveAction {
     Region {
         pad: usize,
         layer: usize,
-        region: Region,
+        region: Box<Region>,
         gesture: u64,
     },
     /// Play the pad, as a hit at full velocity would.
@@ -236,7 +236,7 @@ impl WaveAction {
                 region,
                 gesture,
             } => {
-                let (layer, region) = (*layer, region.clone());
+                let (layer, region) = (*layer, (**region).clone());
                 if p.pad(*pad).is_none_or(|pd| layer >= pd.layers.len()) {
                     return Err(ModelError::BadPad);
                 }
@@ -866,7 +866,7 @@ impl WaveTab {
         Some(WaveAction::Region {
             pad: st.pad,
             layer: st.layer,
-            region: r,
+            region: Box::new(r),
             gesture,
         })
     }

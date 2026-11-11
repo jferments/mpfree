@@ -58,6 +58,7 @@ use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
+use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
@@ -81,6 +82,8 @@ pub const PADS_PAGE: &str = "Sample · Pads";
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 /// The Rec tab's page.
 pub const REC_PAGE: &str = "Sample · Rec";
+/// The Warp tab's page.
+pub const WARP_PAGE: &str = "Sample · Warp";
 /// The line input the sampler keeps while it is on: enough for the
 /// longest Skip back (a minute, or 8 bars down to 60 BPM) and more.
 pub const INPUT_SECONDS: u32 = 75;
@@ -96,6 +99,7 @@ const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
 const GRAIN_PREFIX: &str = "smp-grain-";
 const REC_PREFIX: &str = "smp-rec-";
+const WARP_PREFIX: &str = "smp-warp-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -134,6 +138,7 @@ pub enum PadKnob {
 pub enum Editor {
     Pads,
     Wave,
+    Warp,
     Chop,
     Play,
     Grain,
@@ -209,6 +214,9 @@ pub struct SamplePage {
     stretcher: Option<Worker>,
     /// Copies asked of it and not back yet.
     stretching: Vec<CopyKey>,
+    /// The Warp tab, added the first time it is opened. It shows the Wave
+    /// tab's state.
+    warp: Option<WarpTab>,
     /// The Rec tab, added the first time it is opened.
     rec: Option<RecTab>,
     rec_state: Option<RecState>,
@@ -270,6 +278,7 @@ impl SamplePage {
             warps: Warps::default(),
             stretcher: None,
             stretching: Vec::new(),
+            warp: None,
             rec: None,
             rec_state: None,
             line_on: false,
@@ -455,6 +464,7 @@ impl SamplePage {
             Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
             Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
+            Editor::Warp if self.state.is_some() && self.warp.is_some() => WARP_PAGE,
             _ if self.pads_state.is_some() && self.pads.is_some() => PADS_PAGE,
             _ => EMPTY_PAGE,
         }
@@ -502,6 +512,9 @@ impl SamplePage {
         if self.editor == Editor::Grain {
             self.refresh_grain(ui, bank);
         }
+        if self.editor == Editor::Warp {
+            self.refresh_warp(ui, bank);
+        }
         self.rec_state = None;
         if self.editor == Editor::Rec {
             self.refresh_rec(ui, bank);
@@ -519,6 +532,30 @@ impl SamplePage {
         }
         if let Some(tab) = self.chop.as_ref() {
             tab.set_playheads(ui, &[]);
+        }
+        if let Some(tab) = self.warp.as_ref() {
+            tab.set_playheads(ui, &[]);
+        }
+    }
+
+    /// Shows the Warp tab (the Wave tab's state), adding it the first time.
+    fn refresh_warp(&mut self, ui: &mut Ui, bank: Option<char>) {
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        match self.warp.as_mut() {
+            Some(tab) => {
+                tab.bank = bank;
+                tab.update(ui, st);
+            }
+            None => match WarpTab::add(ui, WARP_PAGE, st) {
+                Ok(mut tab) => {
+                    tab.bank = bank;
+                    tab.update(ui, st);
+                    self.warp = Some(tab);
+                }
+                Err(e) => self.lines.push(format!("sample: no Warp page ({e})")),
+            },
         }
     }
 
@@ -756,6 +793,15 @@ impl SamplePage {
             }
             return;
         }
+        if ev.widget.starts_with(WARP_PREFIX) {
+            let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
+                return;
+            };
+            if let Some(a) = tab.action(ui, ev, st) {
+                self.act(ui, a, out);
+            }
+            return;
+        }
         if ev.widget.starts_with(PADS_PREFIX) {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
@@ -773,12 +819,13 @@ impl SamplePage {
         }
     }
 
-    /// Opens the editor's tab `i` (Pads, Wave, Chop, Play, Grain or Rec;
-    /// FX isn't built).
+    /// Opens the editor's tab `i` (Pads, Wave, Warp, Chop, Play, Grain or
+    /// Rec; FX isn't built).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             pads_tab::TAB => Editor::Pads,
             wave_tab::TAB => Editor::Wave,
+            warp_tab::TAB => Editor::Warp,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
             grain_tab::TAB => Editor::Grain,
@@ -1096,6 +1143,15 @@ impl SamplePage {
             }
             return;
         }
+        if self.editor == Editor::Warp {
+            let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
+                return;
+            };
+            if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
+                self.act(ui, a, &mut Vec::new());
+            }
+            return;
+        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
@@ -1234,6 +1290,11 @@ impl SamplePage {
                     tab.wheel(ui, st, delta);
                 }
             }
+            Editor::Warp => {
+                if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+                    tab.wheel(ui, st, delta);
+                }
+            }
             Editor::Rec => {
                 if let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) {
                     tab.wheel(ui, st, delta);
@@ -1309,6 +1370,9 @@ impl SamplePage {
     /// so the next edit is a new undo step. Writes its log line.
     pub fn lift(&mut self) {
         if let Some(tab) = self.tab.as_mut() {
+            tab.lift();
+        }
+        if let Some(tab) = self.warp.as_mut() {
             tab.lift();
         }
         if let Some(tab) = self.play.as_mut() {
@@ -1878,6 +1942,11 @@ impl SamplePage {
             }
             Editor::Chop => {
                 if let Some(tab) = self.chop.as_ref() {
+                    tab.set_playheads(ui, &frames);
+                }
+            }
+            Editor::Warp => {
+                if let Some(tab) = self.warp.as_ref() {
                     tab.set_playheads(ui, &frames);
                 }
             }

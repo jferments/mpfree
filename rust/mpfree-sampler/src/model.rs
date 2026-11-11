@@ -320,18 +320,23 @@ impl Warp {
     /// The beat source frame `frame` plays on. Frames before the region's
     /// start or after its end follow its tempo from there.
     pub fn beat_at(&self, start: u64, end: u64, rate: u32, frame: f64) -> f64 {
-        let pts = self.points(start, end, rate);
-        let x = frame - start as f64;
-        let fpb = self.frames_per_beat(rate);
-        through(&pts, x, |(f, b)| (f, b), 1.0 / fpb)
+        self.line(start, end, rate).beat_at(frame)
     }
 
     /// The source frame that plays on `beat` (beats before 0 or after the
     /// end follow the region's tempo from there).
     pub fn frame_at(&self, start: u64, end: u64, rate: u32, beat: f64) -> f64 {
-        let pts = self.points(start, end, rate);
-        let fpb = self.frames_per_beat(rate);
-        start as f64 + through(&pts, beat, |(f, b)| (b, f), fpb)
+        self.line(start, end, rate).frame_at(beat)
+    }
+
+    /// The line between the region `start..end`'s frames and beats, worked
+    /// out once, for looking up many places (a picture's columns).
+    pub fn line(&self, start: u64, end: u64, rate: u32) -> BeatLine {
+        BeatLine {
+            start: start as f64,
+            fpb: self.frames_per_beat(rate),
+            points: self.points(start, end, rate),
+        }
     }
 
     /// How fast the region plays between two points, against its own tempo
@@ -458,7 +463,7 @@ impl Warp {
             pins: Vec::new(),
             ..self.clone()
         };
-        if !(grid > 0.0) {
+        if grid.is_nan() || grid <= 0.0 {
             return w;
         }
         let total = w.beats(end.saturating_sub(start), rate);
@@ -541,31 +546,50 @@ impl Warp {
     }
 }
 
-/// Follows the line through `pts` (each turned into (x, y) by `xy`) at
-/// `x`; past either end, on with slope `slope`.
+/// A warped region's line between source frames and beats (see
+/// [`Warp::line`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeatLine {
+    start: f64,
+    fpb: f64,
+    points: Vec<(f64, f64)>,
+}
+
+impl BeatLine {
+    /// The beat source frame `frame` plays on.
+    pub fn beat_at(&self, frame: f64) -> f64 {
+        through(&self.points, frame - self.start, |p| p, 1.0 / self.fpb)
+    }
+
+    /// The source frame that plays on `beat`.
+    pub fn frame_at(&self, beat: f64) -> f64 {
+        self.start + through(&self.points, beat, |(f, b)| (b, f), self.fpb)
+    }
+}
+
+/// Follows the line through `pts` (each turned into (x, y) by `xy`, both
+/// rising) at `x`; past either end, on with slope `slope`.
 pub(crate) fn through(
     pts: &[(f64, f64)],
     x: f64,
     xy: impl Fn((f64, f64)) -> (f64, f64),
     slope: f64,
 ) -> f64 {
-    let first = xy(pts[0]);
+    let (first, last) = (xy(pts[0]), xy(pts[pts.len() - 1]));
     if x <= first.0 {
         return first.1 + (x - first.0) * slope;
     }
-    for w in pts.windows(2) {
-        let (a, b) = (xy(w[0]), xy(w[1]));
-        if x <= b.0 {
-            let t = if b.0 > a.0 {
-                (x - a.0) / (b.0 - a.0)
-            } else {
-                1.0
-            };
-            return a.1 + t * (b.1 - a.1);
-        }
+    if x >= last.0 {
+        return last.1 + (x - last.0) * slope;
     }
-    let last = xy(pts[pts.len() - 1]);
-    last.1 + (x - last.0) * slope
+    // The first point at or past x: x lies between it and the one before.
+    let i = pts.partition_point(|p| xy(*p).0 < x).max(1);
+    let (a, b) = (xy(pts[i - 1]), xy(pts[i]));
+    if b.0 > a.0 {
+        a.1 + (x - a.0) / (b.0 - a.0) * (b.1 - a.1)
+    } else {
+        b.1
+    }
 }
 
 /// A recipe on part of a source. The source's audio is never changed.
