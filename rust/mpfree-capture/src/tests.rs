@@ -338,6 +338,8 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
                 note: 4,
                 velocity: 100,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
             song: Some(song),
         })
@@ -383,7 +385,8 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
             launch: Some(Launch {
                 track: 0,
                 slot: 0,
-                origin: -BAR
+                origin: -BAR,
+                start: 5 * BAR,
             })
         }
     );
@@ -414,6 +417,8 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
                 note: 1,
                 velocity: 9,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             },
             song: None,
         }],
@@ -446,6 +451,7 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
         track: 1,
         slot: 0,
         origin: 2 * BAR,
+        start: 2 * BAR,
     }];
     let phrase = timed(
         &[(BEAT, (4 * BAR + BEAT) as f64), (BAR, (5 * BAR) as f64)],
@@ -482,6 +488,7 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
         track: 1,
         slot: 0,
         origin: 6 * BAR,
+        start: 6 * BAR,
     }];
     let k = keep(&phrase, &mut p, &late, &mut takes, 1, now(7 * BAR), "new").unwrap();
     assert_eq!((k.slot, k.launch.is_some()), (1, true));

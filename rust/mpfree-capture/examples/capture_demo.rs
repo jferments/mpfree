@@ -268,6 +268,8 @@ impl Session {
                 note,
                 velocity,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
             .expect("in range");
         }
@@ -278,6 +280,8 @@ impl Session {
                 note: HAT,
                 velocity: if i % 2 == 0 { 80 } else { 58 },
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
             .expect("in range");
         }
@@ -288,6 +292,7 @@ impl Session {
             track: DRUMS,
             slot: 0,
             origin: 0,
+            start: 0,
         }];
         let mut live: Vec<(u64, Event)> = Vec::new();
         for &(tick, velocity) in &RIFF {

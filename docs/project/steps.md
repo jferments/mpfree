@@ -47,6 +47,8 @@ Edits never change the clip themselves. They look at the clip and return an `Edi
   - `Length` in ticks
   - `Nudge` in ticks from the line. It is kept within the step, and the step's notes move together, so the first one lands there.
   - `Chance`, 1 to 100 %.
+  - `Cond`, a trig condition (see below). One out of range leaves the step as it is.
+  - `Ratchet`, 1 to 8 hits.
 
   Values out of range are clamped. An empty step, or one already set, gives an empty edit. `change_all(clip, i, Change)` does the same for every sound in the step, so a chord's velocity or nudge changes in one go.
 - **`Clip::apply(&Edit)`** applies an edit all or nothing: if a note to take out is not there (`MissingNote`), the clip is not the length the edit expects or a note would be past its new end (`ClipLength`), or a new note does not fit, the clip stays as it was. An edit that changes pages carries the length from and to.
@@ -72,6 +74,35 @@ Adding, taking off or copying a page is one edit, so one UNDO takes the page bac
 
 A note left out is counted in `Stats::skipped`. It does not cut the same note still sounding.
 
+## Trig conditions (`Cond`)
+
+The Elektron set (design: https://claude.ai/artifact/S18hXQ3hSfJk1GaYnrwDZK). `Note.cond` says when a note plays; `Always` is the default, so recorded notes and older clips do not change. The step screen shows it as `cond.to_string()`.
+
+| Condition | Plays when |
+|---|---|
+| `Always` (shown as nothing) | every pass |
+| `Every { a, b }` ("A:B", B from 2 to 8, A from 1 to B) | on pass A of every B: 1:2 on passes 1, 3, 5; 4:4 on the fourth of every four |
+| `Fill` / `NotFill` ("FILL", "!FILL") | FILL is on / off |
+| `Pre` / `NotPre` ("PRE", "!PRE") | the track's last conditional note played / did not |
+| `Nei` / `NotNei` ("NEI", "!NEI") | the last conditional note of the track to the left played / did not (the first track has none: NEI never plays, !NEI always does) |
+| `First` / `NotFirst` ("1ST", "!1ST") | on the clip's first pass / on every other pass |
+
+- **With chance.** Chance stays its own setting. The condition is decided first, and chance rolls only if it holds, so a 1:2 note at 50 % plays on half of the odd passes. `Stats::unmet` counts notes their condition left out, `Stats::skipped` those their chance did.
+- **Conditional notes.** A note whose condition is A:B, FILL, 1ST or an opposite, or that is `Always` with a chance below 100 %, is conditional (`Cond::sets_last`): whether it played is its track's last result, which PRE and NEI read. Notes on PRE or NEI read it but do not set it, as on Elektron boxes, so a chain of them all follow the same note.
+- **Passes** count from the tick the clip started on (`Launch::start`: the bar line it launched on, or its origin if it was launched while stopped), by song position, not by counting wraps. A locate or a transport loop jump lands on the right pass, the same at any period size, and a locate back to the start plays 1ST again. Passes before the start count 0, -1 and so on, and A:B wraps the same way. A relaunch counts again from its new start. A pass is one pass at the clip's own speed: a 1-bar clip at half speed has a 2-bar pass.
+- **FILL** is one switch for the whole project: `Player::set_fill(on, offset)` (`TimeHost::set_fill` in the pad player) turns it on or off on an exact frame, so a fill can start mid-bar. The button is the pad player's: hold for a fill, double-press to latch (as NOTE REPEAT). FILL is not recorded.
+- **Reset.** A track's last result starts at "not played" when its clip starts, and after a stop or a locate. A transport loop jump keeps it, so a PRE chain carries round a loop.
+
+## Ratchets (`Note.ratchet`)
+
+A ratchet of N (1 to 8; 1 is a plain note) plays the note N times, evenly spread over its length, each hit lasting 1/N of it. A 1/16 note with ratchet 4 is four 1/64 hits; stretching the note spreads them out.
+
+- The condition and chance are decided once, on the first hit, so a ratchet plays whole or not at all.
+- Its locks come once, before the first hit.
+- Every hit has the note's velocity.
+- Swing and quantise move the first hit; the others keep their spacing from it. Hits less than a tick apart merge.
+- A switch drops the hits from its bar line on; a stop, a locate or a loop jump drops the rest.
+
 ## Parameter locks (`Lock`)
 
 The owner chose the Elektron way on 11 Nov (12:21Z; design https://claude.ai/artifact/9gEoqcU5D4K6B47u7a3wgR). A step can set any parameter of its track for that step: the instrument's, a sampler pad's own, the track strip's, or an insert effect's. Parameters are named with `mpfree-param`'s `RelAddr` (the mod thread's crate, #102), relative to the clip's track, so a clip copied to another track locks that track.
@@ -82,14 +113,17 @@ The owner chose the Elektron way on 11 Nov (12:21Z; design https://claude.ai/art
 - **Locks go with their steps.** Toggling a step off, entering a chord over it, nudging it, or adding, copying or taking off a page carries the step's locks along with its notes, in the same `Edit` (`erase_locks`, `add_locks`). A nudge moves them with the note.
 - **Undo.** Lock edits are takes like note edits. A Q-Link turned on a held step passes `lock_key(sound, i, addr)` as the join key, so the whole turn is one UNDO.
 - **Recording.** Knob moves while recording become locks on the step they belong to. See [playback.md](playback.md#knob-moves-become-locks).
+- **With conditions and chance.** A note its condition or chance leaves out leaves out its own locks too: the locks on its tick and row, and a whole-step lock only when every note on its tick is left out. So a 1:2 step with a filter lock opens the filter only on the passes it plays. Trigless locks always play. A left-out note ends nothing, so the lock before it keeps holding.
 
 ## Tests
 
-- `mpfree-seq` `steps` unit tests (15), three of them for locks: a lock sits on its step's note (a chord's earliest) or on the line, and replaces the one there; locks go with their steps when they are toggled off, nudged, entered over or copied with a page; a lock out of range is refused. The others: every tick has one step and comes back from it, for every size and odd clip lengths; a row shows the first note of a step and counts the rest; toggle on and off; changes and their limits, nudging a group of notes together; nudges reaching back over the clip's end on step 0; `Clip::apply` is all or nothing, length changes too; pages added (empty and copied, up to 64 steps and on), taken off and set to 13 steps, with an early note staying before the end; a short clip repeating to fill a copied page; a page copied over another; a held chord entered on a step, read back and nudged as one.
+- `mpfree-seq` unit tests: each condition on passes before and after the start, FILL, PRE and NEI; which notes are conditional; how conditions show; a clip refuses a condition or ratchet out of range. `steps`: a step takes a condition and a ratchet on every note of its sound, out of range is refused or clamped, and each joins its own undo.
+- `mpfree-play` `tests/trigs.rs` (17) checks how conditions and ratchets play: see [playback.md](playback.md#tests).
+- `mpfree-seq` `steps` unit tests (16), three of them for locks: a lock sits on its step's note (a chord's earliest) or on the line, and replaces the one there; locks go with their steps when they are toggled off, nudged, entered over or copied with a page; a lock out of range is refused. The others: every tick has one step and comes back from it, for every size and odd clip lengths; a row shows the first note of a step and counts the rest; toggle on and off; changes and their limits, nudging a group of notes together; nudges reaching back over the clip's end on step 0; `Clip::apply` is all or nothing, length changes too; pages added (empty and copied, up to 64 steps and on), taken off and set to 13 steps, with an early note staying before the end; a short clip repeating to fill a copied page; a page copied over another; a held chord entered on a step, read back and nudged as one.
 - `mpfree-play` `takes` unit tests: step edits are takes; a turn of velocity joins one edit; an edit after an undo starts a new one; a recorded note never joins an edit; pages added and taken off undo and redo to the clip exactly as it was; locks undo and redo with their steps.
 - `mpfree-play` `tests/locks.rs` (9) checks how locks play, and `tests/record.rs` how knob moves are recorded: see [playback.md](playback.md#tests).
 - `tests/play.rs`: a note at 50 % is left out on some passes and not others, differently on every pass and the same at every period size.
-- `tests/period_size.rs` and `tests/no_alloc.rs` include notes with chance below 100 %.
+- `tests/period_size.rs` and `tests/no_alloc.rs` include notes with chance below 100 %; `tests/no_alloc.rs` and `tests/trigs.rs` also trig conditions, ratchets and FILL.
 
 ## Listening
 
@@ -104,7 +138,7 @@ It prints the grid, checks where every note was heard on every pass, checks on a
 
 ## Next
 
-- The step screen, once Jay picks where it goes: pads or a lane per sound, 16 steps a page with page buttons, Q-Links for velocity, length, nudge and chance.
+- The step screen, once Jay picks where it goes: pads or a lane per sound, 16 steps a page with page buttons, Q-Links for velocity, length, nudge, chance, condition and ratchet, and a FILL button.
 - Parameter locks reach the sound once the mod thread's resolver (`mpfree-mod`, #102) takes the player's `Event::Lock` and `Event::Unlock`. The pad player ignores them until then. The step screen shows them as dots (`lock_row`) and edits a held step's locks on the Q-Links.
-- Trig conditions (every 2nd pass, first pass only) and ratchets. They add fields to the note, like chance.
+- A velocity ramp for ratchets (Elektron's retrig velocity curve), as a second setting.
 - Ties: a held key in step entry stretching a note over the next steps.

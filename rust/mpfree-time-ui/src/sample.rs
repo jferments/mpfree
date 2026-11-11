@@ -290,6 +290,8 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
             note,
             velocity,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .expect("sample note in range");
     }
@@ -404,11 +406,13 @@ fn launches() -> Vec<Launch> {
             track,
             slot: 0,
             origin: 0,
+            start: 0,
         })
         .chain(std::iter::once(Launch {
             track: 3,
             slot: 0,
             origin: 2 * BAR,
+            start: 2 * BAR,
         }))
         .collect()
 }
