@@ -43,7 +43,7 @@ Bright minor   = 1 2 b3 4 5 6 7
 Classical min  = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10
 ```
 
-A set with a `b` or `#`, or with `1` and no `0`, is read as degrees. The root is always included. A custom scale may not take a built-in name. In the pad player they follow the built-in scales in the arp's Scale row, and Save writes them back with the patterns (only with `--save-patterns`).
+A set with a `b` or `#`, or with `1` and no `0`, is read as degrees. The root is always included. A custom scale may not take a built-in name. In the pad player they follow the built-in scales in the arp's Scale row, and Save keeps them with the patterns in the store (`arp/patterns.txt`, only with `--data`).
 
 ## The pads (`mpfree_scale::pads`)
 

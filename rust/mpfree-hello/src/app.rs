@@ -525,7 +525,8 @@ pub enum Effect {
     /// The data wheel on the Clips page: step the selected record setting,
     /// or (with SHIFT) scroll the grid.
     ClipsWheel { delta: i32, scroll: bool },
-    /// Write this library text to the patterns file (off the audio thread).
+    /// Keep this library text in the store as arp/patterns.txt (the store's
+    /// own thread writes it).
     SavePatterns(String),
     /// STOP in the timed `play` step: end it.
     Quit,
@@ -597,8 +598,8 @@ pub struct App {
     recorder: Option<Recorder>,
     /// How the next recording on the pads goes: Step time or Free time.
     record_mode: RecordMode,
-    /// Save also writes the patterns file (`--patterns` with
-    /// `--save-patterns`), through [`Effect::SavePatterns`].
+    /// Save also keeps the patterns in the store (arp/patterns.txt, when
+    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`].
     pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
@@ -2409,7 +2410,7 @@ mod tests {
         let fx = app.load_patterns("Fine = 1 2\nBad = 1 z\nNo equals sign\n");
         assert_eq!(app.patterns, before);
         assert!(fx.contains(&Effect::Note("arp patterns file not used (2 bad lines); the built-in patterns stay".into())));
-        // Save logs a library line; it writes the file only with --save-patterns.
+        // Save logs a library line; it saves the library only when the store saves.
         app.toggle_panel();
         app.arp_action(ArpAction::Button(PatternButton::Edit));
         let p = Pattern::parse("1 2 . 3").unwrap();
