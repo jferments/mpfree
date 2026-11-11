@@ -218,3 +218,42 @@ The detailed 64-question evidence/backlog matrix is in
 bootchain-open-questions-2026-11-11.md. No source-code-only audit can
 establish live silicon MaskROM entry, unsigned SPL acceptance, or
 independent eMMC restore: these remain explicit physical proof gates.
+
+
+## V5: avoid repeating saturated V1–V4 Ghidra work
+
+The 2026-11-11T132338Z owner ZIP passed all indexed SHA checks,
+and every function presently recognized by Ghidra was processed
+(213 SRAM SPL and 1050 U-Boot). Three P3 decompilations failed,
+so count them as analyzed/attempted, not recovered pseudocode.
+
+The next investigation has a faster owner-facing entry point:
+
+    python3 tools/mpc-one/run_bootchain_v5_followup.py \
+      ~/mpfree-work/bootchain-wide-20261111T132338Z_3414727.zip
+
+It validates the prior private ZIP index, checks every indexed
+file SHA256 and both bootloader image hashes, and copies only
+necessary JSON reports to a NEW private report directory. It
+then runs the new cross-function/indirect-call evidence synthesis,
+imports verified 3.10 security/config utilities into EPHEMERAL
+Ghidra projects, writes an evidence ledger, and produces ONE new
+bootchain-wide-*-v5-*.zip. It does not re-run the 1263-function
+static decompilation in P1/P3.
+
+Optional flags:
+  --no-elf-ghidra
+  --rootfs-310 /absolute/path/to/existing/rootfs.img
+
+The original all-in-one runner also invokes the new V5 analysis
+(after its regular passes) for fresh complete audits. New 3.10
+ELF helper imports explicitly DO NOT execute vendor binaries.
+Their temporary Ghidra projects and ELF copies are deleted once
+the private JSON reports have been produced.
+
+V4 evidence now includes a newly named Linux reboot mode
+(mode-update) numerically identical to the prior loader mode
+(0x5242c301), a new standalone bootloader digest/RC4 utility,
+and an early Linux LoadPin unit. None proves genuine silicon
+MaskROM access, firmware signature acceptance, SD-first boot,
+or independent eMMC recovery. Those remain hardware gates.
