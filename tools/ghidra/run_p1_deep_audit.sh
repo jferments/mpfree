@@ -12,6 +12,8 @@ REPORT_SCRIPT="$ROOT/tools/ghidra/MPFreeSPLDeepAudit.py"
     echo "Missing deep-audit Python script: git pull first" >&2
     exit 1
 }
+python3 -m py_compile "$REPORT_SCRIPT"
+
 [[ -d "$PROJECTS" ]] || {
     echo "Missing Ghidra projects: $PROJECTS" >&2
     exit 1
