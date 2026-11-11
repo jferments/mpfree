@@ -1088,3 +1088,20 @@ Rockchip boot-source IDs (from upstream bootrom.h) include eMMC=2, SD=5 and USB=
 - Rockchip rkdeveloptool: https://github.com/rockchip-linux/rkdeveloptool
 
 **Status:** Fastboot `bootm` and legacy CRC reachability are now evidenced; real, on-chip RK3288 MaskROM USB recovery exists by design but has **not been shown accessible/recoverable on the MPC One board**. The two tracks will remain separate until board-specific evidence connects them.
+
+## 22. USB host inventory: no device enumerated in normal Linux (2026-11-10)
+
+**Owner-observed workstation output:** the Linux host ran `lsusb`, `lsusb -d 2207:`, and checked for `rkdeveloptool`. Host USB inventory included Logitech peripherals, a VIA hub, an Anker camera, Intel Bluetooth and AMI virtual devices; **there was no detectable Rockchip VID `0x2207` and no recognizable MPC One USB device** in that host snapshot. `rkdeveloptool` was **not installed**, so `rkdeveloptool ld` did not run. The owner did **not** explicitly confirm a direct data-capable USB cable from MPC USB-B to the workstation at the time; no claims about MaskROM or board-level USB routing can be concluded from the snapshot.
+
+**Interpretation by mode:** an MPC running stock Akai Linux need not enumerate as a USB peripheral unless Linux/Controller Mode has configured the gadget. Absence of USB device in this state is **not** evidence that U-Boot Fastboot or true silicon MaskROM is unavailable. Installing `rkdeveloptool` alone cannot create a missing USB enumeration event. Even a matching Rockchip VID could represent Loader rather than silicon MaskROM and must be classified separately.
+
+**Verified external sources:**
+- Akai explicitly documents the MPC One's **USB Type-B port** as its PC-facing connection, and says the shipped cable is USB 2.0; USB-A is for host peripherals: https://support.akaipro.com/en/support/solutions/articles/69000816149-akai-pro-mpc-one-frequently-asked-questions
+- Akai says the MPC can expose computer-controller mode over USB-B, when configured appropriately on the MPC: https://support.akaipro.com/en/support/solutions/articles/69000824436-akai-pro-mpc-series-transferring-content-to-and-from-the-mpc-via-a-computer
+- Rockchip project's udev rules list **RK3288 VID:PID `2207:320a`**: https://github.com/rockchip-linux/rkdeveloptool/blob/master/99-rk-rockusb.rules
+- Ubuntu 24.04 LTS (Noble) publishes `rkdeveloptool` in `universe`: https://packages.ubuntu.com/noble/rkdeveloptool
+- Reference RK3288 hardware has distinct **Loader**, **MaskRom**, **Normal** modes; board-specific recovery key procedures described for other boards are **not portable** to MPC One: https://community.t-firefly.com/en/docs/products/motherboard/Firefly-RK3288/bootmode
+
+**Safest next evidence**: confirm a standard data-capable USB-A-to-USB-B connection directly between workstation and MPC One USB-B; run host `udevadm monitor --kernel --subsystem-match=usb` in one terminal while disconnecting/reconnecting **only the cable**, with the MPC left running normally; capture any USB addition/removal events, then `lsusb` and `lsusb -d 2207:`. This does not boot, reflash or alter eMMC. Only once a Rockchip USB device is actually enumerated does `rkdeveloptool ld` add mode-classification evidence. The tool can be installed with `sudo apt install rkdeveloptool` (Noble universe must be enabled if unavailable). **Do not** issue `rkdeveloptool db/wl/ef/rd/ul`, change reboot-mode registers, short an eMMC pin, or assume unrelated RK3288 board recovery-button combinations apply.
+
+**Next hardware research requirement:** document the MPC One's actual USB-B D+/D- and VBUS routing to the RK3288 USB OTG controller, and identify any authorized, non-destructive ROM recovery selection mechanism before attempting to change boot state.
