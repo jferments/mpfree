@@ -1394,3 +1394,36 @@ This documents an **RK3288-specific** two-stage USB ROM loader candidate, and is
 - Gate recovery readiness on enumerated true MaskROM, proven compatible RAM-loaded stage, and full eMMC read-back verified off-device.
 
 **Status: Bootloader static call graph is now substantially understood; neither full Linux handoff nor independent MaskROM recovery has been proven.** The required outcome of this research is a defensible *compatibility and recovery contract* for an installer, not a brittle collection of 2019 offsets.
+
+
+### 30.7 Critical caveat: a RAM-only OS test can still change non-eMMC firmware
+
+The project's verified offline 3.6/3.10 updater investigations (`docs/hardware/akai-updater-offline.md`) identify **separate peripheral microcontroller firmware update paths**: an Ilitek ILI2117 touch-controller update via its sysfs `update_fw`, a pad/controller updater using `dfu-util` and `midifirmup` invoked from MPC application startup, and XMOS-related service logic. They report identical `ili2117.bin` payloads for 3.6 and 3.10 and conditional update logic, but **do not prove all boards or all future versions keep these payloads identical**. There is also `az01config`, which can write configuration directly to eMMC partitions, although the project has not confirmed a boot-time caller on this board.
+
+Therefore **kexec / RAM rootfs alone is not a sufficient "no persistent write" guarantee**. A new kernel's init services or MPC app can perform DFU, sysfs firmware updates or eMMC config writes even if the root filesystem itself is in RAM. A no-write test must launch only an audited minimal initramfs with an explicit service allowlist, disable all automatic peripheral firmware updaters, and inspect block-layer writes and device firmware versions before/after any approved run. The controlled proof-of-concept is not "boot 3.10 full stock userspace and hope", but "boot a minimal MPFree-owned test environment".
+
+The existing **host-only** `tools/mpc-one/offline-update-image.py` accepts the owner's saved `/home/jesse/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img` and lists all included partition records and image hashes without mounting or flashing. It should be the initial input to a version-to-version installer compatibility manifest:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+python3 tools/mpc-one/offline-update-image.py \
+  /home/jesse/mpfree-work/akai-update-files/MPC-3.10.0-Gen1-update.img \
+  > /home/jesse/mpfree-work/firmware-3.10-partition-inventory.txt
+~~~
+
+The report may contain vendor firmware metadata and should be reviewed before publishing; do not commit the proprietary image, serial identifiers or embedded authentication values. Static update records indicate **what the package carries**, not necessarily every partition the updater will rewrite under every conditional branch.
+
+### 30.8 Release-gate checklist (firmware upgrade resilience)
+
+| Gate | Evidence required | If absent |
+| --- | --- | --- |
+| Full backup | Verified user-area eMMC, boot0/boot1 and second off-device copy | **No persistent install** |
+| Firmware-intent audit | Signed Akai container parsed, partition write list and updater code audited | **Block Akai upgrade through MPFree workflow** |
+| Supported ABI | Board ID, PCB revision, kernel, DTB, controller firmware and userspace ABI matched | Run stock only |
+| RAM boot safety | Kernel+DTB+initramfs image verified, FIT/legacy policy and RAM overlap established | Remain on kexec stock-kernel route |
+| User data | Stock backup + independent MPFree release/data copy survives /data erasure | No upgrade |
+| Rollback | Watchdog/boot attempts + offline stock fallback demonstrated | No MPFree persistent boot selection |
+| Tier 3 | **Actual MaskROM entry, board-compatible DDR stage, full eMMC read-back** | Never change p1–p6/boot environment |
+| Update drift | Any bootloader/GPT/DTB hash differs from qualified profile | Fail closed; don't auto-repatch vendor boot |
+
+Firmware resilience must mean **stock operation survives a failed MPFree component and an unknown vendor update**. It cannot mean automatically retaining MPFree boot priority after an Akai update that intentionally rewrites our boot manager or blocks the original entrypoint.
