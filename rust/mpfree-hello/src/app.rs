@@ -517,7 +517,14 @@ impl App {
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
             View::Guide => Vec::new(),
-            _ if self.in_menu() => self.step_item(self.selected, delta.signum()),
+            // In a menu the wheel moves between rows and - / + change the
+            // value, so menus work without touch; SHIFT + wheel also changes
+            // the value, in case - and + are not known yet.
+            _ if self.in_menu() && self.shift => self.step_item(self.selected, delta.signum()),
+            _ if self.in_menu() => {
+                let last = self.items().len() as i32 - 1;
+                self.select((self.selected as i32 + delta).clamp(0, last) as usize)
+            }
             _ => vec![Effect::Kit(delta)],
         }
     }
@@ -751,7 +758,7 @@ impl App {
             Some(step) => (format!("Press {}", step.label()), vec![
                 "MPFree does not know this button's number yet.".to_string(),
                 "Press it once; the number goes in the log for next time.".to_string(),
-                "Not on your MPC, or not sure? Tap Skip.".to_string(),
+                "Not on your MPC, or not sure? Press STOP or tap Skip.".to_string(),
             ]),
             None => ("All done".to_string(), vec!["Tap Done to play.".to_string()]),
         };
@@ -762,6 +769,10 @@ impl App {
     }
 
     fn guide_press(&mut self, note: u8) -> Vec<Effect> {
+        // STOP skips a button, so the guide can be finished without touch.
+        if note == button::STOP {
+            return self.guide_button(if self.guide < GuideStep::ALL.len() { 0 } else { 1 });
+        }
         let Some(&step) = GuideStep::ALL.get(self.guide) else { return vec![self.guide_view()] };
         if let Some(name) = self.map.name(note).filter(|_| self.map.get(step) != Some(note)) {
             if self.map.get(step).is_none() || GuideStep::ALL.iter().all(|&s| s.short() != name) {
@@ -939,10 +950,15 @@ mod tests {
         let fx = press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Play options" && m.rows[0].0 == "Note repeat rate"));
-        // The wheel steps the selected value.
+        // The wheel moves between rows; SHIFT + wheel steps the value.
         let fx = app.wheel(1);
+        assert!(matches!(&fx[0], Effect::Menu(m) if m.selected == 1));
+        app.wheel(-5);
+        app.button(button::SHIFT, true, 0.0);
+        let fx = app.wheel(1);
+        app.button(button::SHIFT, false, 0.0);
         assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
-        assert!(fx.iter().any(|e| matches!(e, Effect::Menu(m) if m.rows[0].1 == "1/16T")));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Menu(m) if m.selected == 0 && m.rows[0].1 == "1/16T")));
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Play);
         app.button(button::SHIFT, true, 0.0);
@@ -963,6 +979,20 @@ mod tests {
         // The wheel picks kits outside menus.
         press(&mut app, MENU);
         assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+    }
+
+    #[test]
+    fn stop_skips_a_button_in_the_guide() {
+        let mut app = App::new(44_100, false);
+        app.start();
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::Note("button guide: MENU skipped".into())));
+        assert_eq!(app.view(), View::Guide);
+        for _ in 0..4 {
+            press(&mut app, button::STOP);
+        }
+        assert_eq!(app.view(), View::Play);
+        assert_eq!(app.map.menu, None);
     }
 
     #[test]

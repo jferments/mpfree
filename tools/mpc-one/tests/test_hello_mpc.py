@@ -72,13 +72,33 @@ case "$1" in
   is-active)
     case "$2" in
       mpfree-test-screen.service) cat "$FAKE_SCREEN" ;;
+      mpfree-test-app.service) cat "$FAKE_APP" ;;
       acvs.service) echo "$FAKE_ACVS" ;;
       *) echo inactive ;;
     esac ;;
-  stop) [ "$2" = mpfree-test-screen.service ] && echo inactive > "$FAKE_SCREEN" ;;
-  start) [ "$2" = mpfree-test-screen.service ] && echo active > "$FAKE_SCREEN" ;;
+  stop)
+    case "$2" in
+      mpfree-test-screen.service) echo inactive > "$FAKE_SCREEN" ;;
+      mpfree-test-app.service) echo inactive > "$FAKE_APP" ;;
+    esac ;;
+  start)
+    case "$2" in
+      mpfree-test-screen.service) echo active > "$FAKE_SCREEN" ;;
+      mpfree-test-app.service) echo active > "$FAKE_APP" ;;
+    esac ;;
   *) echo "systemctl stand-in: refusing $*" >&2; exit 99 ;;
 esac
+'''
+
+# The pad player's log: every line of FAKE_JOURNAL, as journalctl -o short-monotonic prints them. Each
+# call moves the fake clock (and /proc/uptime) on by 10 s first and adds the lines due by then
+# (FAKE_JOURNAL.<n>), so a phase that starts at uptime n - 10 sees the lines of FAKE_JOURNAL.<n>.
+FAKE_JOURNALCTL = r'''#!/bin/sh
+echo "journalctl: $*" >> "$FAKE_LOG"
+n=$(cat "$FAKE_CLOCK"); n=$((n + 10)); echo "$n" > "$FAKE_CLOCK"
+echo "$n.00 1.00" > "$FAKE_ROOT/proc/uptime"
+[ -f "$FAKE_JOURNAL.$n" ] && cat "$FAKE_JOURNAL.$n" >> "$FAKE_JOURNAL"
+cat "$FAKE_JOURNAL"
 '''
 
 FAKE_PROGRAM = r'''#!/bin/sh
@@ -146,13 +166,19 @@ class HelloTests(unittest.TestCase):
         for name in APPLETS:
             os.symlink(self.busybox, os.path.join(remote, name))
         write(os.path.join(remote, "systemctl"), FAKE_SYSTEMCTL, 0o755)
+        write(os.path.join(remote, "journalctl"), FAKE_JOURNALCTL, 0o755)
+        self.app, self.journal, self.clock = (os.path.join(t, n) for n in ("app-state", "journal", "clock"))
+        write(self.app, "inactive\n")
+        write(self.journal, "")
+        write(self.clock, "100\n")
         program_standin = os.path.join(t, "program-standin")
         write(program_standin, FAKE_PROGRAM, 0o755)
         self.env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
                     "HOME": t, "MPFREE_HELLO_TEST": "1", "FAKE_STAGE": self.stage, "FAKE_LOG": self.log,
                     "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": self.screen,
                     "FAKE_PROGRAM": program_standin, "FAKE_ACVS": "inactive", "FAKE_PADS": "3",
-                    "FAKE_PADS_KEEPALIVE": "2", "FAKE_CLICK_RC": "0",
+                    "FAKE_PADS_KEEPALIVE": "2", "FAKE_CLICK_RC": "0", "FAKE_APP": self.app,
+                    "FAKE_JOURNAL": self.journal, "FAKE_CLOCK": self.clock,
                     "FAKE_REPORT": os.path.join(self.root, "run/mpfree-hello/hello.txt")}
         self.key = os.path.join(t, "key")
         write(self.key, "fake key\n", 0o600)
@@ -175,6 +201,7 @@ class HelloTests(unittest.TestCase):
         shutil.rmtree(r, ignore_errors=True)
         write(f"{r}/proc/sys/kernel/osrelease", NEW + "\n")
         write(f"{r}/proc/sys/kernel/kexec_load_disabled", "1\n")
+        write(f"{r}/proc/uptime", "100.00 1.00\n")
         for name in ("sda", "loop0") + (("mmcblk0",) if mmc else ()):
             os.makedirs(f"{r}/sys/block/{name}")
         write(f"{r}/proc/mounts", "/dev/root / ext4 ro,relatime 0 0\n"
@@ -206,7 +233,8 @@ class HelloTests(unittest.TestCase):
         for text in ("static ARM EABI5 hard-float", f"release: {NEW}", "no MMC block device", "/: read-only",
                      "/run: tmpfs rw,nosuid,nodev,mode=755", "Akai's app (acvs.service): inactive",
                      "/dev/fb0: pid 321 (mpfree-screen-l)", "CHECKS-OK", "its hash on the MPC matches",
-                     "inventory done", "log display: inactive", "screen: card drawn", "touch done:",
+                     "inventory done", "pad player: was inactive, now inactive",
+                     "log display: was active, now inactive", "screen: card drawn", "touch done:",
                      "3 pad hits arrived without the keep-alive, so it is not sent.", "click done:",
                      "Starting the log display again:", "log display: active", "| ===== mpfree-hello click =====",
                      "RESULT: all steps ran", "NEXT: switch the MPC off with its power switch"):
@@ -216,7 +244,10 @@ class HelloTests(unittest.TestCase):
                           "click --seconds 10 --gain-db -12"])
         self.assertEqual(self.log_lines("systemctl: "),
                          ["is-active acvs.service", "is-active mpfree-test-screen.service",
-                          "stop mpfree-test-screen.service", "is-active mpfree-test-screen.service",
+                          "is-active mpfree-test-app.service",
+                          "is-active mpfree-test-app.service", "is-active mpfree-test-app.service",
+                          "is-active mpfree-test-screen.service", "stop mpfree-test-screen.service",
+                          "is-active mpfree-test-screen.service",
                           "start mpfree-test-screen.service", "is-active mpfree-test-screen.service"])
         with open(self.program, "rb") as a, open(f"{self.root}/run/mpfree-hello/mpfree-hello", "rb") as b:
             self.assertEqual(hashlib.sha256(a.read()).digest(), hashlib.sha256(b.read()).digest())
@@ -354,6 +385,101 @@ class HelloTests(unittest.TestCase):
         self.assertIn("STOP: no steps left to run; nothing was sent to the MPC", res.stdout)
         self.assertEqual(self.log_lines("ssh["), [])
 
+    def add_journal(self, lines, at=None):
+        """Lines for the fake pad player's log, written now or when the fake clock reaches `at`."""
+        path = self.journal if at is None else f"{self.journal}.{at}"
+        with open(path, "a") as fh:
+            for t, message in lines:
+                fh.write(f"[{t:12.6f}] {message}\n")
+
+    def test_app_step_only_reads_and_follows_each_phase(self):
+        write(self.app, "active\n")
+        write(self.screen, "inactive\n")
+        self.add_journal([(5.1, "systemd[1]: Started MPFree test boot: the pad player, from power-on."),
+                      (6.0, "mpfree-hello[211]: pad player: 6 kits, 81 sounds"),
+                      (9.5, "mpfree-hello[211]: playing until the power goes off: ...")])
+        # The start-up read moves the fake clock to 110; phase k starts at 100 + 10 k and its lines are due
+        # at 110 + 10 k.
+        self.add_journal([(111.0, "mpfree-hello[211]: +40.100 s Private: 90 0B 7F = button 11 pressed"),
+                      (111.1, "mpfree-hello[211]: button guide: MENU is button 11")], at=120)
+        self.add_journal([(121.0, "mpfree-hello[211]: +50.000 s Private: 99 25 12 = pad 1 down, velocity 18"),
+                      (121.1, "mpfree-hello[211]: +50.100 s Private: 89 25 00 = pad 1 up"),
+                      (121.5, "mpfree-hello[211]: +50.500 s Private: 99 25 7C = pad 1 down, velocity 124"),
+                      (122.0, "mpfree-hello[211]: +51.000 s Private: 90 27 7F = button 39 pressed"),
+                      (122.1, "mpfree-hello[211]: pad level: Full Level (every hit 127)"),
+                      (123.0, "mpfree-hello[211]: +52.000 s Private: B0 64 01 = data wheel +1"),
+                      (123.5, "mpfree-hello[211]: +52.500 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping")],
+                     at=130)
+        self.add_journal([(141.0, "mpfree-hello[211]: Latch on"),
+                      (143.0, "mpfree-hello[211]: repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                              "engine dropped 0 events, overflow 0"),
+                      (150.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns in "
+                              "20000 periods, ...")], at=150)
+        # Start-up: Enter + note; phases 1 to 3: Enter, Enter when done, note; phase 4: Enter, then q.
+        answers = "\nloading ok\n" + "\n\nguide ok\n" + "\n\nsoft and hard differ\n" + "\n\nrepeat ok\n" + "\nq\n"
+        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        out = res.stdout
+        for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
+                     "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
+                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 7: Button guide",
+                     "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
+                     "Phase 2 of 7: Velocity, Full Level and Half Level", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
+                     "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
+                     "Phase 4 of 7: Latch", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
+            self.assertIn(text, out)
+        # Phase 1's lines are not shown again in phase 2.
+        self.assertEqual(out.count("button guide: MENU is button 11"), 1)
+        self.assertNotIn("[3/", out.split("steps: app")[0])
+        self.assertNotIn("Copy the program", out)
+        with open(self.report) as fh:
+            report = fh.read()
+        self.assertIn("| [   121.500] +50.500 s Private: 99 25 7C = pad 1 down, velocity 124", report)
+        # Nothing was copied, started or stopped; only reads.
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+        self.assertEqual(self.log_lines("program: "), [])
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
+        self.assertTrue(all(l.startswith("-b -u mpfree-test-app.service -o short-monotonic")
+                            for l in self.log_lines("journalctl: ")))
+        with open(self.app) as fh:
+            self.assertEqual(fh.read().strip(), "active")
+
+    def test_app_step_all_phases_and_the_status(self):
+        write(self.app, "active\n")
+        self.add_journal([(130.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
+        answers = "\n\n" + "\n\n\n" * 7
+        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("Phase 7 of 7: STOP", res.stdout)
+        self.assertIn("The app's latest status", res.stdout)
+        self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
+        self.assertIn("RESULT: all steps ran", res.stdout)
+
+    def test_app_step_when_the_app_is_not_running(self):
+        self.add_journal([(7.0, "mpfree-hello[211]: STOP: no sound card called ACVA after 30 s")])
+        res = self.run_helper("\nit showed an error\n", MPFREE_HELLO_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player (mpfree-test-app.service): inactive", res.stdout)
+        self.assertIn("STOP: no sound card called ACVA after 30 s", res.stdout)
+        self.assertIn("The pad player is not running, so the other phases are left out.", res.stdout)
+        self.assertNotIn("Phase 1", res.stdout)
+
+    def test_other_steps_stop_the_app_and_start_it_again(self):
+        write(self.app, "active\n")
+        write(self.screen, "inactive\n")
+        res = self.run_helper("\nok\n", MPFREE_HELLO_STEPS="screen")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player: was active, now inactive", res.stdout)
+        self.assertIn("log display: was inactive, now inactive", res.stdout)
+        self.assertIn("Starting the pad player again:\n  pad player: active", res.stdout)
+        self.assertNotIn("Starting the log display again", res.stdout)
+        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")],
+                         ["stop mpfree-test-app.service", "start mpfree-test-app.service"])
+        with open(self.screen) as fh:
+            self.assertEqual(fh.read().strip(), "inactive")
+
     def test_stops_if_the_controller_changes(self):
         os.environ["FAKE_USB_PRODUCT"] = "0047"
         try:
@@ -425,7 +551,7 @@ class StaticTests(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
-                 "REPORT", "CONTROLLER")
+                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "REPORT", "CONTROLLER")
         scripts = {name: getattr(mod, name) for name in names}
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
@@ -441,8 +567,12 @@ class StaticTests(unittest.TestCase):
         self.assertIn('cat > "$R/run/mpfree-hello/kits.bin.part"', mod.RECEIVE_KIT)
         services = re.findall(r"systemctl (stop|start|restart|enable|disable|mask|unmask|kill) (\S+)",
                               " ".join(scripts.values()))
-        self.assertEqual(sorted(services), [("start", "mpfree-test-screen.service"),
-                                            ("stop", "mpfree-test-screen.service")])
+        self.assertEqual(sorted(services), [("start", "mpfree-test-app.service"), ("start", "mpfree-test-screen.service"),
+                                            ("stop", "mpfree-test-app.service"), ("stop", "mpfree-test-screen.service")])
+        # The app step's scripts only read.
+        for name in ("APP_STATE", "UPTIME", "APP_LOG"):
+            self.assertIsNone(re.search(r"systemctl (?!is-active)", scripts[name]), name)
+        self.assertIn("journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager", mod.APP_LOG)
         # The program's arguments are fixed in the tool; nothing from the command line reaches the MPC.
         self.assertEqual(sorted(mod.PHASES), ["click", "drums", "inventory", "lights", "pads", "pads-keepalive", "play",
                                               "screen", "setup", "touch"])
@@ -507,6 +637,14 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-hello/main.rs", "mpfree-hello/alsa.rs", "mpfree-ui/fb.rs"}, files)
+
+    def test_the_only_program_it_starts_is_a_read_only_journalctl(self):
+        code = "".join(c for _, c in self.program_sources())
+        self.assertEqual(code.count("Command::new("), 1)
+        self.assertIn('Command::new("journalctl")', code)
+        self.assertIn('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])', code)
+        for needle in ("systemctl", "std::net", "kexec"):
+            self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
 
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""

@@ -43,8 +43,10 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 const CONSOLE_HINT: &str = "Switch the MPC off with its power switch to return to the stock firmware";
 const SHIFT_HINT: &str =
     "SHIFT +   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
-const OPTIONS_HINT: &str = "Wheel, - / + or the arrows: change the value   ·   Tap a row to pick it   ·   MENU: close";
-const GUIDE_HINT: &str = "The pads still play while the guide is open";
+const SHIFT_MENU_HINT: &str = "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
+const OPTIONS_HINT: &str =
+    "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
+const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
 
 /// The screen's size as the player sees it (the MPC One's panel, turned).
@@ -329,7 +331,9 @@ impl Player {
 
     fn refresh_hint(&mut self) {
         let stop = if self.timed { "STOP: end" } else { "STOP: silence" };
-        let text = if self.status.shift && self.ready {
+        let text = if self.status.shift && self.ready && matches!(self.view, View::Prefs | View::Options) {
+            SHIFT_MENU_HINT.to_string()
+        } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else {
             match self.view {
