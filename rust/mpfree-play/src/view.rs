@@ -5,7 +5,7 @@
 //! applies quantise and speed, and resolves which swing each clip uses, so
 //! playback is a binary search and a few multiplications per clip.
 
-use mpfree_seq::{DestId, ModelError, Project, Speed, SLOTS};
+use mpfree_seq::{DestId, ModelError, Project, Quantise, Speed, SLOTS};
 use mpfree_transport::time::{Swing, Tick};
 
 /// A clip playing on a track: which slot, and the song tick where its first
@@ -39,8 +39,12 @@ pub(crate) struct NoteView {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
+    pub slot: usize,
     pub origin: Tick,
+    /// One pass, in the clip's own ticks.
+    pub length: Tick,
     pub speed: Speed,
+    pub quantise: Option<Quantise>,
     /// One pass, in song ticks.
     pub song_len: f64,
     /// The clip's own swing, else the track's; `None` follows the transport.
@@ -102,8 +106,11 @@ impl PlayView {
                 .collect();
             notes.sort_by(|a, b| a.local.total_cmp(&b.local));
             tracks[l.track].clip = Some(ClipView {
+                slot: l.slot,
                 origin: l.origin,
+                length: clip.length,
                 speed: clip.speed,
+                quantise: clip.quantise,
                 song_len: clip.speed.to_song(length),
                 swing: clip.swing.or(track.swing),
                 notes,
