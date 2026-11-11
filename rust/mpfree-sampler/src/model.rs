@@ -1144,6 +1144,49 @@ impl Project {
         Ok(id)
     }
 
+    /// Adds source `s` and puts it on pad `pad`, played whole and once, as
+    /// one undo step; the pad takes the source's name. A pad already there
+    /// keeps its other settings (level, envelopes, filter, keys) with this
+    /// one layer. Returns the source's id.
+    pub fn put_source(&mut self, pad: usize, s: Source) -> Result<SourceId, ModelError> {
+        if pad >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let layer = Layer::new(Region::whole(&s));
+        let p = match self.pad(pad) {
+            Some(old) => Pad {
+                name: s.name.clone(),
+                layers: vec![layer],
+                select: LayerSelect::All,
+                ..old.clone()
+            },
+            None => Pad::new(&s.name, layer),
+        };
+        let id = s.id();
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&p) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.pads[pad].replace(p);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(id)
+    }
+
     pub fn pads_play(&self) -> PadsPlay {
         self.pads_play
     }

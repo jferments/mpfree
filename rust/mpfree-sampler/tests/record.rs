@@ -4,7 +4,10 @@
 use mpfree_sampler::chop::{demo_beat, SourceAnalysis};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
-use mpfree_sampler::record::{rolling, Arm, RecordError, Stop, Take, TakeState};
+use mpfree_sampler::record::{
+    bar_lines, input, rolling, Arm, End, Feed, Pick, Progress, RecordError, Recording, Start, Stop,
+    Take, TakeState, BAR_LINES,
+};
 
 const RATE: u32 = 44_100;
 const PERIOD: usize = 128;
@@ -286,4 +289,202 @@ fn record_chop_and_play_back_in_one_session() {
         .map(|(o, x)| (o - std::f32::consts::FRAC_1_SQRT_2 * x).abs())
         .fold(0.0f32, f32::max);
     assert!(worst < 1e-6, "{worst}");
+}
+
+// ------------------------------------------------- the line input (CAP)
+
+/// The audio thread's side, period by period: bar lines every `bar`
+/// frames from frame `first_bar` (the transport rolling), then the period
+/// of [`frame_audio`].
+fn feed_periods(f: &mut Feed, periods: u64, bar: u64, first_bar: u64) {
+    for _ in 0..periods {
+        let base = f.audio.written();
+        let end = base + PERIOD as u64;
+        // Bar lines that fall in this period, in order.
+        let mut b = if base <= first_bar {
+            first_bar
+        } else {
+            first_bar + (base - first_bar).div_ceil(bar) * bar
+        };
+        while b < end {
+            f.bars.mark(b);
+            b += bar;
+        }
+        f.bars.set_bar(Some(bar as f64));
+        f.audio.push(&frame_audio(base, PERIOD));
+    }
+}
+
+#[test]
+fn bar_lines_look_back_and_forward_from_any_frame() {
+    let (mut w, r) = bar_lines();
+    assert_eq!((r.count(), r.back(0), r.bar_frames()), (0, None, None));
+    for k in 0..10u64 {
+        w.mark(1_000 + k * 500);
+    }
+    w.set_bar(Some(500.0));
+    assert_eq!((r.back(0), r.back(9), r.back(10)), (Some(5_500), Some(1_000), None));
+    assert_eq!(r.bar_frames(), Some(500.0));
+    // The first, and the third, bar line after frame 2 000 (which is one).
+    assert_eq!(r.nth_after(2_000, 1), Some(2_500));
+    assert_eq!(r.nth_after(2_000, 3), Some(3_500));
+    assert_eq!(r.nth_after(5_500, 1), None, "not passed yet");
+    assert_eq!(r.nth_after(0, 1), Some(1_000));
+    // Only the last BAR_LINES are kept: further back is not known.
+    for k in 10..(BAR_LINES as u64 + 20) {
+        w.mark(1_000 + k * 500);
+    }
+    assert_eq!(r.back(BAR_LINES - 1), Some(1_000 + 20 * 500));
+    assert_eq!(r.back(BAR_LINES), None);
+    assert_eq!(r.nth_after(0, 1), None, "the first line after frame 0 is gone");
+    w.set_bar(None);
+    assert_eq!(r.bar_frames(), None, "stopped");
+}
+
+#[test]
+fn the_last_bars_are_cut_exactly_on_the_bar_lines() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 22_050; // 4/4 at 480 BPM, short for the test
+    assert_eq!(i.last_bars(1), Err(RecordError::NoBarLines));
+    feed_periods(&mut f, 1_000, bar, 3_000);
+    // Lines at 3 000, 25 050, ... the latest before frame 128 000.
+    let latest = i.bars.back(0).unwrap();
+    assert_eq!((latest - 3_000) % bar, 0);
+    let two = i.last_bars(2).unwrap();
+    assert_eq!(two.len() as u64, 2 * bar * 2);
+    assert_eq!(two[0], (latest - 2 * bar) as f32);
+    assert_eq!(two[two.len() - 2], (latest - 1) as f32);
+    assert_eq!(i.last_bars(0), Err(RecordError::BadSpan));
+    // More bars than have passed.
+    assert_eq!(i.last_bars(40), Err(RecordError::NoBarLines));
+    // Skip back by frames, and what is held.
+    assert_eq!(i.held(), 128_000);
+    let last = i.last_frames(100).unwrap();
+    assert_eq!((last[0], last[198]), (127_900.0, 127_999.0));
+}
+
+#[test]
+fn a_recording_on_the_next_bar_ends_exactly_on_a_bar_line() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    feed_periods(&mut f, 50, bar, 0);
+    // Asked for at frame 6 400: it starts on the line at 10 000 and lasts
+    // two bars, to the line at 30 000.
+    let mut rec = Recording::new(&i, Start::NextBar, End::Bars(2), RATE as u64 * 60);
+    assert_eq!(rec.armed_at(), 6_400);
+    assert_eq!(rec.poll(&i), Ok(Progress::Waiting));
+    let mut seen_recording = false;
+    for _ in 0..40 {
+        feed_periods(&mut f, 10, bar, 0);
+        if matches!(rec.poll(&i).unwrap(), Progress::Recording { .. }) {
+            seen_recording = true;
+        }
+    }
+    assert!(seen_recording);
+    assert_eq!(rec.started_at(), Some(10_000));
+    assert_eq!(rec.progress(), Progress::Done { frames: 20_000 });
+    let s = rec.finish("Take 1", Pick::Stereo).unwrap().unwrap();
+    assert_eq!((s.channels(), s.frames(), s.rate()), (2, 20_000, RATE));
+    assert_eq!((s.data()[0], s.data()[39_998]), (10_000.0, 29_999.0));
+}
+
+#[test]
+fn a_recording_without_bar_lines_lasts_its_bars_at_the_tempo_then() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 4_000;
+    feed_periods(&mut f, 10, bar, 0);
+    let mut rec = Recording::new(&i, Start::Now, End::Bars(3), RATE as u64 * 60);
+    feed_periods(&mut f, 200, bar, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 12_000 }));
+    assert_eq!(rec.started_at(), Some(1_280));
+}
+
+#[test]
+fn a_press_ends_it_and_the_channels_picked_are_kept() {
+    let (mut f, i) = input(10, RATE);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    let mut rec = Recording::new(&i, Start::Now, End::Press, RATE as u64 * 60);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Recording { frames: 1_280 }));
+    feed_periods(&mut f, 5, 1_000_000, 0);
+    rec.stop(&i);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 1_920 }));
+    let left = rec.clone().finish("L", Pick::Left).unwrap().unwrap();
+    assert_eq!((left.channels(), left.frames()), (1, 1_920));
+    assert_eq!((left.data()[0], left.data()[1]), (1_280.0, 1_281.0));
+    let right = rec.clone().finish("R", Pick::Right).unwrap().unwrap();
+    assert_eq!(right.data()[0], -1_280.0);
+    let mono = rec.finish("M", Pick::Mono).unwrap().unwrap();
+    assert_eq!((mono.channels(), mono.data()[0]), (1, 0.0));
+}
+
+#[test]
+fn stopped_while_waiting_it_records_nothing() {
+    let (mut f, i) = input(10, RATE);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    // The transport is not rolling: no bar line comes.
+    let mut rec = Recording::new(&i, Start::NextBar, End::Bars(1), RATE as u64 * 60);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Waiting));
+    rec.stop(&i);
+    assert_eq!(rec.poll(&i), Ok(Progress::Nothing));
+    assert!(rec.finish("x", Pick::Stereo).is_none());
+    // A threshold never crossed, the same.
+    let mut rec = Recording::new(
+        &i,
+        Start::Threshold {
+            level: 1e9,
+            pre_roll: 100,
+        },
+        End::Press,
+        RATE as u64 * 60,
+    );
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Waiting));
+    rec.stop(&i);
+    assert_eq!(rec.poll(&i), Ok(Progress::Nothing));
+}
+
+#[test]
+fn a_threshold_recording_keeps_its_pre_roll_and_lasts_its_length() {
+    let (mut f, i) = input(10, RATE);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    // frame_audio's left channel is the frame number: it crosses 3 000 at 3 001.
+    let mut rec = Recording::new(
+        &i,
+        Start::Threshold {
+            level: 3_000.0,
+            pre_roll: 500,
+        },
+        End::Frames(1_000),
+        RATE as u64 * 60,
+    );
+    feed_periods(&mut f, 40, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 1_000 }));
+    assert_eq!(rec.started_at(), Some(2_501));
+}
+
+#[test]
+fn a_recording_put_on_a_pad_is_one_undo_step() {
+    let mut p = Project::new();
+    let s = Source::new("Take 1", RATE, 1, vec![0.5; 1_000]).unwrap();
+    let id = p.put_source(4, s.clone()).unwrap();
+    let pad = p.pad(4).unwrap();
+    assert_eq!((pad.name.as_str(), pad.layers.len()), ("Take 1", 1));
+    assert_eq!(pad.layers[0].region.source, id);
+    assert_eq!(pad.layers[0].region.frames(), 1_000);
+    // A pad already there keeps its settings with the new sound.
+    p.edit_pad(4, None, |pd| pd.level_db = -6.0).unwrap();
+    let s2 = Source::new("Take 2", RATE, 2, vec![0.25; 600]).unwrap();
+    p.put_source(4, s2).unwrap();
+    let pad = p.pad(4).unwrap();
+    assert_eq!((pad.name.as_str(), pad.level_db), ("Take 2", -6.0));
+    assert_eq!(p.sources().len(), 2);
+    assert!(p.undo());
+    assert_eq!(p.pad(4).unwrap().name, "Take 1");
+    assert_eq!(p.sources().len(), 1, "the second take's sound went with it");
+    assert!(p.undo() && p.undo());
+    assert!(p.pad(4).is_none());
+    assert!(p.sources().is_empty());
+    assert_eq!(p.put_source(PADS, s), Err(ModelError::BadPad));
 }
