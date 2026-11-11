@@ -3,7 +3,7 @@
 
 use mpfree_fx::{
     Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, MultiFilter, Perform, Phaser, Preset, CLOUD_PRESETS, LOFI_PRESETS,
+    MasterSafety, MultiFilter, Perform, Phaser, Preset,
 };
 use mpfree_node::{Node, NodeInfo, ParamInfo};
 use mpfree_ui::Color;
@@ -74,13 +74,10 @@ impl FxState {
     }
 }
 
-/// An effect's factory presets (none for most).
+/// An effect's factory presets (none for the DJ filter, Master safety and
+/// Perform FX).
 pub fn presets(id: &str) -> &'static [Preset] {
-    match id {
-        "mpfree.fx.cloud" => CLOUD_PRESETS,
-        "mpfree.fx.lofi" => LOFI_PRESETS,
-        _ => &[],
-    }
+    mpfree_fx::presets(id)
 }
 
 /// What loading preset `i` sends to the node: every parameter's default
