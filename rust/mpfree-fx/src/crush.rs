@@ -60,10 +60,17 @@ impl Crush {
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         let dither = self.v[2] >= 0.5;
-        let fs = self.rate as f32;
+        let per_frame = 1.0 / self.rate as f32;
+        // The levels for the bit depth, worked out again only while it
+        // glides (exp2 per sample is a library call on the MPC's ARM).
+        let (mut bits_was, mut levels) = (f32::NAN, 1.0);
         for i in 0..l.len() {
-            let levels = (self.bits.next() - 1.0).exp2();
-            let step = (self.hz.next() / fs).min(1.0);
+            let bits = self.bits.next();
+            if bits != bits_was {
+                bits_was = bits;
+                levels = (bits - 1.0).exp2();
+            }
+            let step = (self.hz.next() * per_frame).min(1.0);
             let mix = self.mix.next();
             self.phase += step;
             let x = [l[i], r[i]];
