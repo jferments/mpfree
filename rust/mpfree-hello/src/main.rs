@@ -62,8 +62,10 @@
 mod akai;
 mod app;
 mod alsa;
+mod debug_page;
 mod gui;
 mod kit;
+mod perf;
 mod sampler;
 mod synth;
 mod sys;
@@ -1325,6 +1327,8 @@ struct RenderTime {
     periods: u64,
     total: Duration,
     max: Duration,
+    /// Since the last `take_window` (the Performance page's 250 ms).
+    window: (u32, Duration, Duration),
 }
 
 impl RenderTime {
@@ -1332,6 +1336,15 @@ impl RenderTime {
         self.periods += 1;
         self.total += d;
         self.max = self.max.max(d);
+        let w = &mut self.window;
+        *w = (w.0 + 1, w.1 + d, w.2.max(d));
+    }
+
+    /// Mean and largest render time since the last call, µs.
+    fn take_window(&mut self) -> (f32, f32) {
+        let (n, total, max) = std::mem::take(&mut self.window);
+        let mean = if n == 0 { 0.0 } else { total.as_secs_f32() * 1e6 / n as f32 };
+        (mean, max.as_secs_f32() * 1e6)
     }
 
     fn describe(&self) -> String {
@@ -1534,6 +1547,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
+        let mut bank_lights = false;
         // Hits are timed only when they sound at once (not on the arp's grid).
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
@@ -1567,6 +1581,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
                 gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
+                gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
+                gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
+                gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -1649,7 +1666,17 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 Some(ControlEvent::Button { note, pressed }) => fx.extend(app.button(note, pressed, t)),
+                // The control mapper names the Q-Links and takes CCs nothing else knows.
+                Some(ControlEvent::QLinkTouch { knob, touched: true }) if (knob as usize) < 4 => {
+                    fx.extend(app.known_control(app::Code::Button(mpc_one::QLINK_TOUCH_NOTES[knob as usize])));
+                }
+                None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => fx.extend(app.unknown_cc(m.bytes[1])),
                 _ => {}
+            }
+            if let Some(ControlEvent::QLinkTurn { knob, .. }) = m.event {
+                if let Some(&cc) = mpc_one::QLINK_TURN_CC.get(knob as usize) {
+                    fx.extend(app.known_control(app::Code::Cc(cc)));
+                }
             }
         }
         fx.extend(app.tick(t));
@@ -1714,6 +1741,26 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
                 app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
                 app::Effect::ClipsWheel { delta, scroll } => out.show(gui::ToUi::ClipsWheel { delta, scroll }),
+                app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
+                // Grains kit are banks A-H again, from kit 9 on).
+                app::Effect::Bank { button, shift } => {
+                    let now = kit_to.unwrap_or(if synth_on { synth_kit } else { player.kit() });
+                    if button < 4 {
+                        let group = if now >= drum_kits { 0 } else { now / 8 * 8 };
+                        let target = group + app::bank_target(now % 8, button, shift);
+                        if target < drum_kits {
+                            kit_to = Some(target);
+                            out.note(&format!("bank: {} (kit {}: {})", app::bank_letter(target), target + 1,
+                                              kits[target].name));
+                        } else {
+                            out.note(&format!("bank {}: no kit there ({} kits)",
+                                              app::bank_letter(group + app::bank_target(now % 8, button, shift)),
+                                              drum_kits));
+                        }
+                    }
+                    bank_lights = true;
+                }
                 // What it gives back (the tempo's status line and note) is
                 // handled with the next period's effects.
                 app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
@@ -1751,6 +1798,21 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             }
             lit = [false; 16];
             out.show(gui::ToUi::Kit(k));
+            bank_lights = true;
+        }
+        // The PAD BANK buttons found so far: the bank playing is lit.
+        if bank_lights {
+            let bank = if synth_on { None } else { Some(player.kit() % 4) };
+            for (b, note) in app.map.bank.iter().enumerate() {
+                let Some(note) = *note else { continue };
+                let value = if bank == Some(b) { app::LIGHT_ON } else { app::LIGHT_OFF };
+                if akai::app_lights(note) {
+                    ports.send(true, &akai::button_light(note, value))?;
+                } else if !unlit[note as usize & 0x7F] {
+                    unlit[note as usize & 0x7F] = true;
+                    out.note(&format!("button {note}: no light sent (Akai's app was never seen lighting it)"));
+                }
+            }
         }
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
@@ -1911,7 +1973,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 hits, periods: totals.periods + play.periods, underruns: totals.xruns + play.xruns,
                 voices: player.playing() + synth.active_voices(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
                 min_ms: lat.min as f32, mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left,
-                periods_queued: periods,
+                periods_queued: periods, audio: {
+                    let (render_mean_us, render_max_us) = render_time.take_window();
+                    let (synth_mean_us, synth_max_us) = synth_time.take_window();
+                    let c = player.counters();
+                    debug_page::AudioNumbers {
+                        render_mean_us, render_max_us, synth_mean_us, synth_max_us,
+                        worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6, steals: c.steals,
+                        dropped: c.dropped_events + events.dropped, peak_grains: c.peak_grains,
+                    }
+                },
             }));
             window_peak = 0.0;
             let meters = synth.meters();

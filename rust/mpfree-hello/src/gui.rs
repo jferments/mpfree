@@ -22,7 +22,9 @@
 //! the loading page shows the console, and a tab goes back. After that,
 //! `app.rs` decides, and touches only report what was touched.
 
-use crate::app::{ArpView, GuideView, MenuView, PadLevel, Settings, Status, View, WorkspaceView, TABS};
+use crate::app::{tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView};
+use crate::debug_page::{AudioNumbers, DebugPages};
+use crate::perf::ProcView;
 use crate::touchlab_page::TouchLabView;
 use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
@@ -55,7 +57,6 @@ pub const PLAY_LAYOUT: &str = "col(header:60, row(pads:*, col(kits:*, level:96, 
 pub fn with_bar(layout: &str) -> String {
     time_view::with_transport(layout).unwrap_or_else(|| layout.to_string())
 }
-pub const DEBUG_LAYOUT: &str = "col(header:60, row(midi:*, col(events:*, timing:232):460):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
@@ -175,6 +176,8 @@ pub struct Timing {
     pub seconds_left: Option<u64>,
     /// The audio buffer, in periods.
     pub periods_queued: u32,
+    /// Render times and engine counters, for the Performance page.
+    pub audio: AudioNumbers,
 }
 
 pub enum ToUi {
@@ -241,6 +244,8 @@ pub enum ToUi {
     /// The data wheel on the Clips page: step the selected record setting,
     /// or scroll the grid.
     ClipsWheel { delta: i32, scroll: bool },
+    /// The Map controls page (debug mode).
+    Map(Box<MapView>),
     Quit,
 }
 
@@ -264,6 +269,12 @@ pub enum FromUi {
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
+    /// The Debug tab's strip: MIDI, Performance or Map controls.
+    DebugPage(usize),
+    /// A control tapped in the mapper's list (listen for it).
+    MapRow(usize),
+    /// The mapper card's buttons: Listen, Skip, Clear.
+    MapButton(usize),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -310,6 +321,8 @@ pub struct Player {
     /// The time engine's bar and Clips page, and what they show.
     time_page: TimePage,
     pub time: TimeState,
+    /// The Debug tab's Performance and Map controls pages.
+    debug: DebugPages,
 }
 
 impl Player {
@@ -317,7 +330,8 @@ impl Player {
     /// last frame), or None for the built-in one.
     pub fn new(fonts: Fonts, size: (i32, i32), timed: bool, backdrop: Option<Arc<Image>>) -> Player {
         let mut ui = Ui::new(Theme::dark(), fonts, size.0, size.1);
-        ui.add("header", Header::new(&TABS));
+        let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
+        ui.add("header", Header::new(&names));
         let mut loading = Loading::new("MPFree", "Pad player");
         loading.set_backdrop(backdrop);
         loading.hint = LOADING_HINT.to_string();
@@ -338,7 +352,7 @@ impl Player {
         let time_page = TimePage::add_to(&mut ui).expect("clips layout");
         ui.add_full_page("Loading", "loading").expect("loading layout");
         ui.add_page("Play", &with_bar(PLAY_LAYOUT)).expect("play layout");
-        ui.add_page("Debug", DEBUG_LAYOUT).expect("debug layout");
+        let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT).expect("console layout");
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT).expect("options layout");
@@ -363,7 +377,7 @@ impl Player {
                              session: ("Starting".to_string(), Tone::Dim),
                              console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
                              synth: None, arp_panel, workspace, arp, qlink_focus: None, arp_chip: None,
-                             fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default() };
+                             fingers: Vec::new(), outbox: Vec::new(), time_page, time: TimeState::default(), debug };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
@@ -437,7 +451,8 @@ impl Player {
                 let note = |i: usize| k.pads.get(i).cloned().flatten().unwrap_or_default();
                 chips.push(Chip::new(format!("Poly · {} to {}", note(0), note(15)), Tone::Accent));
             }
-            Some(_) => chips.push(Chip::new(format!("Kit {} of {}", self.kit + 1, self.kits.len()), Tone::Accent)),
+            Some(_) => chips.push(Chip::new(format!("Kit {} of {} · Bank {}", self.kit + 1, self.kits.len(),
+                                                    crate::app::bank_letter(self.kit)), Tone::Accent)),
             None => {}
         }
         // The level in dB is on the slider and the tempo only matters while
@@ -493,7 +508,12 @@ impl Player {
                 View::Clips => CLIPS_HINT.to_string(),
                 View::Synth => format!("Pads play Poly   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   {stop}"),
-                View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   MENU: options   ·   {stop}"),
+                View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
+                                        Debug page   ·   MENU: options   ·   {stop}"),
+                View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
+                                       the log every 30 s   ·   SHIFT + wheel: Debug page   ·   {stop}"),
+                View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
+                              STOP: stop listening   ·   SHIFT + wheel: Debug page".to_string(),
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + STOP: back"
                     .to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
@@ -549,7 +569,18 @@ impl Player {
 
     fn set_settings(&mut self, s: Settings) {
         let resumed = self.settings.console_paused && !s.console_paused;
+        let retab = self.settings.debug_mode != s.debug_mode;
         self.settings = s;
+        if retab {
+            let debug = self.settings.debug_mode;
+            let active = self.view.tab_index(debug);
+            if let Some(h) = self.ui.get_mut::<Header>("header") {
+                h.tabs = tabs(debug).iter().map(|v| v.name().to_string()).collect();
+                if let Some(t) = active {
+                    h.active = t;
+                }
+            }
+        }
         if resumed {
             let lines: Vec<String> = self.console_backlog.drain(..).collect();
             if let Some(c) = self.ui.get_mut::<LogPanel>("syslog") {
@@ -643,7 +674,9 @@ impl Player {
                 self.timing = t;
                 self.show_timing();
                 self.refresh_chips();
+                self.debug.set_audio(&mut self.ui, t.audio);
             }
+            ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -919,7 +952,10 @@ impl Player {
             View::Play => "Play".to_string(),
             View::Clips => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
-            View::Debug => "Debug".to_string(),
+            View::Debug | View::Perf | View::Map => {
+                DebugPages::set_strip(&mut self.ui, v);
+                DebugPages::page(v).unwrap_or("Debug").to_string()
+            }
             View::Console => "Console".to_string(),
             View::Prefs => "Prefs".to_string(),
             View::Options => "Options".to_string(),
@@ -943,12 +979,22 @@ impl Player {
                 p.refresh(&mut self.ui);
             }
         }
-        if let Some(h) = self.ui.get_mut::<Header>("header") {
-            if let Some(t) = v.tab() {
-                h.active = t;
-            }
+        let tab = v.tab_index(self.settings.debug_mode);
+        if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), tab) {
+            h.active = t;
         }
         self.refresh_hint();
+    }
+
+    /// Debug mode is on (the screen thread then reads /proc for the
+    /// Performance page and the `perf:` lines).
+    pub fn debug_mode(&self) -> bool {
+        self.settings.debug_mode
+    }
+
+    /// Process and system numbers, from the screen thread's sampler.
+    pub fn set_proc(&mut self, v: ProcView) {
+        self.debug.set_proc(&mut self.ui, v);
     }
 
     /// A touch: what it means for the app, if anything. Before the app is
@@ -995,11 +1041,18 @@ impl Player {
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
-                if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), self.view.tab()) {
+                let tab = self.view.tab_index(self.settings.debug_mode);
+                if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), tab) {
                     h.active = t;
                 }
                 Some(FromUi::Tab(i))
             }
+            (crate::debug_page::STRIP, EventKind::Tab(i)) => {
+                DebugPages::set_strip(&mut self.ui, self.view);
+                Some(FromUi::DebugPage(i))
+            }
+            ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
+            ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
             ("pads", EventKind::Pad { index, down }) => Some(FromUi::Pad { pad: index, down }),
             ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
             ("level", EventKind::Value(v)) => Some(FromUi::Level(v)),
@@ -1129,6 +1182,10 @@ const TOUCH_RETRY: Duration = Duration::from_secs(1);
 /// While raw touch events keep arriving, the reader line is logged this often,
 /// so a round's journal shows which layer touches stop at.
 const TOUCH_STATUS_EVERY: Duration = Duration::from_secs(30);
+/// Debug mode: how often the screen thread reads /proc, and how often the
+/// numbers go to the log.
+const PERF_EVERY: Duration = Duration::from_secs(2);
+const PERF_LINE_EVERY: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------- the screen thread
 
@@ -1164,6 +1221,9 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
         let mut total_ms = 0.0;
         let mut last_frame = Instant::now() - Duration::from_secs(1);
         let mut window = (Instant::now(), 0u32, 0f64);
+        // Debug mode: /proc and /sys every 2 s, and a perf: line every 30 s.
+        let mut perf = crate::perf::Sampler::new();
+        let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
         let mut quit = false;
         while !quit {
             match rx.recv_timeout(Duration::from_millis(4)) {
@@ -1227,6 +1287,17 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
             }
             for a in player.take_actions() {
                 let _ = tx.try_send(a);
+            }
+            if !player.debug_mode() {
+                perf_at = None;
+            } else if perf_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
+                perf_at = Some(Instant::now());
+                let v = perf.sample();
+                if v.over_s > 0.0 && perf_logged.is_none_or(|t| t.elapsed() >= PERF_LINE_EVERY) {
+                    perf_logged = Some(Instant::now());
+                    println!("{}", v.line());
+                }
+                player.set_proc(v);
             }
             let since = last_frame.elapsed();
             if since < Duration::from_millis(33) && !quit {
@@ -1316,7 +1387,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
         g.pads[10].level = 0.5;
     }
     p.apply(ToUi::Timing(Timing { hits: 42, periods: 10_335, underruns: 0, voices: 3, peak_db: -9.0, last_ms: 7.9,
-                                  min_ms: 6.2, mean_ms: 7.8, max_ms: 9.6, seconds_left: None, periods_queued: 3 }));
+                                  min_ms: 6.2, mean_ms: 7.8, max_ms: 9.6, seconds_left: None, periods_queued: 3,
+                                  audio: AudioNumbers { render_mean_us: 310.0, render_max_us: 540.0, synth_mean_us: 0.0,
+                                                        synth_max_us: 0.0, worst_us: 905.0, steals: 0, dropped: 0,
+                                                        peak_grains: 0 } }));
     p.set_screen_row("30 fps, slowest frame 6.4 ms".into());
     for l in ["+0.012 s -> Public: F0 7E 00 06 01 F7 = identity request",
               "+0.013 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping",
@@ -1368,9 +1442,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Note(l) => p.apply(ToUi::Line(l)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::SynthWheel(d) => p.apply(ToUi::SynthWheel(d)),
+            Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
-            | Effect::Time(_) | Effect::Octave(_) => {}
+            | Effect::Time(_) | Effect::Octave(_) | Effect::Bank { .. } => {}
         }
     }
 }
@@ -1512,13 +1587,47 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
-    // The guide at power-on: the time engine's buttons are not known yet.
+    // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
+    // asks for MENU.
     let mut guide = sample_player(fonts());
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
+    fx.extend(g.open_tab(View::Prefs));
+    fx.extend(g.step_item(4, 1));
     fx.extend(g.button(button_play(), true, 0.0));
     apply_effects(&mut guide, fx);
     out.push(("guide", guide));
+    // Debug mode: Map controls, REC found, listening for OVERDUB.
+    let mut map = sample_player(fonts());
+    let mut m = sample_app();
+    (m.map.rec, m.map.overdub) = (None, None);
+    let mut fx = m.open_tab(View::Prefs);
+    fx.extend(m.step_item(6, 1));
+    fx.extend(m.map_row(0));
+    fx.extend(m.button(73, true, 0.0));
+    fx.extend(m.button(73, false, 0.0));
+    fx.extend(m.map_row(1));
+    apply_effects(&mut map, fx);
+    out.push(("debug-map", map));
+    // Debug mode: the Performance page.
+    let mut perf = sample_player(fonts());
+    perf.apply(ToUi::Settings(Settings { debug_mode: true, ..Settings::default() }));
+    perf.apply(ToUi::Show(View::Perf));
+    for k in 0..200u32 {
+        let wave = (k as f32 * 0.21).sin().abs();
+        perf.apply(ToUi::Timing(Timing { periods_queued: 3, audio: AudioNumbers {
+            render_mean_us: 280.0 + 120.0 * wave, render_max_us: 450.0 + 500.0 * wave, synth_mean_us: 90.0,
+            synth_max_us: 160.0, worst_us: 1210.0, steals: 2, dropped: 0, peak_grains: 48 }, ..Timing::default() }));
+    }
+    perf.set_proc(ProcView {
+        over_s: 2.0,
+        threads: vec![("mpfree-hello (812)".into(), 31.5), ("mpfree-screen (815)".into(), 9.0),
+                      ("mpfree-journal (816)".into(), 0.5), ("touch-reader (817)".into(), 0.2)],
+        process_cpu: 41.2, system_cpu: Some(14.8), cores: 4, rss_kb: Some(61_440), peak_rss_kb: Some(64_512),
+        thread_count: 5, mem_total_kb: Some(2_042_000), mem_available_kb: Some(1_610_000),
+        load: Some("0.61 0.48 0.30".into()), temps: vec![("soc-thermal".into(), 47.8)], mhz: vec![1608, 1608, 1608, 1608],
+    });
+    out.push(("debug-perf", perf));
     match sample_clips(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
@@ -1760,7 +1869,7 @@ mod tests {
         let chips = |p: &Player| -> Vec<String> {
             p.ui.get::<Header>("header").unwrap().chips.iter().map(|c| c.text.clone()).collect()
         };
-        assert!(chips(&p).contains(&"Kit 1 of 7".to_string()), "{:?}", chips(&p));
+        assert!(chips(&p).contains(&"Kit 1 of 7 · Bank A".to_string()), "{:?}", chips(&p));
         p.apply(ToUi::Kit(synth_kit));
         assert!(chips(&p).contains(&"Poly · C3 to D#4".to_string()), "{:?}", chips(&p));
         assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[1].label, "C#3");
