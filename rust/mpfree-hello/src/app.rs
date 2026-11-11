@@ -214,6 +214,10 @@ pub enum Item {
     LatchMode,
     Buffer,
     FindButtons,
+    /// Prefs: opens the touch screen section.
+    TouchSection,
+    /// The touch screen section: back to the other Prefs.
+    PrefsBack,
     CalibrateTouch,
     TouchLab,
     Rate,
@@ -303,7 +307,15 @@ pub struct App {
     /// When the tempo's beats started (seconds), for the TAP TEMPO light.
     beat_zero: f64,
     tap_light: bool,
+    /// Prefs shows its touch screen section rather than the main rows.
+    prefs_touch: bool,
 }
+
+/// Prefs' main rows. The touch screen settings sit in their own section,
+/// opened by the last row.
+const PREFS_ROWS: &[Item] = &[Item::Curve, Item::LatchMode, Item::Buffer, Item::FindButtons, Item::TouchSection];
+/// Prefs' touch screen section.
+const PREFS_TOUCH_ROWS: &[Item] = &[Item::PrefsBack, Item::ScreenVelocity, Item::CalibrateTouch, Item::TouchLab];
 
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
@@ -312,7 +324,7 @@ impl App {
         let mut app = App { settings, map: ButtonMap::guessed(), engine, timed, shift: false, repeat_held: false,
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide: 0, guide_note: String::new(), taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false };
+                            tap_light: false, prefs_touch: false };
         app.update_engine();
         app
     }
@@ -455,8 +467,13 @@ impl App {
             fx.push(self.status());
             fx.extend(self.repeat_light());
         } else if Some(note) == self.map.menu {
-            let target = if shift { View::Prefs } else { View::Options };
-            fx.extend(self.toggle(target));
+            if !shift && self.view == View::Prefs && self.prefs_touch {
+                // MENU in a Prefs section: back to the main rows.
+                fx.extend(self.leave_prefs_section());
+            } else {
+                let target = if shift { View::Prefs } else { View::Options };
+                fx.extend(self.toggle(target));
+            }
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
@@ -549,6 +566,7 @@ impl App {
         let mut fx = Vec::new();
         if self.in_menu() {
             self.selected = 0;
+            self.prefs_touch = false;
             fx.push(self.menu_view());
         }
         fx.push(Effect::Show(v));
@@ -578,8 +596,8 @@ impl App {
 
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
-            (View::Prefs, _) => &[Item::Curve, Item::ScreenVelocity, Item::LatchMode, Item::Buffer, Item::FindButtons,
-                               Item::CalibrateTouch, Item::TouchLab],
+            (View::Prefs, _) if self.prefs_touch => PREFS_TOUCH_ROWS,
+            (View::Prefs, _) => PREFS_ROWS,
             (_, View::Debug) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
@@ -597,6 +615,8 @@ impl App {
             }),
             Item::Buffer => ("Audio buffer", format!("{} periods, {:.1} ms", s.periods, s.periods as f64 * 128.0 / 44.1)),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
+            Item::TouchSection => ("Touch screen", "Open".to_string()),
+            Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
@@ -635,6 +655,9 @@ impl App {
                                  "restarts the sound."],
             Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +",
                                       "again, one at a time."],
+            Item::TouchSection => vec!["The touch screen's settings: screen pad",
+                                       "velocity, Calibrate touch and the Touch lab."],
+            Item::PrefsBack => vec!["Back to the other Prefs. MENU does the same."],
             Item::CalibrateTouch => vec!["Tap a target in each corner to check that",
                                          "touches land where you touch. This version",
                                          "only reports and logs the result; nothing",
@@ -667,6 +690,7 @@ impl App {
         let items = self.items();
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
+            (View::Prefs, _) if self.prefs_touch => "Prefs · Touch screen".to_string(),
             (View::Prefs, _) => "Prefs".to_string(),
             (_, b) => format!("{} options", TABS[b.tab().unwrap_or(0)]),
         };
@@ -681,6 +705,13 @@ impl App {
             help_heading: name.to_string(),
             help: self.item_help(items[selected]).into_iter().map(String::from).collect(),
         })
+    }
+
+    /// From a Prefs section back to Prefs' main rows, on the row that opened it.
+    fn leave_prefs_section(&mut self) -> Vec<Effect> {
+        self.prefs_touch = false;
+        self.selected = PREFS_ROWS.iter().position(|&i| i == Item::TouchSection).unwrap_or(0);
+        vec![self.menu_view()]
     }
 
     /// A menu row touched.
@@ -727,6 +758,12 @@ impl App {
                 self.view = View::Guide;
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
+            Item::TouchSection => {
+                self.prefs_touch = true;
+                self.selected = 1;
+                return vec![self.menu_view()];
+            }
+            Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::Rate => {
@@ -963,6 +1000,50 @@ mod tests {
         assert_eq!(press(&mut app, button::STOP), vec![Effect::Show(View::Play)]);
     }
 
+    /// Where `item` sits in the menu on screen.
+    fn row(app: &App, item: Item) -> usize {
+        app.items().iter().position(|&i| i == item).expect("row shown")
+    }
+
+    #[test]
+    fn prefs_keeps_touch_settings_in_their_own_section() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        let open_prefs = |app: &mut App| {
+            app.button(button::SHIFT, true, 0.0);
+            press(app, MENU);
+            app.button(button::SHIFT, false, 0.0);
+        };
+        open_prefs(&mut app);
+        assert!(!app.items().contains(&Item::TouchLab) && !app.items().contains(&Item::ScreenVelocity));
+        assert_eq!(app.items().last(), Some(&Item::TouchSection));
+        // + on "Touch screen" opens the section on its first setting.
+        let fx = app.step_item(row(&app, Item::TouchSection), 1);
+        assert!(matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Touch screen" && m.selected == 1
+                         && m.rows[1].0 == "Screen pad velocity"), "{fx:?}");
+        assert_eq!(app.items(), PREFS_TOUCH_ROWS);
+        // Its rows work as before.
+        app.step_item(row(&app, Item::ScreenVelocity), 1);
+        assert_eq!(app.settings.screen_velocity, 110);
+        assert_eq!(app.step_item(row(&app, Item::TouchLab), 1), vec![Effect::TouchLab]);
+        assert_eq!(app.step_item(row(&app, Item::CalibrateTouch), 1), vec![Effect::CalibrateTouch]);
+        // MENU goes back to the main rows, on the row that opened the section.
+        let fx = press(&mut app, MENU);
+        assert!(matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Touch screen"),
+                "{fx:?}");
+        assert_eq!(app.view(), View::Prefs);
+        // So does its Back row.
+        app.step_item(row(&app, Item::TouchSection), 1);
+        app.step_item(row(&app, Item::PrefsBack), 1);
+        assert_eq!(app.items(), PREFS_ROWS);
+        // Prefs opens on its main rows every time.
+        app.step_item(row(&app, Item::TouchSection), 1);
+        open_prefs(&mut app);
+        assert_eq!(app.view(), View::Play);
+        open_prefs(&mut app);
+        assert_eq!(app.items(), PREFS_ROWS);
+    }
+
     #[test]
     fn menu_and_shift_menu_open_options_and_prefs() {
         let mut app = ready();
@@ -989,8 +1070,9 @@ mod tests {
         assert_eq!(app.settings.curve, Curve::Soft);
         assert!(fx.contains(&Effect::Settings(app.settings.clone())));
         // The audio buffer restarts the sound only when it changes.
-        assert_eq!(app.step_item(3, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
-        assert!(app.step_item(3, -1).contains(&Effect::Audio(2)));
+        let buffer = row(&app, Item::Buffer);
+        assert_eq!(app.step_item(buffer, 1).iter().filter(|e| matches!(e, Effect::Audio(_))).count(), 0);
+        assert!(app.step_item(buffer, -1).contains(&Effect::Audio(2)));
         // The Debug page's options.
         app.tab(1);
         press(&mut app, MENU);
@@ -1042,7 +1124,7 @@ mod tests {
                                              && n.contains("- = not found"))));
         // The guide again from Prefs.
         app.tab(3);
-        let fx = app.step_item(4, 1);
+        let fx = app.step_item(row(&app, Item::FindButtons), 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
     }

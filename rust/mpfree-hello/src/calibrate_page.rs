@@ -7,7 +7,7 @@
 //! and then says whether the panel matches the built-in orientation.
 //!
 //! This version reports and logs only. Nothing is saved and the mapping in use
-//! is not changed. It opens from Prefs ("Calibrate touch") and closes with its
+//! is not changed. It opens from Prefs > Touch screen ("Calibrate touch") and closes with its
 //! Exit button or any page change from the app (MENU). Its buttons sit in the
 //! middle of the screen, where corner taps never land, and the middle stays
 //! the middle under every orientation.

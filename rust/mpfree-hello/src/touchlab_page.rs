@@ -2,7 +2,7 @@
 //! itself (Start, a 3-2-1 countdown, the window, STOP, the result, Next), so
 //! the host side only reads the journal.
 //!
-//! It opens from Prefs ("Touch lab", reachable with SHIFT + MENU and the
+//! It opens from Prefs > Touch screen ("Touch lab", reachable with SHIFT + MENU and the
 //! wheel, so it can be opened even if touch is dead) and closes with its Exit
 //! button or any page change from the app. While it is open, touches go only
 //! to the lab, never to the pad player.

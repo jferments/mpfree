@@ -1048,6 +1048,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
+    // Prefs' touch screen section.
+    let mut touch = sample_player(fonts());
+    let mut t = crate::app::App::new(44_100, false);
+    t.map.menu = Some(MENU);
+    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+    let mut fx = t.button(MENU, true, 0.0);
+    t.button(MENU, false, 0.0);
+    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+    fx.extend(t.step_item(usize::MAX, 1));
+    for e in fx {
+        match e {
+            crate::app::Effect::Menu(m) => touch.apply(ToUi::Menu(m)),
+            crate::app::Effect::Show(v) => touch.apply(ToUi::Show(v)),
+            _ => {}
+        }
+    }
+    out.push(("prefs-touch", touch));
     let mut guide = sample_player(fonts());
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
@@ -1105,7 +1122,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // The Touch lab is the last Prefs row; + on it opens the lab.
+        // Prefs' last row opens the touch screen section; its last row, + on it, opens the lab.
+        fx.extend(app.step_item(usize::MAX, 1));
         fx.extend(app.step_item(usize::MAX, 1));
         assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
         for e in fx {
@@ -1144,7 +1162,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // Calibrate touch is the row before the Touch lab; + on it opens the page.
+        // In the touch screen section, Calibrate touch is the row before the Touch lab.
+        fx.extend(app.step_item(usize::MAX, 1));
         fx.extend(app.step_item(app_rows(&app) - 2, 1));
         assert_eq!(fx.last(), Some(&crate::app::Effect::CalibrateTouch), "{fx:?}");
         for e in fx {
