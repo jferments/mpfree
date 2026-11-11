@@ -201,7 +201,8 @@ fn main() {
     }
     if let Some(dir) = out.parent() { std::fs::create_dir_all(dir).expect("create output dir"); }
     std::fs::write(&out, wav(&pcm)).expect("write wav");
-    println!("wrote {} ({} frames)", out.display(), total);
+    println!("wrote {} ({} frames), PCM hash {:016x}", out.display(), total, fnv(&pcm));
+    println!("(the PCM hash repeats on the same computer; other computers' maths libraries can differ in the last bit)");
     if !ok { eprintln!("self-check FAILED"); std::process::exit(1); }
     println!("self-check ok");
 }
@@ -293,4 +294,8 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
     b.extend_from_slice(&data.to_le_bytes());
     b.extend_from_slice(pcm);
     b
+}
+
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
