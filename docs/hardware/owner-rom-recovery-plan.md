@@ -153,3 +153,22 @@ The first-stage partition and payload are **not** a single contiguous 544-KiB bo
 | U-Boot proper p3 | **256–1023** | **384 KiB** |
 
 The header's 1088-sector **combined** size is not a directive to read 1088 sectors from p1: that would cross p2, p3, and even splash storage and would not represent an intact single boot image. Upstream U-Boot sets this size to the default maximum-next-stage allowance in image builds without an attached boot file. Exactly **how** Akai's actual SRAM loader obtains p3 must be determined from its instructions, not header arithmetic.
+
+
+## First real SRAM-stage decompilation results (owner-run November 2026)
+
+The owner ran tools/ghidra/run_p1_sram_analysis.sh against the verified private eMMC backup. All **nine** offline synthetic tests passed. The resulting 32KiB SRAM payload SHA256 is **6faade107d83bb8f0782bf4df0cf86e3aee772b3e52c587d6a1ef83062fa652f**; Ghidra imported it at 0xff704000 with ARM:LE:32:v7 and saved a complete project.
+
+The initial Ghidra export discovered many functions but **capped the export at 120**. Entrypoint data shows seven zero ARM words after the RK32 marker; the first strong branch is **0xff704020 -> 0xff704064 -> 0xff7040b4**. The exact instructions at 0xff7040b4 and early ARM/Thumb transitions need verification; zero values Ghidra labels ANDEQ are not proof of an intentional startup routine. A CP15 cache/TLB setup routine at 0xff7040b8 and a candidate broader startup routine at 0xff705208 have been identified. The literal back-to-ROM magic 0xef08a53c is **absent from the 32KiB stage**; this is insufficient to rule out returning to ROM.
+
+**A read-only second-pass Python 3 audit has been committed** to enumerate *all* functions, report raw startup words alongside decoded instructions, expand call graph, target potential MMC controller and ROM loading routines, and decompile selected hot spots. It **does not modify the existing Ghidra project**.
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+bash tools/ghidra/run_p1_deep_audit.sh
+~~~
+
+Expected private output is `~/mpfree-work/mpfree-ghidra-p1-deep-<timestamp>.json`. Share the resulting JSON for private analysis, not in the public source repository. The new script has **not** yet run on the owner's Ghidra Snap.
+
+**Hardware independence status unchanged:** no actual MaskROM entry on the reference unit, owner-built ROM first stage or independent eMMC readback demonstrated. We must not overwrite p1/p3 or change eFuse state.
