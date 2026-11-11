@@ -101,7 +101,9 @@ pub fn parse_log(text: &str) -> Result<CaptureLog, String> {
     let mut steps: Vec<StepCapture> = Vec::new();
     let mut last_index: Option<usize> = None;
     loop {
-        let line = lines.next().ok_or(format!("no {STEPS_END} footer (capture cut short?)"))?;
+        let line = lines
+            .next()
+            .ok_or(format!("no {STEPS_END} footer (capture cut short?)"))?;
         if let Some(rest) = line.strip_prefix(STEPS_END) {
             let count = rest
                 .trim()
@@ -109,14 +111,19 @@ pub fn parse_log(text: &str) -> Result<CaptureLog, String> {
                 .and_then(|v| v.parse::<usize>().ok())
                 .ok_or(format!("malformed steps footer {line:?}"))?;
             if count != steps.len() {
-                return Err(format!("steps footer says {count}, log has {}", steps.len()));
+                return Err(format!(
+                    "steps footer says {count}, log has {}",
+                    steps.len()
+                ));
             }
             if let Some(extra) = lines.next() {
                 return Err(format!("unexpected line after steps footer: {extra:?}"));
             }
             return Ok(CaptureLog { steps });
         }
-        let name = line.strip_prefix("STEP ").ok_or(format!("expected a STEP line, got {line:?}"))?;
+        let name = line
+            .strip_prefix("STEP ")
+            .ok_or(format!("expected a STEP line, got {line:?}"))?;
         let index = STEP_NAMES
             .iter()
             .position(|n| *n == name)
@@ -127,13 +134,19 @@ pub fn parse_log(text: &str) -> Result<CaptureLog, String> {
         last_index = Some(index);
         let (events, reported_drops) =
             parse_run(&mut lines).map_err(|e| format!("step {name}: {e}"))?;
-        steps.push(StepCapture { name: name.to_string(), events, reported_drops });
+        steps.push(StepCapture {
+            name: name.to_string(),
+            events,
+            reported_drops,
+        });
     }
 }
 
 /// Parse one device run: header, `key=value` lines, armed marker, only `E`
 /// lines, and a PASS footer whose event count matches.
-fn parse_run<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<(Vec<InputEvent>, u64), String> {
+fn parse_run<'a>(
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<(Vec<InputEvent>, u64), String> {
     if lines.next() != Some(LOG_HEADER) {
         return Err(format!("no {LOG_HEADER} header"));
     }
@@ -152,7 +165,10 @@ fn parse_run<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<(Vec<Input
             if f.len() != 5 {
                 return Err(format!("malformed event line {line:?}"));
             }
-            let num = |s: &str| s.parse::<i64>().map_err(|_| format!("bad number in {line:?}"));
+            let num = |s: &str| {
+                s.parse::<i64>()
+                    .map_err(|_| format!("bad number in {line:?}"))
+            };
             let (sec, usec, kind, code, value) =
                 (num(f[0])?, num(f[1])?, num(f[2])?, num(f[3])?, num(f[4])?);
             if !(0..=u32::MAX as i64).contains(&sec)
@@ -170,8 +186,10 @@ fn parse_run<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<(Vec<Input
                 value as i32,
             ));
         } else if let Some(rest) = line.strip_prefix(LOG_END) {
-            let fields: BTreeMap<&str, &str> =
-                rest.split_whitespace().filter_map(|kv| kv.split_once('=')).collect();
+            let fields: BTreeMap<&str, &str> = rest
+                .split_whitespace()
+                .filter_map(|kv| kv.split_once('='))
+                .collect();
             if fields.get("status") != Some(&"PASS") {
                 return Err(format!("capture did not pass: {rest:?}"));
             }
@@ -180,7 +198,10 @@ fn parse_run<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<(Vec<Input
                 .and_then(|v| v.parse().ok())
                 .ok_or("footer has no event count")?;
             if count != events.len() {
-                return Err(format!("footer says {count} events, log has {}", events.len()));
+                return Err(format!(
+                    "footer says {count} events, log has {}",
+                    events.len()
+                ));
             }
             let reported_drops = fields
                 .get("drops")
@@ -234,8 +255,18 @@ impl StepStats {
         self.strokes.iter().map(Stroke::travel).fold(0.0, f64::max)
     }
     fn duration_us(&self) -> u64 {
-        let first = self.strokes.iter().map(|s| s.samples[0].0).min().unwrap_or(0);
-        let last = self.strokes.iter().map(|s| s.samples.last().unwrap().0).max().unwrap_or(0);
+        let first = self
+            .strokes
+            .iter()
+            .map(|s| s.samples[0].0)
+            .min()
+            .unwrap_or(0);
+        let last = self
+            .strokes
+            .iter()
+            .map(|s| s.samples.last().unwrap().0)
+            .max()
+            .unwrap_or(0);
         last - first
     }
 }
@@ -268,7 +299,12 @@ fn decode_step(events: &[InputEvent], slots: usize) -> Result<StepStats, String>
             match ce.phase {
                 Phase::Down => {
                     order.push(c.id);
-                    strokes.insert(c.id, Stroke { samples: vec![(time, c.raw_x, c.raw_y)] });
+                    strokes.insert(
+                        c.id,
+                        Stroke {
+                            samples: vec![(time, c.raw_x, c.raw_y)],
+                        },
+                    );
                 }
                 Phase::Move => {
                     if let Some(s) = strokes.get_mut(&c.id) {
@@ -343,7 +379,8 @@ pub struct Report {
 
 /// Decode each step, check it matches the protocol, and measure.
 pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, String> {
-    let span = f64::from(cfg.raw_x.max - cfg.raw_x.min).min(f64::from(cfg.raw_y.max - cfg.raw_y.min));
+    let span =
+        f64::from(cfg.raw_x.max - cfg.raw_x.min).min(f64::from(cfg.raw_y.max - cfg.raw_y.min));
     let mut decoded: BTreeMap<&str, StepStats> = BTreeMap::new();
     let mut step_lines = Vec::new();
     let (mut frames, mut sync_drops) = (0, 0);
@@ -362,22 +399,33 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
         frames += st.frames;
         sync_drops += st.sync_drops;
         gaps.extend_from_slice(&st.gaps);
-        let name = STEP_NAMES.iter().find(|n| **n == step.name).ok_or("unknown step")?;
+        let name = STEP_NAMES
+            .iter()
+            .find(|n| **n == step.name)
+            .ok_or("unknown step")?;
         decoded.insert(name, st);
     }
 
     let mut failures = Vec::new();
-    let missing: Vec<&str> =
-        STEP_NAMES[..REQUIRED_STEPS].iter().copied().filter(|n| !decoded.contains_key(n)).collect();
+    let missing: Vec<&str> = STEP_NAMES[..REQUIRED_STEPS]
+        .iter()
+        .copied()
+        .filter(|n| !decoded.contains_key(n))
+        .collect();
     if !missing.is_empty() {
         failures.push(format!("missing step(s): {}", missing.join(", ")));
     }
     // Single-finger steps: exactly one touch; holds stay put, drags travel.
     for (i, name) in STEP_NAMES[..7].iter().enumerate() {
-        let Some(st) = decoded.get(name) else { continue };
+        let Some(st) = decoded.get(name) else {
+            continue;
+        };
         let drag = i >= 5;
         let problem = if st.strokes.len() != 1 || st.max_contacts != 1 {
-            Some(format!("expected one finger, one touch; saw {} touch(es)", st.strokes.len()))
+            Some(format!(
+                "expected one finger, one touch; saw {} touch(es)",
+                st.strokes.len()
+            ))
         } else if !drag && st.travel() >= 0.15 * span {
             Some("finger moved too far for a hold".to_string())
         } else if drag && st.travel() < 0.30 * span {
@@ -391,7 +439,9 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
     }
     for name in &STEP_NAMES[7..REQUIRED_STEPS] {
         if decoded.get(name).is_some_and(|st| st.max_contacts < 2) {
-            failures.push(format!("step {name}: fewer than two fingers were down together"));
+            failures.push(format!(
+                "step {name}: fewer than two fingers were down together"
+            ));
         }
     }
     let empty = |failures: Vec<String>, gaps: &mut Vec<u64>| Report {
@@ -404,7 +454,13 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
         margins: None,
         corners_logical: Vec::new(),
         centre_logical: None,
-        jitter: Jitter { samples: 0, std_x_raw: 0.0, std_y_raw: 0.0, p2p_x_raw: 0, p2p_y_raw: 0 },
+        jitter: Jitter {
+            samples: 0,
+            std_x_raw: 0.0,
+            std_y_raw: 0.0,
+            p2p_x_raw: 0,
+            p2p_y_raw: 0,
+        },
         report_gap_median_us: percentile(gaps, 50),
         report_gap_p99_us: percentile(gaps, 99),
         multi: Vec::new(),
@@ -445,7 +501,11 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
         let (a, b) = (at(v0), at(v1));
         let (vx, vy) = (b.0 - a.0, b.1 - a.1);
         let drags_ok = hx > 0.3 * w && hy.abs() < 0.5 * hx && vy > 0.3 * h && vx.abs() < 0.5 * vy;
-        candidates.push(OrientationResult { orientation: o, corners_ok, drags_ok });
+        candidates.push(OrientationResult {
+            orientation: o,
+            corners_ok,
+            drags_ok,
+        });
     }
     let fitting: Vec<Orientation> = candidates
         .iter()
@@ -454,7 +514,10 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
         .collect();
     let orientation = (fitting.len() == 1).then(|| fitting[0]);
     if orientation.is_none() {
-        failures.push(format!("{} orientations fit (need exactly 1)", fitting.len()));
+        failures.push(format!(
+            "{} orientations fit (need exactly 1)",
+            fitting.len()
+        ));
     }
 
     let mut margins = None;
@@ -469,9 +532,9 @@ pub fn analyze(log: &CaptureLog, cfg: &CalibrationConfig) -> Result<Report, Stri
             .map(|&(x, y)| (f64::from(x) / (w - 1.0), f64::from(y) / (h - 1.0)))
             .collect();
         let m = [
-            uv[0].0.max(uv[3].0),             // left: TL, BL
+            uv[0].0.max(uv[3].0),               // left: TL, BL
             (1.0 - uv[1].0).max(1.0 - uv[2].0), // right: TR, BR
-            uv[0].1.max(uv[1].1),             // top: TL, TR
+            uv[0].1.max(uv[1].1),               // top: TL, TR
             (1.0 - uv[2].1).max(1.0 - uv[3].1), // bottom: BR, BL
         ];
         if m.iter().any(|&g| g > cfg.max_corner_margin) {
@@ -534,25 +597,48 @@ fn hold_jitter(s: &Stroke) -> Jitter {
     } else {
         (t0 + (t1 - t0) / 4, t1 - (t1 - t0) / 4)
     };
-    let mid: Vec<(i32, i32)> =
-        s.samples.iter().filter(|p| p.0 >= lo && p.0 <= hi).map(|p| (p.1, p.2)).collect();
+    let mid: Vec<(i32, i32)> = s
+        .samples
+        .iter()
+        .filter(|p| p.0 >= lo && p.0 <= hi)
+        .map(|p| (p.1, p.2))
+        .collect();
     if mid.is_empty() {
-        return Jitter { samples: 0, std_x_raw: 0.0, std_y_raw: 0.0, p2p_x_raw: 0, p2p_y_raw: 0 };
+        return Jitter {
+            samples: 0,
+            std_x_raw: 0.0,
+            std_y_raw: 0.0,
+            p2p_x_raw: 0,
+            p2p_y_raw: 0,
+        };
     }
     let stats = |vals: Vec<i32>| {
         let n = vals.len() as f64;
         let mean = vals.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
-        let var = vals.iter().map(|&v| (f64::from(v) - mean).powi(2)).sum::<f64>() / n;
+        let var = vals
+            .iter()
+            .map(|&v| (f64::from(v) - mean).powi(2))
+            .sum::<f64>()
+            / n;
         let p2p = vals.iter().max().unwrap() - vals.iter().min().unwrap();
         (var.sqrt(), p2p)
     };
     let (sx, px) = stats(mid.iter().map(|p| p.0).collect());
     let (sy, py) = stats(mid.iter().map(|p| p.1).collect());
-    Jitter { samples: mid.len(), std_x_raw: sx, std_y_raw: sy, p2p_x_raw: px, p2p_y_raw: py }
+    Jitter {
+        samples: mid.len(),
+        std_x_raw: sx,
+        std_y_raw: sy,
+        p2p_x_raw: px,
+        p2p_y_raw: py,
+    }
 }
 
 fn orientation_name(o: Orientation) -> String {
-    format!("swap_xy={} flip_x={} flip_y={}", o.swap_xy, o.flip_x, o.flip_y)
+    format!(
+        "swap_xy={} flip_x={} flip_y={}",
+        o.swap_xy, o.flip_x, o.flip_y
+    )
 }
 
 /// Plain-text report (key=value lines) plus a proposed profile in JSON.
@@ -563,7 +649,10 @@ pub fn render(r: &Report, cfg: &CalibrationConfig) -> String {
         s.push('\n');
     };
     line("MPFREE_TOUCH_CALIBRATION_REPORT_V1".into());
-    line(format!("events={} frames={} sync_drops={}", r.events, r.frames, r.sync_drops));
+    line(format!(
+        "events={} frames={} sync_drops={}",
+        r.events, r.frames, r.sync_drops
+    ));
     for st in &r.steps {
         line(format!("step {st}"));
     }
@@ -583,7 +672,9 @@ pub fn render(r: &Report, cfg: &CalibrationConfig) -> String {
         line(format!("corner_{name}_logical={x:.0},{y:.0}"));
     }
     if let Some((x, y)) = r.centre_logical {
-        line(format!("centre_logical={x:.0},{y:.0} (expected near 640,400)"));
+        line(format!(
+            "centre_logical={x:.0},{y:.0} (expected near 640,400)"
+        ));
     }
     if let Some(m) = r.margins {
         line(format!(
@@ -620,9 +711,22 @@ pub fn render(r: &Report, cfg: &CalibrationConfig) -> String {
              \"logical\":[{},{}],\"orientation\":{{\"swap_xy\":{},\"flip_x\":{},\"flip_y\":{}}},\
              \"corner_margin\":{{\"left\":{:.3},\"right\":{:.3},\"top\":{:.3},\"bottom\":{:.3}}},\
              \"hold_jitter_std_raw\":[{:.2},{:.2}],\"slots\":{}}}",
-            cfg.raw_x.min, cfg.raw_x.max, cfg.raw_y.min, cfg.raw_y.max,
-            LOGICAL_W, LOGICAL_H, o.swap_xy, o.flip_x, o.flip_y,
-            m[0], m[1], m[2], m[3], j.std_x_raw, j.std_y_raw, cfg.slots
+            cfg.raw_x.min,
+            cfg.raw_x.max,
+            cfg.raw_y.min,
+            cfg.raw_y.max,
+            LOGICAL_W,
+            LOGICAL_H,
+            o.swap_xy,
+            o.flip_x,
+            o.flip_y,
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            j.std_x_raw,
+            j.std_y_raw,
+            cfg.slots
         ));
         line("PROPOSED_PROFILE_JSON_END".into());
     }
@@ -691,12 +795,15 @@ pub fn synthetic_log(o: Orientation, cfg: &CalibrationConfig, fingers_last: usiz
     };
     let hold = |u: f64, v: f64| (u, v, u, v);
     let spread = |n: usize| -> Vec<(f64, f64, f64, f64)> {
-        (0..n).map(|i| hold(0.1 + 0.8 * i as f64 / n as f64, 0.5)).collect()
+        (0..n)
+            .map(|i| hold(0.1 + 0.8 * i as f64 / n as f64, 0.5))
+            .collect()
     };
     let mut steps: Vec<(&str, Vec<InputEvent>)> = vec![("centre", step(&[hold(0.5, 0.5)], 3000))];
-    for (name, (u, v)) in STEP_NAMES[1..5]
-        .iter()
-        .zip([(0.04, 0.05), (0.96, 0.05), (0.96, 0.95), (0.04, 0.95)])
+    for (name, (u, v)) in
+        STEP_NAMES[1..5]
+            .iter()
+            .zip([(0.04, 0.05), (0.96, 0.05), (0.96, 0.95), (0.04, 0.95)])
     {
         steps.push((name, step(&[hold(u, v)], 1000)));
     }
@@ -709,7 +816,9 @@ pub fn synthetic_log(o: Orientation, cfg: &CalibrationConfig, fingers_last: usiz
     }
     let mut out = format!("{STEPS_HEADER}\n");
     for (name, ev) in &steps {
-        out.push_str(&format!("STEP {name}\n{LOG_HEADER}\ndevice=event0\n{LOG_ARMED}\n"));
+        out.push_str(&format!(
+            "STEP {name}\n{LOG_HEADER}\ndevice=event0\n{LOG_ARMED}\n"
+        ));
         for e in ev {
             out.push_str(&format!(
                 "E {} {} {} {} {}\n",
@@ -720,7 +829,10 @@ pub fn synthetic_log(o: Orientation, cfg: &CalibrationConfig, fingers_last: usiz
                 e.value
             ));
         }
-        let drops = ev.iter().filter(|e| e.kind == EV_SYN && e.code == SYN_DROPPED).count();
+        let drops = ev
+            .iter()
+            .filter(|e| e.kind == EV_SYN && e.code == SYN_DROPPED)
+            .count();
         out.push_str(&format!(
             "{LOG_END} events={} drops={drops} reads=1 elapsed_ms=9000 status=PASS\n",
             ev.len()

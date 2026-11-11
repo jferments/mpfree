@@ -25,7 +25,8 @@
 use std::sync::Arc;
 
 use mpfree_sampler::model::{
-    Ahdsr, Filter, FilterKind, LayerSelect, ModelError, Pad, PlayMode, PressureTarget, Project, Source,
+    Ahdsr, Filter, FilterKind, LayerSelect, ModelError, Pad, PlayMode, PressureTarget, Project,
+    Source,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -60,8 +61,10 @@ pub const HINT: &str = "Drag a layer's edges for its velocities · drag the enve
 /// Voices a pad may hold, as the arrows step them.
 const POLYPHONY: [u8; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
 /// Envelope times the arrows step through, in ms.
-const TIMES_MS: [f32; 15] = [0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0,
-                             20_000.0];
+const TIMES_MS: [f32; 15] = [
+    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0,
+    20_000.0,
+];
 /// The longest envelope time.
 pub const MAX_MS: f32 = 20_000.0;
 /// A release this short at least, so a voice never stops with a click.
@@ -76,7 +79,9 @@ const TIME_DETENTS: f32 = 8.0;
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x504C_4159_0000_0000;
 /// Layer colours on the map, in layer order.
-const LAYER_COLORS: [u32; 8] = [0x6EA8FE, 0x3DDC97, 0xFF8A3D, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048];
+const LAYER_COLORS: [u32; 8] = [
+    0x6EA8FE, 0x3DDC97, 0xFF8A3D, 0xFFC145, 0xC77DFF, 0xFF5C8A, 0x4DD4E8, 0xA3E048,
+];
 
 /// The Pad list's rows, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,10 +109,27 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 19] = [Row::Polyphony, Row::MuteGroup, Row::Layers, Row::Level, Row::Pan, Row::Tune,
-                                Row::VelToLevel, Row::VelToStart, Row::Pressure, Row::Depth, Row::Attack, Row::Hold,
-                                Row::Decay, Row::Sustain, Row::Release, Row::Filter, Row::Cutoff, Row::Resonance,
-                                Row::FilterEnv];
+    pub const ALL: [Row; 19] = [
+        Row::Polyphony,
+        Row::MuteGroup,
+        Row::Layers,
+        Row::Level,
+        Row::Pan,
+        Row::Tune,
+        Row::VelToLevel,
+        Row::VelToStart,
+        Row::Pressure,
+        Row::Depth,
+        Row::Attack,
+        Row::Hold,
+        Row::Decay,
+        Row::Sustain,
+        Row::Release,
+        Row::Filter,
+        Row::Cutoff,
+        Row::Resonance,
+        Row::FilterEnv,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -142,17 +164,35 @@ impl Row {
 pub const QLINK_ROWS: [Row; 4] = [Row::Attack, Row::Decay, Row::Cutoff, Row::Resonance];
 
 /// The filter types the Filter row steps through.
-const FILTERS: [(FilterKind, u8); 7] = [(FilterKind::Off, 2), (FilterKind::LowPass, 2), (FilterKind::LowPass, 4),
-                                       (FilterKind::HighPass, 2), (FilterKind::HighPass, 4), (FilterKind::BandPass, 2),
-                                       (FilterKind::BandPass, 4)];
+const FILTERS: [(FilterKind, u8); 7] = [
+    (FilterKind::Off, 2),
+    (FilterKind::LowPass, 2),
+    (FilterKind::LowPass, 4),
+    (FilterKind::HighPass, 2),
+    (FilterKind::HighPass, 4),
+    (FilterKind::BandPass, 2),
+    (FilterKind::BandPass, 4),
+];
 
-const PRESSURE: [PressureTarget; 8] = [PressureTarget::Off, PressureTarget::Level, PressureTarget::Pitch,
-                                       PressureTarget::Filter, PressureTarget::GrainDensity, PressureTarget::GrainSize,
-                                       PressureTarget::GrainPosition, PressureTarget::GrainSpray];
+const PRESSURE: [PressureTarget; 8] = [
+    PressureTarget::Off,
+    PressureTarget::Level,
+    PressureTarget::Pitch,
+    PressureTarget::Filter,
+    PressureTarget::GrainDensity,
+    PressureTarget::GrainSize,
+    PressureTarget::GrainPosition,
+    PressureTarget::GrainSpray,
+];
 
 fn is_grain(t: PressureTarget) -> bool {
-    matches!(t, PressureTarget::GrainDensity | PressureTarget::GrainSize | PressureTarget::GrainPosition
-                | PressureTarget::GrainSpray)
+    matches!(
+        t,
+        PressureTarget::GrainDensity
+            | PressureTarget::GrainSize
+            | PressureTarget::GrainPosition
+            | PressureTarget::GrainSpray
+    )
 }
 
 /// One layer's sound.
@@ -176,7 +216,11 @@ pub struct PlayState {
 impl PlayState {
     /// Pad `pad`, if it has a sound. `view` gives what the screens know of a
     /// source (the app keeps them, so each is worked out once).
-    pub fn from_project(p: &Project, pad: usize, mut view: impl FnMut(&Source) -> Arc<SourceView>) -> Option<PlayState> {
+    pub fn from_project(
+        p: &Project,
+        pad: usize,
+        mut view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<PlayState> {
         let settings = p.pad(pad)?.clone();
         if settings.layers.is_empty() {
             return None;
@@ -186,14 +230,25 @@ impl PlayState {
             .iter()
             .map(|l| {
                 let s = p.source(l.region.source)?;
-                Some(LayerSound { name: s.name.clone(), rate: s.rate(), view: view(s) })
+                Some(LayerSound {
+                    name: s.name.clone(),
+                    rate: s.rate(),
+                    view: view(s),
+                })
             })
             .collect::<Option<Vec<_>>>()?;
-        Some(PlayState { pad, settings, sounds })
+        Some(PlayState {
+            pad,
+            settings,
+            sounds,
+        })
     }
 
     pub fn granular(&self) -> bool {
-        self.settings.layers.iter().any(|l| l.region.mode == PlayMode::Granular)
+        self.settings
+            .layers
+            .iter()
+            .any(|l| l.region.mode == PlayMode::Granular)
     }
 }
 
@@ -203,7 +258,11 @@ pub enum PlayAction {
     /// Pad `pad`'s settings, changed. `gesture` is the same for every
     /// change of one drag, turn or run of taps on a row, so they merge into
     /// one undo step.
-    Pad { pad: usize, after: Box<Pad>, gesture: u64 },
+    Pad {
+        pad: usize,
+        after: Box<Pad>,
+        gesture: u64,
+    },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -212,7 +271,14 @@ impl PlayAction {
     /// Applies a change to the project (one undo step per gesture), keeping
     /// the project's layer regions. Other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
-        let PlayAction::Pad { pad, after, gesture } = self else { return Ok(()) };
+        let PlayAction::Pad {
+            pad,
+            after,
+            gesture,
+        } = self
+        else {
+            return Ok(());
+        };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
         if now.layers.len() != after.layers.len() {
             return Err(ModelError::BadPad);
@@ -273,7 +339,10 @@ impl PlayTab {
         let t = ui.theme.clone();
         let colors = [t.accent, t.good, t.warn, Color::rgb(0xC77DFF)];
         for (k, row) in QLINK_ROWS.iter().enumerate() {
-            ui.add(QLINKS[k], KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]));
+            ui.add(
+                QLINKS[k],
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
+            );
         }
         ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
         ui.add_page(name, LAYOUT)?;
@@ -297,7 +366,9 @@ impl PlayTab {
 
     /// The row picked in the Pad list.
     pub fn row(&self, ui: &Ui) -> Row {
-        ui.get::<SettingList>(LIST).and_then(|l| Row::ALL.get(l.selected).copied()).unwrap_or(Row::Polyphony)
+        ui.get::<SettingList>(LIST)
+            .and_then(|l| Row::ALL.get(l.selected).copied())
+            .unwrap_or(Row::Polyphony)
     }
 
     /// Ends the drag, turn or run of taps being made: the next edit is a
@@ -334,7 +405,10 @@ impl PlayTab {
             bar.active = TAB;
             bar.title = format!("Pad {} · {}", pad_text(self.bank, st.pad), p.name);
             let first = &p.layers[0].region;
-            let mut about = vec![format!("{n} layer{}", if n == 1 { "" } else { "s" }), mode_label(first.mode).to_string()];
+            let mut about = vec![
+                format!("{n} layer{}", if n == 1 { "" } else { "s" }),
+                mode_label(first.mode).to_string(),
+            ];
             if n > 1 {
                 about.push(select_label(p.select).to_lowercase());
             }
@@ -372,12 +446,24 @@ impl PlayTab {
         if let Some(e) = ui.get_mut::<EnvelopeView>(ENV) {
             e.env = p.amp;
             let (l, s) = (&p.layers[self.layer], st.sounds.get(self.layer));
-            e.set_sound(s.map(|s| s.view.peaks.clone()), l.region.start, l.region.end, s.map_or(44_100, |s| s.rate));
+            e.set_sound(
+                s.map(|s| s.view.peaks.clone()),
+                l.region.start,
+                l.region.end,
+                s.map_or(44_100, |s| s.rate),
+            );
             let a = &p.amp;
-            e.caption = format!("A {} · H {} · D {} · S {} % · R {}", ms_text(a.attack_ms), ms_text(a.hold_ms),
-                                ms_text(a.decay_ms), percent(a.sustain), ms_text(a.release_ms));
+            e.caption = format!(
+                "A {} · H {} · D {} · S {} % · R {}",
+                ms_text(a.attack_ms),
+                ms_text(a.hold_ms),
+                ms_text(a.decay_ms),
+                percent(a.sustain),
+                ms_text(a.release_ms)
+            );
             if n > 1 {
-                e.caption.push_str(&format!(" · over layer {}", self.layer + 1));
+                e.caption
+                    .push_str(&format!(" · over layer {}", self.layer + 1));
             }
         }
         if let Some(f) = ui.get_mut::<FilterCurve>(FILTER) {
@@ -388,11 +474,21 @@ impl PlayTab {
                 f.caption = "Off: pick a type in the Filter row".into();
             } else {
                 f.right = "drag the dot".into();
-                f.caption = format!("cutoff {} · res {} % · env {}", hz_text(p.filter.cutoff_hz), percent(p.filter.resonance),
-                                    octaves_text(p.filter.env_octaves));
+                f.caption = format!(
+                    "cutoff {} · res {} % · env {}",
+                    hz_text(p.filter.cutoff_hz),
+                    percent(p.filter.resonance),
+                    octaves_text(p.filter.env_octaves)
+                );
             }
         }
-        let rows = Row::ALL.iter().map(|r| Setting { name: r.label().into(), value: value_text(p, *r) }).collect();
+        let rows = Row::ALL
+            .iter()
+            .map(|r| Setting {
+                name: r.label().into(),
+                value: value_text(p, *r),
+            })
+            .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
         }
@@ -405,11 +501,17 @@ impl PlayTab {
         let filter_on = p.filter.kind != FilterKind::Off;
         let (lo, hi) = CUTOFF_RANGE_HZ;
         for (k, r) in QLINK_ROWS.iter().enumerate() {
-            let Some(c) = ui.get_mut::<KnobCard>(QLINKS[k]) else { continue };
+            let Some(c) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+                continue;
+            };
             c.focused = *r == row;
             match r {
                 Row::Attack | Row::Decay => {
-                    let ms = if *r == Row::Attack { p.amp.attack_ms } else { p.amp.decay_ms };
+                    let ms = if *r == Row::Attack {
+                        p.amp.attack_ms
+                    } else {
+                        p.amp.decay_ms
+                    };
                     (c.value, c.sub) = split_unit(&ms_text(ms));
                     c.pos = (1.0 + ms).ln() / (1.0 + MAX_MS).ln();
                 }
@@ -461,7 +563,8 @@ impl PlayTab {
             }
             (FILTER, EventKind::Marker { frame, .. }) => {
                 let mut after = st.settings.clone();
-                after.filter.cutoff_hz = (*frame as f32).clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
+                after.filter.cutoff_hz =
+                    (*frame as f32).clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
                 self.edit(st, Key::Cutoff, after)
             }
             (LIST, EventKind::Step { index, delta }) => {
@@ -493,7 +596,14 @@ impl PlayTab {
     /// A Q-Link turned: `knob` 0 to 3 turns Attack, Decay, Cutoff or
     /// Resonance by `delta` detents; `fine` (SHIFT held) turns them finer.
     /// Cutoff and Resonance do nothing while the filter is off.
-    pub fn qlink(&mut self, ui: &mut Ui, st: &PlayState, knob: usize, delta: i32, fine: bool) -> Option<PlayAction> {
+    pub fn qlink(
+        &mut self,
+        ui: &mut Ui,
+        st: &PlayState,
+        knob: usize,
+        delta: i32,
+        fine: bool,
+    ) -> Option<PlayAction> {
         let row = *QLINK_ROWS.get(knob)?;
         self.pick_row(ui, row);
         self.show_cards(ui, st);
@@ -512,7 +622,8 @@ impl PlayTab {
             }
             Row::Resonance if after.filter.kind != FilterKind::Off => {
                 let step = if fine { 0.002 } else { 0.01 };
-                after.filter.resonance = round_to(after.filter.resonance + d * step, 0.001).clamp(0.0, 1.0);
+                after.filter.resonance =
+                    round_to(after.filter.resonance + d * step, 0.001).clamp(0.0, 1.0);
             }
             _ => return None,
         }
@@ -542,7 +653,11 @@ impl PlayTab {
                 g
             }
         };
-        Some(PlayAction::Pad { pad: st.pad, after: Box::new(after), gesture })
+        Some(PlayAction::Pad {
+            pad: st.pad,
+            after: Box::new(after),
+            gesture,
+        })
     }
 
     /// Row `row` stepped by `delta` (an arrow is one step, the wheel one per
@@ -563,7 +678,10 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
     let d = delta as f32;
     match row {
         Row::Polyphony => {
-            let i = nearest(POLYPHONY.iter().map(|&v| f32::from(v)), f32::from(p.polyphony));
+            let i = nearest(
+                POLYPHONY.iter().map(|&v| f32::from(v)),
+                f32::from(p.polyphony),
+            );
             p.polyphony = POLYPHONY[shift(i, delta, POLYPHONY.len())];
         }
         Row::MuteGroup => {
@@ -593,21 +711,30 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             };
             p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
         }
-        Row::VelToLevel => p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0),
-        Row::VelToStart => p.vel_to_start = round_to(p.vel_to_start + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::VelToLevel => {
+            p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
+        Row::VelToStart => {
+            p.vel_to_start = round_to(p.vel_to_start + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
         Row::Pressure => {
             let all: Vec<PressureTarget> = PRESSURE
                 .iter()
                 .copied()
                 .filter(|t| !is_grain(*t) || granular || *t == p.pressure.target)
                 .collect();
-            let i = all.iter().position(|t| *t == p.pressure.target).unwrap_or(0) as i32;
+            let i = all
+                .iter()
+                .position(|t| *t == p.pressure.target)
+                .unwrap_or(0) as i32;
             p.pressure.target = all[(i + delta).rem_euclid(all.len() as i32) as usize];
             if p.pressure.target != PressureTarget::Off && p.pressure.depth == 0.0 {
                 p.pressure.depth = 0.5;
             }
         }
-        Row::Depth => p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0),
+        Row::Depth => {
+            p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0)
+        }
         Row::Attack => p.amp.attack_ms = step_time(p.amp.attack_ms, delta, 0.0),
         Row::Hold => p.amp.hold_ms = step_time(p.amp.hold_ms, delta, 0.0),
         Row::Decay => p.amp.decay_ms = step_time(p.amp.decay_ms, delta, 0.0),
@@ -617,9 +744,16 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             let now = (p.filter.kind, if p.filter.poles >= 4 { 4 } else { 2 });
             let i = FILTERS.iter().position(|f| *f == now).unwrap_or(0);
             (p.filter.kind, p.filter.poles) = FILTERS[shift(i, delta, FILTERS.len())];
-            if now.0 == FilterKind::Off && p.filter.kind != FilterKind::Off && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1 {
+            if now.0 == FilterKind::Off
+                && p.filter.kind != FilterKind::Off
+                && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1
+            {
                 // A low-pass at 20 kHz does nothing: start it where it is heard.
-                p.filter.cutoff_hz = if p.filter.kind == FilterKind::HighPass { 200.0 } else { 2000.0 };
+                p.filter.cutoff_hz = if p.filter.kind == FilterKind::HighPass {
+                    200.0
+                } else {
+                    2000.0
+                };
             }
         }
         Row::Cutoff => {
@@ -627,9 +761,12 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             let hz = p.filter.cutoff_hz * (d / 3.0).exp2();
             p.filter.cutoff_hz = hz.round().clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
         }
-        Row::Resonance => p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::Resonance => {
+            p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
         Row::FilterEnv => {
-            p.filter.env_octaves = round_to(p.filter.env_octaves + d * 0.25, 0.25).clamp(-ENV_OCTAVES, ENV_OCTAVES);
+            p.filter.env_octaves =
+                round_to(p.filter.env_octaves + d * 0.25, 0.25).clamp(-ENV_OCTAVES, ENV_OCTAVES);
         }
     }
     p
@@ -637,7 +774,9 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
 
 /// The index of the entry of `list` nearest `now`.
 fn nearest(list: impl Iterator<Item = f32>, now: f32) -> usize {
-    list.enumerate().min_by(|a, b| (a.1 - now).abs().total_cmp(&(b.1 - now).abs())).map_or(0, |(i, _)| i)
+    list.enumerate()
+        .min_by(|a, b| (a.1 - now).abs().total_cmp(&(b.1 - now).abs()))
+        .map_or(0, |(i, _)| i)
 }
 
 fn shift(i: usize, delta: i32, len: usize) -> usize {
@@ -652,9 +791,19 @@ fn round_to(x: f32, step: f32) -> f32 {
 /// in the direction of `delta` (a time between entries goes to the next).
 fn step_time(ms: f32, delta: i32, min: f32) -> f32 {
     let i = if delta > 0 {
-        TIMES_MS.iter().position(|&t| t > ms).map_or(TIMES_MS.len(), |i| i) as i32 + delta - 1
+        TIMES_MS
+            .iter()
+            .position(|&t| t > ms)
+            .map_or(TIMES_MS.len(), |i| i) as i32
+            + delta
+            - 1
     } else {
-        TIMES_MS.iter().rposition(|&t| t < ms).map_or(-1, |i| i as i32) + delta + 1
+        TIMES_MS
+            .iter()
+            .rposition(|&t| t < ms)
+            .map_or(-1, |i| i as i32)
+            + delta
+            + 1
     };
     TIMES_MS[i.clamp(0, TIMES_MS.len() as i32 - 1) as usize].max(min)
 }
@@ -665,11 +814,19 @@ fn turn_ms(ms: f32, d: f32, fine: bool, min: f32) -> f32 {
     let to = if fine {
         ms + d
     } else if ms < 1.0 {
-        if d > 0.0 { d } else { 0.0 }
+        if d > 0.0 {
+            d
+        } else {
+            0.0
+        }
     } else {
         let t = (ms * (d / TIME_DETENTS).exp2()).round();
         // Short times move at least a millisecond a detent.
-        if t == ms { ms + d.signum() } else { t }
+        if t == ms {
+            ms + d.signum()
+        } else {
+            t
+        }
     };
     let to = if to < 1.0 && d < 0.0 { 0.0 } else { to };
     to.round().clamp(min, MAX_MS)
@@ -693,7 +850,9 @@ fn checked_env(e: Ahdsr) -> Ahdsr {
 pub fn value_text(p: &Pad, row: Row) -> String {
     match row {
         Row::Polyphony => voices_text(p.polyphony),
-        Row::MuteGroup => p.mute_group.map_or_else(|| "Off".into(), |g| format!("Group {g}")),
+        Row::MuteGroup => p
+            .mute_group
+            .map_or_else(|| "Off".into(), |g| format!("Group {g}")),
         Row::Layers => select_label(p.select).into(),
         Row::Level => format!("{:+.1} dB", p.level_db),
         Row::Pan => pan_text(p.pan),
@@ -791,7 +950,11 @@ pub fn hz_text(hz: f32) -> String {
 }
 
 pub fn octaves_text(oct: f32) -> String {
-    if oct == 0.0 { "Off".into() } else { format!("{oct:+.2} oct") }
+    if oct == 0.0 {
+        "Off".into()
+    } else {
+        format!("{oct:+.2} oct")
+    }
 }
 
 /// "310 ms" as ("310", "ms"), for a Q-Link card.
@@ -812,16 +975,51 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
             out.push(format!("{name} {x} -> {y}"));
         }
     };
-    diff("polyphony", voices_text(a.polyphony), voices_text(b.polyphony));
-    diff("mute group", value_text(a, Row::MuteGroup), value_text(b, Row::MuteGroup));
-    diff("layers", select_label(a.select).into(), select_label(b.select).into());
+    diff(
+        "polyphony",
+        voices_text(a.polyphony),
+        voices_text(b.polyphony),
+    );
+    diff(
+        "mute group",
+        value_text(a, Row::MuteGroup),
+        value_text(b, Row::MuteGroup),
+    );
+    diff(
+        "layers",
+        select_label(a.select).into(),
+        select_label(b.select).into(),
+    );
     for (k, (x, y)) in a.layers.iter().zip(&b.layers).enumerate() {
-        diff(&format!("layer {} velocities", k + 1), format!("{}-{}", x.vel_lo, x.vel_hi), format!("{}-{}", y.vel_lo, y.vel_hi));
+        diff(
+            &format!("layer {} velocities", k + 1),
+            format!("{}-{}", x.vel_lo, x.vel_hi),
+            format!("{}-{}", y.vel_lo, y.vel_hi),
+        );
     }
-    for row in [Row::Level, Row::Pan, Row::Tune, Row::VelToLevel, Row::VelToStart, Row::Pressure, Row::Depth, Row::Attack,
-                Row::Hold, Row::Decay, Row::Sustain, Row::Release, Row::Filter, Row::Cutoff, Row::Resonance, Row::FilterEnv]
-    {
-        diff(&row.label().to_lowercase(), value_text(a, row), value_text(b, row));
+    for row in [
+        Row::Level,
+        Row::Pan,
+        Row::Tune,
+        Row::VelToLevel,
+        Row::VelToStart,
+        Row::Pressure,
+        Row::Depth,
+        Row::Attack,
+        Row::Hold,
+        Row::Decay,
+        Row::Sustain,
+        Row::Release,
+        Row::Filter,
+        Row::Cutoff,
+        Row::Resonance,
+        Row::FilterEnv,
+    ] {
+        diff(
+            &row.label().to_lowercase(),
+            value_text(a, row),
+            value_text(b, row),
+        );
     }
     out.join(", ")
 }

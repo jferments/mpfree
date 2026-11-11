@@ -33,14 +33,18 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing, sound_spans, SilenceSettings};
+use mpfree_analysis::{
+    nearest_zero_crossing, previous_zero_crossing, sound_spans, SilenceSettings,
+};
 use mpfree_sampler::model::{ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS};
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{EventKind, Rect, Ui, UiEvent};
 
 use crate::source::SourceView;
-use crate::wave_tab::{self, duration_text, next_zero_crossing, pad_color, pad_label, position_text, TABS};
+use crate::wave_tab::{
+    self, duration_text, next_zero_crossing, pad_color, pad_label, position_text, TABS,
+};
 use crate::widgets::{ButtonRow, InfoCard, KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -79,7 +83,13 @@ const ZERO_RADIUS: u64 = 256;
 const ZERO_AHEAD: usize = 8192;
 const WHEEL_ZOOM: f64 = 1.25;
 /// Slice lengths for Beat, in beats, with their names.
-const BEAT_LENGTHS: [(f64, &str); 5] = [(0.25, "16th"), (0.5, "8th"), (1.0, "Beat"), (2.0, "2 beats"), (4.0, "Bar")];
+const BEAT_LENGTHS: [(f64, &str); 5] = [
+    (0.25, "16th"),
+    (0.5, "8th"),
+    (1.0, "Beat"),
+    (2.0, "2 beats"),
+    (4.0, "Bar"),
+];
 const SENSITIVITY_STEP: u8 = 5;
 const THRESHOLD_RANGE_DB: (i32, i32) = (-72, -12);
 const THRESHOLD_STEP_DB: i32 = 3;
@@ -96,7 +106,13 @@ pub enum Method {
 }
 
 impl Method {
-    pub const ALL: [Method; 5] = [Method::Transient, Method::Beat, Method::Grid, Method::Silence, Method::Manual];
+    pub const ALL: [Method; 5] = [
+        Method::Transient,
+        Method::Beat,
+        Method::Grid,
+        Method::Silence,
+        Method::Manual,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -168,7 +184,12 @@ pub struct ChopState {
 impl ChopState {
     /// Layer `layer` of pad `pad`, if there is one and `source` is its
     /// source.
-    pub fn from_project(p: &Project, pad: usize, layer: usize, source: Arc<SourceView>) -> Option<ChopState> {
+    pub fn from_project(
+        p: &Project,
+        pad: usize,
+        layer: usize,
+        source: Arc<SourceView>,
+    ) -> Option<ChopState> {
         let pd = p.pad(pad)?;
         let region = pd.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
@@ -192,7 +213,10 @@ impl ChopState {
     }
 
     fn frames_per_beat(&self) -> Option<f64> {
-        self.source.tempo.filter(|b| b.is_finite() && *b > 0.0).map(|bpm| f64::from(self.rate) * 60.0 / bpm)
+        self.source
+            .tempo
+            .filter(|b| b.is_finite() && *b > 0.0)
+            .map(|bpm| f64::from(self.rate) * 60.0 / bpm)
     }
 
     fn min_slice(&self) -> u64 {
@@ -212,10 +236,23 @@ pub enum ChopAction {
     /// Put the slices between `bounds` (the region's start, the cuts, its
     /// end) on pads `to_pad..`, one each, made from pad `pad`'s layer
     /// `layer`, and keep the chop in the project: one undo step.
-    ToPads { pad: usize, layer: usize, source: SourceId, name: String, mode: ChopMode, bounds: Vec<u64>, to_pad: usize },
+    ToPads {
+        pad: usize,
+        layer: usize,
+        source: SourceId,
+        name: String,
+        mode: ChopMode,
+        bounds: Vec<u64>,
+        to_pad: usize,
+    },
     /// Play source frames `start..end` (a slice) of pad `pad`'s layer
     /// `layer` once, as a pad made from it would: a tap on the slice.
-    Audition { pad: usize, layer: usize, start: u64, end: u64 },
+    Audition {
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+    },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -224,7 +261,18 @@ impl ChopAction {
     /// Applies [`ChopAction::ToPads`] to the project (one undo step) and
     /// returns the pads it filled; other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads { pad, layer, source, name, mode, bounds, to_pad } = self else { return Ok(0..0) };
+        let ChopAction::ToPads {
+            pad,
+            layer,
+            source,
+            name,
+            mode,
+            bounds,
+            to_pad,
+        } = self
+        else {
+            return Ok(0..0);
+        };
         if bounds.len() < 2 || bounds.windows(2).any(|w| w[0] >= w[1]) {
             return Err(ModelError::BadSlice);
         }
@@ -238,7 +286,9 @@ impl ChopAction {
         let c = ChopSet::from_markers(name, &s, *mode, bounds.iter().copied())?;
         let first = usize::from(bounds[0] > 0);
         let count = bounds.len() - 1;
-        if c.bounds(first).map(|b| b.0) != Some(bounds[0]) || c.bounds(first + count - 1).map(|b| b.1) != bounds.last().copied() {
+        if c.bounds(first).map(|b| b.0) != Some(bounds[0])
+            || c.bounds(first + count - 1).map(|b| b.1) != bounds.last().copied()
+        {
             return Err(ModelError::BadSlice);
         }
         p.chop_to_pads(c, first, count, *to_pad, Some(&template))?;
@@ -301,9 +351,17 @@ impl ChopTab {
         buttons.primary = Some(2);
         ui.add(BUTTONS, buttons);
         let t = ui.theme.clone();
-        let cards = [("Slice", t.accent), ("Slice start", t.text), ("Sensitivity", t.good), ("First pad", t.warn)];
+        let cards = [
+            ("Slice", t.accent),
+            ("Slice start", t.text),
+            ("Sensitivity", t.good),
+            ("First pad", t.warn),
+        ];
         for (k, (label, color)) in cards.iter().enumerate() {
-            ui.add(QLINKS[k], KnobCard::new(&format!("Q-Link {} · {label}", k + 1), *color));
+            ui.add(
+                QLINKS[k],
+                KnobCard::new(&format!("Q-Link {} · {label}", k + 1), *color),
+            );
         }
         ui.add(WHEEL, InfoCard::new("Wheel · zoom"));
         ui.add_page(name, LAYOUT)?;
@@ -369,7 +427,10 @@ impl ChopTab {
     /// The pads Chop to pads fills that have a sound already.
     pub fn replaced(&self, st: &ChopState) -> Vec<usize> {
         let bank = st.bank();
-        self.pads(st).map_or_else(Vec::new, |r| r.filter(|&i| st.used.get(i - bank.start).copied().unwrap_or(false)).collect())
+        self.pads(st).map_or_else(Vec::new, |r| {
+            r.filter(|&i| st.used.get(i - bank.start).copied().unwrap_or(false))
+                .collect()
+        })
     }
 
     /// The waveform's view.
@@ -395,7 +456,10 @@ impl ChopTab {
             }
             if self.method == Method::Manual && same_source {
                 // Keep the hand-made cuts that are still inside.
-                let (lo, hi) = (st.region.start + wave_tab::MIN_FRAMES, st.region.end.saturating_sub(wave_tab::MIN_FRAMES));
+                let (lo, hi) = (
+                    st.region.start + wave_tab::MIN_FRAMES,
+                    st.region.end.saturating_sub(wave_tab::MIN_FRAMES),
+                );
                 self.cuts.retain(|&c| c >= lo && c <= hi);
             } else {
                 if self.method == Method::Manual {
@@ -414,21 +478,35 @@ impl ChopTab {
         let (rs, re) = (st.region.start, st.region.end);
         let raw: Vec<u64> = match self.method {
             Method::Manual => return self.cuts.clone(),
-            Method::Transient => st.source.onsets.as_ref().map_or_else(Vec::new, |o| o.pick(f32::from(self.sensitivity) / 100.0)),
+            Method::Transient => st
+                .source
+                .onsets
+                .as_ref()
+                .map_or_else(Vec::new, |o| o.pick(f32::from(self.sensitivity) / 100.0)),
             Method::Beat => {
-                let Some(fpb) = st.frames_per_beat() else { return Vec::new() };
+                let Some(fpb) = st.frames_per_beat() else {
+                    return Vec::new();
+                };
                 let step = fpb * BEAT_LENGTHS[self.beat_len].0;
                 let first = (rs as f64 / step).floor() as u64 + 1;
                 let last = (re as f64 / step).ceil() as u64;
-                (first..last).map(|k| self.snapped(st, (k as f64 * step).round() as u64, 0, None)).collect()
+                (first..last)
+                    .map(|k| self.snapped(st, (k as f64 * step).round() as u64, 0, None))
+                    .collect()
             }
             Method::Grid => {
                 let n = self.grid.min(((re - rs) / st.min_slice()).max(1) as usize) as u64;
-                (1..n).map(|k| self.snapped(st, rs + (re - rs) * k / n, 0, None)).collect()
+                (1..n)
+                    .map(|k| self.snapped(st, rs + (re - rs) * k / n, 0, None))
+                    .collect()
             }
             Method::Silence => {
-                let settings = SilenceSettings { threshold_db: self.threshold_db as f32, ..SilenceSettings::default() };
-                sound_spans(&st.source.mono, 1, st.rate, settings).map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
+                let settings = SilenceSettings {
+                    threshold_db: self.threshold_db as f32,
+                    ..SilenceSettings::default()
+                };
+                sound_spans(&st.source.mono, 1, st.rate, settings)
+                    .map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
             }
         };
         // Inside the region, apart, and no more than the tab cuts.
@@ -453,7 +531,10 @@ impl ChopTab {
             bar.color = pad_color(st.pad);
             bar.active = TAB;
             bar.title = format!("Pad {} · {}", pad_text(self.bank, st.pad), st.pad_name);
-            let mut about = vec![format!("{n} slice{}", if n == 1 { "" } else { "s" }), self.method.label().to_string()];
+            let mut about = vec![
+                format!("{n} slice{}", if n == 1 { "" } else { "s" }),
+                self.method.label().to_string(),
+            ];
             if let Some(bpm) = src.tempo {
                 about.push(format!("{bpm:.1} BPM"));
             }
@@ -472,7 +553,11 @@ impl ChopTab {
             w.set_region(Some((r.start, r.end)));
             w.set_loop(Some((bounds[self.selected], bounds[self.selected + 1])));
             w.set_fades(0, 0);
-            w.set_beats(st.frames_per_beat().map(|fpb| Beats { first: 0.0, frames_per_beat: fpb, per_bar: 4 }));
+            w.set_beats(st.frames_per_beat().map(|fpb| Beats {
+                first: 0.0,
+                frames_per_beat: fpb,
+                per_bar: 4,
+            }));
         }
         if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
             o.set_peaks(Some(src.peaks.clone()));
@@ -486,7 +571,8 @@ impl ChopTab {
                 (false, _) => format!("{n} slices: too many for a bank"),
                 (true, 0) => "no pad replaced".into(),
                 (true, 1..=3) => {
-                    let names: Vec<String> = replaced.iter().map(|&p| pad_text(self.bank, p)).collect();
+                    let names: Vec<String> =
+                        replaced.iter().map(|&p| pad_text(self.bank, p)).collect();
                     format!("replaces {}", names.join(", "))
                 }
                 (true, k) => format!("replaces {k} pads"),
@@ -496,7 +582,11 @@ impl ChopTab {
         let range = pads.clone().map(|p| self.range_text(&p));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
-            b.enabled = vec![s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES, n > 1, pads.is_some()];
+            b.enabled = vec![
+                s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
+                n > 1,
+                pads.is_some(),
+            ];
             b.labels[2] = match &range {
                 Some(t) => format!("Chop to {t}"),
                 None => format!("Max {BANK} slices"),
@@ -508,17 +598,37 @@ impl ChopTab {
     /// Pads `p` as "A6–A13".
     fn range_text(&self, p: &Range<usize>) -> String {
         let (a, b) = (pad_text(self.bank, p.start), pad_text(self.bank, p.end - 1));
-        if p.len() == 1 { a } else { format!("{a}–{b}") }
+        if p.len() == 1 {
+            a
+        } else {
+            format!("{a}–{b}")
+        }
     }
 
     fn amount(&self) -> (&'static str, String, f32) {
         match self.method {
-            Method::Transient => ("Sensitivity", format!("{} %", self.sensitivity), f32::from(self.sensitivity) / 100.0),
-            Method::Beat => ("Length", BEAT_LENGTHS[self.beat_len].1.into(), self.beat_len as f32 / (BEAT_LENGTHS.len() - 1) as f32),
-            Method::Grid => ("Slices", self.grid.to_string(), (self.grid - 2) as f32 / (MAX_CUT_SLICES - 2) as f32),
+            Method::Transient => (
+                "Sensitivity",
+                format!("{} %", self.sensitivity),
+                f32::from(self.sensitivity) / 100.0,
+            ),
+            Method::Beat => (
+                "Length",
+                BEAT_LENGTHS[self.beat_len].1.into(),
+                self.beat_len as f32 / (BEAT_LENGTHS.len() - 1) as f32,
+            ),
+            Method::Grid => (
+                "Slices",
+                self.grid.to_string(),
+                (self.grid - 2) as f32 / (MAX_CUT_SLICES - 2) as f32,
+            ),
             Method::Silence => {
                 let (lo, hi) = THRESHOLD_RANGE_DB;
-                ("Threshold", format!("{} dB", self.threshold_db), (self.threshold_db - lo) as f32 / (hi - lo) as f32)
+                (
+                    "Threshold",
+                    format!("{} dB", self.threshold_db),
+                    (self.threshold_db - lo) as f32 / (hi - lo) as f32,
+                )
             }
             Method::Manual => ("Setting", "—".into(), 0.0),
         }
@@ -529,13 +639,27 @@ impl ChopTab {
         Row::ALL
             .iter()
             .map(|row| match row {
-                Row::Method => Setting { name: "Method".into(), value: self.method.label().into() },
-                Row::Amount => Setting { name: amount.into(), value: value.clone() },
-                Row::Snap => Setting { name: "Snap".into(), value: if self.snap { "Zero crossing" } else { "Off" }.into() },
-                Row::Slice => Setting { name: "Slice".into(), value: format!("{} of {}", self.selected + 1, self.slices()) },
+                Row::Method => Setting {
+                    name: "Method".into(),
+                    value: self.method.label().into(),
+                },
+                Row::Amount => Setting {
+                    name: amount.into(),
+                    value: value.clone(),
+                },
+                Row::Snap => Setting {
+                    name: "Snap".into(),
+                    value: if self.snap { "Zero crossing" } else { "Off" }.into(),
+                },
+                Row::Slice => Setting {
+                    name: "Slice".into(),
+                    value: format!("{} of {}", self.selected + 1, self.slices()),
+                },
                 Row::Pads => Setting {
                     name: "Pads".into(),
-                    value: self.pads(st).map_or_else(|| "Too many".into(), |p| self.range_text(&p)),
+                    value: self
+                        .pads(st)
+                        .map_or_else(|| "Too many".into(), |p| self.range_text(&p)),
                 },
             })
             .collect()
@@ -550,7 +674,11 @@ impl ChopTab {
         if let Some(c) = ui.get_mut::<KnobCard>(QLINKS[0]) {
             c.value = (self.selected + 1).to_string();
             c.sub = format!("of {n}");
-            c.pos = if n > 1 { self.selected as f32 / (n - 1) as f32 } else { 0.0 };
+            c.pos = if n > 1 {
+                self.selected as f32 / (n - 1) as f32
+            } else {
+                0.0
+            };
         }
         if let Some(c) = ui.get_mut::<KnobCard>(QLINKS[1]) {
             let f = bounds[self.selected];
@@ -568,9 +696,17 @@ impl ChopTab {
             match &pads {
                 Some(p) => {
                     c.value = pad_text(self.bank, p.start);
-                    c.sub = if p.len() > 1 { format!("to {}", pad_text(self.bank, p.end - 1)) } else { String::new() };
+                    c.sub = if p.len() > 1 {
+                        format!("to {}", pad_text(self.bank, p.end - 1))
+                    } else {
+                        String::new()
+                    };
                     let room = bank.len() - p.len();
-                    c.pos = if room > 0 { (p.start - bank.start) as f32 / room as f32 } else { 0.0 };
+                    c.pos = if room > 0 {
+                        (p.start - bank.start) as f32 / room as f32
+                    } else {
+                        0.0
+                    };
                     c.enabled = true;
                 }
                 None => c.enabled = false,
@@ -627,7 +763,12 @@ impl ChopTab {
                 let i = (0..self.slices()).find(|&i| *f >= b[i] && *f < b[i + 1])?;
                 self.selected = i;
                 self.show(ui, st);
-                Some(ChopAction::Audition { pad: st.pad, layer: st.layer, start: b[i], end: b[i + 1] })
+                Some(ChopAction::Audition {
+                    pad: st.pad,
+                    layer: st.layer,
+                    start: b[i],
+                    end: b[i + 1],
+                })
             }
             (OVERVIEW, EventKind::Frame(f)) => {
                 let width = self.wave_w;
@@ -713,7 +854,11 @@ impl ChopTab {
         let d = delta.signum();
         match row {
             Row::Method => {
-                let all: Vec<Method> = Method::ALL.iter().copied().filter(|m| *m != Method::Beat || st.frames_per_beat().is_some()).collect();
+                let all: Vec<Method> = Method::ALL
+                    .iter()
+                    .copied()
+                    .filter(|m| *m != Method::Beat || st.frames_per_beat().is_some())
+                    .collect();
                 let i = all.iter().position(|m| *m == self.method).unwrap_or(0) as i32;
                 self.method = all[(i + d).rem_euclid(all.len() as i32) as usize];
                 self.rechop(st);
@@ -725,7 +870,9 @@ impl ChopTab {
                     self.rechop(st);
                 }
             }
-            Row::Slice => self.selected = (self.selected as i32 + d).clamp(0, self.cuts.len() as i32) as usize,
+            Row::Slice => {
+                self.selected = (self.selected as i32 + d).clamp(0, self.cuts.len() as i32) as usize
+            }
             Row::Pads => self.turn_first_pad(st, d),
         }
     }
@@ -742,8 +889,13 @@ impl ChopTab {
                 let s = i32::from(self.sensitivity) + delta * i32::from(SENSITIVITY_STEP);
                 self.sensitivity = s.clamp(0, 100) as u8;
             }
-            Method::Beat => self.beat_len = (self.beat_len as i32 + delta).clamp(0, BEAT_LENGTHS.len() as i32 - 1) as usize,
-            Method::Grid => self.grid = (self.grid as i32 + delta).clamp(2, MAX_CUT_SLICES as i32) as usize,
+            Method::Beat => {
+                self.beat_len =
+                    (self.beat_len as i32 + delta).clamp(0, BEAT_LENGTHS.len() as i32 - 1) as usize
+            }
+            Method::Grid => {
+                self.grid = (self.grid as i32 + delta).clamp(2, MAX_CUT_SLICES as i32) as usize
+            }
             Method::Silence => {
                 let (lo, hi) = THRESHOLD_RANGE_DB;
                 self.threshold_db = (self.threshold_db + delta * THRESHOLD_STEP_DB).clamp(lo, hi);
@@ -768,7 +920,10 @@ impl ChopTab {
             return;
         }
         match knob {
-            0 => self.selected = (self.selected as i32 + delta).clamp(0, self.cuts.len() as i32) as usize,
+            0 => {
+                self.selected =
+                    (self.selected as i32 + delta).clamp(0, self.cuts.len() as i32) as usize
+            }
             1 if self.selected > 0 => {
                 let now = self.cuts[self.selected - 1];
                 let to = if fine {
@@ -796,7 +951,11 @@ impl ChopTab {
             let v = w.view();
             let mid = f64::from(width) / 2.0;
             let x = v.x_of(at);
-            let (frame, x) = if (0.0..=f64::from(width)).contains(&x) { (at, x) } else { (v.frame_at(mid), mid) };
+            let (frame, x) = if (0.0..=f64::from(width)).contains(&x) {
+                (at, x)
+            } else {
+                (v.frame_at(mid), mid)
+            };
             let nv = v.zoomed(WHEEL_ZOOM.powi(delta), frame, x, st.frames, width);
             w.set_view(nv, width);
         }
@@ -815,7 +974,9 @@ impl ChopTab {
         let at = to as usize;
         let found = match dir {
             0 => {
-                let px = ui.and_then(|ui| self.view(ui)).map_or(1.0, |v| v.frames_per_px);
+                let px = ui
+                    .and_then(|ui| self.view(ui))
+                    .map_or(1.0, |v| v.frames_per_px);
                 nearest_zero_crossing(x, at, ZERO_RADIUS.max((px * 8.0) as u64) as usize)
             }
             d if d > 0 => next_zero_crossing(x, at, ZERO_AHEAD),
@@ -849,5 +1010,8 @@ fn slot(ui: &Ui, name: &str) -> Option<Rect> {
     let node = layout::parse(LAYOUT).ok()?;
     let (w, h) = ui.size();
     let g = ui.theme.gap;
-    layout::solve(&node, Rect::new(0, 0, w, h).inset(g), g).into_iter().find(|(n, _)| n == name).map(|(_, r)| r)
+    layout::solve(&node, Rect::new(0, 0, w, h).inset(g), g)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, r)| r)
 }

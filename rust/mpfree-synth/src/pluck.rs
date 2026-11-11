@@ -43,7 +43,11 @@ const MODES: usize = 8;
 /// A voice ends when its level follower falls below this (-100 dB).
 const SILENT: f32 = 1e-5;
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.pluck", name: "Pluck", kind: Kind::Instrument };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.pluck",
+    name: "Pluck",
+    kind: Kind::Instrument,
+};
 
 /// A material's modes: (frequency ratio, level, decay ratio).
 type Modes = &'static [(f32, f32, f32)];
@@ -53,13 +57,39 @@ const MATERIAL_MODES: [Modes; 6] = [
     // Vibes: like the marimba, longer and with less of the upper modes.
     &[(1.0, 1.0, 1.0), (4.0, 0.25, 0.6), (10.0, 0.08, 0.3)],
     // A church bell's partials: hum, prime, minor third, fifth, nominal ...
-    &[(0.5, 0.6, 1.3), (1.0, 1.0, 1.0), (1.183, 0.7, 0.9), (1.506, 0.5, 0.8), (2.0, 0.6, 0.7), (2.514, 0.35, 0.6), (2.662, 0.3, 0.5), (3.011, 0.25, 0.45)],
+    &[
+        (0.5, 0.6, 1.3),
+        (1.0, 1.0, 1.0),
+        (1.183, 0.7, 0.9),
+        (1.506, 0.5, 0.8),
+        (2.0, 0.6, 0.7),
+        (2.514, 0.35, 0.6),
+        (2.662, 0.3, 0.5),
+        (3.011, 0.25, 0.45),
+    ],
     // A wine glass.
-    &[(1.0, 1.0, 1.0), (2.32, 0.6, 0.8), (4.25, 0.4, 0.6), (6.63, 0.25, 0.45), (9.38, 0.15, 0.35)],
+    &[
+        (1.0, 1.0, 1.0),
+        (2.32, 0.6, 0.8),
+        (4.25, 0.4, 0.6),
+        (6.63, 0.25, 0.45),
+        (9.38, 0.15, 0.35),
+    ],
     // Kalimba tine.
-    &[(1.0, 1.0, 1.0), (2.0, 0.08, 0.6), (5.4, 0.25, 0.3), (13.2, 0.1, 0.15)],
+    &[
+        (1.0, 1.0, 1.0),
+        (2.0, 0.08, 0.6),
+        (5.4, 0.25, 0.3),
+        (13.2, 0.1, 0.15),
+    ],
     // Steel drum: nearly harmonic.
-    &[(1.0, 1.0, 1.0), (2.0, 0.7, 0.8), (3.0, 0.4, 0.6), (4.02, 0.25, 0.5), (5.03, 0.15, 0.4)],
+    &[
+        (1.0, 1.0, 1.0),
+        (2.0, 0.7, 0.8),
+        (3.0, 0.4, 0.6),
+        (4.02, 0.25, 0.5),
+        (5.03, 0.15, 0.4),
+    ],
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -134,7 +164,9 @@ pub struct Pluck {
 impl Pluck {
     pub fn new(rate: u32) -> Pluck {
         let mut values = [0.0; ID_SPACE];
-        for p in PARAMS { values[p.id as usize] = p.default; }
+        for p in PARAMS {
+            values[p.id as usize] = p.default;
+        }
         let mut s = Pluck {
             rate,
             values,
@@ -156,23 +188,44 @@ impl Pluck {
 
     /// Loads a factory preset: defaults, then the preset's values.
     pub fn load_preset(&mut self, preset: &Preset) {
-        for p in PARAMS { if !p.readonly { self.set_param(p.id, p.default); } }
-        for &(id, v) in preset.values { self.set_param(id, v); }
+        for p in PARAMS {
+            if !p.readonly {
+                self.set_param(p.id, p.default);
+            }
+        }
+        for &(id, v) in preset.values {
+            self.set_param(id, v);
+        }
     }
 
-    pub fn presets() -> &'static [Preset] { PRESETS }
+    pub fn presets() -> &'static [Preset] {
+        PRESETS
+    }
 
     /// Voices sounding or fading.
-    pub fn active_voices(&self) -> usize { self.voices.iter().filter(|v| v.state != State::Free).count() }
+    pub fn active_voices(&self) -> usize {
+        self.voices
+            .iter()
+            .filter(|v| v.state != State::Free)
+            .count()
+    }
 
     #[inline]
-    fn v(&self, id: u16) -> f32 { self.values[id as usize] }
+    fn v(&self, id: u16) -> f32 {
+        self.values[id as usize]
+    }
 
-    fn mallet(&self) -> bool { self.v(MODEL) >= 0.5 }
+    fn mallet(&self) -> bool {
+        self.v(MODEL) >= 0.5
+    }
 
     fn update_out(&mut self) {
         let db = self.v(LEVEL);
-        let lvl = if db <= -60.0 { 0.0 } else { 10f32.powf(db / 20.0) };
+        let lvl = if db <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(db / 20.0)
+        };
         let pan = self.v(PAN) / 100.0;
         self.out_l.target = lvl * (1.0 - pan).sqrt();
         self.out_r.target = lvl * (1.0 + pan).sqrt();
@@ -180,14 +233,21 @@ impl Pluck {
 
     /// The pitch a voice plays now, in fractional MIDI notes.
     fn pitch(&self, note: u8) -> f32 {
-        f32::from(note) + self.v(TRANSPOSE) + self.v(FINE) / 100.0 + self.bend.value * self.v(BEND_RANGE)
+        f32::from(note)
+            + self.v(TRANSPOSE)
+            + self.v(FINE) / 100.0
+            + self.bend.value * self.v(BEND_RANGE)
     }
 
     /// Decay (T60, seconds) at `hz`: the Decay value at middle C, halving
     /// every two octaves up.
     fn decay_at(&self, hz: f32, held: bool) -> f32 {
         let d = self.v(DECAY) * 0.001 * (261.63 / hz).sqrt();
-        if held { d } else { d.min(self.v(RELEASE) * 0.001) }
+        if held {
+            d
+        } else {
+            d.min(self.v(RELEASE) * 0.001)
+        }
     }
 
     /// Sets a voice's filters for its pitch and gate.
@@ -225,13 +285,22 @@ impl Pluck {
             for (k, &(ratio, level, dr)) in modes.iter().take(MODES).enumerate() {
                 let r = 1.0 + (ratio - 1.0) * (1.0 + stretch);
                 let hz = f0 * r;
-                if hz >= 0.45 * rate || hz <= 10.0 { v.b0[k] = 0.0; v.c1[k] = 0.0; v.c2[k] = 0.0; continue; }
+                if hz >= 0.45 * rate || hz <= 10.0 {
+                    v.b0[k] = 0.0;
+                    v.c1[k] = 0.0;
+                    v.c2[k] = 0.0;
+                    continue;
+                }
                 let w = std::f32::consts::TAU * hz / rate;
                 let t60 = (base * dr.powf(0.5 + 1.5 * damp)).max(0.005);
                 let rr = 10f32.powf(-3.0 / (t60 * rate));
                 v.c1[k] = 2.0 * rr * w.cos();
                 v.c2[k] = rr * rr;
-                let place = 0.3 + 0.7 * (std::f32::consts::PI * (k + 1) as f32 * pos.max(0.02)).sin().abs();
+                let place = 0.3
+                    + 0.7
+                        * (std::f32::consts::PI * (k + 1) as f32 * pos.max(0.02))
+                            .sin()
+                            .abs();
                 v.b0[k] = w.sin() * level * place * share;
             }
         }
@@ -239,30 +308,66 @@ impl Pluck {
     }
 
     fn note_on(&mut self, note: u8, velocity: u8) {
-        if velocity == 0 { self.note_off(note); return; }
+        if velocity == 0 {
+            self.note_off(note);
+            return;
+        }
         let vel = f32::from(velocity.min(127)) / 127.0;
         self.clock += 1;
         // A ringing note is re-plucked in its own voice.
-        let same = self.voices.iter().position(|v| v.note == note && matches!(v.state, State::On | State::Release));
+        let same = self
+            .voices
+            .iter()
+            .position(|v| v.note == note && matches!(v.state, State::On | State::Release));
         let slot = match same {
             Some(i) => i,
             None => {
-                let sounding = self.voices.iter().filter(|v| matches!(v.state, State::On | State::Release)).count();
+                let sounding = self
+                    .voices
+                    .iter()
+                    .filter(|v| matches!(v.state, State::On | State::Release))
+                    .count();
                 if sounding >= self.v(POLYPHONY) as usize {
                     // Steal the oldest, released notes first.
-                    let old = self.voices.iter().enumerate()
+                    let old = self
+                        .voices
+                        .iter()
+                        .enumerate()
                         .filter(|(_, v)| matches!(v.state, State::On | State::Release))
-                        .min_by_key(|(_, v)| (v.state == State::On, v.age)).map(|(i, _)| i);
-                    if let Some(i) = old { self.kill(i); }
+                        .min_by_key(|(_, v)| (v.state == State::On, v.age))
+                        .map(|(i, _)| i);
+                    if let Some(i) = old {
+                        self.kill(i);
+                    }
                 }
-                let free = self.voices.iter().position(|v| v.state == State::Free)
-                    .or_else(|| self.voices.iter().enumerate().filter(|(_, v)| v.state == State::Kill).min_by_key(|(_, v)| v.age).map(|(i, _)| i))
+                let free = self
+                    .voices
+                    .iter()
+                    .position(|v| v.state == State::Free)
+                    .or_else(|| {
+                        self.voices
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, v)| v.state == State::Kill)
+                            .min_by_key(|(_, v)| v.age)
+                            .map(|(i, _)| i)
+                    })
                     .unwrap_or(0);
-                let mut v = Voice { tuned: f32::NAN, w: 0, ..Voice::default() };
+                let mut v = Voice {
+                    tuned: f32::NAN,
+                    w: 0,
+                    ..Voice::default()
+                };
                 // Spread alternates voices left and right of the pan.
-                let side = if self.next_pan.is_multiple_of(2) { -1.0 } else { 1.0 };
+                let side = if self.next_pan.is_multiple_of(2) {
+                    -1.0
+                } else {
+                    1.0
+                };
                 self.next_pan = self.next_pan.wrapping_add(1);
-                let pan = (side * self.v(SPREAD) / 100.0 * (0.4 + 0.6 * ((self.next_pan / 2) % 3) as f32 / 2.0)).clamp(-1.0, 1.0);
+                let pan = (side * self.v(SPREAD) / 100.0
+                    * (0.4 + 0.6 * ((self.next_pan / 2) % 3) as f32 / 2.0))
+                    .clamp(-1.0, 1.0);
                 v.gain_l = (1.0 - pan).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
                 v.gain_r = (1.0 + pan).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
                 let base = free * self.line;
@@ -288,7 +393,9 @@ impl Pluck {
             // A soft mallet is a long pulse, but never longer than a
             // third of the note's period, so high notes still sound.
             let period = self.rate as f32 / note_hz(pitch).max(1.0);
-            let len = (self.rate as f32 * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard))).min(period / 3.0).max(2.0);
+            let len = (self.rate as f32 * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard)))
+                .min(period / 3.0)
+                .max(2.0);
             v.pulse_len = len as u32;
             v.pulse_at = 0;
             // Unit area, so the low modes sound the same at any hardness.
@@ -316,11 +423,17 @@ impl Pluck {
         let mean = sum / period as f32;
         // Pick position: subtracting a copy delayed by that fraction of the
         // string cancels the harmonics with a node there.
-        let m = ((self.v(POSITION) / 100.0) * period as f32).round().max(1.0) as usize;
+        let m = ((self.v(POSITION) / 100.0) * period as f32)
+            .round()
+            .max(1.0) as usize;
         let mut energy = 0.0f32;
         for i in (0..period).rev() {
             let x = self.scratch[i] - mean;
-            let d = if i >= m { self.scratch[i - m] - mean } else { 0.0 };
+            let d = if i >= m {
+                self.scratch[i - m] - mean
+            } else {
+                0.0
+            };
             self.scratch[i] = x - d;
             energy += (x - d) * (x - d);
         }
@@ -359,12 +472,19 @@ impl Pluck {
             NodeEvent::NoteOn { note, velocity } => self.note_on(note, velocity),
             NodeEvent::NoteOff { note } => self.note_off(note),
             NodeEvent::Bend { value } => {
-                self.bend_value = if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 };
+                self.bend_value = if value.is_finite() {
+                    value.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
                 self.bend.target = self.bend_value;
             }
             NodeEvent::AllOff => {
                 for i in 0..POOL {
-                    if self.voices[i].state == State::On { let n = self.voices[i].note; self.note_off(n); }
+                    if self.voices[i].state == State::On {
+                        let n = self.voices[i].note;
+                        self.note_off(n);
+                    }
                 }
             }
             NodeEvent::Param { id, value } => self.set_param(id, value),
@@ -377,7 +497,9 @@ impl Pluck {
         self.bend.next();
         for i in 0..POOL {
             let mut v = self.voices[i];
-            if v.state == State::Free { continue; }
+            if v.state == State::Free {
+                continue;
+            }
             let p = self.pitch(v.note);
             if v.tuned.is_nan() || (p - v.tuned).abs() > 1e-4 {
                 self.tune(&mut v, p);
@@ -394,13 +516,17 @@ impl Pluck {
             let gl = self.out_l.next();
             let gr = self.out_r.next();
             for (vi, v) in self.voices.iter_mut().enumerate() {
-                if v.state == State::Free { continue; }
+                if v.state == State::Free {
+                    continue;
+                }
                 let mut y = if mallet {
                     let x = if v.pulse_at < v.pulse_len {
                         let t = (v.pulse_at as f32 + 0.5) / v.pulse_len as f32;
                         v.pulse_at += 1;
                         v.pulse_amp * (std::f32::consts::PI * t).sin()
-                    } else { 0.0 };
+                    } else {
+                        0.0
+                    };
                     let mut s = 0.0;
                     for k in 0..v.n_modes {
                         let y = v.b0[k] * x + v.c1[k] * v.y1[k] - v.c2[k] * v.y2[k];
@@ -432,12 +558,16 @@ impl Pluck {
                 if v.state == State::Kill {
                     y *= v.kill;
                     v.kill -= v.kill_step;
-                    if v.kill <= 0.0 { v.state = State::Free; }
+                    if v.kill <= 0.0 {
+                        v.state = State::Free;
+                    }
                 }
                 let a = y.abs();
                 v.follow = if a > v.follow { a } else { v.follow * 0.9995 };
                 v.frames = v.frames.saturating_add(1);
-                if v.follow < SILENT && v.frames > 256 && v.pulse_at >= v.pulse_len { v.state = State::Free; }
+                if v.follow < SILENT && v.frames > 256 && v.pulse_at >= v.pulse_len {
+                    v.state = State::Free;
+                }
                 left[i] += y * v.gain_l * gl;
                 right[i] += y * v.gain_r * gr;
             }
@@ -446,30 +576,48 @@ impl Pluck {
 }
 
 impl Node for Pluck {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { PARAMS }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        PARAMS
+    }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.iter().find(|p| p.id == id) else { return };
-        if p.readonly { return; }
+        let Some(p) = PARAMS.iter().find(|p| p.id == id) else {
+            return;
+        };
+        if p.readonly {
+            return;
+        }
         let old = self.values[id as usize];
         self.values[id as usize] = p.clamp(value);
         if id == MODEL && self.values[id as usize] != old {
             // A voice can't change model while it rings: fade them out.
-            for i in 0..POOL { self.kill(i); }
+            for i in 0..POOL {
+                self.kill(i);
+            }
         }
         match id {
             LEVEL | PAN => self.update_out(),
             // Anything that shapes a ringing voice: retune at the next step.
             DECAY | RELEASE | BRIGHTNESS | MATERIAL | STRETCH | HIGH_DAMP | STRIKE => {
-                for v in self.voices.iter_mut() { v.tuned = f32::NAN; }
+                for v in self.voices.iter_mut() {
+                    v.tuned = f32::NAN;
+                }
             }
             _ => {}
         }
     }
 
     fn param(&self, id: u16) -> f32 {
-        if id == METER_VOICES { return self.voices.iter().filter(|v| matches!(v.state, State::On | State::Release)).count() as f32; }
+        if id == METER_VOICES {
+            return self
+                .voices
+                .iter()
+                .filter(|v| matches!(v.state, State::On | State::Release))
+                .count() as f32;
+        }
         match PARAMS.iter().find(|p| p.id == id) {
             Some(_) => self.values[id as usize],
             None => f32::NAN,
@@ -489,7 +637,9 @@ impl Node for Pluck {
     }
 
     fn reset(&mut self) {
-        for v in self.voices.iter_mut() { *v = Voice::default(); }
+        for v in self.voices.iter_mut() {
+            *v = Voice::default();
+        }
         self.lines.fill(0.0);
         self.update_out();
         self.out_l.snap(self.out_l.target);
@@ -498,7 +648,9 @@ impl Node for Pluck {
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
-        if ctx.rate != self.rate { self.prepare(ctx.rate, left.len()); }
+        if ctx.rate != self.rate {
+            self.prepare(ctx.rate, left.len());
+        }
         let len = left.len().min(right.len());
         let mut at = 0usize;
         let mut i = 0usize;
@@ -511,14 +663,21 @@ impl Node for Pluck {
             let next = events.get(i).map_or(len, |e| (e.offset as usize).min(len));
             while at < next {
                 let abs = ctx.frame + at as u64;
-                if abs.is_multiple_of(CTRL) { self.control(); }
+                if abs.is_multiple_of(CTRL) {
+                    self.control();
+                }
                 let end = next.min(at + (CTRL - abs % CTRL) as usize);
                 self.render(at, end, left, right);
                 at = end;
             }
         }
-        for e in &events[i..] { let ev = e.ev; self.apply(&ev); }
+        for e in &events[i..] {
+            let ev = e.ev;
+            self.apply(&ev);
+        }
     }
 
-    fn tail_frames(&self) -> u32 { (self.v(RELEASE).max(KILL_MS) * 0.001 * self.rate as f32 * 1.5) as u32 }
+    fn tail_frames(&self) -> u32 {
+        (self.v(RELEASE).max(KILL_MS) * 0.001 * self.rate as f32 * 1.5) as u32
+    }
 }

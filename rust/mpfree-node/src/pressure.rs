@@ -46,9 +46,13 @@ pub mod field {
     pub const FALL: u16 = 6;
     pub const RELEASE: u16 = 7;
     /// Slot `n` (0 to 3): its target.
-    pub const fn target(n: usize) -> u16 { 8 + 2 * n as u16 }
+    pub const fn target(n: usize) -> u16 {
+        8 + 2 * n as u16
+    }
     /// Slot `n` (0 to 3): its depth, -100 to 100 %.
-    pub const fn depth(n: usize) -> u16 { 9 + 2 * n as u16 }
+    pub const fn depth(n: usize) -> u16 {
+        9 + 2 * n as u16
+    }
 }
 
 /// Parameters in a pressure block.
@@ -82,7 +86,9 @@ pub enum PressureCurve {
 }
 
 impl PressureCurve {
-    pub fn power(self) -> f32 { POWERS[self as usize] }
+    pub fn power(self) -> f32 {
+        POWERS[self as usize]
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -130,7 +136,11 @@ impl Default for PressureShape {
 }
 
 fn pick<T: Copy>(all: &[T], v: f32) -> T {
-    let i = if v.is_finite() { v.round().clamp(0.0, (all.len() - 1) as f32) as usize } else { 0 };
+    let i = if v.is_finite() {
+        v.round().clamp(0.0, (all.len() - 1) as f32) as usize
+    } else {
+        0
+    };
     all[i]
 }
 
@@ -139,14 +149,36 @@ impl PressureShape {
     /// `base` as [`params`] lays them.
     pub fn from_params(base: u16, get: impl Fn(u16) -> f32) -> PressureShape {
         PressureShape {
-            mode: pick(&[PressureMode::PerNote, PressureMode::Highest, PressureMode::Off], get(base + field::MODE)),
+            mode: pick(
+                &[
+                    PressureMode::PerNote,
+                    PressureMode::Highest,
+                    PressureMode::Off,
+                ],
+                get(base + field::MODE),
+            ),
             holdoff_ms: get(base + field::HOLDOFF).max(0.0),
             threshold: (get(base + field::THRESHOLD) / 100.0).clamp(0.0, 0.9),
             full_at: (get(base + field::FULL_AT) / 100.0).clamp(0.0, 1.0),
-            curve: pick(&[PressureCurve::Soft, PressureCurve::Linear, PressureCurve::Firm, PressureCurve::Hard], get(base + field::CURVE)),
+            curve: pick(
+                &[
+                    PressureCurve::Soft,
+                    PressureCurve::Linear,
+                    PressureCurve::Firm,
+                    PressureCurve::Hard,
+                ],
+                get(base + field::CURVE),
+            ),
             rise_ms: get(base + field::RISE).max(0.0),
             fall_ms: get(base + field::FALL).max(0.0),
-            release: pick(&[PressureRelease::Hold, PressureRelease::Follow, PressureRelease::Fade], get(base + field::RELEASE)),
+            release: pick(
+                &[
+                    PressureRelease::Hold,
+                    PressureRelease::Follow,
+                    PressureRelease::Fade,
+                ],
+                get(base + field::RELEASE),
+            ),
         }
     }
 
@@ -157,7 +189,11 @@ impl PressureShape {
         // Full at sits at least one raw step above the threshold.
         let full = self.full_at.max(thr + 1.0 / 127.0);
         let x = ((raw - thr) / (full - thr)).clamp(0.0, 1.0);
-        if x <= 0.0 { 0.0 } else { x.powf(self.curve.power()) }
+        if x <= 0.0 {
+            0.0
+        } else {
+            x.powf(self.curve.power())
+        }
     }
 
     /// The numbers the shaper runs on, for a control step rate in Hz (the
@@ -182,7 +218,11 @@ impl PressureShape {
 /// `step_rate` steps a second (1.0, instant, for 0 ms).
 fn one_pole(ms: f32, step_rate: f32) -> f32 {
     let n = ms * 0.001 * step_rate;
-    if n <= 0.0 { 1.0 } else { 1.0 - (-1.0 / n).exp() }
+    if n <= 0.0 {
+        1.0
+    } else {
+        1.0 - (-1.0 / n).exp()
+    }
 }
 
 /// [`PressureShape`] worked out for a control rate: the shaped value of each
@@ -199,7 +239,9 @@ pub struct PressureCoefs {
 }
 
 impl Default for PressureCoefs {
-    fn default() -> Self { PressureShape::default().coefs(3_000.0) }
+    fn default() -> Self {
+        PressureShape::default().coefs(3_000.0)
+    }
 }
 
 /// Moves `value` one step toward `target` (none: hold still).
@@ -223,10 +265,19 @@ pub struct Pressure {
 }
 
 impl Pressure {
-    pub const fn new() -> Pressure { Pressure { raw: 0, value: 0.0, steps: 0, released: false } }
+    pub const fn new() -> Pressure {
+        Pressure {
+            raw: 0,
+            value: 0.0,
+            steps: 0,
+            released: false,
+        }
+    }
 
     /// Back to nothing, for a fresh voice.
-    pub fn clear(&mut self) { *self = Pressure::new(); }
+    pub fn clear(&mut self) {
+        *self = Pressure::new();
+    }
 
     /// A note-on: the hold-off starts again and the pad starts unpressed.
     /// The value is kept, so a voice that is retriggered while it sounds
@@ -238,21 +289,33 @@ impl Pressure {
     }
 
     /// A pressure message, 0 to 127.
-    pub fn set(&mut self, value: u8) { self.raw = value.min(127); }
+    pub fn set(&mut self, value: u8) {
+        self.raw = value.min(127);
+    }
 
     /// The note-off.
-    pub fn release(&mut self) { self.released = true; }
+    pub fn release(&mut self) {
+        self.released = true;
+    }
 
     /// The last raw value, 0 to 127.
-    pub fn raw(&self) -> u8 { self.raw }
+    pub fn raw(&self) -> u8 {
+        self.raw
+    }
 
     /// The shaped, smoothed value, 0 to 1.
-    pub fn value(&self) -> f32 { self.value }
+    pub fn value(&self) -> f32 {
+        self.value
+    }
 
-    pub fn released(&self) -> bool { self.released }
+    pub fn released(&self) -> bool {
+        self.released
+    }
 
     /// Past the strike hold-off.
-    pub fn ready(&self, c: &PressureCoefs) -> bool { self.steps >= c.holdoff_steps }
+    pub fn ready(&self, c: &PressureCoefs) -> bool {
+        self.steps >= c.holdoff_steps
+    }
 
     /// The shaped value this voice is heading for now, or none while it holds
     /// still (in its hold-off, or after its note-off with Hold).
@@ -288,27 +351,63 @@ pub struct PressureChord {
 }
 
 impl PressureChord {
-    pub fn clear(&mut self) { self.value = 0.0; }
+    pub fn clear(&mut self) {
+        self.value = 0.0;
+    }
 
-    pub fn value(&self) -> f32 { self.value }
+    pub fn value(&self) -> f32 {
+        self.value
+    }
 
     /// One control step, from each sounding voice's `(held, aim)` (see
     /// [`Pressure::aim`]), taken before the voices step.
-    pub fn step<I: IntoIterator<Item = (bool, Option<f32>)>>(&mut self, c: &PressureCoefs, voices: I) -> f32 {
+    pub fn step<I: IntoIterator<Item = (bool, Option<f32>)>>(
+        &mut self,
+        c: &PressureCoefs,
+        voices: I,
+    ) -> f32 {
         let (mut any_held, mut held_top, mut rel_top) = (false, None::<f32>, None::<f32>);
         for (held, aim) in voices {
-            let top = if held { any_held = true; &mut held_top } else { &mut rel_top };
+            let top = if held {
+                any_held = true;
+                &mut held_top
+            } else {
+                &mut rel_top
+            };
             if let Some(a) = aim {
                 *top = Some(top.map_or(a, |t| t.max(a)));
             }
         }
-        glide(&mut self.value, if any_held { held_top } else { rel_top }, c)
+        glide(
+            &mut self.value,
+            if any_held { held_top } else { rel_top },
+            c,
+        )
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-const fn info(id: u16, name: &'static str, group: &'static str, min: f32, max: f32, default: f32, unit: Unit, curve: Curve) -> ParamInfo {
-    ParamInfo { id, name, group, min, max, default, unit, curve, readonly: false }
+const fn info(
+    id: u16,
+    name: &'static str,
+    group: &'static str,
+    min: f32,
+    max: f32,
+    default: f32,
+    unit: Unit,
+    curve: Curve,
+) -> ParamInfo {
+    ParamInfo {
+        id,
+        name,
+        group,
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    }
 }
 
 const SLOT_TARGET_NAMES: [&str; SLOTS] = ["To 1", "To 2", "To 3", "To 4"];
@@ -318,24 +417,96 @@ const SLOT_DEPTH_NAMES: [&str; SLOTS] = ["Depth 1", "Depth 2", "Depth 3", "Depth
 /// settings at the defaults of [`PressureShape::default`], then 4 slots.
 /// `targets` names what a slot can drive (index 0 should be "Off"), and
 /// `slots` gives each slot's default target index and depth (%).
-pub const fn params(base: u16, group: &'static str, targets: &'static [&'static str], slots: [(f32, f32); SLOTS]) -> [ParamInfo; FIELDS] {
+pub const fn params(
+    base: u16,
+    group: &'static str,
+    targets: &'static [&'static str],
+    slots: [(f32, f32); SLOTS],
+) -> [ParamInfo; FIELDS] {
     use Curve::Linear;
     let mut out = [
         choice(base + field::MODE, "Mode", group, MODES, 0.0),
-        info(base + field::HOLDOFF, "Hold-off", group, 0.0, 100.0, 30.0, Unit::Ms, Linear),
-        info(base + field::THRESHOLD, "Threshold", group, 0.0, 50.0, 8.0, Unit::Percent, Linear),
-        info(base + field::FULL_AT, "Full at", group, 30.0, 100.0, 85.0, Unit::Percent, Linear),
+        info(
+            base + field::HOLDOFF,
+            "Hold-off",
+            group,
+            0.0,
+            100.0,
+            30.0,
+            Unit::Ms,
+            Linear,
+        ),
+        info(
+            base + field::THRESHOLD,
+            "Threshold",
+            group,
+            0.0,
+            50.0,
+            8.0,
+            Unit::Percent,
+            Linear,
+        ),
+        info(
+            base + field::FULL_AT,
+            "Full at",
+            group,
+            30.0,
+            100.0,
+            85.0,
+            Unit::Percent,
+            Linear,
+        ),
         choice(base + field::CURVE, "Curve", group, CURVES, 2.0),
-        info(base + field::RISE, "Rise", group, 0.0, 200.0, 8.0, Unit::Ms, Linear),
-        info(base + field::FALL, "Fall", group, 0.0, 200.0, 40.0, Unit::Ms, Linear),
+        info(
+            base + field::RISE,
+            "Rise",
+            group,
+            0.0,
+            200.0,
+            8.0,
+            Unit::Ms,
+            Linear,
+        ),
+        info(
+            base + field::FALL,
+            "Fall",
+            group,
+            0.0,
+            200.0,
+            40.0,
+            Unit::Ms,
+            Linear,
+        ),
         choice(base + field::RELEASE, "Release", group, RELEASES, 0.0),
         // The slots, filled in below.
-        UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET, UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
+        UNSET,
     ];
     let mut n = 0;
     while n < SLOTS {
-        out[8 + 2 * n] = choice(base + field::target(n), SLOT_TARGET_NAMES[n], group, targets, slots[n].0);
-        out[9 + 2 * n] = info(base + field::depth(n), SLOT_DEPTH_NAMES[n], group, -100.0, 100.0, slots[n].1, Unit::Percent, Linear);
+        out[8 + 2 * n] = choice(
+            base + field::target(n),
+            SLOT_TARGET_NAMES[n],
+            group,
+            targets,
+            slots[n].0,
+        );
+        out[9 + 2 * n] = info(
+            base + field::depth(n),
+            SLOT_DEPTH_NAMES[n],
+            group,
+            -100.0,
+            100.0,
+            slots[n].1,
+            Unit::Percent,
+            Linear,
+        );
         n += 1;
     }
     out
@@ -343,8 +514,23 @@ pub const fn params(base: u16, group: &'static str, targets: &'static [&'static 
 
 const UNSET: ParamInfo = info(0, "", "", 0.0, 1.0, 0.0, Unit::None, Curve::Linear);
 
-const fn choice(id: u16, name: &'static str, group: &'static str, names: &'static [&'static str], default: f32) -> ParamInfo {
-    info(id, name, group, 0.0, (names.len() - 1) as f32, default, Unit::None, Curve::Choice(names))
+const fn choice(
+    id: u16,
+    name: &'static str,
+    group: &'static str,
+    names: &'static [&'static str],
+    default: f32,
+) -> ParamInfo {
+    info(
+        id,
+        name,
+        group,
+        0.0,
+        (names.len() - 1) as f32,
+        default,
+        Unit::None,
+        Curve::Choice(names),
+    )
 }
 
 #[cfg(test)]
@@ -360,11 +546,16 @@ mod tests {
     }
 
     /// Steps a voice `n` times, returning the values.
-    fn run(p: &mut Pressure, c: &PressureCoefs, n: usize) -> Vec<f32> { (0..n).map(|_| p.step(c)).collect() }
+    fn run(p: &mut Pressure, c: &PressureCoefs, n: usize) -> Vec<f32> {
+        (0..n).map(|_| p.step(c)).collect()
+    }
 
     #[test]
     fn below_the_threshold_is_exactly_zero_and_it_rises_with_no_step() {
-        let s = PressureShape { curve: PressureCurve::Linear, ..PressureShape::default() };
+        let s = PressureShape {
+            curve: PressureCurve::Linear,
+            ..PressureShape::default()
+        };
         for raw in 0..=10 {
             // 10/127 is 7.9 %, under the 8 % threshold.
             assert_eq!(s.map(raw as f32 / 127.0), 0.0, "raw {raw}");
@@ -376,8 +567,16 @@ mod tests {
         assert!((s.map(0.85) - 1.0).abs() < 1e-6);
         assert_eq!(s.map(1.0), 1.0);
         // Monotonic for every curve.
-        for curve in [PressureCurve::Soft, PressureCurve::Linear, PressureCurve::Firm, PressureCurve::Hard] {
-            let s = PressureShape { curve, ..PressureShape::default() };
+        for curve in [
+            PressureCurve::Soft,
+            PressureCurve::Linear,
+            PressureCurve::Firm,
+            PressureCurve::Hard,
+        ] {
+            let s = PressureShape {
+                curve,
+                ..PressureShape::default()
+            };
             let t = s.coefs(RATE).table;
             assert!(t.windows(2).all(|w| w[1] >= w[0]), "{curve:?}");
             assert_eq!(t[0], 0.0);
@@ -399,13 +598,26 @@ mod tests {
         let during = run(&mut p, &c, 30);
         p.set(60);
         let during2 = run(&mut p, &c, 60);
-        assert!(during.iter().chain(&during2).all(|&v| v == 0.0), "nothing moves in the hold-off");
+        assert!(
+            during.iter().chain(&during2).all(|&v| v == 0.0),
+            "nothing moves in the hold-off"
+        );
         // Then the settled value glides in: no jump on any step.
         let after = run(&mut p, &c, 300);
         let target = c.table[60];
-        assert!(after[0] > 0.0 && after[0] <= c.rise * target + 1e-6, "first step {}", after[0]);
-        assert!(after.windows(2).all(|w| w[1] >= w[0] && w[1] - w[0] <= c.rise * target + 1e-6));
-        assert!((after[299] - target).abs() < 1e-3, "settles at {target}: {}", after[299]);
+        assert!(
+            after[0] > 0.0 && after[0] <= c.rise * target + 1e-6,
+            "first step {}",
+            after[0]
+        );
+        assert!(after
+            .windows(2)
+            .all(|w| w[1] >= w[0] && w[1] - w[0] <= c.rise * target + 1e-6));
+        assert!(
+            (after[299] - target).abs() < 1e-3,
+            "settles at {target}: {}",
+            after[299]
+        );
     }
 
     #[test]
@@ -450,11 +662,19 @@ mod tests {
         assert!(at_off > 0.6 * full, "{at_off} of {full}");
         assert!(hold.iter().all(|&v| v == at_off), "Hold keeps the value");
         let (_, follow) = lift(PressureRelease::Follow);
-        assert!(follow[599] < 0.01, "Follow goes down with the pad: {}", follow[599]);
+        assert!(
+            follow[599] < 0.01,
+            "Follow goes down with the pad: {}",
+            follow[599]
+        );
         let (_, fade) = lift(PressureRelease::Fade);
         assert!(fade[599] < 0.01, "Fade falls to 0: {}", fade[599]);
         // Follow takes new pressure after the note-off; Fade ignores it.
-        for (release, moves) in [(PressureRelease::Follow, true), (PressureRelease::Fade, false), (PressureRelease::Hold, false)] {
+        for (release, moves) in [
+            (PressureRelease::Follow, true),
+            (PressureRelease::Fade, false),
+            (PressureRelease::Hold, false),
+        ] {
             let c = coefs(|s| s.release = release);
             let mut p = Pressure::new();
             p.start();
@@ -523,7 +743,11 @@ mod tests {
             a.step(&c);
             b.step(&c);
         }
-        assert!((chord.value() - c.table[40]).abs() < 1e-3, "{}", chord.value());
+        assert!(
+            (chord.value() - c.table[40]).abs() < 1e-3,
+            "{}",
+            chord.value()
+        );
         // Nothing held: with Hold, the chord holds still.
         a.release();
         let before = chord.value();
@@ -535,12 +759,28 @@ mod tests {
 
     #[test]
     fn params_read_back_into_the_shape() {
-        let ps = params(100, "Pressure", &["Off", "Cutoff"], [(1.0, 25.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
-        assert!(crate::check_params(&ps).is_ok(), "{:?}", crate::check_params(&ps));
+        let ps = params(
+            100,
+            "Pressure",
+            &["Off", "Cutoff"],
+            [(1.0, 25.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+        );
+        assert!(
+            crate::check_params(&ps).is_ok(),
+            "{:?}",
+            crate::check_params(&ps)
+        );
         assert_eq!(ps[8].id, 108);
         assert_eq!(ps[15].id, 115);
-        let get = |id: u16| ps.iter().find(|p| p.id == id).map_or(f32::NAN, |p| p.default);
-        assert_eq!(PressureShape::from_params(100, get), PressureShape::default());
+        let get = |id: u16| {
+            ps.iter()
+                .find(|p| p.id == id)
+                .map_or(f32::NAN, |p| p.default)
+        };
+        assert_eq!(
+            PressureShape::from_params(100, get),
+            PressureShape::default()
+        );
         assert_eq!(get(100 + field::target(0)), 1.0);
         assert_eq!(get(100 + field::depth(0)), 25.0);
     }

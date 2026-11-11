@@ -24,7 +24,11 @@ impl<K: Copy + Eq> Default for GestureRouter<K> {
 
 impl<K: Copy + Eq> GestureRouter<K> {
     pub fn new() -> Self {
-        Self { owners: Vec::new(), scratch: Vec::new(), out: Vec::new() }
+        Self {
+            owners: Vec::new(),
+            scratch: Vec::new(),
+            out: Vec::new(),
+        }
     }
 
     /// Give `key` gestures with `config`. Registering again resets it.
@@ -52,7 +56,8 @@ impl<K: Copy + Eq> GestureRouter<K> {
     pub fn frame(&mut self, events: &[(K, PointerEvent)], out: &mut Vec<(K, Gesture)>) {
         for (key, recognizer) in &mut self.owners {
             self.scratch.clear();
-            self.scratch.extend(events.iter().filter(|(k, _)| k == key).map(|(_, e)| *e));
+            self.scratch
+                .extend(events.iter().filter(|(k, _)| k == key).map(|(_, e)| *e));
             if self.scratch.is_empty() {
                 continue;
             }
