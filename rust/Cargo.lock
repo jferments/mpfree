@@ -102,6 +102,10 @@ name = "mpfree-network"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-node"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
@@ -143,6 +147,13 @@ name = "mpfree-session"
 version = "0.1.0"
 dependencies = [
  "mpfree-headless",
+]
+
+[[package]]
+name = "mpfree-synth"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
 ]
 
 [[package]]
