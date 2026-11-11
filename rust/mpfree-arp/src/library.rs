@@ -56,10 +56,7 @@ impl Library {
     pub fn built_in() -> Self {
         let mut l = Self::default();
         for (name, text) in BUILT_IN {
-            l.entries.push((
-                name.to_string(),
-                Pattern::parse(text).expect("built-in patterns parse"),
-            ));
+            l.entries.push((name.to_string(), Pattern::parse(text).expect("built-in patterns parse")));
         }
         l
     }
@@ -76,18 +73,13 @@ impl Library {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            if trimmed.eq_ignore_ascii_case("[scales]")
-                || trimmed.eq_ignore_ascii_case("[patterns]")
-            {
+            if trimmed.eq_ignore_ascii_case("[scales]") || trimmed.eq_ignore_ascii_case("[patterns]") {
                 in_scales = trimmed.eq_ignore_ascii_case("[scales]");
                 continue;
             }
             let what = if in_scales { "scale" } else { "pattern" };
             let Some((name, body)) = trimmed.split_once('=') else {
-                errors.push(LibraryError {
-                    line,
-                    reason: format!("expected: Name = {what}"),
-                });
+                errors.push(LibraryError { line, reason: format!("expected: Name = {what}") });
                 continue;
             };
             let name = name.trim();
@@ -102,20 +94,14 @@ impl Library {
                 continue;
             }
             if lib.get(name).is_some() {
-                errors.push(LibraryError {
-                    line,
-                    reason: format!("\"{name}\" is already in the file"),
-                });
+                errors.push(LibraryError { line, reason: format!("\"{name}\" is already in the file") });
                 continue;
             }
             match Pattern::parse(body) {
                 Ok(p) => lib.entries.push((name.to_string(), p)),
                 Err(ParseError { token, reason }) => {
                     let word = nth_token(body, token).unwrap_or("");
-                    errors.push(LibraryError {
-                        line,
-                        reason: format!("\"{name}\", token {token} \"{word}\": {reason}"),
-                    });
+                    errors.push(LibraryError { line, reason: format!("\"{name}\", token {token} \"{word}\": {reason}") });
                 }
             }
         }
@@ -128,12 +114,7 @@ impl Library {
 
     /// Writes the file form; `parse` reads it back to the same library.
     pub fn to_text(&self) -> String {
-        let width = self
-            .entries
-            .iter()
-            .map(|(n, _)| n.chars().count())
-            .max()
-            .unwrap_or(0);
+        let width = self.entries.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
         let mut s = String::new();
         for (name, p) in &self.entries {
             let pad = width - name.chars().count();
@@ -144,12 +125,7 @@ impl Library {
             s.push('\n');
         }
         if !self.scales.is_empty() {
-            let width = self
-                .scales
-                .iter()
-                .map(|(n, ..)| n.chars().count())
-                .max()
-                .unwrap_or(0);
+            let width = self.scales.iter().map(|(n, ..)| n.chars().count()).max().unwrap_or(0);
             s.push_str("\n[scales]\n");
             for (name, up, down) in &self.scales {
                 s.push_str(name);
@@ -173,17 +149,10 @@ impl Library {
         let name = name.trim();
         check_name(name)?;
         if mpfree_scale::by_name(name).is_some_and(|d| d.name.eq_ignore_ascii_case(name)) {
-            return Err(format!(
-                "\"{name}\" is a built-in scale; give yours another name"
-            ));
+            return Err(format!("\"{name}\" is a built-in scale; give yours another name"));
         }
-        let (up, down) =
-            mpfree_scale::parse_steps(steps).map_err(|e| format!("scale \"{name}\": {e}"))?;
-        match self
-            .scales
-            .iter_mut()
-            .find(|(n, ..)| n.eq_ignore_ascii_case(name))
-        {
+        let (up, down) = mpfree_scale::parse_steps(steps).map_err(|e| format!("scale \"{name}\": {e}"))?;
+        match self.scales.iter_mut().find(|(n, ..)| n.eq_ignore_ascii_case(name)) {
             Some(entry) => *entry = (name.to_string(), up, down),
             None => self.scales.push((name.to_string(), up, down)),
         }
@@ -204,10 +173,7 @@ impl Library {
 
     /// Finds a pattern by name, ignoring case.
     pub fn get(&self, name: &str) -> Option<&Pattern> {
-        self.entries
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, p)| p)
+        self.entries.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, p)| p)
     }
 
     /// Adds a pattern, or replaces the one with the same name (ignoring
@@ -215,11 +181,7 @@ impl Library {
     pub fn put(&mut self, name: &str, pattern: Pattern) -> Result<(), String> {
         let name = name.trim();
         check_name(name)?;
-        match self
-            .entries
-            .iter_mut()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-        {
+        match self.entries.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
             Some(entry) => *entry = (name.to_string(), pattern),
             None => self.entries.push((name.to_string(), pattern)),
         }
@@ -251,9 +213,7 @@ fn check_name(name: &str) -> Result<(), String> {
 /// The `n`th (1-based) whitespace-separated token, counting `|` lane
 /// names and values the same way `Pattern::parse` does.
 fn nth_token(text: &str, n: usize) -> Option<&str> {
-    text.split(|c: char| c.is_whitespace() || c == '|')
-        .filter(|w| !w.is_empty())
-        .nth(n.checked_sub(1)?)
+    text.split(|c: char| c.is_whitespace() || c == '|').filter(|w| !w.is_empty()).nth(n.checked_sub(1)?)
 }
 
 #[cfg(test)]
@@ -267,38 +227,16 @@ mod tests {
         let lib = Library::parse(text).unwrap();
         assert_eq!(lib.len(), 2, "patterns before and after the scales");
         let scales: Vec<_> = lib.scales().collect();
-        assert_eq!(
-            scales,
-            [
-                (
-                    "Bright minor",
-                    mpfree_scale::MELODIC_MINOR,
-                    mpfree_scale::MELODIC_MINOR
-                ),
-                (
-                    "Classical",
-                    mpfree_scale::MELODIC_MINOR,
-                    mpfree_scale::MINOR
-                )
-            ]
-        );
+        assert_eq!(scales, [("Bright minor", mpfree_scale::MELODIC_MINOR, mpfree_scale::MELODIC_MINOR),
+                            ("Classical", mpfree_scale::MELODIC_MINOR, mpfree_scale::MINOR)]);
         let again = Library::parse(&lib.to_text()).unwrap();
         assert_eq!(again, lib);
         assert!(lib.to_text().contains("[scales]\nBright minor = 0 2 3 5 7 9 11\nClassical    = 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
-        let errors =
-            Library::parse("[scales]\nDorian = 0 2 3\nOdd = 0 2 13\nFine = 0 4 7\n").unwrap_err();
+        let errors = Library::parse("[scales]\nDorian = 0 2 3\nOdd = 0 2 13\nFine = 0 4 7\n").unwrap_err();
         assert_eq!(errors.len(), 2);
         assert_eq!(errors[0].line, 2);
-        assert!(
-            errors[0].reason.contains("built-in scale"),
-            "{}",
-            errors[0].reason
-        );
-        assert!(
-            errors[1].reason.contains("\"13\" is not a semitone"),
-            "{}",
-            errors[1].reason
-        );
+        assert!(errors[0].reason.contains("built-in scale"), "{}", errors[0].reason);
+        assert!(errors[1].reason.contains("\"13\" is not a semitone"), "{}", errors[1].reason);
         assert!(Library::default().to_text().is_empty());
     }
 
@@ -307,36 +245,26 @@ mod tests {
         let text = "# mine\n\nSkip = 1 . 3 2 . 3 x:2 .\n  Lift=1 2 3 4 | oct 0 0 1 | vel 110 70  \nShuffle = x x' x x' | nudge 0 12 0 8 | vel~15\n";
         let lib = Library::parse(text).unwrap();
         assert_eq!(lib.len(), 3);
-        assert_eq!(
-            lib.get("lift").unwrap().to_text(),
-            "1 2 3 4 | oct 0 0 1 | vel 110 70"
-        );
+        assert_eq!(lib.get("lift").unwrap().to_text(), "1 2 3 4 | oct 0 0 1 | vel 110 70");
         let out = lib.to_text();
         assert_eq!(out.lines().next(), Some("Skip    = 1 . 3 2 . 3 x:2 ."));
         assert_eq!(Library::parse(&out).unwrap(), lib);
         assert_eq!(Library::built_in().len(), BUILT_IN.len());
-        assert_eq!(
-            Library::parse(&Library::built_in().to_text()).unwrap(),
-            Library::built_in()
-        );
+        assert_eq!(Library::parse(&Library::built_in().to_text()).unwrap(), Library::built_in());
     }
 
     #[test]
     fn reports_every_bad_line() {
         let text = "A = x\nno equals sign\n = x\nA = x x\nB = x y x\nC = x | vel 200\nThis name is far too long to be a name = x\n";
         let errors = Library::parse(text).unwrap_err();
-        let lines: Vec<(usize, &str)> =
-            errors.iter().map(|e| (e.line, e.reason.as_str())).collect();
+        let lines: Vec<(usize, &str)> = errors.iter().map(|e| (e.line, e.reason.as_str())).collect();
         assert_eq!(
             lines,
             [
                 (2, "expected: Name = pattern"),
                 (3, "the pattern needs a name before ="),
                 (4, "\"A\" is already in the file"),
-                (
-                    5,
-                    "\"B\", token 2 \"y\": unknown step (use . _ x 1-9 * ? l h)"
-                ),
+                (5, "\"B\", token 2 \"y\": unknown step (use . _ x 1-9 * ? l h)"),
                 (6, "\"C\", token 3 \"200\": velocity must be 0 to 127"),
                 (7, "names are at most 32 characters"),
             ]
