@@ -23,10 +23,20 @@ on:
 permissions:
   contents: read
 
+# One pending run per branch: a newer push replaces a run still waiting for a
+# runner. A run that has started is never cancelled (a Cargo build cancelled
+# mid-compile corrupted a shared target on After's runners, 2026-10-08).
+concurrency:
+  group: mpc-inventory-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   syntax:
     name: Shell syntax and static no-write checks
-    runs-on: ubuntu-latest
+    # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
+    # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Validate shell syntax
@@ -48,6 +58,7 @@ jobs:
           sh -n tools/mpc-one/read-only-rtthreads.sh
           sh -n tools/mpc-one/read-only-capacity.sh
           sh -n tools/mpc-one/read-only-boot-map.sh
+          sh -n tools/mpc-one/read-only-boot-menu.sh
           sh -n tools/mpc-one/read-only-ethernet.sh
           sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
@@ -60,12 +71,12 @@ jobs:
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends busybox
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends busybox
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py
       - name: Test the offline Akai update tools against fake backups and images (no device)
         run: |
-          sudo apt-get install -y --no-install-recommends squashfs-tools e2fsprogs file binutils \
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends squashfs-tools e2fsprogs file binutils \
             device-tree-compiler lz4 lzop zstd fdisk openssh-client
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_updater.py
           python3 tools/mpc-one/tests/test_offline_update_image.py
@@ -436,7 +447,10 @@ jobs:
 
   core:
     name: Deterministic core build, tests and offline WAV
-    runs-on: ubuntu-latest
+    # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
+    # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Configure C++ core
@@ -466,14 +480,40 @@ jobs:
 
   rust:
     name: Rust host parity and ARMv7 hard-float cross-build
-    runs-on: ubuntu-latest
+    # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
+    # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
+    env:
+      # Not `rustup default`: on the self-hosted runners that would change the
+      # shared runner account's default toolchain for every other project's jobs.
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          # Outside the checkout, so actions/checkout's clean keeps it; the runner
+          # installer (ci-infrastructure scripts/mpfree_runner.py) budgets the disk for it.
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/rust"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting rust afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          rm -rf rust/target && ln -s "$t" rust/target
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # The runner service's PATH has no ~/.cargo/bin; After's ci.yml does the same.
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install Rust stable with ARMv7 target
         run: |
           rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add armv7-unknown-linux-gnueabihf
+          rustup target add --toolchain stable armv7-unknown-linux-gnueabihf
           rustc --version
           cargo --version
       - name: Test Rust core in native release and debug
@@ -682,8 +722,8 @@ jobs:
             --rust rust/target/release/mpfree-render
       - name: Install GNU ARMv7 hard-float cross-linker
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf libc6-dev-armhf-cross
       - name: Build and inspect ARMv7 ELF32 hard-float artifact (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
@@ -843,7 +883,7 @@ jobs:
             echo "mpfree-screen-log must be statically linked"; exit 1
           fi
           # Run it under qemu against a fake framebuffer and sysfs folder (no device).
-          sudo apt-get install -y --no-install-recommends qemu-user
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
           t=$(mktemp -d)
           mkdir "$t/sys"
           printf 'U:800x1280p-0\n' > "$t/sys/modes"
@@ -886,8 +926,132 @@ jobs:
             --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           timeout 120 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
-          for n in console loading loading-failed play debug syslog prefs options guide; do
+          for n in console loading loading-failed play debug syslog prefs options guide touchlab; do
             head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done
           echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."
 
+      - name: Build and check the static startup screen program (do not deploy)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-splash
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-splash
+          file "$f"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
+            echo "mpfree-splash must be statically linked"; exit 1
+          fi
+          # Run it under qemu against a fake framebuffer and sysfs folder (no device).
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
+          t=$(mktemp -d)
+          mkdir "$t/sys"
+          printf 'U:800x1280p-0\n' > "$t/sys/modes"
+          echo 3200 > "$t/sys/stride"
+          echo 32 > "$t/sys/bits_per_pixel"
+          : > "$t/sys/pan"
+          truncate -s $((800 * 3840 * 4)) "$t/fb"
+          timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 2
+          test "$(cat "$t/sys/pan")" = "0,0"
+          test "$(stat -c %s "$t/fb")" = $((800 * 3840 * 4))
+          python3 - "$t/fb" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          frame = 800 * 1280 * 4
+          assert any(data[:frame]), "nothing was drawn"
+          assert not any(data[frame:]), "wrote past the visible frame"
+          print("PASS: static ARMv7 startup screen draws one frame's bytes on a fake framebuffer under qemu")
+          PY
+          # Boot menu: MPFree starts by itself; the factory OS only when picked.
+          menu() { rc=0; out=$(timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --menu --menu-seconds 1 "$@") || rc=$?; echo "$out rc=$rc"; }
+          r=$(menu); test "$r" = "choice=mpfree rc=0"
+          r=$(menu --no-mpfree); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\220\122\177' > "$t/wheel-right-play.mid"   # wheel cw, PLAY down
+          r=$(menu --midi-file "$t/wheel-right-play.mid"); test "$r" = "choice=factory rc=3"
+          printf '\260\144\001\260\144\177\231\045\100' > "$t/right-left-pad.mid"   # cw, ccw, a pad
+          r=$(menu --midi-file "$t/right-left-pad.mid"); test "$r" = "choice=mpfree rc=0"
+          echo "PASS: boot menu choices and exit codes under qemu"
+          # Title from a font file; a broken font file falls back to the block letters.
+          run1() { timeout 60 qemu-arm "$f" --framebuffer --fb "$t/fb" --sysfs "$t/sys" --seconds 1 "$@" > "$t/out.txt" 2>&1; }
+          dejavu=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          if [ -f "$dejavu" ]; then
+            run1 --font "$dejavu" --tracking 0.1; grep -q 'title font: DejaVu' "$t/out.txt"
+          fi
+          echo "not a font" > "$t/bad.ttf"
+          run1 --font "$t/bad.ttf"; grep -q 'using the built-in block letters' "$t/out.txt"
+          echo "PASS: title fonts under qemu"
+  splash-gl:
+    name: SDL3/GLES startup screen (desktop build, headless render)
+    # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
+    # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          # Outside the checkout, so actions/checkout's clean keeps it; the runner
+          # installer (ci-infrastructure scripts/mpfree_runner.py) budgets the disk for it.
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/splash-gl"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting splash-gl afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          rm -rf rust/mpfree-splash-gl/target && ln -s "$t" rust/mpfree-splash-gl/target
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # The runner service's PATH has no ~/.cargo/bin; After's ci.yml does the same.
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install Rust stable (self-hosted only; GitHub's hosts have it)
+        if: runner.environment == 'self-hosted'
+        run: rustup toolchain install stable --profile minimal
+      - name: Install SDL3 build dependencies and Mesa
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends cmake libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxss-dev libxkbcommon-dev libxfixes-dev libxtst-dev libwayland-dev \
+            wayland-protocols libdrm-dev libgbm-dev libegl-dev libgles-dev libasound2-dev libudev-dev \
+            libdbus-1-dev libegl-mesa0 libgl1-mesa-dri
+      - name: Build
+        run: cargo build --manifest-path rust/mpfree-splash-gl/Cargo.toml --release --locked
+      - name: Render frames offscreen with Mesa's software renderer and check them
+        run: |
+          d=$(mktemp -d)
+          SDL_VIDEO_DRIVER=offscreen timeout 300 rust/mpfree-splash-gl/target/release/mpfree-splash-gl \
+            --screenshot "$d" --frames 2 --every 5
+          python3 - "$d" <<'PY'
+          import struct, sys, zlib, pathlib
+          files = sorted(pathlib.Path(sys.argv[1]).glob("*.png"))
+          assert len(files) == 2, files
+          frames = []
+          for f in files:
+              data = f.read_bytes()
+              w, h = struct.unpack(">II", data[16:24])
+              assert (w, h) == (1280, 800), (w, h)
+              idat, i = b"", 8
+              while i < len(data):
+                  n = struct.unpack(">I", data[i:i + 4])[0]
+                  if data[i + 4:i + 8] == b"IDAT":
+                      idat += data[i + 8:i + 8 + n]
+                  i += 12 + n
+              raw = zlib.decompress(idat)
+              frames.append(raw)
+              row = 1 + w * 3
+              centre = raw[400 * row + 1 + 640 * 3: 400 * row + 1 + 640 * 3 + 3]
+              corner = raw[1 + 3: 1 + 6]
+              assert sum(raw[1:]) / len(raw) > 10, "the frame is nearly black"
+              assert sum(corner) < 120, ("the corner should be dark sky", corner)
+          assert frames[0] != frames[1], "the galaxy should turn between frames"
+          print("PASS: two 1280x800 frames rendered headless; they differ")
+          PY
