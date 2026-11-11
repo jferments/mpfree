@@ -42,6 +42,8 @@ pub enum View {
     Play,
     /// The time engine's launch grid, record settings and takes.
     Clips,
+    /// The synth's page (mpfree-synth-ui): Poly's controls.
+    Synth,
     Debug,
     Console,
     Prefs,
@@ -55,20 +57,22 @@ pub enum View {
     Pattern,
 }
 
-pub const TABS: [&str; 5] = ["Play", "Clips", "Debug", "Console", "Prefs"];
+pub const TABS: [&str; 6] = ["Play", "Clips", "Synth", "Debug", "Console", "Prefs"];
 
 impl View {
     pub fn from_tab(i: usize) -> View {
-        [View::Play, View::Clips, View::Debug, View::Console, View::Prefs].get(i).copied().unwrap_or(View::Play)
+        [View::Play, View::Clips, View::Synth, View::Debug, View::Console, View::Prefs].get(i).copied()
+            .unwrap_or(View::Play)
     }
 
     pub fn tab(self) -> Option<usize> {
         match self {
             View::Play | View::Arp | View::Pattern => Some(0),
             View::Clips => Some(1),
-            View::Debug => Some(2),
-            View::Console => Some(3),
-            View::Prefs => Some(4),
+            View::Synth => Some(2),
+            View::Debug => Some(3),
+            View::Console => Some(4),
+            View::Prefs => Some(5),
             View::Options | View::Guide => None,
         }
     }
@@ -312,6 +316,13 @@ pub enum Effect {
     StopSounds,
     /// Move the kit by this many places.
     Kit(i32),
+    /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
+    /// before, when a drum kit is playing).
+    Octave(i32),
+    /// The wheel on the Synth page: turn the selected knob.
+    SynthWheel(i32),
+    /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
+    SynthPage(i32),
     /// Start the audio again with this many periods.
     Audio(u32),
     ClearLogs,
@@ -408,7 +419,6 @@ impl App {
         app
     }
 
-    #[cfg(test)]
     pub fn view(&self) -> View {
         self.view
     }
@@ -603,6 +613,8 @@ impl App {
                 fx.extend(self.step_item(self.selected, d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
+            } else if self.view == View::Synth {
+                fx.push(Effect::SynthPage(d));
             } else {
                 fx.push(Effect::Kit(d));
             }
@@ -687,6 +699,9 @@ impl App {
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
             View::Clips => vec![Effect::ClipsWheel { delta, scroll: self.shift }],
+            View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
+            View::Synth => vec![Effect::SynthWheel(delta)],
+            View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
     }
@@ -700,7 +715,9 @@ impl App {
     /// Show `v`. The page left is remembered for going back, unless it is
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
-        if self.view != v && matches!(self.view, View::Play | View::Clips | View::Debug | View::Console | View::Arp) {
+        if self.view != v
+            && matches!(self.view, View::Play | View::Clips | View::Synth | View::Debug | View::Console | View::Arp)
+        {
             self.back = self.view;
         }
         self.view = v;
@@ -1153,6 +1170,33 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(press(&mut app, button::STOP), vec![Effect::Show(View::Console)]);
         assert_eq!(press(&mut app, button::STOP), vec![Effect::Show(View::Play)]);
+    }
+
+    #[test]
+    fn the_synth_tab_takes_the_wheel_and_shift_wheel_moves_octaves_on_play() {
+        let mut app = ready();
+        // SHIFT + wheel on Play: octaves (main.rs moves the kit when drums play).
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(3), vec![Effect::Octave(1)]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.tab(View::Synth.tab().unwrap()), vec![Effect::Show(View::Synth)]);
+        assert_eq!(app.view(), View::Synth);
+        assert_eq!(app.wheel(2), vec![Effect::SynthWheel(2)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-4), vec![Effect::SynthPage(-1)]);
+        app.button(button::SHIFT, false, 0.0);
+        // - and + step pages once the guide knows them.
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(press(&mut app, 41), vec![Effect::SynthPage(1)]);
+        assert_eq!(press(&mut app, 40), vec![Effect::SynthPage(-1)]);
+        // MENU on the Synth page opens its options and goes back to it.
+        let fx = press(&mut app, MENU);
+        assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Synth options"));
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Synth);
+        assert_eq!(app.tab(0), vec![Effect::Show(View::Play)]);
     }
 
     #[test]
