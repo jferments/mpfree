@@ -13,7 +13,9 @@
 //! the middle under every orientation.
 
 use crate::touchlab_page::TouchPage;
-use mpfree_touch::corners::{orientation_line, Calibration, CalibrationError, Corner, CornerCalibrator, TapOutcome};
+use mpfree_touch::corners::{
+    orientation_line, Calibration, CalibrationError, Corner, CornerCalibrator, TapOutcome,
+};
 use mpfree_touch::profile::MPC_ONE;
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Tone, Touch, Widget};
 
@@ -62,8 +64,15 @@ pub struct CalibrateView {
 
 impl CalibrateView {
     pub fn new() -> CalibrateView {
-        CalibrateView { cal: CornerCalibrator::new(MPC_ONE), taps: Vec::new(), note: Note::Ask, result: None,
-                        fingers: Vec::new(), lines: Vec::new(), exit: false }
+        CalibrateView {
+            cal: CornerCalibrator::new(MPC_ONE),
+            taps: Vec::new(),
+            note: Note::Ask,
+            result: None,
+            fingers: Vec::new(),
+            lines: Vec::new(),
+            exit: false,
+        }
     }
 
     fn restart(&mut self) {
@@ -87,12 +96,19 @@ impl CalibrateView {
 
     fn buttons(&self, r: Rect) -> Vec<(Button, Rect)> {
         let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
-        vec![(Button::Again, Rect::new(cx - 190, cy + 40, 180, 64)), (Button::Exit, Rect::new(cx + 10, cy + 40, 180, 64))]
+        vec![
+            (Button::Again, Rect::new(cx - 190, cy + 40, 180, 64)),
+            (Button::Exit, Rect::new(cx + 10, cy + 40, 180, 64)),
+        ]
     }
 
     fn tap(&mut self, x: i32, y: i32, r: Rect) {
-        let Ok(map) = MPC_ONE.axis_map(r.w as u32, r.h as u32) else { return };
-        let Some(corner) = self.cal.next_corner() else { return };
+        let Ok(map) = MPC_ONE.axis_map(r.w as u32, r.h as u32) else {
+            return;
+        };
+        let Some(corner) = self.cal.next_corner() else {
+            return;
+        };
         let (raw_x, raw_y) = map.unmap((x - r.x) as f32, (y - r.y) as f32);
         let outcome = self.cal.tap(raw_x, raw_y);
         let word = match outcome {
@@ -101,8 +117,10 @@ impl CalibrateView {
             TapOutcome::SameAsEarlier(c) => format!("same_as_{}", c.label()),
             TapOutcome::Ignored => "ignored".to_string(),
         };
-        self.lines.push(format!("touch-calibrate-tap: corner={} x={x} y={y} raw_x={raw_x} raw_y={raw_y} outcome={word}",
-                                corner.label()));
+        self.lines.push(format!(
+            "touch-calibrate-tap: corner={} x={x} y={y} raw_x={raw_x} raw_y={raw_y} outcome={word}",
+            corner.label()
+        ));
         match outcome {
             TapOutcome::Next(_) => {
                 self.taps.push((x, y));
@@ -114,11 +132,17 @@ impl CalibrateView {
                 let result = self.cal.result();
                 match &result {
                     Ok(c) => {
-                        let word = if c.matches_profile { "match" } else { "differs" };
+                        let word = if c.matches_profile {
+                            "match"
+                        } else {
+                            "differs"
+                        };
                         self.lines.push(format!("touch-calibrate: result={word}"));
                         self.lines.push(orientation_line(c.orientation));
                     }
-                    Err(CalibrationError::NoFit(n)) => self.lines.push(format!("touch-calibrate: result=no_fit fits={n}")),
+                    Err(CalibrationError::NoFit(n)) => self
+                        .lines
+                        .push(format!("touch-calibrate: result=no_fit fits={n}")),
                     Err(CalibrationError::Incomplete) => {}
                 }
                 self.result = Some(result);
@@ -131,22 +155,39 @@ impl CalibrateView {
 
     fn message(&self) -> (String, Tone) {
         match (&self.result, self.cal.next_corner()) {
-            (Some(Ok(c)), _) if c.matches_profile => {
-                ("Touch matches the built-in mapping. Nothing needs changing.".to_string(), Tone::Good)
-            }
+            (Some(Ok(c)), _) if c.matches_profile => (
+                "Touch matches the built-in mapping. Nothing needs changing.".to_string(),
+                Tone::Good,
+            ),
             (Some(Ok(c)), _) => {
                 let o = c.orientation;
                 (format!("This panel is mounted differently (swap_xy={} flip_x={} flip_y={}). It is logged, not applied.",
                          o.swap_xy as u8, o.flip_x as u8, o.flip_y as u8), Tone::Warn)
             }
-            (Some(Err(_)), _) => ("The taps fit no mapping: a corner was probably tapped out of order.".to_string(),
-                                  Tone::Bad),
+            (Some(Err(_)), _) => (
+                "The taps fit no mapping: a corner was probably tapped out of order.".to_string(),
+                Tone::Bad,
+            ),
             (None, Some(next)) => match self.note {
-                Note::Ask => (format!("Tap the {} target, as you face the MPC.", next.label()), Tone::Accent),
-                Note::TooCentral => (format!("That was too near the middle. Tap the {} target.", next.label()),
-                                     Tone::Warn),
-                Note::SameAs(c) => (format!("That landed in the {} corner, which is done. Tap the {} target.",
-                                            c.label(), next.label()), Tone::Warn),
+                Note::Ask => (
+                    format!("Tap the {} target, as you face the MPC.", next.label()),
+                    Tone::Accent,
+                ),
+                Note::TooCentral => (
+                    format!(
+                        "That was too near the middle. Tap the {} target.",
+                        next.label()
+                    ),
+                    Tone::Warn,
+                ),
+                Note::SameAs(c) => (
+                    format!(
+                        "That landed in the {} corner, which is done. Tap the {} target.",
+                        c.label(),
+                        next.label()
+                    ),
+                    Tone::Warn,
+                ),
             },
             (None, None) => (String::new(), Tone::Normal),
         }
@@ -160,19 +201,44 @@ impl Default for CalibrateView {
 }
 
 fn circle(cx: &mut PaintCx, x: i32, y: i32, radius: i32, c: Color) {
-    cx.canvas.fill_round_rect(Rect::new(x - radius, y - radius, 2 * radius, 2 * radius), radius, c);
+    cx.canvas.fill_round_rect(
+        Rect::new(x - radius, y - radius, 2 * radius, 2 * radius),
+        radius,
+        c,
+    );
 }
 
 impl Widget for CalibrateView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let cy0 = r.y + r.h / 2;
-        cx.text(FontId::Bold, t.size_title, Rect::new(r.x, cy0 - 120, r.w, 40), Align::Center, t.text, "Calibrate touch");
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            Rect::new(r.x, cy0 - 120, r.w, 40),
+            Align::Center,
+            t.text,
+            "Calibrate touch",
+        );
         let (msg, tone) = self.message();
         let color = t.tone(tone);
-        cx.text(FontId::Sans, t.size_body, Rect::new(r.x + 160, cy0 - 70, r.w - 320, 40), Align::Center, color, &msg);
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            Rect::new(r.x + 160, cy0 - 70, r.w - 320, 40),
+            Align::Center,
+            color,
+            &msg,
+        );
         let step = format!("{} of 4 corners", self.taps.len());
-        cx.text(FontId::Sans, t.size_small, Rect::new(r.x, cy0 - 30, r.w, 30), Align::Center, t.text_dim, &step);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(r.x, cy0 - 30, r.w, 30),
+            Align::Center,
+            t.text_dim,
+            &step,
+        );
         for (i, c) in Corner::ORDER.into_iter().enumerate() {
             let (x, y) = Self::target(r, c);
             if Some(c) == self.cal.next_corner() && self.result.is_none() {
@@ -189,13 +255,31 @@ impl Widget for CalibrateView {
         for (b, br) in self.buttons(r) {
             cx.canvas.fill_round_rect(br, t.radius, t.raised);
             cx.canvas.stroke_round_rect(br, t.radius, 2, t.outline);
-            cx.text(FontId::Bold, t.size_body, br, Align::Center, t.text, b.label());
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                br,
+                Align::Center,
+                t.text,
+                b.label(),
+            );
         }
     }
 
-    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<mpfree_ui::EventKind> {
+    fn touch(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        r: Rect,
+    ) -> Option<mpfree_ui::EventKind> {
         if phase == Touch::Down {
-            let what = match self.buttons(r).into_iter().find(|(_, br)| br.contains(x, y)) {
+            let what = match self
+                .buttons(r)
+                .into_iter()
+                .find(|(_, br)| br.contains(x, y))
+            {
                 Some((b, _)) => Finger::Button(b),
                 None => Finger::Tap,
             };
@@ -211,10 +295,17 @@ impl Widget for CalibrateView {
             return None;
         }
         match what {
-            Finger::Button(b) if self.buttons(r).iter().any(|(bb, br)| *bb == b && br.contains(x, y)) => match b {
-                Button::Again => self.restart(),
-                Button::Exit => self.leave(),
-            },
+            Finger::Button(b)
+                if self
+                    .buttons(r)
+                    .iter()
+                    .any(|(bb, br)| *bb == b && br.contains(x, y)) =>
+            {
+                match b {
+                    Button::Again => self.restart(),
+                    Button::Exit => self.leave(),
+                }
+            }
             Finger::Button(_) => {}
             Finger::Tap => self.tap(x, y, r),
         }
@@ -278,7 +369,11 @@ mod tests {
         }
         let lines = v.take_lines();
         assert_eq!(lines.len(), 6, "{lines:?}");
-        assert!(lines[0].starts_with("touch-calibrate-tap: corner=top-left x=70 y=70 raw_x="), "{}", lines[0]);
+        assert!(
+            lines[0].starts_with("touch-calibrate-tap: corner=top-left x=70 y=70 raw_x="),
+            "{}",
+            lines[0]
+        );
         assert!(lines[0].ends_with(" outcome=ok"));
         assert_eq!(lines[4], "touch-calibrate: result=match");
         assert_eq!(lines[5], orientation_line(MPC_ONE.orientation));
@@ -289,8 +384,17 @@ mod tests {
     fn a_differently_mounted_panel_is_reported_not_applied() {
         // A panel mounted with no swap or flip: the owner taps the physical
         // corners, which the built-in mapping draws at other places.
-        let other = Orientation { swap_xy: false, flip_x: false, flip_y: false };
-        let theirs = mpfree_touch::profile::TouchProfile { orientation: other, ..MPC_ONE }.axis_map(1280, 800).unwrap();
+        let other = Orientation {
+            swap_xy: false,
+            flip_x: false,
+            flip_y: false,
+        };
+        let theirs = mpfree_touch::profile::TouchProfile {
+            orientation: other,
+            ..MPC_ONE
+        }
+        .axis_map(1280, 800)
+        .unwrap();
         let ours = MPC_ONE.axis_map(1280, 800).unwrap();
         let mut v = opened();
         for (i, c) in Corner::ORDER.into_iter().enumerate() {
@@ -315,7 +419,11 @@ mod tests {
         assert_eq!(v.note, Note::SameAs(Corner::TopLeft));
         assert_eq!(v.taps.len(), 1);
         let lines = v.take_lines();
-        assert!(lines[0].ends_with("outcome=too_central") && lines[2].ends_with("outcome=same_as_top-left"), "{lines:?}");
+        assert!(
+            lines[0].ends_with("outcome=too_central")
+                && lines[2].ends_with("outcome=same_as_top-left"),
+            "{lines:?}"
+        );
         // Start again clears the taps and logs nothing.
         let (_, again) = v.buttons(SCREEN)[0];
         tap(&mut v, 4, again.x + 5, again.y + 5);
@@ -329,12 +437,26 @@ mod tests {
     #[test]
     fn out_of_order_corners_fit_nothing() {
         let mut v = opened();
-        for (i, c) in [Corner::TopLeft, Corner::BottomRight, Corner::TopRight, Corner::BottomLeft].into_iter().enumerate() {
+        for (i, c) in [
+            Corner::TopLeft,
+            Corner::BottomRight,
+            Corner::TopRight,
+            Corner::BottomLeft,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (x, y) = CalibrateView::target(SCREEN, c);
             tap(&mut v, i as u64, x, y);
         }
         let lines = v.take_lines();
-        assert!(lines.last().unwrap().starts_with("touch-calibrate: result=no_fit"), "{lines:?}");
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .starts_with("touch-calibrate: result=no_fit"),
+            "{lines:?}"
+        );
         assert_eq!(v.message().1, Tone::Bad);
     }
 
@@ -343,13 +465,23 @@ mod tests {
         let v = CalibrateView::new();
         // Buttons are inside the 15%-from-middle band, where no corner tap counts.
         for (_, br) in v.buttons(SCREEN) {
-            assert!(br.x >= 1280 * 35 / 100 && br.right() <= 1280 * 65 / 100, "{br:?}");
-            assert!(br.y >= 800 * 35 / 100 && br.bottom() <= 800 * 65 / 100, "{br:?}");
+            assert!(
+                br.x >= 1280 * 35 / 100 && br.right() <= 1280 * 65 / 100,
+                "{br:?}"
+            );
+            assert!(
+                br.y >= 800 * 35 / 100 && br.bottom() <= 800 * 65 / 100,
+                "{br:?}"
+            );
         }
         let mut canvas = mpfree_ui::SoftCanvas::new(1280, 800);
         let mut fonts = mpfree_ui::Fonts::embedded();
         let theme = mpfree_ui::Theme::dark();
-        let mut cx = PaintCx { canvas: &mut canvas, theme: &theme, fonts: &mut fonts };
+        let mut cx = PaintCx {
+            canvas: &mut canvas,
+            theme: &theme,
+            fonts: &mut fonts,
+        };
         v.paint(&mut cx, SCREEN);
     }
 }

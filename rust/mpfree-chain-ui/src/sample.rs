@@ -8,27 +8,24 @@
 //! (layout spec, "The FX chain editor and macros"): the chain editor in the
 //! mixer's place with a Back to it, or in the Sample tab's FX sub-tab
 //! under the pad bar; the macros panel over the page under the top bar,
-//! no tab lit. The top bar and the Q-Link column are stand-ins for the
-//! app's own (see [`AppBar`] and [`QLinkColumn`]).
+//! no tab lit. The top bar is the app's (`Header::app`); the Q-Link column
+//! is a stand-in for the app's own (see [`QLinkColumn`]).
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, ParamInfo};
 use mpfree_fx::{strip_params, Chain, Chorus, Compressor, Delay, Drive, Eq, LoFi, MultiFilter};
-use mpfree_mod::{lfo, Bindings, MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK};
+use mpfree_mod::{
+    lfo, Bindings, MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK,
+};
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_sampler_ui::widgets::PadBar;
-use mpfree_ui::widgets::{Chip, Label};
-use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
+use mpfree_ui::widgets::{Chip, Header, Label, APP_TABS};
 use mpfree_ui::Fonts;
+use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
 
 use crate::state::{macro_color, ChainState, MacrosState};
 use crate::{ChainView, MacrosView};
 
-/// The music tabs, as the approved layout spec lists them (round 7's
-/// `mpfree_ui::widgets::APP_TABS`).
-pub const TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
-/// The Sample tab's pad bar tabs (`mpfree_sampler_ui::wave_tab::TABS`).
-pub const PAD_TABS: [&str; 6] = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"];
 pub const DRUMS: Strip = Strip::Bus(0);
 pub const KEYS: Strip = Strip::Track(4);
 pub const KICK: Strip = Strip::Pad(0);
@@ -60,12 +57,28 @@ fn chain(nodes: Vec<Box<dyn mpfree_fx::mpfree_node::Node>>) -> Chain {
     c
 }
 
-fn info(c: &Chain, slot: usize, id: u16) -> ParamInfo { *c.node(slot).unwrap().params().iter().find(|p| p.id == id).unwrap() }
+fn info(c: &Chain, slot: usize, id: u16) -> ParamInfo {
+    *c.node(slot)
+        .unwrap()
+        .params()
+        .iter()
+        .find(|p| p.id == id)
+        .unwrap()
+}
 
 impl Song {
     pub fn new() -> Song {
-        let drums = chain(vec![Box::new(MultiFilter::new()), Box::new(Drive::new()), Box::new(Compressor::new()), Box::new(Eq::new())]);
-        let keys = chain(vec![Box::new(Chorus::new()), Box::new(LoFi::new()), Box::new(Delay::new())]);
+        let drums = chain(vec![
+            Box::new(MultiFilter::new()),
+            Box::new(Drive::new()),
+            Box::new(Compressor::new()),
+            Box::new(Eq::new()),
+        ]);
+        let keys = chain(vec![
+            Box::new(Chorus::new()),
+            Box::new(LoFi::new()),
+            Box::new(Delay::new()),
+        ]);
         let kick = chain(vec![Box::new(Drive::new()), Box::new(Compressor::new())]);
         let mut e = ModEngine::new(RATE, DEFAULT_TICK);
         let add = |c: &Chain, strip: Strip, slot: usize, id: u16, e: &mut ModEngine| -> ParamAddr {
@@ -89,8 +102,27 @@ impl Song {
         let dlmix = add(&keys, KEYS, 2, ids::delay::MIX, &mut e);
         let kdrive = add(&kick, KICK, 0, ids::drive::DRIVE, &mut e);
         let send = ParamAddr::new(Owner::Strip(KEYS), ids::mixer::send(0));
-        e.add_target(send, *strip_params().iter().find(|p| p.id == ids::mixer::send(0)).unwrap(), -30.0).unwrap();
-        let map = |e: &mut ModEngine, m: usize, target: ParamAddr, from: f32, to: f32| e.map(m, MacroMap { target, from, to, curve: MapCurve::Linear }).unwrap();
+        e.add_target(
+            send,
+            *strip_params()
+                .iter()
+                .find(|p| p.id == ids::mixer::send(0))
+                .unwrap(),
+            -30.0,
+        )
+        .unwrap();
+        let map = |e: &mut ModEngine, m: usize, target: ParamAddr, from: f32, to: f32| {
+            e.map(
+                m,
+                MacroMap {
+                    target,
+                    from,
+                    to,
+                    curve: MapCurve::Linear,
+                },
+            )
+            .unwrap()
+        };
         // 1 Wash, 2 Grit, 3 Pump, 4 Air.
         map(&mut e, 0, send, 0.45, 0.85);
         map(&mut e, 0, fb, 0.2, 0.7);
@@ -105,42 +137,115 @@ impl Song {
         map(&mut e, 2, cmix, 0.2, 0.6);
         map(&mut e, 3, chorus, 0.0, 0.35);
         map(&mut e, 3, reso, 0.0, 0.3);
-        e.add_row(Row { source: Source::Lfo(0), via: None, target: tone, depth: 0.18 }).unwrap();
-        e.add_row(Row { source: Source::Follower(0), via: None, target: dlmix, depth: -0.25 }).unwrap();
-        e.add_row(Row { source: Source::Lfo(1), via: Some(Source::Host(2)), target: cutoff, depth: 0.12 }).unwrap();
+        e.add_row(Row {
+            source: Source::Lfo(0),
+            via: None,
+            target: tone,
+            depth: 0.18,
+        })
+        .unwrap();
+        e.add_row(Row {
+            source: Source::Follower(0),
+            via: None,
+            target: dlmix,
+            depth: -0.25,
+        })
+        .unwrap();
+        e.add_row(Row {
+            source: Source::Lfo(1),
+            via: Some(Source::Host(2)),
+            target: cutoff,
+            depth: 0.12,
+        })
+        .unwrap();
         // Scene A as it is; scene B with the drums darker and wetter.
         let mut setup = vec![
-            ModEvent::Set { addr: ParamAddr::new(Owner::Mod(0), lfo::ids::SYNC), value: 6.0 },
-            ModEvent::Set { addr: ParamAddr::new(Owner::Mod(1), lfo::ids::RATE), value: 0.3 },
+            ModEvent::Set {
+                addr: ParamAddr::new(Owner::Mod(0), lfo::ids::SYNC),
+                value: 6.0,
+            },
+            ModEvent::Set {
+                addr: ParamAddr::new(Owner::Mod(1), lfo::ids::RATE),
+                value: 0.3,
+            },
             ModEvent::Source { n: 2, value: 0.8 },
         ];
         let run = |e: &mut ModEngine, evs: &[ModEvent], blocks: u64| {
             for b in 0..blocks {
                 let f0 = b * BLOCK as u64;
-                let timed: Vec<ModTimed> = if b == 0 { evs.iter().map(|ev| ModTimed::new(0, *ev)).collect() } else { Vec::new() };
-                let audio: Vec<f32> = (0..BLOCK).map(|i| 0.4 * (((f0 + i as u64) as f32) * 0.05).sin()).collect();
-                let ctx = Ctx { rate: RATE, frame: f0, bpm: 92.0, beats: f0 as f64 * 92.0 / 60.0 / RATE as f64, playing: true, sidechain: None };
-                e.process(&ctx, BLOCK, &timed, &[Some((&audio, &audio)), None, None, None], &mut |_, _| {});
+                let timed: Vec<ModTimed> = if b == 0 {
+                    evs.iter().map(|ev| ModTimed::new(0, *ev)).collect()
+                } else {
+                    Vec::new()
+                };
+                let audio: Vec<f32> = (0..BLOCK)
+                    .map(|i| 0.4 * (((f0 + i as u64) as f32) * 0.05).sin())
+                    .collect();
+                let ctx = Ctx {
+                    rate: RATE,
+                    frame: f0,
+                    bpm: 92.0,
+                    beats: f0 as f64 * 92.0 / 60.0 / RATE as f64,
+                    playing: true,
+                    sidechain: None,
+                };
+                e.process(
+                    &ctx,
+                    BLOCK,
+                    &timed,
+                    &[Some((&audio, &audio)), None, None, None],
+                    &mut |_, _| {},
+                );
             }
         };
         run(&mut e, &setup, 4);
         e.capture_scene(0);
         setup = vec![
-            ModEvent::Set { addr: cutoff, value: 900.0 },
-            ModEvent::Set { addr: ParamAddr::macro_value(0), value: 0.9 },
-            ModEvent::Set { addr: ParamAddr::macro_value(2), value: 0.8 },
+            ModEvent::Set {
+                addr: cutoff,
+                value: 900.0,
+            },
+            ModEvent::Set {
+                addr: ParamAddr::macro_value(0),
+                value: 0.9,
+            },
+            ModEvent::Set {
+                addr: ParamAddr::macro_value(2),
+                value: 0.8,
+            },
         ];
         run(&mut e, &setup, 2);
         e.capture_scene(1);
-        let names = ["Wash", "Grit", "Pump", "Air", "Macro 5", "Macro 6", "Macro 7", "Macro 8"].map(String::from).to_vec();
-        let mut start: Vec<ModEvent> = [0.62, 0.40, 0.55, 0.25].iter().enumerate().map(|(m, v)| ModEvent::Set { addr: ParamAddr::macro_value(m as u8), value: *v }).collect();
-        start.push(ModEvent::Set { addr: ParamAddr::morph_pos(0), value: 0.64 });
+        let names = [
+            "Wash", "Grit", "Pump", "Air", "Macro 5", "Macro 6", "Macro 7", "Macro 8",
+        ]
+        .map(String::from)
+        .to_vec();
+        let mut start: Vec<ModEvent> = [0.62, 0.40, 0.55, 0.25]
+            .iter()
+            .enumerate()
+            .map(|(m, v)| ModEvent::Set {
+                addr: ParamAddr::macro_value(m as u8),
+                value: *v,
+            })
+            .collect();
+        start.push(ModEvent::Set {
+            addr: ParamAddr::morph_pos(0),
+            value: 0.64,
+        });
         run(&mut e, &start, 40);
         let mut bindings = Bindings::with_macros(&names);
         for m in 0..mpfree_mod::MACROS {
             bindings.observe(ParamAddr::macro_value(m as u8), e.macro_value(m));
         }
-        Song { drums, keys, kick, engine: e, bindings, names }
+        Song {
+            drums,
+            keys,
+            kick,
+            engine: e,
+            bindings,
+            names,
+        }
     }
 
     /// A parameter's name on the cards: "Drive (Drums)", "Send A (Keys)".
@@ -157,12 +262,23 @@ impl Song {
             _ => ("", None),
         };
         let pname = match node {
-            Some(n) => n.params().iter().find(|p| p.id == a.param).map(|p| p.name).unwrap_or("?"),
-            None => strip_params().iter().find(|p| p.id == a.param).map(|p| p.name).unwrap_or("?"),
+            Some(n) => n
+                .params()
+                .iter()
+                .find(|p| p.id == a.param)
+                .map(|p| p.name)
+                .unwrap_or("?"),
+            None => strip_params()
+                .iter()
+                .find(|p| p.id == a.param)
+                .map(|p| p.name)
+                .unwrap_or("?"),
         };
         let nname = node.map(|n| n.info().name);
         match nname {
-            Some(n) if !pname.starts_with(n) && pname != "Drive" => format!("{n} {} ({strip_name})", pname.to_lowercase()),
+            Some(n) if !pname.starts_with(n) && pname != "Drive" => {
+                format!("{n} {} ({strip_name})", pname.to_lowercase())
+            }
             _ => format!("{pname} ({strip_name})"),
         }
     }
@@ -192,11 +308,30 @@ impl Song {
         }
     }
 
-    pub fn chain_state(&self, strip: Strip, selected: usize, group: usize, focus: Option<ParamAddr>) -> ChainState {
+    pub fn chain_state(
+        &self,
+        strip: Strip,
+        selected: usize,
+        group: usize,
+        focus: Option<ParamAddr>,
+    ) -> ChainState {
         let title = format!("{} FX", self.strip_name(strip));
-        let mut st = ChainState::from_chain(self.chain(strip), strip, &title, 8, &self.engine, Some(selected), group, focus);
+        let mut st = ChainState::from_chain(
+            self.chain(strip),
+            strip,
+            &title,
+            8,
+            &self.engine,
+            Some(selected),
+            group,
+            focus,
+        );
         st.macro_names = self.names.clone();
-        st.cost_pct = Some(match strip { DRUMS => 6.2, KICK => 2.9, _ => 4.8 });
+        st.cost_pct = Some(match strip {
+            DRUMS => 6.2,
+            KICK => 2.9,
+            _ => 4.8,
+        });
         st
     }
 
@@ -208,45 +343,9 @@ impl Song {
 }
 
 impl Default for Song {
-    fn default() -> Self { Self::new() }
-}
-
-/// A stand-in for the app's top bar until round 7 (#85) lands, drawn as
-/// its `Header::app` is: the tabs from the left edge (no wordmark; the
-/// name is on the startup screen only), the lit tab if any, chips on the
-/// right. Swap for `Header::app` then.
-pub struct AppBar {
-    pub active: Option<usize>,
-    pub chips: Vec<Chip>,
-}
-
-impl Widget for AppBar {
-    fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        let t = cx.theme.clone();
-        let (tab_w, gap, h) = (112, 6, 44.min(r.h));
-        for (i, name) in TABS.iter().enumerate() {
-            let tr = Rect::new(r.x + 8 + i as i32 * (tab_w + gap), r.y + (r.h - h) / 2, tab_w, h);
-            let on = self.active == Some(i);
-            if on {
-                cx.canvas.fill_round_rect(tr, 10, t.raised);
-                cx.canvas.fill_round_rect(Rect::new(tr.x + 20, tr.bottom() - 4, tr.w - 40, 3), 1, t.accent);
-            }
-            cx.text(if on { FontId::Bold } else { FontId::Sans }, t.size_title, tr, Align::Center, if on { t.text } else { t.text_dim }, name);
-        }
-        let mut right = r.right();
-        let ch = 34.min(r.h);
-        for chip in &self.chips {
-            let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
-            let w = tw + 40;
-            let cr = Rect::new(right - w, r.y + (r.h - ch) / 2, w, ch);
-            cx.canvas.fill_round_rect(cr, ch / 2, t.surface);
-            cx.canvas.fill_round_rect(Rect::new(cr.x + 14, cr.y + ch / 2 - 4, 8, 8), 4, t.tone(chip.tone));
-            cx.text(FontId::Sans, t.size_small, Rect::new(cr.x + 28, cr.y, tw + 4, ch), Align::Left, t.text, &chip.text);
-            right -= w + 8;
-        }
+    fn default() -> Self {
+        Self::new()
     }
-
-    fn touch(&mut self, _f: u64, _p: mpfree_ui::Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> { None }
 }
 
 /// A stand-in for the app's Q-Link column (the Hello MPC thread draws the
@@ -263,38 +362,78 @@ pub struct QLinkColumn {
 impl QLinkColumn {
     pub fn new(song: &Song) -> QLinkColumn {
         let cards = song.bindings.cards().to_vec();
-        let places = cards.iter().map(|c| c.target.map(|a| song.place(a)).unwrap_or_default()).collect();
+        let places = cards
+            .iter()
+            .map(|c| c.target.map(|a| song.place(a)).unwrap_or_default())
+            .collect();
         let title = match song.bindings.title() {
             "" => "Q-Links".to_string(),
             t => format!("Q-Links · {t}"),
         };
-        QLinkColumn { cards, places, title }
+        QLinkColumn {
+            cards,
+            places,
+            title,
+        }
     }
 }
 
 /// A knob's colour on the column when its binding has none of its own.
-fn knob_color(t: &Theme, k: usize) -> mpfree_ui::Color { [t.accent, t.good, t.warn, t.accent.mix(t.bad, 0.55)][k % 4] }
+fn knob_color(t: &Theme, k: usize) -> mpfree_ui::Color {
+    [t.accent, t.good, t.warn, t.accent.mix(t.bad, 0.55)][k % 4]
+}
 
 impl Widget for QLinkColumn {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         let (head, body) = r.take_top(26);
-        cx.text(FontId::Bold, t.size_small - 2.0, head.inset_xy(4, 0), Align::Left, t.text_faint, &self.title.to_uppercase());
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            head.inset_xy(4, 0),
+            Align::Left,
+            t.text_faint,
+            &self.title.to_uppercase(),
+        );
         let gap = 10;
         let h = (body.h - 3 * gap) / 4;
         for (k, c) in self.cards.iter().enumerate() {
             let cr = Rect::new(body.x, body.y + k as i32 * (h + gap), body.w, h);
-            let col = c.colour.map_or(knob_color(&t, k), |m| macro_color(&t, m as usize));
+            let col = c
+                .colour
+                .map_or(knob_color(&t, k), |m| macro_color(&t, m as usize));
             cx.canvas.fill_round_rect(cr, t.radius, t.surface);
-            cx.canvas.fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, cr.h - 28), 2, col);
+            cx.canvas
+                .fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, cr.h - 28), 2, col);
             let inner = cr.inset_xy(14, 10);
             let (top, rest) = inner.take_top(18);
-            cx.text(FontId::Bold, 13.0, top, Align::Left, col, &format!("Q{}", k + 1));
+            cx.text(
+                FontId::Bold,
+                13.0,
+                top,
+                Align::Left,
+                col,
+                &format!("Q{}", k + 1),
+            );
             let place = self.places.get(k).map_or("", |p| p.as_str());
-            cx.text(FontId::Sans, 12.0, top, Align::Right, t.text_faint, &place.to_uppercase());
+            cx.text(
+                FontId::Sans,
+                12.0,
+                top,
+                Align::Right,
+                t.text_faint,
+                &place.to_uppercase(),
+            );
             let (name, rest) = rest.take_top(24);
-            cx.text(FontId::Bold, 16.0, name, Align::Left, if c.enabled() { t.text } else { t.text_faint }, if c.enabled() { &c.label } else { "free" });
+            cx.text(
+                FontId::Bold,
+                16.0,
+                name,
+                Align::Left,
+                if c.enabled() { t.text } else { t.text_faint },
+                if c.enabled() { &c.label } else { "free" },
+            );
             // The knob: 270 degrees of dots, open at the bottom.
             let d = rest.h.min(rest.w - 10).max(20);
             let (kx, ky) = (rest.x + rest.w / 2, rest.y + rest.h / 2 + 2);
@@ -303,10 +442,17 @@ impl Widget for QLinkColumn {
             for i in 0..n {
                 let f = i as f32 / (n - 1) as f32;
                 let a = (135.0 + 270.0 * f).to_radians();
-                let (x, y) = (kx + (rad * a.cos()).round() as i32, ky + (rad * a.sin()).round() as i32);
+                let (x, y) = (
+                    kx + (rad * a.cos()).round() as i32,
+                    ky + (rad * a.sin()).round() as i32,
+                );
                 let lit = c.enabled() && f <= c.pos;
                 let s = if lit { 3 } else { 2 };
-                cx.canvas.fill_round_rect(Rect::new(x - s, y - s, 2 * s, 2 * s), s, if lit { col } else { t.outline });
+                cx.canvas.fill_round_rect(
+                    Rect::new(x - s, y - s, 2 * s, 2 * s),
+                    s,
+                    if lit { col } else { t.outline },
+                );
             }
             // The value inside the ring: "20.0 kHz" as "20 kHz", and a
             // smaller size when the ring is small.
@@ -320,7 +466,16 @@ impl Widget for QLinkColumn {
         }
     }
 
-    fn touch(&mut self, _f: u64, _p: mpfree_ui::Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> { None }
+    fn touch(
+        &mut self,
+        _f: u64,
+        _p: mpfree_ui::Touch,
+        _x: i32,
+        _y: i32,
+        _r: Rect,
+    ) -> Option<EventKind> {
+        None
+    }
 }
 
 /// Where a panel opens.
@@ -341,10 +496,26 @@ const PREVIEW_SAMPLE: &str = "col(header:60, smp-bar:60, row(chain:*, qlinks:168
 /// The app's screen around a panel. For the chain editor, the Q-Links
 /// show the selected effect's first four knobs (bank 0, the page's own);
 /// for the macros, the bank of the four shown.
-pub fn screen(fonts: Fonts, song: &mut Song, place: Place, chain: Option<ChainState>, macros: Option<MacrosState>) -> Result<Ui, String> {
+pub fn screen(
+    fonts: Fonts,
+    song: &mut Song,
+    place: Place,
+    chain: Option<ChainState>,
+    macros: Option<MacrosState>,
+) -> Result<Ui, String> {
     let mut ui = Ui::new(Theme::dark(), fonts, 1280, 800);
-    let active = (place == Place::SampleFx).then_some(4);
-    ui.add("header", AppBar { active, chips: vec![Chip::new("92 BPM", Tone::Normal), Chip::new("Night drive", Tone::Normal)] });
+    // The top bar: Sample lit for its FX sub-tab; nothing lit over the
+    // mixer or a page (as the mixer does).
+    let mut header = Header::app(if place == Place::SampleFx {
+        APP_TABS[4]
+    } else {
+        ""
+    });
+    header.chips = vec![
+        Chip::new("92 BPM", Tone::Normal),
+        Chip::new("Night drive", Tone::Normal),
+    ];
+    ui.add("header", header);
     match (&chain, &macros) {
         (Some(c), _) => {
             let (name, knobs) = c.qlinks();
@@ -363,7 +534,7 @@ pub fn screen(fonts: Fonts, song: &mut Song, place: Place, chain: Option<ChainSt
         Place::SampleFx => (crate::CHAIN_HINT, PREVIEW_SAMPLE),
         Place::Over => (crate::MACROS_HINT, crate::MACROS_LAYOUT),
     };
-    let mut bar = PadBar::new(&PAD_TABS);
+    let mut bar = PadBar::new(&mpfree_sampler_ui::wave_tab::TABS);
     bar.color = Theme::dark().bad;
     bar.title = "Pad 1 · Kick".into();
     bar.subtitle = "kick_tight · 1 layer · Drums".into();
@@ -374,8 +545,12 @@ pub fn screen(fonts: Fonts, song: &mut Song, place: Place, chain: Option<ChainSt
     ui.add(crate::MACROS_W, MacrosView::new());
     ui.add_page("preview", layout)?;
     ui.show("preview")?;
-    if let Some(c) = chain { crate::update_chain(&mut ui, c); }
-    if let Some(m) = macros { crate::update_macros(&mut ui, m); }
+    if let Some(c) = chain {
+        crate::update_chain(&mut ui, c);
+    }
+    if let Some(m) = macros {
+        crate::update_macros(&mut ui, m);
+    }
     Ok(ui)
 }
 
@@ -392,13 +567,54 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         st.back = Some("Mixer".into());
         st
     };
-    let mut drive = from_mixer(song.chain_state(DRUMS, 1, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, drive_uid), ids::drive::TONE))));
+    let mut drive = from_mixer(song.chain_state(
+        DRUMS,
+        1,
+        0,
+        Some(ParamAddr::new(
+            Owner::Insert(DRUMS, drive_uid),
+            ids::drive::TONE,
+        )),
+    ));
     drive.slots[3].on = false;
-    let filter = from_mixer(song.chain_state(DRUMS, 0, 0, Some(ParamAddr::new(Owner::Insert(DRUMS, filter_uid), ids::filter::CUTOFF))));
-    let delay = from_mixer(song.chain_state(KEYS, 2, 2, Some(ParamAddr::new(Owner::Insert(KEYS, delay_uid), ids::delay::MIX))));
-    let mut kick = song.chain_state(KICK, 0, 0, Some(ParamAddr::new(Owner::Insert(KICK, kick_uid), ids::drive::DRIVE)));
+    let filter = from_mixer(song.chain_state(
+        DRUMS,
+        0,
+        0,
+        Some(ParamAddr::new(
+            Owner::Insert(DRUMS, filter_uid),
+            ids::filter::CUTOFF,
+        )),
+    ));
+    let delay = from_mixer(song.chain_state(
+        KEYS,
+        2,
+        2,
+        Some(ParamAddr::new(
+            Owner::Insert(KEYS, delay_uid),
+            ids::delay::MIX,
+        )),
+    ));
+    let mut kick = song.chain_state(
+        KICK,
+        0,
+        0,
+        Some(ParamAddr::new(
+            Owner::Insert(KICK, kick_uid),
+            ids::drive::DRIVE,
+        )),
+    );
     kick.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
-    let mut empty = ChainState::from_chain(&chain(vec![]), Strip::Track(6), "Vocal chop FX", 8, &song.engine, None, 0, None);
+    let mut empty = ChainState::from_chain(
+        &chain(vec![]),
+        Strip::Track(6),
+        "Vocal chop FX",
+        8,
+        &song.engine,
+        None,
+        0,
+        None,
+    );
     empty.back = Some("Mixer".into());
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
@@ -435,7 +651,10 @@ mod tests {
         }
         let song = Song::new();
         let st = song.chain_state(DRUMS, 1, 0, None);
-        assert_eq!(st.slots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Multi filter", "Drive", "Compressor", "EQ"]);
+        assert_eq!(
+            st.slots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["Multi filter", "Drive", "Compressor", "EQ"]
+        );
         assert!(st.slots[1].macros.contains(&1), "Grit moves the drive");
         assert!(st.slots[1].modulated, "LFO 1 on its tone");
         assert!(st.params.iter().any(|p| p.macro_ == Some(1)));
@@ -455,8 +674,14 @@ mod tests {
         let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
         // The Q-Links show the drive's first four knobs.
         let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
-        assert_eq!(q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Mode", "Drive", "Tone", "Bias"]);
-        assert_eq!((q.title.as_str(), q.places[0].as_str()), ("Q-Links · Drive", "Drums"));
+        assert_eq!(
+            q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["Mode", "Drive", "Tone", "Bias"]
+        );
+        assert_eq!(
+            (q.title.as_str(), q.places[0].as_str()),
+            ("Q-Links · Drive", "Drums")
+        );
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
         // Select the compressor, then bypass it.
@@ -472,7 +697,9 @@ mod tests {
         let acts = crate::take_chain_actions(&mut ui);
         assert_eq!(acts[0], ChainAction::Select(2));
         assert_eq!(acts[1], ChainAction::SetOn { slot: 2, on: false });
-        let ChainAction::Focus(addr) = acts[2] else { panic!("{acts:?}") };
+        let ChainAction::Focus(addr) = acts[2] else {
+            panic!("{acts:?}")
+        };
         assert!(matches!(acts[3], ChainAction::Set { addr: a, .. } if a == addr));
         // Put the knob on macro 3, and move the selected insert up.
         let st = ui.get::<ChainView>(crate::CHAIN).unwrap().state().clone();
@@ -482,11 +709,20 @@ mod tests {
         tap(&mut ui, l.buttons[0].x + 5, l.buttons[0].y + 5);
         tap(&mut ui, l.add_lfo.x + 5, l.add_lfo.y + 5);
         let acts = crate::take_chain_actions(&mut ui);
-        assert_eq!(acts[0], ChainAction::Macro { target: addr, macro_: Some(2) });
+        assert_eq!(
+            acts[0],
+            ChainAction::Macro {
+                target: addr,
+                macro_: Some(2)
+            }
+        );
         assert_eq!(acts[1], ChainAction::Learn(addr));
         assert_eq!(acts[2], ChainAction::Move { from: 2, to: 1 });
         assert_eq!(acts.len(), 4, "{acts:?} {:?}", l.add_lfo);
-        assert!(matches!(acts[3], ChainAction::AddRow { target, .. } if target == addr), "{acts:?}");
+        assert!(
+            matches!(acts[3], ChainAction::AddRow { target, .. } if target == addr),
+            "{acts:?}"
+        );
         let b = l.back.unwrap();
         tap(&mut ui, b.x + 5, b.y + 5);
         assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Back]);
@@ -497,7 +733,14 @@ mod tests {
         let mut song = Song::new();
         let mut st = song.chain_state(KICK, 0, 0, None);
         st.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
-        let mut ui = screen(Fonts::embedded(), &mut song, Place::SampleFx, Some(st), None).unwrap();
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::SampleFx,
+            Some(st),
+            None,
+        )
+        .unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
         assert!(l.back.is_none());
@@ -512,19 +755,34 @@ mod tests {
         let st = song.macros_state(0);
         let mut ui = screen(Fonts::embedded(), &mut song, Place::Over, None, Some(st)).unwrap();
         let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
-        assert_eq!(q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Wash", "Grit", "Pump", "Air"]);
+        assert_eq!(
+            q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["Wash", "Grit", "Pump", "Air"]
+        );
         let r = ui.rect_of(crate::MACROS_W).unwrap();
         let l = crate::macros::layout(r);
         let (kx, ky, _) = l.knobs[1];
-        let v0 = ui.get::<MacrosView>(crate::MACROS_W).unwrap().state().macros[1].value;
+        let v0 = ui
+            .get::<MacrosView>(crate::MACROS_W)
+            .unwrap()
+            .state()
+            .macros[1]
+            .value;
         ui.touch(1, Touch::Down, kx as i32, ky as i32);
         ui.touch(1, Touch::Move, kx as i32, ky as i32 - 30);
         ui.touch(1, Touch::Up, kx as i32, ky as i32 - 30);
-        tap(&mut ui, l.slider.x + l.slider.w / 2, l.slider.y + l.slider.h / 2);
+        tap(
+            &mut ui,
+            l.slider.x + l.slider.w / 2,
+            l.slider.y + l.slider.h / 2,
+        );
         tap(&mut ui, l.save[1].x + 4, l.save[1].y + 4);
         tap(&mut ui, l.banks[1].x + 4, l.banks[1].y + 4);
         let acts = crate::take_macro_actions(&mut ui);
-        assert!(matches!(acts[0], MacroAction::Macro { m: 1, value } if (value - v0 - 0.1).abs() < 0.01), "{acts:?}");
+        assert!(
+            matches!(acts[0], MacroAction::Macro { m: 1, value } if (value - v0 - 0.1).abs() < 0.01),
+            "{acts:?}"
+        );
         assert!(matches!(acts[1], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
         assert_eq!(acts[2], MacroAction::Capture(1));
         assert_eq!(acts[3], MacroAction::Bank(1));
@@ -535,6 +793,13 @@ mod tests {
         tap(&mut ui, c.x + 40, c.y + 80 + 30 + 10);
         let acts = crate::take_macro_actions(&mut ui);
         let target = song.engine.macro_maps(0).nth(1).unwrap().target;
-        assert_eq!(acts, [MacroAction::Back, MacroAction::Bank(0), MacroAction::EditTarget { m: 0, target }]);
+        assert_eq!(
+            acts,
+            [
+                MacroAction::Back,
+                MacroAction::Bank(0),
+                MacroAction::EditTarget { m: 0, target }
+            ]
+        );
     }
 }

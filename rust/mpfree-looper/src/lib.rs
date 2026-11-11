@@ -261,7 +261,11 @@ impl Looper {
             frames: self.len,
             ticks: self.len_ticks,
             origin: self.origin,
-            position: if self.len > 0 { (self.pos / self.len as f64) as f32 } else { 0.0 },
+            position: if self.len > 0 {
+                (self.pos / self.len as f64) as f32
+            } else {
+                0.0
+            },
             ending: self.ending,
             overdub_next: self.then_overdub,
             latency: self.latency,
@@ -274,14 +278,17 @@ impl Looper {
     /// Layer `k`'s audio (interleaved stereo, the loop's length), for
     /// drawing the waveform. None if there is no such layer.
     pub fn layer(&self, k: usize) -> Option<&[f32]> {
-        (k < self.layers && self.len > 0).then(|| &self.pool[2 * k * self.len..2 * (k + 1) * self.len])
+        (k < self.layers && self.len > 0)
+            .then(|| &self.pool[2 * k * self.len..2 * (k + 1) * self.len])
     }
 
     /// Run one period: `input` is the line input and `out` the mix, both
     /// interleaved stereo with `block.frames` frames. The loop is added to
     /// `out`; nothing else is changed.
     pub fn process(&mut self, block: &Block, input: &[f32], out: &mut [f32]) {
-        let n = (block.frames as usize).min(input.len() / 2).min(out.len() / 2);
+        let n = (block.frames as usize)
+            .min(input.len() / 2)
+            .min(out.len() / 2);
         self.apply_commands();
         let markers = block.markers();
         let mut m = 0;
@@ -368,7 +375,10 @@ impl Looper {
         let mut waiting = false;
         for k in 0..self.queued {
             let c = self.queue[k];
-            let deferrable = matches!(c, Command::Record | Command::Overdub | Command::Undo | Command::Redo);
+            let deferrable = matches!(
+                c,
+                Command::Record | Command::Overdub | Command::Undo | Command::Redo
+            );
             if deferrable && (waiting || self.must_wait(c)) {
                 self.queue[kept] = c;
                 kept += 1;
@@ -383,7 +393,9 @@ impl Looper {
     fn must_wait(&self, c: Command) -> bool {
         match c {
             Command::Undo => self.undoing || self.clearing,
-            Command::Record | Command::Overdub | Command::Redo => self.undoing || self.clearing || self.top < 1.0,
+            Command::Record | Command::Overdub | Command::Redo => {
+                self.undoing || self.clearing || self.top < 1.0
+            }
             _ => false,
         }
     }
@@ -437,7 +449,13 @@ impl Looper {
             Command::Mute(m) => self.muted = m,
             Command::SetBars(b) => self.bars = b.filter(|&b| b > 0),
             Command::SetLatency(l) => self.latency = l,
-            Command::SetLevel(v) => self.level = if v.is_finite() { v.clamp(0.0, 2.0) } else { self.level },
+            Command::SetLevel(v) => {
+                self.level = if v.is_finite() {
+                    v.clamp(0.0, 2.0)
+                } else {
+                    self.level
+                }
+            }
         }
     }
 
@@ -475,7 +493,9 @@ impl Looper {
         match mark {
             // The transport looped back at `end`: if that is where the pass
             // ends (or Record asked for the next bar), it ends here.
-            Mark::Looped { end, .. } if self.end_tick == Some(end) || (self.ending && self.end_tick.is_none()) => {
+            Mark::Looped { end, .. }
+                if self.end_tick == Some(end) || (self.ending && self.end_tick.is_none()) =>
+            {
                 self.end_tick = Some(end);
                 self.finish_first(end, frame);
             }
@@ -582,7 +602,9 @@ impl Looper {
     }
 
     fn max_layers(&self) -> usize {
-        self.capacity.checked_div(self.len).map_or(0, |n| MAX_LAYERS.min(n))
+        self.capacity
+            .checked_div(self.len)
+            .map_or(0, |n| MAX_LAYERS.min(n))
     }
 
     /// A new layer on top, written from now on, fading in over `fade`
@@ -656,7 +678,11 @@ impl Looper {
 
     fn write_overdub(&mut self, x: [f32; 2]) {
         let len = self.len;
-        let mut g = if self.od_in < self.od_fade { (self.od_in as f32 + 0.5) / self.od_fade as f32 } else { 1.0 };
+        let mut g = if self.od_in < self.od_fade {
+            (self.od_in as f32 + 0.5) / self.od_fade as f32
+        } else {
+            1.0
+        };
         self.od_in += 1;
         let mut last = false;
         match self.od_stop_in {
@@ -668,7 +694,10 @@ impl Looper {
             Some(left) => self.od_stop_in = Some(left - 1),
             None => {}
         }
-        let q = ((self.pos - f64::from(self.latency)).rem_euclid(len as f64).round() as usize) % len;
+        let q = ((self.pos - f64::from(self.latency))
+            .rem_euclid(len as f64)
+            .round() as usize)
+            % len;
         let k = self.od_layer;
         let (start, count) = self.valid[k];
         let idx = 2 * (k * len + q);
@@ -754,8 +783,16 @@ impl Looper {
             let g = if k + 1 == self.layers { self.top } else { 1.0 };
             let base = 2 * k * len;
             for (c, v) in y.iter_mut().enumerate() {
-                let v0 = if in0 { self.pool[base + 2 * i0 + c] } else { 0.0 };
-                let v1 = if in1 { self.pool[base + 2 * i1 + c] } else { 0.0 };
+                let v0 = if in0 {
+                    self.pool[base + 2 * i0 + c]
+                } else {
+                    0.0
+                };
+                let v1 = if in1 {
+                    self.pool[base + 2 * i1 + c]
+                } else {
+                    0.0
+                };
                 *v += g * (v0 + (v1 - v0) * frac);
             }
         }

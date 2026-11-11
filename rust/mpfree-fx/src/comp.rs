@@ -23,17 +23,111 @@ pub mod ids {
     pub const REDUCTION: u16 = 8;
 }
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.compressor", name: "Compressor", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.compressor",
+    name: "Compressor",
+    kind: Kind::Effect,
+};
 static PARAMS: [ParamInfo; 9] = [
-    ParamInfo { id: 0, name: "Threshold", group: "Compressor", min: -60.0, max: 0.0, default: -18.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 1, name: "Ratio", group: "Compressor", min: 1.0, max: 20.0, default: 4.0, unit: Unit::None, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 2, name: "Attack", group: "Compressor", min: 0.1, max: 100.0, default: 10.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 3, name: "Release", group: "Compressor", min: 10.0, max: 2000.0, default: 150.0, unit: Unit::Ms, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 4, name: "Knee", group: "Compressor", min: 0.0, max: 24.0, default: 6.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Makeup", group: "Output", min: 0.0, max: 24.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 7, name: "Sidechain", group: "Output", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
-    ParamInfo { id: 8, name: "Reduction", group: "Meters", min: -60.0, max: 0.0, default: 0.0, unit: Unit::Db, curve: Curve::Linear, readonly: true },
+    ParamInfo {
+        id: 0,
+        name: "Threshold",
+        group: "Compressor",
+        min: -60.0,
+        max: 0.0,
+        default: -18.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Ratio",
+        group: "Compressor",
+        min: 1.0,
+        max: 20.0,
+        default: 4.0,
+        unit: Unit::None,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Attack",
+        group: "Compressor",
+        min: 0.1,
+        max: 100.0,
+        default: 10.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Release",
+        group: "Compressor",
+        min: 10.0,
+        max: 2000.0,
+        default: 150.0,
+        unit: Unit::Ms,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Knee",
+        group: "Compressor",
+        min: 0.0,
+        max: 24.0,
+        default: 6.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Makeup",
+        group: "Output",
+        min: 0.0,
+        max: 24.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "Sidechain",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 8,
+        name: "Reduction",
+        group: "Meters",
+        min: -60.0,
+        max: 0.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: true,
+    },
 ];
 
 /// The static curve: output level for input level `x`, all in dB.
@@ -64,13 +158,24 @@ pub struct Compressor {
 }
 
 impl Default for Compressor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Compressor {
     pub fn new() -> Compressor {
         let v = defaults(&PARAMS);
-        let mut c = Compressor { v, rate: 48_000, thresh: Smooth::new(v[0]), makeup: Smooth::new(v[5]), mix: Smooth::new(v[6] / 100.0), env: 0.0, att: 0.0, rel: 0.0 };
+        let mut c = Compressor {
+            v,
+            rate: 48_000,
+            thresh: Smooth::new(v[0]),
+            makeup: Smooth::new(v[5]),
+            mix: Smooth::new(v[6] / 100.0),
+            env: 0.0,
+            att: 0.0,
+            rel: 0.0,
+        };
         c.prepare(48_000, mpfree_node::MAX_BLOCK);
         c
     }
@@ -82,8 +187,12 @@ impl Compressor {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
-        if p.readonly { return; }
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
+        if p.readonly {
+            return;
+        }
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
@@ -120,30 +229,53 @@ impl Compressor {
 }
 
 impl Node for Compressor {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
-        for s in [&mut self.thresh, &mut self.makeup, &mut self.mix] { s.set_time(self.rate, 20.0); }
+        for s in [&mut self.thresh, &mut self.makeup, &mut self.mix] {
+            s.set_time(self.rate, 20.0);
+        }
         self.times();
     }
     fn reset(&mut self) {
-        for s in [&mut self.thresh, &mut self.makeup, &mut self.mix] { s.snap(s.target); }
+        for s in [&mut self.thresh, &mut self.makeup, &mut self.mix] {
+            s.snap(s.target);
+        }
         self.env = 0.0;
         self.v[ids::REDUCTION as usize] = 0.0;
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
-        let side = if self.v[7] >= 0.5 { ctx.sidechain.filter(|(a, b)| a.len() >= len && b.len() >= len) } else { None };
+        let side = if self.v[7] >= 0.5 {
+            ctx.sidechain
+                .filter(|(a, b)| a.len() >= len && b.len() >= len)
+        } else {
+            None
+        };
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             let key = side.map(|(a, b)| (&a[from..to], &b[from..to]));
             self.run(&mut left[from..to], &mut right[from..to], key);
         }
     }
-    fn tail_frames(&self) -> u32 { 0 }
+    fn tail_frames(&self) -> u32 {
+        0
+    }
 }
 
 #[cfg(test)]

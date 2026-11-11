@@ -67,8 +67,7 @@ impl AxisInfo {
         if self.minimum != 0 || self.maximum > 63 {
             return Err(MetadataError::InvalidSlotCount);
         }
-        u32::try_from(i64::from(self.maximum) + 1)
-            .map_err(|_| MetadataError::InvalidSlotCount)
+        u32::try_from(i64::from(self.maximum) + 1).map_err(|_| MetadataError::InvalidSlotCount)
     }
 }
 
@@ -76,7 +75,11 @@ impl AxisInfo {
 /// These values are *not* values observed on the owner's MPC.
 pub fn validate_fixture() -> Result<u32, MetadataError> {
     let synthetic_slot = AxisInfo {
-        minimum: 0, maximum: 9, fuzz: 0, flat: 0, resolution: 0,
+        minimum: 0,
+        maximum: 9,
+        fuzz: 0,
+        flat: 0,
+        resolution: 0,
     };
     synthetic_slot.slot_count()
 }
@@ -87,33 +90,65 @@ mod tests {
 
     #[test]
     fn fixed_linux_evdev_axis_ids() {
-        assert_eq!([ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_POSITION_X,
-                    ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID],
-                   [0, 1, 47, 53, 54, 57]);
+        assert_eq!(
+            [
+                ABS_X,
+                ABS_Y,
+                ABS_MT_SLOT,
+                ABS_MT_POSITION_X,
+                ABS_MT_POSITION_Y,
+                ABS_MT_TRACKING_ID
+            ],
+            [0, 1, 47, 53, 54, 57]
+        );
     }
 
     #[test]
     fn inclusive_slot_count_is_not_derived_from_pixel_dimensions() {
         assert_eq!(validate_fixture(), Ok(10));
         let single = AxisInfo {
-            minimum: 0, maximum: 0, fuzz: 0, flat: 0, resolution: 0,
+            minimum: 0,
+            maximum: 0,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
         };
         assert_eq!(single.slot_count(), Ok(1));
-        let bad = AxisInfo { minimum: 1, maximum: 9, ..single };
+        let bad = AxisInfo {
+            minimum: 1,
+            maximum: 9,
+            ..single
+        };
         assert_eq!(bad.slot_count(), Err(MetadataError::InvalidSlotCount));
-        let unbounded = AxisInfo { maximum: i32::MAX, ..single };
+        let unbounded = AxisInfo {
+            maximum: i32::MAX,
+            ..single
+        };
         assert_eq!(unbounded.slot_count(), Err(MetadataError::InvalidSlotCount));
     }
 
     #[test]
     fn reject_invalid_raw_ranges_without_touch_events() {
         let zero = AxisInfo {
-            minimum: 0, maximum: 0, fuzz: 0, flat: 0, resolution: 0,
+            minimum: 0,
+            maximum: 0,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
         };
         assert!(zero.check().is_ok());
-        assert_eq!(AxisInfo { minimum: 30, maximum: 5, ..zero }.check(),
-                   Err(MetadataError::InvalidRange));
-        assert_eq!(AxisInfo { fuzz: -1, ..zero }.check(),
-                   Err(MetadataError::InvalidNoise));
+        assert_eq!(
+            AxisInfo {
+                minimum: 30,
+                maximum: 5,
+                ..zero
+            }
+            .check(),
+            Err(MetadataError::InvalidRange)
+        );
+        assert_eq!(
+            AxisInfo { fuzz: -1, ..zero }.check(),
+            Err(MetadataError::InvalidNoise)
+        );
     }
 }

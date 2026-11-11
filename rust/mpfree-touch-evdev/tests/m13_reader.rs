@@ -54,19 +54,41 @@ impl TouchSource for Fake {
 }
 
 fn snap(current_slot: i32, live: &[(usize, i32, i32, i32)]) -> MtSnapshot {
-    let mut slots = vec![SlotSnapshot { tracking_id: -1, raw_x: 0, raw_y: 0 }; 10];
+    let mut slots = vec![
+        SlotSnapshot {
+            tracking_id: -1,
+            raw_x: 0,
+            raw_y: 0
+        };
+        10
+    ];
     for &(s, tracking_id, raw_x, raw_y) in live {
-        slots[s] = SlotSnapshot { tracking_id, raw_x, raw_y };
+        slots[s] = SlotSnapshot {
+            tracking_id,
+            raw_x,
+            raw_y,
+        };
     }
-    MtSnapshot { current_slot, slots }
+    MtSnapshot {
+        current_slot,
+        slots,
+    }
 }
 
 const SYN: (u16, u16, i32) = (EV_SYN, SYN_REPORT, 0);
 const DROP: (u16, u16, i32) = (EV_SYN, SYN_DROPPED, 0);
-fn slot(s: i32) -> (u16, u16, i32) { (EV_ABS, SLOT, s) }
-fn id(t: i32) -> (u16, u16, i32) { (EV_ABS, TID, t) }
-fn x(v: i32) -> (u16, u16, i32) { (EV_ABS, X, v) }
-fn y(v: i32) -> (u16, u16, i32) { (EV_ABS, Y, v) }
+fn slot(s: i32) -> (u16, u16, i32) {
+    (EV_ABS, SLOT, s)
+}
+fn id(t: i32) -> (u16, u16, i32) {
+    (EV_ABS, TID, t)
+}
+fn x(v: i32) -> (u16, u16, i32) {
+    (EV_ABS, X, v)
+}
+fn y(v: i32) -> (u16, u16, i32) {
+    (EV_ABS, Y, v)
+}
 
 fn reader(fake: Fake) -> TouchReader<Fake> {
     TouchReader::new(fake, &MPC_ONE, 1280, 800).unwrap()
@@ -79,17 +101,24 @@ fn phases(evs: &[mpfree_touch::pointer::PointerEvent]) -> Vec<Phase> {
 #[test]
 fn events_round_trip_for_this_build() {
     let ev = parse_input_event(&event(3_000_042, EV_ABS, X, -7));
-    assert_eq!((ev.time_us, ev.kind, ev.code, ev.value), (3_000_042, EV_ABS, X, -7));
+    assert_eq!(
+        (ev.time_us, ev.kind, ev.code, ev.value),
+        (3_000_042, EV_ABS, X, -7)
+    );
 }
 
 fn chunk(events: &[(u16, u16, i32)]) -> Vec<u8> {
-    events.iter().flat_map(|&(k, c, v)| event(1_000, k, c, v)).collect()
+    events
+        .iter()
+        .flat_map(|&(k, c, v)| event(1_000, k, c, v))
+        .collect()
 }
 
 #[test]
 fn open_drains_then_seeds_from_the_snapshot() {
     let mut fake = Fake::default();
-    fake.reads.push_back(chunk(&[slot(5), id(1), x(1), y(1), SYN])); // older than the snapshot
+    fake.reads
+        .push_back(chunk(&[slot(5), id(1), x(1), y(1), SYN])); // older than the snapshot
     fake.snapshots.push_back(Ok(snap(3, &[(5, 1, 1, 1)])));
     let mut r = reader(fake);
     assert!(r.stats().seeded && r.seed_error().is_none());
@@ -98,7 +127,9 @@ fn open_drains_then_seeds_from_the_snapshot() {
     assert_eq!(r.stats().fingers_at_open, 1);
     assert_eq!(r.stats().drained_events, 5);
     // A new finger with no ABS_MT_SLOT goes to slot 3, not slot 0.
-    r.source_mut().reads.push_back(chunk(&[id(9), x(1024), y(1024), SYN]));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[id(9), x(1024), y(1024), SYN]));
     let out = r.read().unwrap();
     assert_eq!(phases(&out), vec![Phase::Down]);
     assert_eq!(r.decoder().contacts()[0].slot, 3);
@@ -109,12 +140,15 @@ fn open_drains_then_seeds_from_the_snapshot() {
 #[test]
 fn a_failed_snapshot_at_open_still_gives_touch_unseeded() {
     let mut fake = Fake::default();
-    fake.snapshots.push_back(Err(io::ErrorKind::PermissionDenied.into()));
+    fake.snapshots
+        .push_back(Err(io::ErrorKind::PermissionDenied.into()));
     let mut r = TouchReader::new(fake, &MPC_ONE, 1280, 800).unwrap();
     assert!(!r.stats().seeded);
     assert!(r.seed_error().unwrap().contains("unseeded"));
     // Old behaviour: no ABS_MT_SLOT yet, so slot 0 is assumed.
-    r.source_mut().reads.push_back(chunk(&[id(9), x(10), y(10), SYN]));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[id(9), x(10), y(10), SYN]));
     assert_eq!(phases(&r.read().unwrap()), vec![Phase::Down]);
     assert_eq!(r.decoder().contacts()[0].slot, 0);
 }
@@ -124,7 +158,9 @@ fn the_resting_finger_at_open_is_ignored_and_the_next_one_is_not() {
     let mut fake = Fake::default();
     fake.snapshots.push_back(Ok(snap(0, &[(0, 4, 100, 100)])));
     let mut r = reader(fake);
-    r.source_mut().reads.push_back(chunk(&[x(120), SYN, id(-1), SYN, id(5), x(200), SYN]));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[x(120), SYN, id(-1), SYN, id(5), x(200), SYN]));
     let out = r.read().unwrap();
     assert_eq!(phases(&out), vec![Phase::Down]);
     assert_eq!(r.decoder().contacts()[0].tracking_id, 5);
@@ -137,23 +173,48 @@ fn overflow_resyncs_and_a_held_finger_keeps_going() {
     let mut fake = Fake::default();
     fake.snapshots.push_back(Ok(snap(0, &[])));
     let mut r = reader(fake);
-    r.source_mut().reads.push_back(chunk(&[slot(0), id(1), x(10), y(10), slot(1), id(2), x(20), y(20), SYN]));
+    r.source_mut().reads.push_back(chunk(&[
+        slot(0),
+        id(1),
+        x(10),
+        y(10),
+        slot(1),
+        id(2),
+        x(20),
+        y(20),
+        SYN,
+    ]));
     assert_eq!(phases(&r.read().unwrap()), vec![Phase::Down, Phase::Down]);
     let held = r.decoder().contacts()[0].id;
 
     // Overflow; finger 2 lifted during it, finger 1 moved. After the post-drop
     // SYN_REPORT there are two stale events in the same read and one more
     // queued: all older than the snapshot, so all dropped.
-    r.source_mut().reads.push_back(chunk(&[DROP, x(999), SYN, slot(1), id(-1)]));
-    r.source_mut().reads.push_back(chunk(&[slot(0), x(11), SYN]));
-    r.source_mut().snapshots.push_back(Ok(snap(0, &[(0, 1, 15, 16)])));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[DROP, x(999), SYN, slot(1), id(-1)]));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[slot(0), x(11), SYN]));
+    r.source_mut()
+        .snapshots
+        .push_back(Ok(snap(0, &[(0, 1, 15, 16)])));
     let out = r.read().unwrap();
-    assert_eq!(r.source().log[r.source().log.len() - 3..], ["read", "read", "snapshot"]);
+    assert_eq!(
+        r.source().log[r.source().log.len() - 3..],
+        ["read", "read", "snapshot"]
+    );
     // Finger 1 moved (same identity), finger 2 is up. No cancels.
     assert_eq!(phases(&out), vec![Phase::Move, Phase::Up]);
     assert_eq!(out[0].id, held);
     assert_eq!(r.decoder().contacts().len(), 1);
-    assert_eq!((r.decoder().contacts()[0].raw_x, r.decoder().contacts()[0].raw_y), (15, 16));
+    assert_eq!(
+        (
+            r.decoder().contacts()[0].raw_x,
+            r.decoder().contacts()[0].raw_y
+        ),
+        (15, 16)
+    );
     let st = r.stats();
     assert_eq!((st.resyncs, st.resync_fallbacks), (1, 0));
     assert_eq!(st.drained_events, 2 + 3);
@@ -170,10 +231,14 @@ fn overflow_without_a_snapshot_cancels_every_finger() {
     let mut fake = Fake::default();
     fake.snapshots.push_back(Ok(snap(0, &[])));
     let mut r = reader(fake);
-    r.source_mut().reads.push_back(chunk(&[id(1), x(10), y(10), SYN]));
+    r.source_mut()
+        .reads
+        .push_back(chunk(&[id(1), x(10), y(10), SYN]));
     r.read().unwrap();
     r.source_mut().reads.push_back(chunk(&[DROP, SYN]));
-    r.source_mut().snapshots.push_back(Err(io::ErrorKind::Other.into()));
+    r.source_mut()
+        .snapshots
+        .push_back(Err(io::ErrorKind::Other.into()));
     let out = r.read().unwrap();
     assert_eq!(phases(&out), vec![Phase::Cancel]);
     assert_eq!((r.stats().resyncs, r.stats().resync_fallbacks), (0, 1));

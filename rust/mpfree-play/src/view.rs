@@ -57,9 +57,16 @@ impl Started {
     pub fn apply(&self, launches: &mut Vec<Launch>, cues: &mut Vec<Cue>) {
         launches.retain(|l| l.track != self.track);
         if let Some(slot) = self.slot {
-            launches.push(Launch { track: self.track, slot, origin: self.origin });
+            launches.push(Launch {
+                track: self.track,
+                slot,
+                origin: self.origin,
+            });
         }
-        if let Some(i) = cues.iter().position(|c| c.track == self.track && c.slot == self.slot) {
+        if let Some(i) = cues
+            .iter()
+            .position(|c| c.track == self.track && c.slot == self.slot)
+        {
             cues.remove(i);
         }
     }
@@ -85,7 +92,10 @@ pub fn anchored(at: Tick, length: Tick, speed: Speed) -> Tick {
 pub enum CompileError {
     Model(ModelError),
     NoTrack(usize),
-    EmptySlot { track: usize, slot: usize },
+    EmptySlot {
+        track: usize,
+        slot: usize,
+    },
     /// One clip per track plays at a time.
     TwoClips(usize),
     /// One cue per track waits at a time.
@@ -157,10 +167,22 @@ impl PlayView {
 
     /// Compile `project` with the clips in `launches` playing and the
     /// `cues` waiting for the next bar line.
-    pub fn compile_cued(project: &Project, launches: &[Launch], cues: &[Cue]) -> Result<PlayView, CompileError> {
+    pub fn compile_cued(
+        project: &Project,
+        launches: &[Launch],
+        cues: &[Cue],
+    ) -> Result<PlayView, CompileError> {
         project.check().map_err(CompileError::Model)?;
-        let mut tracks: Vec<TrackView> =
-            project.tracks.iter().map(|t| TrackView { dest: t.dest, mute: t.mute, clip: None, cue: None }).collect();
+        let mut tracks: Vec<TrackView> = project
+            .tracks
+            .iter()
+            .map(|t| TrackView {
+                dest: t.dest,
+                mute: t.mute,
+                clip: None,
+                cue: None,
+            })
+            .collect();
         for l in launches {
             let clip = clip_view(project, l.track, l.slot, l.origin)?;
             if tracks[l.track].clip.is_some() {
@@ -173,10 +195,16 @@ impl PlayView {
             if track.cue.is_some() {
                 return Err(CompileError::TwoCues(c.track));
             }
-            let clip = c.slot.map(|slot| clip_view(project, c.track, slot, 0)).transpose()?;
+            let clip = c
+                .slot
+                .map(|slot| clip_view(project, c.track, slot, 0))
+                .transpose()?;
             tracks[c.track].cue = Some(CueView { slot: c.slot, clip });
         }
-        Ok(PlayView { tracks, armed: None })
+        Ok(PlayView {
+            tracks,
+            armed: None,
+        })
     }
 
     /// Arm `track` for recording, or none. The recorder records into its
@@ -196,7 +224,11 @@ impl PlayView {
 
     /// Notes in the playing clips.
     pub fn notes(&self) -> usize {
-        self.tracks.iter().filter_map(|t| t.clip.as_ref()).map(|c| c.notes.len()).sum()
+        self.tracks
+            .iter()
+            .filter_map(|t| t.clip.as_ref())
+            .map(|c| c.notes.len())
+            .sum()
     }
 
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
@@ -207,8 +239,16 @@ impl PlayView {
 }
 
 /// One clip compiled: notes sorted, quantise and speed applied.
-fn clip_view(project: &Project, track: usize, slot: usize, origin: Tick) -> Result<ClipView, CompileError> {
-    let t = project.tracks.get(track).ok_or(CompileError::NoTrack(track))?;
+fn clip_view(
+    project: &Project,
+    track: usize,
+    slot: usize,
+    origin: Tick,
+) -> Result<ClipView, CompileError> {
+    let t = project
+        .tracks
+        .get(track)
+        .ok_or(CompileError::NoTrack(track))?;
     let clip = t
         .slots
         .get(slot)
@@ -220,7 +260,9 @@ fn clip_view(project: &Project, track: usize, slot: usize, origin: Tick) -> Resu
         .notes
         .iter()
         .map(|n| {
-            let at = clip.quantise.map_or(n.tick as f64, |q| q.apply(n.tick as f64));
+            let at = clip
+                .quantise
+                .map_or(n.tick as f64, |q| q.apply(n.tick as f64));
             NoteView {
                 // Quantise can move a note at the very end onto the next pass's start.
                 local: at.rem_euclid(length),
@@ -268,7 +310,12 @@ impl Switches {
     pub fn follow(&mut self, view: &PlayView) {
         for (i, s) in self.0.iter_mut().enumerate() {
             if let Some(sw) = *s {
-                if view.tracks.get(i).and_then(|t| t.cue.as_ref()).is_none_or(|c| c.slot != sw.slot) {
+                if view
+                    .tracks
+                    .get(i)
+                    .and_then(|t| t.cue.as_ref())
+                    .is_none_or(|c| c.slot != sw.slot)
+                {
                     *s = None;
                 }
             }
@@ -277,7 +324,13 @@ impl Switches {
 
     /// Where the cue on `track` starts in a span playing `ticks`, if it
     /// does: the first bar line among them.
-    pub fn due(&self, view: &PlayView, track: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+    pub fn due(
+        &self,
+        view: &PlayView,
+        track: usize,
+        ticks: &Range<Tick>,
+        bar: Tick,
+    ) -> Option<Tick> {
         if self.0.get(track).is_none_or(Option::is_some) {
             return None;
         }
@@ -289,9 +342,20 @@ impl Switches {
     /// Carry out the cue on `track` at song tick `at`.
     pub fn start(&mut self, view: &PlayView, track: usize, at: Tick) -> Option<Started> {
         let cue = view.tracks.get(track)?.cue.as_ref()?;
-        let origin = cue.clip.as_ref().map_or(at, |c| anchored(at, c.length, c.speed));
-        *self.0.get_mut(track)? = Some(Switch { slot: cue.slot, origin });
-        Some(Started { track, slot: cue.slot, at, origin })
+        let origin = cue
+            .clip
+            .as_ref()
+            .map_or(at, |c| anchored(at, c.length, c.speed));
+        *self.0.get_mut(track)? = Some(Switch {
+            slot: cue.slot,
+            origin,
+        });
+        Some(Started {
+            track,
+            slot: cue.slot,
+            at,
+            origin,
+        })
     }
 
     /// The clip `track` plays now, and its origin.
@@ -314,9 +378,27 @@ mod tests {
         let mut t = Track::new("drums", 3);
         let mut c = Clip::new("beat", 960);
         c.notes = vec![
-            Note { tick: 500, len: 10, note: 1, velocity: 90 },
-            Note { tick: 0, len: 10, note: 0, velocity: 100 },
-            Note { tick: 950, len: 10, note: 2, velocity: 80 },
+            Note {
+                tick: 500,
+                len: 10,
+                note: 1,
+                velocity: 90,
+                chance: 100,
+            },
+            Note {
+                tick: 0,
+                len: 10,
+                note: 0,
+                velocity: 100,
+                chance: 100,
+            },
+            Note {
+                tick: 950,
+                len: 10,
+                note: 2,
+                velocity: 80,
+                chance: 100,
+            },
         ];
         c.quantise = Quantise::new(240, 100);
         c.speed = Speed::new(2, 1).unwrap();
@@ -328,7 +410,15 @@ mod tests {
 
     #[test]
     fn compiling_sorts_quantises_and_scales() {
-        let v = PlayView::compile(&project(), &[Launch { track: 0, slot: 2, origin: 3840 }]).unwrap();
+        let v = PlayView::compile(
+            &project(),
+            &[Launch {
+                track: 0,
+                slot: 2,
+                origin: 3840,
+            }],
+        )
+        .unwrap();
         assert_eq!(v.tracks(), 2);
         assert_eq!(v.notes(), 3);
         let c = v.tracks[0].clip.as_ref().unwrap();
@@ -343,11 +433,27 @@ mod tests {
     #[test]
     fn launches_must_name_a_clip() {
         let p = project();
-        let l = |track, slot| Launch { track, slot, origin: 0 };
-        assert_eq!(PlayView::compile(&p, &[l(5, 0)]), Err(CompileError::NoTrack(5)));
-        assert_eq!(PlayView::compile(&p, &[l(0, 1)]), Err(CompileError::EmptySlot { track: 0, slot: 1 }));
-        assert_eq!(PlayView::compile(&p, &[l(0, 99)]), Err(CompileError::EmptySlot { track: 0, slot: 99 }));
-        assert_eq!(PlayView::compile(&p, &[l(0, 2), l(0, 2)]), Err(CompileError::TwoClips(0)));
+        let l = |track, slot| Launch {
+            track,
+            slot,
+            origin: 0,
+        };
+        assert_eq!(
+            PlayView::compile(&p, &[l(5, 0)]),
+            Err(CompileError::NoTrack(5))
+        );
+        assert_eq!(
+            PlayView::compile(&p, &[l(0, 1)]),
+            Err(CompileError::EmptySlot { track: 0, slot: 1 })
+        );
+        assert_eq!(
+            PlayView::compile(&p, &[l(0, 99)]),
+            Err(CompileError::EmptySlot { track: 0, slot: 99 })
+        );
+        assert_eq!(
+            PlayView::compile(&p, &[l(0, 2), l(0, 2)]),
+            Err(CompileError::TwoClips(0))
+        );
         assert_eq!(PlayView::compile(&p, &[]).unwrap().notes(), 0);
     }
 
@@ -356,34 +462,107 @@ mod tests {
         let p = project();
         let cue = |track, slot| Cue { track, slot };
         let ok = PlayView::compile_cued(&p, &[], &[cue(0, Some(2)), cue(1, None)]).unwrap();
-        assert_eq!((ok.cue(0), ok.cue(1), ok.cue(7)), (Some(Some(2)), Some(None), None));
+        assert_eq!(
+            (ok.cue(0), ok.cue(1), ok.cue(7)),
+            (Some(Some(2)), Some(None), None)
+        );
         assert_eq!(ok.notes(), 0, "a cue does not play yet");
-        assert_eq!(PlayView::compile_cued(&p, &[], &[cue(4, None)]), Err(CompileError::NoTrack(4)));
-        assert_eq!(PlayView::compile_cued(&p, &[], &[cue(1, Some(2))]), Err(CompileError::EmptySlot { track: 1, slot: 2 }));
-        assert_eq!(PlayView::compile_cued(&p, &[], &[cue(0, None), cue(0, Some(2))]), Err(CompileError::TwoCues(0)));
+        assert_eq!(
+            PlayView::compile_cued(&p, &[], &[cue(4, None)]),
+            Err(CompileError::NoTrack(4))
+        );
+        assert_eq!(
+            PlayView::compile_cued(&p, &[], &[cue(1, Some(2))]),
+            Err(CompileError::EmptySlot { track: 1, slot: 2 })
+        );
+        assert_eq!(
+            PlayView::compile_cued(&p, &[], &[cue(0, None), cue(0, Some(2))]),
+            Err(CompileError::TwoCues(0))
+        );
     }
 
     #[test]
     fn an_anchored_origin_keeps_the_phase_and_lies_before_the_earliest_tick() {
-        for (at, length, speed) in [(3840, 7680, Speed::NORMAL), (0, 3840, Speed::NORMAL), (11_520, 1000, Speed::new(3, 2).unwrap()),
-                                    (-3840, 960, Speed::new(1, 8).unwrap()), (EARLIEST - 5, 960, Speed::NORMAL)] {
+        for (at, length, speed) in [
+            (3840, 7680, Speed::NORMAL),
+            (0, 3840, Speed::NORMAL),
+            (11_520, 1000, Speed::new(3, 2).unwrap()),
+            (-3840, 960, Speed::new(1, 8).unwrap()),
+            (EARLIEST - 5, 960, Speed::NORMAL),
+        ] {
             let o = anchored(at, length, speed);
             assert!(o <= EARLIEST, "{at} {length} {speed:?}");
             let song_len = speed.to_song(length as f64);
             let passes = (at - o) as f64 / song_len;
             assert_eq!(passes, passes.round(), "{at}: whole passes back");
-            assert!(at - o < (at - EARLIEST).max(0) + length * Tick::from(speed.den), "{at}: the least whole passes");
+            assert!(
+                at - o < (at - EARLIEST).max(0) + length * Tick::from(speed.den),
+                "{at}: the least whole passes"
+            );
         }
     }
 
     #[test]
     fn a_started_cue_becomes_the_launch() {
-        let mut launches = vec![Launch { track: 0, slot: 1, origin: 0 }, Launch { track: 1, slot: 0, origin: 0 }];
-        let mut cues = vec![Cue { track: 0, slot: Some(2) }, Cue { track: 1, slot: None }];
-        Started { track: 0, slot: Some(2), at: 7680, origin: -100 }.apply(&mut launches, &mut cues);
-        assert_eq!(launches, vec![Launch { track: 1, slot: 0, origin: 0 }, Launch { track: 0, slot: 2, origin: -100 }]);
-        Started { track: 1, slot: None, at: 7680, origin: 7680 }.apply(&mut launches, &mut cues);
-        assert_eq!(launches, vec![Launch { track: 0, slot: 2, origin: -100 }]);
+        let mut launches = vec![
+            Launch {
+                track: 0,
+                slot: 1,
+                origin: 0,
+            },
+            Launch {
+                track: 1,
+                slot: 0,
+                origin: 0,
+            },
+        ];
+        let mut cues = vec![
+            Cue {
+                track: 0,
+                slot: Some(2),
+            },
+            Cue {
+                track: 1,
+                slot: None,
+            },
+        ];
+        Started {
+            track: 0,
+            slot: Some(2),
+            at: 7680,
+            origin: -100,
+        }
+        .apply(&mut launches, &mut cues);
+        assert_eq!(
+            launches,
+            vec![
+                Launch {
+                    track: 1,
+                    slot: 0,
+                    origin: 0
+                },
+                Launch {
+                    track: 0,
+                    slot: 2,
+                    origin: -100
+                }
+            ]
+        );
+        Started {
+            track: 1,
+            slot: None,
+            at: 7680,
+            origin: 7680,
+        }
+        .apply(&mut launches, &mut cues);
+        assert_eq!(
+            launches,
+            vec![Launch {
+                track: 0,
+                slot: 2,
+                origin: -100
+            }]
+        );
         assert!(cues.is_empty());
     }
 }

@@ -39,8 +39,10 @@ pub mod sample;
 pub mod state;
 pub mod view;
 
-pub use state::{default_name, InputView, InsertView, MixState, MixView, SafetyView, SendView, StripView};
 pub use qlinks::{QLinkView, QLinks};
+pub use state::{
+    default_name, InputView, InsertView, MixState, MixView, SafetyView, SendView, StripView,
+};
 pub use view::{MixAction, MixerIcon, MixerView};
 
 use mpfree_fx::Mixer;
@@ -62,7 +64,14 @@ pub fn add(ui: &mut Ui) -> Result<(), String> {
         ui.add("header", mpfree_ui::widgets::Header::new(&[]));
     }
     if ui.get::<mpfree_ui::widgets::Label>("hint").is_none() {
-        ui.add("hint", mpfree_ui::widgets::Label::new(MIXER_HINT, mpfree_ui::Tone::Dim, mpfree_ui::Align::Left));
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new(
+                MIXER_HINT,
+                mpfree_ui::Tone::Dim,
+                mpfree_ui::Align::Left,
+            ),
+        );
     }
     ui.add(MIXER, MixerView::new());
     ui.add_page(MIXER_PAGE, MIXER_LAYOUT)
@@ -77,14 +86,19 @@ pub fn update(ui: &mut Ui, st: MixState) {
 
 /// What the touches on the mixer meant since the last call.
 pub fn take_actions(ui: &mut Ui) -> Vec<MixAction> {
-    ui.get_mut::<MixerView>(MIXER).map(|v| v.take_actions()).unwrap_or_default()
+    ui.get_mut::<MixerView>(MIXER)
+        .map(|v| v.take_actions())
+        .unwrap_or_default()
 }
 
 /// What the four Q-Links' cards say: the selected strip's Volume, Pan,
 /// Send A and Send B, as the mixer widget shows them now (so a fader under
 /// a finger reads where the finger has it).
 pub fn qlinks(ui: &Ui) -> QLinks {
-    ui.get::<MixerView>(MIXER).map_or_else(|| qlinks::show(&MixState::default()), |v| qlinks::show(v.state()))
+    ui.get::<MixerView>(MIXER).map_or_else(
+        || qlinks::show(&MixState::default()),
+        |v| qlinks::show(v.state()),
+    )
 }
 
 /// Q-Link `knob` (0 to 3) turned by `detents`; `fine` while SHIFT is held.

@@ -115,12 +115,23 @@ pub enum ModEvent {
     /// Sets a parameter's own value (a knob turned, automation). Also sets
     /// a macro (`Owner::Macro`), the morph (`Owner::Morph`) or an LFO's or
     /// follower's settings (`Owner::Mod`).
-    Set { addr: ParamAddr, value: f32 },
+    Set {
+        addr: ParamAddr,
+        value: f32,
+    },
     /// A parameter lock: replaces the value until [`ModEvent::Unlock`].
-    Lock { addr: ParamAddr, value: f32 },
-    Unlock { addr: ParamAddr },
+    Lock {
+        addr: ParamAddr,
+        value: f32,
+    },
+    Unlock {
+        addr: ParamAddr,
+    },
     /// A host source's value, 0 to 1.
-    Source { n: u8, value: f32 },
+    Source {
+        n: u8,
+        value: f32,
+    },
     /// A note started: LFOs with Retrigger on restart.
     Trigger,
 }
@@ -133,7 +144,9 @@ pub struct ModTimed {
 }
 
 impl ModTimed {
-    pub fn new(offset: u32, ev: ModEvent) -> ModTimed { ModTimed { offset, ev } }
+    pub fn new(offset: u32, ev: ModEvent) -> ModTimed {
+        ModTimed { offset, ev }
+    }
 }
 
 /// Why a change to the engine was refused. Nothing changes when it is.
@@ -191,13 +204,31 @@ struct Target {
 impl Target {
     fn new(addr: ParamAddr, info: ParamInfo, base: f32) -> Target {
         let base = info.clamp(base);
-        Target { addr, info, base, base_u: info.to_unit(base), log: log_consts(&info), lock: None, scene: [None; 2], mac: None, rows: 0, offset: 0.0, pos: info.to_unit(base), sent: f32::NAN, dirty: true }
+        Target {
+            addr,
+            info,
+            base,
+            base_u: info.to_unit(base),
+            log: log_consts(&info),
+            lock: None,
+            scene: [None; 2],
+            mac: None,
+            rows: 0,
+            offset: 0.0,
+            pos: info.to_unit(base),
+            sent: f32::NAN,
+            dirty: true,
+        }
     }
 
-    fn moving(&self) -> bool { self.rows > 0 || self.mac.is_some() || self.morphs() }
+    fn moving(&self) -> bool {
+        self.rows > 0 || self.mac.is_some() || self.morphs()
+    }
 
     /// Both scenes hold it, so the morph moves it.
-    fn morphs(&self) -> bool { self.scene[0].is_some() && self.scene[1].is_some() }
+    fn morphs(&self) -> bool {
+        self.scene[0].is_some() && self.scene[1].is_some()
+    }
 
     /// The value at knob position `u`: `ParamInfo::from_unit`, faster.
     #[inline]
@@ -213,7 +244,9 @@ impl Target {
         self.base_u = self.info.to_unit(self.base);
     }
 
-    fn is_switch(&self) -> bool { matches!(self.info.curve, Curve::Toggle | Curve::Choice(_)) }
+    fn is_switch(&self) -> bool {
+        matches!(self.info.curve, Curve::Toggle | Curve::Choice(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -232,12 +265,41 @@ struct RowSlot {
 
 static MACRO_INFO: [ParamInfo; MACROS] = {
     const fn m(name: &'static str) -> ParamInfo {
-        ParamInfo { id: 0, name, group: "Macros", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Linear, readonly: false }
+        ParamInfo {
+            id: 0,
+            name,
+            group: "Macros",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            unit: Unit::None,
+            curve: Curve::Linear,
+            readonly: false,
+        }
     }
-    [m("Macro 1"), m("Macro 2"), m("Macro 3"), m("Macro 4"), m("Macro 5"), m("Macro 6"), m("Macro 7"), m("Macro 8")]
+    [
+        m("Macro 1"),
+        m("Macro 2"),
+        m("Macro 3"),
+        m("Macro 4"),
+        m("Macro 5"),
+        m("Macro 6"),
+        m("Macro 7"),
+        m("Macro 8"),
+    ]
 };
 
-static MORPH_INFO: ParamInfo = ParamInfo { id: 0, name: "Morph", group: "Morph", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Linear, readonly: false };
+static MORPH_INFO: ParamInfo = ParamInfo {
+    id: 0,
+    name: "Morph",
+    group: "Morph",
+    min: 0.0,
+    max: 1.0,
+    default: 0.0,
+    unit: Unit::None,
+    curve: Curve::Linear,
+    readonly: false,
+};
 
 /// See the module docs.
 pub struct ModEngine {
@@ -282,36 +344,60 @@ impl ModEngine {
         }
     }
 
-    pub fn rate(&self) -> u32 { self.rate }
-    pub fn tick(&self) -> u32 { self.tick }
-    pub fn stats(&self) -> ModStats { self.stats }
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+    pub fn tick(&self) -> u32 {
+        self.tick
+    }
+    pub fn stats(&self) -> ModStats {
+        self.stats
+    }
 
     /// Changes the sample rate (control thread).
     pub fn prepare(&mut self, rate: u32) {
         self.rate = rate.max(1);
-        for f in &mut self.followers { f.prepare(self.rate); }
+        for f in &mut self.followers {
+            f.prepare(self.rate);
+        }
     }
 
     /// Restarts the LFOs and empties the followers; keeps every setting.
     pub fn reset(&mut self) {
-        for l in &mut self.lfos { l.reset(); }
-        for f in &mut self.followers { f.reset(); }
+        for l in &mut self.lfos {
+            l.reset();
+        }
+        for f in &mut self.followers {
+            f.reset();
+        }
         self.lfo_out = [0.0; LFOS];
         self.fol_out = [0.0; FOLLOWERS];
-        for t in &mut self.targets { t.dirty = true; }
+        for t in &mut self.targets {
+            t.dirty = true;
+        }
     }
 
     // ---- Targets ----------------------------------------------------------
 
-    fn find(&self, addr: ParamAddr) -> Option<usize> { self.targets.iter().position(|t| t.addr == addr) }
+    fn find(&self, addr: ParamAddr) -> Option<usize> {
+        self.targets.iter().position(|t| t.addr == addr)
+    }
 
     /// Starts looking after a parameter, with its description and its
     /// value now. From here on, set it through the engine
     /// ([`ModEvent::Set`]), or the engine's next value will undo the
     /// change. Real-time safe. Adding one that is already there updates
     /// its description and value.
-    pub fn add_target(&mut self, addr: ParamAddr, info: ParamInfo, value: f32) -> Result<(), ModError> {
-        if matches!(addr.owner, Owner::Macro(_) | Owner::Morph(_) | Owner::Mod(_)) {
+    pub fn add_target(
+        &mut self,
+        addr: ParamAddr,
+        info: ParamInfo,
+        value: f32,
+    ) -> Result<(), ModError> {
+        if matches!(
+            addr.owner,
+            Owner::Macro(_) | Owner::Morph(_) | Owner::Mod(_)
+        ) {
             return Err(ModError::Refused);
         }
         if let Some(i) = self.find(addr) {
@@ -329,13 +415,17 @@ impl ModEngine {
         Ok(())
     }
 
-    pub fn is_target(&self, addr: ParamAddr) -> bool { self.find(addr).is_some() }
+    pub fn is_target(&self, addr: ParamAddr) -> bool {
+        self.find(addr).is_some()
+    }
 
     /// Stops looking after a parameter: its macro map and matrix rows go
     /// with it. Real-time safe. False if it was not a target (or is a
     /// macro or the morph, which always are).
     pub fn remove_target(&mut self, addr: ParamAddr) -> bool {
-        let Some(i) = self.find(addr) else { return false };
+        let Some(i) = self.find(addr) else {
+            return false;
+        };
         if i < INTERNAL {
             return false;
         }
@@ -350,11 +440,15 @@ impl ModEngine {
             let (from, to) = (last as u16, i as u16);
             for maps in &mut self.maps {
                 for m in maps.iter_mut().flatten() {
-                    if m.target == from { m.target = to; }
+                    if m.target == from {
+                        m.target = to;
+                    }
                 }
             }
             for r in &mut self.rows {
-                if r.target == from { r.target = to; }
+                if r.target == from {
+                    r.target = to;
+                }
             }
         }
         true
@@ -363,20 +457,29 @@ impl ModEngine {
     /// Targets with nothing moving them (no macro, row, lock or scene).
     /// The host may remove them to make room.
     pub fn idle_targets(&self) -> impl Iterator<Item = ParamAddr> + '_ {
-        self.targets[INTERNAL..].iter().filter(|t| !t.moving() && t.lock.is_none()).map(|t| t.addr)
+        self.targets[INTERNAL..]
+            .iter()
+            .filter(|t| !t.moving() && t.lock.is_none())
+            .map(|t| t.addr)
     }
 
-    pub fn targets(&self) -> impl Iterator<Item = ParamAddr> + '_ { self.targets[INTERNAL..].iter().map(|t| t.addr) }
+    pub fn targets(&self) -> impl Iterator<Item = ParamAddr> + '_ {
+        self.targets[INTERNAL..].iter().map(|t| t.addr)
+    }
 
     /// A target's own value (not modulated).
     pub fn base(&self, addr: ParamAddr) -> Option<f32> {
-        if let Some(v) = self.source_param(addr) { return Some(v); }
+        if let Some(v) = self.source_param(addr) {
+            return Some(v);
+        }
         self.find(addr).map(|i| self.targets[i].base)
     }
 
     /// The value last sent (macros and the morph: their position).
     pub fn value(&self, addr: ParamAddr) -> Option<f32> {
-        if let Some(v) = self.source_param(addr) { return Some(v); }
+        if let Some(v) = self.source_param(addr) {
+            return Some(v);
+        }
         let t = &self.targets[self.find(addr)?];
         Some(if t.sent.is_nan() { t.base } else { t.sent })
     }
@@ -388,7 +491,10 @@ impl ModEngine {
         }
     }
 
-    pub fn is_locked(&self, addr: ParamAddr) -> bool { self.find(addr).is_some_and(|i| self.targets[i].lock.is_some()) }
+    pub fn is_locked(&self, addr: ParamAddr) -> bool {
+        self.find(addr)
+            .is_some_and(|i| self.targets[i].lock.is_some())
+    }
 
     /// How far modulation can move a target's knob now, as positions
     /// (0 to 1) below and above where it would sit without the matrix,
@@ -399,11 +505,19 @@ impl ModEngine {
         for r in self.rows.iter().filter(|r| r.target as usize == i) {
             let d = r.row.depth.abs();
             let bipolar = matches!(r.row.source, Source::Lfo(_));
-            let (a, b) = if bipolar { (-d, d) } else if r.row.depth < 0.0 { (-d, 0.0) } else { (0.0, d) };
+            let (a, b) = if bipolar {
+                (-d, d)
+            } else if r.row.depth < 0.0 {
+                (-d, 0.0)
+            } else {
+                (0.0, d)
+            };
             lo += a;
             hi += b;
         }
-        if self.targets[i].rows == 0 { return None; }
+        if self.targets[i].rows == 0 {
+            return None;
+        }
         let p = (self.targets[i].pos - self.targets[i].offset).clamp(0.0, 1.0);
         Some(((p + lo).clamp(0.0, 1.0), (p + hi).clamp(0.0, 1.0)))
     }
@@ -417,7 +531,12 @@ impl ModEngine {
             return Err(ModError::Refused);
         }
         let i = self.find(map.target).ok_or(ModError::Unknown(map.target))?;
-        let slot = Map { target: i as u16, from: map.from.clamp(0.0, 1.0), to: map.to.clamp(0.0, 1.0), curve: map.curve };
+        let slot = Map {
+            target: i as u16,
+            from: map.from.clamp(0.0, 1.0),
+            to: map.to.clamp(0.0, 1.0),
+            curve: map.curve,
+        };
         // Already on this macro: change it in place.
         if let Some((om, ok)) = self.targets[i].mac {
             if om as usize == m {
@@ -426,7 +545,10 @@ impl ModEngine {
                 return Ok(());
             }
         }
-        let k = self.maps[m].iter().position(|s| s.is_none()).ok_or(ModError::Full)?;
+        let k = self.maps[m]
+            .iter()
+            .position(|s| s.is_none())
+            .ok_or(ModError::Full)?;
         if let Some((om, ok)) = self.targets[i].mac {
             self.maps[om as usize][ok as usize] = None;
         }
@@ -438,8 +560,12 @@ impl ModEngine {
 
     /// Takes a parameter off its macro. False if it had none.
     pub fn unmap(&mut self, target: ParamAddr) -> bool {
-        let Some(i) = self.find(target) else { return false };
-        let Some((m, k)) = self.targets[i].mac.take() else { return false };
+        let Some(i) = self.find(target) else {
+            return false;
+        };
+        let Some((m, k)) = self.targets[i].mac.take() else {
+            return false;
+        };
         self.maps[m as usize][k as usize] = None;
         self.targets[i].dirty = true;
         true
@@ -447,13 +573,32 @@ impl ModEngine {
 
     /// Macro `m`'s targets, in the order they were mapped (for the screen).
     pub fn macro_maps(&self, m: usize) -> impl Iterator<Item = MacroMap> + '_ {
-        self.maps.get(m).into_iter().flatten().flatten().map(|s| MacroMap { target: self.targets[s.target as usize].addr, from: s.from, to: s.to, curve: s.curve })
+        self.maps
+            .get(m)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|s| MacroMap {
+                target: self.targets[s.target as usize].addr,
+                from: s.from,
+                to: s.to,
+                curve: s.curve,
+            })
     }
 
     /// Which macro moves a parameter, if any.
-    pub fn macro_of(&self, target: ParamAddr) -> Option<usize> { self.find(target).and_then(|i| self.targets[i].mac).map(|(m, _)| m as usize) }
+    pub fn macro_of(&self, target: ParamAddr) -> Option<usize> {
+        self.find(target)
+            .and_then(|i| self.targets[i].mac)
+            .map(|(m, _)| m as usize)
+    }
 
-    pub fn macro_value(&self, m: usize) -> f32 { self.targets.get(FIRST_MACRO + m).filter(|_| m < MACROS).map_or(0.0, |t| t.pos) }
+    pub fn macro_value(&self, m: usize) -> f32 {
+        self.targets
+            .get(FIRST_MACRO + m)
+            .filter(|_| m < MACROS)
+            .map_or(0.0, |t| t.pos)
+    }
 
     // ---- The matrix ---------------------------------------------------------
 
@@ -468,13 +613,21 @@ impl ModEngine {
             return Err(ModError::Refused);
         }
         if let (Source::Macro(m), Owner::Macro(t)) = (row.source, row.target.owner) {
-            if m == t { return Err(ModError::Refused); }
+            if m == t {
+                return Err(ModError::Refused);
+            }
         }
         if self.rows.len() == self.rows.capacity() {
             return Err(ModError::Full);
         }
-        let row = Row { depth: row.depth.clamp(-1.0, 1.0), ..row };
-        self.rows.push(RowSlot { row, target: i as u16 });
+        let row = Row {
+            depth: row.depth.clamp(-1.0, 1.0),
+            ..row
+        };
+        self.rows.push(RowSlot {
+            row,
+            target: i as u16,
+        });
         self.targets[i].rows += 1;
         self.targets[i].dirty = true;
         Ok(self.rows.len() - 1)
@@ -482,23 +635,33 @@ impl ModEngine {
 
     /// Changes a row's depth (-1 to 1). False if there is no such row.
     pub fn set_depth(&mut self, row: usize, depth: f32) -> bool {
-        let Some(r) = self.rows.get_mut(row) else { return false };
-        if depth.is_finite() { r.row.depth = depth.clamp(-1.0, 1.0); }
+        let Some(r) = self.rows.get_mut(row) else {
+            return false;
+        };
+        if depth.is_finite() {
+            r.row.depth = depth.clamp(-1.0, 1.0);
+        }
         true
     }
 
     /// Takes a row out; later rows move up one. Real-time safe.
     pub fn remove_row(&mut self, row: usize) -> Option<Row> {
-        if row >= self.rows.len() { return None; }
+        if row >= self.rows.len() {
+            return None;
+        }
         let r = self.rows.remove(row);
         let t = &mut self.targets[r.target as usize];
         t.rows -= 1;
-        if t.rows == 0 { t.offset = 0.0; }
+        if t.rows == 0 {
+            t.offset = 0.0;
+        }
         t.dirty = true;
         Some(r.row)
     }
 
-    pub fn rows(&self) -> impl Iterator<Item = Row> + '_ { self.rows.iter().map(|r| r.row) }
+    pub fn rows(&self) -> impl Iterator<Item = Row> + '_ {
+        self.rows.iter().map(|r| r.row)
+    }
 
     /// A source's value now (-1 to 1 for an LFO, else 0 to 1).
     pub fn source(&self, s: Source) -> f32 {
@@ -510,16 +673,25 @@ impl ModEngine {
         }
     }
 
-    pub fn lfo(&self, n: usize) -> Option<&Lfo> { self.lfos.get(n) }
-    pub fn follower(&self, n: usize) -> Option<&Follower> { self.followers.get(n) }
+    pub fn lfo(&self, n: usize) -> Option<&Lfo> {
+        self.lfos.get(n)
+    }
+    pub fn follower(&self, n: usize) -> Option<&Follower> {
+        self.followers.get(n)
+    }
 
     fn source_param(&self, addr: ParamAddr) -> Option<f32> {
-        let Owner::Mod(n) = addr.owner else { return None };
+        let Owner::Mod(n) = addr.owner else {
+            return None;
+        };
         let n = n as usize;
         if n < LFOS {
             Some(self.lfos[n].param(addr.param)).filter(|v| !v.is_nan())
         } else {
-            self.followers.get(n - LFOS).map(|f| f.param(addr.param)).filter(|v| !v.is_nan())
+            self.followers
+                .get(n - LFOS)
+                .map(|f| f.param(addr.param))
+                .filter(|v| !v.is_nan())
         }
     }
 
@@ -536,8 +708,15 @@ impl ModEngine {
     }
 
     /// Sets or clears one target's value in a scene.
-    pub fn set_scene_value(&mut self, addr: ParamAddr, which: usize, value: Option<f32>) -> Result<(), ModError> {
-        if matches!(addr.owner, Owner::Morph(_)) { return Err(ModError::Refused); }
+    pub fn set_scene_value(
+        &mut self,
+        addr: ParamAddr,
+        which: usize,
+        value: Option<f32>,
+    ) -> Result<(), ModError> {
+        if matches!(addr.owner, Owner::Morph(_)) {
+            return Err(ModError::Refused);
+        }
         let i = self.find(addr).ok_or(ModError::Unknown(addr))?;
         let t = &mut self.targets[i];
         t.scene[which.min(1)] = value.map(|v| t.info.to_unit(v));
@@ -547,19 +726,26 @@ impl ModEngine {
 
     /// Forgets both scenes.
     pub fn clear_scenes(&mut self) {
-        for t in &mut self.targets { t.scene = [None; 2]; t.dirty = true; }
+        for t in &mut self.targets {
+            t.scene = [None; 2];
+            t.dirty = true;
+        }
     }
 
     /// The parameters whose scenes differ, with their A and B values, for
     /// the "what changes" list.
     pub fn scene_changes(&self) -> impl Iterator<Item = (ParamAddr, f32, f32)> + '_ {
         self.targets[FIRST_MACRO..].iter().filter_map(|t| {
-            let [Some(a), Some(b)] = t.scene else { return None };
+            let [Some(a), Some(b)] = t.scene else {
+                return None;
+            };
             ((a - b).abs() > 1e-6).then(|| (t.addr, t.info.from_unit(a), t.info.from_unit(b)))
         })
     }
 
-    pub fn morph(&self) -> f32 { self.targets[MORPH].pos }
+    pub fn morph(&self) -> f32 {
+        self.targets[MORPH].pos
+    }
 
     // ---- Audio thread -------------------------------------------------------
 
@@ -572,14 +758,23 @@ impl ModEngine {
     ///
     /// Never allocates. Gives the same events, frame for frame, however
     /// the host cuts the same frames into blocks.
-    pub fn process(&mut self, ctx: &Ctx, len: usize, events: &[ModTimed], follow: &[Option<(&[f32], &[f32])>; FOLLOWERS], out: &mut dyn FnMut(ParamAddr, Timed)) {
+    pub fn process(
+        &mut self,
+        ctx: &Ctx,
+        len: usize,
+        events: &[ModTimed],
+        follow: &[Option<(&[f32], &[f32])>; FOLLOWERS],
+        out: &mut dyn FnMut(ParamAddr, Timed),
+    ) {
         let tick = self.tick as u64;
         let mut next_tick = ((tick - ctx.frame % tick) % tick) as usize;
         let mut followed = 0usize;
         let mut ev = 0usize;
         let beats_per_frame = ctx.bpm / 60.0 / self.rate as f64;
         loop {
-            let at_ev = events.get(ev).map(|e| (e.offset as usize).min(len.saturating_sub(1)));
+            let at_ev = events
+                .get(ev)
+                .map(|e| (e.offset as usize).min(len.saturating_sub(1)));
             match at_ev {
                 // Events on a tick's frame go first, so a lock lands before
                 // the tick reads it.
@@ -591,7 +786,9 @@ impl ModEngine {
                 _ if next_tick < len => {
                     self.follow(follow, followed, next_tick);
                     followed = next_tick;
-                    let beats = ctx.playing.then_some(ctx.beats + next_tick as f64 * beats_per_frame);
+                    let beats = ctx
+                        .playing
+                        .then_some(ctx.beats + next_tick as f64 * beats_per_frame);
                     self.advance(beats);
                     self.settle(true, next_tick as u32, out);
                     next_tick += tick as usize;
@@ -603,7 +800,9 @@ impl ModEngine {
     }
 
     fn follow(&mut self, follow: &[Option<(&[f32], &[f32])>; FOLLOWERS], from: usize, to: usize) {
-        if to <= from { return; }
+        if to <= from {
+            return;
+        }
         for (f, input) in self.followers.iter_mut().zip(follow) {
             match input {
                 Some((l, r)) if l.len() >= to && r.len() >= to => f.run(&l[from..to], &r[from..to]),
@@ -615,8 +814,12 @@ impl ModEngine {
     fn advance(&mut self, beats: Option<f64>) {
         self.stats.ticks += 1;
         let secs = self.tick as f64 / self.rate as f64;
-        for (o, l) in self.lfo_out.iter_mut().zip(&mut self.lfos) { *o = l.tick(secs, beats); }
-        for (o, f) in self.fol_out.iter_mut().zip(&self.followers) { *o = f.value(); }
+        for (o, l) in self.lfo_out.iter_mut().zip(&mut self.lfos) {
+            *o = l.tick(secs, beats);
+        }
+        for (o, f) in self.fol_out.iter_mut().zip(&self.followers) {
+            *o = f.value();
+        }
     }
 
     fn apply(&mut self, ev: &ModEvent) {
@@ -660,16 +863,24 @@ impl ModEngine {
             ModEvent::Unlock { addr } => {
                 if let Some(i) = self.find(addr) {
                     let t = &mut self.targets[i];
-                    if t.lock.take().is_some() { t.dirty = true; }
+                    if t.lock.take().is_some() {
+                        t.dirty = true;
+                    }
                 }
             }
             ModEvent::Source { n, value } => {
                 if let Some(h) = self.host.get_mut(n as usize) {
-                    *h = if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+                    *h = if value.is_finite() {
+                        value.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
                 }
             }
             ModEvent::Trigger => {
-                for l in &mut self.lfos { l.trigger(); }
+                for l in &mut self.lfos {
+                    l.trigger();
+                }
             }
         }
     }
@@ -683,17 +894,39 @@ impl ModEngine {
     fn settle(&mut self, full: bool, offset: u32, out: &mut dyn FnMut(ParamAddr, Timed)) {
         if let Some((addr, value)) = self.pass.take() {
             self.stats.sent += 1;
-            out(addr, Timed::new(offset, NodeEvent::Param { id: addr.param, value }));
+            out(
+                addr,
+                Timed::new(
+                    offset,
+                    NodeEvent::Param {
+                        id: addr.param,
+                        value,
+                    },
+                ),
+            );
         }
         if full {
             for t in &mut self.targets {
-                if t.rows > 0 { t.offset = 0.0; }
+                if t.rows > 0 {
+                    t.offset = 0.0;
+                }
             }
             for r in &self.rows {
-                let mut v = source_value(&self.lfo_out, &self.fol_out, &self.host, &self.targets, r.row.source) * r.row.depth;
+                let mut v = source_value(
+                    &self.lfo_out,
+                    &self.fol_out,
+                    &self.host,
+                    &self.targets,
+                    r.row.source,
+                ) * r.row.depth;
                 if let Some(via) = r.row.via {
-                    let s = source_value(&self.lfo_out, &self.fol_out, &self.host, &self.targets, via);
-                    v *= if matches!(via, Source::Lfo(_)) { 0.5 + 0.5 * s } else { s };
+                    let s =
+                        source_value(&self.lfo_out, &self.fol_out, &self.host, &self.targets, via);
+                    v *= if matches!(via, Source::Lfo(_)) {
+                        0.5 + 0.5 * s
+                    } else {
+                        s
+                    };
                 }
                 self.targets[r.target as usize].offset += v;
             }
@@ -756,7 +989,13 @@ impl ModEngine {
         (u.clamp(0.0, 1.0), exact)
     }
 
-    fn commit(&mut self, i: usize, (pos, exact): (f32, Option<f32>), offset: u32, out: &mut dyn FnMut(ParamAddr, Timed)) {
+    fn commit(
+        &mut self,
+        i: usize,
+        (pos, exact): (f32, Option<f32>),
+        offset: u32,
+        out: &mut dyn FnMut(ParamAddr, Timed),
+    ) {
         let t = &mut self.targets[i];
         t.pos = pos;
         t.dirty = false;
@@ -765,16 +1004,32 @@ impl ModEngine {
         if t.sent.is_nan() || (v - t.sent).abs() > eps {
             t.sent = v;
             self.stats.sent += 1;
-            out(t.addr, Timed::new(offset, NodeEvent::Param { id: t.addr.param, value: v }));
+            out(
+                t.addr,
+                Timed::new(
+                    offset,
+                    NodeEvent::Param {
+                        id: t.addr.param,
+                        value: v,
+                    },
+                ),
+            );
         }
     }
 }
 
 fn log_consts(info: &ParamInfo) -> Option<(f32, f32)> {
-    (info.curve == Curve::Log && info.min > 0.0 && info.max > info.min).then(|| (info.min.ln(), (info.max / info.min).ln()))
+    (info.curve == Curve::Log && info.min > 0.0 && info.max > info.min)
+        .then(|| (info.min.ln(), (info.max / info.min).ln()))
 }
 
-fn source_value(lfo: &[f32; LFOS], fol: &[f32; FOLLOWERS], host: &[f32; HOST_SOURCES], targets: &[Target], s: Source) -> f32 {
+fn source_value(
+    lfo: &[f32; LFOS],
+    fol: &[f32; FOLLOWERS],
+    host: &[f32; HOST_SOURCES],
+    targets: &[Target],
+    s: Source,
+) -> f32 {
     match s {
         Source::Lfo(n) => lfo[n as usize],
         Source::Follower(n) => fol[n as usize],
@@ -787,8 +1042,16 @@ fn source_value(lfo: &[f32; LFOS], fol: &[f32; FOLLOWERS], host: &[f32; HOST_SOU
 /// The description of an LFO's (`n` below [`LFOS`]) or a follower's
 /// parameter.
 pub fn source_info(n: usize, id: u16) -> Option<ParamInfo> {
-    let table: &[ParamInfo] = if n < LFOS { &LFO_PARAMS } else if n < LFOS + FOLLOWERS { &FOLLOWER_PARAMS } else { return None };
+    let table: &[ParamInfo] = if n < LFOS {
+        &LFO_PARAMS
+    } else if n < LFOS + FOLLOWERS {
+        &FOLLOWER_PARAMS
+    } else {
+        return None;
+    };
     table.iter().find(|p| p.id == id).copied()
 }
 
-pub(crate) fn macro_info(m: usize) -> ParamInfo { MACRO_INFO[m.min(MACROS - 1)] }
+pub(crate) fn macro_info(m: usize) -> ParamInfo {
+    MACRO_INFO[m.min(MACROS - 1)]
+}

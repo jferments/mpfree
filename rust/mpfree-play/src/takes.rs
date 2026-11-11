@@ -19,12 +19,19 @@
 //! notes added to a clip that was playing), so UNDO takes a capture back
 //! like any take. Captures are numbered on their own, from 1.
 //!
+//! An edit of a clip's notes, such as a step tapped on or a step's velocity
+//! changed ([`Takes::edit`] with an `mpfree_seq::steps::Edit`), is a take
+//! too, numbered on its own. Turning a Q-Link through many values can join
+//! one edit, so one UNDO takes the whole turn back.
+//!
 //! This allocates; it never runs on the audio thread.
 //!
 //! [`Player::erased`]: crate::Player::erased
 //! [`Recorder::taken`]: crate::Recorder::taken
 
+use mpfree_seq::steps::Edit;
 use mpfree_seq::{Clip, ModelError, Note, Project};
+use mpfree_transport::time::Tick;
 
 use crate::{Erased, Taken};
 
@@ -37,12 +44,19 @@ pub struct Take {
     pub number: u32,
     /// Made by CAPTURE, not by recording.
     pub captured: bool,
+    /// An edit of a clip's notes (the step sequencer), not a recording.
+    pub edited: bool,
+    /// What a joining edit turns (see [`Takes::edit`]).
+    join: Option<u64>,
     pub added: Vec<(usize, usize, Note)>,
     pub erased: Vec<(usize, usize, Note)>,
     /// Clips the take put in empty slots, as (track, slot, clip). Undo
     /// empties the slot and keeps the clip as it was then; redo puts it
     /// back if the slot is still empty.
     pub made: Vec<(usize, usize, Clip)>,
+    /// Clips the take made longer or shorter, as (track, slot, from, to)
+    /// in ticks (a page added or taken off).
+    pub resized: Vec<(usize, usize, Tick, Tick)>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -54,6 +68,8 @@ pub struct Takes {
     limit: usize,
     /// Captures so far, to number them.
     captures: u32,
+    /// Edits so far, to number them.
+    edits: u32,
 }
 
 impl Default for Takes {
@@ -66,7 +82,13 @@ impl Takes {
     /// Keep up to `limit` takes for undo (at least 1); older ones are
     /// forgotten and stay as they are.
     pub fn new(limit: usize) -> Takes {
-        Takes { done: vec![], undone: vec![], limit: limit.max(1), captures: 0 }
+        Takes {
+            done: vec![],
+            undone: vec![],
+            limit: limit.max(1),
+            captures: 0,
+            edits: 0,
+        }
     }
 
     /// Add a recorded note to its clip and remember it with its take.
@@ -82,7 +104,9 @@ impl Takes {
     /// False if the clip does not hold it (it was edited meanwhile); then
     /// nothing is remembered.
     pub fn erase(&mut self, project: &mut Project, e: &Erased) -> bool {
-        let Some(clip) = clip(project, e.track, e.slot) else { return false };
+        let Some(clip) = clip(project, e.track, e.slot) else {
+            return false;
+        };
         if !clip.remove_note(&e.note) {
             return false;
         }
@@ -94,8 +118,13 @@ impl Takes {
     /// a take of its own. The capture's number. `BadSlot` if there is no
     /// such slot or it holds a clip; the clip's own refusals as they are.
     /// Nothing changes on an error.
-    pub fn capture_clip(&mut self, project: &mut Project, track: usize, slot: usize, new: Clip)
-        -> Result<u32, ModelError> {
+    pub fn capture_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        new: Clip,
+    ) -> Result<u32, ModelError> {
         new.check()?;
         let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
         if s.is_some() {
@@ -112,8 +141,13 @@ impl Takes {
     /// own. The capture's number. All the notes go in or none: `BadSlot` if
     /// the clip is gone, `TooManyNotes` or `BadNote` (its index in
     /// `notes`) if one does not fit.
-    pub fn capture_notes(&mut self, project: &mut Project, track: usize, slot: usize, notes: &[Note])
-        -> Result<u32, ModelError> {
+    pub fn capture_notes(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        notes: &[Note],
+    ) -> Result<u32, ModelError> {
         let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
         let before = c.notes.len();
         for (i, n) in notes.iter().enumerate() {
@@ -130,6 +164,87 @@ impl Takes {
         Ok(take.number)
     }
 
+    /// Edit clip `slot` of `track`: `edit`'s notes to take out come out
+    /// and its new notes go in, all or none, as a take of its own. `join`
+    /// names what is being turned (such as `steps::Change::key`): an edit
+    /// joins the latest take instead when that is an edit of the same clip
+    /// with the same key and nothing undone since, so a Q-Link turned
+    /// through many values is one undo. The edit's number. `BadSlot` if
+    /// the clip is gone; `MissingNote` or the clip's own refusals as they
+    /// are; nothing changes on an error. An empty edit changes nothing and
+    /// makes no take.
+    pub fn edit(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        edit: &Edit,
+        join: Option<u64>,
+    ) -> Result<u32, ModelError> {
+        let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
+        if edit.is_empty() {
+            return Ok(self.edits);
+        }
+        c.apply(edit)?;
+        let same_clip = |t: &Take| {
+            t.added
+                .iter()
+                .chain(&t.erased)
+                .all(|&(tr, sl, _)| (tr, sl) == (track, slot))
+        };
+        let joins = join.is_some()
+            && edit.length.is_none()
+            && self.undone.is_empty()
+            && self.done.last().is_some_and(|t| {
+                t.edited && t.join == join && t.resized.is_empty() && same_clip(t)
+            });
+        if !joins {
+            self.edits += 1;
+            let number = self.edits;
+            let take = self.push(Take {
+                number,
+                edited: true,
+                join,
+                ..Take::default()
+            });
+            take.erased
+                .extend(edit.erase.iter().map(|&n| (track, slot, n)));
+            take.added
+                .extend(edit.add.iter().map(|&n| (track, slot, n)));
+            take.resized
+                .extend(edit.length.map(|(from, to)| (track, slot, from, to)));
+            return Ok(number);
+        }
+        let take = self.done.last_mut().expect("checked");
+        // A note this take put in and now takes out was never there; a note
+        // it took out and now puts back is as it was.
+        for &n in &edit.erase {
+            match take
+                .added
+                .iter()
+                .position(|&(tr, sl, x)| (tr, sl, x) == (track, slot, n))
+            {
+                Some(i) => {
+                    take.added.remove(i);
+                }
+                None => take.erased.push((track, slot, n)),
+            }
+        }
+        for &n in &edit.add {
+            match take
+                .erased
+                .iter()
+                .position(|&(tr, sl, x)| (tr, sl, x) == (track, slot, n))
+            {
+                Some(i) => {
+                    take.erased.remove(i);
+                }
+                None => take.added.push((track, slot, n)),
+            }
+        }
+        Ok(take.number)
+    }
+
     /// Undo the latest take: its recorded notes come out, its erased notes
     /// go back and the clips it made leave their slots. Its number, or
     /// None if there is nothing to undo. Notes whose clip is gone, or no
@@ -140,6 +255,9 @@ impl Takes {
             if let Some(c) = clip(project, *track, *slot) {
                 c.remove_note(note);
             }
+        }
+        for &(track, slot, from, to) in take.resized.iter().rev() {
+            resize(project, track, slot, to, from);
         }
         for (track, slot, note) in take.erased.iter().rev() {
             if let Some(c) = clip(project, *track, *slot) {
@@ -171,6 +289,9 @@ impl Takes {
                 c.remove_note(note);
             }
         }
+        for &(track, slot, from, to) in &take.resized {
+            resize(project, track, slot, from, to);
+        }
         for (track, slot, note) in &take.added {
             if let Some(c) = clip(project, *track, *slot) {
                 let _ = c.add_note(*note);
@@ -196,6 +317,11 @@ impl Takes {
         self.captures
     }
 
+    /// Edits so far: the next one is number `edits() + 1`.
+    pub fn edits(&self) -> u32 {
+        self.edits
+    }
+
     /// Forget every take, for example when another project is loaded.
     pub fn clear(&mut self) {
         self.done.clear();
@@ -205,16 +331,27 @@ impl Takes {
     /// The entry for recorded take `number`: an earlier one still being
     /// finished, or a new one, which ends redo.
     fn entry(&mut self, number: u32) -> &mut Take {
-        if let Some(i) = self.done.iter().rposition(|t| t.number == number && !t.captured) {
+        if let Some(i) = self
+            .done
+            .iter()
+            .rposition(|t| t.number == number && !t.captured && !t.edited)
+        {
             return &mut self.done[i];
         }
-        self.push(Take { number, ..Take::default() })
+        self.push(Take {
+            number,
+            ..Take::default()
+        })
     }
 
     /// A new capture, which ends redo.
     fn next_capture(&mut self) -> &mut Take {
         self.captures += 1;
-        self.push(Take { number: self.captures, captured: true, ..Take::default() })
+        self.push(Take {
+            number: self.captures,
+            captured: true,
+            ..Take::default()
+        })
     }
 
     fn push(&mut self, take: Take) -> &mut Take {
@@ -224,6 +361,17 @@ impl Takes {
         }
         self.done.push(take);
         self.done.last_mut().expect("just pushed")
+    }
+}
+
+/// Make a clip `from` ticks long `to` ticks long, unless it has changed
+/// length since or holds a note past the new end.
+fn resize(project: &mut Project, track: usize, slot: usize, from: Tick, to: Tick) {
+    if let Some(c) = clip(project, track, slot) {
+        let _ = c.apply(&Edit {
+            length: Some((from, to)),
+            ..Edit::default()
+        });
     }
 }
 
@@ -249,11 +397,28 @@ mod tests {
     }
 
     fn taken(tick: i64, take: u32) -> Taken {
-        Taken { track: 0, slot: 0, note: Note { tick, len: 10, note: 1, velocity: 100 }, take }
+        Taken {
+            track: 0,
+            slot: 0,
+            note: Note {
+                tick,
+                len: 10,
+                note: 1,
+                velocity: 100,
+                chance: 100,
+            },
+            take,
+        }
     }
 
     fn ticks(p: &Project) -> Vec<i64> {
-        p.tracks[0].slots[0].as_ref().unwrap().notes.iter().map(|n| n.tick).collect()
+        p.tracks[0].slots[0]
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .map(|n| n.tick)
+            .collect()
     }
 
     #[test]
@@ -291,16 +456,38 @@ mod tests {
         let mut t = Takes::default();
         t.add(&mut p, &taken(0, 1)).unwrap();
         let mut c = Clip::new("Capture 1", 3840);
-        c.add_note(Note { tick: 240, len: 10, note: 4, velocity: 90 }).unwrap();
+        c.add_note(Note {
+            tick: 240,
+            len: 10,
+            note: 4,
+            velocity: 90,
+            chance: 100,
+        })
+        .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
         assert_eq!(p.clip(0, 1), Some(&c));
         // Recorded take 1 goes on: its notes still join take 1, not the
         // capture, though both are number 1.
         t.add(&mut p, &taken(100, 1)).unwrap();
-        assert_eq!(t.done().iter().map(|t| (t.number, t.captured, t.added.len())).collect::<Vec<_>>(),
-                   vec![(1, false, 2), (1, true, 0)]);
+        assert_eq!(
+            t.done()
+                .iter()
+                .map(|t| (t.number, t.captured, t.added.len()))
+                .collect::<Vec<_>>(),
+            vec![(1, false, 2), (1, true, 0)]
+        );
         // Notes recorded into the captured clip are kept with it on undo.
-        p.tracks[0].slots[1].as_mut().unwrap().add_note(Note { tick: 0, len: 5, note: 1, velocity: 1 }).unwrap();
+        p.tracks[0].slots[1]
+            .as_mut()
+            .unwrap()
+            .add_note(Note {
+                tick: 0,
+                len: 5,
+                note: 1,
+                velocity: 1,
+                chance: 100,
+            })
+            .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
         assert!(p.clip(0, 1).is_none());
         assert_eq!(t.redo(&mut p), Some(1));
@@ -311,19 +498,37 @@ mod tests {
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.clip(0, 1).map(|c| c.name.as_str()), Some("mine"));
         // The second capture is number 2; a full slot is refused.
-        assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Err(ModelError::BadSlot));
+        assert_eq!(
+            t.capture_clip(&mut p, 0, 1, c.clone()),
+            Err(ModelError::BadSlot)
+        );
         assert_eq!(t.capture_clip(&mut p, 0, 2, c.clone()), Ok(2));
-        assert_eq!(t.capture_clip(&mut p, 0, SLOTS, c), Err(ModelError::BadSlot));
+        assert_eq!(
+            t.capture_clip(&mut p, 0, SLOTS, c),
+            Err(ModelError::BadSlot)
+        );
     }
 
     #[test]
     fn captured_notes_go_in_together_or_not_at_all() {
         let mut p = project();
         let mut t = Takes::default();
-        let n = |tick| Note { tick, len: 10, note: 2, velocity: 100 };
-        assert_eq!(t.capture_notes(&mut p, 0, 0, &[n(0), n(5000)]), Err(ModelError::BadNote(1)));
+        let n = |tick| Note {
+            tick,
+            len: 10,
+            note: 2,
+            velocity: 100,
+            chance: 100,
+        };
+        assert_eq!(
+            t.capture_notes(&mut p, 0, 0, &[n(0), n(5000)]),
+            Err(ModelError::BadNote(1))
+        );
         assert!(ticks(&p).is_empty() && t.done().is_empty());
-        assert_eq!(t.capture_notes(&mut p, 0, 3, &[n(0)]), Err(ModelError::BadSlot));
+        assert_eq!(
+            t.capture_notes(&mut p, 0, 3, &[n(0)]),
+            Err(ModelError::BadSlot)
+        );
         assert_eq!(t.capture_notes(&mut p, 0, 0, &[n(0), n(960)]), Ok(1));
         assert_eq!(ticks(&p), vec![0, 960]);
         assert_eq!(t.undo(&mut p), Some(1));
@@ -336,13 +541,182 @@ mod tests {
     fn missing_clips_and_notes_change_nothing() {
         let mut p = project();
         let mut t = Takes::default();
-        let gone = Taken { slot: 5, ..taken(0, 1) };
+        let gone = Taken {
+            slot: 5,
+            ..taken(0, 1)
+        };
         assert_eq!(t.add(&mut p, &gone), Err(ModelError::BadSlot));
-        let e = Erased { track: 0, slot: 0, note: taken(0, 1).note, take: 1 };
+        let e = Erased {
+            track: 0,
+            slot: 0,
+            note: taken(0, 1).note,
+            take: 1,
+        };
         assert!(!t.erase(&mut p, &e), "the clip does not hold it");
         assert!(t.done().is_empty());
         // A note out of the clip's range is refused, and not remembered.
         assert!(t.add(&mut p, &taken(5000, 1)).is_err());
         assert!(t.done().is_empty());
+    }
+
+    #[test]
+    fn step_edits_are_takes_and_a_turn_joins_one() {
+        use mpfree_seq::steps::{Change, Grid};
+        let mut p = project();
+        let mut t = Takes::default();
+        let g = Grid::new(240).unwrap();
+        let c = |p: &Project| p.tracks[0].slots[0].clone().unwrap();
+        // Work out an edit from the clip as it is, and apply it.
+        fn step(
+            t: &mut Takes,
+            p: &mut Project,
+            f: impl Fn(&Clip) -> Edit,
+            join: Option<u64>,
+        ) -> Result<u32, ModelError> {
+            let e = f(p.tracks[0].slots[0].as_ref().unwrap());
+            t.edit(p, 0, 0, &e, join)
+        }
+        // Two steps tapped on: two edits.
+        assert_eq!(
+            step(&mut t, &mut p, |c| g.toggle(c, 36, 0, 100), None),
+            Ok(1)
+        );
+        assert_eq!(
+            step(&mut t, &mut p, |c| g.toggle(c, 36, 4, 100), None),
+            Ok(2)
+        );
+        // A velocity turned 100 -> 90 -> 80 -> 70 on step 4 joins one edit.
+        for v in [90, 80, 70] {
+            assert_eq!(
+                step(
+                    &mut t,
+                    &mut p,
+                    |c| g.change(c, 36, 4, Change::Velocity(v)),
+                    Some(Change::Velocity(v).key(36, 4))
+                ),
+                Ok(3)
+            );
+        }
+        let last = t.done().last().unwrap();
+        assert!(last.edited && !last.captured);
+        assert_eq!(
+            (last.erased.len(), last.added.len()),
+            (1, 1),
+            "only the first and last values"
+        );
+        assert_eq!(g.row(&c(&p), 36)[4].map(|s| s.velocity), Some(70));
+        // One undo takes the whole turn back; another the second step.
+        assert_eq!(t.undo(&mut p), Some(3));
+        assert_eq!(g.row(&c(&p), 36)[4].map(|s| s.velocity), Some(100));
+        assert_eq!(t.undo(&mut p), Some(2));
+        assert_eq!(ticks(&p), vec![0]);
+        // A joining edit after an undo starts a new edit.
+        assert_eq!(
+            step(
+                &mut t,
+                &mut p,
+                |c| g.change(c, 36, 0, Change::Chance(50)),
+                Some(Change::Chance(50).key(36, 0))
+            ),
+            Ok(4)
+        );
+        assert!(t.undone().is_empty());
+        // A recorded note does not join an edit, and an edit never joins a take.
+        t.add(&mut p, &taken(480, 4)).unwrap();
+        assert_eq!(t.done().len(), 3, "take 4 is its own");
+        assert_eq!(
+            step(
+                &mut t,
+                &mut p,
+                |c| g.change(c, 36, 0, Change::Chance(60)),
+                Some(Change::Chance(60).key(36, 0))
+            ),
+            Ok(5)
+        );
+        // Refused edits change nothing.
+        let before = c(&p);
+        assert_eq!(
+            t.edit(&mut p, 0, 3, &g.toggle(&before, 36, 1, 100), None),
+            Err(ModelError::BadSlot)
+        );
+        let stale = g.toggle(&before, 36, 4, 100);
+        t.edit(&mut p, 0, 0, &stale, None).unwrap();
+        assert_eq!(
+            t.edit(
+                &mut p,
+                0,
+                0,
+                &Edit {
+                    erase: stale.add.clone(),
+                    ..Edit::default()
+                },
+                None
+            ),
+            Ok(7)
+        );
+        assert_eq!(
+            t.edit(
+                &mut p,
+                0,
+                0,
+                &Edit {
+                    erase: stale.add.clone(),
+                    ..Edit::default()
+                },
+                None
+            ),
+            Err(ModelError::MissingNote)
+        );
+        assert_eq!(t.edits(), 7);
+    }
+
+    #[test]
+    fn pages_added_and_taken_off_undo_and_redo() {
+        use mpfree_seq::steps::Grid;
+        let mut p = project();
+        let mut t = Takes::default();
+        let g = Grid::new(240).unwrap();
+        // The clip, its notes in order (a clip keeps them as written).
+        let c = |p: &Project| {
+            let mut c = p.tracks[0].slots[0].clone().unwrap();
+            c.notes.sort_by_key(|n| (n.tick, n.note));
+            c
+        };
+        for i in [0, 6, 15] {
+            let e = g.toggle(&c(&p), 36, i, 100);
+            t.edit(&mut p, 0, 0, &e, None).unwrap();
+        }
+        // A step early on step 0, so it moves with the clip's end.
+        let e = g.change(&c(&p), 36, 0, mpfree_seq::steps::Change::Nudge(-40));
+        t.edit(&mut p, 0, 0, &e, None).unwrap();
+        let one_page = c(&p);
+        // A copied page, then another, as two edits.
+        let e = g.add_page(&c(&p), true);
+        assert_eq!(t.edit(&mut p, 0, 0, &e, None), Ok(5));
+        let two_pages = c(&p);
+        let e = g.add_page(&c(&p), true);
+        t.edit(&mut p, 0, 0, &e, None).unwrap();
+        assert_eq!((c(&p).length, c(&p).notes.len()), (3 * 3840, 9));
+        assert_eq!(
+            t.done().last().unwrap().resized,
+            vec![(0, 0, 2 * 3840, 3 * 3840)]
+        );
+        // Undo goes back a page at a time, notes and length exactly.
+        t.undo(&mut p);
+        assert_eq!(c(&p), two_pages);
+        t.undo(&mut p);
+        assert_eq!(c(&p), one_page);
+        t.redo(&mut p);
+        assert_eq!(c(&p), two_pages);
+        // Taking the page off again is an edit too, and undoes.
+        let e = g.remove_page(&c(&p));
+        t.edit(&mut p, 0, 0, &e, None).unwrap();
+        assert_eq!(c(&p), one_page);
+        t.undo(&mut p);
+        assert_eq!(c(&p), two_pages);
+        // A length change never joins a turn.
+        let e = g.add_page(&c(&p), false);
+        let n = t.edits();
+        assert_eq!(t.edit(&mut p, 0, 0, &e, Some(1)), Ok(n + 1));
     }
 }

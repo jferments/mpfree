@@ -7,8 +7,10 @@
 //! on the Play and Clips pages, and a sample arp chip on the bar where the
 //! arp's chip goes.
 
-use crate::view::{bars_label, clips_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
-                  CLIPS_HINT, CLIPS_PAGE, TRANSPORT};
+use crate::view::{
+    bars_label, clips_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
+    CLIPS_HINT, CLIPS_PAGE, TRANSPORT,
+};
 use crate::widgets::TransportBar;
 use mpfree_capture::{keep, Capture, Kept, Now};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
@@ -20,12 +22,10 @@ use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 /// The screen as the pad player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The pad player's music tabs, in the order the owner approved for the
-/// layout on 2026-11-11.
-pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
 /// The pad player's Play page (`mpfree-hello`'s `PLAY_LAYOUT`), before the
 /// bar goes in.
-pub const APP_PLAY_LAYOUT: &str = "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
+pub const APP_PLAY_LAYOUT: &str =
+    "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
 const PLAY_HINT: &str =
     "Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   STOP: silence";
 
@@ -76,12 +76,27 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(project: Project, launches: Vec<Launch>, armed: Option<usize>) -> Result<Session, String> {
-        let transport = Box::new(Transport::new(RATE, BPM).map_err(|e| format!("transport: {e:?}"))?);
-        let mut s = Session { transport, player: Box::new(Player::new()), recorder: Box::new(Recorder::new()),
-                              capture: Box::new(Capture::new()), project, launches, cues: Vec::new(), armed,
-                              takes: Takes::default(),
-                              view: PlayView::empty(), block: Box::new(Block::new()), live: Vec::new() };
+    pub fn new(
+        project: Project,
+        launches: Vec<Launch>,
+        armed: Option<usize>,
+    ) -> Result<Session, String> {
+        let transport =
+            Box::new(Transport::new(RATE, BPM).map_err(|e| format!("transport: {e:?}"))?);
+        let mut s = Session {
+            transport,
+            player: Box::new(Player::new()),
+            recorder: Box::new(Recorder::new()),
+            capture: Box::new(Capture::new()),
+            project,
+            launches,
+            cues: Vec::new(),
+            armed,
+            takes: Takes::default(),
+            view: PlayView::empty(),
+            block: Box::new(Block::new()),
+            live: Vec::new(),
+        };
         s.compile()?;
         Ok(s)
     }
@@ -89,8 +104,12 @@ impl Session {
     fn compile(&mut self) -> Result<(), String> {
         // An undone capture takes its clip, and so its launch, away.
         let project = &self.project;
-        self.launches.retain(|l| project.clip(l.track, l.slot).is_some());
-        self.cues.retain(|c| c.slot.is_none_or(|slot| project.clip(c.track, slot).is_some()));
+        self.launches
+            .retain(|l| project.clip(l.track, l.slot).is_some());
+        self.cues.retain(|c| {
+            c.slot
+                .is_none_or(|slot| project.clip(c.track, slot).is_some())
+        });
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("compile: {e:?}"))?;
         v.set_armed(self.armed);
@@ -106,7 +125,10 @@ impl Session {
             Some(s) if s.state.rolling() => s.frame_of(tick as f64).max(now),
             _ => now,
         };
-        self.transport.command(at, cmd).then_some(()).ok_or_else(|| "command queue full".to_string())
+        self.transport
+            .command(at, cmd)
+            .then_some(())
+            .ok_or_else(|| "command queue full".to_string())
     }
 
     /// Play `note` on the pads from `tick` for `len` ticks.
@@ -121,22 +143,43 @@ impl Session {
         if a == TimeAction::Capture {
             return self.keep().map(|_| ());
         }
-        (self.launches, self.cues) =
-            clips_after(&self.project, &self.launches, &self.cues, &a, &TransportInfo::of(&self.transport));
+        (self.launches, self.cues) = clips_after(
+            &self.project,
+            &self.launches,
+            &self.cues,
+            &a,
+            &TransportInfo::of(&self.transport),
+        );
         self.compile()
     }
 
     /// CAPTURE: keep the last phrase in the armed track (track 1 if none),
     /// into its playing clip or as a new clip that plays on in its place.
     pub fn keep(&mut self) -> Result<Kept, String> {
-        let phrase = self.capture.pending().and(self.capture.phrase()).ok_or("nothing new to capture")?;
+        let phrase = self
+            .capture
+            .pending()
+            .and(self.capture.phrase())
+            .ok_or("nothing new to capture")?;
         let t = &self.transport;
-        let now = Now { position: t.position(), rolling: t.state().rolling(), meter: t.meter(),
-                        loop_range: t.loop_range() };
+        let now = Now {
+            position: t.position(),
+            rolling: t.state().rolling(),
+            meter: t.meter(),
+            loop_range: t.loop_range(),
+        };
         let name = format!("Capture {}", self.takes.captures() + 1);
         let track = self.armed.unwrap_or(0);
-        let k = keep(&phrase, &mut self.project, &self.launches, &mut self.takes, track, now, &name)
-            .map_err(|e| format!("capture: {e:?}"))?;
+        let k = keep(
+            &phrase,
+            &mut self.project,
+            &self.launches,
+            &mut self.takes,
+            track,
+            now,
+            &name,
+        )
+        .map_err(|e| format!("capture: {e:?}"))?;
         if let Some(l) = k.launch {
             self.launches.retain(|x| x.track != l.track);
             self.cues.retain(|x| x.track != l.track);
@@ -203,7 +246,9 @@ impl Session {
             changed |= self.takes.erase(&mut self.project, &e);
         }
         for k in self.recorder.taken().to_vec() {
-            self.takes.add(&mut self.project, &k).map_err(|e| format!("recorded note: {e:?}"))?;
+            self.takes
+                .add(&mut self.project, &k)
+                .map_err(|e| format!("recorded note: {e:?}"))?;
             changed = true;
         }
         if changed {
@@ -213,8 +258,13 @@ impl Session {
     }
 
     pub fn state(&self) -> TimeState {
-        let mut st = TimeState::from_engine(TransportInfo::of(&self.transport), &self.project, &self.launches,
-                                            self.armed, &self.takes);
+        let mut st = TimeState::from_engine(
+            TransportInfo::of(&self.transport),
+            &self.project,
+            &self.launches,
+            self.armed,
+            &self.takes,
+        );
         st.capture = self.capture.pending().map(|p| bars_label(p.bars));
         st.cues = self.cues.clone();
         st
@@ -225,23 +275,46 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
     let mut c = Clip::new(name, length);
     for &(tick, note, velocity) in notes {
         let len = SIXTEENTH.min(length - tick);
-        c.add_note(Note { tick, len, note, velocity }).expect("sample note in range");
+        c.add_note(Note {
+            tick,
+            len,
+            note,
+            velocity,
+            chance: 100,
+        })
+        .expect("sample note in range");
     }
     c
 }
 
 /// A note every `step` ticks through `length`.
 fn every(step: Tick, length: Tick, note: u8, velocity: u8) -> Vec<(Tick, u8, u8)> {
-    (0..length / step).map(|i| (i * step, note, velocity)).collect()
+    (0..length / step)
+        .map(|i| (i * step, note, velocity))
+        .collect()
 }
 
 fn beat(bars: Tick) -> Vec<(Tick, u8, u8)> {
-    (0..bars).flat_map(|b| [(b * BAR, 0, 120), (b * BAR + BEAT, 1, 110), (b * BAR + 1680, 0, 100),
-                             (b * BAR + 3 * BEAT, 1, 115)]).collect()
+    (0..bars)
+        .flat_map(|b| {
+            [
+                (b * BAR, 0, 120),
+                (b * BAR + BEAT, 1, 110),
+                (b * BAR + 1680, 0, 100),
+                (b * BAR + 3 * BEAT, 1, 115),
+            ]
+        })
+        .collect()
 }
 
 /// The stab riff: five notes in one bar (what take 1 replaces).
-pub const STAB_RIFF: [(Tick, u8, u8); 5] = [(0, 6, 120), (720, 6, 100), (1440, 6, 110), (2400, 6, 105), (3120, 6, 100)];
+pub const STAB_RIFF: [(Tick, u8, u8); 5] = [
+    (0, 6, 120),
+    (720, 6, 100),
+    (1440, 6, 110),
+    (2400, 6, 105),
+    (3120, 6, 100),
+];
 
 /// The sample project: eight tracks with clips in some of their slots.
 pub fn project() -> Project {
@@ -253,21 +326,63 @@ pub fn project() -> Project {
         }
         p.tracks.push(t);
     };
-    track("Drums", vec![(0, clip("Boom bap", 2 * BAR, &beat(2))), (1, clip("Half time", 4 * BAR, &beat(4)[..8])),
-                        (2, clip("Fill", BAR, &every(SIXTEENTH, BAR, 1, 90))),
-                        (4, clip("Break", 2 * BAR, &every(480, 2 * BAR, 0, 100)))]);
-    track("Hats", vec![(0, clip("Hats 16", BAR, &every(SIXTEENTH, BAR, 2, 80))),
-                       (1, clip("Shaker", 2 * BAR, &every(480, 2 * BAR, 3, 70)))]);
-    track("Bass", vec![(0, clip("Sub line", 2 * BAR, &every(1280, 2 * BAR, 4, 100))),
-                       (1, clip("Bass B", 4 * BAR, &every(1280, 4 * BAR, 4, 100))),
-                       (3, clip("Drop", 2 * BAR, &every(BAR, 2 * BAR, 4, 127)))]);
-    track("Glitch", vec![(0, clip("Glitch", 7 * SIXTEENTH, &every(3 * SIXTEENTH, 7 * SIXTEENTH, 5, 90))),
-                         (2, clip("Stutter", BAR, &every(SIXTEENTH, BAR, 5, 70)))]);
-    track("Chords", vec![(0, clip("Arp chords", 4 * BAR, &every(2 * BEAT, 4 * BAR, 7, 90))),
-                         (2, clip("Pad", 8 * BAR, &every(2 * BAR, 8 * BAR, 8, 80)))]);
+    track(
+        "Drums",
+        vec![
+            (0, clip("Boom bap", 2 * BAR, &beat(2))),
+            (1, clip("Half time", 4 * BAR, &beat(4)[..8])),
+            (2, clip("Fill", BAR, &every(SIXTEENTH, BAR, 1, 90))),
+            (4, clip("Break", 2 * BAR, &every(480, 2 * BAR, 0, 100))),
+        ],
+    );
+    track(
+        "Hats",
+        vec![
+            (0, clip("Hats 16", BAR, &every(SIXTEENTH, BAR, 2, 80))),
+            (1, clip("Shaker", 2 * BAR, &every(480, 2 * BAR, 3, 70))),
+        ],
+    );
+    track(
+        "Bass",
+        vec![
+            (0, clip("Sub line", 2 * BAR, &every(1280, 2 * BAR, 4, 100))),
+            (1, clip("Bass B", 4 * BAR, &every(1280, 4 * BAR, 4, 100))),
+            (3, clip("Drop", 2 * BAR, &every(BAR, 2 * BAR, 4, 127))),
+        ],
+    );
+    track(
+        "Glitch",
+        vec![
+            (
+                0,
+                clip(
+                    "Glitch",
+                    7 * SIXTEENTH,
+                    &every(3 * SIXTEENTH, 7 * SIXTEENTH, 5, 90),
+                ),
+            ),
+            (2, clip("Stutter", BAR, &every(SIXTEENTH, BAR, 5, 70))),
+        ],
+    );
+    track(
+        "Chords",
+        vec![
+            (
+                0,
+                clip("Arp chords", 4 * BAR, &every(2 * BEAT, 4 * BAR, 7, 90)),
+            ),
+            (2, clip("Pad", 8 * BAR, &every(2 * BAR, 8 * BAR, 8, 80))),
+        ],
+    );
     track("Stab", vec![(0, clip("Stab riff", BAR, &STAB_RIFF))]);
     track("Dust", vec![(0, clip("Dust", 4 * BAR, &[(0, 9, 60)]))]);
-    track("FX", vec![(0, clip("Riser", 4 * BAR, &[(0, 10, 90)])), (3, clip("Wash", 2 * BAR, &[(0, 11, 90)]))]);
+    track(
+        "FX",
+        vec![
+            (0, clip("Riser", 4 * BAR, &[(0, 10, 90)])),
+            (3, clip("Wash", 2 * BAR, &[(0, 11, 90)])),
+        ],
+    );
     p
 }
 
@@ -276,8 +391,16 @@ pub fn project() -> Project {
 fn launches() -> Vec<Launch> {
     [0, 1, 2, 5, 6, 7]
         .iter()
-        .map(|&track| Launch { track, slot: 0, origin: 0 })
-        .chain(std::iter::once(Launch { track: 3, slot: 0, origin: 2 * BAR }))
+        .map(|&track| Launch {
+            track,
+            slot: 0,
+            origin: 0,
+        })
+        .chain(std::iter::once(Launch {
+            track: 3,
+            slot: 0,
+            origin: 2 * BAR,
+        }))
         .collect()
 }
 
@@ -294,7 +417,10 @@ pub fn playing() -> Result<Session, String> {
     let mut s = Session::new(project(), launches(), Some(STAB))?;
     s.command_at(0, Command::Play)?;
     s.run_to(4 * BAR + 2 * BEAT)?;
-    s.act(TimeAction::Launch { track: CHORDS, slot: 0 })?;
+    s.act(TimeAction::Launch {
+        track: CHORDS,
+        slot: 0,
+    })?;
     s.act(TimeAction::StopClip(3))?;
     s.run_to(4 * BAR + 2 * BEAT + SIXTEENTH)?;
     Ok(s)
@@ -343,7 +469,14 @@ pub fn counting_in() -> Result<Session, String> {
 }
 
 /// A chord riff the pads play over bars 3 and 4 (6 notes), for CAPTURE.
-pub const CHORD_RIFF: [(Tick, u8); 6] = [(0, 7), (720, 8), (1440, 7), (BAR, 8), (BAR + BEAT, 7), (BAR + 2400, 8)];
+pub const CHORD_RIFF: [(Tick, u8); 6] = [
+    (0, 7),
+    (720, 8),
+    (1440, 7),
+    (BAR, 8),
+    (BAR + BEAT, 7),
+    (BAR + 2400, 8),
+];
 
 /// Playing from bar 1 with the chords track armed but nothing recording:
 /// the pads played a chord riff over bars 3 and 4, and at 5.1.480 Capture
@@ -378,34 +511,62 @@ fn arp_chip() -> Chip {
     Chip::new("Arp · Up · 1/16", Tone::Accent)
 }
 
-fn app_ui(fonts: Fonts, tab: usize, hint: &str) -> Ui {
+fn app_ui(fonts: Fonts, tab: &str, hint: &str) -> Ui {
     let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
-    let mut header = Header::new(&APP_TABS);
-    header.active = tab;
-    header.chips = vec![Chip::new("Akai session", Tone::Good), Chip::new("Kit 2 of 6", Tone::Accent)];
+    let mut header = Header::app(tab);
+    header.chips = vec![
+        Chip::new("Akai session", Tone::Good),
+        Chip::new("Kit 2 of 6", Tone::Accent),
+    ];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
     ui
 }
 
-fn clips_sample(name: &'static str, about: &'static str, fonts: Fonts, s: &Session, first_row: usize)
-    -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, 1, CLIPS_HINT);
+fn clips_sample(
+    name: &'static str,
+    about: &'static str,
+    fonts: Fonts,
+    s: &Session,
+    first_row: usize,
+) -> Result<Sample, String> {
+    let mut ui = app_ui(fonts, "Clips", CLIPS_HINT);
     let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.first_row = first_row;
     let mut state = s.state();
     state.chips = vec![arp_chip()];
     page.update(&mut ui, &state);
-    Ok(Sample { name, about, ui, state })
+    Ok(Sample {
+        name,
+        about,
+        ui,
+        state,
+    })
 }
 
 /// The pad player's Play page with the bar under the header.
 fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, 0, PLAY_HINT);
+    let mut ui = app_ui(fonts, "Play", PLAY_HINT);
     let mut pads = PadGrid::new(16, 4);
-    let names = ["Kick", "Snare", "Closed Hat", "Open Hat", "Sub", "Glitch", "Stab", "Chord", "Chord 2", "Dust",
-                 "Riser", "Wash", "Clank", "", "", ""];
+    let names = [
+        "Kick",
+        "Snare",
+        "Closed Hat",
+        "Open Hat",
+        "Sub",
+        "Glitch",
+        "Stab",
+        "Chord",
+        "Chord 2",
+        "Dust",
+        "Riser",
+        "Wash",
+        "Clank",
+        "",
+        "",
+        "",
+    ];
     let color = Color::from_pad([0x00, 0x2A, 0x3F]);
     for (i, n) in names.iter().enumerate() {
         pads.pads[i].label = n.to_string();
@@ -417,9 +578,19 @@ fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     pads.pads[6].level = 0.5;
     ui.add("pads", pads);
     let mut kits = ListView::new("Kits");
-    for (k, d) in [("Classic House", "16 pads"), ("Boom Bap", "13 pads"), ("Trap", "16 pads"), ("Lo-Fi", "9 pads"),
-                   ("Techno", "16 pads"), ("Afrobeat", "14 pads")] {
-        kits.items.push(ListItem { text: k.into(), detail: d.into(), color: Some(color) });
+    for (k, d) in [
+        ("Classic House", "16 pads"),
+        ("Boom Bap", "13 pads"),
+        ("Trap", "16 pads"),
+        ("Lo-Fi", "9 pads"),
+        ("Techno", "16 pads"),
+        ("Afrobeat", "14 pads"),
+    ] {
+        kits.items.push(ListItem {
+            text: k.into(),
+            detail: d.into(),
+            color: Some(color),
+        });
     }
     kits.selected = 1;
     ui.add("kits", kits);
@@ -428,10 +599,16 @@ fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     level.text = "-18.0 dB".into();
     ui.add("level", level);
     let mut timing = StatList::new("Timing");
-    timing.set(vec![("Period".into(), "128 frames · 2.9 ms".into(), Tone::Normal),
-                    ("Audio thread".into(), "0.41 ms mean · 0.88 ms max".into(), Tone::Good),
-                    ("Underruns".into(), "0".into(), Tone::Good),
-                    ("Voices".into(), "6".into(), Tone::Normal)]);
+    timing.set(vec![
+        ("Period".into(), "128 frames · 2.9 ms".into(), Tone::Normal),
+        (
+            "Audio thread".into(),
+            "0.41 ms mean · 0.88 ms max".into(),
+            Tone::Good,
+        ),
+        ("Underruns".into(), "0".into(), Tone::Good),
+        ("Voices".into(), "6".into(), Tone::Normal),
+    ]);
     ui.add("timing", timing);
     let layout = with_transport(APP_PLAY_LAYOUT).ok_or("the Play layout has no header")?;
     let page = TimePage::add_to(&mut ui)?;
@@ -440,8 +617,12 @@ fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     let mut state = s.state();
     state.chips = vec![arp_chip()];
     page.update(&mut ui, &state);
-    Ok(Sample { name: "play", about: "the Play page with the transport bar under the header, playing at 5.3",
-                ui, state })
+    Ok(Sample {
+        name: "play",
+        about: "the Play page with the transport bar under the header, playing at 5.3",
+        ui,
+        state,
+    })
 }
 
 /// Every sample screen, with `fonts` called once per screen.
@@ -449,20 +630,57 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let playing = playing()?;
     let mut out = vec![
         play_sample(fonts(), &playing)?,
-        clips_sample("clips-playing", "Clips page: playing at 5.3, the chords tapped and waiting for bar 6",
-                     fonts(), &playing, 0)?,
-        clips_sample("clips-recording", "Clips page: replace recording into the stab at 4.2, take 1 in progress",
-                     fonts(), &recording()?, 0)?,
-        clips_sample("clips-undo", "Clips page: overdub take 2 undone, Redo brings it back", fonts(), &undone()?,
-                     0)?,
-        clips_sample("clips-count-in", "Clips page: counting in a bar before recording from bar 1 (0.3)", fonts(),
-                     &counting_in()?, 0)?,
-        clips_sample("clips-stopped", "Clips page: stopped at 1.1, nothing launched or armed", fonts(), &stopped()?,
-                     0)?,
-        clips_sample("clips-capture-ready", "Clips page: a chord riff played over bars 3 and 4 without recording; \
-                      Capture would keep 2 bars", fonts(), &capture_ready()?, 0)?,
-        clips_sample("clips-captured", "Clips page: Capture kept the riff as a new clip in Chords / 2, playing on in \
-                      its place", fonts(), &captured()?, 0)?,
+        clips_sample(
+            "clips-playing",
+            "Clips page: playing at 5.3, the chords tapped and waiting for bar 6",
+            fonts(),
+            &playing,
+            0,
+        )?,
+        clips_sample(
+            "clips-recording",
+            "Clips page: replace recording into the stab at 4.2, take 1 in progress",
+            fonts(),
+            &recording()?,
+            0,
+        )?,
+        clips_sample(
+            "clips-undo",
+            "Clips page: overdub take 2 undone, Redo brings it back",
+            fonts(),
+            &undone()?,
+            0,
+        )?,
+        clips_sample(
+            "clips-count-in",
+            "Clips page: counting in a bar before recording from bar 1 (0.3)",
+            fonts(),
+            &counting_in()?,
+            0,
+        )?,
+        clips_sample(
+            "clips-stopped",
+            "Clips page: stopped at 1.1, nothing launched or armed",
+            fonts(),
+            &stopped()?,
+            0,
+        )?,
+        clips_sample(
+            "clips-capture-ready",
+            "Clips page: a chord riff played over bars 3 and 4 without recording; \
+                      Capture would keep 2 bars",
+            fonts(),
+            &capture_ready()?,
+            0,
+        )?,
+        clips_sample(
+            "clips-captured",
+            "Clips page: Capture kept the riff as a new clip in Chords / 2, playing on in \
+                      its place",
+            fonts(),
+            &captured()?,
+            0,
+        )?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -472,7 +690,12 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut state = rec.state();
     state.chips = vec![arp_chip()];
     TimePage::default().update(&mut ui, &state);
-    out.push(Sample { name: "bar-recording", about: "the transport bar alone, recording", ui, state });
+    out.push(Sample {
+        name: "bar-recording",
+        about: "the transport bar alone, recording",
+        ui,
+        state,
+    });
     Ok(out)
 }
 
@@ -480,8 +703,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
 mod tests {
     use super::*;
     use crate::view::{cell_of, take_items};
-    use mpfree_play::anchored;
     use crate::widgets::CellState;
+    use mpfree_play::anchored;
     use mpfree_transport::State;
     use mpfree_ui::SoftCanvas;
 
@@ -516,11 +739,30 @@ mod tests {
         assert_eq!((at.bar, at.beat), (5, 3));
         assert!((240..245).contains(&at.tick), "{at}");
         let chords = cell_of(&st, CHORDS, 0);
-        assert_eq!((chords.state, chords.foot.as_str()), (CellState::Queued, "from 6.1"));
+        assert_eq!(
+            (chords.state, chords.foot.as_str()),
+            (CellState::Queued, "from 6.1")
+        );
         assert_eq!(cell_of(&st, DRUMS, 0).state, CellState::Playing);
         let glitch = cell_of(&st, 3, 0);
-        assert_eq!((glitch.state, glitch.detail.as_str()), (CellState::Playing, "stops 6.1"), "the glitch started at bar 3");
-        assert_eq!(st.cues, vec![Cue { track: CHORDS, slot: Some(0) }, Cue { track: 3, slot: None }]);
+        assert_eq!(
+            (glitch.state, glitch.detail.as_str()),
+            (CellState::Playing, "stops 6.1"),
+            "the glitch started at bar 3"
+        );
+        assert_eq!(
+            st.cues,
+            vec![
+                Cue {
+                    track: CHORDS,
+                    slot: Some(0)
+                },
+                Cue {
+                    track: 3,
+                    slot: None
+                }
+            ]
+        );
     }
 
     #[test]
@@ -528,20 +770,34 @@ mod tests {
         let mut s = playing().unwrap();
         // A stop for the drums, cued in the same bar.
         s.act(TimeAction::StopClip(DRUMS)).unwrap();
-        assert!(s.launches.iter().any(|l| l.track == DRUMS), "the drums play to the bar line");
+        assert!(
+            s.launches.iter().any(|l| l.track == DRUMS),
+            "the drums play to the bar line"
+        );
         assert_eq!(cell_of(&s.state(), DRUMS, 0).detail, "stops 6.1");
         s.run_to(5 * BAR - 8).unwrap();
         assert_eq!(s.cues.len(), 3);
         s.run_to(5 * BAR + 8).unwrap();
         assert!(s.cues.is_empty());
         assert!(!s.launches.iter().any(|l| l.track == DRUMS || l.track == 3));
-        let chords = s.launches.iter().find(|l| l.track == CHORDS).copied().unwrap();
+        let chords = s
+            .launches
+            .iter()
+            .find(|l| l.track == CHORDS)
+            .copied()
+            .unwrap();
         let clip = s.project.clip(CHORDS, 0).unwrap();
         assert_eq!(chords.origin, anchored(5 * BAR, clip.length, clip.speed));
         assert_eq!(cell_of(&s.state(), CHORDS, 0).state, CellState::Playing);
         // Taken back before its bar line, a cue does nothing.
         s.act(TimeAction::StopClip(CHORDS)).unwrap();
-        assert_eq!(s.cues, vec![Cue { track: CHORDS, slot: None }]);
+        assert_eq!(
+            s.cues,
+            vec![Cue {
+                track: CHORDS,
+                slot: None
+            }]
+        );
         s.act(TimeAction::Uncue(CHORDS)).unwrap();
         s.run_to(6 * BAR + 8).unwrap();
         assert_eq!(s.launches.iter().find(|l| l.track == CHORDS), Some(&chords));
@@ -557,7 +813,10 @@ mod tests {
         // and the one of bar 4 were recorded.
         assert_eq!(st.done.len(), 1);
         assert_eq!((st.done[0].added, st.done[0].erased), (5, 5));
-        assert_eq!(notes(&s, STAB), vec![(0, 12), (480, 12), (960, 12), (1680, 12), (2880, 12)]);
+        assert_eq!(
+            notes(&s, STAB),
+            vec![(0, 12), (480, 12), (960, 12), (1680, 12), (2880, 12)]
+        );
     }
 
     #[test]
@@ -566,15 +825,28 @@ mod tests {
         let st = s.state();
         assert_eq!(st.transport.state, State::Playing);
         assert!(st.transport.overdub);
-        let rows: Vec<(u32, usize, usize)> = st.done.iter().map(|r| (r.number, r.added, r.erased)).collect();
+        let rows: Vec<(u32, usize, usize)> = st
+            .done
+            .iter()
+            .map(|r| (r.number, r.added, r.erased))
+            .collect();
         assert_eq!(rows, vec![(1, 5, 5)]);
-        let rows: Vec<(u32, usize, usize)> = st.undone.iter().map(|r| (r.number, r.added, r.erased)).collect();
+        let rows: Vec<(u32, usize, usize)> = st
+            .undone
+            .iter()
+            .map(|r| (r.number, r.added, r.erased))
+            .collect();
         assert_eq!(rows, vec![(2, 4, 0)]);
         // The clip is as take 1 left it.
-        assert_eq!(notes(&s, STAB), vec![(0, 12), (480, 12), (960, 12), (1680, 12), (2880, 12)]);
+        assert_eq!(
+            notes(&s, STAB),
+            vec![(0, 12), (480, 12), (960, 12), (1680, 12), (2880, 12)]
+        );
         let (items, current) = take_items(&st);
-        assert_eq!(items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
-                   vec!["Take 2 · Stab / 1", "Take 1 · Stab / 1"]);
+        assert_eq!(
+            items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
+            vec!["Take 2 · Stab / 1", "Take 1 · Stab / 1"]
+        );
         assert_eq!(current, Some(1));
     }
 
@@ -596,7 +868,10 @@ mod tests {
         assert_eq!(cell.state, CellState::Playing);
         assert!(cell.progress < 0.2, "{}", cell.progress);
         let (items, _) = take_items(&st);
-        assert_eq!((items[0].title.as_str(), items[0].detail.as_str()), ("Capture 1 · Chords / 2", "new +6"));
+        assert_eq!(
+            (items[0].title.as_str(), items[0].detail.as_str()),
+            ("Capture 1 · Chords / 2", "new +6")
+        );
     }
 
     #[test]
@@ -617,7 +892,11 @@ mod tests {
         assert_eq!(s.keep(), Err("nothing new to capture".to_string()));
         s.undo().unwrap();
         assert_eq!(notes(&s, STAB).len(), STAB_RIFF.len());
-        assert_eq!(s.state().capture.as_deref(), Some("1 bar"), "an undone capture can be kept again");
+        assert_eq!(
+            s.state().capture.as_deref(),
+            Some("1 bar"),
+            "an undone capture can be kept again"
+        );
         // A new clip undone takes its launch with it.
         s.armed = Some(CHORDS);
         let k = s.keep().unwrap();
@@ -635,6 +914,10 @@ mod tests {
         let at = st.transport.meter.position(st.transport.position);
         assert_eq!((at.bar, at.beat), (0, 3));
         assert!(at.tick < 5, "{at}");
-        assert_eq!(cell_of(&st, STAB, 0).state, CellState::Queued, "nothing plays before bar 1");
+        assert_eq!(
+            cell_of(&st, STAB, 0).state,
+            CellState::Queued,
+            "nothing plays before bar 1"
+        );
     }
 }

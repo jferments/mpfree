@@ -161,25 +161,39 @@ pub struct ParamAddr {
 }
 
 impl ParamAddr {
-    pub const fn new(owner: Owner, param: u16) -> ParamAddr { ParamAddr { owner, param } }
+    pub const fn new(owner: Owner, param: u16) -> ParamAddr {
+        ParamAddr { owner, param }
+    }
 
     /// The same parameter on track `t` (see [`Owner::with_track`]).
-    pub const fn with_track(self, t: u8) -> ParamAddr { ParamAddr { owner: self.owner.with_track(t), param: self.param } }
+    pub const fn with_track(self, t: u8) -> ParamAddr {
+        ParamAddr {
+            owner: self.owner.with_track(t),
+            param: self.param,
+        }
+    }
 
     /// The address without its track, for a clip to store; `None` when the
     /// owner is not on a track.
     pub const fn rel(self) -> Option<RelAddr> {
         match self.owner.split() {
-            Some((_, on)) => Some(RelAddr { on, param: self.param }),
+            Some((_, on)) => Some(RelAddr {
+                on,
+                param: self.param,
+            }),
             None => None,
         }
     }
 
     /// A macro's value.
-    pub const fn macro_value(n: u8) -> ParamAddr { ParamAddr::new(Owner::Macro(n), 0) }
+    pub const fn macro_value(n: u8) -> ParamAddr {
+        ParamAddr::new(Owner::Macro(n), 0)
+    }
 
     /// A morph's position.
-    pub const fn morph_pos(n: u8) -> ParamAddr { ParamAddr::new(Owner::Morph(n), 0) }
+    pub const fn morph_pos(n: u8) -> ParamAddr {
+        ParamAddr::new(Owner::Morph(n), 0)
+    }
 }
 
 /// A parameter on "this track", for clips (see the crate docs).
@@ -190,10 +204,17 @@ pub struct RelAddr {
 }
 
 impl RelAddr {
-    pub const fn new(on: OnTrack, param: u16) -> RelAddr { RelAddr { on, param } }
+    pub const fn new(on: OnTrack, param: u16) -> RelAddr {
+        RelAddr { on, param }
+    }
 
     /// The address on track `t`.
-    pub const fn on(self, t: u8) -> ParamAddr { ParamAddr { owner: self.on.on(t), param: self.param } }
+    pub const fn on(self, t: u8) -> ParamAddr {
+        ParamAddr {
+            owner: self.on.on(t),
+            param: self.param,
+        }
+    }
 }
 
 // ---- Text form -------------------------------------------------------------
@@ -241,11 +262,15 @@ impl fmt::Display for Owner {
 }
 
 impl fmt::Display for ParamAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}.{}", self.owner, self.param) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.owner, self.param)
+    }
 }
 
 impl fmt::Display for RelAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}.{}", self.on, self.param) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.on, self.param)
+    }
 }
 
 /// Why a text address did not read.
@@ -253,7 +278,9 @@ impl fmt::Display for RelAddr {
 pub struct ParseError(pub String);
 
 impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "bad parameter address: {}", self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "bad parameter address: {}", self.0)
+    }
 }
 
 impl std::error::Error for ParseError {}
@@ -273,10 +300,18 @@ fn strip(word: &str) -> Option<Strip> {
         return Some(Strip::Master);
     }
     // Longer prefixes first: "ps" before "p", "ret" before "t".
-    if let Some(n) = num(word, "ps") { return Some(Strip::Pad(n)); }
-    if let Some(n) = num(word, "in") { return Some(Strip::Input(n)); }
-    if let Some(n) = num(word, "bus") { return Some(Strip::Bus(n)); }
-    if let Some(n) = num(word, "ret") { return Some(Strip::Return(n)); }
+    if let Some(n) = num(word, "ps") {
+        return Some(Strip::Pad(n));
+    }
+    if let Some(n) = num(word, "in") {
+        return Some(Strip::Input(n));
+    }
+    if let Some(n) = num(word, "bus") {
+        return Some(Strip::Bus(n));
+    }
+    if let Some(n) = num(word, "ret") {
+        return Some(Strip::Return(n));
+    }
     num(word, "t").map(Strip::Track)
 }
 
@@ -286,7 +321,9 @@ fn on_track(word: &str) -> Option<OnTrack> {
         "mix" => Some(OnTrack::Strip),
         "arp" => Some(OnTrack::Arp),
         "seq" => Some(OnTrack::Seq),
-        _ => num(word, "pad").map(OnTrack::Pad).or_else(|| num(word, "fx").map(OnTrack::Insert)),
+        _ => num(word, "pad")
+            .map(OnTrack::Pad)
+            .or_else(|| num(word, "fx").map(OnTrack::Insert)),
     }
 }
 
@@ -294,7 +331,10 @@ fn on_track(word: &str) -> Option<OnTrack> {
 /// dots).
 fn owner(words: &[&str]) -> Option<Owner> {
     match *words {
-        [w] => num(w, "macro").map(Owner::Macro).or_else(|| num(w, "mod").map(Owner::Mod)).or_else(|| num(w, "morph").map(Owner::Morph)),
+        [w] => num(w, "macro")
+            .map(Owner::Macro)
+            .or_else(|| num(w, "mod").map(Owner::Mod))
+            .or_else(|| num(w, "morph").map(Owner::Morph)),
         [s, what] => {
             let s = strip(s)?;
             if what == "mix" {
@@ -318,7 +358,10 @@ impl FromStr for ParamAddr {
         let (head, param) = s.rsplit_once('.').ok_or_else(bad)?;
         let param = num(param, "").ok_or_else(bad)?;
         let words: Vec<&str> = head.split('.').collect();
-        Ok(ParamAddr { owner: owner(&words).ok_or_else(bad)?, param })
+        Ok(ParamAddr {
+            owner: owner(&words).ok_or_else(bad)?,
+            param,
+        })
     }
 }
 
@@ -327,7 +370,10 @@ impl FromStr for RelAddr {
     fn from_str(s: &str) -> Result<RelAddr, ParseError> {
         let bad = || ParseError(s.to_string());
         let (on, param) = s.split_once('.').ok_or_else(bad)?;
-        Ok(RelAddr { on: on_track(on).ok_or_else(bad)?, param: num(param, "").ok_or_else(bad)? })
+        Ok(RelAddr {
+            on: on_track(on).ok_or_else(bad)?,
+            param: num(param, "").ok_or_else(bad)?,
+        })
     }
 }
 
@@ -336,8 +382,24 @@ mod tests {
     use super::*;
 
     fn every_owner() -> Vec<Owner> {
-        let strips = [Strip::Input(0), Strip::Pad(127), Strip::Track(3), Strip::Bus(7), Strip::Return(3), Strip::Master];
-        let mut v = vec![Owner::Inst(0), Owner::Inst(63), Owner::Pad(3, 5), Owner::Arp(1), Owner::Seq(2), Owner::Macro(7), Owner::Mod(4), Owner::Morph(0)];
+        let strips = [
+            Strip::Input(0),
+            Strip::Pad(127),
+            Strip::Track(3),
+            Strip::Bus(7),
+            Strip::Return(3),
+            Strip::Master,
+        ];
+        let mut v = vec![
+            Owner::Inst(0),
+            Owner::Inst(63),
+            Owner::Pad(3, 5),
+            Owner::Arp(1),
+            Owner::Seq(2),
+            Owner::Macro(7),
+            Owner::Mod(4),
+            Owner::Morph(0),
+        ];
         for s in strips {
             v.push(Owner::Strip(s));
             v.push(Owner::Insert(s, 0));
@@ -348,7 +410,11 @@ mod tests {
 
     #[test]
     fn small_and_copy() {
-        assert!(std::mem::size_of::<ParamAddr>() <= 8, "{}", std::mem::size_of::<ParamAddr>());
+        assert!(
+            std::mem::size_of::<ParamAddr>() <= 8,
+            "{}",
+            std::mem::size_of::<ParamAddr>()
+        );
         assert!(std::mem::size_of::<RelAddr>() <= 6);
     }
 
@@ -358,10 +424,19 @@ mod tests {
             (ParamAddr::new(Owner::Inst(3), 12), "t3.inst.12"),
             (ParamAddr::new(Owner::Pad(3, 5), 2), "t3.pad5.2"),
             (ParamAddr::new(Owner::Strip(Strip::Track(3)), 0), "t3.mix.0"),
-            (ParamAddr::new(Owner::Insert(Strip::Bus(2), 7), 4), "bus2.fx7.4"),
+            (
+                ParamAddr::new(Owner::Insert(Strip::Bus(2), 7), 4),
+                "bus2.fx7.4",
+            ),
             (ParamAddr::new(Owner::Strip(Strip::Pad(9)), 0), "ps9.mix.0"),
-            (ParamAddr::new(Owner::Strip(Strip::Master), 1), "master.mix.1"),
-            (ParamAddr::new(Owner::Insert(Strip::Return(1), 3), 0), "ret1.fx3.0"),
+            (
+                ParamAddr::new(Owner::Strip(Strip::Master), 1),
+                "master.mix.1",
+            ),
+            (
+                ParamAddr::new(Owner::Insert(Strip::Return(1), 3), 0),
+                "ret1.fx3.0",
+            ),
             (ParamAddr::new(Owner::Arp(3), 1), "t3.arp.1"),
             (ParamAddr::macro_value(2), "macro2.0"),
             (ParamAddr::new(Owner::Mod(4), 1), "mod4.1"),
@@ -385,7 +460,25 @@ mod tests {
 
     #[test]
     fn bad_text_is_refused() {
-        for s in ["", "t3", "t3.inst", "t3.inst.", "t3.inst.x", "t3.inst.-1", "t3.inst.+1", "t3.inst.70000", "t300.inst.1", "bus2.inst.1", "master.pad1.0", "t3.fx.1", "macro.0", "foo.1", "t3.mix.0.1", "t.mix.0", "T3.mix.0"] {
+        for s in [
+            "",
+            "t3",
+            "t3.inst",
+            "t3.inst.",
+            "t3.inst.x",
+            "t3.inst.-1",
+            "t3.inst.+1",
+            "t3.inst.70000",
+            "t300.inst.1",
+            "bus2.inst.1",
+            "master.pad1.0",
+            "t3.fx.1",
+            "macro.0",
+            "foo.1",
+            "t3.mix.0.1",
+            "t.mix.0",
+            "T3.mix.0",
+        ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }
         for s in ["", "inst", "inst.", "t3.inst.1", "pad.1", "mix.x"] {
@@ -413,8 +506,21 @@ mod tests {
             }
         }
         // An insert on a track strip moves with the track; on a bus it stays.
-        assert_eq!(ParamAddr::new(Owner::Insert(Strip::Track(1), 7), 2).with_track(4).to_string(), "t4.fx7.2");
-        assert_eq!(ParamAddr::new(Owner::Insert(Strip::Bus(1), 7), 2).with_track(4).to_string(), "bus1.fx7.2");
-        assert_eq!("fx7.2".parse::<RelAddr>().unwrap().on(0).to_string(), "t0.fx7.2");
+        assert_eq!(
+            ParamAddr::new(Owner::Insert(Strip::Track(1), 7), 2)
+                .with_track(4)
+                .to_string(),
+            "t4.fx7.2"
+        );
+        assert_eq!(
+            ParamAddr::new(Owner::Insert(Strip::Bus(1), 7), 2)
+                .with_track(4)
+                .to_string(),
+            "bus1.fx7.2"
+        );
+        assert_eq!(
+            "fx7.2".parse::<RelAddr>().unwrap().on(0).to_string(),
+            "t0.fx7.2"
+        );
     }
 }

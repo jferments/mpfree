@@ -57,10 +57,22 @@ const DRUMS: usize = 0;
 const TAKE: usize = 1;
 /// The stab riff as played over bars 3 and 4 (song ticks): a little late
 /// or early here and there.
-const RIFF: [(Tick, u8); 7] = [(2 * BAR + 12, 120), (2 * BAR + 712, 96), (2 * BAR + 1460, 110), (2 * BAR + 2885, 104),
-                               (3 * BAR + 30, 118), (3 * BAR + 970, 100), (3 * BAR + 2415, 112)];
+const RIFF: [(Tick, u8); 7] = [
+    (2 * BAR + 12, 120),
+    (2 * BAR + 712, 96),
+    (2 * BAR + 1460, 110),
+    (2 * BAR + 2885, 104),
+    (3 * BAR + 30, 118),
+    (3 * BAR + 970, 100),
+    (3 * BAR + 2415, 112),
+];
 /// The clanks over bar 7.
-const CLANKS: [(Tick, u8); 4] = [(6 * BAR + 490, 100), (6 * BAR + 1435, 92), (6 * BAR + 2408, 104), (6 * BAR + 3360, 96)];
+const CLANKS: [(Tick, u8); 4] = [
+    (6 * BAR + 490, 100),
+    (6 * BAR + 1435, 92),
+    (6 * BAR + 2408, 104),
+    (6 * BAR + 3360, 96),
+];
 /// When CAPTURE is pressed: after the last note of each phrase, before the
 /// clip's next note.
 const PRESS: [Tick; 2] = [3 * BAR + 3000, 7 * BAR + 480];
@@ -73,10 +85,18 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--period" => {
-                period = args.next().and_then(|v| v.parse().ok()).filter(|p| (1..=8192).contains(p))
+                period = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|p| (1..=8192).contains(p))
                     .unwrap_or_else(|| fail("--period takes 1 to 8192"))
             }
-            "--out" => out = Some(args.next().unwrap_or_else(|| fail("--out takes a file name"))),
+            "--out" => {
+                out = Some(
+                    args.next()
+                        .unwrap_or_else(|| fail("--out takes a file name")),
+                )
+            }
             "-h" | "--help" => {
                 println!("capture_demo [--period N] [--out FILE]   (default FILE: ~/mpfree-work/capture-demo.wav)");
                 return;
@@ -110,14 +130,23 @@ fn main() {
     let wav = wav(&pcm.data);
     if let Some(dir) = std::path::Path::new(&out).parent() {
         if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", dir.display())));
         }
     }
     std::fs::write(&out, &wav).unwrap_or_else(|e| fail(&format!("cannot write {out}: {e}")));
 
-    println!("wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames", frames as f64 / f64::from(RATE));
-    println!("notes heard: {}  dropped by the sampler: {}  peak: {:.1} dBFS  clipped samples: {}", s.heard.len(),
-             engine.stats().dropped_events, 20.0 * pcm.peak.log10(), pcm.clipped);
+    println!(
+        "wrote {out}: {:.1} s, 44.1 kHz stereo 16-bit, period {period} frames",
+        frames as f64 / f64::from(RATE)
+    );
+    println!(
+        "notes heard: {}  dropped by the sampler: {}  peak: {:.1} dBFS  clipped samples: {}",
+        s.heard.len(),
+        engine.stats().dropped_events,
+        20.0 * pcm.peak.log10(),
+        pcm.clipped
+    );
     for line in &s.lines {
         println!("{line}");
     }
@@ -129,12 +158,18 @@ fn main() {
         println!("  events at period {p:>4}: {h:016x}");
     }
     let ok = same && s.hash() == hashes[0].1;
-    println!("same events for every period size: {}", if ok { "yes" } else { "NO" });
+    println!(
+        "same events for every period size: {}",
+        if ok { "yes" } else { "NO" }
+    );
     if !ok {
         std::process::exit(1);
     }
     if pcm.clipped > 0 {
-        eprintln!("capture_demo: warning: {} samples clipped at the master", pcm.clipped);
+        eprintln!(
+            "capture_demo: warning: {} samples clipped at the master",
+            pcm.clipped
+        );
     }
 }
 
@@ -183,7 +218,10 @@ impl Sink for Route<'_> {
 
 fn to_sampler(engine: &mut Engine, offset: u32, event: Event) {
     let ev = match event {
-        Event::NoteOn { note, velocity } => SEvent::NoteOn { pad: note, velocity },
+        Event::NoteOn { note, velocity } => SEvent::NoteOn {
+            pad: note,
+            velocity,
+        },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
     };
@@ -211,32 +249,81 @@ impl Session {
         let mut project = Project::new();
         let mut drums = Track::new("Drums", 0);
         let mut beat = Clip::new("Beat", 2 * BAR);
-        let hits = [(0, KICK, 120), (BEAT, SNARE, 110), (1680, KICK, 96), (3 * BEAT, SNARE, 116), (BAR, KICK, 118),
-                    (BAR + BEAT, SNARE, 108), (BAR + 2160, KICK, 90), (BAR + 2400, KICK, 104), (BAR + 3 * BEAT, SNARE, 116)];
+        let hits = [
+            (0, KICK, 120),
+            (BEAT, SNARE, 110),
+            (1680, KICK, 96),
+            (3 * BEAT, SNARE, 116),
+            (BAR, KICK, 118),
+            (BAR + BEAT, SNARE, 108),
+            (BAR + 2160, KICK, 90),
+            (BAR + 2400, KICK, 104),
+            (BAR + 3 * BEAT, SNARE, 116),
+        ];
         for (tick, note, velocity) in hits {
-            beat.add_note(Note { tick, len: S, note, velocity }).expect("in range");
+            beat.add_note(Note {
+                tick,
+                len: S,
+                note,
+                velocity,
+                chance: 100,
+            })
+            .expect("in range");
         }
         for i in 0..16 {
-            beat.add_note(Note { tick: i * 2 * S, len: S / 2, note: HAT, velocity: if i % 2 == 0 { 80 } else { 58 } })
-                .expect("in range");
+            beat.add_note(Note {
+                tick: i * 2 * S,
+                len: S / 2,
+                note: HAT,
+                velocity: if i % 2 == 0 { 80 } else { 58 },
+                chance: 100,
+            })
+            .expect("in range");
         }
         drums.slots[0] = Some(beat);
         project.tracks.push(drums);
         project.tracks.push(Track::new("Stab", 0));
-        let launches = vec![Launch { track: DRUMS, slot: 0, origin: 0 }];
+        let launches = vec![Launch {
+            track: DRUMS,
+            slot: 0,
+            origin: 0,
+        }];
         let mut live: Vec<(u64, Event)> = Vec::new();
         for &(tick, velocity) in &RIFF {
-            live.push((frame_of(tick), Event::NoteOn { note: STAB, velocity }));
+            live.push((
+                frame_of(tick),
+                Event::NoteOn {
+                    note: STAB,
+                    velocity,
+                },
+            ));
             live.push((frame_of(tick + S), Event::NoteOff { note: STAB }));
         }
         for &(tick, velocity) in &CLANKS {
-            live.push((frame_of(tick), Event::NoteOn { note: CLANK, velocity }));
+            live.push((
+                frame_of(tick),
+                Event::NoteOn {
+                    note: CLANK,
+                    velocity,
+                },
+            ));
             live.push((frame_of(tick + S / 2), Event::NoteOff { note: CLANK }));
         }
         live.sort_by_key(|l| l.0);
         let view = compile(&project, &launches);
-        Session { project, launches, view, player: Box::new(Player::new()), capture: Box::new(Capture::new()),
-                  takes: Takes::default(), live, next_live: 0, presses: 0, heard: Vec::new(), lines: Vec::new() }
+        Session {
+            project,
+            launches,
+            view,
+            player: Box::new(Player::new()),
+            capture: Box::new(Capture::new()),
+            takes: Takes::default(),
+            live,
+            next_live: 0,
+            presses: 0,
+            heard: Vec::new(),
+            lines: Vec::new(),
+        }
     }
 
     fn run(&mut self, frames: u64, period: u32, mut sampler: Option<&mut Engine>) -> Pcm {
@@ -245,7 +332,11 @@ impl Session {
         t.command(frame_of(STOP_AT), Command::Stop);
         let mut block = Box::new(Block::new());
         let (mut left, mut right) = (vec![0.0f32; 8192], vec![0.0f32; 8192]);
-        let mut pcm = Pcm { data: Vec::with_capacity(frames as usize * 4), peak: 0.0, clipped: 0 };
+        let mut pcm = Pcm {
+            data: Vec::with_capacity(frames as usize * 4),
+            peak: 0.0,
+            clipped: 0,
+        };
         while t.frame() < frames {
             let n = period.min((frames - t.frame()) as u32);
             assert!(t.process(n, &mut block));
@@ -264,7 +355,14 @@ impl Session {
                 }
             }
             self.capture.process(&block);
-            self.player.process(&self.view, &block, &mut Route { heard: &mut self.heard, sampler: sampler.as_deref_mut() });
+            self.player.process(
+                &self.view,
+                &block,
+                &mut Route {
+                    heard: &mut self.heard,
+                    sampler: sampler.as_deref_mut(),
+                },
+            );
             if let Some(e) = sampler.as_deref_mut() {
                 let (l, r) = (&mut left[..n as usize], &mut right[..n as usize]);
                 e.render(l, r);
@@ -274,7 +372,9 @@ impl Session {
                         let v = x * MASTER;
                         pcm.peak = pcm.peak.max(v.abs());
                         pcm.clipped += usize::from(v.abs() > 1.0);
-                        pcm.data.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+                        pcm.data.extend_from_slice(
+                            &((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes(),
+                        );
                     }
                 }
             }
@@ -289,9 +389,23 @@ impl Session {
 
     fn press(&mut self, t: &Transport) {
         let phrase = self.capture.phrase().expect("something was played");
-        let now = Now { position: t.position(), rolling: t.state().rolling(), meter: t.meter(), loop_range: t.loop_range() };
+        let now = Now {
+            position: t.position(),
+            rolling: t.state().rolling(),
+            meter: t.meter(),
+            loop_range: t.loop_range(),
+        };
         let name = format!("Capture {}", self.takes.captures() + 1);
-        let k = keep(&phrase, &mut self.project, &self.launches, &mut self.takes, TAKE, now, &name).expect("kept");
+        let k = keep(
+            &phrase,
+            &mut self.project,
+            &self.launches,
+            &mut self.takes,
+            TAKE,
+            now,
+            &name,
+        )
+        .expect("kept");
         if let Some(l) = k.launch {
             self.launches.retain(|x| x.track != l.track);
             self.launches.push(l);
@@ -300,11 +414,22 @@ impl Session {
         self.view = compile(&self.project, &self.launches);
         let (bar, tick) = bar_of(frame_of(t.position()));
         let what = match k.launch {
-            Some(l) => format!("a new clip in slot {}, playing from its place (origin tick {})", k.slot + 1, l.origin),
+            Some(l) => format!(
+                "a new clip in slot {}, playing from its place (origin tick {})",
+                k.slot + 1,
+                l.origin
+            ),
             None => format!("into the playing clip in slot {}", k.slot + 1),
         };
-        let bars = if k.bars == 1 { "1 bar".to_string() } else { format!("{} bars", k.bars) };
-        self.lines.push(format!("CAPTURE at bar {bar} tick {tick}: {} notes, {bars}, {what}", k.notes));
+        let bars = if k.bars == 1 {
+            "1 bar".to_string()
+        } else {
+            format!("{} bars", k.bars)
+        };
+        self.lines.push(format!(
+            "CAPTURE at bar {bar} tick {tick}: {} notes, {bars}, {what}",
+            k.notes
+        ));
     }
 
     fn hash(&self) -> u64 {
@@ -345,22 +470,49 @@ impl Session {
         want.sort();
         let mut got: Vec<Tick> = clip.notes.iter().map(|n| n.tick).collect();
         got.sort();
-        assert_eq!(got, want, "the clip holds what was played, where it was played");
+        assert_eq!(
+            got, want,
+            "the clip holds what was played, where it was played"
+        );
         // Heard: the riff live in bars 3 and 4, from the clip in bars 5
         // to 12, each time where it was played in the bar.
         let riff_in = |odd: bool| -> Vec<Tick> {
-            RIFF.iter().filter(|r| (r.0 / BAR == 2) == odd).map(|r| r.0 % BAR).collect()
+            RIFF.iter()
+                .filter(|r| (r.0 / BAR == 2) == odd)
+                .map(|r| r.0 % BAR)
+                .collect()
         };
         for bar in 1..=13 {
             let clip_stabs = self.in_bar(bar, STAB, false);
             let live_stabs = self.in_bar(bar, STAB, true);
-            let want_clip = if (5..=12).contains(&bar) { riff_in(bar % 2 == 1) } else { vec![] };
-            let want_live = if (3..=4).contains(&bar) { riff_in(bar == 3) } else { vec![] };
-            assert!(close(&clip_stabs, &want_clip), "bar {bar}: stabs from the clip {clip_stabs:?}, want {want_clip:?}");
-            assert!(close(&live_stabs, &want_live), "bar {bar}: live stabs {live_stabs:?}");
+            let want_clip = if (5..=12).contains(&bar) {
+                riff_in(bar % 2 == 1)
+            } else {
+                vec![]
+            };
+            let want_live = if (3..=4).contains(&bar) {
+                riff_in(bar == 3)
+            } else {
+                vec![]
+            };
+            assert!(
+                close(&clip_stabs, &want_clip),
+                "bar {bar}: stabs from the clip {clip_stabs:?}, want {want_clip:?}"
+            );
+            assert!(
+                close(&live_stabs, &want_live),
+                "bar {bar}: live stabs {live_stabs:?}"
+            );
             let clanks = self.in_bar(bar, CLANK, false);
-            let want: Vec<Tick> = if bar == 9 || bar == 11 { CLANKS.iter().map(|c| c.0 % BAR).collect() } else { vec![] };
-            assert!(close(&clanks, &want), "bar {bar}: clanks from the clip {clanks:?}");
+            let want: Vec<Tick> = if bar == 9 || bar == 11 {
+                CLANKS.iter().map(|c| c.0 % BAR).collect()
+            } else {
+                vec![]
+            };
+            assert!(
+                close(&clanks, &want),
+                "bar {bar}: clanks from the clip {clanks:?}"
+            );
         }
         // Undo on a copy: the clanks go, then the clip.
         let (mut p, mut takes) = (self.project.clone(), self.takes.clone());
@@ -374,8 +526,13 @@ impl Session {
         println!("bar  stab (live / clip)   clank (live / clip)");
         for bar in 1..=12 {
             let n = |pad, live| self.in_bar(bar, pad, live).len();
-            println!("{bar:>3}  {:>4} / {:<4}         {:>4} / {:<4}", n(STAB, true), n(STAB, false), n(CLANK, true),
-                     n(CLANK, false));
+            println!(
+                "{bar:>3}  {:>4} / {:<4}         {:>4} / {:<4}",
+                n(STAB, true),
+                n(STAB, false),
+                n(CLANK, true),
+                n(CLANK, false)
+            );
         }
     }
 }
@@ -409,7 +566,10 @@ struct Lp {
 
 impl Lp {
     fn new(hz: f32) -> Lp {
-        Lp { a: 1.0 - (-TAU * hz / RATE as f32).exp(), y: 0.0 }
+        Lp {
+            a: 1.0 - (-TAU * hz / RATE as f32).exp(),
+            y: 0.0,
+        }
     }
 
     fn run(&mut self, x: f32) -> f32 {
@@ -437,8 +597,11 @@ fn make(secs: f32, mut f: impl FnMut(f32) -> f32) -> Vec<f32> {
     (0..n)
         .flat_map(|i| {
             let left = n - i;
-            let gain =
-                if left < fade { 0.5 - 0.5 * (std::f32::consts::PI * left as f32 / fade as f32).cos() } else { 1.0 };
+            let gain = if left < fade {
+                0.5 - 0.5 * (std::f32::consts::PI * left as f32 / fade as f32).cos()
+            } else {
+                1.0
+            };
             let s = gain * f(i as f32 / RATE as f32);
             [s, s]
         })
@@ -447,7 +610,9 @@ fn make(secs: f32, mut f: impl FnMut(f32) -> f32) -> Vec<f32> {
 
 /// A sawtooth from `harmonics` sine partials.
 fn saw(hz: f32, t: f32, harmonics: usize) -> f32 {
-    (1..=harmonics).map(|k| (TAU * hz * k as f32 * t).sin() / k as f32).sum()
+    (1..=harmonics)
+        .map(|k| (TAU * hz * k as f32 * t).sin() / k as f32)
+        .sum()
 }
 
 /// Synthesised, dirty sounds on pads 0 to 4: kick, snare, hat, stab, clank.
@@ -465,7 +630,10 @@ fn sounds() -> SProject {
     let snare = make(0.35, |t| {
         let body = (TAU * 185.0 * t).sin() * (-t * 22.0).exp();
         let x = n.next();
-        0.65 * crush(drive(0.5 * body + 0.8 * (x - lp.run(x)) * (-t * 11.0).exp(), 4.0), 8)
+        0.65 * crush(
+            drive(0.5 * body + 0.8 * (x - lp.run(x)) * (-t * 11.0).exp(), 4.0),
+            8,
+        )
     });
     let mut lp = Lp::new(5000.0);
     let hat = make(0.07, |t| {
@@ -475,7 +643,10 @@ fn sounds() -> SProject {
     // A D minor chord (D3 F3 A3 D4) of sawtooths through a closing filter.
     let mut y = 0.0f32;
     let stab = make(0.7, |t| {
-        let s: f32 = [146.83, 174.61, 220.0, 293.66].iter().map(|&hz| saw(hz, t, 8)).sum();
+        let s: f32 = [146.83, 174.61, 220.0, 293.66]
+            .iter()
+            .map(|&hz| saw(hz, t, 8))
+            .sum();
         let cutoff = 500.0 + 4000.0 * (-t * 8.0).exp();
         y += (1.0 - (-TAU * cutoff / RATE as f32).exp()) * (0.25 * s - y);
         let env = (t / 0.003).min(1.0) * (-t * 5.0).exp();
@@ -483,19 +654,33 @@ fn sounds() -> SProject {
     });
     // Metal: inharmonic partials and a click.
     let clank = make(0.35, |t| {
-        let partials = [(540.0, 1.0, 9.0), (1213.0, 0.7, 12.0), (1771.0, 0.5, 16.0), (2390.0, 0.4, 20.0)];
-        let s: f32 = partials.iter().map(|&(hz, a, d)| a * (TAU * hz * t).sin() * (-t * d).exp()).sum();
+        let partials = [
+            (540.0, 1.0, 9.0),
+            (1213.0, 0.7, 12.0),
+            (1771.0, 0.5, 16.0),
+            (2390.0, 0.4, 20.0),
+        ];
+        let s: f32 = partials
+            .iter()
+            .map(|&(hz, a, d)| a * (TAU * hz * t).sin() * (-t * d).exp())
+            .sum();
         let click = n.next() * (-t * 250.0).exp();
         0.7 * crush(drive(0.6 * s + 0.5 * click, 3.0), 6)
     });
     let mut p = SProject::new();
-    for (pad, name, data) in [(KICK, "kick", kick), (SNARE, "snare", snare), (HAT, "hat", hat), (STAB, "stab", stab),
-                              (CLANK, "clank", clank)] {
+    for (pad, name, data) in [
+        (KICK, "kick", kick),
+        (SNARE, "snare", snare),
+        (HAT, "hat", hat),
+        (STAB, "stab", stab),
+        (CLANK, "clank", clank),
+    ] {
         let s = Source::new(name, RATE, 2, data).expect("valid source");
         p.add_source(s.clone());
         let mut r = Region::whole(&s);
         r.mode = PlayMode::OneShot;
-        p.set_pad(usize::from(pad), Some(Pad::new(name, Layer::new(r))), None).expect("valid pad");
+        p.set_pad(usize::from(pad), Some(Pad::new(name, Layer::new(r))), None)
+            .expect("valid pad");
     }
     p
 }
@@ -520,5 +705,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

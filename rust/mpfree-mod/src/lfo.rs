@@ -24,18 +24,47 @@ pub enum Shape {
     Drift,
 }
 
-pub const SHAPES: &[&str] = &["Sine", "Triangle", "Saw up", "Saw down", "Square", "S&H", "Drift"];
+pub const SHAPES: &[&str] = &[
+    "Sine", "Triangle", "Saw up", "Saw down", "Square", "S&H", "Drift",
+];
 
 impl Shape {
     pub fn from_index(i: usize) -> Shape {
-        [Shape::Sine, Shape::Triangle, Shape::SawUp, Shape::SawDown, Shape::Square, Shape::Hold, Shape::Drift][i.min(6)]
+        [
+            Shape::Sine,
+            Shape::Triangle,
+            Shape::SawUp,
+            Shape::SawDown,
+            Shape::Square,
+            Shape::Hold,
+            Shape::Drift,
+        ][i.min(6)]
     }
-    pub fn index(self) -> usize { self as usize }
+    pub fn index(self) -> usize {
+        self as usize
+    }
 }
 
 /// Synced lengths in beats, for the Sync choice. "Off" runs free at Rate.
-pub const SYNC_BEATS: [f64; 13] = [0.0, 0.125, 0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 32.0];
-pub const SYNC_NAMES: &[&str] = &["Off", "1/32", "1/16", "1/8 T", "1/8", "1/4 T", "1/4", "1/4 D", "1/2", "1 bar", "2 bars", "4 bars", "8 bars"];
+pub const SYNC_BEATS: [f64; 13] = [
+    0.0,
+    0.125,
+    0.25,
+    1.0 / 3.0,
+    0.5,
+    2.0 / 3.0,
+    1.0,
+    1.5,
+    2.0,
+    4.0,
+    8.0,
+    16.0,
+    32.0,
+];
+pub const SYNC_NAMES: &[&str] = &[
+    "Off", "1/32", "1/16", "1/8 T", "1/8", "1/4 T", "1/4", "1/4 D", "1/2", "1 bar", "2 bars",
+    "4 bars", "8 bars",
+];
 
 /// LFO parameter ids (the `param` of an `Owner::Mod` address).
 pub mod ids {
@@ -48,11 +77,61 @@ pub mod ids {
 }
 
 pub static LFO_PARAMS: [ParamInfo; 5] = [
-    ParamInfo { id: ids::SHAPE, name: "Shape", group: "LFO", min: 0.0, max: 6.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SHAPES), readonly: false },
-    ParamInfo { id: ids::RATE, name: "Rate", group: "LFO", min: 0.01, max: 40.0, default: 1.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: ids::SYNC, name: "Sync", group: "LFO", min: 0.0, max: 12.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(SYNC_NAMES), readonly: false },
-    ParamInfo { id: ids::PHASE, name: "Phase", group: "LFO", min: 0.0, max: 100.0, default: 0.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: ids::RETRIGGER, name: "Retrigger", group: "LFO", min: 0.0, max: 1.0, default: 0.0, unit: Unit::None, curve: Curve::Toggle, readonly: false },
+    ParamInfo {
+        id: ids::SHAPE,
+        name: "Shape",
+        group: "LFO",
+        min: 0.0,
+        max: 6.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SHAPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::RATE,
+        name: "Rate",
+        group: "LFO",
+        min: 0.01,
+        max: 40.0,
+        default: 1.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::SYNC,
+        name: "Sync",
+        group: "LFO",
+        min: 0.0,
+        max: 12.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SYNC_NAMES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::PHASE,
+        name: "Phase",
+        group: "LFO",
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::RETRIGGER,
+        name: "Retrigger",
+        group: "LFO",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Toggle,
+        readonly: false,
+    },
 ];
 
 /// A tiny deterministic random series (one per LFO), so renders repeat.
@@ -60,7 +139,9 @@ pub static LFO_PARAMS: [ParamInfo; 5] = [
 pub(crate) struct Rng(u32);
 
 impl Rng {
-    pub(crate) fn new(seed: u32) -> Rng { Rng(seed.wrapping_mul(0x9E37_79B9) | 1) }
+    pub(crate) fn new(seed: u32) -> Rng {
+        Rng(seed.wrapping_mul(0x9E37_79B9) | 1)
+    }
     /// -1 to 1.
     pub(crate) fn next(&mut self) -> f32 {
         // xorshift32
@@ -95,7 +176,20 @@ pub struct Lfo {
 
 impl Lfo {
     pub fn new(seed: u32) -> Lfo {
-        let mut l = Lfo { shape: Shape::Sine, rate: 1.0, sync: 0, phase_offset: 0.0, retrigger: false, phase: 0.0, free_cycle: 0, cycle: i64::MIN, rng: Rng::new(seed), seed, held: [0.0; 2], out: 0.0 };
+        let mut l = Lfo {
+            shape: Shape::Sine,
+            rate: 1.0,
+            sync: 0,
+            phase_offset: 0.0,
+            retrigger: false,
+            phase: 0.0,
+            free_cycle: 0,
+            cycle: i64::MIN,
+            rng: Rng::new(seed),
+            seed,
+            held: [0.0; 2],
+            out: 0.0,
+        };
         l.reset();
         l
     }
@@ -111,7 +205,9 @@ impl Lfo {
     }
 
     pub fn set_param(&mut self, id: u16, v: f32) {
-        let Some(p) = LFO_PARAMS.iter().find(|p| p.id == id) else { return };
+        let Some(p) = LFO_PARAMS.iter().find(|p| p.id == id) else {
+            return;
+        };
         let v = p.clamp(v);
         match id {
             ids::SHAPE => self.shape = Shape::from_index(v as usize),
@@ -134,7 +230,9 @@ impl Lfo {
         }
     }
 
-    pub fn is_synced(&self) -> bool { self.sync > 0 }
+    pub fn is_synced(&self) -> bool {
+        self.sync > 0
+    }
 
     /// A note from the host: restarts the cycle if Retrigger is on.
     pub fn trigger(&mut self) {
@@ -145,7 +243,9 @@ impl Lfo {
     }
 
     /// The last value, -1 to 1.
-    pub fn value(&self) -> f32 { self.out }
+    pub fn value(&self) -> f32 {
+        self.out
+    }
 
     /// Moves on by one tick of `secs` seconds and returns the new value.
     /// `beats` is the transport position at the tick when it plays.
@@ -185,7 +285,13 @@ fn wave(shape: Shape, ph: f32, held: [f32; 2]) -> f32 {
         Shape::Triangle => 1.0 - 4.0 * ((ph + 0.25).fract() - 0.5).abs(),
         Shape::SawUp => 2.0 * ph - 1.0,
         Shape::SawDown => 1.0 - 2.0 * ph,
-        Shape::Square => if ph < 0.5 { 1.0 } else { -1.0 },
+        Shape::Square => {
+            if ph < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
         Shape::Hold => held[1],
         Shape::Drift => {
             let t = 0.5 - 0.5 * (ph * std::f32::consts::PI).cos();
@@ -227,7 +333,11 @@ mod tests {
         let first = l.tick(0.01, None);
         assert!(first.abs() < 1e-6);
         let rest: Vec<f32> = (0..39).map(|_| l.tick(0.01, None)).collect();
-        assert!((rest[9] - 1.0).abs() < 1e-4, "a quarter cycle in is the top: {}", rest[9]);
+        assert!(
+            (rest[9] - 1.0).abs() < 1e-4,
+            "a quarter cycle in is the top: {}",
+            rest[9]
+        );
         assert!(l.tick(0.01, None).abs() < 1e-3);
     }
 
@@ -236,7 +346,10 @@ mod tests {
         let mut l = Lfo::new(1);
         l.set_param(ids::SYNC, 6.0); // 1/4: one cycle per beat
         assert!((l.tick(0.0, Some(0.25)) - 1.0).abs() < 1e-6);
-        assert!((l.tick(0.0, Some(7.25)) - 1.0).abs() < 1e-6, "same phase a few beats later");
+        assert!(
+            (l.tick(0.0, Some(7.25)) - 1.0).abs() < 1e-6,
+            "same phase a few beats later"
+        );
         // Stopped transport: runs free.
         assert!(l.tick(0.01, None).is_finite());
     }
@@ -247,7 +360,9 @@ mod tests {
             let mut l = Lfo::new(seed);
             l.set_param(ids::SHAPE, Shape::Hold.index() as f32);
             l.set_param(ids::SYNC, 6.0);
-            (0..16).map(|i| l.tick(0.0, Some(i as f64 * 0.5))).collect::<Vec<f32>>()
+            (0..16)
+                .map(|i| l.tick(0.0, Some(i as f64 * 0.5)))
+                .collect::<Vec<f32>>()
         };
         let a = run(7);
         assert_eq!(a, run(7));

@@ -8,10 +8,14 @@
 //! (polymeter). Recorded ticks stay exact; quantise is a clip setting
 //! applied on playback, so it can be changed or undone later.
 //!
-//! This first version holds notes only. Chance, trig conditions, ratchets,
-//! parameter locks, audio clips, scenes and the arrangement come in later
-//! roadmap steps without changing what is here.
+//! A note has a chance to play on each pass. [`steps`] is the step
+//! sequencer's view of a clip: 16 steps to a page, each step the notes of
+//! one sound nearest its grid line, with velocity, length, nudge and
+//! chance. Trig conditions, ratchets, parameter locks, audio clips, scenes
+//! and the arrangement come in later roadmap steps.
 #![forbid(unsafe_code)]
+
+pub mod steps;
 
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
@@ -38,6 +42,22 @@ pub struct Note {
     pub note: u8,
     /// 1 to 127.
     pub velocity: u8,
+    /// The chance it plays on each pass, in percent: 1 to 100 (always).
+    pub chance: u8,
+}
+
+impl Note {
+    /// A note that always plays. New code should build notes with this, so
+    /// that fields added later take their defaults.
+    pub fn new(tick: Tick, len: Tick, note: u8, velocity: u8) -> Note {
+        Note {
+            tick,
+            len,
+            note,
+            velocity,
+            chance: 100,
+        }
+    }
 }
 
 /// How fast a clip plays against the song: `num / den` clip ticks per song
@@ -114,19 +134,28 @@ pub struct Clip {
 pub enum ModelError {
     ClipLength,
     TooManyNotes,
-    /// A note's tick, length, note number or velocity is out of range.
+    /// A note's tick, length, note number, velocity or chance is out of range.
     BadNote(usize),
     BadSpeed,
     BadSwing,
     BadQuantise,
     TooManyTracks,
     BadSlot,
+    /// A note to take out is not in the clip (see [`steps::Edit`]).
+    MissingNote,
 }
 
 impl Clip {
     /// An empty clip of `length` ticks at normal speed.
     pub fn new(name: &str, length: Tick) -> Clip {
-        Clip { name: name.to_string(), length, speed: Speed::NORMAL, swing: None, quantise: None, notes: Vec::new() }
+        Clip {
+            name: name.to_string(),
+            length,
+            speed: Speed::NORMAL,
+            swing: None,
+            quantise: None,
+            notes: Vec::new(),
+        }
     }
 
     /// Add one note, for example a recorded one. A note out of range, or
@@ -159,6 +188,7 @@ impl Clip {
             && (1..=MAX_CLIP_TICKS).contains(&n.len)
             && n.note <= 127
             && (1..=127).contains(&n.velocity)
+            && (1..=100).contains(&n.chance)
     }
 
     /// Every value in range.
@@ -172,10 +202,16 @@ impl Clip {
         if Speed::new(self.speed.num, self.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
         }
-        if self.swing.is_some_and(|s| Swing::new(s.grid, s.amount).is_none()) {
+        if self
+            .swing
+            .is_some_and(|s| Swing::new(s.grid, s.amount).is_none())
+        {
             return Err(ModelError::BadSwing);
         }
-        if self.quantise.is_some_and(|q| Quantise::new(q.grid, q.strength).is_none()) {
+        if self
+            .quantise
+            .is_some_and(|q| Quantise::new(q.grid, q.strength).is_none())
+        {
             return Err(ModelError::BadQuantise);
         }
         for (i, n) in self.notes.iter().enumerate() {
@@ -204,7 +240,13 @@ pub struct Track {
 
 impl Track {
     pub fn new(name: &str, dest: DestId) -> Track {
-        Track { name: name.to_string(), dest, swing: None, mute: false, slots: Default::default() }
+        Track {
+            name: name.to_string(),
+            dest,
+            swing: None,
+            mute: false,
+            slots: Default::default(),
+        }
     }
 }
 
@@ -224,7 +266,9 @@ impl Project {
             return Err(ModelError::TooManyTracks);
         }
         for t in &self.tracks {
-            if t.swing.is_some_and(|s| Swing::new(s.grid, s.amount).is_none()) {
+            if t.swing
+                .is_some_and(|s| Swing::new(s.grid, s.amount).is_none())
+            {
                 return Err(ModelError::BadSwing);
             }
             for c in t.slots.iter().flatten() {
@@ -247,9 +291,21 @@ mod tests {
     #[test]
     fn clips_check_their_values() {
         let mut c = Clip::new("beat", 3840);
-        c.notes.push(Note { tick: 0, len: 240, note: 0, velocity: 100 });
+        c.notes.push(Note {
+            tick: 0,
+            len: 240,
+            note: 0,
+            velocity: 100,
+            chance: 100,
+        });
         assert_eq!(c.check(), Ok(()));
-        c.notes.push(Note { tick: 3840, len: 240, note: 0, velocity: 100 });
+        c.notes.push(Note {
+            tick: 3840,
+            len: 240,
+            note: 0,
+            velocity: 100,
+            chance: 100,
+        });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
         c.notes[1].velocity = 0;
@@ -262,23 +318,82 @@ mod tests {
         assert_eq!(c.check(), Ok(()));
         c.speed = Speed { num: 8, den: 1 };
         assert_eq!(c.check(), Err(ModelError::BadSpeed));
-        assert!(Speed::new(1, 8).is_some() && Speed::new(4, 1).is_some() && Speed::new(5, 4).is_none());
+        assert!(
+            Speed::new(1, 8).is_some() && Speed::new(4, 1).is_some() && Speed::new(5, 4).is_none()
+        );
     }
 
     #[test]
     fn recorded_notes_are_checked_as_they_are_added() {
         let mut c = Clip::new("take", 960);
-        assert_eq!(c.add_note(Note { tick: 959, len: 2000, note: 3, velocity: 1 }), Ok(()));
-        assert_eq!(c.add_note(Note { tick: 960, len: 10, note: 3, velocity: 100 }), Err(ModelError::BadNote(1)));
-        assert_eq!(c.add_note(Note { tick: 0, len: 0, note: 3, velocity: 100 }), Err(ModelError::BadNote(1)));
+        assert_eq!(
+            c.add_note(Note {
+                tick: 959,
+                len: 2000,
+                note: 3,
+                velocity: 1,
+                chance: 100
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            c.add_note(Note {
+                tick: 960,
+                len: 10,
+                note: 3,
+                velocity: 100,
+                chance: 100
+            }),
+            Err(ModelError::BadNote(1))
+        );
+        assert_eq!(
+            c.add_note(Note {
+                tick: 0,
+                len: 0,
+                note: 3,
+                velocity: 100,
+                chance: 100
+            }),
+            Err(ModelError::BadNote(1))
+        );
         assert_eq!(c.notes.len(), 1);
-        c.notes = vec![Note { tick: 0, len: 1, note: 0, velocity: 1 }; MAX_NOTES];
-        assert_eq!(c.add_note(Note { tick: 0, len: 1, note: 0, velocity: 1 }), Err(ModelError::TooManyNotes));
+        c.notes = vec![
+            Note {
+                tick: 0,
+                len: 1,
+                note: 0,
+                velocity: 1,
+                chance: 100
+            };
+            MAX_NOTES
+        ];
+        assert_eq!(
+            c.add_note(Note {
+                tick: 0,
+                len: 1,
+                note: 0,
+                velocity: 1,
+                chance: 100
+            }),
+            Err(ModelError::TooManyNotes)
+        );
         assert_eq!(c.check(), Ok(()));
         // Equal notes are the same note: removing one leaves the rest.
-        assert!(c.remove_note(&Note { tick: 0, len: 1, note: 0, velocity: 1 }));
+        assert!(c.remove_note(&Note {
+            tick: 0,
+            len: 1,
+            note: 0,
+            velocity: 1,
+            chance: 100
+        }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
-        assert!(!c.remove_note(&Note { tick: 5, len: 1, note: 0, velocity: 1 }));
+        assert!(!c.remove_note(&Note {
+            tick: 5,
+            len: 1,
+            note: 0,
+            velocity: 1,
+            chance: 100
+        }));
     }
 
     #[test]
