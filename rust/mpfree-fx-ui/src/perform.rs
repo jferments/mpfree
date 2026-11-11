@@ -20,7 +20,13 @@
 //! Everything reaches the node as parameter events and notes: a pad is a
 //! NoteOn and NoteOff of its number ([`PerformAction::Press`],
 //! [`PerformAction::Release`]); the rest is [`PerformAction::Set`].
+//!
+//! In lock mode (a step held, [`PerformPanel::set_locks`]) a pad tap locks
+//! the pad's Hold on for the step, or takes that lock off; the pads light
+//! as the step's locks say. Turns and the XY pad lock their parameters.
+//! See [`crate::lock`].
 
+use crate::lock::Locks;
 use crate::state::FxState;
 use mpfree_fx::ids::perform as pf;
 use mpfree_fx::{perform_state, XyPad, PERFORM_AMOUNTS, PERFORM_EFFECTS, PERFORM_SLOTS};
@@ -65,6 +71,8 @@ pub struct PadView {
 pub struct PerformPads {
     pub pads: Vec<PadView>,
     pub selected: Option<usize>,
+    /// Lock mode: what is held ("Step 5"); the pads show its locks.
+    pub locking: Option<String>,
     fingers: Vec<(u64, usize)>,
 }
 
@@ -81,6 +89,7 @@ impl PerformPads {
         PerformPads {
             pads: vec![PadView::default(); PERFORM_SLOTS],
             selected: None,
+            locking: None,
             fingers: Vec::new(),
         }
     }
@@ -109,10 +118,10 @@ impl Widget for PerformPads {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let on = self.pads.iter().filter(|p| p.state != 0).count();
-        let right = if on == 0 {
-            "hold a pad to play it".to_string()
-        } else {
-            format!("{on} playing")
+        let right = match &self.locking {
+            Some(held) => format!("{held}: tap a pad to lock it"),
+            None if on == 0 => "hold a pad to play it".to_string(),
+            None => format!("{on} playing"),
         };
         cx.titled_panel(r, "Perform pads", &right);
         for (i, p) in self.pads.iter().enumerate() {
@@ -428,6 +437,10 @@ pub enum PerformAction {
     Press(usize),
     /// Pad `k` let go: `NoteOff { note: k }`.
     Release(usize),
+    /// Lock mode: lock parameter `id` at `value` on the held steps.
+    Lock { id: u16, value: f32 },
+    /// Lock mode: take the held steps' lock on `id` off.
+    Unlock { id: u16 },
 }
 
 pub struct PerformPanel {
@@ -438,6 +451,8 @@ pub struct PerformPanel {
     focus: Option<usize>,
     xy: XyPad,
     trail: Vec<(f32, f32)>,
+    /// Lock mode: the held step and its locks.
+    locks: Option<Locks>,
     pub state: FxState,
 }
 
@@ -476,6 +491,7 @@ impl PerformPanel {
             focus: None,
             xy: XyPad::perform(),
             trail: Vec::new(),
+            locks: None,
             state,
         };
         p.refresh(ui);
@@ -503,6 +519,73 @@ impl PerformPanel {
         &self.xy
     }
 
+    /// Lock mode on (a step held, with its locks on this Perform FX) or
+    /// off (`None`). See [`crate::lock`].
+    pub fn set_locks(&mut self, ui: &mut Ui, locks: Option<Locks>) {
+        self.locks = locks;
+        self.refresh(ui);
+    }
+
+    pub fn locks(&self) -> Option<&Locks> {
+        self.locks.as_ref()
+    }
+
+    /// Lock mode: pad `k` (on the screen or the hardware) locks its Hold
+    /// on for the held step, or takes that lock off. `None` outside lock
+    /// mode: the pad plays as usual.
+    pub fn pad_lock(&mut self, ui: &mut Ui, k: usize) -> Option<PerformAction> {
+        if k >= PERFORM_SLOTS {
+            return None;
+        }
+        let id = pf::hold(k);
+        let l = self.locks.as_mut()?;
+        let a = if l.get(id).is_some_and(|v| v >= 0.5) {
+            l.take(id);
+            PerformAction::Unlock { id }
+        } else {
+            l.put(id, 1.0);
+            PerformAction::Lock { id, value: 1.0 }
+        };
+        self.selected = k;
+        self.focus = None;
+        self.refresh(ui);
+        Some(a)
+    }
+
+    /// Lock mode: takes the selected tile's lock off the held step.
+    pub fn unlock(&mut self, ui: &mut Ui) -> Option<PerformAction> {
+        let id = self.state.params[self.focus?].id;
+        if !self.locks.as_mut()?.take(id) {
+            return None;
+        }
+        self.refresh(ui);
+        Some(PerformAction::Unlock { id })
+    }
+
+    /// Lock mode: takes every lock the held step has on Perform FX off.
+    pub fn unlock_all(&mut self, ui: &mut Ui) -> Vec<PerformAction> {
+        let Some(l) = self.locks.as_mut() else {
+            return Vec::new();
+        };
+        let out = l
+            .values
+            .drain(..)
+            .map(|(id, _)| PerformAction::Unlock { id })
+            .collect();
+        self.refresh(ui);
+        out
+    }
+
+    /// Parameter `i`'s value as the page shows it: the held step's lock in
+    /// lock mode, else the effect's own.
+    fn shown(&self, i: usize) -> f32 {
+        let id = self.state.params[i].id;
+        self.locks
+            .as_ref()
+            .and_then(|l| l.get(id))
+            .unwrap_or(self.state.values[i])
+    }
+
     /// What Q-Links 1 to 4 turn: the DJ filter, the echo, its time, and
     /// the selected pad's Amount.
     pub fn qlink_ids(&self) -> [u16; 4] {
@@ -519,7 +602,7 @@ impl PerformPanel {
     pub fn qlink(&mut self, ui: &mut Ui, n: usize, ticks: i32) -> Option<PerformAction> {
         let id = *self.qlink_ids().get(n)?;
         let i = self.state.index(id)?;
-        let old = self.state.values[i];
+        let old = self.shown(i);
         let p = self.state.params[i];
         let mut new = match p.curve {
             Curve::Stepped | Curve::Choice(_) | Curve::Toggle => old + ticks as f32,
@@ -537,7 +620,7 @@ impl PerformPanel {
         match self.focus {
             Some(i) => {
                 let p = self.state.params[i];
-                let v = self.state.values[i];
+                let v = self.shown(i);
                 let new = match p.curve {
                     Curve::Stepped | Curve::Choice(_) | Curve::Toggle => v + ticks as f32,
                     _ => p.from_unit(p.to_unit(v) + ticks as f32 / crate::view::DETENTS),
@@ -549,6 +632,16 @@ impl PerformPanel {
     }
 
     fn set(&mut self, ui: &mut Ui, i: usize, v: f32) -> Option<PerformAction> {
+        if let Some(l) = self.locks.as_mut() {
+            let p = self.state.params[i];
+            let v = p.clamp(v);
+            if p.readonly || l.get(p.id) == Some(v) {
+                return None;
+            }
+            l.put(p.id, v);
+            self.refresh(ui);
+            return Some(PerformAction::Lock { id: p.id, value: v });
+        }
         let set = self.state.set(i, v);
         self.refresh(ui);
         set.map(|value| PerformAction::Set {
@@ -612,6 +705,28 @@ impl PerformPanel {
         let tile_param =
             |s: &PerformPanel, k: usize| tiles.get(k).and_then(|&id| s.state.index(id));
         match (ev.widget.as_str(), &ev.kind) {
+            (PADS, EventKind::Pad { index, down: true }) if self.locks.is_some() => {
+                self.pad_lock(ui, *index).into_iter().collect()
+            }
+            (PADS, EventKind::Pad { down: false, .. }) if self.locks.is_some() => {
+                self.refresh(ui);
+                Vec::new()
+            }
+            (XY, EventKind::Pad { down: true, .. }) if self.locks.is_some() => {
+                // Lock the DJ filter and the echo where the finger is.
+                let Some((x, y)) = ui.get::<XyView>(XY).and_then(|w| w.finger) else {
+                    return Vec::new();
+                };
+                let (xa, ya) = (self.xy.x, self.xy.y);
+                let mut out = Vec::new();
+                for (axis, pos) in [(xa, x), (ya, y)] {
+                    if let Some(i) = self.state.index(axis.param) {
+                        out.extend(self.set(ui, i, axis.value(pos)));
+                    }
+                }
+                out
+            }
+            (XY, EventKind::Pad { down: false, .. }) if self.locks.is_some() => Vec::new(),
             (PADS, EventKind::Pad { index, down: true }) => {
                 self.selected = *index;
                 self.focus = None;
@@ -657,7 +772,7 @@ impl PerformPanel {
                     return Vec::new();
                 };
                 self.focus = Some(i);
-                let v = self.state.values[i] + *delta as f32;
+                let v = self.shown(i) + *delta as f32;
                 self.set(ui, i, v).into_iter().collect()
             }
             (QLINKS, EventKind::Select(n)) => {
@@ -670,12 +785,13 @@ impl PerformPanel {
         }
     }
 
-    /// The text for parameter `id`'s value.
+    /// The text for parameter `id`'s value (as shown: locked in lock
+    /// mode).
     fn line(&self, id: u16) -> String {
         let Some(i) = self.state.index(id) else {
             return String::new();
         };
-        let (n, u) = value_text(&self.state.params[i], self.state.values[i]);
+        let (n, u) = value_text(&self.state.params[i], self.shown(i));
         if u.is_empty() {
             n
         } else {
@@ -685,7 +801,10 @@ impl PerformPanel {
 
     /// Puts the state into the widgets.
     pub fn refresh(&mut self, ui: &mut Ui) {
-        let st = &self.state;
+        // In lock mode the page shows what the held step plays.
+        let over = self.locks.as_ref().map(|l| l.over(&self.state));
+        let st = over.as_ref().unwrap_or(&self.state);
+        let locks = self.locks.as_ref();
         let v = |id: u16| st.value(id);
         let playing: Vec<String> = (0..PERFORM_SLOTS)
             .filter(|&k| v(pf::slot(k) + pf::STATE) == perform_state::ON)
@@ -699,7 +818,9 @@ impl PerformPanel {
                 format!("punch in on {}", self.line(pf::QUANTISE)),
             ];
             sub.retain(|s| !s.is_empty());
-            if !playing.is_empty() {
+            if let Some(l) = locks {
+                sub.insert(0, format!("Locking {}", l.line()));
+            } else if !playing.is_empty() {
                 sub.push(format!("playing: {}", playing.join(", ")));
             }
             w.subtitle = sub.join(" · ");
@@ -723,9 +844,20 @@ impl PerformPanel {
                         text_of(st, s + pf::AMOUNT)
                     )
                 };
-                p.state = v(s + pf::STATE).round().clamp(0.0, 3.0) as u8;
+                p.state = match locks {
+                    // Lit where the held step locks the pad on.
+                    Some(l) => {
+                        if l.get(pf::hold(k)).is_some_and(|h| h >= 0.5) {
+                            perform_state::ON.round() as u8
+                        } else {
+                            0
+                        }
+                    }
+                    None => v(s + pf::STATE).round().clamp(0.0, 3.0) as u8,
+                };
             }
             w.selected = Some(self.selected);
+            w.locking = locks.map(|l| l.held.clone());
         }
         let dj = v(pf::DJ_FILTER);
         let echo = v(pf::ECHO);
@@ -763,8 +895,9 @@ impl PerformPanel {
         let fx_now = v(pf::slot(self.selected) + pf::EFFECT) as usize;
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
             w.title = format!("Pad {}", self.selected + 1);
-            w.caption = match PERFORM_AMOUNTS.get(fx_now) {
-                Some(m) if !m.is_empty() => format!("Amount: {m}"),
+            w.caption = match (locks, PERFORM_AMOUNTS.get(fx_now)) {
+                (Some(l), _) => format!("{}: a turn locks it · amber tiles are locked", l.held),
+                (None, Some(m)) if !m.is_empty() => format!("Amount: {m}"),
                 _ => "Q-Links: DJ filter, echo, echo time, amount".to_string(),
             };
             w.tiles = ids
@@ -785,11 +918,13 @@ impl PerformPanel {
                             bipolar: p.min < 0.0 && p.max > 0.0,
                         },
                     };
+                    let locked = locks.is_some_and(|l| l.get(p.id).is_some());
                     Tile {
                         label: p.name.to_string(),
                         value,
                         unit: unit.to_string(),
                         color: match (q, &kind) {
+                            _ if locked => theme.warn,
                             (Some(q), _) => QLINK_COLORS[q],
                             (None, TileKind::Knob { .. }) => theme.text_dim,
                             (None, _) => theme.accent,
