@@ -403,6 +403,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-chain-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-mod",
+ "mpfree-param",
+ "mpfree-synth-ui",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-controller"
 version = "0.1.0"
 

@@ -68,3 +68,11 @@ Macros and the morph position are targets too, so they can be locked on a step, 
 - `save()` and `load()` as `key = value` lines for `mpfree-store`'s "mod" settings.
 
 The page owner sets a page's default knobs; a user binding overrides them. Where the macro and chain screens open is a layout proposal to the Hello MPC thread and Jay.
+
+## The chain editor and the macros panel (`mpfree-chain-ui`)
+
+Two panels on `mpfree-ui`, drawn with theme tokens only. Where they open is a **proposal** to the Hello MPC thread, which owns the layout (suggested: the chain editor from a mixer strip's insert row and from the Sample tab's FX sub-tab; the macros as a bank of the Play page's Q-Link column, with this panel as a later full view). Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder).
+
+- **Chain editor** (`ChainView`): the strip's inserts (number, name, a line about its settings, a dot per macro that moves it, `~` when the matrix does, a power button that bypasses with spillover; Up, Down, Remove, + Add effect); the selected effect's page (its parameter groups as tabs, up to eight knobs, each with a green ring for how far modulation moves it and a badge in its macro's colour); and the Modulate column for the knob last touched (macro 1 to 8, Learn to a Q-Link, matrix rows with a depth bar, + LFO, + Follower; a switch takes macros only).
+- **Macros and morph** (`MacrosView`): four macro cards at a time (drag the knob; each target shows its range as a bar, where it is now, and the range as text; a tap asks to edit its range and curve), and the morph: A to B slider, what changes and where each parameter is now, Snap back to A, Save A, Save B.
+- Touches become `ChainAction`s and `MacroAction`s for the app: parameter moves go to the mod engine as `ModEvent::Set`, chain edits to the mixer as `Edit`s, macro maps and rows to the engine.
