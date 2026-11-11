@@ -132,6 +132,71 @@ const FM_OP_Q: [[u16; 4]; 6] = {
     q
 };
 
+use mpfree_synth::wavetable::params::{self as wp, osc_id};
+
+/// Wavetable: a page per oscillator (Q-Links on table position, warp,
+/// fine and level, the knobs played live), then the mix, filter, mod
+/// envelope, LFO, amp envelope, voice and pressure.
+const WT: &[PlanPage] = &[
+    pg(
+        "Osc A",
+        &["Osc A"],
+        &[
+            osc_id(0, wp::POSITION),
+            osc_id(0, wp::WARP),
+            osc_id(0, wp::FINE),
+            osc_id(0, wp::OSC_LEVEL),
+        ],
+    ),
+    pg(
+        "Osc B",
+        &["Osc B"],
+        &[
+            osc_id(1, wp::POSITION),
+            osc_id(1, wp::WARP),
+            osc_id(1, wp::FINE),
+            osc_id(1, wp::OSC_LEVEL),
+        ],
+    ),
+    pg(
+        "Mix",
+        &["Mix", "Unison"],
+        &[
+            wp::SUB_LEVEL,
+            wp::NOISE_LEVEL,
+            wp::UNISON_DETUNE,
+            wp::UNISON_SPREAD,
+        ],
+    ),
+    pg("Filter", &["Filter"], &[]),
+    pg(
+        "Mod",
+        &["Mod env"],
+        &[wp::MENV_POS_A, wp::MENV_WARP, wp::MENV_D, wp::VEL_POS],
+    ),
+    pg(
+        "LFO",
+        &["LFO"],
+        &[wp::LFO_RATE, wp::LFO_POS_A, wp::LFO_POS_B, wp::LFO_PITCH],
+    ),
+    pg("Env", &["Amp env"], &[]),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[wp::GLIDE, wp::BEND_RANGE, wp::LEVEL, wp::PAN],
+    ),
+    pg(
+        "Pressure",
+        &["Pressure"],
+        &[
+            wp::PRESS_THRESHOLD,
+            wp::PRESS_FULL_AT,
+            wp::press_depth(0),
+            wp::press_depth(1),
+        ],
+    ),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, BASE_NOTE, LEVEL as DRUM_LEVEL};
 
 /// The drum synth's Q-Links on pad `n`'s page: tune, decay, tone, snap.
@@ -206,6 +271,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
         "mpfree.fm" => Some(FM),
+        "mpfree.wavetable" => Some(WT),
         "mpfree.drums" => Some(DRUMS),
         "mpfree.pluck" => Some(PLUCK),
         _ => None,
