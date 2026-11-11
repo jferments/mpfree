@@ -18,7 +18,8 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{GuideView, MenuView, PadLevel, Settings, Status, View, TABS};
-use crate::touchlab_page::TouchLabView;
+use crate::calibrate_page::CalibrateView;
+use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
@@ -182,6 +183,8 @@ pub enum ToUi {
     ClearConsole,
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// Open the Calibrate touch page; any `Show` closes it again.
+    CalibrateTouch,
     Quit,
 }
 
@@ -220,8 +223,9 @@ pub struct Player {
     /// timed step there is none, so the step's own lines go there.
     console_from_lines: bool,
     console_backlog: VecDeque<String>,
-    /// The Touch lab page is on screen (over `view`, which it returns to).
-    lab_open: bool,
+    /// The widget of the touch page on screen (Touch lab, Calibrate touch),
+    /// over `view`, which it returns to.
+    touch_page: Option<&'static str>,
 }
 
 impl Player {
@@ -256,6 +260,8 @@ impl Player {
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
         ui.add("touchlab", TouchLabView::new());
         ui.add_full_page("Touch lab", "touchlab").expect("touch lab layout");
+        ui.add("calibrate", CalibrateView::new());
+        ui.add_full_page("Calibrate touch", "calibrate").expect("calibrate layout");
         let _ = ui.show("Loading");
         let status = Status { shift: false, pad_level: PadLevel::Off, repeat: false, latched: false, rate: "1/16",
                               bpm: 120.0 };
@@ -263,7 +269,7 @@ impl Player {
                              timing: Timing { last_ms: f32::NAN, ..Timing::default() }, screen_row: "-".to_string(),
                              timed, ready: false, view: View::Play, status, settings: Settings::default(),
                              session: ("Starting".to_string(), Tone::Dim),
-                             console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false };
+                             console_from_lines: timed, console_backlog: VecDeque::new(), touch_page: None };
         p.show_timing();
         p.refresh_chips();
         p.refresh_hint();
@@ -541,35 +547,54 @@ impl Player {
                 self.ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
-            ToUi::TouchLab => {
-                self.ready = true;
-                if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                    lab.reset();
-                }
-                let _ = self.ui.show("Touch lab");
-                self.lab_open = true;
-            }
+            ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
+            ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
             ToUi::Quit => {}
         }
     }
 
-    /// Close the Touch lab if it is open (a step in progress is logged).
-    fn close_lab(&mut self) {
-        if !self.lab_open {
-            return;
-        }
-        self.lab_open = false;
-        if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-            lab.leave();
-        }
-        self.print_lab_lines();
+    fn open_touch_page(&mut self, widget: &'static str, page: &str) {
+        self.ready = true;
+        self.close_touch_page();
+        self.touch_page = Some(widget);
+        self.with_touch_page(|p| p.open());
+        let _ = self.ui.show(page);
+        self.print_touch_page_lines();
     }
 
-    fn print_lab_lines(&mut self) {
-        if !self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.has_lines()) {
+    /// The open touch page, to read (nothing is redrawn).
+    fn touch_page_ref(&self) -> Option<&dyn TouchPage> {
+        match self.touch_page? {
+            "touchlab" => self.ui.get::<TouchLabView>("touchlab").map(|p| p as &dyn TouchPage),
+            "calibrate" => self.ui.get::<CalibrateView>("calibrate").map(|p| p as &dyn TouchPage),
+            _ => None,
+        }
+    }
+
+    /// Change the open touch page (it is redrawn).
+    fn with_touch_page<R>(&mut self, f: impl FnOnce(&mut dyn TouchPage) -> R) -> Option<R> {
+        match self.touch_page? {
+            "touchlab" => self.ui.get_mut::<TouchLabView>("touchlab").map(|p| f(p)),
+            "calibrate" => self.ui.get_mut::<CalibrateView>("calibrate").map(|p| f(p)),
+            _ => None,
+        }
+    }
+
+    /// Close the touch page if one is open (a step in progress is logged).
+    fn close_touch_page(&mut self) {
+        if self.touch_page.is_none() {
             return;
         }
-        let lines = self.ui.get_mut::<TouchLabView>("touchlab").map(|l| l.take_lines()).unwrap_or_default();
+        self.with_touch_page(|p| p.leave());
+        self.print_touch_page_lines();
+        self.touch_page = None;
+    }
+
+    fn print_touch_page_lines(&mut self) {
+        if !self.touch_page_ref().is_some_and(|p| p.has_lines()) {
+            return;
+        }
+        let lines = self.with_touch_page(|p| p.take_lines()).unwrap_or_default();
         for l in lines {
             println!("{l}");
             if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -579,10 +604,10 @@ impl Player {
         let _ = io::stdout().flush();
     }
 
-    /// True while the Touch lab page is on screen.
+    /// The widget of the touch page on screen, if any.
     #[cfg(test)]
-    pub fn lab_open(&self) -> bool {
-        self.lab_open
+    pub fn touch_page(&self) -> Option<&'static str> {
+        self.touch_page
     }
 
     /// The touchscreen reader's latest state line, for the Touch lab's top bar.
@@ -595,15 +620,11 @@ impl Player {
     /// The kernel's timestamp of the finger event about to be passed to
     /// `touch` (the Touch lab measures speeds and jitter with it).
     pub fn set_touch_time(&mut self, time_us: u64) {
-        if self.lab_open {
-            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                lab.set_event_time(time_us);
-            }
-        }
+        self.with_touch_page(|p| p.set_event_time(time_us));
     }
 
     fn show_view(&mut self, v: View) {
-        self.close_lab();
+        self.close_touch_page();
         let page = match v {
             View::Play => "Play",
             View::Debug => "Debug",
@@ -637,11 +658,11 @@ impl Player {
             }
             return None;
         }
-        if self.lab_open {
-            // The lab page takes every finger and means nothing to the app.
+        if self.touch_page.is_some() {
+            // A touch page takes every finger and means nothing to the app.
             let _ = self.ui.touch(finger, phase, x, y);
-            self.print_lab_lines();
-            if self.ui.get::<TouchLabView>("touchlab").is_some_and(|l| l.wants_exit()) {
+            self.print_touch_page_lines();
+            if self.touch_page_ref().is_some_and(|p| p.wants_exit()) {
                 self.show_view(self.view);
             }
             return None;
@@ -677,11 +698,9 @@ impl Player {
                 g.fade(dt);
             }
         }
-        if self.lab_open && self.ui.get::<TouchLabView>("touchlab").is_some_and(mpfree_ui::Widget::animating) {
-            if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
-                lab.tick();
-            }
-            self.print_lab_lines();
+        if self.touch_page_ref().is_some_and(|p| p.animating()) {
+            self.with_touch_page(|p| p.tick());
+            self.print_touch_page_lines();
         }
     }
 
@@ -1046,6 +1065,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     lab.apply(ToUi::TouchLab);
     lab.set_touch_status("touch-reader: seeded=1 slot=0 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=4 events=212");
     out.push(("touchlab", lab));
+    let mut cal = sample_player(fonts());
+    cal.apply(ToUi::Show(View::Prefs));
+    cal.apply(ToUi::CalibrateTouch);
+    // The top-left corner done; top-right asked for next.
+    cal.touch(1, Touch::Down, 70, 70);
+    cal.touch(1, Touch::Up, 70, 70);
+    out.push(("calibrate", cal));
     out
 }
 
@@ -1091,22 +1117,63 @@ mod tests {
             }
         }
         assert_eq!(p.page(), "Touch lab");
-        assert!(p.lab_open());
+        assert_eq!(p.touch_page(), Some("touchlab"));
         // Touches go to the lab, not the app. Exit (top right) goes back to Prefs.
         assert_eq!(p.touch(1, Touch::Down, 1280 - 80, 38), None);
         assert_eq!(p.touch(1, Touch::Up, 1280 - 80, 38), None);
         assert_eq!(p.page(), "Prefs");
-        assert!(!p.lab_open());
+        assert_eq!(p.touch_page(), None);
         // Open again; a page change from the app (a hardware button) closes it.
         p.apply(ToUi::TouchLab);
         assert_eq!(p.page(), "Touch lab");
         p.apply(ToUi::Show(View::Play));
         assert_eq!(p.page(), "Play");
-        assert!(!p.lab_open());
+        assert_eq!(p.touch_page(), None);
         // Kernel times reach the lab without upsetting ordinary touches.
         p.set_touch_time(123);
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(p.touch(2, Touch::Down, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: true }));
+    }
+
+    #[test]
+    fn calibrate_touch_opens_from_prefs_and_takes_every_finger() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = crate::app::App::new(44_100, false);
+        app.map.menu = Some(1);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let mut fx = app.button(1, true, 0.0);
+        app.button(1, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        // Calibrate touch is the row before the Touch lab; + on it opens the page.
+        fx.extend(app.step_item(app_rows(&app) - 2, 1));
+        assert_eq!(fx.last(), Some(&crate::app::Effect::CalibrateTouch), "{fx:?}");
+        for e in fx {
+            match e {
+                crate::app::Effect::Menu(m) => p.apply(ToUi::Menu(m)),
+                crate::app::Effect::Show(v) => p.apply(ToUi::Show(v)),
+                crate::app::Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
+                _ => {}
+            }
+        }
+        assert_eq!((p.page(), p.touch_page()), ("Calibrate touch", Some("calibrate")));
+        // A corner tap goes to the page, not the app; the lab can't be open at the same time.
+        assert_eq!(p.touch(1, Touch::Down, 70, 70), None);
+        assert_eq!(p.touch(1, Touch::Up, 70, 70), None);
+        p.apply(ToUi::TouchLab);
+        assert_eq!(p.touch_page(), Some("touchlab"));
+        p.apply(ToUi::CalibrateTouch);
+        assert_eq!(p.touch_page(), Some("calibrate"));
+        // Exit sits right of the middle.
+        assert_eq!(p.touch(2, Touch::Down, 640 + 60, 400 + 70), None);
+        assert_eq!(p.touch(2, Touch::Up, 640 + 60, 400 + 70), None);
+        assert_eq!((p.page(), p.touch_page()), ("Prefs", None));
+    }
+
+    fn app_rows(app: &crate::app::App) -> usize {
+        match app.menu_view() {
+            crate::app::Effect::Menu(m) => m.rows.len(),
+            _ => 0,
+        }
     }
 
     #[test]
