@@ -5,6 +5,11 @@
 //! [`Engine::process`] once per period, which returns the note-ons and
 //! note-offs that fall inside that period with their frame offsets. Nothing
 //! allocates, locks or does I/O after [`Engine::new`].
+//!
+//! On its own the engine free-runs: the first step falls on the press and
+//! the tempo comes from [`Engine::set_tempo`]. With a transport, the host
+//! calls [`Engine::sync`] with a [`Clock`] before every `process` call, and
+//! while the transport plays the steps fall on its tick grid instead.
 
 use crate::notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 use crate::pattern::{Pattern, Pick, Step};
@@ -121,6 +126,81 @@ impl Order {
     }
 }
 
+/// Where the generator starts when notes arrive while the transport plays.
+/// Without a playing transport it always starts on the press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncStart {
+    /// The next step of the transport's grid.
+    Step,
+    /// The next beat (quarter note).
+    Beat,
+    /// The next bar line ([`Clock::bar_ticks`]).
+    Bar,
+}
+
+impl SyncStart {
+    pub const ALL: [SyncStart; 3] = [SyncStart::Step, SyncStart::Beat, SyncStart::Bar];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SyncStart::Step => "Step",
+            SyncStart::Beat => "Beat",
+            SyncStart::Bar => "Bar",
+        }
+    }
+}
+
+/// The transport's clock for one `process` call (one span: one tempo, one
+/// play state, no jump inside it). Ticks are [`PPQ`] per quarter note and
+/// can be negative (count-in). Tick `t` falls on frame
+/// `anchor_frame + round((t - anchor_tick) * 60 * sample_rate / (bpm * PPQ))`,
+/// where the anchor frame is `frames_since_anchor` frames before the start
+/// of this call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clock {
+    /// A whole tick that falls exactly on the anchor frame.
+    pub anchor_tick: i64,
+    /// Frames from the anchor to the start of this `process` call.
+    pub frames_since_anchor: u64,
+    pub bpm: f64,
+    /// False: the engine free-runs as it does without a transport.
+    pub playing: bool,
+    /// A loop wrap or locate happened at the anchor: the next step is
+    /// placed on the grid again from the new position.
+    pub jumped: bool,
+    /// Transport swing: (grid in ticks, 50..=75). None uses
+    /// [`Settings::swing`] on the arp's own step grid.
+    pub swing: Option<(u32, u8)>,
+    /// Ticks per bar, for [`SyncStart::Bar`] (3840 in 4/4).
+    pub bar_ticks: u32,
+}
+
+impl Clock {
+    /// A playing 4/4 clock with no swing, anchored `frames_since_anchor`
+    /// frames before this call.
+    pub const fn playing(anchor_tick: i64, frames_since_anchor: u64, bpm: f64) -> Self {
+        Self {
+            anchor_tick,
+            frames_since_anchor,
+            bpm,
+            playing: true,
+            jumped: false,
+            swing: None,
+            bar_ticks: 4 * PPQ,
+        }
+    }
+}
+
+/// The last clock from [`Engine::sync`], in the engine's own frames.
+#[derive(Clone, Copy, Debug)]
+struct Synced {
+    /// Engine frame of `anchor_tick` (a whole number, maybe negative).
+    anchor_frame: f64,
+    anchor_tick: i64,
+    swing: Option<(u32, u8)>,
+    bar_ticks: u32,
+}
+
 /// What the held notes do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -190,6 +270,8 @@ pub struct Settings {
     pub repeats: u16,
     /// Velocity ramp after the notes start (accents are left alone).
     pub ramp: Ramp,
+    /// Where notes start while the transport plays.
+    pub start: SyncStart,
 }
 
 impl Default for Settings {
@@ -208,6 +290,7 @@ impl Default for Settings {
             retrigger: false,
             repeats: 0,
             ramp: Ramp::OFF,
+            start: SyncStart::Step,
         }
     }
 }
@@ -338,6 +421,10 @@ pub struct Engine {
     /// When the last step fired, so a nudge never puts a step before the
     /// one ahead of it.
     last_fire: f64,
+    /// The transport, while it plays. None: free-running.
+    sync: Option<Synced>,
+    /// Tick of the next step on the straight grid, while synced.
+    next_tick: i64,
     /// Notes that could not be queued, since the engine started.
     pub overflow: u64,
 }
@@ -364,6 +451,8 @@ impl Engine {
             once_len: 0,
             nudge: None,
             last_fire: f64::MIN,
+            sync: None,
+            next_tick: 0,
             overflow: 0,
         }
     }
@@ -396,7 +485,8 @@ impl Engine {
 
     /// Where the generator is now, in steps since the notes started,
     /// including the fraction of the current step (swing not counted).
-    /// Free-time recording uses it to place pad presses. 0 when stopped.
+    /// Free-time recording uses it to place pad presses. 0 when stopped,
+    /// below 0 while a synced start waits for its beat or bar.
     pub fn position(&self) -> f64 {
         if !self.running {
             return 0.0;
@@ -408,8 +498,40 @@ impl Engine {
         self.rng = seed.max(1);
     }
 
+    /// The free-running tempo. While a transport plays, [`Engine::sync`]
+    /// sets the tempo instead.
     pub fn set_tempo(&mut self, bpm: f64) {
         self.bpm = bpm.clamp(20.0, 300.0);
+    }
+
+    /// True while the steps follow a playing transport.
+    pub fn synced(&self) -> bool {
+        self.sync.is_some()
+    }
+
+    /// Follows the transport. Call it before every [`Engine::process`]
+    /// call, with the clock of the span that call covers. While
+    /// `clock.playing` is false the engine free-runs as if never synced,
+    /// carrying on from where the transport left it.
+    pub fn sync(&mut self, clock: &Clock) {
+        if !clock.playing {
+            self.sync = None;
+            return;
+        }
+        let was = self.sync.is_some();
+        self.bpm = clock.bpm.clamp(20.0, 300.0);
+        self.sync = Some(Synced {
+            anchor_frame: self.now as f64 - clock.frames_since_anchor as f64,
+            anchor_tick: clock.anchor_tick,
+            swing: clock.swing.map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
+            bar_ticks: clock.bar_ticks.max(1),
+        });
+        if self.running {
+            if !was || clock.jumped {
+                self.next_tick = self.grid_after(i64::from(self.settings.rate.ticks()));
+            }
+            self.next_step = self.frame_of(self.next_tick as f64);
+        }
     }
 
     pub fn set_pattern(&mut self, pattern: Pattern) {
@@ -432,11 +554,16 @@ impl Engine {
             }
             self.running = false;
         }
+        let regrid = settings.rate != self.settings.rate;
         if settings.octaves != self.settings.octaves || settings.order != self.settings.order {
             self.once_len = 0;
             self.bag = 0;
         }
         self.settings = settings;
+        if regrid && self.running && self.sync.is_some() {
+            self.next_tick = self.grid_after(i64::from(settings.rate.ticks()));
+            self.next_step = self.frame_of(self.next_tick as f64);
+        }
         self.update_running();
     }
 
@@ -486,7 +613,23 @@ impl Engine {
     pub fn process(&mut self, frames: u32, out: &mut Events) {
         out.len = 0;
         let end = self.now + u64::from(frames);
-        if self.running {
+        if self.running && self.sync.is_some() {
+            let ticks = i64::from(self.settings.rate.ticks());
+            loop {
+                let len = self.step_frames();
+                let nudge = len * f64::from(self.nudge_percent()) / 100.0;
+                let swung = self.swung(self.next_tick, ticks);
+                let fire = (self.frame_of(swung) + nudge).max(self.last_fire);
+                if fire >= end as f64 {
+                    break;
+                }
+                self.fire_step(fire, len);
+                self.last_fire = fire;
+                self.step += 1;
+                self.next_tick += ticks;
+            }
+            self.next_step = self.frame_of(self.next_tick as f64);
+        } else if self.running {
             loop {
                 let len = self.step_frames();
                 let nudge = len * f64::from(self.nudge_percent()) / 100.0;
@@ -506,6 +649,56 @@ impl Engine {
 
     fn step_frames(&self) -> f64 {
         f64::from(self.settings.rate.ticks()) / f64::from(PPQ) * 60.0 / self.bpm * self.sample_rate
+    }
+
+    /// Frames per tick at the current tempo.
+    fn frames_per_tick(&self) -> f64 {
+        60.0 * self.sample_rate / (self.bpm * f64::from(PPQ))
+    }
+
+    /// The engine frame of tick `t`, rounded as the transport rounds it.
+    /// Only called while synced.
+    fn frame_of(&self, t: f64) -> f64 {
+        let Some(s) = self.sync else { return self.next_step };
+        s.anchor_frame + ((t - s.anchor_tick as f64) * self.frames_per_tick()).round()
+    }
+
+    /// The first multiple of `unit` ticks that falls on or after the
+    /// current frame. Only called while synced.
+    fn grid_after(&self, unit: i64) -> i64 {
+        let Some(s) = self.sync else { return self.next_tick };
+        let unit = unit.max(1);
+        let now = self.now as f64;
+        let tick = s.anchor_tick as f64 + (now - s.anchor_frame) / self.frames_per_tick();
+        let mut t = (tick.floor() as i64).div_euclid(unit) * unit;
+        while self.frame_of(t as f64) < now {
+            t += unit;
+        }
+        while self.frame_of((t - unit) as f64) >= now {
+            t -= unit;
+        }
+        t
+    }
+
+    /// Tick `t` moved by swing: every second cell of the swing grid starts
+    /// late by (swing - 50) / 50 of a cell, and the points inside each pair
+    /// of cells are stretched or squeezed to match. Without transport swing
+    /// the grid is the arp's own step, as when free-running.
+    fn swung(&self, t: i64, step_ticks: i64) -> f64 {
+        let (grid, amount) = match self.sync.and_then(|s| s.swing) {
+            Some((grid, amount)) => (i64::from(grid), amount),
+            None => (step_ticks, self.settings.swing),
+        };
+        let s = f64::from(amount.saturating_sub(50)) / 50.0;
+        if s == 0.0 {
+            return t as f64;
+        }
+        let pair = 2 * grid;
+        let base = t.div_euclid(pair) * pair;
+        let p = (t - base) as f64;
+        let g = grid as f64;
+        let moved = if p < g { p * (1.0 + s) } else { g * (1.0 + s) + (p - g) * (1.0 - s) };
+        base as f64 + moved
     }
 
     /// The nudge lane's value for the coming step, plus its random part,
@@ -580,9 +773,20 @@ impl Engine {
     fn update_running(&mut self) {
         let want = self.settings.mode != Mode::Direct && !self.notes.active().is_empty();
         if want && !self.running {
-            // Starts on the press, not on a bar line: there is no transport yet.
+            // Free-running, the first step is on the press. With a playing
+            // transport it waits for the next step, beat or bar.
             self.running = true;
-            self.next_step = self.now as f64;
+            if let Some(s) = self.sync {
+                let unit = match self.settings.start {
+                    SyncStart::Step => self.settings.rate.ticks(),
+                    SyncStart::Beat => PPQ,
+                    SyncStart::Bar => s.bar_ticks,
+                };
+                self.next_tick = self.grid_after(i64::from(unit));
+                self.next_step = self.frame_of(self.next_tick as f64);
+            } else {
+                self.next_step = self.now as f64;
+            }
             self.last_fire = f64::MIN;
             self.nudge = None;
             self.step = 0;
@@ -1299,5 +1503,175 @@ mod tests {
         assert_eq!(e.position(), 3.0);
         e.release(60);
         assert_eq!(e.position(), 0.0);
+    }
+
+    /// A stretch of transport time: from engine frame `from`, tick
+    /// `tick` is on frame `from` and the tempo is `bpm`.
+    #[derive(Clone, Copy)]
+    struct Span {
+        from: u64,
+        tick: i64,
+        bpm: f64,
+        playing: bool,
+        jumped: bool,
+        swing: Option<(u32, u8)>,
+    }
+
+    fn span(from: u64, tick: i64, bpm: f64) -> Span {
+        Span { from, tick, bpm, playing: true, jumped: false, swing: None }
+    }
+
+    /// Runs like a host behind a transport: periods of `block` frames are
+    /// cut where a span starts, and each piece gets its own `sync`.
+    /// `press` events are applied at their frames (which must be period
+    /// boundaries in every block size used).
+    fn run_synced(e: &mut Engine, spans: &[Span], press: &[(u64, u8)], frames: u64, block: u32) -> Vec<(u64, EventKind)> {
+        let mut out = Events::new();
+        let mut got = Vec::new();
+        while e.now < frames {
+            let now = e.now;
+            for &(at, note) in press {
+                if at == now {
+                    e.press(note, 100);
+                }
+            }
+            let s = *spans.iter().rev().find(|s| s.from <= now).unwrap();
+            let mut n = u64::from(block).min(frames - now);
+            if let Some(next) = spans.iter().find(|s| s.from > now) {
+                n = n.min(next.from - now);
+            }
+            if let Some(&(at, _)) = press.iter().find(|(at, _)| *at > now) {
+                n = n.min(at - now);
+            }
+            e.sync(&Clock {
+                anchor_tick: s.tick,
+                frames_since_anchor: now - s.from,
+                bpm: s.bpm,
+                playing: s.playing,
+                jumped: s.jumped && now == s.from,
+                swing: s.swing,
+                bar_ticks: 4 * PPQ,
+            });
+            e.process(n as u32, &mut out);
+            got.extend(out.as_slice().iter().map(|ev| (now + u64::from(ev.offset), ev.kind)));
+        }
+        got
+    }
+
+    #[test]
+    fn synced_steps_wait_for_the_transport_grid() {
+        // The transport is at tick 0 on frame 0, 120 bpm (a 1/16 is STEP).
+        let spans = [span(0, 0, 120.0)];
+        let mut e = engine(Mode::Repeat);
+        let got = run_synced(&mut e, &spans, &[(1000, 1)], STEP * 4, 128);
+        assert!(e.synced());
+        assert_eq!(ons(&got), [(STEP, 1), (2 * STEP, 1), (3 * STEP, 1)]);
+    }
+
+    #[test]
+    fn synced_start_can_wait_for_a_beat_or_a_bar() {
+        for (start, first) in [(SyncStart::Beat, 4 * STEP), (SyncStart::Bar, 16 * STEP)] {
+            let mut e = Engine::new(SR, 120.0);
+            e.set_settings(Settings { mode: Mode::Repeat, start, ..Settings::default() });
+            let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(1000, 1)], 17 * STEP + 1, 128);
+            assert_eq!(ons(&got)[0], (first, 1), "{start:?}");
+            assert!(e.position() > 0.0);
+        }
+        // A press exactly on the line starts there.
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Repeat, start: SyncStart::Bar, ..Settings::default() });
+        let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(16 * STEP, 1)], 17 * STEP, 128);
+        assert_eq!(ons(&got), [(16 * STEP, 1)]);
+    }
+
+    #[test]
+    fn synced_steps_follow_tempo_changes_and_count_ins() {
+        // Count-in from tick -960, then 120 bpm until tick 960 (frame 48000),
+        // then 60 bpm: a 1/16 takes twice as long.
+        let spans = [span(0, -960, 120.0), span(48_000, 960, 60.0)];
+        let mut e = engine(Mode::Repeat);
+        let got = run_synced(&mut e, &spans, &[(0, 1)], 48_000 + 3 * 12_000, 128);
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        let mut want: Vec<u64> = (0..8).map(|k| k * STEP).collect();
+        want.extend((0..3).map(|k| 48_000 + k * 12_000));
+        assert_eq!(t, want);
+    }
+
+    #[test]
+    fn synced_timing_does_not_depend_on_the_period_size() {
+        let mut spans = [span(0, 100, 120.0), span(30_011, 1920, 97.0), span(70_000, 0, 97.0)];
+        spans[1].swing = Some((240, 60));
+        spans[2].jumped = true;
+        let mk = || {
+            let mut e = engine(Mode::Pattern);
+            e.set_pattern(Pattern::parse("x x:3 . x | nudge~20 -10 10 | vel~30 | gate~40").unwrap());
+            e.set_settings(Settings { mode: Mode::Pattern, swing: 62, rate: Rate::SixteenthTriplet, ..Settings::default() });
+            e
+        };
+        let press = [(0, 1), (0, 2)];
+        let a = run_synced(&mut mk(), &spans, &press, 100_000, 128);
+        assert!(a.len() > 40);
+        for block in [1, 64, 127, 1000, 100_000] {
+            assert_eq!(run_synced(&mut mk(), &spans, &press, 100_000, block), a, "block {block}");
+        }
+    }
+
+    #[test]
+    fn a_jump_puts_the_next_step_back_on_the_grid() {
+        // Loop back to tick 0 at frame 10_000, between two steps.
+        let mut spans = [span(0, 0, 120.0), span(10_000, 0, 120.0)];
+        spans[1].jumped = true;
+        let mut e = engine(Mode::Repeat);
+        let got = run_synced(&mut e, &spans, &[(0, 1)], 10_000 + 2 * STEP, 128);
+        assert_eq!(ons(&got), [(0, 1), (STEP, 1), (10_000, 1), (10_000 + STEP, 1)]);
+    }
+
+    #[test]
+    fn transport_swing_bends_the_grid() {
+        // 1/16 swing at 66 with the arp at 1/32: the odd 1/16 lines move
+        // 16/50 of a 1/16 later, and the 1/32s between them are spread out.
+        let mut s = span(0, 0, 120.0);
+        s.swing = Some((240, 66));
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Repeat, rate: Rate::ThirtySecond, ..Settings::default() });
+        let got = run_synced(&mut e, &[s], &[(0, 1)], 2 * STEP, 128);
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        let delay = STEP * 16 / 50;
+        assert_eq!(t, [0, (STEP / 2) * 66 / 50, STEP + delay, STEP + delay + (STEP / 2) * 34 / 50]);
+        // Without transport swing, the arp's own swing works on the transport
+        // grid as it does free-running.
+        let mut e = Engine::new(SR, 120.0);
+        e.set_settings(Settings { mode: Mode::Repeat, swing: 66, ..Settings::default() });
+        let got = run_synced(&mut e, &[span(0, 0, 120.0)], &[(0, 1)], 4 * STEP, 128);
+        assert_eq!(ons(&got), [(0, 1), (STEP + delay, 1), (2 * STEP, 1), (3 * STEP + delay, 1)]);
+    }
+
+    #[test]
+    fn stopping_the_transport_goes_back_to_free_running() {
+        let mut stop = span(2 * STEP + 100, 0, 120.0);
+        stop.playing = false;
+        let mut e = engine(Mode::Repeat);
+        let got = run_synced(&mut e, &[span(0, 0, 120.0), stop], &[(0, 1)], 5 * STEP, 128);
+        assert!(!e.synced());
+        let t: Vec<u64> = ons(&got).iter().map(|(t, _)| *t).collect();
+        assert_eq!(t, [0, STEP, 2 * STEP, 3 * STEP, 4 * STEP]);
+    }
+
+    #[test]
+    fn changing_the_rate_while_synced_snaps_to_the_new_grid() {
+        let mut e = engine(Mode::Repeat);
+        let spans = [span(0, 0, 120.0)];
+        let got = run_synced(&mut e, &spans, &[(0, 1)], STEP + 1000, 128);
+        assert_eq!(ons(&got), [(0, 1), (STEP, 1)]);
+        e.set_settings(Settings { rate: Rate::Quarter, ..e.settings() });
+        let mut out = Events::new();
+        let mut got = Vec::new();
+        while e.now < 9 * STEP {
+            let now = e.now;
+            e.sync(&Clock::playing(0, now, 120.0));
+            e.process(128, &mut out);
+            got.extend(out.as_slice().iter().map(|ev| (now + u64::from(ev.offset), ev.kind)));
+        }
+        assert_eq!(ons(&got), [(4 * STEP, 1), (8 * STEP, 1)]);
     }
 }
