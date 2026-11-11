@@ -35,6 +35,8 @@ A subtractive synth:
 
 Timing: oscillators, drive, filters, the amp envelope and the steal fade run every frame. Smoothing, the LFO, the filter envelope, pressure, glide, pitch and the filter coefficients run once every 16 frames, on frames divisible by 16. Each voice's gain is ramped across a step, so a pressure swell has no zipper.
 
+Cost (after round 7's device bench): each voice renders a control step in passes (gains, each unison stack, sub and noise, drive, filter, out), so the choice of wave, filter type and drive is made once per step, not once a frame. A centred voice (one stack, or no spread) works out one side and uses it for both, since its left and right are the same to the bit. Pitch, pan and filter coefficients are only worked out again when their inputs move. The output is the same to the bit as before; `cargo run --release -p mpfree-synth --example poly_cost` prints a hash per preset to check that after any change. Under qemu, the ARMv7 build runs 12 to 37 % fewer instructions per preset (Init 30 %, Supersaw 20 %, Dust Pad 12 %).
+
 ## FM (`mpfree-synth`, `Fm`)
 
 A six-operator FM synth in the DX7's mould. It is DX7-style, not a bit-exact clone: the numbers come from published descriptions of the DX7 (the operator level table, the envelope rate formula, the keyboard scaling curves), and where the original is not public (the LFO speed curve, the pitch envelope's tables, detune) the values are close approximations.
