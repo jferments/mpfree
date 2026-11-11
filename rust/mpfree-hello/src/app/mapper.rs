@@ -52,7 +52,8 @@ pub enum Job {
     Bank(u8),
     /// TRACK MIX (SHIFT: PAD MIX): the mixer.
     TrackMix,
-    /// SHIFT + ERASE: the Console (ERASE itself comes with live erase).
+    /// ERASE: nothing yet (live erase, and the FX lock mode with a step
+    /// held, come later).
     Erase,
     /// MAIN: the Play page, and on it the next view.
     Main,

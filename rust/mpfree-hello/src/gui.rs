@@ -1222,8 +1222,8 @@ impl Player {
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
                               STOP: stop listening   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Console if self.settings.debug_mode => "The system log, as it comes   ·   MENU: pause or clear   ·   \
-                                                              SHIFT + wheel: Dev page   ·   SHIFT + ERASE: back".to_string(),
-                View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE: back"
+                                                              SHIFT + wheel: Dev page   ·   SHIFT + ERASE + TAP TEMPO: back".to_string(),
+                View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE + TAP TEMPO: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
@@ -2062,7 +2062,7 @@ impl Player {
                 self.sample.refresh_if_stale(&mut self.ui);
                 self.sample.page().to_string()
             }
-            // Without the developer tools the Console (SHIFT + ERASE) has no strip.
+            // Without the developer tools the Console has no strip.
             View::Console if !self.settings.debug_mode => "Console".to_string(),
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);

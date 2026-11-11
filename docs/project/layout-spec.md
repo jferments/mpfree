@@ -2,7 +2,7 @@
 
 **Status:** APPROVED by Jay on 2026-11-11 at 08:15Z ("Approve, Synth before Looper"). Every thread works to this. Any change to it needs Jay's approval again.
 **Owner:** the Hello MPC thread ("Build round 6 with looper, synths and sampler"). Send layout proposals there.
-**Shared layout means:** the top bar, the tab set and its order, the Play page's structure, the right-hand column, the pad grid, the hint line, Prefs, and the global buttons (MENU, SHIFT + MENU, STOP, SHIFT + STOP, SHIFT + ERASE, NOTE REPEAT, the mode buttons).
+**Shared layout means:** the top bar, the tab set and its order, the Play page's structure, the right-hand column, the pad grid, the hint line, Prefs, and the global buttons (MENU, SHIFT + MENU, STOP, SHIFT + STOP, the Console's chord, NOTE REPEAT, the mode buttons).
 
 ## 1. The screen
 
@@ -114,7 +114,8 @@ Built in round 9 to mockup J (Jay's direction, 10:16Z), with real data; side-by-
 - **SHIFT + MENU:** Prefs.
 - **STOP:** the transport, then silence.
 - **SHIFT + STOP:** as on the MPC: stop, silence everything and go back to bar 1 (Jay, 20:40Z, control map decision 2).
-- **SHIFT + ERASE:** the Console and back (it moved off SHIFT + STOP). It works without developer tools too, but has no strip then. ERASE alone waits for live erase.
+- **The Console:** hold SHIFT, hold ERASE, then press TAP TEMPO (and the same again to go back). Jay wants a chord nothing else uses, since only developers open it (22:12Z); the hardware control map thread picked this one. The press is no tempo tap, and nothing fires on the way into the chord. The Dev tab's Console page opens it too. It works without developer tools, but has no strip then.
+- **ERASE and SHIFT + ERASE** do nothing yet (live erase, and the FX lock mode with a step held, come later).
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
 - **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.

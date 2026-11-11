@@ -469,8 +469,8 @@ APP_PHASES = (
      "Did the Touch lab open and see your touches? What did Calibrate touch say (match or differs)?"),
     ("Menus, console and STOP",
      ["Press MENU (the page's options) and MENU again to close. The Dev tab's Console page shows the",
-      "system log (SHIFT + ERASE opens it too, once ERASE is found with Map controls). Tap a few pads",
-      "on the screen and a kit in the list.",
+      "system log (so does SHIFT + ERASE + TAP TEMPO, once ERASE is found with Map controls). Tap a",
+      "few pads on the screen and a kit in the list.",
       "Last: SHIFT + NOTE REPEAT, hold pads 1 and 2, let go so they repeat, then press STOP."],
      "Did the menus, the console and the screen pads work, and did STOP silence everything?"),
 )

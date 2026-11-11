@@ -35,7 +35,7 @@
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
-//!                      player; STOP silences, SHIFT + ERASE shows the system log
+//!                      player; STOP silences, SHIFT + ERASE + TAP TEMPO shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
 //!                      startup screen's last frame behind the loading card;
 //!                      --data DIR keeps settings and found buttons there
