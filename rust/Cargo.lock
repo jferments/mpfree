@@ -390,6 +390,7 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-synth",
+ "mpfree-track",
  "mpfree-transport",
 ]
 
@@ -401,6 +402,25 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-clap"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-clap-testplug",
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-track",
+]
+
+[[package]]
+name = "mpfree-clap-testplug"
+version = "0.1.0"
+dependencies = [
+ "mpfree-clap",
 ]
 
 [[package]]
@@ -522,6 +542,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-plughost"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-clap",
+ "mpfree-clap-testplug",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-track",
+]
+
+[[package]]
 name = "mpfree-prof"
 version = "0.1.0"
 dependencies = [
@@ -594,6 +626,7 @@ version = "0.1.0"
 name = "mpfree-synth"
 version = "0.1.0"
 dependencies = [
+ "mpfree-analysis",
  "mpfree-node",
 ]
 

@@ -6,6 +6,9 @@ use crate::window::{Window, WindowTable};
 
 /// Grains one voice can play at once.
 pub const MAX_GRAINS: usize = 64;
+/// Frame positions below this (2^31 less a margin for rounding) take the
+/// `i32` path in [`GrainVoice::mix`].
+const SMALL_FRAMES: f64 = 2_147_000_000.0;
 
 /// Locks density and size to the tempo. Grains then start on exact frames
 /// of the transport's timeline, so a synced cloud stays on the grid however
@@ -438,16 +441,33 @@ impl GrainVoice {
             let g = &mut self.grains[i];
             let m = ((g.len - g.age) as usize).min(n);
             let (mut pos, mut age) = (g.pos, g.age);
-            for (l, r) in left[..m].iter_mut().zip(&mut right[..m]) {
-                // Grains are kept inside the span, which never starts below
-                // frame 0, so truncation is floor (and avoids a libm call).
-                let f = pos as i64;
-                let [sl, sr] = src.read(f, (pos - f as f64) as f32);
-                let w = self.window.at(age as f32 * g.dphase);
-                *l += sl * w * g.gl;
-                *r += sr * w * g.gr;
-                pos += g.inc;
-                age += 1;
+            // Grains are kept inside the span, which never starts below
+            // frame 0, so truncation is floor (and avoids a libm call).
+            // Below 2^31 frames (13 hours at 44.1 kHz, so every sample and
+            // nearly every live buffer) the frame goes through an `i32`,
+            // which ARMv7 converts to and from a double in one instruction
+            // each; an `i64` takes two library calls. Same result either way.
+            let last = pos + g.inc * m as f64;
+            if pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES {
+                for (l, r) in left[..m].iter_mut().zip(&mut right[..m]) {
+                    let f = pos as i32;
+                    let [sl, sr] = src.read(i64::from(f), (pos - f64::from(f)) as f32);
+                    let w = self.window.at(age as f32 * g.dphase);
+                    *l += sl * w * g.gl;
+                    *r += sr * w * g.gr;
+                    pos += g.inc;
+                    age += 1;
+                }
+            } else {
+                for (l, r) in left[..m].iter_mut().zip(&mut right[..m]) {
+                    let f = pos as i64;
+                    let [sl, sr] = src.read(f, (pos - f as f64) as f32);
+                    let w = self.window.at(age as f32 * g.dphase);
+                    *l += sl * w * g.gl;
+                    *r += sr * w * g.gr;
+                    pos += g.inc;
+                    age += 1;
+                }
             }
             g.pos = pos;
             g.age = age;

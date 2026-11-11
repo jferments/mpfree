@@ -1,6 +1,6 @@
-# Synths: the node interface, Poly, FM, Drums, Pluck and pad pressure
+# Synths: the node interface, Poly, FM, Drums, Pluck, Wavetable and pad pressure
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, FM, Drums and Pluck; Drums and Pluck merged in PR #97). Poly plays on the pads (see "In the pad player"); FM, Drums and Pluck are not on the pads yet, and none has run its own cost bench on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
+**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../rust/mpfree-synth) (native synths: Poly, FM, Drums, Pluck and Wavetable; Drums and Pluck merged in PR #97, Wavetable in PR #99). Poly plays on the pads (see "In the pad player"); FM, Drums, Pluck and Wavetable are not on the pads yet, and none has run its own cost bench on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
 
 ## The node interface (`mpfree-node`)
 
@@ -101,6 +101,10 @@ Timing: the strings and resonators run every frame; pitch (transpose, fine, bend
 **On the Synth tab** Pluck has three pages: String (with the model, decay and release; Q-Links Decay, Brightness, Pick, Position), Mallet (Q-Links Hardness, Strike, Stretch, High damp) and Voice. The preview draws `synth-pluck-string` and `synth-pluck-mallet`.
 
 Its visual strip has three cards for the model it plays, all for middle C. A string: **Pick** (the string pulled up where it is picked), **Harmonics** (the first 16, in dB, at their average level over many plucks, since each pluck's noise burst gives them random levels around it) and **Decay** (harmonics 1, 2, 4 and 8 falling in dB, higher ones sooner, more so when darker). A mallet: **Mallet** (the pulse, as long as the mallet stays on the bar), **Modes** (the material's modes on a log scale of the note, as struck: placed by Strike, weighed by the pulse's spectrum) and **Decay** (the first four modes). `pluck::partials` works them out with the engine's own formulas (shared helpers, the output unchanged to the bit), and tests render notes and find each harmonic's and mode's decay, and the harmonics' average levels, as drawn. One finding: Position's comb works within the burst's one period (the first frames are not subtracted), so its notches are partial; plucked at the middle, the even harmonics come out about 7 dB under the odd ones on average rather than gone.
+
+## Wavetable (`mpfree-synth`, `Wavetable`)
+
+Two table oscillators that scan through stacks of single-cycle frames, with warps (Bend, Sync, Mirror, FM), unison, a sub and noise, Poly's filter, a mod envelope and LFO that move the positions, and pad pressure. Ten factory tables are built from formulas; a player's WAV tables and a pad's sample can become user tables. Tables are band-limited at 17 half-octave levels, so high notes don't alias. The full description, the memory and cost numbers and the demo are in [Wavetable synth](wavetable.md).
 
 ## Pad pressure (poly aftertouch)
 
@@ -240,5 +244,6 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
+- Wavetable on the pads (a third Engine choice) and the Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
-- Plugin hosting: CLAP first, in a sandbox process.
+- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).
