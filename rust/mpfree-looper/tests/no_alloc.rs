@@ -15,7 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_looper::{Command as L, Looper, Phase};
+use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -111,6 +111,14 @@ fn commands_and_periods_never_allocate() {
         }
         if i >= 290 && i % 37 == 0 {
             let _ = l.command(script[(i / 37 - 8) as usize % script.len()]);
+        }
+        // Each layer's controls; deletes only in the second half, so the
+        // first half fills the memory and overdubs are refused.
+        if i >= 290 && i % 53 == 0 {
+            let k = (i / 53) as usize % if i < 3000 { 4 } else { 5 };
+            let id = l.layer_info(k % l.status().layers.max(1)).map_or(9, |x| x.id);
+            let c = [Lc::Mute(i % 2 == 0), Lc::Solo(i % 3 == 0), Lc::Pan(0.3), Lc::Level(1.4), Lc::Delete][k];
+            let _ = l.layer_command(id, c);
         }
         let n = sizes[(i % sizes.len() as u64) as usize];
         for k in 0..n {

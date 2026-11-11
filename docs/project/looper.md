@@ -9,6 +9,9 @@ One stereo loop on the transport, recorded from the line input or the pad player
 - **The first pass** starts on the next bar line after Record, and ends after the set number of bars (2 by default), or, with free length, on the bar line after Record is pressed again. Its place in the song is a whole number of bars from `origin`.
 - **Playback follows the song position.** The loop's position is the song position's place in the loop: `(tick - origin) mod len_ticks`, scaled to frames and read between frames. It stays on the bars through stops, locates and transport loops. At the tempo it was recorded at it plays sample for sample; at another tempo it plays faster or slower, like tape (no time-stretch yet).
 - **Overdubs** are layers on top of the first pass, from the moment Overdub is pressed until it is pressed again, over as many passes as you like. Overdub pressed during the first pass starts the overdub exactly where the first pass ends. Undo fades out and removes the newest layer; Redo brings it back, until a new overdub starts.
+- **Each layer has its own mix.** Level (0 to 2), pan (a balance, -1 to 1), mute and solo. While any layer is soloed, only soloed layers play.
+- **Any layer can be deleted**, the first pass too; the last layer stays (Clear removes the loop). A delete fades the layer out, and Undo brings it back in its place. Undo and Redo walk one history of overdubs and deletes, newest first.
+- **Layer ids.** A layer keeps its id while it exists, whatever comes and goes around it, so a screen can name it safely.
 - **Silent while stopped or counting in.** Overdub pressed while stopped waits for Play. Stopping ends an overdub, with a fade.
 
 ## No clicks
@@ -18,9 +21,10 @@ One stereo loop on the transport, recorded from the line input or the pad player
 | The loop point | The last 256 frames crossfade into the input from just before the first pass, which flows on into the first frame. A sine that does not fit the loop would jump about 0.13 at a raw splice; the test holds it under 0.008. |
 | Punch in and out | The overdub writer fades in and out over 256 frames (`FADE`, about 5.8 ms). After a full pass it adds, so the fade-in and the next pass join without a seam. An overdub that takes over from the first pass fades in over 32 frames (`HANDOFF_FADE`), because the input runs on without a break there; that keeps the downbeat's attack. |
 | Start, stop, mute, clear | The loop's gain ramps over 256 frames. |
-| Undo and redo | The newest layer's gain ramps over 256 frames. |
+| Undo, redo and delete | The layer's gain ramps over 256 frames. |
+| A layer's level, pan, mute and solo | Its left and right gains move one 256th of full scale a frame toward the settings. |
 | A jump in the song position | A locate, a transport loop that is not a whole number of loops, or a restart right after a stop: the old place and the new one crossfade over 256 frames. |
-| Commands during a fade | Record, Overdub, Undo and Redo that would cut a fade short wait for it (at most 256 frames), in order. Pressing Undo twice removes two layers. |
+| Commands during a fade | Record, Overdub, Undo, Redo and Delete that would cut a fade short wait for it (at most 256 frames), in order. Pressing Undo twice removes two layers. |
 | Stale audio | A reused layer slot only plays the frames the new overdub wrote. |
 
 ## Latency
@@ -37,22 +41,26 @@ looper.command(Command::SetLatency(640));
 looper.command(Command::Record);            // armed: records from the next bar line
 // in the audio callback, after the transport:
 looper.process(&block, &line_input, &mut mix); // adds the loop to the mix
-let s = looper.status();                    // phase, layers, redo, position, ...
-let wave = looper.layer(0);                 // a layer's audio, for the waveform
+let s = looper.status();                    // phase, layers, redo, position, memory used, ...
+let wave = looper.layer(0);                 // a layer's audio, in play order, for the waveform
+let info = looper.layer_info(1);            // its id, level, pan, mute, solo, audible, recording
+looper.layer_command(info.unwrap().id, LayerCommand::Mute(true));
 ```
 
 - `Command`: `Record`, `Overdub`, `Undo`, `Redo`, `Clear`, `Mute(bool)`, `SetBars(Option<u32>)`, `SetLatency(u32)`, `SetLevel(f32)` (0 to 2). Commands apply at the start of the next period.
+- `LayerCommand`, sent with a layer's id: `Level(f32)` (0 to 2), `Pan(f32)` (-1 to 1), `Mute(bool)`, `Solo(bool)`, `Delete`. Deleting the overdub being recorded throws it away, as Undo does. A command for a layer that is not there is counted in `Stats::no_layer`.
+- `LayerInfo` (`layer_info(k)`, in play order, the first pass first): `id`, `level`, `pan`, `muted`, `solo`, `audible` (not muted, not left out by a solo) and `recording`.
 - `Phase`: `Empty`, `Armed`, `Recording`, `Playing`, `Overdubbing`.
 - `Stats` counts what went wrong, never silently: commands that did not fit the queue, overdubs refused because the memory was full, first passes thrown away (the transport stopped or jumped during the first pass, or it outgrew the memory).
-- The memory is shared: a 2-bar loop at 120 BPM is 4 s, so 60 s holds the first pass and 14 overdubs. At most 16 layers.
+- The memory is shared: a 2-bar loop at 120 BPM is 4 s, so 60 s holds the first pass and 14 overdubs. At most 16 layers. `Status::used` is the memory the loop holds, in frames: its layers and the ones Undo or Redo can bring back. A deleted layer keeps its memory while Undo can bring it back; when the memory is full, a new overdub takes the oldest deleted layer's memory, and the history up to that delete is forgotten.
 - `process` and `command` never allocate, lock or panic.
 
 ## Tests
 
 `cargo test -p mpfree-looper` (workstation, no device):
 
-- `tests/looper.rs` (18 tests, against a real transport): the first pass starts on the bar and plays back sample for sample; latency is made up for; the loop point does not click; overdubs stack, and undo and redo fade; Undo twice removes two layers; punches fade, and old audio in a reused slot stays silent; stop fades out and play fades back in; a locate crossfades; nothing plays during a count-in; free length ends on the bar after Record; a transport loop ends the first pass and the loop follows it; stopping or jumping during the first pass throws it away; overdubs are refused when the memory is full; Overdub pressed while stopped waits for Play; Clear then Record arms again; mute and level fade and scale; Overdub during the first pass takes over where it ends; and a busy session (latency, a transport loop, a locate, a tempo change, stop and play, overdubs, undo, redo, clear) gives bit-identical output at periods of 64 to 1024 frames.
-- `tests/no_alloc.rs`: a counting allocator watches `command`, `process`, `status`, `stats` and `layer` through a busy session at periods of 1 to 4096 frames, with a full memory: no allocation or free.
+- `tests/looper.rs` (22 tests, against a real transport): the first pass starts on the bar and plays back sample for sample; latency is made up for; the loop point does not click; overdubs stack, and undo and redo fade; Undo twice removes two layers; punches fade, and old audio in a reused slot stays silent; stop fades out and play fades back in; a locate crossfades; nothing plays during a count-in; free length ends on the bar after Record; a transport loop ends the first pass and the loop follows it; stopping or jumping during the first pass throws it away; overdubs are refused when the memory is full; Overdub pressed while stopped waits for Play; Clear then Record arms again; mute and level fade and scale; Overdub during the first pass takes over where it ends; each layer's level, pan, mute and solo, without clicks, and NaN or out-of-range values; a deleted layer fades out and comes back with Undo in its place, in one history with overdubs; deleting the overdub being recorded throws it away like Undo; a new overdub in a full memory takes the oldest delete's memory; and a busy session (latency, a transport loop, a locate, a tempo change, stop and play, overdubs, undo, redo, layer pan, level, delete, solo and mute, clear) gives bit-identical output at periods of 64 to 1024 frames.
+- `tests/no_alloc.rs`: a counting allocator watches `command`, `layer_command`, `process`, `status`, `stats`, `layer` and `layer_info` through a busy session at periods of 1 to 4096 frames, with a full memory, and with layer mutes, solos, pans, levels and deletes: no allocation or free.
 
 ## Listening
 
@@ -90,4 +98,5 @@ The plan, with rule zero (nothing state-changing on the device without the owner
 
 - The `line` step on the MPC (round 6, after the owner's go): does Akai's driver record on the test build, which jack is L and which R, and the input's level.
 - Measure the round-trip latency on the MPC One.
-- Time-stretch, so a loop keeps its pitch at another tempo; more than one loop; saving loops with the project.
+- The Looper tab (Jay approved the direction 10:16Z), engine side in this order: several loops sharing one memory pool with a gauge; edit tools (half, double, reverse, nudge 1/16, trim, seam fade, merge) with an edit history; send to a pad, to a WAV and resample.
+- Time-stretch, so a loop keeps its pitch at another tempo; saving loops with the project.

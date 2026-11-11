@@ -15,9 +15,15 @@
 //!   moment Overdub is pressed until it is pressed again, over as many
 //!   passes as you like. Undo fades out and removes the newest layer; Redo
 //!   brings it back, until a new overdub starts.
+//! - **Each layer has its own level, pan, mute and solo**
+//!   ([`Looper::layer_command`]), and can be deleted. A delete is undone
+//!   and redone like an overdub: Undo and Redo walk one history of both.
+//!   A layer keeps its id ([`LayerInfo::id`]) while it exists, whatever
+//!   comes and goes around it.
 //! - **No clicks:** the loop point is crossfaded with the input from just
 //!   before the first pass, so the end flows into the start. Punch in and
-//!   out, start, stop, mute, undo and clear fade over [`FADE`] frames, and
+//!   out, start, stop, mute, undo, delete, clear and every layer's level,
+//!   pan, mute and solo fade over [`FADE`] frames, and
 //!   a jump in the song position (a locate, a transport loop that is not a
 //!   whole number of loops, a restart) crossfades from the old place to the
 //!   new one. Commands that would cut a fade short wait for it to end (at
@@ -46,6 +52,8 @@ pub const FADE: usize = 256;
 pub const MAX_LAYERS: usize = 16;
 /// Commands waiting for the next period.
 const QUEUE: usize = 32;
+/// Overdubs and deletes Undo can take back.
+const HISTORY: usize = 64;
 const STEP: f32 = 1.0 / FADE as f32;
 /// The fade-in of an overdub that starts where the first pass ends: the
 /// input runs on without a break there, so a short fade is enough, and the
@@ -81,6 +89,40 @@ pub enum Command {
     SetLevel(f32),
 }
 
+/// What one layer's controls ask for ([`Looper::layer_command`]). Each
+/// applies at the start of the next period, after the commands before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LayerCommand {
+    /// 0 to 2 (1 is as recorded).
+    Level(f32),
+    /// -1 (left) to 1 (right); 0 is as recorded. A balance: the other side
+    /// turns down, this one stays.
+    Pan(f32),
+    Mute(bool),
+    /// While any layer is soloed, only soloed layers play.
+    Solo(bool),
+    /// Fade the layer out and take it away; Undo brings it back. The last
+    /// layer stays (Clear removes the loop). Deleting the overdub being
+    /// recorded ends it first.
+    Delete,
+}
+
+/// One layer as the screen shows it, in play order (the first pass first).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerInfo {
+    /// The layer's id for [`Looper::layer_command`]: the same while the
+    /// layer exists, through deletes, undo and redo around it.
+    pub id: u8,
+    pub level: f32,
+    pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
+    /// Heard: not muted and not left out by another layer's solo.
+    pub audible: bool,
+    /// Being recorded now.
+    pub recording: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     #[default]
@@ -100,6 +142,8 @@ pub struct Stats {
     pub dropped_commands: u64,
     /// Overdubs refused because every layer slot was in use.
     pub refused: u64,
+    /// Layer commands for a layer that is not there.
+    pub no_layer: u64,
     /// First passes thrown away: the transport stopped or jumped before
     /// the end, or the pass outgrew the memory.
     pub aborted: u64,
@@ -131,6 +175,57 @@ pub struct Status {
     pub muted: bool,
     /// The longest first pass that fits, in frames.
     pub capacity: usize,
+    /// Frames of memory the loop holds: its layers and the ones Undo or
+    /// Redo can bring back.
+    pub used: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Queued {
+    Loop(Command),
+    Layer(u8, LayerCommand),
+}
+
+/// An overdub added or a layer deleted, for Undo and Redo: the layer's
+/// slot, and its place in the play order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Act {
+    deleted: bool,
+    slot: u8,
+    index: u8,
+}
+
+const NO_ACT: Act = Act { deleted: false, slot: 0, index: 0 };
+
+/// A layer's memory slot and its mix.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    /// (first position written, frames written).
+    valid: (usize, usize),
+    level: f32,
+    pan: f32,
+    mute: bool,
+    solo: bool,
+    /// Gains now, left and right: they move to the settings over FADE.
+    gl: f32,
+    gr: f32,
+    /// 0 to 1: fades in when the layer comes back, out when it goes.
+    presence: f32,
+    /// Fading out, to leave the play order when silent.
+    leaving: bool,
+}
+
+impl Slot {
+    const NEW: Slot =
+        Slot { valid: (0, 0), level: 1.0, pan: 0.0, mute: false, solo: false, gl: 1.0, gr: 1.0, presence: 1.0, leaving: false };
+
+    /// The gains the settings ask for.
+    fn target(&self, any_solo: bool) -> (f32, f32) {
+        if self.mute || (any_solo && !self.solo) {
+            return (0.0, 0.0);
+        }
+        (self.level * (1.0 - self.pan).min(1.0), self.level * (1.0 + self.pan).min(1.0))
+    }
 }
 
 pub struct Looper {
@@ -147,10 +242,15 @@ pub struct Looper {
     len_ticks: Tick,
     /// Frames; 0 until the first pass ends.
     len: usize,
-    layers: usize,
-    redo: usize,
-    /// Per layer: (first position written, frames written).
-    valid: [(usize, usize); MAX_LAYERS],
+    /// The play order: slots, first pass first. Leaving layers stay until
+    /// they are silent.
+    order: [u8; MAX_LAYERS],
+    in_order: usize,
+    slots: [Slot; MAX_LAYERS],
+    done: [Act; HISTORY],
+    n_done: usize,
+    undone: [Act; HISTORY],
+    n_undone: usize,
     // The first pass.
     start_frame: u64,
     end_tick: Option<Tick>,
@@ -168,6 +268,7 @@ pub struct Looper {
     ring_at: usize,
     // The overdub writer.
     od_open: bool,
+    /// The slot it writes.
     od_layer: usize,
     od_in: usize,
     /// Frames of the writer's fade-in.
@@ -176,14 +277,12 @@ pub struct Looper {
     od_out: usize,
     // Gains.
     gain: f32,
-    top: f32,
-    undoing: bool,
     clearing: bool,
     pos: f64,
     /// A jump's crossfade: frames left, and where the old place is now.
     jump: usize,
     jump_pos: f64,
-    queue: [Command; QUEUE],
+    queue: [Queued; QUEUE],
     queued: usize,
     stats: Stats,
 }
@@ -205,9 +304,13 @@ impl Looper {
             origin: 0,
             len_ticks: 0,
             len: 0,
-            layers: 0,
-            redo: 0,
-            valid: [(0, 0); MAX_LAYERS],
+            order: [0; MAX_LAYERS],
+            in_order: 0,
+            slots: [Slot::NEW; MAX_LAYERS],
+            done: [NO_ACT; HISTORY],
+            n_done: 0,
+            undone: [NO_ACT; HISTORY],
+            n_undone: 0,
             start_frame: 0,
             end_tick: None,
             ending: false,
@@ -224,13 +327,11 @@ impl Looper {
             od_stop_in: None,
             od_out: 0,
             gain: 0.0,
-            top: 1.0,
-            undoing: false,
             clearing: false,
             pos: 0.0,
             jump: 0,
             jump_pos: 0.0,
-            queue: [Command::Clear; QUEUE],
+            queue: [Queued::Loop(Command::Clear); QUEUE],
             queued: 0,
             stats: Stats::default(),
         }
@@ -239,11 +340,21 @@ impl Looper {
     /// Queue a command for the next period. False (and counted) if the
     /// queue is full.
     pub fn command(&mut self, c: Command) -> bool {
+        self.push(Queued::Loop(c))
+    }
+
+    /// Queue a command for layer `id` ([`LayerInfo::id`]) for the next
+    /// period. False (and counted) if the queue is full.
+    pub fn layer_command(&mut self, id: u8, c: LayerCommand) -> bool {
+        self.push(Queued::Layer(id, c))
+    }
+
+    fn push(&mut self, q: Queued) -> bool {
         if self.queued == QUEUE {
             self.stats.dropped_commands += 1;
             return false;
         }
-        self.queue[self.queued] = c;
+        self.queue[self.queued] = q;
         self.queued += 1;
         true
     }
@@ -255,8 +366,8 @@ impl Looper {
     pub fn status(&self) -> Status {
         Status {
             phase: self.phase,
-            layers: self.layers,
-            redo: self.redo,
+            layers: self.layers(),
+            redo: self.n_undone,
             bars: self.bars,
             frames: self.len,
             ticks: self.len_ticks,
@@ -268,13 +379,58 @@ impl Looper {
             level: self.level,
             muted: self.muted,
             capacity: self.capacity,
+            used: self.held() * self.len,
         }
     }
 
-    /// Layer `k`'s audio (interleaved stereo, the loop's length), for
-    /// drawing the waveform. None if there is no such layer.
+    /// Layer `k`'s audio (interleaved stereo, the loop's length), counting
+    /// in play order, for drawing the waveform. None if there is no such
+    /// layer.
     pub fn layer(&self, k: usize) -> Option<&[f32]> {
-        (k < self.layers && self.len > 0).then(|| &self.pool[2 * k * self.len..2 * (k + 1) * self.len])
+        let slot = self.listed(k)?;
+        (self.len > 0).then(|| &self.pool[2 * slot * self.len..2 * (slot + 1) * self.len])
+    }
+
+    /// Layer `k`'s id and mix, counting in play order. None if there is no
+    /// such layer.
+    pub fn layer_info(&self, k: usize) -> Option<LayerInfo> {
+        let slot = self.listed(k)?;
+        let s = &self.slots[slot];
+        let any_solo = self.any_solo();
+        Some(LayerInfo {
+            id: slot as u8,
+            level: s.level,
+            pan: s.pan,
+            muted: s.mute,
+            solo: s.solo,
+            audible: !s.mute && (!any_solo || s.solo),
+            recording: self.od_open && self.od_layer == slot,
+        })
+    }
+
+    /// Layers in play order, not counting ones fading away.
+    fn layers(&self) -> usize {
+        self.order[..self.in_order].iter().filter(|&&k| !self.slots[k as usize].leaving).count()
+    }
+
+    /// The slot of the `k`th layer not fading away.
+    fn listed(&self, k: usize) -> Option<usize> {
+        self.order[..self.in_order].iter().map(|&s| s as usize).filter(|&s| !self.slots[s].leaving).nth(k)
+    }
+
+    fn any_solo(&self) -> bool {
+        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].solo && !self.slots[k as usize].leaving)
+    }
+
+    /// Whether `slot` is playing, or Undo or Redo can bring it back.
+    fn holds(&self, slot: usize) -> bool {
+        self.order[..self.in_order].iter().any(|&k| k as usize == slot)
+            || self.done[..self.n_done].iter().chain(&self.undone[..self.n_undone]).any(|a| a.slot as usize == slot)
+    }
+
+    /// Slots held.
+    fn held(&self) -> usize {
+        (0..MAX_LAYERS).filter(|&k| self.holds(k)).count()
     }
 
     /// Run one period: `input` is the line input and `out` the mix, both
@@ -367,25 +523,135 @@ impl Looper {
         let mut kept = 0;
         let mut waiting = false;
         for k in 0..self.queued {
-            let c = self.queue[k];
-            let deferrable = matches!(c, Command::Record | Command::Overdub | Command::Undo | Command::Redo);
-            if deferrable && (waiting || self.must_wait(c)) {
-                self.queue[kept] = c;
+            let q = self.queue[k];
+            let deferrable = matches!(
+                q,
+                Queued::Loop(Command::Record | Command::Overdub | Command::Undo | Command::Redo)
+                    | Queued::Layer(_, LayerCommand::Delete)
+            );
+            if deferrable && (waiting || self.must_wait(q)) {
+                self.queue[kept] = q;
                 kept += 1;
                 waiting = true;
             } else {
-                self.apply(c);
+                match q {
+                    Queued::Loop(c) => self.apply(c),
+                    Queued::Layer(id, c) => self.apply_layer(id, c),
+                }
             }
         }
         self.queued = kept;
     }
 
-    fn must_wait(&self, c: Command) -> bool {
-        match c {
-            Command::Undo => self.undoing || self.clearing,
-            Command::Record | Command::Overdub | Command::Redo => self.undoing || self.clearing || self.top < 1.0,
-            _ => false,
+    fn must_wait(&self, q: Queued) -> bool {
+        match q {
+            Queued::Loop(Command::Undo) => self.leaving() || self.clearing,
+            _ => self.fading() || self.clearing,
         }
+    }
+
+    /// A layer is fading out of the play order.
+    fn leaving(&self) -> bool {
+        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].leaving)
+    }
+
+    /// A layer is fading in or out.
+    fn fading(&self) -> bool {
+        self.order[..self.in_order].iter().any(|&k| self.slots[k as usize].leaving || self.slots[k as usize].presence < 1.0)
+    }
+
+    fn apply_layer(&mut self, id: u8, c: LayerCommand) {
+        let slot = id as usize;
+        let at = self.order[..self.in_order].iter().position(|&k| k == id);
+        let Some(at) = at.filter(|_| !self.slots[slot].leaving) else {
+            self.stats.no_layer += 1;
+            return;
+        };
+        let s = &mut self.slots[slot];
+        match c {
+            LayerCommand::Level(v) if v.is_finite() => s.level = v.clamp(0.0, 2.0),
+            LayerCommand::Pan(v) if v.is_finite() => s.pan = v.clamp(-1.0, 1.0),
+            LayerCommand::Level(_) | LayerCommand::Pan(_) => {}
+            LayerCommand::Mute(m) => s.mute = m,
+            LayerCommand::Solo(o) => s.solo = o,
+            // The overdub being recorded is thrown away, as Undo does.
+            LayerCommand::Delete if self.od_open && self.od_layer == slot => self.apply(Command::Undo),
+            LayerCommand::Delete if self.layers() > 1 => {
+                self.n_undone = 0;
+                self.push_done(Act { deleted: true, slot: id, index: at as u8 });
+                self.slots[slot].leaving = true;
+            }
+            LayerCommand::Delete => {}
+        }
+    }
+
+    /// Undo the newest overdub or delete.
+    fn undo(&mut self) {
+        if self.n_done == 0 {
+            return;
+        }
+        let a = self.take_done(self.n_done - 1);
+        self.push_undone(a);
+        if a.deleted {
+            self.restore(a);
+        } else {
+            self.slots[a.slot as usize].leaving = true;
+        }
+    }
+
+    /// Redo what was undone last.
+    fn redo(&mut self) {
+        self.n_undone -= 1;
+        let a = self.undone[self.n_undone];
+        self.push_done(a);
+        if a.deleted {
+            self.slots[a.slot as usize].leaving = true;
+        } else {
+            self.restore(a);
+        }
+    }
+
+    /// Put an act's layer back in its place, fading in.
+    fn restore(&mut self, a: Act) {
+        let at = (a.index as usize).min(self.in_order);
+        self.order.copy_within(at..self.in_order, at + 1);
+        self.order[at] = a.slot;
+        self.in_order += 1;
+        let s = &mut self.slots[a.slot as usize];
+        s.presence = 0.0;
+        s.leaving = false;
+    }
+
+    /// Take the layer at place `at` out of the play order.
+    fn remove_at(&mut self, at: usize) {
+        self.order.copy_within(at + 1..self.in_order, at);
+        self.in_order -= 1;
+    }
+
+    /// Remember an act for Undo; the oldest is forgotten when the history
+    /// is full.
+    fn push_done(&mut self, a: Act) {
+        if self.n_done == HISTORY {
+            self.take_done(0);
+        }
+        self.done[self.n_done] = a;
+        self.n_done += 1;
+    }
+
+    fn push_undone(&mut self, a: Act) {
+        if self.n_undone == HISTORY {
+            self.undone.copy_within(1..HISTORY, 0);
+            self.n_undone -= 1;
+        }
+        self.undone[self.n_undone] = a;
+        self.n_undone += 1;
+    }
+
+    fn take_done(&mut self, i: usize) -> Act {
+        let a = self.done[i];
+        self.done.copy_within(i + 1..self.n_done, i);
+        self.n_done -= 1;
+        a
     }
 
     fn apply(&mut self, c: Command) {
@@ -409,21 +675,25 @@ impl Looper {
                 Phase::Armed | Phase::Recording => self.abort(),
                 Phase::Overdubbing | Phase::Playing if self.od_open => {
                     // Throw the overdub away (recording, or still writing
-                    // its tail): it stops and fades out.
+                    // its tail): it stops and fades out, and Redo can
+                    // bring back what it recorded.
                     self.od_open = false;
                     self.phase = Phase::Playing;
+                    let slot = self.od_layer;
                     if !self.drop_empty_overdub() {
-                        self.undoing = true;
+                        if let Some(i) = self.done[..self.n_done].iter().rposition(|a| !a.deleted && a.slot as usize == slot) {
+                            let a = self.take_done(i);
+                            self.push_undone(a);
+                        }
+                        self.slots[slot].leaving = true;
                     }
                 }
-                Phase::Playing if self.layers > 1 => self.undoing = true,
+                Phase::Playing => self.undo(),
                 _ => {}
             },
             Command::Redo => {
-                if self.phase == Phase::Playing && self.redo > 0 && !self.od_open {
-                    self.layers += 1;
-                    self.redo -= 1;
-                    self.top = 0.0;
+                if self.phase == Phase::Playing && self.n_undone > 0 && !self.od_open {
+                    self.redo();
                 }
             }
             Command::Clear => match self.phase {
@@ -446,16 +716,15 @@ impl Looper {
         self.phase = Phase::Empty;
         self.len = 0;
         self.len_ticks = 0;
-        self.layers = 0;
-        self.redo = 0;
+        self.in_order = 0;
+        self.n_done = 0;
+        self.n_undone = 0;
         self.end_tick = None;
         self.ending = false;
         self.then_overdub = false;
         self.first_open = false;
         self.od_open = false;
-        self.undoing = false;
         self.clearing = false;
-        self.top = 1.0;
         self.gain = 0.0;
         self.pos = 0.0;
         self.jump = 0;
@@ -516,10 +785,11 @@ impl Looper {
         }
         self.len = len;
         self.len_ticks = t - self.origin;
-        self.layers = 1;
-        self.redo = 0;
-        self.valid[0] = (0, len);
-        self.top = 1.0;
+        self.order[0] = 0;
+        self.in_order = 1;
+        self.slots[0] = Slot { valid: (0, len), ..Slot::NEW };
+        self.n_done = 0;
+        self.n_undone = 0;
         self.ending = false;
         self.pos = 0.0;
         self.jump = 0;
@@ -581,21 +851,42 @@ impl Looper {
         }
     }
 
-    fn max_layers(&self) -> usize {
+    /// Layer slots the memory has room for.
+    fn slot_count(&self) -> usize {
         self.capacity.checked_div(self.len).map_or(0, |n| MAX_LAYERS.min(n))
+    }
+
+    /// A slot for a new overdub: one no layer plays and Undo cannot bring
+    /// back (what Redo could bring back goes, as a new overdub ends
+    /// redo). With none, the history up to its oldest delete is forgotten,
+    /// so that delete's slot can be used. None if every slot plays.
+    fn free_slot(&mut self) -> Option<usize> {
+        loop {
+            let live = |k: usize| {
+                self.order[..self.in_order].iter().any(|&s| s as usize == k)
+                    || self.done[..self.n_done].iter().any(|a| a.slot as usize == k)
+            };
+            if let Some(k) = (0..self.slot_count()).find(|&k| !live(k)) {
+                return Some(k);
+            }
+            let i = self.done[..self.n_done].iter().position(|a| a.deleted)?;
+            self.done.copy_within(i + 1..self.n_done, 0);
+            self.n_done -= i + 1;
+        }
     }
 
     /// A new layer on top, written from now on, fading in over `fade`
     /// frames.
     fn open_overdub(&mut self, fade: usize) {
-        let k = self.layers;
-        if k >= self.max_layers() {
+        let Some(k) = self.free_slot() else {
             self.stats.refused += 1;
             return;
-        }
-        self.redo = 0;
-        self.valid[k] = (0, 0);
-        self.layers += 1;
+        };
+        self.n_undone = 0;
+        self.slots[k] = Slot::NEW;
+        self.order[self.in_order] = k as u8;
+        self.push_done(Act { deleted: false, slot: k as u8, index: self.in_order as u8 });
+        self.in_order += 1;
         self.od_open = true;
         self.od_layer = k;
         self.od_in = 0;
@@ -614,15 +905,20 @@ impl Looper {
         self.phase = Phase::Playing;
     }
 
-    /// An overdub that never wrote a frame leaves no layer behind. True if
-    /// it was dropped.
+    /// An overdub that never wrote a frame leaves no layer behind, and
+    /// nothing to undo. True if it was dropped.
     fn drop_empty_overdub(&mut self) -> bool {
         let k = self.od_layer;
-        if k + 1 == self.layers && self.valid[k].1 == 0 {
-            self.layers -= 1;
-            return true;
+        if self.slots[k].valid.1 != 0 {
+            return false;
         }
-        false
+        if let Some(at) = self.order[..self.in_order].iter().position(|&s| s as usize == k) {
+            self.remove_at(at);
+        }
+        if let Some(i) = self.done[..self.n_done].iter().rposition(|a| !a.deleted && a.slot as usize == k) {
+            self.take_done(i);
+        }
+        true
     }
 
     fn close_overdub(&mut self) {
@@ -670,14 +966,14 @@ impl Looper {
         }
         let q = ((self.pos - f64::from(self.latency)).rem_euclid(len as f64).round() as usize) % len;
         let k = self.od_layer;
-        let (start, count) = self.valid[k];
+        let (start, count) = self.slots[k].valid;
         let idx = 2 * (k * len + q);
         if count == 0 {
-            self.valid[k] = (q, 1);
+            self.slots[k].valid = (q, 1);
             self.pool[idx] = x[0] * g;
             self.pool[idx + 1] = x[1] * g;
         } else if count < len {
-            self.valid[k] = (start, count + 1);
+            self.slots[k].valid = (start, count + 1);
             self.pool[idx] = x[0] * g;
             self.pool[idx + 1] = x[1] * g;
         } else {
@@ -687,15 +983,6 @@ impl Looper {
         if last {
             self.close_overdub();
         }
-    }
-
-    fn finish_undo(&mut self) {
-        self.undoing = false;
-        if self.layers > 1 {
-            self.layers -= 1;
-            self.redo += 1;
-        }
-        self.top = 1.0;
     }
 
     fn read(&mut self, playing: bool) -> [f32; 2] {
@@ -712,14 +999,7 @@ impl Looper {
             self.reset();
             return [0.0; 2];
         }
-        if self.undoing {
-            self.top = (self.top - STEP).max(0.0);
-            if self.top == 0.0 {
-                self.finish_undo();
-            }
-        } else if self.top < 1.0 {
-            self.top = (self.top + STEP).min(1.0);
-        }
+        self.mix_layers();
         if self.gain == 0.0 || self.len == 0 {
             return [0.0; 2];
         }
@@ -735,28 +1015,57 @@ impl Looper {
         [y[0] * g, y[1] * g]
     }
 
-    /// Every layer at `pos`, read between frames; the newest layer at its
-    /// fade. Only the frames a layer has written count.
+    /// One frame of every layer's fades: coming and going, and its gains
+    /// moving to its level, pan, mute and solo. A layer that has faded
+    /// away leaves the play order.
+    fn mix_layers(&mut self) {
+        let any_solo = self.any_solo();
+        let mut p = 0;
+        while p < self.in_order {
+            let s = &mut self.slots[self.order[p] as usize];
+            if s.leaving {
+                s.presence = (s.presence - STEP).max(0.0);
+                if s.presence == 0.0 {
+                    s.leaving = false;
+                    self.remove_at(p);
+                    continue;
+                }
+            } else if s.presence < 1.0 {
+                s.presence = (s.presence + STEP).min(1.0);
+            }
+            let (l, r) = s.target(any_solo);
+            s.gl += (l - s.gl).clamp(-STEP, STEP);
+            s.gr += (r - s.gr).clamp(-STEP, STEP);
+            p += 1;
+        }
+    }
+
+    /// Every layer at `pos`, read between frames, at its gains. Only the
+    /// frames a layer has written count.
     fn sample_at(&self, pos: f64) -> [f32; 2] {
         let len = self.len;
         let i0 = (pos as usize).min(len - 1);
         let frac = (pos - i0 as f64) as f32;
         let i1 = if i0 + 1 == len { 0 } else { i0 + 1 };
         let mut y = [0.0f32; 2];
-        for k in 0..self.layers {
-            let (start, count) = self.valid[k];
+        for &k in &self.order[..self.in_order] {
+            let s = &self.slots[k as usize];
+            let g = [s.gl * s.presence, s.gr * s.presence];
+            if g == [0.0, 0.0] {
+                continue;
+            }
+            let (start, count) = s.valid;
             let full = count >= len;
             let in0 = full || (i0 + len - start) % len < count;
             let in1 = full || (i1 + len - start) % len < count;
             if !in0 && !in1 {
                 continue;
             }
-            let g = if k + 1 == self.layers { self.top } else { 1.0 };
-            let base = 2 * k * len;
+            let base = 2 * k as usize * len;
             for (c, v) in y.iter_mut().enumerate() {
                 let v0 = if in0 { self.pool[base + 2 * i0 + c] } else { 0.0 };
                 let v1 = if in1 { self.pool[base + 2 * i1 + c] } else { 0.0 };
-                *v += g * (v0 + (v1 - v0) * frac);
+                *v += g[c] * (v0 + (v1 - v0) * frac);
             }
         }
         y
