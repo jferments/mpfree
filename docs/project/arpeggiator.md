@@ -63,7 +63,7 @@ Built now:
 - **Orders** Up, Down, Up-down, Up-down inclusive, Converge, Diverge, As played, Random (seeded, so it is repeatable), Random with no repeats until every note has played, Random once (one shuffled order kept until the notes change), Chord; 1–4 octaves; notes past 127 are skipped.
 - **Feel** strum (spreads chord notes across up to the whole step, lowest first); retrigger (a new note restarts the order and pattern); repeat count (play N steps, then stop, for one-shot runs).
 - **Scales** ten scales (major, minor, harmonic minor, dorian, phrygian, mixolydian, both pentatonics, blues, chromatic) with any root, applied last so octave and degree offsets always land in key. Off by default and for drum pads.
-- **Timing** rates 1/4 to 1/32 with triplets, at 960 ticks per quarter; gate 1–100 %; swing 50–75 % on every second step. The first step plays on the press (there is no transport yet).
+- **Timing** rates 1/4 to 1/32 with triplets, at 960 ticks per quarter; gate 1–100 %; swing 50–75 % on every second step. Free-running, the first step plays on the press. Following a transport (`Engine::sync` with a `Clock`, called before each `process`), the steps sit on the transport's tick grid: notes start on the next step, beat or bar (`Settings::start`), tempo changes and loop jumps are followed, and a transport swing (grid and amount) bends the grid; when the transport stops, the engine free-runs again.
 - **Velocity** played (following pad pressure) or fixed; accent velocity.
 - **Patterns** up to 64 steps, written as text:
 
@@ -186,7 +186,7 @@ It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a
 | C (engine side done, this PR) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Still to do: the `StepGrid` widget, the pattern editor and record screens | B | yes |
 | D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
 | E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
-| F | Transport and MIDI: sync to the sequencer's clock and MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
+| F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`, waits for the transport crate to drive it), MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
 
@@ -196,7 +196,7 @@ The owner accepted all four proposals, and they apply to every live test from ro
 
 1. **Latch defaults to Reset:** a press with nothing held starts a new chord; Toggle is an option.
 2. **Latched pads keep repeating** after NOTE REPEAT is released, until Latch is turned off.
-3. **The generator starts on the press**, not on the next beat, until a transport exists; then it becomes a setting.
+3. **The generator starts on the press**, not on the next beat, until a transport exists; then it becomes a setting (`Settings::start`: Step, Beat or Bar, default Step).
 4. **Record-on-pads layout:** pads 1 to 9 are the 1st to 9th held note, several at once a chord, pad 13 the next note in the order, 14 random, 15 tie, 16 rest.
 
 ## Sources
