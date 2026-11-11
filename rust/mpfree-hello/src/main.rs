@@ -89,6 +89,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_dev;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
@@ -2271,6 +2272,12 @@ fn player_session(
     ) {
         out.say(&line);
     }
+    // Touch tuning (the Dev tab's Touch page), kept as the "touch" settings.
+    let touch = store.settings(app::saved::TOUCH);
+    if !touch.is_empty() {
+        let t = mpfree_touch::tuning::Tuning::from_lookup(|k| touch.get_f64(k));
+        out.show(gui::ToUi::TouchTuning(t));
+    }
     out.say(&match (&o.data, store.saves()) {
         (None, _) => {
             "saving: off (no --data); settings and found buttons reset at every start".to_string()
@@ -2456,6 +2463,17 @@ fn player_session(
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
                 gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
+                gui::FromUi::SaveTouch(t) => {
+                    let mut settings = mpfree_store::Settings::default();
+                    for (k, v) in t.to_pairs() {
+                        settings.set_str(k, &v);
+                    }
+                    if !store.saves() {
+                        out.note("touch tuning: not saved (no data folder); it stays until the power goes off");
+                    } else if let Err(e) = store.save_settings(app::saved::TOUCH, &settings) {
+                        out.note(&format!("not saved: {}: {e}", app::saved::TOUCH));
+                    }
+                }
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
                 gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
@@ -2754,6 +2772,8 @@ fn player_session(
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
                 app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
+                app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
+                app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
                 app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
                 app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
