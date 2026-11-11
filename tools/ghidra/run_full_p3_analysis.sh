@@ -100,7 +100,8 @@ echo
     -processor ARM:LE:32:v7 \
     -cspec default \
     -scriptPath "$SCRIPT_DIR" \
-    -postScript MPFreeFinishBootChain.py \
+    -preScript MPFreeFinishBootChain.py pre \
+    -postScript MPFreeFinishBootChain.py post \
     -max-cpu 8 \
     -log "$LOG" \
     2>&1 | tee "$WORKDIR/$PROJECT_NAME.console.txt"
