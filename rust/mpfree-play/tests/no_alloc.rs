@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
-use mpfree_play::{ArpHost, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
+use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -85,11 +85,17 @@ fn playing_never_allocates() {
             c.swing = Some(Swing::new(240, 70).unwrap());
             c.quantise = Quantise::new(120, 60);
         }
+        if i == 0 {
+            t.slots[9] = Some(c.clone());
+        }
         t.slots[i] = Some(c);
         p.tracks.push(t);
         launches.push(Launch { track: i, slot: i, origin: (i as i64 - 2) * 480 });
     }
-    let mut view = PlayView::compile(&p, &launches).unwrap();
+    // Cues start on the first bar line, and the player carries them on its
+    // own: this view is never compiled again.
+    let cues = [Cue { track: 0, slot: Some(9) }, Cue { track: 4, slot: None }];
+    let mut view = PlayView::compile_cued(&p, &launches, &cues).unwrap();
     view.set_armed(Some(3));
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
@@ -100,6 +106,7 @@ fn playing_never_allocates() {
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
     let mut recorded = 0usize;
+    let mut started = 0usize;
 
     watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
@@ -137,6 +144,7 @@ fn playing_never_allocates() {
         t.process(n, &mut block);
         sink.last = block.start_frame;
         player.process(&view, &block, &mut sink);
+        started += player.started().len();
         sink.arp.process(&block, &mut |_, _| arp_notes += 1);
         // Pads on the recording track: notes held a few periods, some overlapping.
         let note = (i % 7) as u8;
@@ -154,4 +162,5 @@ fn playing_never_allocates() {
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");
     assert_eq!(rec.dropped(), 0);
+    assert_eq!(started, 2, "both cues started, once");
 }

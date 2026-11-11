@@ -7,11 +7,11 @@
 //! on the Play and Clips pages, and a sample arp chip on the bar where the
 //! arp's chip goes.
 
-use crate::view::{bars_label, launches_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
+use crate::view::{bars_label, clips_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
                   CLIPS_HINT, CLIPS_PAGE, TRANSPORT};
 use crate::widgets::TransportBar;
 use mpfree_capture::{keep, Capture, Kept, Now};
-use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
+use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::{Clip, Note, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
@@ -62,6 +62,8 @@ pub struct Session {
     pub capture: Box<Capture>,
     pub project: Project,
     pub launches: Vec<Launch>,
+    /// Launches and stops waiting for the next bar line.
+    pub cues: Vec<Cue>,
     pub armed: Option<usize>,
     pub takes: Takes,
     view: PlayView,
@@ -74,7 +76,8 @@ impl Session {
     pub fn new(project: Project, launches: Vec<Launch>, armed: Option<usize>) -> Result<Session, String> {
         let transport = Box::new(Transport::new(RATE, BPM).map_err(|e| format!("transport: {e:?}"))?);
         let mut s = Session { transport, player: Box::new(Player::new()), recorder: Box::new(Recorder::new()),
-                              capture: Box::new(Capture::new()), project, launches, armed, takes: Takes::default(),
+                              capture: Box::new(Capture::new()), project, launches, cues: Vec::new(), armed,
+                              takes: Takes::default(),
                               view: PlayView::empty(), block: Box::new(Block::new()), live: Vec::new() };
         s.compile()?;
         Ok(s)
@@ -84,7 +87,9 @@ impl Session {
         // An undone capture takes its clip, and so its launch, away.
         let project = &self.project;
         self.launches.retain(|l| project.clip(l.track, l.slot).is_some());
-        let mut v = PlayView::compile(&self.project, &self.launches).map_err(|e| format!("compile: {e:?}"))?;
+        self.cues.retain(|c| c.slot.is_none_or(|slot| project.clip(c.track, slot).is_some()));
+        let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
+            .map_err(|e| format!("compile: {e:?}"))?;
         v.set_armed(self.armed);
         self.view = v;
         Ok(())
@@ -113,7 +118,8 @@ impl Session {
         if a == TimeAction::Capture {
             return self.keep().map(|_| ());
         }
-        self.launches = launches_after(&self.launches, &a, &TransportInfo::of(&self.transport));
+        (self.launches, self.cues) =
+            clips_after(&self.project, &self.launches, &self.cues, &a, &TransportInfo::of(&self.transport));
         self.compile()
     }
 
@@ -130,6 +136,7 @@ impl Session {
             .map_err(|e| format!("capture: {e:?}"))?;
         if let Some(l) = k.launch {
             self.launches.retain(|x| x.track != l.track);
+            self.cues.retain(|x| x.track != l.track);
             self.launches.push(l);
         }
         self.capture.mark_kept(phrase.id);
@@ -185,6 +192,10 @@ impl Session {
         self.player.process(&self.view, &self.block, &mut Mute);
         self.recorder.process(&self.view, &self.block);
         let mut changed = false;
+        for st in self.player.started().to_vec() {
+            st.apply(&mut self.launches, &mut self.cues);
+            changed = true;
+        }
         for e in self.player.erased().to_vec() {
             changed |= self.takes.erase(&mut self.project, &e);
         }
@@ -202,6 +213,7 @@ impl Session {
         let mut st = TimeState::from_engine(TransportInfo::of(&self.transport), &self.project, &self.launches,
                                             self.armed, &self.takes);
         st.capture = self.capture.pending().map(|p| bars_label(p.bars));
+        st.cues = self.cues.clone();
         st
     }
 }
@@ -274,12 +286,13 @@ fn clank(s: &mut Session, bar: Tick, hits: &[Tick]) {
 }
 
 /// Playing from bar 1 to 5.3.240; at 5.3 the chords were tapped, so they
-/// start on the next bar.
+/// start on the next bar, and the glitch was tapped, so it stops there.
 pub fn playing() -> Result<Session, String> {
     let mut s = Session::new(project(), launches(), Some(STAB))?;
     s.command_at(0, Command::Play)?;
     s.run_to(4 * BAR + 2 * BEAT)?;
     s.act(TimeAction::Launch { track: CHORDS, slot: 0 })?;
+    s.act(TimeAction::StopClip(3))?;
     s.run_to(4 * BAR + 2 * BEAT + SIXTEENTH)?;
     Ok(s)
 }
@@ -463,6 +476,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
 mod tests {
     use super::*;
     use crate::view::{cell_of, take_items};
+    use mpfree_play::anchored;
     use crate::widgets::CellState;
     use mpfree_transport::State;
     use mpfree_ui::SoftCanvas;
@@ -500,7 +514,33 @@ mod tests {
         let chords = cell_of(&st, CHORDS, 0);
         assert_eq!((chords.state, chords.foot.as_str()), (CellState::Queued, "from 6.1"));
         assert_eq!(cell_of(&st, DRUMS, 0).state, CellState::Playing);
-        assert_eq!(cell_of(&st, 3, 0).state, CellState::Playing, "the glitch started at bar 3");
+        let glitch = cell_of(&st, 3, 0);
+        assert_eq!((glitch.state, glitch.detail.as_str()), (CellState::Playing, "stops 6.1"), "the glitch started at bar 3");
+        assert_eq!(st.cues, vec![Cue { track: CHORDS, slot: Some(0) }, Cue { track: 3, slot: None }]);
+    }
+
+    #[test]
+    fn cues_start_on_the_bar_line_and_become_launches() {
+        let mut s = playing().unwrap();
+        // A stop for the drums, cued in the same bar.
+        s.act(TimeAction::StopClip(DRUMS)).unwrap();
+        assert!(s.launches.iter().any(|l| l.track == DRUMS), "the drums play to the bar line");
+        assert_eq!(cell_of(&s.state(), DRUMS, 0).detail, "stops 6.1");
+        s.run_to(5 * BAR - 8).unwrap();
+        assert_eq!(s.cues.len(), 3);
+        s.run_to(5 * BAR + 8).unwrap();
+        assert!(s.cues.is_empty());
+        assert!(!s.launches.iter().any(|l| l.track == DRUMS || l.track == 3));
+        let chords = s.launches.iter().find(|l| l.track == CHORDS).copied().unwrap();
+        let clip = s.project.clip(CHORDS, 0).unwrap();
+        assert_eq!(chords.origin, anchored(5 * BAR, clip.length, clip.speed));
+        assert_eq!(cell_of(&s.state(), CHORDS, 0).state, CellState::Playing);
+        // Taken back before its bar line, a cue does nothing.
+        s.act(TimeAction::StopClip(CHORDS)).unwrap();
+        assert_eq!(s.cues, vec![Cue { track: CHORDS, slot: None }]);
+        s.act(TimeAction::Uncue(CHORDS)).unwrap();
+        s.run_to(6 * BAR + 8).unwrap();
+        assert_eq!(s.launches.iter().find(|l| l.track == CHORDS), Some(&chords));
     }
 
     #[test]
