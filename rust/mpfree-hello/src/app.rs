@@ -33,15 +33,16 @@ pub mod mapper;
 pub mod saved;
 mod synth_pads;
 
-pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
+pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
 use crate::looping::{LoopAction, LoopSource};
-use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
+use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use mpfree_looper::Command as LoopCommand;
+use mpfree_play::TrackArps;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
 
@@ -647,7 +648,17 @@ pub enum Effect {
 pub struct App {
     pub settings: Settings,
     pub map: ButtonMap,
-    pub engine: Engine,
+    /// One arp per track (owner decision 2). The pads play the armed
+    /// track's ([`App::set_track`]); the arp panel, the NOTE REPEAT band and
+    /// Latch show and change it. The time engine borrows these for each
+    /// period (`TimeHost::period_arps`), so clips through an arp and a
+    /// latched arp on another track keep playing.
+    pub arps: TrackArps,
+    /// The armed track: the one the pads and the arp screens play.
+    track: usize,
+    /// Each track's arp panel state while another track is armed
+    /// ([`App::set_track`] swaps it in and out).
+    track_ui: [arp::TrackUi; mpfree_seq::MAX_TRACKS],
     /// The `play` step: STOP ends it. The app: STOP stops the sounds.
     timed: bool,
     shift: bool,
@@ -766,14 +777,16 @@ const PREFS_TOUCH_ROWS: &[Item] = &[
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
         let settings = Settings::default();
-        let engine = Engine::new(sample_rate, settings.bpm);
+        let arps = TrackArps::new(sample_rate, settings.bpm);
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
-        let sent_notes = engine.active().clone();
+        let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
             map: ButtonMap::measured(),
-            engine,
+            arps,
+            track: 0,
+            track_ui: [arp::TrackUi::default(); mpfree_seq::MAX_TRACKS],
             timed,
             shift: false,
             repeat_held: false,
@@ -821,7 +834,11 @@ impl App {
             save_dirty: false,
             saved: Default::default(),
         };
-        app.engine.set_pattern(pattern);
+        // Every track's arp starts on the first pattern, as the panel does.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            app.arps.engine_at_mut(t).set_pattern(pattern);
+            app.track_ui[t].pattern = pattern;
+        }
         app.update_engine();
         app
     }
@@ -871,6 +888,17 @@ impl App {
 
     // ------------------------------------------------------------ pads
 
+    /// The armed track's arp engine: the one the pads play.
+    #[cfg(test)]
+    pub fn eng(&self) -> &mpfree_arp::Engine {
+        self.arps.engine_at(self.track)
+    }
+
+    #[cfg(test)]
+    pub fn eng_mut(&mut self) -> &mut mpfree_arp::Engine {
+        self.arps.engine_at_mut(self.track)
+    }
+
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
         if !self.free_time_recording() {
@@ -879,6 +907,30 @@ impl App {
             self.press_pad(slot, velocity.max(1));
         }
         self.record_press(slot as u8, velocity)
+    }
+
+    /// What a pad press gives the clip recorder "as pressed" (a track whose
+    /// clips play through its arp records the pads before the arp): the
+    /// pad, at the velocity it plays at. None while the pads only write
+    /// pattern steps (Free time).
+    pub fn pressed_event(
+        &self,
+        slot: usize,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() || slot >= 16 {
+            return None;
+        }
+        let note = slot as u8;
+        Some(if down {
+            mpfree_play::Event::NoteOn {
+                note,
+                velocity: self.live_map().velocity(velocity.max(1)),
+            }
+        } else {
+            mpfree_play::Event::NoteOff { note }
+        })
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
@@ -890,13 +942,15 @@ impl App {
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
         if self.pad_layout.is_none() {
-            self.engine.pressure(slot as u8, value);
+            self.arps
+                .engine_at_mut(self.track)
+                .pressure(slot as u8, value);
             return;
         }
         // Every note of a chord pad gets the pad's pressure.
         if let Some(p) = self.pad_pressed.get(slot).copied() {
             for &n in p.notes() {
-                self.engine.pressure(n, value);
+                self.arps.engine_at_mut(self.track).pressure(n, value);
             }
         }
     }
@@ -906,17 +960,23 @@ impl App {
     /// free-runs at the app's tempo without one.
     pub fn process(&mut self, frames: u32, out: &mut Events) {
         self.sync_arp();
-        self.engine.process(frames, out);
+        self.arps.engine_at_mut(self.track).process(frames, out);
     }
 
     /// Pads the engine keeps playing (held, or latched). With a pad layout:
     /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
         match &self.pad_layout {
-            None => self.engine.active().contains(slot as u8),
-            Some(l) => l
-                .get(slot)
-                .is_some_and(|p| p.notes().iter().any(|&n| self.engine.active().contains(n))),
+            None => self
+                .arps
+                .engine_at(self.track)
+                .active()
+                .contains(slot as u8),
+            Some(l) => l.get(slot).is_some_and(|p| {
+                p.notes()
+                    .iter()
+                    .any(|&n| self.arps.engine_at(self.track).active().contains(n))
+            }),
         }
     }
 
@@ -928,23 +988,29 @@ impl App {
     /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
     /// may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
-        self.engine.settings().mode != Mode::Direct
+        self.arps.engine_at(self.track).settings().mode != Mode::Direct
     }
 
     fn update_engine(&mut self) {
         let mut s = self.arp;
         s.mode = self.engine_mode();
         s.rate = self.settings.rate;
-        self.engine.set_settings(s);
+        self.arps.engine_at_mut(self.track).set_settings(s);
         let latch = if self.latched {
             self.settings.latch_mode
         } else {
             LatchMode::Off
         };
-        if self.engine.latch() != latch {
-            self.engine.set_latch(latch);
+        if self.arps.engine_at(self.track).latch() != latch {
+            self.arps.engine_at_mut(self.track).set_latch(latch);
         }
-        self.engine.set_tempo(self.settings.bpm);
+        self.arps
+            .engine_at_mut(self.track)
+            .set_own_swing(!self.swing_from_transport);
+        // Every track's arp free-runs at the app's tempo while stopped.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            self.arps.engine_at_mut(t).set_tempo(self.settings.bpm);
+        }
         self.arp_dirty = true;
     }
 
@@ -1058,10 +1124,10 @@ impl App {
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
         } else if note == button::PLAY {
-            self.engine.resume();
+            self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start {
-            self.engine.resume();
+            self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
@@ -1157,10 +1223,10 @@ impl App {
     fn stop(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
-            && !self.engine.hushed()
-            && !self.engine.active().is_empty()
+            && !self.arps.engine_at(self.track).hushed()
+            && !self.arps.engine_at(self.track).active().is_empty()
         {
-            self.engine.hush();
+            self.arps.engine_at_mut(self.track).hush();
             let mut fx = vec![
                 Effect::StopSounds,
                 Effect::Note("STOP: arp silenced, latch kept (STOP again clears it)".to_string()),
@@ -1170,7 +1236,7 @@ impl App {
             return fx;
         }
         self.latched = false;
-        self.engine.panic();
+        self.arps.engine_at_mut(self.track).panic();
         self.update_engine();
         let mut fx = vec![
             Effect::StopSounds,
@@ -2260,12 +2326,9 @@ mod tests {
         app.pad_down(2, 100);
         app.pad_up(0);
         for &n in &three {
-            assert!(
-                app.engine.active().contains(n),
-                "{n} is still held by pad 3"
-            );
+            assert!(app.eng().active().contains(n), "{n} is still held by pad 3");
         }
-        assert!(!app.engine.active().contains(48), "C was only pad 1's");
+        assert!(!app.eng().active().contains(48), "C was only pad 1's");
         assert!(app.active(2) && !app.active(1));
         assert_eq!(app.pad_of_note(48), Some(0));
         // A layout change while pad 3 is down: its pressure still goes to
@@ -2278,11 +2341,11 @@ mod tests {
         assert_eq!(app.pad_held_notes(2), held.as_slice());
         app.pad_up(2);
         assert!(app.pad_held_notes(2).is_empty());
-        assert!(app.engine.active().is_empty(), "nothing left held");
+        assert!(app.eng().active().is_empty(), "nothing left held");
         // Back to slots: held pads are let go.
         app.pad_down(5, 100);
         app.set_pad_layout(None);
-        assert!(app.engine.active().is_empty());
+        assert!(app.eng().active().is_empty());
         assert!(!app.arp_plays_notes());
     }
 
@@ -2386,6 +2449,49 @@ mod tests {
         assert!(!app.repeating());
         let _ = ons(&mut app, 128);
         assert!(ons(&mut app, 20_000).is_empty());
+    }
+
+    /// One arp per track: arming another track gives the panel that
+    /// track's arp, and a latched arp on the old track keeps running.
+    #[test]
+    fn another_track_gets_its_own_arp_and_a_latched_one_keeps_running() {
+        let mut app = ready();
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, REPEAT);
+        app.button(button::SHIFT, false, 0.0);
+        app.pad_down(4, 90);
+        app.pad_up(4);
+        assert!(app.repeating() && app.active(4));
+        let fx = app.set_track(2);
+        assert!(fx.contains(&Effect::Note(format!(
+            "arp: track 3 ({})",
+            mode_label(app.arp_mode)
+        ))));
+        assert_eq!(app.track(), 2);
+        // Track 3's panel: not latched, nothing held.
+        assert!(!app.repeating() && !app.active(4));
+        assert!(ons(&mut app, 11_100).is_empty(), "track 3's arp is quiet");
+        // Track 1's arp still holds and plays its latched pad.
+        let old = app.arps.engine_at(0);
+        assert!(old.latch() != LatchMode::Off && old.active().contains(4));
+        let mut ev = Events::new();
+        let mut n = 0;
+        for _ in 0..100 {
+            app.arps.engine_at_mut(0).process(111, &mut ev);
+            n += ev
+                .as_slice()
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::On { .. }))
+                .count();
+        }
+        assert_eq!(n, 3, "still repeating");
+        // Back on track 1: its panel and latch again; STOP twice lets go.
+        app.set_track(0);
+        assert!(app.repeating() && app.active(4));
+        press(&mut app, button::STOP);
+        press(&mut app, button::STOP);
+        assert!(!app.repeating());
+        assert!(app.set_track(0).is_empty(), "same track: nothing to do");
     }
 
     #[test]
@@ -2944,11 +3050,11 @@ mod tests {
         assert!(fx.contains(&Effect::Note(
             "STOP: arp silenced, latch kept (STOP again clears it)".into()
         )));
-        assert!(app.latched && app.engine.hushed() && app.active(2));
+        assert!(app.latched && app.eng().hushed() && app.active(2));
         assert!(notes(&mut app, 4 * 5513).is_empty(), "silent");
         // PLAY carries on with the same latch.
         press(&mut app, button::PLAY);
-        assert!(!app.engine.hushed());
+        assert!(!app.eng().hushed());
         assert!(notes(&mut app, 4 * 5513).contains(&2));
         // STOP, then STOP again: the latch goes.
         press(&mut app, button::STOP);
@@ -2983,17 +3089,17 @@ mod tests {
     #[test]
     fn note_repeat_turns_on_the_arp_mode_the_panel_picked() {
         let mut app = ready();
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         // Hold NOTE REPEAT: Repeat, and - / + pick the mode, the wheel the order.
         app.button(REPEAT, true, 0.0);
-        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
         press(&mut app, button::PLUS);
-        assert_eq!(app.engine.settings().mode, Mode::Arp);
+        assert_eq!(app.eng().settings().mode, Mode::Arp);
         app.wheel(1);
-        assert_eq!(app.engine.settings().order, Order::ALL[1]);
+        assert_eq!(app.eng().settings().order, Order::ALL[1]);
         let fx = app.button(REPEAT, false, 0.0);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert_eq!(
             app.wheel(1),
             vec![Effect::Kit(1)],
@@ -3060,20 +3166,20 @@ mod tests {
         app.button(MENU, false, 0.0);
         assert_eq!(app.view(), View::Arp);
         // The panel plays the pads through its mode, Repeat to begin with.
-        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
         assert!(app.generating());
         // - / + walk its tabs, Direct included.
         let fx = press(&mut app, button::MINUS);
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
         press(&mut app, button::PLUS);
         press(&mut app, button::PLUS);
         press(&mut app, button::PLUS);
-        assert_eq!(app.engine.settings().mode, Mode::Pattern);
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
         // The wheel picks a pattern, the Q-Links rate, gate, swing and octaves.
         app.wheel(2);
         assert_eq!(app.pattern_index, 2);
-        assert_eq!(*app.engine.pattern(), app.patterns[2].1);
+        assert_eq!(*app.eng().pattern(), app.patterns[2].1);
         assert_eq!(
             app.qlink(1, 5, None),
             Some(vec![
@@ -3081,19 +3187,19 @@ mod tests {
                 Effect::Light(REPEAT, LIGHT_ON)
             ])
         );
-        assert_eq!(app.engine.settings().gate, 60);
+        assert_eq!(app.eng().settings().gate, 60);
         assert_eq!(
             app.qlink(3, 3, None),
             Some(Vec::new()),
             "octaves need a longer turn"
         );
         app.qlink(3, 1, None);
-        assert_eq!(app.engine.settings().octaves, 2);
+        assert_eq!(app.eng().settings().octaves, 2);
         app.qlink(0, 3, None);
         assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
         app.qlink(2, 0, Some(127));
         assert_eq!(
-            app.engine.settings().swing,
+            app.eng().settings().swing,
             75,
             "absolute positions without Akai's session"
         );
@@ -3155,21 +3261,21 @@ mod tests {
             |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
         // Accent level steps by 8, down from 127.
         let fx = app.step_item(row(&app, ArpItem::Accent), -1);
-        assert_eq!(app.engine.settings().accent, 119);
+        assert_eq!(app.eng().settings().accent, 119);
         assert!(fx.contains(&Effect::Note("arp accent level: 119".to_string())));
         // Scale: Off, then the named scales; the root moves it.
         app.step_item(row(&app, ArpItem::Scale), 1);
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, DORIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(0, DORIAN)));
         app.step_item(row(&app, ArpItem::Root), 1);
         let fx = app.step_item(row(&app, ArpItem::Root), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(2, DORIAN)));
         assert!(fx.contains(&Effect::Note("arp scale: D Dorian".to_string())));
         assert!(
             matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Dorian")
         );
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, PHRYGIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(2, PHRYGIAN)));
         // A scale with other notes coming down keeps them when the root moves.
         let classical = mpfree_arp::scale::SCALES
             .iter()
@@ -3179,7 +3285,7 @@ mod tests {
             app.step_item(row(&app, ArpItem::Scale), 1);
         }
         app.step_item(row(&app, ArpItem::Root), 1);
-        let s = app.engine.settings().scale.unwrap();
+        let s = app.eng().settings().scale.unwrap();
         assert_eq!(
             (s.root, s.mask, s.down),
             (
@@ -3191,44 +3297,44 @@ mod tests {
         app.step_item(row(&app, ArpItem::Root), -1);
         // Out-of-key notes: below, above, nearest, not played.
         let fx = app.step_item(row(&app, ArpItem::Snap), 1);
-        assert_eq!(app.engine.settings().snap, Snap::Up);
+        assert_eq!(app.eng().settings().snap, Snap::Up);
         assert!(fx.contains(&Effect::Note(
             "arp out-of-key notes: note above".to_string()
         )));
         for _ in 0..5 {
             app.step_item(row(&app, ArpItem::Snap), 1);
         }
-        assert_eq!(app.engine.settings().snap, Snap::Skip);
+        assert_eq!(app.eng().settings().snap, Snap::Skip);
         // A chord on each pad, and a scale run.
         app.step_item(row(&app, ArpItem::Chord), 1);
         let fx = app.step_item(row(&app, ArpItem::Chord), 1);
-        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Triad);
+        assert_eq!(app.eng().settings().chord, mpfree_arp::Chord::Triad);
         assert!(fx.contains(&Effect::Note(
             "arp chord on each pad: triad (1 3 5)".to_string()
         )));
         app.step_item(row(&app, ArpItem::Run), 1);
-        assert!(app.engine.settings().run);
+        assert!(app.eng().settings().run);
         app.step_item(row(&app, ArpItem::Run), -1);
         // Held chords take turns: a progression.
         app.step_item(row(&app, ArpItem::Turns), 1);
         app.step_item(row(&app, ArpItem::Turns), 1);
         let fx = app.step_item(row(&app, ArpItem::Turns), 1);
-        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Bar);
+        assert_eq!(app.eng().settings().turns, mpfree_arp::Turns::Bar);
         assert!(fx.contains(&Effect::Note(
             "arp chords take turns: every bar".to_string()
         )));
         for _ in 0..4 {
             app.step_item(row(&app, ArpItem::Turns), -1);
         }
-        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Off);
+        assert_eq!(app.eng().settings().turns, mpfree_arp::Turns::Off);
         app.step_item(row(&app, ArpItem::Chord), -5);
         app.step_item(row(&app, ArpItem::Chord), -1);
-        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Off);
+        assert_eq!(app.eng().settings().chord, mpfree_arp::Chord::Off);
         // Off keeps the root for next time.
         for _ in 0..classical {
             app.step_item(row(&app, ArpItem::Scale), -1);
         }
-        assert_eq!(app.engine.settings().scale, None);
+        assert_eq!(app.eng().settings().scale, None);
         assert_eq!(
             app.step_item(row(&app, ArpItem::Scale), -1)
                 .iter()
@@ -3239,20 +3345,20 @@ mod tests {
         );
         app.step_item(row(&app, ArpItem::Scale), 1);
         assert_eq!(
-            app.engine.settings().scale,
+            app.eng().settings().scale,
             Some(Scale::new(2, mpfree_arp::scale::MAJOR))
         );
         // Strum in tens of percent; New notes restart on and off.
         app.step_item(row(&app, ArpItem::Strum), 1);
-        assert_eq!(app.engine.settings().strum, 10);
+        assert_eq!(app.eng().settings().strum, 10);
         app.step_item(row(&app, ArpItem::Retrigger), 1);
-        assert!(app.engine.settings().retrigger);
+        assert!(app.eng().settings().retrigger);
         // The panel's own settings leave them alone.
         app.arp_action(ArpAction::Settings(mpfree_arp::Settings {
             gate: 80,
             ..app.arp
         }));
-        let s = app.engine.settings();
+        let s = app.eng().settings();
         assert_eq!(
             (s.accent, s.strum, s.retrigger, s.gate),
             (119, 10, true, 80)
@@ -3374,7 +3480,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Effect::Workspace(w) if !w.open && w.recording)));
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Direct,
             "pads sound as pressed while recording"
         );
@@ -3412,7 +3518,7 @@ mod tests {
             "a hard hit"
         );
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Repeat,
             "the panel's mode again"
         );
@@ -3461,13 +3567,13 @@ mod tests {
             .any(|e| matches!(e, Effect::Workspace(w) if w.free_time && w.recording)));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::FreeTime);
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Pattern,
             "the pattern keeps playing"
         );
         let _ = ons(&mut app, 3 * 5513 + 400);
         // Pad 2 (the 2nd held note), hit hard, lands on the step nearest now.
-        let at = (app.engine.position().round() as usize) % 4;
+        let at = (app.eng_mut().position().round() as usize) % 4;
         let fx = app.pad_down(1, 127);
         assert!(
             fx.iter()
@@ -3483,7 +3589,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            *app.engine.pattern(),
+            *app.eng().pattern(),
             app.pattern,
             "the engine plays it at once"
         );
@@ -3494,7 +3600,7 @@ mod tests {
             .collect();
         assert_eq!(active, [0, 4], "record pads don't change the latched chord");
         // Held across two more steps: ties after it.
-        let at = (app.engine.position().round() as usize) % 4;
+        let at = (app.eng_mut().position().round() as usize) % 4;
         app.pad_down(12, 90);
         let _ = ons(&mut app, 2 * 5513);
         let fx = app.pad_up(12);
@@ -3508,7 +3614,7 @@ mod tests {
         // Back to Step time restarts the recording there.
         app.workspace_action(WsAction::RecordMode(RecordMode::Step));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::Step);
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         for pad in [0, 1] {
             app.pad_down(pad, 100);
             app.pad_up(pad);
@@ -3537,7 +3643,7 @@ mod tests {
             "keeps its place"
         );
         assert_eq!(
-            *app.engine.pattern(),
+            *app.eng().pattern(),
             Pattern::parse("x x .").unwrap(),
             "the pattern in use is reloaded"
         );
@@ -3596,7 +3702,7 @@ mod tests {
         }
         let fx = app.step_item(row, 1);
         assert_eq!(
-            app.engine.settings().scale,
+            app.eng().settings().scale,
             Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MELODIC_MINOR))
         );
         assert!(
@@ -3612,7 +3718,7 @@ mod tests {
         app.arp_action(ArpAction::Button(PatternButton::Edit));
         let edited = Pattern::parse("1 . 2! _").unwrap();
         app.workspace_action(WsAction::Changed(edited));
-        assert_eq!(*app.engine.pattern(), edited);
+        assert_eq!(*app.eng().pattern(), edited);
         assert!(matches!(app.arp_view(), Effect::Arp(v) if v.pattern_changed));
         app.workspace_action(WsAction::Record(true));
         assert!(app.recorder.is_some());
