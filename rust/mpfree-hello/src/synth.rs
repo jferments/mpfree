@@ -1,15 +1,16 @@
-//! The pad player's synth: MPFree's Poly, FM, Drums or Pluck
+//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck or Wavetable
 //! (`mpfree-synth`) on the pads, edited on the Synth tab (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
 //!   Kit page knob, C2 by default) and each pad after it a semitone higher,
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
-//!   of the pad hit last. Pluck plays the pad layouts as Poly and FM do.
+//!   of the pad hit last. Pluck and Wavetable play the pad layouts as Poly
+//!   and FM do.
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -41,7 +42,7 @@ use mpfree_arp::scale::Scale;
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
-use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset};
+use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset, Wavetable};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 use mpfree_ui::Color;
@@ -54,6 +55,7 @@ pub const START_PRESET: &str = "Pluck";
 pub const FM_START_PRESET: &str = "Glass Keys";
 pub const DRUMS_START_PRESET: &str = "Init Kit";
 pub const PLUCK_START_PRESET: &str = "Steel String";
+pub const WT_START_PRESET: &str = "Harmonic Pluck";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -86,7 +88,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 4;
+const ENGINES: usize = 5;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,10 +102,18 @@ pub enum Engine {
     Drums,
     /// Plucked strings and struck mallets.
     Pluck,
+    /// The wavetable synth: two oscillators scanning frame stacks.
+    Wavetable,
 }
 
 impl Engine {
-    pub const ALL: [Engine; ENGINES] = [Engine::Poly, Engine::Fm, Engine::Drums, Engine::Pluck];
+    pub const ALL: [Engine; ENGINES] = [
+        Engine::Poly,
+        Engine::Fm,
+        Engine::Drums,
+        Engine::Pluck,
+        Engine::Wavetable,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -111,6 +121,7 @@ impl Engine {
             Engine::Fm => "FM",
             Engine::Drums => "Drums",
             Engine::Pluck => "Pluck",
+            Engine::Wavetable => "Wavetable",
         }
     }
 
@@ -199,6 +210,7 @@ pub struct Synth {
     fm: Fm,
     drums: Drums,
     pluck: Pluck,
+    wt: Wavetable,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -237,6 +249,7 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
     match engine {
         Engine::Drums => Drums::presets(),
         Engine::Pluck => Pluck::presets(),
+        Engine::Wavetable => Wavetable::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
@@ -281,6 +294,12 @@ impl Synth {
         if let Some(p) = Pluck::presets().get(pluck_preset) {
             pluck.load_preset(p);
         }
+        // Builds the factory wavetables the first time (control thread).
+        let mut wt = Wavetable::new(rate);
+        let wt_preset = start_preset(Wavetable::presets(), WT_START_PRESET);
+        if let Some(p) = Wavetable::presets().get(wt_preset) {
+            wt.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -295,6 +314,7 @@ impl Synth {
             meters_of(&fm),
             meters_of(&drums),
             meters_of(&pluck),
+            meters_of(&wt),
         ];
         let settings = PadSettings::default();
         Synth {
@@ -302,6 +322,7 @@ impl Synth {
             fm,
             drums,
             pluck,
+            wt,
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -315,7 +336,7 @@ impl Synth {
             playing: [Held::default(); PADS],
             holders: [0; 128],
             press: [0; PADS],
-            presets: [preset, fm_preset, drums_preset, pluck_preset],
+            presets: [preset, fm_preset, drums_preset, pluck_preset, wt_preset],
             pads_changed: false,
             fade: 0,
             fading: false,
@@ -332,6 +353,7 @@ impl Synth {
             Engine::Fm => &self.fm,
             Engine::Drums => &self.drums,
             Engine::Pluck => &self.pluck,
+            Engine::Wavetable => &self.wt,
         }
     }
 
@@ -341,6 +363,7 @@ impl Synth {
             Engine::Fm => &mut self.fm,
             Engine::Drums => &mut self.drums,
             Engine::Pluck => &mut self.pluck,
+            Engine::Wavetable => &mut self.wt,
         }
     }
 
@@ -351,6 +374,7 @@ impl Synth {
             Engine::Fm => self.fm.active_voices(),
             Engine::Drums => self.drums.active_voices(),
             Engine::Pluck => self.pluck.active_voices(),
+            Engine::Wavetable => self.wt.active_voices(),
         }
     }
 
@@ -760,6 +784,7 @@ impl Synth {
                     Engine::Fm => &mut self.fm,
                     Engine::Drums => &mut self.drums,
                     Engine::Pluck => &mut self.pluck,
+                    Engine::Wavetable => &mut self.wt,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -792,6 +817,7 @@ impl Synth {
                     self.fm.reset();
                     self.drums.reset();
                     self.pluck.reset();
+                    self.wt.reset();
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -811,7 +837,7 @@ impl Synth {
         Counters {
             notes: self.notes,
             peak_voices: self.peak_voices,
-            dropped: self.dropped_events + self.poly.dropped + self.fm.dropped,
+            dropped: self.dropped_events + self.poly.dropped + self.fm.dropped + self.wt.dropped,
             resets: self.resets,
         }
     }
@@ -824,6 +850,7 @@ impl Synth {
             Engine::Fm => self.fm.param(mpfree_synth::fm_params::POLYPHONY),
             Engine::Drums => mpfree_synth::drum::POOL as f32,
             Engine::Pluck => self.pluck.param(mpfree_synth::pluck_params::POLYPHONY),
+            Engine::Wavetable => self.wt.param(mpfree_synth::wavetable::params::POLYPHONY),
         }
     }
 
@@ -834,6 +861,7 @@ impl Synth {
         match self.settings.engine {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
+            Engine::Wavetable => self.wt.pressures(out),
             Engine::Drums | Engine::Pluck => 0,
         }
     }
@@ -892,6 +920,7 @@ impl Synth {
                 self.drums_moved(names);
             }
             Engine::Pluck => self.pluck.load_preset(p),
+            Engine::Wavetable => self.wt.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -1612,31 +1641,44 @@ mod tests {
     }
 
     #[test]
-    fn pluck_plays_the_pad_layouts_as_poly_does() {
-        let mut poly = Synth::new(44_100);
-        let mut pluck = Synth::new(44_100);
-        with(&mut pluck, |p| p.engine = Engine::Pluck);
-        for s in [&mut poly, &mut pluck] {
-            with(s, |p| {
-                p.scale = scale("Dorian", 2);
-                p.set_layout(PadLayout::Chords);
-            });
-            s.shift_octave(-1);
+    fn pluck_and_wavetable_play_the_pad_layouts_as_poly_does() {
+        let cases = [
+            (
+                Engine::Pluck,
+                "Pluck",
+                PLUCK_START_PRESET,
+                mpfree_synth::pluck_params::POLYPHONY,
+            ),
+            (
+                Engine::Wavetable,
+                "Wavetable",
+                WT_START_PRESET,
+                mpfree_synth::wavetable::params::POLYPHONY,
+            ),
+        ];
+        for (engine, name, start, polyphony) in cases {
+            let mut poly = Synth::new(44_100);
+            let mut other = Synth::new(44_100);
+            with(&mut other, |p| p.engine = engine);
+            for s in [&mut poly, &mut other] {
+                with(s, |p| {
+                    p.scale = scale("Dorian", 2);
+                    p.set_layout(PadLayout::Chords);
+                });
+                s.shift_octave(-1);
+            }
+            for pad in 0..PADS {
+                assert_eq!(poly.notes(pad), other.notes(pad), "{name} pad {pad}");
+            }
+            assert_eq!(other.pad_labels(), poly.pad_labels());
+            assert!(other.chip().starts_with(&format!("{name} · D Dorian")));
+            assert_eq!(other.preset_name(), start);
+            assert_eq!(other.polyphony(), other.value(polyphony));
+            // A chord pad: every note of it reaches the engine.
+            other.note_on(0, 90, 0);
+            assert_eq!(queued(&other).len(), other.notes(0).len());
+            assert!(!other.take_pads_changed());
         }
-        for pad in 0..PADS {
-            assert_eq!(poly.notes(pad), pluck.notes(pad), "pad {pad}");
-        }
-        assert_eq!(pluck.pad_labels(), poly.pad_labels());
-        assert!(pluck.chip().starts_with("Pluck · D Dorian"));
-        assert_eq!(pluck.preset_name(), PLUCK_START_PRESET);
-        assert_eq!(
-            pluck.polyphony(),
-            pluck.value(mpfree_synth::pluck_params::POLYPHONY)
-        );
-        // A chord pad: every note of it reaches Pluck.
-        pluck.note_on(0, 90, 0);
-        assert_eq!(queued(&pluck).len(), pluck.notes(0).len());
-        assert!(!pluck.take_pads_changed());
     }
 
     #[test]
