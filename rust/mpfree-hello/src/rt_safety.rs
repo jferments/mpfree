@@ -1,14 +1,16 @@
 //! The audio thread's sound path, run the way `player_session` runs it each
 //! period, under the counting allocator: pads and pressure into the arp app,
-//! the transport and clips, the sampler or the synth, the click and the
-//! looper, out to the period's samples. None of it may allocate or free
-//! while nothing is edited.
+//! the transport and clips, the sampler (each pad into its mixer channel) or
+//! the synth, the looper, the mixer and the click, out to the period's
+//! samples. None of it may allocate or free while nothing is edited.
 //!
-//! Left out, because they are the device's: reading MIDI and the screen's
-//! queue, the log lines and the screen updates (`out.note`, `out.show`),
-//! and writing the period to ALSA.
+//! Left out, because they are the device's or the screen's: reading MIDI
+//! and the screen's queue, the log lines and the screen updates (`out.note`,
+//! `out.show`, and what is built only for them: `arp_poll`'s view,
+//! `time.steps()`, `mix.poll_state`, the meter), and writing the period to
+//! ALSA.
 
-use crate::{app, kit, looping, sampler, synth, time, SeqPads, PERIOD, RATE};
+use crate::{app, kit, looping, mixing, sampler, synth, time, SeqPads, PERIOD, RATE};
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
 use mpfree_controller::mpc_one::PAD_NOTES;
@@ -23,10 +25,16 @@ struct Rig {
     player: sampler::Player,
     synth: synth::Synth,
     looper: looping::LoopHost,
+    mix: mixing::MixHost,
     events: Events,
     synth_on: bool,
     left: [f32; PERIOD],
     right: [f32; PERIOD],
+    /// The tracks' sounds before the mixer, as `player_session` keeps them.
+    drums: [[f32; PERIOD]; 2],
+    synth_out: [[f32; PERIOD]; 2],
+    loop_out: [[f32; PERIOD]; 2],
+    pads_out: [[f32; PERIOD]; 2],
     peak: f32,
     /// Notes the arp started, and hits the clip played.
     arp_notes: u64,
@@ -57,12 +65,18 @@ impl Rig {
             player: sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap(),
             synth: synth::Synth::new(RATE),
             looper: looping::LoopHost::new(RATE, 20),
+            // The device's default: 6 dB under a -12 dB maximum.
+            mix: mixing::MixHost::new(RATE, -18.0, -12.0),
             time: time::TimeHost::new(RATE, 120.0).unwrap(),
             app,
             events: Events::new(),
             synth_on,
             left: [0.0; PERIOD],
             right: [0.0; PERIOD],
+            drums: [[0.0; PERIOD]; 2],
+            synth_out: [[0.0; PERIOD]; 2],
+            loop_out: [[0.0; PERIOD]; 2],
+            pads_out: [[0.0; PERIOD]; 2],
             peak: 0.0,
             arp_notes: 0,
             clip_hits: 0,
@@ -99,24 +113,39 @@ impl Rig {
             player,
             synth,
             looper,
+            mix,
             events,
             synth_on,
             left,
             right,
+            drums,
+            synth_out,
+            loop_out,
+            pads_out,
             arp_notes,
             clip_hits,
             ..
         } = self;
+        let synth_on = *synth_on;
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
         time.advance(PERIOD as u32);
         app.set_clock(time.arp_clock());
         app.process(PERIOD as u32, events);
+        // With the synth on the pads the arp may play notes (its pad layout).
+        let notes = synth_on && app.arp_plays_notes();
         for ev in events.as_slice() {
             let (slot, velocity) = match ev.kind {
                 EventKind::On { note, velocity } => (note, velocity),
+                EventKind::Off { note } if notes => {
+                    synth.note_off_note(note, ev.offset);
+                    if let Some(pad) = app.pad_of_note(note) {
+                        time.pad(ev.offset, mpfree_play::Event::NoteOff { note: pad as u8 });
+                    }
+                    continue;
+                }
                 EventKind::Off { note } => {
-                    if *synth_on {
+                    if synth_on {
                         synth.note_off(note as usize, ev.offset);
                     } else {
                         player.release_at(note as usize, ev.offset);
@@ -126,11 +155,26 @@ impl Rig {
                 }
             };
             *arp_notes += 1;
-            let pad = slot as usize;
-            if pad >= 16 {
+            let v = app.velocity(velocity);
+            let pad = if notes {
+                synth.note_on_note(slot, v, ev.offset);
+                let Some(pad) = app.pad_of_note(slot) else {
+                    continue;
+                };
+                time.pad(
+                    ev.offset,
+                    mpfree_play::Event::NoteOn {
+                        note: pad as u8,
+                        velocity: v,
+                    },
+                );
+                pad
+            } else {
+                slot as usize
+            };
+            if pad >= 16 || notes {
                 continue;
             }
-            let v = app.velocity(velocity);
             time.pad(
                 ev.offset,
                 mpfree_play::Event::NoteOn {
@@ -138,7 +182,7 @@ impl Rig {
                     velocity: v,
                 },
             );
-            if *synth_on {
+            if synth_on {
                 synth.note_on(pad, v, ev.offset);
             } else {
                 player.hit_at(pad, v, ev.offset);
@@ -152,13 +196,39 @@ impl Rig {
         };
         time.period(PERIOD as u32, &mut seq);
         *clip_hits += seq.hits;
-        player.render_dry(left, right);
-        synth.render(i * PERIOD as u64, app.settings.bpm, left, right);
-        let p = sampler::master_out(left, right, 1.0);
-        looper.take_pads(left, right);
+        time.clear_hits();
+        // The pads, each into its mixer channel, and on to the Drums track.
+        player.set_tempo(time.info().bpm);
+        let mut pads = mix.pads();
+        player.render_routed(PERIOD, &mut pads);
+        let played = pads.played();
+        let [drums_l, drums_r] = drums;
+        mix.drums(played, drums_l, drums_r);
+        let [synth_l, synth_r] = synth_out;
+        synth_l.fill(0.0);
+        synth_r.fill(0.0);
+        synth.render(i * PERIOD as u64, app.settings.bpm, synth_l, synth_r);
+        let [pads_l, pads_r] = pads_out;
+        for f in 0..PERIOD {
+            pads_l[f] = drums_l[f] + synth_l[f];
+            pads_r[f] = drums_r[f] + synth_r[f];
+        }
+        looper.take_pads(pads_l, pads_r);
+        let [loop_l, loop_r] = loop_out;
+        let note = looper.run(time.block(), loop_l, loop_r);
+        assert!(note.is_none(), "period {i}: {note:?}");
+        mix.follow(looper.line.is_open(), looper.monitor);
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        let (p, _) = mix.period(
+            &ctx,
+            (synth_l, synth_r),
+            (loop_l, loop_r),
+            looper.input(),
+            left,
+            right,
+        );
         let p = p.max(time.mix_click(left, right));
-        let (loop_peak, _) = looper.period(time.block(), left, right);
-        self.peak = self.peak.max(p).max(loop_peak);
+        self.peak = self.peak.max(p);
     }
 }
 
