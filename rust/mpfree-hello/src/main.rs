@@ -1829,7 +1829,13 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     app.pressure(pad as usize, pressure);
-                    if synth_on {
+                    if synth_on && app.arp_plays_notes() {
+                        // The pad's layout notes, which the arp pressed by number.
+                        let notes = synth.pad_layout()[pad as usize];
+                        for &note in notes.notes() {
+                            synth.pressure_note(note, pressure);
+                        }
+                    } else if synth_on {
                         synth.pressure(pad as usize, pressure);
                     } else {
                         player.pressure(pad as usize, pressure);
@@ -1903,6 +1909,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
                 app::Effect::Octave(d) if synth_on || kit_to == Some(synth_kit) => {
                     if synth.shift_octave(d) {
+                        if synth_on {
+                            app.set_pad_layout(Some(synth.pad_layout()));
+                        }
                         out.note(&synth_pads_note(&synth));
                         out.show(gui::ToUi::KitChanged { kit: synth_kit, view: synth.kit_view() });
                         rest = synth.pad_colours();
@@ -1929,9 +1938,11 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     out.note(&synth_pads_note(&synth));
                     out.show(gui::ToUi::KitChanged { kit: synth_kit, view: synth.kit_view() });
                     if synth_on {
+                        app.set_pad_layout(Some(synth.pad_layout()));
                         rest = synth.pad_colours();
                         ports.send_batch(out, false, "the synth's pad colours", &as_slices(&pad_colours(&rest)))?;
                         lit = [false; 16];
+                        bank_lights = true;
                     }
                 }
                 app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
@@ -1973,6 +1984,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
+                // While the synth has the pads, PAD BANK A-H picks a bank's
+                // pad layout (Jay, 09:55Z), not a drum kit.
+                app::Effect::Bank { button, shift }
+                    if button < 4 && kit_to.unwrap_or(if synth_on { synth_kit } else { player.kit() }) == synth_kit =>
+                {
+                    let target = app::bank_target(synth.settings().bank % 8, button, shift);
+                    later.extend(app.synth_bank(target));
+                    bank_lights = true;
+                }
                 app::Effect::Bank { button, shift } => {
                     let now = kit_to.unwrap_or(if synth_on { synth_kit } else { player.kit() });
                     if button < 4 {
@@ -2033,12 +2053,14 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
             }
             lit = [false; 16];
+            // The arp plays the synth's layout notes, or a kit's pad slots.
+            app.set_pad_layout(synth_on.then(|| synth.pad_layout()));
             out.show(gui::ToUi::Kit(k));
             bank_lights = true;
         }
         // The PAD BANK buttons found so far: the bank playing is lit.
         if bank_lights {
-            let bank = if synth_on { None } else { Some(player.kit() % 4) };
+            let bank = Some(if synth_on { synth.settings().bank % 4 } else { player.kit() % 4 });
             for (b, note) in app.map.bank.iter().enumerate() {
                 let Some(note) = *note else { continue };
                 let value = if bank == Some(b) { app::LIGHT_ON } else { app::LIGHT_OFF };
@@ -2063,9 +2085,19 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
+        // With the synth on the pads the arp's events carry MIDI notes (its
+        // pad layout); the screen and the clips get the pad a note is on.
+        let notes = synth_on && app.arp_plays_notes();
         for ev in events.as_slice() {
             let (slot, velocity) = match ev.kind {
                 mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
+                mpfree_arp::EventKind::Off { note } if notes => {
+                    synth.note_off_note(note, ev.offset);
+                    if let Some(pad) = app.pad_of_note(note) {
+                        time.pad(ev.offset, mpfree_play::Event::NoteOff { note: pad as u8 });
+                    }
+                    continue;
+                }
                 // The synth's note ends; a Grains pad stops when let go; one-shot sounds ignore it.
                 mpfree_arp::EventKind::Off { note } if synth_on => {
                     synth.note_off(note as usize, ev.offset);
@@ -2078,20 +2110,32 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     continue;
                 }
             };
-            let pad = slot as usize;
+            let v = app.velocity(velocity);
+            let pad = if notes {
+                // A note no pad has (an arp octave up, a scale run) still
+                // plays; only a pad's own note shows and records.
+                synth.note_on_note(slot, v, ev.offset);
+                hits += 1;
+                let Some(pad) = app.pad_of_note(slot) else { continue };
+                time.pad(ev.offset, mpfree_play::Event::NoteOn { note: pad as u8, velocity: v });
+                pad
+            } else {
+                slot as usize
+            };
             if pad >= 16 {
                 continue;
             }
-            let v = app.velocity(velocity);
-            // Recorded into the armed track while the transport records.
-            time.pad(ev.offset, mpfree_play::Event::NoteOn { note: slot, velocity: v });
-            if synth_on {
-                synth.note_on(pad, v, ev.offset);
-                hits += 1;
-            } else if player.hit_at(pad, v, ev.offset) {
-                hits += 1;
-            } else {
-                silent_hits += 1;
+            if !notes {
+                // Recorded into the armed track while the transport records.
+                time.pad(ev.offset, mpfree_play::Event::NoteOn { note: slot, velocity: v });
+                if synth_on {
+                    synth.note_on(pad, v, ev.offset);
+                    hits += 1;
+                } else if player.hit_at(pad, v, ev.offset) {
+                    hits += 1;
+                } else {
+                    silent_hits += 1;
+                }
             }
             if awaiting[pad] {
                 awaiting[pad] = false;
