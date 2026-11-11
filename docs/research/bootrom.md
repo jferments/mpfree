@@ -1162,3 +1162,33 @@ The ConfigFS gadget root is empty despite `usb-gadget.target` being active. The 
 4. Determine the hardware mux reset default from MPC board evidence (schematic, safe passive measurement) and seek a non-destructive BootROM entry mechanism **before** assuming silicon ROM USB can reach the USB-B connector.
 5. Continue the **parallel** offline Fastboot `bootm` research: authorization-runtime initialization, image policy and available memory. No on-device `boot`, `oem`, `flash`, `erase`, reset-mode or eMMC tests have been authorized or performed.
 
+
+
+## 25. Linux gadget unbound and USB OTG mux remains peripheral (2026-11-10)
+
+The owner ran another read-only remote SSH survey **on the actual MPC One** and supplied `mpc-usb-runtime-state.txt`. It confirms:
+
+| Field | Observed |
+| --- | --- |
+| `hostname`/`uname -m` | `mpc-one` / `armv7l` |
+| `/sys/class/udc/ff580000.usb/state` | **`not attached`** |
+| `.../function` | **empty** (no gadget function reported) |
+| `.../current_speed` | `UNKNOWN` |
+| `.../maximum_speed` | `high-speed` |
+| `.../is_otg` | `0` |
+| `.../soft_connect` | `Permission denied` when read; do not write it |
+| `/sys/devices/platform/usb-otg-mux/state` | **`peripheral`** |
+| `/sys/devices/platform/usb-otg-mux/driver` | `../../../bus/platform/drivers/of-mux` |
+| `/sys/devices/platform/usb-otg-mux/of_node` | live FDT `/usb-otg-mux` |
+| `/sys/bus/platform/devices/ff580000.usb/driver` | `../../../bus/platform/drivers/dwc2` |
+| `/sys/kernel/config/usb_gadget` | empty |
+| `usb-gadget.target` dependencies | target itself; no concrete gadget unit listed |
+| Other USB nodes | `ff500000.usb`, `ff520000.usb`, `ff540000.usb`, `ff580000.usb`, `ff770000.syscon:usbphy`, `usb-otg-regulator` |
+
+**Interpretation:** The working Linux kernel registered DWC2 at `ff580000.usb` and is currently set to peripheral routing, but there is **no reported bound gadget function, no USB attachment, and no negotiated speed**. The earlier host-side absence of MPC enumeration is expected in that state and does not indicate hardware failure or prove any MaskROM impossibility. Linux USB gadget drivers must bind before the host can enumerate; cf. https://www.kernel.org/doc/html/latest/driver-api/usb/gadget.html .
+
+**`is_otg=0` should not be used to reject MaskROM.** That Linux gadget capability bit concerns whether an OTG port supports OTG-specific behavior/descriptors, not whether DWC2 works in USB device mode or whether the immutable RK3288 ROM implements recovery. Likewise, the error when **reading** `soft_connect` does not imply controller failure; the ABI documents it as a **control for logical connect/disconnect**, which must not be written in passive research: https://kernel.org/doc/html/v5.19/admin-guide/abi-stable.html .
+
+**Highest-value next evidence:** the running Linux FDT node `/usb-otg-mux` and the exact GPIO/regulator/pinctrl or hardware-mux implementation it references. The sysfs `of-mux` driver name alone does **not** prove an external discrete analog switch; it might select a PHY role or GPIO mux. Even an established Linux role does **not** prove the default electrical path at cold power-on, before ROM code executes. A safe remote audit can read `available_states`, list and hex-dump selected nonsecret properties from `/proc/device-tree/usb-otg-mux` and `/proc/device-tree/usb@ff580000`, inspect `/sys/kernel/debug/gpio` if already mounted, and read driver symlinks. Do **not** change sysfs mux `state`, `soft_connect`, bind a gadget, reset into a new mode or write boot partitions.
+
+The concurrent **Fastboot RAM-boot** investigation remains in progress independently (§§15–21); this USB survey does not alter the bootm CRC and downloaded-image findings or establish the initial permission-gate state.
