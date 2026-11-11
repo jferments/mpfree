@@ -31,9 +31,12 @@
 mod arp;
 pub mod mapper;
 pub mod saved;
+mod synth_pads;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
+use mpfree_arp::scale::pads::Pad as PadNotes;
+pub use synth_pads::SynthItem;
 
 use crate::looping::{LoopAction, LoopSource};
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
@@ -54,9 +57,10 @@ pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
-    /// The time engine's launch grid, record settings and takes.
-    Clips,
-    /// The synth's page (mpfree-synth-ui): Poly's controls.
+    /// Arrange: the time engine's launch grid, record settings and takes
+    /// (the Clips tab until Jay renamed it, 12:55Z).
+    Arrange,
+    /// The synth's page (mpfree-synth-ui): the controls of Poly or FM.
     Synth,
     /// The audio looper: the loop's waveform, its buttons and the line
     /// input's meter.
@@ -88,6 +92,9 @@ pub enum View {
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
+    /// The mixer (mpfree-mixer-ui), over the page under the top bar: TRACK
+    /// MIX or the bar's mixer icon (Jay, 09:17Z). Not a tab.
+    Mixer,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -97,7 +104,7 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
-        View::Clips,
+        View::Arrange,
         View::Synth,
         View::Looper,
         View::Sample,
@@ -144,7 +151,7 @@ impl View {
             View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 Some(View::Debug)
             }
-            View::Options | View::Guide | View::Prefs | View::System => None,
+            View::Options | View::Guide | View::Prefs | View::System | View::Mixer => None,
             v => Some(v),
         }
     }
@@ -158,7 +165,7 @@ impl View {
     pub fn name(self) -> &'static str {
         match self {
             View::Play => "Play",
-            View::Clips => "Clips",
+            View::Arrange => "Arrange",
             View::Synth => "Synth",
             View::Looper => "Looper",
             View::Sample => "Sample",
@@ -174,6 +181,7 @@ impl View {
             View::Procs => "Processes",
             View::Map => "Map controls",
             View::System => "System info",
+            View::Mixer => "Mixer",
         }
     }
 }
@@ -281,6 +289,8 @@ pub struct ButtonMap {
     pub play_start: Option<u8>,
     /// PAD BANK A/E to D/H, found with the control mapper.
     pub bank: [Option<u8>; 4],
+    /// TRACK MIX (SHIFT: PAD MIX), found with the control mapper.
+    pub track_mix: Option<u8>,
 }
 
 impl ButtonMap {
@@ -374,6 +384,7 @@ impl ButtonMap {
             Job::Undo => self.undo,
             Job::PlayStart => self.play_start,
             Job::Bank(k) => self.bank[k as usize & 3],
+            Job::TrackMix => self.track_mix,
         }
     }
 
@@ -392,6 +403,7 @@ impl ButtonMap {
             Job::Undo => &mut self.undo,
             Job::PlayStart => &mut self.play_start,
             Job::Bank(k) => &mut self.bank[k as usize & 3],
+            Job::TrackMix => &mut self.track_mix,
         };
         *slot = code;
     }
@@ -511,6 +523,8 @@ pub enum Item {
     LoopLevel,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
+    /// The synth's engine and pad layouts (the Synth tab's options).
+    Synth(SynthItem),
 }
 
 /// The menu on screen: its rows (name, value), the selected row and help.
@@ -558,6 +572,18 @@ pub enum Effect {
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
+    /// The Synth tab's options changed: the engine, the scale or the pad
+    /// layouts, for the synth on the audio thread.
+    SynthPads(crate::synth::PadSettings),
+    /// The mixer opened on a view, or closed (`None`): the audio thread
+    /// sends the panel its state only while it is open.
+    Mixer(Option<mpfree_mixer_ui::MixView>),
+    /// While the mixer is open: Q-Link `knob` (or the wheel, as Q-Link 1)
+    /// turned by `delta`, for the panel's selected strip.
+    MixerTurn {
+        knob: usize,
+        delta: i32,
+    },
     /// The wheel on the Synth page: turn the selected knob.
     SynthWheel(i32),
     /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
@@ -589,13 +615,14 @@ pub enum Effect {
     Recorded(Pattern, usize),
     /// The data wheel in the workspace: turn the selected cell.
     WorkspaceWheel(i32),
-    /// The data wheel on the Clips page: step the selected record setting,
+    /// The data wheel on the Arrange page: step the selected record setting,
     /// or (with SHIFT) scroll the grid.
     ClipsWheel {
         delta: i32,
         scroll: bool,
     },
-    /// Write this library text to the patterns file (off the audio thread).
+    /// Keep this library text in the store as arp/patterns.txt (the store's
+    /// own thread writes it).
     SavePatterns(String),
     /// STOP in the timed `play` step: end it.
     Quit,
@@ -659,6 +686,13 @@ pub struct App {
     /// owner's (kept as a place, since an owner's scale may have the same
     /// notes as a built-in one).
     scale_pick: usize,
+    /// The synth pads' engine, scale and bank layouts (the Synth tab's
+    /// options), as handed to the synth.
+    synth_pads: crate::synth::PadSettings,
+    /// The pads' Scale row's choice and root, as `scale_pick` and
+    /// `scale_root` are for the arp.
+    pad_scale_pick: usize,
+    pad_scale_root: u8,
     /// The transport's clock for the next period ([`App::set_clock`]).
     clock: Option<mpfree_arp::Clock>,
     /// While the transport plays: its swing (true) or the arp's own.
@@ -674,8 +708,8 @@ pub struct App {
     recorder: Option<Recorder>,
     /// How the next recording on the pads goes: Step time or Free time.
     record_mode: RecordMode,
-    /// Save also writes the patterns file (`--patterns` with
-    /// `--save-patterns`), through [`Effect::SavePatterns`].
+    /// Save also keeps the patterns in the store (arp/patterns.txt, when
+    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`].
     pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
@@ -686,6 +720,15 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// The synth's pad layout while the synth is on the pads
+    /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
+    /// notes, and its events carry notes rather than pad slots.
+    pad_layout: Option<[PadNotes; 16]>,
+    /// What each held pad pressed into the arp (kept so a layout change
+    /// while a pad is down still lets go of the right notes).
+    pad_pressed: [PadNotes; 16],
+    /// How many held pads press each note (two chord pads can share one).
+    note_holds: [u8; 128],
     /// The control mapper (Debug mode).
     mapper: mapper::Mapper,
     /// Buttons pressed while the mapper listened: their release is kept
@@ -751,6 +794,9 @@ impl App {
             scale_root: 0,
             custom_scales: Vec::new(),
             scale_pick: 0,
+            synth_pads: Default::default(),
+            pad_scale_pick: 0,
+            pad_scale_root: 0,
             clock: None,
             swing_from_transport: true,
             patterns,
@@ -765,6 +811,9 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            pad_layout: None,
+            pad_pressed: [PadNotes::default(); 16],
+            note_holds: [0; 128],
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_touch: false,
@@ -827,20 +876,29 @@ impl App {
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
-            self.engine.press(slot as u8, velocity.max(1));
+            self.press_pad(slot, velocity.max(1));
         }
         self.record_press(slot as u8, velocity)
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
         if !self.free_time_recording() {
-            self.engine.release(slot as u8);
+            self.release_pad(slot);
         }
         self.record_release(slot as u8)
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
-        self.engine.pressure(slot as u8, value);
+        if self.pad_layout.is_none() {
+            self.engine.pressure(slot as u8, value);
+            return;
+        }
+        // Every note of a chord pad gets the pad's pressure.
+        if let Some(p) = self.pad_pressed.get(slot).copied() {
+            for &n in p.notes() {
+                self.engine.pressure(n, value);
+            }
+        }
     }
 
     /// One audio period: the notes that start (or stop) in it. The arp
@@ -851,9 +909,15 @@ impl App {
         self.engine.process(frames, out);
     }
 
-    /// Pads the engine keeps playing (held, or latched).
+    /// Pads the engine keeps playing (held, or latched). With a pad layout:
+    /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
-        self.engine.active().contains(slot as u8)
+        match &self.pad_layout {
+            None => self.engine.active().contains(slot as u8),
+            Some(l) => l
+                .get(slot)
+                .is_some_and(|p| p.notes().iter().any(|&n| self.engine.active().contains(n))),
+        }
     }
 
     /// NOTE REPEAT is held or Latch is on.
@@ -997,6 +1061,8 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start {
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.track_mix {
+            fx.extend(self.toggle_mixer(shift));
         } else if self.view == View::Looper && Some(note) == self.map.rec {
             fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
         } else if self.view == View::Looper && Some(note) == self.map.overdub {
@@ -1125,7 +1191,7 @@ impl App {
         fx
     }
 
-    /// The tempo, set from elsewhere (the Clips page): Note Repeat, the arp
+    /// The tempo, set from elsewhere (the Arrange page): Note Repeat, the arp
     /// and the transport follow it.
     pub fn set_tempo(&mut self, bpm: f64) -> Vec<Effect> {
         self.settings.bpm = bpm.clamp(30.0, 300.0);
@@ -1166,6 +1232,8 @@ impl App {
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
+            // The mixer: the wheel is the selected strip's volume (Q-Link 1).
+            View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
@@ -1179,7 +1247,7 @@ impl App {
             }
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
-            View::Clips => vec![Effect::ClipsWheel {
+            View::Arrange => vec![Effect::ClipsWheel {
                 delta,
                 scroll: self.shift,
             }],
@@ -1205,7 +1273,7 @@ impl App {
             && matches!(
                 self.view,
                 View::Play
-                    | View::Clips
+                    | View::Arrange
                     | View::Synth
                     | View::Looper
                     | View::Sample
@@ -1221,6 +1289,9 @@ impl App {
             self.back = self.view;
         }
         let mut fx = Vec::new();
+        if self.view == View::Mixer && v != View::Mixer {
+            fx.push(Effect::Mixer(None));
+        }
         if self.view == View::Map && v != View::Map {
             self.mapper.listening = false;
             if self.mapper.changed {
@@ -1244,6 +1315,27 @@ impl App {
     }
 
     /// Open `v`, or go back if it is open already.
+    /// TRACK MIX, SHIFT + TRACK MIX (PAD MIX) or the bar's mixer icon: the
+    /// mixer opens over the page on Track Mix (or Pad Mix); again, it closes
+    /// back to the page. A tab closes it too.
+    pub fn toggle_mixer(&mut self, pads: bool) -> Vec<Effect> {
+        use mpfree_mixer_ui::MixView;
+        if self.view == View::Guide {
+            return Vec::new();
+        }
+        if self.view == View::Mixer {
+            let mut fx = vec![Effect::Mixer(None)];
+            fx.extend(self.toggle(View::Mixer));
+            return fx;
+        }
+        let mut fx = self.show(View::Mixer);
+        fx.insert(
+            0,
+            Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
+        );
+        fx
+    }
+
     fn toggle(&mut self, v: View) -> Vec<Effect> {
         if self.view == v {
             let back = if self.back == v {
@@ -1523,6 +1615,7 @@ impl App {
             }
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
+            (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
     }
@@ -1613,6 +1706,7 @@ impl App {
             ),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
             Item::Arp(a) => self.arp_item_text(a),
+            Item::Synth(a) => self.synth_item_text(a),
         }
     }
 
@@ -1749,6 +1843,7 @@ impl App {
                 "0 dB plays it as it was recorded.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
+            Item::Synth(a) => Self::synth_item_help(a),
         }
     }
 
@@ -1946,6 +2041,7 @@ impl App {
                 ))));
             }
             Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
+            Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
         fx.push(self.menu_view());
@@ -2113,6 +2209,62 @@ mod tests {
         let fx = app.button(note, true, 0.0);
         app.button(note, false, 0.0);
         fx
+    }
+
+    #[test]
+    fn a_pad_layout_feeds_the_arp_its_notes_and_chord_pads_share_notes() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        use mpfree_arp::scale::{Scale, MAJOR};
+        let mut app = ready();
+        assert!(!app.arp_plays_notes());
+        // Slots without a layout, as before.
+        app.pad_down(3, 100);
+        assert_eq!(notes(&mut app, 64), [3]);
+        app.pad_up(3);
+        let setup = PadSetup {
+            layout: PadLayout::Chords,
+            scale: Some(Scale::new(0, MAJOR)),
+            ..PadSetup::default()
+        };
+        let pads = layout(&setup);
+        app.set_pad_layout(Some(pads));
+        assert!(app.arp_plays_notes());
+        // Pad 1 is C major (root last), pad 3 is E minor: E and G are on both.
+        let (one, three) = (pads[0].notes().to_vec(), pads[2].notes().to_vec());
+        assert_eq!(one.last(), Some(&48));
+        app.pad_down(0, 100);
+        let mut heard = notes(&mut app, 64);
+        heard.sort_unstable();
+        let mut want = one.clone();
+        want.sort_unstable();
+        assert_eq!(heard, want, "a chord pad presses every note of its chord");
+        app.pad_down(2, 100);
+        app.pad_up(0);
+        for &n in &three {
+            assert!(
+                app.engine.active().contains(n),
+                "{n} is still held by pad 3"
+            );
+        }
+        assert!(!app.engine.active().contains(48), "C was only pad 1's");
+        assert!(app.active(2) && !app.active(1));
+        assert_eq!(app.pad_of_note(48), Some(0));
+        // A layout change while pad 3 is down: its pressure still goes to
+        // what it pressed, and letting go releases exactly that.
+        let held: Vec<u8> = app.pad_held_notes(2).to_vec();
+        app.set_pad_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..setup
+        })));
+        assert_eq!(app.pad_held_notes(2), held.as_slice());
+        app.pad_up(2);
+        assert!(app.pad_held_notes(2).is_empty());
+        assert!(app.engine.active().is_empty(), "nothing left held");
+        // Back to slots: held pads are let go.
+        app.pad_down(5, 100);
+        app.set_pad_layout(None);
+        assert!(app.engine.active().is_empty());
+        assert!(!app.arp_plays_notes());
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {
@@ -2315,13 +2467,120 @@ mod tests {
     }
 
     #[test]
+    fn the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts() {
+        use crate::synth::Engine;
+        use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let fx = press(&mut app, MENU);
+        let Effect::Menu(m) = &fx[0] else {
+            panic!("{fx:?}")
+        };
+        let names: Vec<&str> = m.rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Engine",
+                "Scale",
+                "Scale root",
+                "Pad layout",
+                "In key rows",
+                "Note repeat rate",
+                "Tempo",
+                "Pad level",
+                "Latch"
+            ]
+        );
+        assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[1].1, "Off");
+        assert_eq!(m.rows[3].1, "Chromatic (no scale)");
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        let pads = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(*p),
+                _ => None,
+            })
+        };
+        // Engine: FM, Drums, Pluck, Wavetable, and no further; then back to Poly.
+        for want in [Engine::Fm, Engine::Drums, Engine::Pluck, Engine::Wavetable] {
+            let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
+            assert_eq!(p.engine, want);
+        }
+        assert_eq!(
+            pads(&app.step_item(row(SynthItem::Engine), 1)),
+            None,
+            "Wavetable is the last"
+        );
+        for _ in 0..4 {
+            app.step_item(row(SynthItem::Engine), -1);
+        }
+        assert_eq!(app.synth_pads.engine, Engine::Poly);
+        // No scale: the pads panel's In key only says so; Chromatic is already on.
+        assert!(matches!(
+            app.synth_pick_layout(true).as_slice(),
+            [Effect::Note(_)]
+        ));
+        assert!(app.synth_pick_layout(false).is_empty());
+        // Scale: Major (Chromatic is skipped; Off stands for it), root D.
+        let p = pads(&app.step_item(row(SynthItem::Scale), 1)).unwrap();
+        let major = mpfree_arp::scale::by_name("Major").unwrap();
+        assert_eq!(p.scale.map(|s| (s.root, s.mask)), Some((0, major.mask)));
+        app.step_item(row(SynthItem::Root), 1);
+        let fx = app.step_item(row(SynthItem::Root), 1);
+        assert_eq!(pads(&fx).unwrap().scale.unwrap().root, 2);
+        let Some(Effect::Menu(m)) = fx.last() else {
+            panic!("{fx:?}")
+        };
+        assert_eq!((m.rows[1].1.as_str(), m.rows[2].1.as_str()), ("Major", "D"));
+        assert_eq!(m.rows[3].1, "Chromatic (bank A)");
+        // Pad layout: bank A to Chord pads; In key rows a fourth apart.
+        app.step_item(row(SynthItem::Layout), 1);
+        assert_eq!(
+            pads(&app.step_item(row(SynthItem::Layout), 1))
+                .unwrap()
+                .layout(),
+            PadLayout::Chords
+        );
+        assert_eq!(
+            pads(&app.step_item(row(SynthItem::Rows), 1)).unwrap().rows,
+            InKeyRows::Fourths
+        );
+        // The pads panel's switch (from Chord pads), and the banks.
+        assert_eq!(
+            pads(&app.synth_pick_layout(false)).unwrap().layout(),
+            PadLayout::Chromatic
+        );
+        assert_eq!(
+            pads(&app.synth_pick_layout(true)).unwrap().layout(),
+            PadLayout::InKey
+        );
+        assert!(app.synth_pick_layout(true).is_empty(), "In key already");
+        let p = pads(&app.synth_bank(2)).unwrap();
+        assert_eq!((p.bank, p.layout()), (2, PadLayout::Chords));
+        assert!(app.synth_bank(2).is_empty());
+        assert_eq!(
+            pads(&app.synth_bank(0)).unwrap().layout(),
+            PadLayout::InKey,
+            "bank A kept its layout"
+        );
+        // Scale Off again: every layout plays as Chromatic.
+        let p = pads(&app.step_item(row(SynthItem::Scale), -1)).unwrap();
+        assert_eq!(p.scale, None);
+    }
+
+    #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
         assert_eq!(
             tabs(false),
             vec![
                 View::Play,
-                View::Clips,
+                View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
@@ -2425,7 +2684,7 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Clips,
+                View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
@@ -3223,7 +3482,7 @@ mod tests {
         assert!(fx.contains(&Effect::Note(
             "arp patterns file not used (2 bad lines); the built-in patterns stay".into()
         )));
-        // Save logs a library line; it writes the file only with --save-patterns.
+        // Save logs a library line; it saves the library only when the store saves.
         app.toggle_panel();
         app.arp_action(ArpAction::Button(PatternButton::Edit));
         let p = Pattern::parse("1 2 . 3").unwrap();
@@ -3363,8 +3622,8 @@ mod tests {
     #[test]
     fn the_clips_page_takes_the_wheel_and_the_tempo() {
         let mut app = ready();
-        app.open_tab(View::Clips);
-        assert_eq!(app.view(), View::Clips);
+        app.open_tab(View::Arrange);
+        assert_eq!(app.view(), View::Arrange);
         assert_eq!(
             app.wheel(1),
             vec![Effect::ClipsWheel {
@@ -3379,11 +3638,11 @@ mod tests {
                 scroll: true
             }]
         );
-        // MENU there opens the options and goes back to Clips.
+        // MENU there opens the options and goes back to Arrange.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
         press(&mut app, MENU);
-        assert_eq!(app.view(), View::Clips);
+        assert_eq!(app.view(), View::Arrange);
         // The page's tempo is the app's: Note Repeat and the arp follow it.
         let fx = app.set_tempo(96.5);
         assert_eq!(app.settings.bpm, 96.5);
