@@ -72,25 +72,89 @@ impl Wave {
 /// triangle has no steps and the sine no harmonics to alias.
 #[inline]
 pub fn osc(wave: Wave, t: &mut f32, dt: f32, pw: f32) -> f32 {
-    let p = *t;
-    let y = match wave {
-        Wave::Saw => 2.0 * p - 1.0 - poly_blep(p, dt),
-        Wave::Pulse => {
-            let mut y = if p < pw { 1.0 } else { -1.0 };
-            y += poly_blep(p, dt);
-            let q = p - pw;
-            y -= poly_blep(if q < 0.0 { q + 1.0 } else { q }, dt);
-            // Remove the DC a narrow pulse carries.
-            y - (2.0 * pw - 1.0)
-        }
-        Wave::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
-        Wave::Sine => (2.0 * PI * p).sin(),
-    };
-    let mut n = p + dt;
+    match wave {
+        Wave::Saw => saw(t, dt),
+        Wave::Pulse => pulse(t, dt, pw),
+        Wave::Triangle => triangle(t, dt),
+        Wave::Sine => sine(t, dt),
+    }
+}
+
+/// Adds `osc(wave, ..) * level` to each frame of `buf`, advancing the
+/// phase: the same samples as calling [`osc`] once a frame, with the
+/// choice of shape made once for the whole buffer.
+#[inline]
+pub fn osc_add(wave: Wave, buf: &mut [f32], t: &mut f32, dt: f32, pw: f32, level: f32) {
+    osc_into::<true>(wave, buf, t, dt, pw, level);
+}
+
+/// Like [`osc_add`] onto a buffer of zeros: each frame becomes
+/// `0.0 + osc(wave, ..) * level`, so the buffer need not be cleared first.
+#[inline]
+pub fn osc_set(wave: Wave, buf: &mut [f32], t: &mut f32, dt: f32, pw: f32, level: f32) {
+    osc_into::<false>(wave, buf, t, dt, pw, level);
+}
+
+#[inline]
+fn osc_into<const ADD: bool>(
+    wave: Wave,
+    buf: &mut [f32],
+    t: &mut f32,
+    dt: f32,
+    pw: f32,
+    level: f32,
+) {
+    let mut p = *t;
+    let put = |x: &mut f32, y: f32| *x = if ADD { *x } else { 0.0 } + y * level;
+    match wave {
+        Wave::Saw => buf.iter_mut().for_each(|x| put(x, saw(&mut p, dt))),
+        Wave::Pulse => buf.iter_mut().for_each(|x| put(x, pulse(&mut p, dt, pw))),
+        Wave::Triangle => buf.iter_mut().for_each(|x| put(x, triangle(&mut p, dt))),
+        Wave::Sine => buf.iter_mut().for_each(|x| put(x, sine(&mut p, dt))),
+    }
+    *t = p;
+}
+
+#[inline]
+fn advance(t: &mut f32, dt: f32) {
+    let mut n = *t + dt;
     if n >= 1.0 {
         n -= 1.0;
     }
     *t = n;
+}
+
+#[inline]
+fn saw(t: &mut f32, dt: f32) -> f32 {
+    let p = *t;
+    let y = 2.0 * p - 1.0 - poly_blep(p, dt);
+    advance(t, dt);
+    y
+}
+
+#[inline]
+fn pulse(t: &mut f32, dt: f32, pw: f32) -> f32 {
+    let p = *t;
+    let mut y = if p < pw { 1.0 } else { -1.0 };
+    y += poly_blep(p, dt);
+    let q = p - pw;
+    y -= poly_blep(if q < 0.0 { q + 1.0 } else { q }, dt);
+    advance(t, dt);
+    // Remove the DC a narrow pulse carries.
+    y - (2.0 * pw - 1.0)
+}
+
+#[inline]
+fn triangle(t: &mut f32, dt: f32) -> f32 {
+    let y = 1.0 - 4.0 * (*t - 0.5).abs();
+    advance(t, dt);
+    y
+}
+
+#[inline]
+fn sine(t: &mut f32, dt: f32) -> f32 {
+    let y = (2.0 * PI * *t).sin();
+    advance(t, dt);
     y
 }
 
@@ -201,6 +265,76 @@ impl Filter {
             }
         }
     }
+
+    /// Filters `buf` in place: the same samples as calling
+    /// [`Filter::process`] once a frame, with the mode chosen once and the
+    /// ladder's powers of `g` worked out once for the buffer.
+    #[inline]
+    pub fn run(&mut self, mode: FilterMode, c: &FilterCoefs, buf: &mut [f32]) {
+        match mode {
+            FilterMode::Lp24 => {
+                let g = c.big_g;
+                let g2 = g * g;
+                let g3 = g2 * g;
+                let g4 = g3 * g;
+                let den = 1.0 + c.k * g4;
+                let [mut s0, mut s1, mut s2, mut s3] = self.s;
+                for x in buf {
+                    let sig = c.inv_1g * (g3 * s0 + g2 * s1 + g * s2 + s3);
+                    let y4 = (g4 * *x + sig) / den;
+                    let u = *x - c.k * y4;
+                    let v = (u - s0) * g;
+                    let y = v + s0;
+                    s0 = y + v;
+                    let v = (y - s1) * g;
+                    let y = v + s1;
+                    s1 = y + v;
+                    let v = (y - s2) * g;
+                    let y = v + s2;
+                    s2 = y + v;
+                    let v = (y - s3) * g;
+                    let y = v + s3;
+                    s3 = y + v;
+                    *x = y * c.makeup;
+                }
+                self.s = [s0, s1, s2, s3];
+            }
+            FilterMode::Lp12 => self.svf::<0>(c, buf),
+            FilterMode::Bp12 => self.svf::<1>(c, buf),
+            FilterMode::Hp12 => self.svf::<2>(c, buf),
+        }
+    }
+
+    /// The state-variable filter over a buffer; `OUT` 0 low-pass, 1
+    /// band-pass, 2 high-pass.
+    #[inline]
+    fn svf<const OUT: u8>(&mut self, c: &FilterCoefs, buf: &mut [f32]) {
+        let (mut ic1, mut ic2) = (self.s[0], self.s[1]);
+        for x in buf {
+            let v3 = *x - ic2;
+            let v1 = c.a1 * ic1 + c.a2 * v3;
+            let v2 = ic2 + c.a2 * ic1 + c.a3 * v3;
+            ic1 = 2.0 * v1 - ic1;
+            ic2 = 2.0 * v2 - ic2;
+            *x = match OUT {
+                0 => v2,
+                1 => v1 * c.damp,
+                _ => *x - c.damp * v1 - v2,
+            };
+        }
+        self.s[0] = ic1;
+        self.s[1] = ic2;
+    }
+
+    /// True when both states hold exactly the same numbers, so the same
+    /// input gives the same output.
+    #[inline]
+    pub fn same_as(&self, other: &Filter) -> bool {
+        self.s
+            .iter()
+            .zip(&other.s)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
 }
 
 /// Soft drive before the filter. `amount` 0 leaves the signal untouched;
@@ -211,6 +345,19 @@ pub fn drive(x: f32, gain: f32, amount: f32) -> f32 {
         return x;
     }
     x + ((x * gain).tanh() / gain.sqrt() - x) * amount
+}
+
+/// [`drive`] over a buffer in place, with the gain's square root worked
+/// out once: the same samples.
+#[inline]
+pub fn drive_run(buf: &mut [f32], gain: f32, amount: f32) {
+    if amount <= 0.0 {
+        return;
+    }
+    let sq = gain.sqrt();
+    for x in buf {
+        *x = *x + ((*x * gain).tanh() / sq - *x) * amount;
+    }
 }
 
 /// Envelope stages.
@@ -425,5 +572,75 @@ mod tests {
             y = f.process(FilterMode::Hp12, &c, 1.0);
         }
         assert!(y.abs() < 1e-3);
+    }
+
+    /// A test signal with steps, both signs and loud parts.
+    fn signal(n: usize) -> Vec<f32> {
+        let mut rng = Rng::new(7);
+        (0..n)
+            .map(|i| rng.bipolar() * if i % 50 < 25 { 3.0 } else { 0.4 })
+            .collect()
+    }
+
+    #[test]
+    fn buffer_oscillators_give_the_same_samples_as_one_frame_at_a_time() {
+        let waves = [Wave::Saw, Wave::Pulse, Wave::Triangle, Wave::Sine];
+        for wave in waves {
+            for dt in [0.001, 0.013, 0.2, 0.45] {
+                let (mut t, mut tb) = (0.37f32, 0.37f32);
+                let mut buf = signal(16);
+                let mut want = buf.clone();
+                for chunk in [5usize, 16, 1, 11] {
+                    let mut set = vec![9.0f32; chunk];
+                    let mut t2 = tb;
+                    osc_set(wave, &mut set, &mut t2, dt, 0.3, 0.7);
+                    osc_add(wave, &mut buf[..chunk], &mut tb, dt, 0.3, 0.7);
+                    assert_eq!(t2.to_bits(), tb.to_bits());
+                    for (k, w) in want[..chunk].iter_mut().enumerate() {
+                        let y = osc(wave, &mut t, dt, 0.3);
+                        assert_eq!(set[k].to_bits(), (0.0 + y * 0.7).to_bits(), "{wave:?}");
+                        *w += y * 0.7;
+                    }
+                    assert_eq!(t.to_bits(), tb.to_bits(), "{wave:?} phase");
+                    let same = buf[..chunk].iter().zip(&want[..chunk]);
+                    assert!(
+                        same.into_iter().all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{wave:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn buffer_filter_and_drive_give_the_same_samples_as_one_frame_at_a_time() {
+        let modes = [
+            FilterMode::Lp24,
+            FilterMode::Lp12,
+            FilterMode::Bp12,
+            FilterMode::Hp12,
+        ];
+        for mode in modes {
+            for (fc, res) in [(80.0, 0.0), (900.0, 0.5), (12_000.0, 1.0)] {
+                let c = FilterCoefs::new(fc, res, 44_100.0);
+                let (mut a, mut b) = (Filter::default(), Filter::default());
+                let x = signal(4_000);
+                let mut buf = x.clone();
+                for chunk in buf.chunks_mut(13) {
+                    drive_run(chunk, 3.5, 0.6);
+                    b.run(mode, &c, chunk);
+                }
+                for (k, &xk) in x.iter().enumerate() {
+                    let y = a.process(mode, &c, drive(xk, 3.5, 0.6));
+                    assert_eq!(y.to_bits(), buf[k].to_bits(), "{mode:?} frame {k}");
+                }
+                assert!(a.same_as(&b));
+            }
+        }
+        // No drive leaves the signal alone.
+        let mut buf = signal(64);
+        let x = buf.clone();
+        drive_run(&mut buf, 4.0, 0.0);
+        assert_eq!(buf, x);
     }
 }
