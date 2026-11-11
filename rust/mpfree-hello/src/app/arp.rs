@@ -236,6 +236,8 @@ impl App {
                 if e.tap(i) { self.set_pattern(*e.pattern()) } else { Vec::new() }
             }
             ArpAction::Latch => self.toggle_latch(),
+            ArpAction::OpenPanel if self.view != View::Arp => self.toggle_panel(),
+            ArpAction::OpenPanel => Vec::new(),
         }
     }
 
