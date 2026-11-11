@@ -19,8 +19,12 @@ fn a_clap_synth_plays_on_a_track_and_swaps_out_cleanly() {
     let lib = Library::from_entry(&testplug::ENTRY, "linked").expect("entry");
     let synth = lib.create(SYNTH_ID).expect("synth");
     let mut host = TrackHost::new(2, RATE, 256);
-    host.swap(0, Some(Instrument::new(Box::new(synth), RATE, 256))).expect("slot 0");
-    assert_eq!(host.instrument(0).map(|i| i.node().info().id), Some("clap:org.mpfree.test-synth"));
+    host.swap(0, Some(Instrument::new(Box::new(synth), RATE, 256)))
+        .expect("slot 0");
+    assert_eq!(
+        host.instrument(0).map(|i| i.node().info().id),
+        Some("clap:org.mpfree.test-synth")
+    );
     assert_eq!(host.params(0).len(), 5);
     host.note_on(0, 3, 69, 120);
     let (mut l, mut r) = (vec![0f32; 256], vec![0f32; 256]);
@@ -29,14 +33,28 @@ fn a_clap_synth_plays_on_a_track_and_swaps_out_cleanly() {
     for _ in 0..8 {
         l.fill(0.0);
         r.fill(0.0);
-        host.render(&Ctx::new(RATE, frame), 256, &mut Sum { left: &mut l, right: &mut r });
+        host.render(
+            &Ctx::new(RATE, frame),
+            256,
+            &mut Sum {
+                left: &mut l,
+                right: &mut r,
+            },
+        );
         loud = loud.max(peak(&l));
         frame += 256;
     }
     assert!(loud > 0.01, "the plugin sounds on its track");
     // A parameter from the host (the mod matrix's path) reaches the plugin.
     host.param(0, 0, 1, 50.0);
-    host.render(&Ctx::new(RATE, frame), 256, &mut Sum { left: &mut l, right: &mut r });
+    host.render(
+        &Ctx::new(RATE, frame),
+        256,
+        &mut Sum {
+            left: &mut l,
+            right: &mut r,
+        },
+    );
     frame += 256;
     assert_eq!(host.param_value(0, 1), Some(50.0));
     // Swapped out: it gets AllOff, rings out, and comes back to be dropped.
@@ -45,7 +63,14 @@ fn a_clap_synth_plays_on_a_track_and_swaps_out_cleanly() {
     for _ in 0..400 {
         l.fill(0.0);
         r.fill(0.0);
-        host.render(&Ctx::new(RATE, frame), 256, &mut Sum { left: &mut l, right: &mut r });
+        host.render(
+            &Ctx::new(RATE, frame),
+            256,
+            &mut Sum {
+                left: &mut l,
+                right: &mut r,
+            },
+        );
         frame += 256;
         if let Some(old) = host.pop_retired() {
             back = Some(old);

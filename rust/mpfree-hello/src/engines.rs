@@ -39,8 +39,14 @@ pub const TIME: usize = 4;
 pub const MIX: usize = 5;
 
 /// What the page calls each stage.
-const LABELS: [&str; 6] = ["Whole period", "Sampler (pads, grains)", "Synth (Poly)", "Looper and line input",
-                           "Transport, clips, arp", "Mix, metronome"];
+const LABELS: [&str; 6] = [
+    "Whole period",
+    "Sampler (pads, grains)",
+    "Synth (Poly)",
+    "Looper and line input",
+    "Transport, clips, arp",
+    "Mix, metronome",
+];
 
 /// The numbers the audio loop publishes: each stage's last window (about
 /// 250 ms) and the whole session.
@@ -59,15 +65,22 @@ pub struct EngineProbes {
 
 impl EngineProbes {
     pub fn new() -> EngineProbes {
-        EngineProbes { prof: Profiler::new(&STAGES, MPC.ns()), shared: Arc::new(EngineShared::default()) }
+        EngineProbes {
+            prof: Profiler::new(&STAGES, MPC.ns()),
+            shared: Arc::new(EngineShared::default()),
+        }
     }
 
     /// The handle the screen thread reads (sent to it once, at start).
-    pub fn shared(&self) -> Arc<EngineShared> { Arc::clone(&self.shared) }
+    pub fn shared(&self) -> Arc<EngineShared> {
+        Arc::clone(&self.shared)
+    }
 
     /// Ends stage `i`'s span for this period.
     #[inline]
-    pub fn stop(&mut self, i: usize, span: Span) { self.prof.stop(i, span, MPC.frames); }
+    pub fn stop(&mut self, i: usize, span: Span) {
+        self.prof.stop(i, span, MPC.frames);
+    }
 
     /// Records a time the loop already measured for stage `i` (the
     /// sampler's and the looper's, which it times for its status lines).
@@ -90,7 +103,9 @@ impl EngineProbes {
     }
 
     /// The whole session, for the log at the end.
-    pub fn lifetime(&self) -> Vec<(&'static str, Summary)> { self.prof.lifetime() }
+    pub fn lifetime(&self) -> Vec<(&'static str, Summary)> {
+        self.prof.lifetime()
+    }
 }
 
 /// The log line (every 30 s with the status lines, and at the end).
@@ -120,26 +135,49 @@ fn tone(v: Verdict) -> Tone {
 }
 
 fn budget_pct(i: usize) -> f64 {
-    if i == PERIOD { budget::AUDIO_THREAD_WORST_PCT } else { budget::for_module(STAGES[i]).map_or(100.0, |b| b.worst_pct) }
+    if i == PERIOD {
+        budget::AUDIO_THREAD_WORST_PCT
+    } else {
+        budget::for_module(STAGES[i]).map_or(100.0, |b| b.worst_pct)
+    }
 }
 
 /// The left panel: the last 250 ms of each stage, mean · p99 · worst in µs
 /// and the worst as a share of the period, coloured against its budget.
 pub fn now_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
-    let mut rows = vec![(format!("Period: {} frames at {} Hz", MPC.frames, MPC.rate), format!("{:.0} µs", MPC.us()), Tone::Dim)];
+    let mut rows = vec![(
+        format!("Period: {} frames at {} Hz", MPC.frames, MPC.rate),
+        format!("{:.0} µs", MPC.us()),
+        Tone::Dim,
+    )];
     for (i, (w, _)) in s.iter().enumerate() {
         let (value, t) = match w {
             Some(w) if w.blocks > 0 => {
                 let pct = MPC.pct(w.max_ns as f64);
-                (format!("{:.0} · {:.0} · {:.0} µs ({pct:.1} %)", w.mean_ns / 1e3, w.p99_ns as f64 / 1e3, w.max_ns as f64 / 1e3),
-                 tone(Verdict::of(pct, budget_pct(i))))
+                (
+                    format!(
+                        "{:.0} · {:.0} · {:.0} µs ({pct:.1} %)",
+                        w.mean_ns / 1e3,
+                        w.p99_ns as f64 / 1e3,
+                        w.max_ns as f64 / 1e3
+                    ),
+                    tone(Verdict::of(pct, budget_pct(i))),
+                )
             }
             _ => ("waiting for the audio loop".to_string(), Tone::Dim),
         };
         rows.push((LABELS[i].to_string(), value, t));
     }
-    rows.push(("FX".to_string(), "not in the pad player yet".to_string(), Tone::Dim));
-    rows.push(("Columns".to_string(), "mean · p99 · worst, last 0.25 s".to_string(), Tone::Dim));
+    rows.push((
+        "FX".to_string(),
+        "not in the pad player yet".to_string(),
+        Tone::Dim,
+    ));
+    rows.push((
+        "Columns".to_string(),
+        "mean · p99 · worst, last 0.25 s".to_string(),
+        Tone::Dim,
+    ));
     rows
 }
 
@@ -153,7 +191,14 @@ pub fn session_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
             Some(l) if l.blocks > 0 => {
                 let pct = MPC.pct(l.max_ns as f64);
                 let v = Verdict::of(pct, b);
-                (format!("worst {pct:.1} % of {b:.0} % ({}), CPU {:.1} %", v.word(), l.realtime_pct(MPC.rate)), tone(v))
+                (
+                    format!(
+                        "worst {pct:.1} % of {b:.0} % ({}), CPU {:.1} %",
+                        v.word(),
+                        l.realtime_pct(MPC.rate)
+                    ),
+                    tone(v),
+                )
             }
             _ => (format!("budget {b:.0} %"), Tone::Dim),
         };
@@ -161,9 +206,16 @@ pub fn session_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     }
     let periods = s[PERIOD].1.map_or(0, |l| l.blocks);
     let over = s[PERIOD].1.map_or(0, |l| l.over);
-    rows.push(("Periods timed · longer than a period".to_string(), format!("{periods} · {over}"),
-               if over == 0 { Tone::Normal } else { Tone::Bad }));
-    rows.push(("Budgets".to_string(), "a proposal: docs/project/profiling.md".to_string(), Tone::Dim));
+    rows.push((
+        "Periods timed · longer than a period".to_string(),
+        format!("{periods} · {over}"),
+        if over == 0 { Tone::Normal } else { Tone::Bad },
+    ));
+    rows.push((
+        "Budgets".to_string(),
+        "a proposal: docs/project/profiling.md".to_string(),
+        Tone::Dim,
+    ));
     rows
 }
 
@@ -175,10 +227,17 @@ mod tests {
     fn probes_publish_and_the_page_reads_them() {
         let mut p = EngineProbes::new();
         let shared = p.shared();
-        assert!(read(&shared).iter().all(|(w, l)| w.is_none() && l.is_none()), "nothing before the first publish");
+        assert!(
+            read(&shared)
+                .iter()
+                .all(|(w, l)| w.is_none() && l.is_none()),
+            "nothing before the first publish"
+        );
         let rows = now_rows(&read(&shared));
         assert_eq!(rows[1].1, "waiting for the audio loop");
-        assert!(rows.iter().any(|r| r.0 == "FX" && r.1 == "not in the pad player yet"));
+        assert!(rows
+            .iter()
+            .any(|r| r.0 == "FX" && r.1 == "not in the pad player yet"));
         // Fixed times, so the verdicts don't depend on the machine (CI runs
         // this under qemu, where even an empty span can take milliseconds).
         for _ in 0..10 {
@@ -191,13 +250,26 @@ mod tests {
         assert_eq!(s[SAMPLER].0.unwrap().blocks, 10);
         assert_eq!(s[MIX].1.unwrap().blocks, 10);
         let now = now_rows(&s);
-        assert!(now[1].1.ends_with(" %)") && now[1].2 == Tone::Good, "{:?}", now[1]);
+        assert!(
+            now[1].1.ends_with(" %)") && now[1].2 == Tone::Good,
+            "{:?}",
+            now[1]
+        );
         let session = session_rows(&s);
-        assert!(session[0].1.starts_with("worst 0.") && session[0].1.contains("of 60 % (fits)"), "{}", session[0].1);
+        assert!(
+            session[0].1.starts_with("worst 0.") && session[0].1.contains("of 60 % (fits)"),
+            "{}",
+            session[0].1
+        );
         assert_eq!(session[6].1, "10 · 0");
         p.publish();
-        assert_eq!(read(&shared)[SAMPLER].0.unwrap().blocks, 0, "windows restart");
+        assert_eq!(
+            read(&shared)[SAMPLER].0.unwrap().blocks,
+            0,
+            "windows restart"
+        );
         assert_eq!(read(&shared)[SAMPLER].1.unwrap().blocks, 10);
-        assert!(log_line(&p.lifetime()).starts_with("cpu by engine (mean/p99/worst of a period): period "));
+        assert!(log_line(&p.lifetime())
+            .starts_with("cpu by engine (mean/p99/worst of a period): period "));
     }
 }

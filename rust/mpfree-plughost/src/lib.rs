@@ -150,7 +150,9 @@ impl Shared {
             loop {
                 match ctl.child.try_wait() {
                     Ok(Some(_)) | Err(_) => break,
-                    Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+                    Ok(None) if Instant::now() < until => {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
                     Ok(None) => {
                         let _ = ctl.child.kill();
                         let _ = ctl.child.wait();
@@ -176,13 +178,23 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
     // each other.
     // SAFETY: fcntl on fds we own.
     let (shm_fd, ctl_fd) = unsafe {
-        (libc::fcntl(map.fd, libc::F_DUPFD_CLOEXEC, 10), libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10))
+        (
+            libc::fcntl(map.fd, libc::F_DUPFD_CLOEXEC, 10),
+            libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10),
+        )
     };
     if shm_fd < 0 || ctl_fd < 0 {
         return Err(Error::Io(io::Error::last_os_error()));
     }
     let mut cmd = Command::new(exe);
-    cmd.arg("--plugin").arg(plugin).arg("--id").arg(id).arg("--shm-fd").arg("3").arg("--ctl-fd").arg("4");
+    cmd.arg("--plugin")
+        .arg(plugin)
+        .arg("--id")
+        .arg(id)
+        .arg("--shm-fd")
+        .arg("3")
+        .arg("--ctl-fd")
+        .arg("4");
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
         cmd.pre_exec(move || {
@@ -192,7 +204,10 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
             // Gone with us if we die.
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
             // A crashing plugin leaves no core file on the stick.
-            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             libc::setrlimit(libc::RLIMIT_CORE, &none);
             Ok(())
         });
@@ -232,7 +247,10 @@ pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbo
     let (ctl, hello) = start(exe, plugin, id, &map)?;
     let info = intern_info(&hello.id, &hello.name, hello.kind);
     let params = intern_params(&hello.id, hello.params.clone());
-    let values: Box<[AtomicU32]> = params.iter().map(|p| AtomicU32::new(p.default.to_bits())).collect();
+    let values: Box<[AtomicU32]> = params
+        .iter()
+        .map(|p| AtomicU32::new(p.default.to_bits()))
+        .collect();
     let shared = Arc::new(Shared {
         map,
         exe: exe.to_path_buf(),
@@ -300,7 +318,14 @@ impl SandboxNode {
     /// starts `at` frames in (events' offsets are from the whole block's
     /// start). False if the process didn't answer (the rest of the block
     /// is left as it is).
-    fn block(&mut self, ctx: &Ctx, events: &[Timed], at: usize, left: &mut [f32], right: &mut [f32]) -> bool {
+    fn block(
+        &mut self,
+        ctx: &Ctx,
+        events: &[Timed],
+        at: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> bool {
         let n = left.len();
         if self.shared.down.load(Ordering::Acquire) || !self.shared.ready.load(Ordering::Acquire) {
             self.stats.down += 1;
@@ -329,9 +354,20 @@ impl SandboxNode {
                     break;
                 }
                 (*p).events[k] = if id == u16::MAX {
-                    ShmEvent { offset: 0, kind: shm::EV_RESET, ..ShmEvent::default() }
+                    ShmEvent {
+                        offset: 0,
+                        kind: shm::EV_RESET,
+                        ..ShmEvent::default()
+                    }
                 } else {
-                    ShmEvent { offset: 0, kind: shm::EV_PARAM, a: u32::from(id), b: 0, value: v, _pad: 0 }
+                    ShmEvent {
+                        offset: 0,
+                        kind: shm::EV_PARAM,
+                        a: u32::from(id),
+                        b: 0,
+                        value: v,
+                        _pad: 0,
+                    }
                 };
                 k += 1;
             }
@@ -340,7 +376,10 @@ impl SandboxNode {
                 if k == shm::MAX_EVENTS {
                     break;
                 }
-                let local = Timed { offset: (t.offset as usize).saturating_sub(at) as u32, ev: t.ev };
+                let local = Timed {
+                    offset: (t.offset as usize).saturating_sub(at) as u32,
+                    ev: t.ev,
+                };
                 (*p).events[k] = flatten(&local, n);
                 k += 1;
             }
@@ -378,7 +417,9 @@ impl SandboxNode {
                     *d += *s;
                 }
             }
-            let nv = ((*p).nvalues as usize).min(self.shared.values.len()).min(shm::MAX_PARAMS);
+            let nv = ((*p).nvalues as usize)
+                .min(self.shared.values.len())
+                .min(shm::MAX_PARAMS);
             for i in 0..nv {
                 self.shared.values[i].store((*p).values[i].to_bits(), Ordering::Relaxed);
             }
@@ -401,11 +442,22 @@ impl SandboxNode {
 
 fn flatten(t: &Timed, n: usize) -> ShmEvent {
     let offset = t.offset.min(n.saturating_sub(1) as u32);
-    let e = |kind, a: u32, b: u32, value: f32| ShmEvent { offset, kind, a, b, value, _pad: 0 };
+    let e = |kind, a: u32, b: u32, value: f32| ShmEvent {
+        offset,
+        kind,
+        a,
+        b,
+        value,
+        _pad: 0,
+    };
     match t.ev {
-        NodeEvent::NoteOn { note, velocity } => e(shm::EV_NOTE_ON, u32::from(note), u32::from(velocity), 0.0),
+        NodeEvent::NoteOn { note, velocity } => {
+            e(shm::EV_NOTE_ON, u32::from(note), u32::from(velocity), 0.0)
+        }
         NodeEvent::NoteOff { note } => e(shm::EV_NOTE_OFF, u32::from(note), 0, 0.0),
-        NodeEvent::Pressure { note, value } => e(shm::EV_PRESSURE, u32::from(note), u32::from(value), 0.0),
+        NodeEvent::Pressure { note, value } => {
+            e(shm::EV_PRESSURE, u32::from(note), u32::from(value), 0.0)
+        }
         NodeEvent::Bend { value } => e(shm::EV_BEND, 0, 0, value),
         NodeEvent::AllOff => e(shm::EV_ALL_OFF, 0, 0, 0.0),
         NodeEvent::Param { id, value } => e(shm::EV_PARAM, u32::from(id), 0, value),
@@ -422,7 +474,9 @@ impl Node for SandboxNode {
     }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        let Some(p) = self.params.get(usize::from(id)) else { return };
+        let Some(p) = self.params.get(usize::from(id)) else {
+            return;
+        };
         if p.readonly {
             return;
         }
@@ -436,7 +490,10 @@ impl Node for SandboxNode {
     }
 
     fn param(&self, id: u16) -> f32 {
-        self.shared.values.get(usize::from(id)).map_or(f32::NAN, |v| f32::from_bits(v.load(Ordering::Relaxed)))
+        self.shared
+            .values
+            .get(usize::from(id))
+            .map_or(f32::NAN, |v| f32::from_bits(v.load(Ordering::Relaxed)))
     }
 
     fn prepare(&mut self, rate: u32, max_block: usize) {
@@ -444,8 +501,14 @@ impl Node for SandboxNode {
         self.rate = rate;
         self.max_block = max_block;
         self.shared.ready.store(false, Ordering::Release);
-        self.shared.prepared.store((u64::from(rate) << 32) | max_block as u64, Ordering::Relaxed);
-        if let Ok(ToHost::Prepared { ok, latency, tail }) = self.shared.ask(&ToChild::Prepare { rate, max_block: max_block as u32 }) {
+        self.shared.prepared.store(
+            (u64::from(rate) << 32) | max_block as u64,
+            Ordering::Relaxed,
+        );
+        if let Ok(ToHost::Prepared { ok, latency, tail }) = self.shared.ask(&ToChild::Prepare {
+            rate,
+            max_block: max_block as u32,
+        }) {
             self.latency = latency;
             self.tail = tail;
             self.shared.ready.store(ok, Ordering::Release);
@@ -478,8 +541,18 @@ impl Node for SandboxNode {
             while next < events.len() && (events[next].offset as usize) < at + len {
                 next += 1;
             }
-            let c = Ctx { frame: ctx.frame + at as u64, beats: ctx.beats + at as f64 * beats_per_frame, ..*ctx };
-            if !self.block(&c, &events[first..next], at, &mut left[at..at + len], &mut right[at..at + len]) {
+            let c = Ctx {
+                frame: ctx.frame + at as u64,
+                beats: ctx.beats + at as f64 * beats_per_frame,
+                ..*ctx
+            };
+            if !self.block(
+                &c,
+                &events[first..next],
+                at,
+                &mut left[at..at + len],
+                &mut right[at..at + len],
+            ) {
                 return;
             }
             at += len;
@@ -514,12 +587,16 @@ impl Sandbox {
     /// waiting for it and the crash is counted.
     pub fn poll(&self) -> Health {
         let mut g = self.shared.ctl.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(ctl) = g.as_mut() else { return Health::Gone(0) };
+        let Some(ctl) = g.as_mut() else {
+            return Health::Gone(0);
+        };
         match ctl.child.try_wait() {
             Ok(None) => Health::Running,
             Ok(Some(status)) => {
                 use std::os::unix::process::ExitStatusExt;
-                let code = status.code().unwrap_or_else(|| -status.signal().unwrap_or(0));
+                let code = status
+                    .code()
+                    .unwrap_or_else(|| -status.signal().unwrap_or(0));
                 if !self.shared.down.swap(true, Ordering::AcqRel) {
                     self.shared.crashes.fetch_add(1, Ordering::Relaxed);
                 }
@@ -543,7 +620,12 @@ impl Sandbox {
             let req = shm::load(&(*p).req);
             (*p).done.store(req, Ordering::Release);
         }
-        let (ctl, _hello) = start(&self.shared.exe, &self.shared.plugin, &self.shared.id, &self.shared.map)?;
+        let (ctl, _hello) = start(
+            &self.shared.exe,
+            &self.shared.plugin,
+            &self.shared.id,
+            &self.shared.map,
+        )?;
         *self.shared.ctl.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctl);
         let prepared = self.shared.prepared.load(Ordering::Relaxed);
         if prepared != 0 {
@@ -573,7 +655,10 @@ impl Sandbox {
     }
 
     pub fn load_state(&self, bytes: &[u8]) -> bool {
-        matches!(self.shared.ask(&ToChild::LoadState(bytes.to_vec())), Ok(ToHost::Loaded(true)))
+        matches!(
+            self.shared.ask(&ToChild::LoadState(bytes.to_vec())),
+            Ok(ToHost::Loaded(true))
+        )
     }
 
     /// How the plugin shows `value` of parameter `index`.
@@ -586,6 +671,11 @@ impl Sandbox {
 
     /// The process's id, while it runs.
     pub fn pid(&self) -> Option<u32> {
-        self.shared.ctl.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.child.id())
+        self.shared
+            .ctl
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.child.id())
     }
 }

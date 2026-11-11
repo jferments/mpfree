@@ -31,7 +31,11 @@ pub struct Hello {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToHost {
     Hello(Hello),
-    Prepared { ok: bool, latency: u32, tail: u32 },
+    Prepared {
+        ok: bool,
+        latency: u32,
+        tail: u32,
+    },
     State(Option<Vec<u8>>),
     Loaded(bool),
     Text(Option<String>),
@@ -90,13 +94,19 @@ impl Dec<'_> {
         Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> io::Result<u16> {
-        Ok(u16::from_le_bytes(self.take(2)?.try_into().map_err(|_| bad())?))
+        Ok(u16::from_le_bytes(
+            self.take(2)?.try_into().map_err(|_| bad())?,
+        ))
     }
     fn u32(&mut self) -> io::Result<u32> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| bad())?))
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| bad())?,
+        ))
     }
     fn f32(&mut self) -> io::Result<f32> {
-        Ok(f32::from_le_bytes(self.take(4)?.try_into().map_err(|_| bad())?))
+        Ok(f32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| bad())?,
+        ))
     }
     fn bytes(&mut self) -> io::Result<Vec<u8>> {
         let n = self.u32()? as usize;
@@ -153,17 +163,28 @@ pub fn read_to_child(r: &mut impl Read) -> io::Result<ToChild> {
     let body = read_frame(r)?;
     let mut d = Dec(&body);
     Ok(match d.u8()? {
-        1 => ToChild::Prepare { rate: d.u32()?, max_block: d.u32()? },
+        1 => ToChild::Prepare {
+            rate: d.u32()?,
+            max_block: d.u32()?,
+        },
         2 => ToChild::SaveState,
         3 => ToChild::LoadState(d.bytes()?),
-        4 => ToChild::ParamText { index: d.u16()?, value: d.f32()? },
+        4 => ToChild::ParamText {
+            index: d.u16()?,
+            value: d.f32()?,
+        },
         5 => ToChild::Quit,
         _ => return Err(bad()),
     })
 }
 
 fn put_param(e: &mut Enc, p: &ParamSpec) {
-    e.str(&p.name).str(&p.group).f32(p.min).f32(p.max).f32(p.default).u8(u8::from(p.readonly));
+    e.str(&p.name)
+        .str(&p.group)
+        .f32(p.min)
+        .f32(p.max)
+        .f32(p.default)
+        .u8(u8::from(p.readonly));
     match &p.curve {
         CurveSpec::Linear => {
             e.u8(0);
@@ -200,14 +221,26 @@ fn get_param(d: &mut Dec) -> io::Result<ParamSpec> {
         }
         _ => return Err(bad()),
     };
-    Ok(ParamSpec { name, group, min, max, default, curve, readonly })
+    Ok(ParamSpec {
+        name,
+        group,
+        min,
+        max,
+        default,
+        curve,
+        readonly,
+    })
 }
 
 pub fn send_to_host(w: &mut impl Write, m: &ToHost) -> io::Result<()> {
     let mut e = Enc(Vec::new());
     match m {
         ToHost::Hello(h) => {
-            e.u8(101).str(&h.id).str(&h.name).u8(u8::from(h.kind == Kind::Instrument)).u32(h.params.len() as u32);
+            e.u8(101)
+                .str(&h.id)
+                .str(&h.name)
+                .u8(u8::from(h.kind == Kind::Instrument))
+                .u32(h.params.len() as u32);
             for p in &h.params {
                 put_param(&mut e, p);
             }
@@ -216,13 +249,17 @@ pub fn send_to_host(w: &mut impl Write, m: &ToHost) -> io::Result<()> {
             e.u8(102).u8(u8::from(*ok)).u32(*latency).u32(*tail);
         }
         ToHost::State(s) => {
-            e.u8(103).u8(u8::from(s.is_some())).bytes(s.as_deref().unwrap_or(&[]));
+            e.u8(103)
+                .u8(u8::from(s.is_some()))
+                .bytes(s.as_deref().unwrap_or(&[]));
         }
         ToHost::Loaded(ok) => {
             e.u8(104).u8(u8::from(*ok));
         }
         ToHost::Text(t) => {
-            e.u8(105).u8(u8::from(t.is_some())).str(t.as_deref().unwrap_or(""));
+            e.u8(105)
+                .u8(u8::from(t.is_some()))
+                .str(t.as_deref().unwrap_or(""));
         }
         ToHost::Failed(msg) => {
             e.u8(199).str(msg);
@@ -237,15 +274,30 @@ pub fn read_to_host(r: &mut impl Read) -> io::Result<ToHost> {
     Ok(match d.u8()? {
         101 => {
             let (id, name) = (d.str()?, d.str()?);
-            let kind = if d.u8()? != 0 { Kind::Instrument } else { Kind::Effect };
+            let kind = if d.u8()? != 0 {
+                Kind::Instrument
+            } else {
+                Kind::Effect
+            };
             let n = d.u32()? as usize;
             if n > usize::from(u16::MAX) {
                 return Err(bad());
             }
-            let params = (0..n).map(|_| get_param(&mut d)).collect::<io::Result<_>>()?;
-            ToHost::Hello(Hello { id, name, kind, params })
+            let params = (0..n)
+                .map(|_| get_param(&mut d))
+                .collect::<io::Result<_>>()?;
+            ToHost::Hello(Hello {
+                id,
+                name,
+                kind,
+                params,
+            })
         }
-        102 => ToHost::Prepared { ok: d.u8()? != 0, latency: d.u32()?, tail: d.u32()? },
+        102 => ToHost::Prepared {
+            ok: d.u8()? != 0,
+            latency: d.u32()?,
+            tail: d.u32()?,
+        },
         103 => {
             let some = d.u8()? != 0;
             let b = d.bytes()?;
@@ -269,10 +321,16 @@ mod tests {
     #[test]
     fn every_message_round_trips() {
         let to_child = [
-            ToChild::Prepare { rate: 44_100, max_block: 256 },
+            ToChild::Prepare {
+                rate: 44_100,
+                max_block: 256,
+            },
             ToChild::SaveState,
             ToChild::LoadState(vec![1, 2, 3]),
-            ToChild::ParamText { index: 7, value: -3.5 },
+            ToChild::ParamText {
+                index: 7,
+                value: -3.5,
+            },
             ToChild::Quit,
         ];
         for m in &to_child {
@@ -285,13 +343,33 @@ mod tests {
             name: "X".into(),
             kind: Kind::Effect,
             params: vec![
-                ParamSpec { name: "A".into(), group: "G".into(), min: 0.0, max: 2.0, default: 1.0, curve: CurveSpec::Choice(vec!["a".into(), "b".into(), "c".into()]), readonly: false },
-                ParamSpec { name: "B".into(), group: "".into(), min: -1.0, max: 1.0, default: 0.0, curve: CurveSpec::Linear, readonly: true },
+                ParamSpec {
+                    name: "A".into(),
+                    group: "G".into(),
+                    min: 0.0,
+                    max: 2.0,
+                    default: 1.0,
+                    curve: CurveSpec::Choice(vec!["a".into(), "b".into(), "c".into()]),
+                    readonly: false,
+                },
+                ParamSpec {
+                    name: "B".into(),
+                    group: "".into(),
+                    min: -1.0,
+                    max: 1.0,
+                    default: 0.0,
+                    curve: CurveSpec::Linear,
+                    readonly: true,
+                },
             ],
         };
         let to_host = [
             ToHost::Hello(hello),
-            ToHost::Prepared { ok: true, latency: 3, tail: 900 },
+            ToHost::Prepared {
+                ok: true,
+                latency: 3,
+                tail: 900,
+            },
             ToHost::State(Some(vec![9; 10])),
             ToHost::State(None),
             ToHost::Loaded(false),

@@ -97,21 +97,35 @@ impl Default for HandoffSimulation {
 }
 
 impl HandoffSimulation {
-    pub fn state(&self) -> State { self.state }
-    pub fn stop_reason(&self) -> Option<StopReason> { self.stop_reason }
-    pub fn restoration_attempts(&self) -> u32 { self.restoration_attempts }
+    pub fn state(&self) -> State {
+        self.state
+    }
+    pub fn stop_reason(&self) -> Option<StopReason> {
+        self.stop_reason
+    }
+    pub fn restoration_attempts(&self) -> u32 {
+        self.restoration_attempts
+    }
 
     /// Proof requirements are stricter than merely being able to SSH the MPC.
     pub fn qualify(&mut self, evidence: SafetyEvidence) -> Result<(), Error> {
-        if self.state != State::StockRunning { return Err(Error::InvalidTransition); }
-        if !evidence.complete() { return Err(Error::MissingRecoveryEvidence); }
+        if self.state != State::StockRunning {
+            return Err(Error::InvalidTransition);
+        }
+        if !evidence.complete() {
+            return Err(Error::MissingRecoveryEvidence);
+        }
         self.state = State::Qualified;
         Ok(())
     }
 
     pub fn arm(&mut self, period_ms: u64) -> Result<(), Error> {
-        if self.state != State::Qualified { return Err(Error::InvalidTransition); }
-        if !(10..=10_000).contains(&period_ms) { return Err(Error::InvalidDeadline); }
+        if self.state != State::Qualified {
+            return Err(Error::InvalidTransition);
+        }
+        if !(10..=10_000).contains(&period_ms) {
+            return Err(Error::InvalidDeadline);
+        }
         self.heartbeat_period_ms = period_ms;
         self.state = State::Armed;
         Ok(())
@@ -119,22 +133,31 @@ impl HandoffSimulation {
 
     /// No actual systemd interaction. The caller models its state.
     pub fn simulate_stock_quiesce(&mut self) -> Result<(), Error> {
-        if self.state != State::Armed { return Err(Error::InvalidTransition); }
+        if self.state != State::Armed {
+            return Err(Error::InvalidTransition);
+        }
         self.state = State::StockQuiescing;
         Ok(())
     }
 
     pub fn simulate_resources_released(&mut self) -> Result<(), Error> {
-        if self.state != State::StockQuiescing { return Err(Error::InvalidTransition); }
+        if self.state != State::StockQuiescing {
+            return Err(Error::InvalidTransition);
+        }
         self.state = State::ResourcesReleased;
         Ok(())
     }
 
     pub fn simulate_mpfree_start(&mut self, now_ms: u64) -> Result<(), Error> {
-        if self.state != State::ResourcesReleased { return Err(Error::InvalidTransition); }
-        let deadline = now_ms.checked_add(self.heartbeat_period_ms)
+        if self.state != State::ResourcesReleased {
+            return Err(Error::InvalidTransition);
+        }
+        let deadline = now_ms
+            .checked_add(self.heartbeat_period_ms)
             .ok_or(Error::InvalidDeadline)?;
-        if now_ms < self.now_ms { return Err(Error::TimeWentBackwards); }
+        if now_ms < self.now_ms {
+            return Err(Error::TimeWentBackwards);
+        }
         self.now_ms = now_ms;
         self.deadline_ms = Some(deadline);
         self.state = State::MpFreeActive;
@@ -143,8 +166,12 @@ impl HandoffSimulation {
 
     /// Strictly increasing clock; a late heartbeat CANNOT revive an expired session.
     pub fn heartbeat(&mut self, at_ms: u64) -> Result<(), Error> {
-        if self.state != State::MpFreeActive { return Err(Error::InvalidTransition); }
-        if at_ms < self.now_ms { return Err(Error::TimeWentBackwards); }
+        if self.state != State::MpFreeActive {
+            return Err(Error::InvalidTransition);
+        }
+        if at_ms < self.now_ms {
+            return Err(Error::TimeWentBackwards);
+        }
         let deadline = self.deadline_ms.ok_or(Error::InvalidTransition)?;
         self.now_ms = at_ms;
         if at_ms >= deadline {
@@ -162,7 +189,9 @@ impl HandoffSimulation {
     }
 
     pub fn advance_time(&mut self, at_ms: u64) -> Result<(), Error> {
-        if at_ms < self.now_ms { return Err(Error::TimeWentBackwards); }
+        if at_ms < self.now_ms {
+            return Err(Error::TimeWentBackwards);
+        }
         self.now_ms = at_ms;
         if self.state == State::MpFreeActive
             && self.deadline_ms.is_some_and(|deadline| at_ms >= deadline)
@@ -172,14 +201,18 @@ impl HandoffSimulation {
         Ok(())
     }
 
-    pub fn crash(&mut self) { self.restore(StopReason::MpFreeCrash); }
+    pub fn crash(&mut self) {
+        self.restore(StopReason::MpFreeCrash);
+    }
     pub fn transport_failure(&mut self) {
         self.restore(StopReason::ExternalTransportFailure);
     }
     pub fn cancel(&mut self) {
         match self.state {
-            State::StockRunning | State::StockVerified | State::RecoveryRequired
-                | State::StockRestoring => {}
+            State::StockRunning
+            | State::StockVerified
+            | State::RecoveryRequired
+            | State::StockRestoring => {}
             State::Qualified | State::Armed => {
                 // No resource ownership transfer has happened; nothing to restore.
                 self.state = State::StockRunning;
@@ -203,10 +236,10 @@ impl HandoffSimulation {
 
     /// Caller must substantiate all checks; false => recovery-required state.
     /// A mock success here is NEVER proof of a safe physical MPC handoff.
-    pub fn simulate_stock_restored(
-        &mut self, checks: StockRestoreChecks,
-    ) -> Result<(), Error> {
-        if self.state != State::StockRestoring { return Err(Error::InvalidTransition); }
+    pub fn simulate_stock_restored(&mut self, checks: StockRestoreChecks) -> Result<(), Error> {
+        if self.state != State::StockRestoring {
+            return Err(Error::InvalidTransition);
+        }
         if !checks.complete() {
             self.state = State::RecoveryRequired;
             return Err(Error::RestorationUnverified);
@@ -216,7 +249,9 @@ impl HandoffSimulation {
     }
 
     pub fn simulate_return_to_stock(&mut self) -> Result<(), Error> {
-        if self.state != State::StockVerified { return Err(Error::InvalidTransition); }
+        if self.state != State::StockVerified {
+            return Err(Error::InvalidTransition);
+        }
         self.state = State::StockRunning;
         self.stop_reason = None;
         Ok(())
@@ -260,7 +295,10 @@ mod tests {
     fn default_is_stock_and_all_missing_gates_refuse_handoff() {
         let mut m = HandoffSimulation::default();
         assert_eq!(m.state(), State::StockRunning);
-        assert_eq!(m.qualify(SafetyEvidence::default()), Err(Error::MissingRecoveryEvidence));
+        assert_eq!(
+            m.qualify(SafetyEvidence::default()),
+            Err(Error::MissingRecoveryEvidence)
+        );
         assert_eq!(m.state(), State::StockRunning);
         assert_eq!(m.arm(100), Err(Error::InvalidTransition));
         assert_eq!(m.simulate_stock_quiesce(), Err(Error::InvalidTransition));
@@ -329,7 +367,10 @@ mod tests {
         m.transport_failure();
         let mut checks = complete_restore();
         checks.pcm_reacquired = false;
-        assert_eq!(m.simulate_stock_restored(checks), Err(Error::RestorationUnverified));
+        assert_eq!(
+            m.simulate_stock_restored(checks),
+            Err(Error::RestorationUnverified)
+        );
         assert_eq!(m.state(), State::RecoveryRequired);
         assert_eq!(m.qualify(all_gates()), Err(Error::InvalidTransition));
         assert_eq!(m.simulate_return_to_stock(), Err(Error::InvalidTransition));
@@ -344,7 +385,10 @@ mod tests {
         m.arm(100).unwrap();
         m.simulate_stock_quiesce().unwrap();
         m.simulate_resources_released().unwrap();
-        assert_eq!(m.simulate_mpfree_start(u64::MAX), Err(Error::InvalidDeadline));
+        assert_eq!(
+            m.simulate_mpfree_start(u64::MAX),
+            Err(Error::InvalidDeadline)
+        );
         assert_eq!(m.state(), State::ResourcesReleased);
         m.simulate_mpfree_start(20).unwrap();
         assert_eq!(m.heartbeat(19), Err(Error::TimeWentBackwards));

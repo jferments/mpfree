@@ -35,26 +35,178 @@ pub mod ids {
     pub const MIX: u16 = 9;
 }
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fx.lofi", name: "Lo-fi", kind: Kind::Effect };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fx.lofi",
+    name: "Lo-fi",
+    kind: Kind::Effect,
+};
 static PARAMS: [ParamInfo; 10] = [
-    ParamInfo { id: 0, name: "Amount", group: "Lo-fi", min: 0.0, max: 100.0, default: 60.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 1, name: "Wow", group: "Tape", min: 0.0, max: 100.0, default: 40.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 2, name: "Flutter", group: "Tape", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 3, name: "Saturation", group: "Tape", min: 0.0, max: 100.0, default: 40.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 4, name: "Crackle", group: "Vinyl", min: 0.0, max: 100.0, default: 30.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 5, name: "Noise", group: "Vinyl", min: 0.0, max: 100.0, default: 20.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 6, name: "Low cut", group: "Tone", min: 20.0, max: 500.0, default: 80.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 7, name: "High cut", group: "Tone", min: 2_000.0, max: 20_000.0, default: 8_000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false },
-    ParamInfo { id: 8, name: "Width", group: "Tone", min: 0.0, max: 100.0, default: 70.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
-    ParamInfo { id: 9, name: "Mix", group: "Output", min: 0.0, max: 100.0, default: 100.0, unit: Unit::Percent, curve: Curve::Linear, readonly: false },
+    ParamInfo {
+        id: 0,
+        name: "Amount",
+        group: "Lo-fi",
+        min: 0.0,
+        max: 100.0,
+        default: 60.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 1,
+        name: "Wow",
+        group: "Tape",
+        min: 0.0,
+        max: 100.0,
+        default: 40.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 2,
+        name: "Flutter",
+        group: "Tape",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 3,
+        name: "Saturation",
+        group: "Tape",
+        min: 0.0,
+        max: 100.0,
+        default: 40.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 4,
+        name: "Crackle",
+        group: "Vinyl",
+        min: 0.0,
+        max: 100.0,
+        default: 30.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 5,
+        name: "Noise",
+        group: "Vinyl",
+        min: 0.0,
+        max: 100.0,
+        default: 20.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 6,
+        name: "Low cut",
+        group: "Tone",
+        min: 20.0,
+        max: 500.0,
+        default: 80.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 7,
+        name: "High cut",
+        group: "Tone",
+        min: 2_000.0,
+        max: 20_000.0,
+        default: 8_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 8,
+        name: "Width",
+        group: "Tone",
+        min: 0.0,
+        max: 100.0,
+        default: 70.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 9,
+        name: "Mix",
+        group: "Output",
+        min: 0.0,
+        max: 100.0,
+        default: 100.0,
+        unit: Unit::Percent,
+        curve: Curve::Linear,
+        readonly: false,
+    },
 ];
 
 /// Factory presets (Amount and Mix left at their defaults).
 pub static PRESETS: &[Preset] = &[
-    Preset { name: "Worn tape", values: &[(ids::WOW, 60.0), (ids::FLUTTER, 40.0), (ids::SATURATION, 60.0), (ids::CRACKLE, 0.0), (ids::NOISE, 25.0), (ids::LOW_CUT, 50.0), (ids::HIGH_CUT, 11_000.0), (ids::WIDTH, 85.0)] },
-    Preset { name: "Dusty vinyl", values: &[(ids::WOW, 15.0), (ids::FLUTTER, 5.0), (ids::SATURATION, 20.0), (ids::CRACKLE, 75.0), (ids::NOISE, 30.0), (ids::LOW_CUT, 70.0), (ids::HIGH_CUT, 7_500.0), (ids::WIDTH, 60.0)] },
-    Preset { name: "Cassette", values: &[(ids::WOW, 45.0), (ids::FLUTTER, 65.0), (ids::SATURATION, 50.0), (ids::CRACKLE, 0.0), (ids::NOISE, 45.0), (ids::LOW_CUT, 70.0), (ids::HIGH_CUT, 6_000.0), (ids::WIDTH, 55.0)] },
-    Preset { name: "Old radio", values: &[(ids::WOW, 0.0), (ids::FLUTTER, 10.0), (ids::SATURATION, 85.0), (ids::CRACKLE, 35.0), (ids::NOISE, 40.0), (ids::LOW_CUT, 420.0), (ids::HIGH_CUT, 3_200.0), (ids::WIDTH, 0.0)] },
+    Preset {
+        name: "Worn tape",
+        values: &[
+            (ids::WOW, 60.0),
+            (ids::FLUTTER, 40.0),
+            (ids::SATURATION, 60.0),
+            (ids::CRACKLE, 0.0),
+            (ids::NOISE, 25.0),
+            (ids::LOW_CUT, 50.0),
+            (ids::HIGH_CUT, 11_000.0),
+            (ids::WIDTH, 85.0),
+        ],
+    },
+    Preset {
+        name: "Dusty vinyl",
+        values: &[
+            (ids::WOW, 15.0),
+            (ids::FLUTTER, 5.0),
+            (ids::SATURATION, 20.0),
+            (ids::CRACKLE, 75.0),
+            (ids::NOISE, 30.0),
+            (ids::LOW_CUT, 70.0),
+            (ids::HIGH_CUT, 7_500.0),
+            (ids::WIDTH, 60.0),
+        ],
+    },
+    Preset {
+        name: "Cassette",
+        values: &[
+            (ids::WOW, 45.0),
+            (ids::FLUTTER, 65.0),
+            (ids::SATURATION, 50.0),
+            (ids::CRACKLE, 0.0),
+            (ids::NOISE, 45.0),
+            (ids::LOW_CUT, 70.0),
+            (ids::HIGH_CUT, 6_000.0),
+            (ids::WIDTH, 55.0),
+        ],
+    },
+    Preset {
+        name: "Old radio",
+        values: &[
+            (ids::WOW, 0.0),
+            (ids::FLUTTER, 10.0),
+            (ids::SATURATION, 85.0),
+            (ids::CRACKLE, 35.0),
+            (ids::NOISE, 40.0),
+            (ids::LOW_CUT, 420.0),
+            (ids::HIGH_CUT, 3_200.0),
+            (ids::WIDTH, 0.0),
+        ],
+    },
 ];
 
 /// The tape delay's centre: the latency, and room for the widest wow.
@@ -104,7 +256,11 @@ struct Tape {
 impl Tape {
     fn new(frames: usize) -> Tape {
         let n = (frames + 8).next_power_of_two();
-        Tape { buf: vec![0.0; n], mask: n - 1, w: 0 }
+        Tape {
+            buf: vec![0.0; n],
+            mask: n - 1,
+            w: 0,
+        }
     }
     /// Writes `x`, then reads `d` frames back (0 is `x` itself; `d` at
     /// least 1).
@@ -137,7 +293,15 @@ struct Crackle {
 }
 
 impl Crackle {
-    fn new(seed: u32) -> Crackle { Crackle { rng: Rng::new(seed), level: 0.0, decay: 0.0, lp: 0.0, lp_a: 1.0 } }
+    fn new(seed: u32) -> Crackle {
+        Crackle {
+            rng: Rng::new(seed),
+            level: 0.0,
+            decay: 0.0,
+            lp: 0.0,
+            lp_a: 1.0,
+        }
+    }
     #[inline]
     fn run(&mut self, chance: f32, size: f32, rate: f32) -> f32 {
         // A new click: mostly small, now and then a pop (size cubed).
@@ -148,16 +312,21 @@ impl Crackle {
             self.level = size * (0.05 + 0.6 * big);
             // 0.1 ms for a tick, up to 1 ms for a pop.
             self.decay = (-1.0 / ((0.0001 + 0.0009 * big) * rate)).exp();
-            self.lp_a = 1.0 - (-2.0 * std::f32::consts::PI * (9_000.0 - 7_000.0 * big) / rate).exp();
+            self.lp_a =
+                1.0 - (-2.0 * std::f32::consts::PI * (9_000.0 - 7_000.0 * big) / rate).exp();
         }
-        if self.level == 0.0 { return 0.0; }
+        if self.level == 0.0 {
+            return 0.0;
+        }
         let n = self.rng.bipolar();
         let x = n * self.level;
         self.level = flush(self.level * self.decay);
         self.lp = flush(self.lp + self.lp_a * (x - self.lp));
         self.lp
     }
-    fn reset(&mut self, seed: u32) { *self = Crackle::new(seed); }
+    fn reset(&mut self, seed: u32) {
+        *self = Crackle::new(seed);
+    }
 }
 
 /// Tape wear and vinyl dust with one Amount over all of it.
@@ -194,7 +363,9 @@ pub struct LoFi {
 const SEEDS: [u32; 3] = [0x51ED_270B, 0x2F6C_A3E1, 0x9B3C_57D4];
 
 impl Default for LoFi {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LoFi {
@@ -234,7 +405,9 @@ impl LoFi {
     }
 
     fn apply(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.get(id as usize) else { return };
+        let Some(p) = PARAMS.get(id as usize) else {
+            return;
+        };
         let v = p.clamp(value);
         self.v[id as usize] = v;
         let target = match id {
@@ -260,7 +433,20 @@ impl LoFi {
     }
 
     fn each_smooth(&mut self, f: &mut dyn FnMut(&mut Smooth)) {
-        for s in [&mut self.amount, &mut self.wow, &mut self.flutter, &mut self.sat, &mut self.crackle, &mut self.noise, &mut self.log_low, &mut self.log_high, &mut self.width, &mut self.mix] { f(s); }
+        for s in [
+            &mut self.amount,
+            &mut self.wow,
+            &mut self.flutter,
+            &mut self.sat,
+            &mut self.crackle,
+            &mut self.noise,
+            &mut self.log_low,
+            &mut self.log_high,
+            &mut self.width,
+            &mut self.mix,
+        ] {
+            f(s);
+        }
     }
 
     /// The cut filters for the current Amount and corners: at Amount 0
@@ -269,8 +455,20 @@ impl LoFi {
         let a = self.amount.value;
         let low = lerp(20f32.log2(), self.log_low.value, a).exp2();
         let high = lerp(20_000f32.log2(), self.log_high.value, a).exp2();
-        self.low.set(SvfMode::HighPass, low, std::f32::consts::FRAC_1_SQRT_2, 0.0, self.rate);
-        self.high.set(SvfMode::LowPass, high, std::f32::consts::FRAC_1_SQRT_2, 0.0, self.rate);
+        self.low.set(
+            SvfMode::HighPass,
+            low,
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            self.rate,
+        );
+        self.high.set(
+            SvfMode::LowPass,
+            high,
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            self.rate,
+        );
     }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
@@ -283,7 +481,8 @@ impl LoFi {
         // The saturator's gain, its inverse and the bias's own offset,
         // worked out again only while the saturation glides (powf per
         // sample is a library call on the MPC's ARM).
-        let (mut sat_was, mut drive, mut undrive, mut bias, mut offset) = (f32::NAN, 1.0, 1.0, 0.0, 0.0);
+        let (mut sat_was, mut drive, mut undrive, mut bias, mut offset) =
+            (f32::NAN, 1.0, 1.0, 0.0, 0.0);
         for i in 0..l.len() {
             if !(self.amount.settled() && self.log_low.settled() && self.log_high.settled()) {
                 self.amount.next();
@@ -301,7 +500,9 @@ impl LoFi {
             let mix = self.mix.next();
             for (p, inc) in self.phase.iter_mut().zip(&self.inc) {
                 *p += inc;
-                if *p >= 1.0 { *p -= 1.0; }
+                if *p >= 1.0 {
+                    *p -= 1.0;
+                }
             }
             let w = 0.6 * sine(self.phase[0] as f32) + 0.4 * sine(self.phase[1] as f32);
             let fl = 0.7 * sine(self.phase[2] as f32) + 0.3 * sine(self.phase[3] as f32);
@@ -309,7 +510,11 @@ impl LoFi {
             let x = [l[i], r[i]];
             // The music envelope that crackle and hiss ride.
             let level = x[0].abs().max(x[1].abs());
-            let k = if level > self.env { self.env_up } else { self.env_down };
+            let k = if level > self.env {
+                self.env_up
+            } else {
+                self.env_down
+            };
             self.env = flush(self.env + k * (level - self.env));
             let ride = (self.env / ENV_FULL).min(1.0);
             let chance = crackle * CLICKS_PER_S / fs;
@@ -333,8 +538,11 @@ impl LoFi {
                 s = self.high.run(ch, s);
                 if ride > 0.0 {
                     let h = self.hiss.bipolar();
-                    self.hiss_lp[ch] = flush(self.hiss_lp[ch] + self.hiss_a * (h - self.hiss_lp[ch]));
-                    s += ride * (noise * HISS * self.hiss_lp[ch] + self.clicks[ch].run(chance, crackle, fs));
+                    self.hiss_lp[ch] =
+                        flush(self.hiss_lp[ch] + self.hiss_a * (h - self.hiss_lp[ch]));
+                    s += ride
+                        * (noise * HISS * self.hiss_lp[ch]
+                            + self.clicks[ch].run(chance, crackle, fs));
                 }
                 y[ch] = s;
             }
@@ -349,10 +557,18 @@ impl LoFi {
 }
 
 impl Node for LoFi {
-    fn info(&self) -> &'static NodeInfo { &INFO }
-    fn params(&self) -> &'static [ParamInfo] { &PARAMS }
-    fn set_param(&mut self, id: u16, value: f32) { self.apply(id, value); }
-    fn param(&self, id: u16) -> f32 { self.v.get(id as usize).copied().unwrap_or(f32::NAN) }
+    fn info(&self) -> &'static NodeInfo {
+        &INFO
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &PARAMS
+    }
+    fn set_param(&mut self, id: u16, value: f32) {
+        self.apply(id, value);
+    }
+    fn param(&self, id: u16) -> f32 {
+        self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+    }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         let fs = rate as f32;
@@ -360,11 +576,16 @@ impl Node for LoFi {
             self.latency = (LATENCY_MS * 0.001 * fs).round() as u32;
             let frames = 2 * self.latency as usize + 8;
             self.tape = [Tape::new(frames), Tape::new(frames)];
-            self.dry = [FixedDelay::new(self.latency as usize), FixedDelay::new(self.latency as usize)];
+            self.dry = [
+                FixedDelay::new(self.latency as usize),
+                FixedDelay::new(self.latency as usize),
+            ];
         }
         self.rate = rate;
         self.each_smooth(&mut |s| s.set_time(rate, 30.0));
-        for (inc, hz) in self.inc.iter_mut().zip(WOW_HZ.iter().chain(&FLUTTER_HZ)) { *inc = f64::from(*hz) / f64::from(rate); }
+        for (inc, hz) in self.inc.iter_mut().zip(WOW_HZ.iter().chain(&FLUTTER_HZ)) {
+            *inc = f64::from(*hz) / f64::from(rate);
+        }
         self.hiss_a = 1.0 - (-2.0 * std::f32::consts::PI * 6_000.0f32.min(0.45 * fs) / fs).exp();
         self.env_up = 1.0 - (-1.0 / (ENV_ATTACK_S * fs)).exp();
         self.env_down = 1.0 - (-1.0 / (ENV_RELEASE_S * fs)).exp();
@@ -372,8 +593,12 @@ impl Node for LoFi {
     }
     fn reset(&mut self) {
         self.each_smooth(&mut |s| s.snap(s.target));
-        for t in &mut self.tape { t.clear(); }
-        for d in &mut self.dry { d.reset(); }
+        for t in &mut self.tape {
+            t.clear();
+        }
+        for d in &mut self.dry {
+            d.reset();
+        }
         self.low.reset();
         self.high.reset();
         self.clicks[0].reset(SEEDS[0]);
@@ -387,17 +612,25 @@ impl Node for LoFi {
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
-        while let Some((from, to)) = segs.next(len, |ev| if let NodeEvent::Param { id, value } = *ev { self.apply(id, value) }) {
+        while let Some((from, to)) = segs.next(len, |ev| {
+            if let NodeEvent::Param { id, value } = *ev {
+                self.apply(id, value)
+            }
+        }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
-    fn latency(&self) -> u32 { self.latency }
+    fn latency(&self) -> u32 {
+        self.latency
+    }
     fn tail_frames(&self) -> u32 {
         let fs = self.rate as f32;
         // The tape delay and the filters' settling; while crackle or hiss
         // is on, the music envelope's release down 80 dB (from full).
         let mut secs = 0.05;
-        if self.v[4] > 0.0 || self.v[5] > 0.0 { secs += ENV_RELEASE_S * (1e4f32 / ENV_FULL).ln(); }
+        if self.v[4] > 0.0 || self.v[5] > 0.0 {
+            secs += ENV_RELEASE_S * (1e4f32 / ENV_FULL).ln();
+        }
         self.latency + (secs * fs) as u32
     }
 }

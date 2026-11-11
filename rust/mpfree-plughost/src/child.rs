@@ -54,7 +54,12 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Option<Args> {
             _ => return None,
         }
     }
-    Some(Args { plugin: plugin?, id: id?, shm_fd: shm_fd?, ctl_fd: ctl_fd? })
+    Some(Args {
+        plugin: plugin?,
+        id: id?,
+        shm_fd: shm_fd?,
+        ctl_fd: ctl_fd?,
+    })
 }
 
 /// The process's whole life; returns its exit status.
@@ -93,7 +98,9 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
     let quit = Arc::new(AtomicBool::new(false));
     let audio = {
         let (map, node, quit) = (Arc::clone(&map), Arc::clone(&node), Arc::clone(&quit));
-        std::thread::Builder::new().name("plughost-audio".into()).spawn(move || audio_loop(&map, &node, nparams, &quit))
+        std::thread::Builder::new()
+            .name("plughost-audio".into())
+            .spawn(move || audio_loop(&map, &node, nparams, &quit))
     };
     let Ok(audio) = audio else { return 2 };
     let served = serve(&mut sock, &node, &control);
@@ -109,7 +116,11 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
 /// The main thread: answers the host until it says quit or goes away.
 fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -> io::Result<()> {
     loop {
-        let mut pfd = libc::pollfd { fd: sock.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd: sock.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
         // SAFETY: one valid pollfd.
         let r = unsafe { libc::poll(&mut pfd, 1, IDLE.as_millis() as libc::c_int) };
         if r < 0 {
@@ -133,7 +144,11 @@ fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -
             ToChild::Prepare { rate, max_block } => {
                 let mut n = node.lock().unwrap_or_else(|e| e.into_inner());
                 n.prepare(rate, max_block as usize);
-                ToHost::Prepared { ok: n.is_active(), latency: n.latency(), tail: n.tail_frames() }
+                ToHost::Prepared {
+                    ok: n.is_active(),
+                    latency: n.latency(),
+                    tail: n.tail_frames(),
+                }
             }
             ToChild::SaveState => ToHost::State(control.save_state()),
             ToChild::LoadState(b) => ToHost::Loaded(control.load_state(&b)),
@@ -174,12 +189,21 @@ fn audio_loop(map: &Mapping, node: &Mutex<ClapNode>, nparams: usize, quit: &Atom
 fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
     let byte = |v: u32| v.min(127) as u8;
     Some(match e.kind {
-        shm::EV_NOTE_ON => NodeEvent::NoteOn { note: byte(e.a), velocity: byte(e.b) },
+        shm::EV_NOTE_ON => NodeEvent::NoteOn {
+            note: byte(e.a),
+            velocity: byte(e.b),
+        },
         shm::EV_NOTE_OFF => NodeEvent::NoteOff { note: byte(e.a) },
-        shm::EV_PRESSURE => NodeEvent::Pressure { note: byte(e.a), value: byte(e.b) },
+        shm::EV_PRESSURE => NodeEvent::Pressure {
+            note: byte(e.a),
+            value: byte(e.b),
+        },
         shm::EV_BEND => NodeEvent::Bend { value: e.value },
         shm::EV_ALL_OFF => NodeEvent::AllOff,
-        shm::EV_PARAM => NodeEvent::Param { id: u16::try_from(e.a).ok()?, value: e.value },
+        shm::EV_PARAM => NodeEvent::Param {
+            id: u16::try_from(e.a).ok()?,
+            value: e.value,
+        },
         _ => return None,
     })
 }
@@ -189,7 +213,12 @@ fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
 /// # Safety
 /// `p` is the mapped block, and this side owns the request and answer
 /// fields (between the host's `req` and our `done`).
-unsafe fn run_block(p: *mut shm::Shm, node: &Mutex<ClapNode>, events: &mut Vec<Timed>, nparams: usize) {
+unsafe fn run_block(
+    p: *mut shm::Shm,
+    node: &Mutex<ClapNode>,
+    events: &mut Vec<Timed>,
+    nparams: usize,
+) {
     let n = ((*p).frames as usize).min(MAX_BLOCK);
     let ctx = Ctx {
         rate: (*p).rate,
@@ -206,7 +235,10 @@ unsafe fn run_block(p: *mut shm::Shm, node: &Mutex<ClapNode>, events: &mut Vec<T
         if e.kind == shm::EV_RESET {
             reset = true;
         } else if let Some(ev) = event_of(e) {
-            events.push(Timed { offset: e.offset.min(n.saturating_sub(1) as u32), ev });
+            events.push(Timed {
+                offset: e.offset.min(n.saturating_sub(1) as u32),
+                ev,
+            });
         }
     }
     let mut g = node.lock().unwrap_or_else(|e| e.into_inner());
@@ -242,30 +274,94 @@ mod tests {
 
     #[test]
     fn arguments_are_read_in_any_order() {
-        let want = Args { plugin: "/x/p.clap".into(), id: "org.x".into(), shm_fd: 3, ctl_fd: 4 };
-        assert_eq!(parse_args(os(&["--plugin", "/x/p.clap", "--id", "org.x", "--shm-fd", "3", "--ctl-fd", "4"])), Some(want));
-        let a = parse_args(os(&["--ctl-fd", "9", "--shm-fd", "8", "--id", "y", "--plugin", "q"])).unwrap();
+        let want = Args {
+            plugin: "/x/p.clap".into(),
+            id: "org.x".into(),
+            shm_fd: 3,
+            ctl_fd: 4,
+        };
+        assert_eq!(
+            parse_args(os(&[
+                "--plugin",
+                "/x/p.clap",
+                "--id",
+                "org.x",
+                "--shm-fd",
+                "3",
+                "--ctl-fd",
+                "4"
+            ])),
+            Some(want)
+        );
+        let a = parse_args(os(&[
+            "--ctl-fd", "9", "--shm-fd", "8", "--id", "y", "--plugin", "q",
+        ]))
+        .unwrap();
         assert_eq!((a.shm_fd, a.ctl_fd), (8, 9));
     }
 
     #[test]
     fn bad_arguments_are_refused() {
         assert_eq!(parse_args(os(&[])), None);
-        assert_eq!(parse_args(os(&["--plugin", "p", "--id", "x", "--shm-fd", "3"])), None);
-        assert_eq!(parse_args(os(&["--plugin", "p", "--id", "x", "--shm-fd", "three", "--ctl-fd", "4"])), None);
-        assert_eq!(parse_args(os(&["--plugin", "p", "--id", "x", "--shm-fd", "3", "--ctl-fd", "4", "--what", "1"])), None);
+        assert_eq!(
+            parse_args(os(&["--plugin", "p", "--id", "x", "--shm-fd", "3"])),
+            None
+        );
+        assert_eq!(
+            parse_args(os(&[
+                "--plugin", "p", "--id", "x", "--shm-fd", "three", "--ctl-fd", "4"
+            ])),
+            None
+        );
+        assert_eq!(
+            parse_args(os(&[
+                "--plugin", "p", "--id", "x", "--shm-fd", "3", "--ctl-fd", "4", "--what", "1"
+            ])),
+            None
+        );
         assert_eq!(parse_args(os(&["--plugin"])), None);
     }
 
     #[test]
     fn events_map_back() {
-        let e = |kind, a, b, value| shm::ShmEvent { offset: 0, kind, a, b, value, _pad: 0 };
-        assert_eq!(event_of(&e(shm::EV_NOTE_ON, 60, 100, 0.0)), Some(NodeEvent::NoteOn { note: 60, velocity: 100 }));
-        assert_eq!(event_of(&e(shm::EV_NOTE_OFF, 300, 0, 0.0)), Some(NodeEvent::NoteOff { note: 127 }));
-        assert_eq!(event_of(&e(shm::EV_PRESSURE, 61, 40, 0.0)), Some(NodeEvent::Pressure { note: 61, value: 40 }));
-        assert_eq!(event_of(&e(shm::EV_BEND, 0, 0, -0.5)), Some(NodeEvent::Bend { value: -0.5 }));
-        assert_eq!(event_of(&e(shm::EV_ALL_OFF, 0, 0, 0.0)), Some(NodeEvent::AllOff));
-        assert_eq!(event_of(&e(shm::EV_PARAM, 3, 0, 0.25)), Some(NodeEvent::Param { id: 3, value: 0.25 }));
+        let e = |kind, a, b, value| shm::ShmEvent {
+            offset: 0,
+            kind,
+            a,
+            b,
+            value,
+            _pad: 0,
+        };
+        assert_eq!(
+            event_of(&e(shm::EV_NOTE_ON, 60, 100, 0.0)),
+            Some(NodeEvent::NoteOn {
+                note: 60,
+                velocity: 100
+            })
+        );
+        assert_eq!(
+            event_of(&e(shm::EV_NOTE_OFF, 300, 0, 0.0)),
+            Some(NodeEvent::NoteOff { note: 127 })
+        );
+        assert_eq!(
+            event_of(&e(shm::EV_PRESSURE, 61, 40, 0.0)),
+            Some(NodeEvent::Pressure {
+                note: 61,
+                value: 40
+            })
+        );
+        assert_eq!(
+            event_of(&e(shm::EV_BEND, 0, 0, -0.5)),
+            Some(NodeEvent::Bend { value: -0.5 })
+        );
+        assert_eq!(
+            event_of(&e(shm::EV_ALL_OFF, 0, 0, 0.0)),
+            Some(NodeEvent::AllOff)
+        );
+        assert_eq!(
+            event_of(&e(shm::EV_PARAM, 3, 0, 0.25)),
+            Some(NodeEvent::Param { id: 3, value: 0.25 })
+        );
         assert_eq!(event_of(&e(shm::EV_PARAM, 70_000, 0, 0.25)), None);
         assert_eq!(event_of(&e(99, 0, 0, 0.0)), None);
     }

@@ -21,7 +21,10 @@ const WARM: usize = 500;
 const BLOCKS: usize = 20_000;
 
 fn find(dir: &Path, name: &str) -> Option<PathBuf> {
-    [dir.to_path_buf(), dir.join("deps"), dir.join("..")].into_iter().map(|d| d.join(name)).find(|p| p.exists())
+    [dir.to_path_buf(), dir.join("deps"), dir.join("..")]
+        .into_iter()
+        .map(|d| d.join(name))
+        .find(|p| p.exists())
 }
 
 /// Microseconds per block: mean, median, 99th percentile, worst.
@@ -59,11 +62,22 @@ fn main() {
     }
     let here = std::env::current_exe().expect("own path");
     let dir = here.parent().and_then(Path::parent).expect("build folder");
-    let lib_name = format!("{}mpfree_clap_testplug{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
-    let exe = exe.or_else(|| find(dir, "mpfree-plughost")).expect("mpfree-plughost not found: build it, or pass --exe");
-    let plugin = plugin.or_else(|| find(dir, &lib_name)).expect("test plugin library not found: pass --plugin");
+    let lib_name = format!(
+        "{}mpfree_clap_testplug{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    let exe = exe
+        .or_else(|| find(dir, "mpfree-plughost"))
+        .expect("mpfree-plughost not found: build it, or pass --exe");
+    let plugin = plugin
+        .or_else(|| find(dir, &lib_name))
+        .expect("test plugin library not found: pass --plugin");
 
-    let mut local = Library::open(&plugin).expect("open").create(GAIN_ID).expect("gain");
+    let mut local = Library::open(&plugin)
+        .expect("open")
+        .create(GAIN_ID)
+        .expect("gain");
     local.prepare(RATE, FRAMES);
     let (mut boxed, sandbox) = spawn(&exe, &plugin, GAIN_ID).expect("spawn");
     // Generous, so every block is measured to its end rather than cut off.
@@ -72,15 +86,34 @@ fn main() {
 
     let period_us = FRAMES as f64 / f64::from(RATE) * 1e6;
     println!("The test gain, {FRAMES} frames at {RATE} Hz (period {period_us:.0} us), {BLOCKS} blocks each, {}.", if cfg!(debug_assertions) { "debug build" } else { "release build" });
-    println!("{:<14} {:>9} {:>9} {:>9} {:>9} {:>11}", "", "mean us", "p50 us", "p99 us", "max us", "p99 % period");
+    println!(
+        "{:<14} {:>9} {:>9} {:>9} {:>9} {:>11}",
+        "", "mean us", "p50 us", "p99 us", "max us", "p99 % period"
+    );
     let a = time(&mut local);
     let b = time(&mut boxed);
     for (name, t) in [("in-process", a), ("sandboxed", b)] {
-        println!("{name:<14} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>11.1}", t.0, t.1, t.2, t.3, t.2 / period_us * 100.0);
+        println!(
+            "{name:<14} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>11.1}",
+            t.0,
+            t.1,
+            t.2,
+            t.3,
+            t.2 / period_us * 100.0
+        );
     }
-    println!("{:<14} {:>9.1} {:>9.1} {:>9.1}", "round trip", b.0 - a.0, b.1 - a.1, b.2 - a.2);
+    println!(
+        "{:<14} {:>9.1} {:>9.1} {:>9.1}",
+        "round trip",
+        b.0 - a.0,
+        b.1 - a.1,
+        b.2 - a.2
+    );
     let s = boxed.stats();
-    println!("sandboxed blocks {}, misses {}, busy {}, down {}", s.blocks, s.misses, s.busy, s.down);
+    println!(
+        "sandboxed blocks {}, misses {}, busy {}, down {}",
+        s.blocks, s.misses, s.busy, s.down
+    );
     drop(boxed);
     drop(sandbox);
 }
