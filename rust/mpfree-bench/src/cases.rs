@@ -12,7 +12,7 @@ use mpfree_looper::{
     Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
 };
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
-use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
+use mpfree_play::{Launch, Out, PlayView, Player, Sink, TrackArps};
 use mpfree_prof::alloc;
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
@@ -1173,27 +1173,24 @@ fn chain(rate: u32) -> Case {
     }
 }
 
-/// Where the player's notes go in the time case: track 0 to the arp, the
-/// rest counted (in the pad player they become sampler and synth events,
-/// whose cost is in those cases).
+/// Where the time case's notes go after the per-track arps: counted (in
+/// the pad player they become sampler and synth events, whose cost is in
+/// those cases).
 struct TimeSink {
-    arp: ArpHost,
     notes: u64,
 }
 
 impl Sink for TimeSink {
-    fn send(&mut self, o: Out) {
+    fn send(&mut self, _: Out) {
         self.notes += 1;
-        if o.dest == 0 || o.dest == ALL {
-            self.arp.input(o.offset, o.event);
-        }
     }
 }
 
 /// The time engine as a busy song uses it: the transport looping 4 bars at
 /// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
-/// one at 3:2 speed, one swung and quantised), the first through the arp
-/// at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// one at 3:2 speed, one swung and quantised), through the per-track
+/// arps as the pad player runs them (16 of them), the first track's clip
+/// through its arp at 32nds over 2 octaves. Every step has two parameter locks: one of the
 /// instrument's (a different one each step, so each ends at the next
 /// note) and one of the strip's. With `trigs`, every note also has a trig
 /// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
@@ -1273,20 +1270,19 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(0, T::SetLoop(Some((0, 16 * ppq))));
     t.command(0, T::Play);
-    let mut engine = mpfree_arp::Engine::new(rate, 128.0);
-    engine.set_settings(mpfree_arp::Settings {
-        mode: mpfree_arp::Mode::Arp,
-        rate: mpfree_arp::Rate::ThirtySecond,
-        octaves: 2,
-        ..mpfree_arp::Settings::default()
-    });
-    let mut sink = TimeSink {
-        arp: ArpHost::new(engine),
-        notes: 0,
-    };
+    let mut arps = Box::new(TrackArps::new(rate, 128.0));
+    arps.engine(0)
+        .expect("track 1's arp")
+        .set_settings(mpfree_arp::Settings {
+            mode: mpfree_arp::Mode::Arp,
+            rate: mpfree_arp::Rate::ThirtySecond,
+            octaves: 2,
+            ..mpfree_arp::Settings::default()
+        });
+    arps.set_through(0, true);
+    let mut sink = TimeSink { notes: 0 };
     let mut player = Player::new();
     let mut block = TBlock::new();
-    let mut arp_notes = 0u64;
     Case {
         name: if trigs {
             format!("Time with trig conditions and ratchets, {tracks} clips, arp")
@@ -1304,13 +1300,13 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
                 player.set_fill(b % 128 == 0, 0);
             }
             t.process(l.len() as u32, &mut block);
-            player.process(&view, &block, &mut sink);
-            sink.arp.process(&block, &mut |_, _| arp_notes += 1);
+            player.process(&view, &block, &mut arps.through_sink());
+            arps.finish(&block, &mut sink);
             // Silent, except the notes so far in the first sample, so the
             // self-test can see that notes flowed.
             l.fill(0.0);
             r.fill(0.0);
-            l[0] = (sink.notes + arp_notes) as f32;
+            l[0] = sink.notes as f32;
         }),
         mem_bytes: 0,
     }
