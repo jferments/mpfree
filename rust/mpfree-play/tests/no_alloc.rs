@@ -89,7 +89,8 @@ fn playing_never_allocates() {
         p.tracks.push(t);
         launches.push(Launch { track: i, slot: i, origin: (i as i64 - 2) * 480 });
     }
-    let view = PlayView::compile(&p, &launches).unwrap();
+    let mut view = PlayView::compile(&p, &launches).unwrap();
+    view.set_armed(Some(3));
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
     let mut block = Block::new();
@@ -98,7 +99,6 @@ fn playing_never_allocates() {
     let mut sink = Counter { events: 0, last: 0, arp: ArpHost::new(engine) };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
-    rec.arm(Some(3));
     let mut recorded = 0usize;
 
     watch(true);
@@ -149,6 +149,7 @@ fn playing_never_allocates() {
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while playing");
     assert!(sink.events > 2000, "{}", sink.events);
     assert_eq!(player.stats().dropped, 0);
+    assert!(player.stats().erased > 20, "{:?}", player.stats());
     assert!(arp_notes > 500, "{arp_notes}");
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");
