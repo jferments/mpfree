@@ -4,14 +4,16 @@
 
 use std::sync::Arc;
 
+use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView};
 use mpfree_sampler::model::{
-    Ahdsr, ChopMode, ChopSet, Fade, FadeCurve, Filter, FilterKind, Layer, LayerSelect, Loop, LoopMode, Pad, PlayMode,
-    PressureRoute, PressureTarget, Project, Region, Source,
+    Ahdsr, ChopMode, ChopSet, Fade, FadeCurve, Filter, FilterKind, GrainParams, GrainWindow, Layer, LayerSelect, Loop,
+    LoopMode, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
 };
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::chop_tab::{self, ChopState, ChopTab};
+use crate::grain_tab::{self, GrainState, GrainTab};
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::source::SourceView;
@@ -28,6 +30,7 @@ pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Sample · Pads";
+pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -122,6 +125,16 @@ pub struct PlaySample {
     pub tab: PlayTab,
     pub project: Project,
     pub state: PlayState,
+}
+
+/// One sample screen of the Grain tab.
+pub struct GrainSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: GrainTab,
+    pub project: Project,
+    pub state: GrainState,
 }
 
 /// One sample screen of the Pads tab.
@@ -392,5 +405,82 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     ui.show(PAGE)?;
     tab.set_playheads(&mut ui, &[(f64::from(RATE) * 60.0 / BPM * 2.6) as u64]);
     out.push(Sample { name: "wave-one-shot", about: "A one-shot without a loop, with a voice playing", ui, tab, project, state });
+    Ok(out)
+}
+
+/// The sample project with pad A5 played as a grain cloud: a dense cloud
+/// of short grains from the middle of the loop, sprayed a little, read at
+/// a quarter speed, pitched down, a few backwards, spread wide and kept to
+/// a minor scale.
+pub fn grain_project() -> (Project, Arc<SourceView>) {
+    let (mut p, view) = project();
+    p.edit_pad(PAD, None, |pd| {
+        let r = &mut pd.layers[0].region;
+        r.mode = PlayMode::Granular;
+        r.grain = GrainParams {
+            position: 0.56,
+            spray: 0.16,
+            size_ms: 150.0,
+            density: 120.0,
+            pitch: -5.0,
+            pitch_spray: 0.5,
+            scan: 0.25,
+            window: GrainWindow::Tukey { taper: 0.5 },
+            reverse: 0.15,
+            spread: 0.7,
+            scale: 0b0101_1010_1101,
+            ..GrainParams::default()
+        };
+    })
+    .expect("the grain pad is valid");
+    (p, view)
+}
+
+/// The Grain tab on `project`'s pad A5, shown.
+pub fn grain_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<GrainSample, String> {
+    let state = GrainState::from_project(&project, PAD, 0, |_| view.clone()).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, grain_tab::HINT);
+    let tab = GrainTab::add(&mut ui, GRAIN_PAGE, &state)?;
+    ui.show(GRAIN_PAGE)?;
+    Ok(GrainSample { name: "grain", about: "", ui, tab, project, state })
+}
+
+/// What the engine plays of pad A5 `seconds` after a hit: its grains, its
+/// reading place and how many grains play in all.
+pub fn grains_after(project: &Project, seconds: f32) -> (Vec<GrainView>, Option<f32>, usize) {
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(project, RATE));
+    e.apply(Event::NoteOn { pad: PAD as u8, velocity: 100 });
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    for _ in 0..(seconds * RATE as f32 / 128.0) as usize {
+        e.render(&mut l, &mut r);
+    }
+    let mut views = [GrainView::default(); 64];
+    let n = e.grains_of(PAD as u8, 0, &mut views);
+    let region = &project.pad(PAD).expect("pad A5").layers[0].region;
+    let head = e.playheads().find(|h| h.0 == PAD as u8 && h.1 == 0).map(|h| {
+        ((h.2 as f64 - region.start as f64) / region.frames().max(1) as f64) as f32
+    });
+    (views[..n].to_vec(), head, e.live_grains())
+}
+
+/// The Grain tab's sample screens.
+pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, String> {
+    let mut out = Vec::new();
+    let (p, view) = grain_project();
+    let mut s = grain_on(fonts(), p, view)?;
+    (s.name, s.about) = ("grain", "A cloud from the middle of the loop, 1.5 s after a hit: the engine's own grains");
+    let (grains, head, live) = grains_after(&s.project, 1.5);
+    let st = s.state.clone();
+    s.tab.set_cloud(&mut s.ui, &st, &grains, head, live);
+    out.push(s);
+
+    // The loop as the Wave tab leaves it: it doesn't play grains yet.
+    let (p, view) = project();
+    let mut s = grain_on(fonts(), p, view)?;
+    (s.name, s.about) = ("grain-off", "The pad still plays as a loop: the tab says how to make it play grains");
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    out.push(s);
     Ok(out)
 }
