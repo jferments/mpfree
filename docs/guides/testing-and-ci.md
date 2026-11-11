@@ -1,0 +1,167 @@
+# Testing and CI
+
+How MPFree is tested, where CI runs, what it checks, and how the suite is
+meant to grow. Status as of 2026-11-11.
+
+## The test tiers
+
+| Tier | What it proves | Where it runs | Who starts it |
+| --- | --- | --- | --- |
+| Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
+| Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
+| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, Hello MPC and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
+| Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
+| On the MPC | Real audio, pads, touch, screen | The reference MPC One, round by round with `tools/mpc-one/results.py` | Jay only |
+
+The last tier never runs in CI. Every on-device step is paced by Jay and
+must be reversible (the safety rules in the [README](../../README.md) and
+[developer access](developer-access.md)). A hardware-in-the-loop lane is not
+planned until MaskROM recovery is proven on the unit.
+
+## What CI runs
+
+Workflow: [`.github/workflows/mpc-inventory.yml`](../../.github/workflows/mpc-inventory.yml).
+It runs on every pull request, every push to `main` and by hand, with no path
+filters, so the check always reports.
+
+| Job | Checks | Typical time |
+| --- | --- | --- |
+| `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
+| `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
+| `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, on a pinned toolchain | ~1 min |
+| `rust` | All workspace tests in debug and release; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
+| `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
+| `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
+
+The coverage table appears in the run's summary page, and the lcov file is
+kept as an artifact for 14 days.
+
+### Where it runs
+
+GitHub-hosted Actions minutes ran out on 2026-11-11. Since then every job runs
+on two self-hosted runners, `mpfree-ci` and `mpfree-ci-2` (label `mpfree-ci`),
+inside the CI VM `project-after-ci` that also runs Project After's and
+PlantGen's CI. The setup, resource limits, job guard and undo are documented in
+jferments/ci-infrastructure `docs/mpfree-runner.md`.
+
+Things that differ from GitHub's hosts, and that the workflow handles:
+
+- The runner account has no sudo. The packages the jobs need are installed
+  once on the VM by `mpfree_runner.py`, and the workflow's `apt-get` lines
+  run only on GitHub's hosts. A job that needs a new package needs it added
+  to `PACKAGES` in that script and installed on the VM first.
+- `~/.cargo/bin` isn't on the service's PATH, so each Rust job adds it.
+- Rust is chosen with `RUSTUP_TOOLCHAIN`, never `rustup default`, because
+  the account is shared with other projects.
+- Cargo targets are kept between runs at
+  `$RUNNER_WORKSPACE/cargo-target/<job>`, outside the checkout. When they
+  pass 15 GiB together, the job's own target is wiped first.
+- Each runner has its own `/tmp` that lasts between jobs. Every job starts
+  by deleting the runner's `/tmp/mpfree-*` files, because many steps write
+  fixed `/tmp/mpfree-*` names, and some create them with `create_new`.
+- Only Jay's own pushes and PRs from this repository's branches run. The
+  VM's job guard refuses forks and other actors.
+
+Two runners means at most two jobs at once; the rest queue. A run waiting for
+a runner is waiting, not failed.
+
+## Running it locally
+
+On a Linux workstation with stable Rust and CMake (see the
+[README](../../README.md#build-and-test) for the C++ parity commands):
+
+~~~sh
+cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
+cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --locked -- \
+  -D warnings -A clippy::needless_range_loop -A clippy::should_implement_trait
+python3 -m unittest discover -s tests -p 'test_*.py'
+~~~
+
+Coverage, with `cargo install cargo-llvm-cov` and
+`rustup component add llvm-tools-preview`:
+
+~~~sh
+cd rust && cargo llvm-cov --workspace --all-targets --locked --no-report
+cargo llvm-cov report --json --summary-only --output-path /tmp/cov.json
+python3 ../tools/ci/coverage_summary.py /tmp/cov.json
+~~~
+
+## Rules for changes
+
+- **Never skip, ignore or loosen a test to get green.** A test that is wrong
+  gets fixed in the same PR, with the reason in the commit.
+- **New behaviour comes with tests** in the crate that owns it. Engine code
+  gets unit tests. Audio output gets a fixed-output or golden check. A parser
+  gets tests on bad input as well as good.
+- **Audio-thread code doesn't allocate or block.** `mpfree-fx` and
+  `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`).
+  New audio paths should do the same.
+- **No test touches a device.** Tests that need device-like input use
+  fixtures, fakes (`tools/mpc-one/tests/fake_mpc_ssh.py`) or qemu.
+- **Clippy is pinned** (`MPFREE_CLIPPY_TOOLCHAIN` in the workflow), so a new
+  Rust release can't turn every PR red at once. To bump it, change the pin,
+  fix the new warnings, and merge that as one PR. Two lints are allowed
+  workspace-wide: `needless_range_loop` (index loops are clearer in much of
+  the DSP) and `should_implement_trait` (`mpfree-sampler`'s `next`).
+- **rustfmt** isn't enforced yet: 163 of 180 Rust files would change. The
+  one-time reformat is planned for a quiet moment on the merge desk, so open
+  PRs only need `cargo fmt` once. After that, CI checks it.
+
+## Merging
+
+PRs are merged through the merge desk (trains of ready PRs tested together),
+and code PRs need Jay's go. CI is meant to be a required status check on
+`main`, so nothing merges red. That's a repository setting Jay turns on
+(Settings, Branches, a rule for `main`, "Require status checks to pass"
+with the jobs above).
+
+## Coverage today
+
+Line coverage of `cargo test` across the workspace, measured 2026-11-11 on
+`main` (`5d030ac`): **83.0%** (21,188 of 25,516 lines). It counts unit and
+integration tests only. Programs that CI runs as whole binaries (render,
+self-tests, previews) are checked by their output but not counted here.
+
+| Thinnest crates | Lines covered |
+| --- | ---: |
+| `mpfree-render` | 0% (exercised only by the WAV parity step) |
+| `mpfree-device-smoke` | 46% |
+| `mpfree-screen-log` | 52% |
+| `mpfree-session` | 57% |
+| `mpfree-hello` | 60% |
+| `mpfree-splash` | 69% |
+| `mpfree-touch-evdev`, `mpfree-display` | 71% |
+
+The engines are well covered: `mpfree-synth`, `-fx`, `-grain`, `-analysis`,
+`-arp`, `-sampler`, `-play`, `-transport`, `-ui` are all above 90%. The
+`coverage` job's summary on `main` has the current table.
+
+## Plan: growing the regression suite
+
+In order. Each step is its own PR.
+
+1. **Gates** (this PR): clippy, the orphaned ROM tool tests, coverage, no
+   path filters. Then the required check on `main`, and rustfmt after the
+   reformat.
+2. **Raise the thin crates** in the table above, starting with `mpfree-hello`,
+   which is the program that actually runs on the MPC.
+3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
+   audio and compare with stored references within a tolerance. Do the same
+   for the Hello preview screens, which today are checked only as valid PNGs,
+   compared with stored images.
+4. **Real-time safety everywhere.** No-allocation and deadline tests for every
+   audio path (synth, sampler, play, arp), not only FX and grain. Once the
+   `mpfree-bench` profiler (PR #77) is on `main`, the `rust` job runs
+   `cargo run --release -p mpfree-bench -- --quick --check-allocs`, which
+   fails if any engine allocates inside its audio callback. Its timings are
+   not a gate, because wall-clock speed on a shared VM varies from run to run.
+   The stable way to gate on CPU cost later is to count instructions per
+   engine under qemu-arm (ARMv7, like the MPC) and fail on a regression past
+   a set margin.
+5. **Fuzz and property tests** for everything that reads files or device
+   input: WAV, MIDI, touch events, kit files, the DX7 sysex importer.
+6. **End-to-end headless scenarios** under qemu ARMv7: scripted pad and touch
+   input in, audio and screen fingerprints out.
+7. **Nightly long run:** soak tests and sanitizers. This needs the VM's job
+   guard to allow `schedule` for jferments/mpfree (ci-infrastructure
+   `runner_job_guard.py`).
