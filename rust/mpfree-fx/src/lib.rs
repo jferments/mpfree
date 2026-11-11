@@ -63,6 +63,7 @@ mod mixer;
 mod modfx;
 mod oversample;
 mod perform;
+pub mod print;
 mod svf;
 mod xy;
 
@@ -77,9 +78,9 @@ pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use mixer::{
-    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig,
-    MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS,
-    SILENT_DB,
+    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, FreezeState, Mixer,
+    MixerConfig, MixerStats, StripId, BUSES, CAPTURES, FREEZE_FADE_MS, MAX_INPUTS, MAX_PADS,
+    MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
@@ -88,6 +89,7 @@ pub use perform::{
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
     SLOTS as PERFORM_SLOTS,
 };
+pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use xy::{XyAxis, XyPad};
 
