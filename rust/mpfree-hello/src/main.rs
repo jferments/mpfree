@@ -61,6 +61,7 @@ mod app;
 mod alsa;
 mod gui;
 mod kit;
+mod sampler;
 mod sys;
 
 use mpfree_controller::midi::{Message, Parser};
@@ -1308,13 +1309,48 @@ struct AudioTotals {
     summaries: Vec<String>,
 }
 
+/// How long the sampler engine takes to render a period (the RK3288's figure
+/// sets the voice and grain limits).
+#[derive(Default)]
+struct RenderTime {
+    periods: u64,
+    total: Duration,
+    max: Duration,
+}
+
+impl RenderTime {
+    fn add(&mut self, d: Duration) {
+        self.periods += 1;
+        self.total += d;
+        self.max = self.max.max(d);
+    }
+
+    fn describe(&self) -> String {
+        let period_us = PERIOD as f64 * 1e6 / RATE as f64;
+        let mean = if self.periods == 0 { 0.0 } else { self.total.as_secs_f64() * 1e6 / self.periods as f64 };
+        let max = self.max.as_secs_f64() * 1e6;
+        format!("render mean {mean:.0} us, max {max:.0} us ({:.1} % and {:.1} % of a period)",
+                100.0 * mean / period_us, 100.0 * max / period_us)
+    }
+}
+
+/// The sampler's part of the status line.
+fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
+    let c = player.counters();
+    format!("sampler: {}, {} steals, {} events dropped, at most {} grains ({} skipped)",
+            time.describe(), c.steals, c.dropped_events, c.peak_grains, c.skipped_grains)
+}
+
 fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
     // 1. Kits.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
-    let kits = load_kits(&o.kits, &mut |done, total| {
+    let mut kits = load_kits(&o.kits, &mut |done, total| {
         let value = 0.02 + 0.38 * done as f32 / total.max(1) as f32;
         progress(out, 1, "Loading drum kits", &format!("{:.1} of {:.1} MB", done as f64 / 1e6, total as f64 / 1e6), value);
     })?;
+    // The sampler engine plays them (and adds the Grains kit when there is room).
+    progress(out, 1, "Loading drum kits", "Handing the sounds to the sampler", 0.4);
+    let mut player = sampler::Player::new(&mut kits, &mpc_one::PAD_NOTES, RATE)?;
     let n = kits.len();
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
     out.say(&format!("pad player: {n} kits, {sounds} sounds"));
@@ -1349,7 +1385,6 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     }
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
-    let mut mixer = kit::Mixer::new(kits);
     let mut app = app::App::new(RATE, timed);
     let mut periods = app.settings.periods;
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
@@ -1390,6 +1425,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // Repeats per second, for the log (the paced Latch check reads these).
     let (mut window_repeats, mut window_pads, mut last_repeat_note) = (0u64, [false; 16], Instant::now());
     let mut totals = AudioTotals::default();
+    let mut render_time = RenderTime::default();
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -1456,6 +1492,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     app.pressure(pad as usize, pressure);
+                    player.pressure(pad as usize, pressure);
                 }
                 Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
                 Some(ControlEvent::QLinkTurn { knob: 0, delta }) => {
@@ -1480,10 +1517,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 app::Effect::Kit(d) => {
-                    let from = kit_to.unwrap_or(mixer.kit()) as i64;
+                    let from = kit_to.unwrap_or(player.kit()) as i64;
                     kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
                 }
-                app::Effect::StopSounds => mixer.stop_all(),
+                app::Effect::StopSounds => player.stop_all(),
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Note(s) => out.note(&s),
                 app::Effect::Quit => stop = true,
@@ -1506,26 +1543,34 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             play = Playback::start(open_acva(out, p)?, p)?;
             pending.clear();
         }
-        if let Some(k) = kit_to.filter(|&k| k != mixer.kit()) {
-            mixer.select(k);
+        if let Some(k) = kit_to.filter(|&k| k != player.kit()) {
+            player.select(k);
             used[k] = true;
-            rest = kit_pad_colours(&mixer.kits[k], k);
-            out.note(&format!("kit {}: {} ({} sounds)", k + 1, mixer.kits[k].name, mixer.kits[k].sounds.len()));
+            rest = kit_pad_colours(&kits[k], k);
+            out.note(&format!("kit {}: {} ({} sounds)", k + 1, kits[k].name, kits[k].sounds.len()));
             ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
             lit = [false; 16];
             out.show(gui::ToUi::Kit(k));
         }
         app.process(PERIOD as u32, &mut events);
         for ev in events.as_slice() {
-            let mpfree_arp::EventKind::On { note: slot, velocity } = ev.kind else { continue };
+            let (slot, velocity) = match ev.kind {
+                mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
+                // A Grains pad stops when let go; one-shot sounds ignore it.
+                mpfree_arp::EventKind::Off { note } => {
+                    player.release_at(note as usize, ev.offset);
+                    continue;
+                }
+            };
             let pad = slot as usize;
             if pad >= 16 {
                 continue;
             }
             let v = app.velocity(velocity);
-            match mixer.hit_at(mpc_one::PAD_NOTES[pad], v, ev.offset as usize) {
-                Some(_) => hits += 1,
-                None => silent_hits += 1,
+            if player.hit_at(pad, v, ev.offset) {
+                hits += 1;
+            } else {
+                silent_hits += 1;
             }
             if awaiting[pad] {
                 awaiting[pad] = false;
@@ -1558,8 +1603,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             out.note("no session reply for 10 s");
             out.show(gui::ToUi::Session("No reply".into(), Tone::Bad));
         }
-        voices = voices.max(mixer.playing());
-        let p = mixer.render(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        voices = voices.max(player.playing());
+        let t_render = Instant::now();
+        let p = player.render(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        render_time.add(t_render.elapsed());
         peak = peak.max(p);
         window_peak = window_peak.max(p);
         if p > 1.0 {
@@ -1610,16 +1657,17 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             last_status = Instant::now();
             out.note(&format!("status: {hits} hits ({screen_hits} from the screen), {repeats} repeats, {} underruns \
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
-                               clipped; pad to sound {}; note engine dropped {} events, overflow {}",
+                               clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
-                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow));
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
+                              sampler_status(&player, &render_time)));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
             let seconds_left = timed.then(|| o.seconds.saturating_sub(started.elapsed().as_secs()));
             out.show(gui::ToUi::Timing(gui::Timing {
                 hits, periods: totals.periods + play.periods, underruns: totals.xruns + play.xruns,
-                voices: mixer.playing(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
+                voices: player.playing(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
                 min_ms: lat.min as f32, mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left,
                 periods_queued: periods,
             }));
@@ -1645,6 +1693,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
                       peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {}",
                      kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
+    out.say(&sampler_status(&player, &render_time));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
