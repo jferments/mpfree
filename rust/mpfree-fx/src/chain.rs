@@ -186,8 +186,9 @@ impl Chain {
 
     /// Puts a prepared insert in at `at` (0 to `len`), shifting the later
     /// slots along. Real-time safe. Hands the insert back if the chain is
-    /// full, `at` is past the end, or it was prepared for another rate or
-    /// block size.
+    /// full, `at` is past the end, it was prepared for another rate or
+    /// block size, or it asks for a slot id ([`Insert::with_uid`]) another
+    /// slot has.
     // Handing the value back, to be dropped off the audio thread, is the point.
     #[allow(clippy::result_large_err)]
     pub fn insert(&mut self, at: usize, ins: Insert) -> Result<(), Insert> {
@@ -202,8 +203,10 @@ impl Chain {
     }
 
     /// Swaps the insert at `at` for `ins` and hands the old one back.
-    /// Real-time safe. Hands `ins` back if `at` is not a slot or it does
-    /// not fit.
+    /// Real-time safe. Hands `ins` back if `at` is not a slot, it does not
+    /// fit, or it asks for a slot id another slot has. The old insert comes
+    /// back with its slot id; the new one gets a new id unless it asked
+    /// for one.
     // Handing the value back, to be dropped off the audio thread, is the point.
     #[allow(clippy::result_large_err)]
     pub fn replace(&mut self, at: usize, ins: Insert) -> Result<Insert, Insert> {
