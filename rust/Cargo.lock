@@ -374,6 +374,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-bench"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-grain",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-sampler",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-capture"
 version = "0.1.0"
 dependencies = [
@@ -441,12 +453,21 @@ name = "mpfree-hello"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-arp-ui",
+ "mpfree-capture",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-node",
+ "mpfree-play",
  "mpfree-sampler",
  "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-synth",
+ "mpfree-synth-ui",
+ "mpfree-time-ui",
  "mpfree-touch",
  "mpfree-touch-evdev",
+ "mpfree-transport",
  "mpfree-ui",
 ]
 
@@ -473,6 +494,13 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-prof"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
 ]
 
 [[package]]

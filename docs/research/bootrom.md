@@ -1711,3 +1711,60 @@ bash tools/ghidra/run_p1_deep_audit.sh
 Expected result `~/mpfree-work/mpfree-ghidra-p1-deep-*.json`. Upload private report and accompanying errors/log if any. **Do not commit proprietary decompilation or extracted binaries.**
 
 **Research priority:** resolve what executes at `0xff7040b4`, the instruction-state transitions around `0xff704118`/`0xff7041e2`, and which routines initialize eMMC (`0xff0f0000` family) and acquire p3 or return to ROM. The Python audit's exact literal search is a **lead only**: hardware base addresses can be calculated and may not appear verbatim. Secure fuse-programming-voltage circuit and physical MaskROM entry remain separately unresolved Tier 3 blockers.
+
+
+## 37. SPL deep audit from owner workstation: sector-256 second-stage loader identified (2026-11-11)
+
+**Owner-provided private evidence:** `mpfree-ghidra-p1-deep-20261111T092242Z_3320341.json` and Ghidra console. Python 3 headless read-only run succeeded on an independent Git worktree at GitHub commit `f08f898`; unchanged already-analyzed p1 program. SRAM payload size **32,768 bytes**, SHA256 **6faade107d83bb8f0782bf4df0cf86e3aee772b3e52c587d6a1ef83062fa652f**. Ghidra inventoried **213** candidate functions; 0 exact MMIO-base literals and 0 direct little-endian `0xEF08A53C` Rockchip back-to-BROM literal matches. Nonfatal constructor warning at `0xff7041e2` persists, so some ARM/Thumb function boundaries remain unresolved.
+
+### 37.1 The crucial next-stage evidence: second-stage read from sector 0x100
+
+Ghidra function **`0xFF7054A4`** decompiles as a multi-step storage read:
+
+1. Select device and initialize it.
+2. Dispatch via a device-structure function pointer at **offset `+0x64`** (100 decimal), with arguments **`(device, 0x100, 1, DAT_ff705598)`** — one 512-byte sector at **LBA 0x100 = sector 256** into a header buffer.
+3. Invoke **`0xFF7052C0`** on that header, apparently checking the image header; this function **was not exported in the first deep audit's limited decompilation** and must be inspected before naming the format or security properties.
+4. Compute a full-image sector count with **`0xFF709128`** using size information extracted from the loaded header and device block-size metadata.
+5. Dispatch the **same device-structure block-read callback** again, with arguments **`(device, 0x100, calculated_sector_count, image_destination)`**. If returned block count equals expected, function returns success.
+
+**This is strong evidence for a direct second-stage U-Boot read from physical sector 256**. The separately verified MPC One eMMC backup starts the p3 U-Boot legacy uImage header exactly at sector **256**. Independent historical U-Boot Rockchip documentation explicitly uses `CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR 256` for RK3288 U-Boot proper. Reference: https://github.com/brgl/u-boot/blob/master/doc/README.rockchip .
+
+**Very important qualification:** the corresponding caller **`0xFF705350`** iterates boot selections and calls `0xFF7054A4`, but Ghidra's *direct-call graph* has **no caller to `0xFF705350`**. An earlier audit's reported 148 "startup reachable" functions was a **union of independently seeded roots** (`0xff704004`, `0xff704060`, `0xff705208`, `0xff705350`), so it **DID NOT prove that the sector-256 reader is reachable from ROM entry**. An indirect boot dispatch in `0xFF705208` may be the missing link, but it must be resolved from raw SRAM data/Thumb pointer bits and call sites before asserting a complete live path.
+
+### 37.2 Corrected startup branch/vector interpretation
+
+The SRAM stage starts with `RK32` (0xff704000), seven 32-bit zero words at 0xff704004–0xff70401c, followed by `0xEA00000F` at **0xff704020**. The actual decoded branch chain is:
+
+```text
+0xff704020 -> 0xff704064 -> 0xff7040b4 -> 0xff704068
+```
+
+At 0xff704024–0xff70403c, seven `LDR PC,[PC,...]` exception-vector stubs load `0xff704060` from the entries at 0xff704040–0xff704058. At **0xff704060**, `0xEBFFFFFE` decodes to `BL 0xff704060` — a self-loop/trap reachable from vector entries, **not part of the normal 0xff704020 startup branch sequence**. At 0xff70405c, `0xDEADBEEF` is present as a sentinel. At 0xff704068 onward the code configures CPSR, CP15, cache/TLB, then makes direct calls `0xff7040b8`, `0xff704118`, and `0xff705208`. The actual BootROM entry PC into this SRAM image still requires silicon/source verification; an earlier Ghidra seed at 0xff704004 is likely overly naive.
+
+**Important indirect handoff:** `0xff705208` initializes runtime support, calls `0xff704164` and `0xff705444`, clears a bounded memory range, then calls a function pointer loaded through **`DAT_ff705274`**, supplying a boot-descriptor pointer and its field `+0x2c`. This may select the boot-target loop, but the existing JSON lacks the raw value at **0xff705274**. The existing "internal pointer" scan incorrectly omitted odd-valued words by requiring even alignment; **Thumb pointers encode state in bit 0**. The next audit must include odd values and the exact raw words around 0xff705268–0xff70527c. Ghidra's call graph cannot prove an indirect target from the absence of a direct xref.
+
+### 37.3 Targeted next investigation committed to Python audit v2
+
+Updated `tools/ghidra/MPFreeSPLDeepAudit.py` to:
+- record raw 32-bit words at critical SRAM handoff/loader metadata offsets, especially **0xff705274**;
+- enumerate plausible **odd/Thumb function pointers** instead of silently discarding them;
+- find decoded immediate `0x100` uses, not only whole-word literals;
+- decompile additional key functions (**0xff7052c0**, **0xff705444**, **0xff705480**, **0xff707de4**, **0xff7069e0**, **0xff709128**, etc.);
+- distinguish four individually seeded, direct-only call graphs to remove the earlier misleading combined 148-function startup claim.
+
+A new **local private** report is still needed to decide if the chip executes this precise loader, whether the header parser validates CRC/signature, what DDR destination is used, and which jump enters U-Boot proper.
+
+**Owner's working tree status:** `/home/jesse/code/mpfree-hardware-survey` is on the independent **`review-hello-mpc` development branch**, not `main`; Git correctly rejected `git pull --ff-only origin main` because that would try to fast-forward a feature branch to unrelated main history. It also contains untracked `gpu-qualification/` which must be preserved. A detached worktree at `~/mpfree-work/rom-audit-20261111T092242Z-2914271` succeeded, without modifying the original branch. Continue using that worktree or another detached checkout of `origin/main` to run Ghidra.
+
+**Safely refresh only the dedicated audit worktree** (do not reset, merge or rebase the active review branch):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey
+git fetch origin main
+AUDIT_DIR="$HOME/mpfree-work/rom-audit-20261111T092242Z-2914271"
+test -z "$(git -C "$AUDIT_DIR" status --porcelain)" || { echo "Audit worktree has changes; stopping"; exit 1; }
+git -C "$AUDIT_DIR" switch --detach origin/main
+bash "$AUDIT_DIR/tools/ghidra/run_p1_deep_audit.sh"
+```
+
+This remains **read-only with respect to the device and saved Ghidra project**. No MaskROM boot has yet executed on the owner's MPC One. Do not publish proprietary extracted SRAM binaries or raw decompiled vendor code.
