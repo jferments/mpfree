@@ -44,8 +44,8 @@ def listdir(image,path):
         if not line.startswith('/') or not line.endswith('/'):
             continue
         parts=line.split('/')
-        if len(parts)<4 or not parts[1].isdigit():continue
-        name=parts[2]
+        if len(parts)<7 or not parts[1].isdigit():continue
+        name=parts[5]  # debugfs ls -p: /inode/mode/uid/gid/name/size/
         if name in ('','.', '..') or '/' in name:continue
         # names from filesystem are untrusted, but they are passed to
         # debugfs as one shell-free -R argument (no evaluation by bash).
