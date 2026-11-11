@@ -909,3 +909,168 @@ fn the_same_events_whatever_the_block_size() {
         }
     }
 }
+
+#[test]
+fn the_set_up_saves_and_loads_back_the_same() {
+    let mut e = engine();
+    e.map(
+        2,
+        MacroMap {
+            target: cut(),
+            from: 0.2,
+            to: 0.9,
+            curve: MapCurve::S,
+        },
+    )
+    .unwrap();
+    e.map(
+        2,
+        MacroMap {
+            target: mode(),
+            from: 0.0,
+            to: 1.0,
+            curve: MapCurve::Linear,
+        },
+    )
+    .unwrap();
+    e.add_row(Row {
+        source: Source::Lfo(3),
+        via: Some(Source::Host(2)),
+        target: mix(),
+        depth: -0.4,
+    })
+    .unwrap();
+    e.add_row(Row {
+        source: Source::Follower(1),
+        via: None,
+        target: ParamAddr::macro_value(2),
+        depth: 0.25,
+    })
+    .unwrap();
+    let events = [
+        (
+            0,
+            ModEvent::Set {
+                addr: ParamAddr::macro_value(2),
+                value: 0.7,
+            },
+        ),
+        (
+            0,
+            ModEvent::Set {
+                addr: ParamAddr::new(Owner::Mod(3), lfo::ids::RATE),
+                value: 2.5,
+            },
+        ),
+        (
+            0,
+            ModEvent::Set {
+                addr: ParamAddr::new(Owner::Mod(9), mpfree_mod::follow::ids::RELEASE),
+                value: 300.0,
+            },
+        ),
+    ];
+    run(&mut e, 128, 128, &events, None);
+    e.capture_scene(0);
+    run(
+        &mut e,
+        128,
+        128,
+        &[
+            (
+                0,
+                ModEvent::Set {
+                    addr: mix(),
+                    value: 80.0,
+                },
+            ),
+            (
+                0,
+                ModEvent::Set {
+                    addr: ParamAddr::morph_pos(0),
+                    value: 0.25,
+                },
+            ),
+        ],
+        None,
+    );
+    e.capture_scene(1);
+    let text = e.save();
+    assert!(text.contains("map.2.0 = t0.fx1.3 0.2 0.9 s"), "{text}");
+    assert!(text.contains("row.0 = lfo3 host2 t0.fx1.5 -0.4"), "{text}");
+
+    // A fresh engine, which knows the three parameters only through the
+    // nodes (the closure); one more line names a parameter no node has.
+    let mut f = ModEngine::new(RATE, DEFAULT_TICK);
+    let lookup = |a: ParamAddr| {
+        [
+            (cut(), CUT, 1000.0),
+            (mix(), MIX, 50.0),
+            (mode(), MODE, 0.0),
+        ]
+        .into_iter()
+        .find(|x| x.0 == a)
+        .map(|x| (x.1, x.2))
+    };
+    let skipped = f.load(&format!("{text}map.3.0 = t9.fx1.3 0 1 linear\n"), &lookup);
+    assert_eq!(skipped, 1);
+    assert_eq!(f.save(), text);
+    assert_eq!(f.rows().count(), 2);
+    assert_eq!(f.macro_of(cut()), Some(2));
+    assert!(f
+        .scene_changes()
+        .any(|(a, _, b)| a == mix() && (b - 80.0).abs() < 1e-3));
+
+    // Loading again replaces, it doesn't add.
+    assert_eq!(f.load(&text, &lookup), 0);
+    assert_eq!(f.rows().count(), 2);
+    assert_eq!(f.save(), text);
+}
+
+#[test]
+fn changes_as_messages_do_what_the_calls_do() {
+    let mut e = ModEngine::new(RATE, DEFAULT_TICK);
+    e.change(Change::Target {
+        addr: mix(),
+        info: MIX,
+        value: 50.0,
+    })
+    .unwrap();
+    let map = MacroMap {
+        target: mix(),
+        from: 0.0,
+        to: 1.0,
+        curve: MapCurve::Exp,
+    };
+    e.change(Change::Map { m: 1, map }).unwrap();
+    assert_eq!(e.macro_maps(1).collect::<Vec<_>>(), [map]);
+    e.change(Change::AddRow(Row {
+        source: Source::Lfo(0),
+        via: None,
+        target: mix(),
+        depth: 0.5,
+    }))
+    .unwrap();
+    e.change(Change::Depth { row: 0, depth: 0.2 }).unwrap();
+    assert_eq!(e.rows().next().unwrap().depth, 0.2);
+    e.change(Change::RemoveRow(0)).unwrap();
+    e.change(Change::Unmap(mix())).unwrap();
+    assert_eq!((e.rows().count(), e.macro_of(mix())), (0, None));
+    assert_eq!(
+        e.change(Change::Map {
+            m: 1,
+            map: MacroMap {
+                target: cut(),
+                ..map
+            }
+        }),
+        Err(ModError::Unknown(cut()))
+    );
+    e.change(Change::RemoveTarget(mix())).unwrap();
+    assert!(!e.targets().any(|a| a == mix()));
+    assert_eq!(
+        parse_source(&source_text(Source::Follower(3))),
+        Some(Source::Follower(3))
+    );
+    assert_eq!(parse_source("lfo9"), None);
+}
