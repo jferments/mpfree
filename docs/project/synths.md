@@ -234,7 +234,7 @@ The pad player (`play` and `app`) carries one Poly. `src/synth.rs` holds it on t
 
 ## Next
 
-- A track host: a track's notes from `mpfree-play` and the pads into its instrument node, then its `mpfree-fx` chain.
+- A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - FM on the pads: an FM choice next to Poly in the pad player.
 - Drums and Pluck in the pad player: Drums as an engine that sends each pad its own note (no pad layout or octave), with model names on the pads; Pluck through the pad layouts like Poly and FM.
 - Synth tab visuals for Drums and Pluck (a pad grid with the models, the string or the mode bank).
