@@ -399,6 +399,51 @@ fn load_theme(o: &Options) -> Result<Theme, String> {
     Theme::parse(&text).map_err(|e| format!("{name}: {e}"))
 }
 
+/// The most theme files the themes folder offers.
+const MAX_THEME_FILES: usize = 32;
+
+/// The themes folder's `NAME.theme` files that parse, in name order (at
+/// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
+/// `name`, or named like a built-in one, is shown by its file name. A file
+/// that doesn't parse is left out with a line saying why (the second list,
+/// lines for the log). Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>) {
+    let (mut found, mut notes) = (Vec::new(), Vec::new());
+    for file in store.list(app::THEMES_FOLDER) {
+        let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if found.len() == MAX_THEME_FILES {
+            notes.push(format!(
+                "themes: only the first {MAX_THEME_FILES} theme files are offered"
+            ));
+            break;
+        }
+        let text = store
+            .read(app::THEMES_FOLDER, &file)
+            .and_then(|b| String::from_utf8(b).ok());
+        match text.map(|t| Theme::parse(&t)) {
+            Some(Ok(mut t)) => {
+                if app::THEMES
+                    .iter()
+                    .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
+                    || t.name.trim().is_empty()
+                {
+                    t.name = stem.to_string();
+                }
+                found.push((file, t));
+            }
+            Some(Err(e)) => notes.push(format!("themes: {file} left out: {e}")),
+            None => notes.push(format!("themes: {file} left out: not readable text")),
+        }
+    }
+    if !found.is_empty() {
+        let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
+        notes.push(format!("themes: found {}", names.join(", ")));
+    }
+    (found, notes)
+}
+
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
 fn load_fonts(o: &Options, out: &mut Out) -> Fonts {
     match Fonts::with_files(
@@ -2275,6 +2320,18 @@ fn player_session(
         }
         None => mpfree_store::Store::none(),
     };
+    // The themes folder: theme files the user put in files/themes/ (read
+    // only), offered in Prefs > Appearance after the built-in themes. Listed
+    // before restore so a saved theme file comes back.
+    let (theme_files, notes) = load_theme_files(&store);
+    for line in notes {
+        out.say(&line);
+    }
+    app.theme_files = theme_files
+        .iter()
+        .map(|(f, t)| (f.clone(), t.name.clone()))
+        .collect();
+    out.show(gui::ToUi::ThemeFiles(theme_files));
     for line in app.restore(
         &store.settings(app::saved::APP),
         &store.settings(app::saved::MAP),
@@ -3881,6 +3938,45 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn the_themes_folder_offers_theme_files_that_parse() {
+        let d = std::env::temp_dir().join(format!("mpfree-hello-themes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let t = d.join("files/themes");
+        fs::create_dir_all(&t).unwrap();
+        fs::write(d.join("FORMAT"), "mpfree-data 1\n").unwrap();
+        fs::write(
+            t.join("sunrise.theme"),
+            "base = synthwave\nname = Sunrise\n",
+        )
+        .unwrap();
+        fs::write(t.join("plain.theme"), "base = console\n").unwrap();
+        fs::write(t.join("broken.theme"), "accent = blue\n").unwrap();
+        fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
+        let store = mpfree_store::Store::at(&d, |_| {});
+        let (found, notes) = load_theme_files(&store);
+        let names: Vec<(&str, &str)> = found
+            .iter()
+            .map(|(f, t)| (f.as_str(), t.name.as_str()))
+            .collect();
+        // Named like a built-in theme (Console, from its base): its file name.
+        assert_eq!(
+            names,
+            vec![("plain.theme", "plain"), ("sunrise.theme", "Sunrise")]
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.starts_with("themes: broken.theme left out")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n == "themes: found plain, Sunrise"),
+            "{notes:?}"
+        );
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

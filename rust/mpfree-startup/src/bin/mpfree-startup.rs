@@ -22,8 +22,9 @@
 //! --data DIR (any mode): the app's data folder (`app --data`, on the stick
 //!       /run/mpfree-data). When --theme is not given, the startup screen is
 //!       the theme picked in Prefs > Appearance (`settings/app.conf`, key
-//!       `theme`). Only that one file is read; nothing in DIR is written or
-//!       made. If it is missing or odd, the default (synthwave) shows.
+//!       `theme`; for a theme file, its `startup` from `files/themes/`).
+//!       Only those files are read; nothing in DIR is written or made. If
+//!       anything is missing or odd, the default (synthwave) shows.
 //!
 //! --preview writes only PNG files in DIR.
 
