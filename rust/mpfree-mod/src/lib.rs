@@ -21,11 +21,14 @@
 //!    scene the morph is nearer. Until then the base stands.
 //! 3. **Macro:** a macro mapped to it puts it at `from + (to - from) ×
 //!    curve(macro)`. One macro per parameter.
-//! 4. **Lock:** a parameter lock replaces all of the above until it is
+//! 4. **Lock:** a step's parameter lock, or a move lane's value
+//!    ([`ModEvent::Lane`]), replaces all of the above until it is
 //!    unlocked.
 //! 5. **Touch:** a hand on the control ([`ModEvent::Touch`]) replaces all
-//!    of the above until it lets go ([`ModEvent::Untouch`]); locks keep
-//!    landing underneath, so it lets go to what they hold by then.
+//!    of the above until it lets go ([`ModEvent::Untouch`]), except a
+//!    step's lock unless recording; locks keep landing underneath, so it
+//!    lets go to what they hold by then. [`ModEvent::hand`] picks `Touch`
+//!    or `Set` for a move.
 //! 6. **Matrix:** every row aimed at it adds `source × depth (× via)`,
 //!    and the sum is clamped to the knob's travel.
 //!
