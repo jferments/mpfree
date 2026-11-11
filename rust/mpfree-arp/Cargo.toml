@@ -10,6 +10,7 @@ name = "mpfree_arp"
 path = "src/lib.rs"
 
 [dependencies]
+mpfree-scale = { path = "../mpfree-scale" }
 
 [[bin]]
 name = "mpfree-arp-render"

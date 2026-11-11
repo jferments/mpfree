@@ -77,7 +77,7 @@ fn playing_never_allocates() {
     for i in 0..5usize {
         let mut t = Track::new("t", i as u16);
         let mut c = Clip::new("c", 960 * (i as i64 + 2));
-        c.notes = (0..(8 * (i as i64 + 2))).map(|k| Note { tick: k * 120 + (k % 3) * 7, len: 100 + 300 * (k % 4), note: (k % 16) as u8, velocity: 100 }).collect();
+        c.notes = (0..(8 * (i as i64 + 2))).map(|k| Note { tick: k * 120 + (k % 3) * 7, len: 100 + 300 * (k % 4), note: (k % 16) as u8, velocity: 100, chance: if k % 5 == 0 { 50 } else { 100 } }).collect();
         if i == 1 {
             c.speed = Speed::new(3, 2).unwrap();
         }

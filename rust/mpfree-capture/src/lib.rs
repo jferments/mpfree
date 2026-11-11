@@ -363,7 +363,7 @@ impl Capture {
                     if let Some(o) = open[n].take() {
                         close(&mut played, o, x.at);
                     }
-                    let note = Note { tick: tick(x.at, start), len: 1, note: x.note, velocity: x.velocity.max(1) };
+                    let note = Note { tick: tick(x.at, start), len: 1, note: x.note, velocity: x.velocity.max(1), chance: 100 };
                     open[n] = Some((played.len(), x.at));
                     played.push(Played { note, song: h.timed.then_some(x.song) });
                 }

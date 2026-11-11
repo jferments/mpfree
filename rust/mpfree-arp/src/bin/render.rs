@@ -4,7 +4,8 @@
 //! It drives the same `mpfree-arp` engine the MPC uses, in 128-frame periods
 //! at 44.1 kHz, and plays its notes on a small built-in synth (or built-in
 //! drum sounds for pad slots). It never touches any device; it only writes
-//! WAV files and a report.txt into one new folder.
+//! WAV files, MIDI files of the same notes and a report.txt into one new
+//! folder.
 //!
 //! ```text
 //! mpfree-arp-render --demo                       every order, every starter pattern, drums, lanes, scales
@@ -17,8 +18,14 @@
 //! repeat|arp|pattern`, `--order NAME`, `--pattern TEXT` or `--builtin NAME`,
 //! `--chords "n,n;n,n"` (one bar each, looped) or `--notes n,n` or `--pads
 //! 1,2` (drum sounds), `--bpm`, `--rate 1/16`, `--octaves`, `--gate`,
-//! `--swing`, `--strum`, `--scale d_dorian`, `--ramp TARGET:STEPS`, `--retrigger`,
+//! `--swing`, `--strum`, `--scale d_dorian`, `--snap down|up|nearest|skip`,
+//! `--chord triad|power|sus2|sus4|seventh|ninth`, `--run`, `--turns beat|2beats|bar|2bars`,
+//! `--ramp TARGET:STEPS`, `--retrigger`,
 //! `--bars`, `--seed`, `--name`.
+//!
+//! Each WAV has a `.mid` beside it (format 0, 960 ticks per quarter note,
+//! the job's tempo): drum pads on channel 10 from C1 (36) up, notes on
+//! channel 1 as played. It is what `mpfree_arp::MidiOut` would send.
 //!
 //! The report gives two hashes per file. `events` covers the notes the
 //! engine played (frame, pitch, velocity) and is the same on every computer.
@@ -27,8 +34,8 @@
 //! between computers.
 #![forbid(unsafe_code)]
 
-use mpfree_arp::scale::SCALES;
-use mpfree_arp::{Engine, EventKind, Events, LatchMode, Library, Mode, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN};
+use mpfree_arp::{midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, Mode, NoteMap, Order, Pattern, Ramp, Rate,
+                 Scale, Settings, BUILT_IN};
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -200,6 +207,8 @@ struct Rendered {
     notes: usize,
     peak: f32,
     dropped: u64,
+    /// The notes as MIDI messages at absolute frames, for the `.mid` file.
+    midi: Vec<(u64, [u8; 3])>,
 }
 
 fn render(job: &Job) -> Rendered {
@@ -218,6 +227,8 @@ fn render(job: &Job) -> Rendered {
     let mut bar = u64::MAX;
     let mut notes = 0;
     let mut log = Vec::new();
+    let mut out = if job.drums { MidiOut::new(9, NoteMap::PADS) } else { MidiOut::new(0, NoteMap::Same) };
+    let mut midi = Vec::new();
     while frame < total {
         let this_bar = frame / bar_frames;
         if this_bar != bar && this_bar < u64::from(job.bars) {
@@ -242,6 +253,9 @@ fn render(job: &Job) -> Rendered {
             synth.render(&mut buf[pos..at]);
             pos = at;
             log.extend_from_slice(&(frame + u64::from(ev.offset)).to_le_bytes());
+            if let Some(m) = out.event(ev) {
+                midi.push((frame + u64::from(m.offset), m.bytes));
+            }
             match ev.kind {
                 EventKind::On { note, velocity } => {
                     synth.on(note, velocity);
@@ -258,8 +272,9 @@ fn render(job: &Job) -> Rendered {
         samples.extend_from_slice(&buf);
         frame += u64::from(PERIOD);
     }
+    out.all_off(0, |m| midi.push((frame, m.bytes)));
     let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
-    Rendered { samples, events: log, notes, peak, dropped: events.dropped + e.overflow }
+    Rendered { samples, events: log, notes, peak, dropped: events.dropped + e.overflow, midi }
 }
 
 fn wav_bytes(samples: &[f32]) -> Vec<u8> {
@@ -307,8 +322,8 @@ fn scale_by_name(s: &str) -> Option<Scale> {
     let s = s.trim().to_ascii_lowercase().replace(['_', '-'], " ");
     let (root, rest) = s.split_once(' ')?;
     let root = ROOTS.iter().position(|r| *r == root)?;
-    let (_, mask) = SCALES.iter().find(|(name, _)| name.to_ascii_lowercase() == rest.trim())?;
-    Some(Scale::new(root as u8, *mask))
+    let def = mpfree_arp::scale::by_name(rest.trim())?;
+    Some(Scale::of(root as u8, def))
 }
 
 fn notes(s: &str, pads: bool) -> Result<Vec<u8>, String> {
@@ -416,6 +431,39 @@ fn demo_jobs() -> Vec<Job> {
     j.pattern = Pattern::parse("1 1 1 1 1 1 1 1 | deg 0 2 4 5 7 4 2 | gate 40 40 80").unwrap();
     j.settings.scale = scale_by_name("d dorian");
     j.chords = vec![vec![62], vec![62], vec![57], vec![60]];
+    jobs.push(j);
+    let mut j = base("scale-02-chord-from-one-note", "One note at a time, each grown into a seventh chord from A harmonic minor, arp Up-down over 2 octaves", Mode::Arp);
+    j.settings.scale = scale_by_name("a harmonic_minor");
+    j.settings.chord = mpfree_arp::Chord::Seventh;
+    j.settings.order = Order::UpDown;
+    j.settings.octaves = 2;
+    j.chords = vec![vec![57], vec![62], vec![64], vec![57]];
+    jobs.push(j);
+    let mut j = base("scale-03-run-hirajoshi", "Two notes held an octave and a half apart; the arp runs through E hirajoshi between them, up and down", Mode::Arp);
+    j.settings.scale = scale_by_name("e hirajoshi");
+    j.settings.run = true;
+    j.settings.order = Order::UpDown;
+    j.chords = vec![vec![52, 71], vec![57, 76]];
+    jobs.push(j);
+    let mut j = base("scale-04-progression", "Four pads held (A, F, C, G in A minor), each a triad from the scale, taking turns a bar each: Am F C G, arp Up-down over 2 octaves", Mode::Arp);
+    j.settings.scale = scale_by_name("a minor");
+    j.settings.chord = mpfree_arp::Chord::Triad;
+    j.settings.turns = mpfree_arp::Turns::Bar;
+    j.settings.order = Order::UpDown;
+    j.settings.octaves = 2;
+    j.chords = vec![vec![57, 53, 60, 55]];
+    j.bars = 8;
+    jobs.push(j);
+    let mut j = base("scale-05-seventh-stabs", "D, G, C and A held in C major, each a seventh chord, taking turns every 2 beats as strummed 1/8 stabs: Dm7 G7 Cmaj7 Am7", Mode::Arp);
+    j.settings.scale = scale_by_name("c major");
+    j.settings.chord = mpfree_arp::Chord::Seventh;
+    j.settings.turns = mpfree_arp::Turns::TwoBeats;
+    j.settings.order = Order::Chord;
+    j.settings.rate = Rate::Eighth;
+    j.settings.strum = 25;
+    j.settings.gate = 70;
+    j.chords = vec![vec![62, 67, 60, 57]];
+    j.bars = 4;
     jobs.push(j);
     let mut j = base("feel-01-strum", "Chord order with a 40% strum, 1/8", Mode::Arp);
     j.settings.order = Order::Chord;
@@ -579,6 +627,39 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                 job.settings.ramp = Ramp { target, steps };
             }
             "--retrigger" => job.settings.retrigger = true,
+            "--run" => job.settings.run = true,
+            "--snap" => {
+                let v = value(&mut i)?;
+                job.settings.snap = mpfree_arp::Snap::ALL
+                    .into_iter()
+                    .find(|s| s.label().eq_ignore_ascii_case(&v))
+                    .ok_or(format!("--snap {v:?}: use down, up, nearest or skip"))?;
+            }
+            "--chord" => {
+                let v = value(&mut i)?;
+                job.settings.chord = mpfree_arp::Chord::ALL
+                    .into_iter()
+                    .find(|c| {
+                        c.label()
+                            .split(' ')
+                            .next()
+                            .is_some_and(|w| w.eq_ignore_ascii_case(&v))
+                    })
+                    .ok_or(format!(
+                        "--chord {v:?}: use triad, power, sus2, sus4, seventh or ninth"
+                    ))?;
+            }
+            "--turns" => {
+                let v = value(&mut i)?;
+                job.settings.turns = match v.to_ascii_lowercase().as_str() {
+                    "off" => mpfree_arp::Turns::Off,
+                    "beat" => mpfree_arp::Turns::Beat,
+                    "2beats" => mpfree_arp::Turns::TwoBeats,
+                    "bar" => mpfree_arp::Turns::Bar,
+                    "2bars" => mpfree_arp::Turns::TwoBars,
+                    _ => return Err(format!("--turns {v:?}: use beat, 2beats, bar or 2bars")),
+                };
+            }
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -616,6 +697,8 @@ fn run(jobs: &[Job], dir: &Path) -> Result<String, String> {
         let bytes = wav_bytes(&r.samples);
         let file = dir.join(format!("{}.wav", job.name));
         std::fs::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mid = dir.join(format!("{}.mid", job.name));
+        std::fs::write(&mid, midi_file(&r.midi, RATE, job.bpm, &job.name)).map_err(|e| format!("{}: {e}", mid.display()))?;
         let line = format!(
             "{}.wav  {:.1} s  {} notes  peak {:.1} dBFS  dropped {}  events {:016x}  audio {:016x}\n    {} ({} bpm, {} bars)\n",
             job.name, r.samples.len() as f64 / f64::from(RATE), r.notes, 20.0 * r.peak.max(1e-9).log10(), r.dropped,
@@ -637,7 +720,7 @@ fn main() {
             }
             eprintln!("usage: mpfree-arp-render --demo | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
                        [--mode repeat|arp|pattern] [--order NAME] [--pattern TEXT | --builtin NAME] [--bpm N] [--rate 1/16] \
-                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
+                       [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--snap up] [--chord triad] [--run] [--turns bar] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
                        [--name NAME] [--out DIR]\n       mpfree-arp-render --patterns FILE [the same options; --chords etc. replace the four-chord loop]");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
@@ -648,7 +731,7 @@ fn main() {
         work.join(format!("arp-render-{}", utc_stamp()))
     });
     match run(&jobs, &dir) {
-        Ok(_) => println!("\nWAV files and report.txt are in {}", dir.display()),
+        Ok(_) => println!("\nWAV and MIDI files and report.txt are in {}", dir.display()),
         Err(e) => {
             eprintln!("mpfree-arp-render: {e}");
             std::process::exit(1);
@@ -674,6 +757,22 @@ mod tests {
             assert!(!render(job).events.is_empty());
             assert_eq!(&a[..4], b"RIFF");
             assert_eq!(u32::from_le_bytes(a[40..44].try_into().unwrap()) as usize, a.len() - 44);
+        }
+    }
+
+    #[test]
+    fn the_midi_has_one_note_off_per_note_on_and_drums_on_channel_10() {
+        let jobs = demo_jobs();
+        for job in [&jobs[0], jobs.iter().find(|j| j.drums).unwrap()] {
+            let r = render(job);
+            let ons = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x90).count();
+            let offs = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x80).count();
+            assert_eq!((ons, offs), (r.notes, r.notes), "{}", job.name);
+            assert!(r.midi.windows(2).all(|w| w[0].0 <= w[1].0), "in time order");
+            let channel = if job.drums { 9 } else { 0 };
+            assert!(r.midi.iter().all(|(_, b)| b[0] & 0x0F == channel), "{}", job.name);
+            let f = midi_file(&r.midi, RATE, job.bpm, &job.name);
+            assert_eq!(&f[..4], b"MThd");
         }
     }
 
@@ -728,6 +827,24 @@ mod tests {
         assert_eq!(scale_by_name("harmonic_minor a"), None);
         assert_eq!(scale_by_name("a harmonic_minor"), Some(Scale::new(9, mpfree_arp::scale::HARMONIC_MINOR)));
         assert_eq!(scale_by_name("h major"), None);
+        assert_eq!(
+            scale_by_name("e hirajoshi"),
+            Some(Scale::new(4, mpfree_arp::scale::HIRAJOSHI))
+        );
+        let (jobs, _) = parse_args(&a(
+            "--notes 60 --scale c_major --snap nearest --chord seventh --run",
+        ))
+        .unwrap();
+        let s = jobs[0].settings;
+        assert_eq!(
+            (s.snap, s.chord, s.run),
+            (mpfree_arp::Snap::Nearest, mpfree_arp::Chord::Seventh, true)
+        );
+        assert!(parse_args(&a("--notes 60 --chord eleventh")).is_err());
+        assert!(parse_args(&a("--notes 60 --snap sideways")).is_err());
+        let (jobs, _) = parse_args(&a("--notes 57,53 --chord triad --turns 2beats")).unwrap();
+        assert_eq!(jobs[0].settings.turns, mpfree_arp::Turns::TwoBeats);
+        assert!(parse_args(&a("--notes 60 --turns sometimes")).is_err());
         assert_eq!(slug("Up-down incl."), "up-down-incl");
         assert_eq!(utc_stamp().len(), 16);
     }
