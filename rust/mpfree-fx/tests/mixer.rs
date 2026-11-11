@@ -605,3 +605,31 @@ fn params_describe_every_strip() {
         }
     }
 }
+
+#[test]
+fn profiling_times_the_mixer_its_strips_and_their_inserts_only_when_on() {
+    let n = 4096;
+    let mut m = mixer(small());
+    m.chain_mut(StripId::Track(1)).unwrap().push(Lag::boxed(3));
+    let script = Script { feeds: vec![(StripId::Track(1), mono(sine(220.0, 0.3, n)))], ..Default::default() };
+    // Off by default: nothing recorded, and the output is the same either
+    // way.
+    let off = play(&mut m, &script, n, &mut blocks(128));
+    assert!(!m.profiling());
+    assert_eq!(m.probe().lifetime().blocks, 0);
+    assert_eq!(m.strip_probe(StripId::Track(1)).unwrap().lifetime().blocks, 0);
+    m.reset();
+    m.set_profiling(true);
+    let on = play(&mut m, &script, n, &mut blocks(128));
+    close("profiled", &on.out, &off.out, 0.0);
+    let blocks_run = (n / 128) as u64;
+    assert_eq!(m.probe().lifetime().blocks, blocks_run);
+    assert_eq!(m.probe().lifetime().frames, n as u64);
+    assert_eq!(m.strip_probe(StripId::Track(1)).unwrap().lifetime().blocks, blocks_run);
+    assert_eq!(m.chain(StripId::Track(1)).unwrap().probe(0).unwrap().lifetime().blocks, blocks_run);
+    assert_eq!(m.probe_mut().take_window().blocks, blocks_run);
+    assert_eq!(m.probe_mut().take_window().blocks, 0);
+    m.set_profiling(false);
+    play(&mut m, &script, 1024, &mut blocks(128));
+    assert_eq!(m.probe().lifetime().blocks, blocks_run);
+}

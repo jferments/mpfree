@@ -25,8 +25,14 @@
 //! the chain has room ([`Chain::with_capacity`]), and what they take out
 //! comes back as an `Insert` to be dropped off the audio thread. They do
 //! not fade by themselves: the mixer ducks a strip around them.
+//!
+//! Each slot can listen to its own sidechain ([`Chain::set_key`] and
+//! [`Chain::process_keyed`]), and, while profiling is on
+//! ([`Chain::set_profiling`]), times its block into an `mpfree_prof`
+//! probe that moves with it.
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_prof::{Probe, Span};
 
 use crate::FixedDelay;
 
@@ -58,12 +64,15 @@ struct Slot {
     /// Which sidechain this slot listens to, a tag only the chain's owner
     /// understands (see [`Chain::process_keyed`]).
     key: Option<u16>,
+    /// The slot's time per block while the chain is profiling; it moves
+    /// with the slot.
+    probe: Box<Probe>,
 }
 
 impl Slot {
     fn new(node: Box<dyn Node>) -> Slot {
         let lat = node.latency() as usize;
-        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS), key: None }
+        Slot { node, on: true, fade: 1.0, tail_left: 0, resting: false, dry: [FixedDelay::new(lat), FixedDelay::new(lat)], fade_delay: fade_line(lat), events: Vec::with_capacity(MAX_SLOT_EVENTS), key: None, probe: Box::new(Probe::new(u64::MAX)) }
     }
 }
 
@@ -119,6 +128,7 @@ pub struct Chain {
     /// Events of a part of a block, re-timed (capacity `MAX_SLOT_EVENTS`).
     part: Vec<Timed>,
     stats: ChainStats,
+    profiling: bool,
 }
 
 impl Default for Chain {
@@ -127,7 +137,7 @@ impl Default for Chain {
 
 impl Chain {
     pub fn new() -> Chain {
-        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default() };
+        let mut c = Chain { slots: Vec::new(), rate: 48_000, max_block: 0, step: 0.0, scratch: Default::default(), part: Vec::with_capacity(MAX_SLOT_EVENTS), stats: ChainStats::default(), profiling: false };
         c.prepare(48_000, mpfree_node::MAX_BLOCK);
         c
     }
@@ -231,6 +241,18 @@ impl Chain {
     pub fn stats(&self) -> ChainStats { self.stats }
     pub fn is_on(&self, slot: usize) -> bool { self.slots.get(slot).is_some_and(|s| s.on) }
 
+    /// Times every slot's block into its probe (two clock reads per slot
+    /// per block), for the Dev pages and the bench. Off by default.
+    pub fn set_profiling(&mut self, on: bool) { self.profiling = on; }
+    pub fn profiling(&self) -> bool { self.profiling }
+
+    /// A slot's timing (blocks it ran, mean, percentiles, worst), recorded
+    /// while profiling is on. The probe moves with its insert.
+    pub fn probe(&self, slot: usize) -> Option<&Probe> { self.slots.get(slot).map(|s| &*s.probe) }
+
+    /// A slot's timing, to take its window ([`Probe::take_window`]).
+    pub fn probe_mut(&mut self, slot: usize) -> Option<&mut Probe> { self.slots.get_mut(slot).map(|s| &mut *s.probe) }
+
     /// The sidechain tag of a slot (see [`Chain::process_keyed`]).
     pub fn key(&self, slot: usize) -> Option<u16> { self.slots.get(slot).and_then(|s| s.key) }
 
@@ -304,7 +326,9 @@ impl Chain {
         let [da, db, fa, fb] = &mut self.scratch;
         let (da, db, fa, fb) = (&mut da[..len], &mut db[..len], &mut fa[..len], &mut fb[..len]);
         let part = &mut self.part;
+        let profiling = self.profiling;
         for s in &mut self.slots {
+            let span = profiling.then(Span::start);
             let keyed = Ctx { sidechain: s.key.and_then(&key).or(ctx.sidechain), ..*ctx };
             let ctx = &keyed;
             // The dry path, delayed by the slot's latency, and the fade ramp
@@ -410,6 +434,7 @@ impl Chain {
                 }
             }
             s.events.clear();
+            if let Some(span) = span { s.probe.stop(span, len as u32); }
         }
     }
 }

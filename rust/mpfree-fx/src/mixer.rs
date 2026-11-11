@@ -82,6 +82,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use mpfree_node::{Ctx, Curve, NodeEvent, ParamInfo, Smooth, Timed, Unit};
+use mpfree_prof::{Probe, Span};
 
 use crate::chain::{Chain, Insert};
 use crate::{db_to_gain, MasterSafety};
@@ -531,6 +532,8 @@ struct Plan {
     arrive: Vec<u32>,
     /// Latency at each strip's output (its input plus its inserts).
     out: Vec<u32>,
+    /// Each strip's insert latency, as last worked out.
+    lats: Vec<u32>,
     max_comp: usize,
 }
 
@@ -555,11 +558,22 @@ impl Line {
     fn new(size: usize) -> Line { Line { buf: [vec![0.0; size], vec![0.0; size]], mask: size.saturating_sub(1), w: 0 } }
 
     fn write(&mut self, l: &[f32], r: &[f32]) {
-        for (i, (&a, &b)) in l.iter().zip(r).enumerate() {
-            let p = (self.w + i) & self.mask;
-            self.buf[0][p] = a;
-            self.buf[1][p] = b;
+        let n = l.len();
+        let first = n.min(self.mask + 1 - self.w);
+        for (b, x) in self.buf.iter_mut().zip([l, r]) {
+            b[self.w..self.w + first].copy_from_slice(&x[..first]);
+            b[..n - first].copy_from_slice(&x[first..]);
         }
+    }
+
+    /// The `n` frames of side `ch` that start `d` frames before the chunk
+    /// just written, as up to two runs.
+    #[inline]
+    fn runs(&self, ch: usize, d: usize, n: usize) -> (&[f32], &[f32]) {
+        let start = self.w.wrapping_sub(d) & self.mask;
+        let first = n.min(self.mask + 1 - start);
+        let b = &self.buf[ch];
+        (&b[start..start + first], &b[..n - first])
     }
 
     /// Frame `i` of the chunk just written, `d` frames back.
@@ -646,6 +660,10 @@ struct Strip {
     pan: f32,
     send_db: [f32; RETURNS],
     send_pre: [bool; RETURNS],
+    /// The settings above as gains, worked out when they change (not every
+    /// block): volume times balance per side, and each send's level.
+    vol_bal: [f32; 2],
+    send_g: [f32; RETURNS],
     source: u8,
     monitor: u8,
     arm: bool,
@@ -676,6 +694,15 @@ struct Strip {
     peak_in: [f32; 2],
     /// Frames in a row the strip's signal after its inserts was silent.
     quiet: usize,
+    /// The strip's whole block (inserts, fader, routing) while profiling.
+    probe: Probe,
+    /// The block in `buf` is known to be all zeros, so it needs no clearing.
+    clean: bool,
+    /// Something may have written `buf` this block (a producer took it, the
+    /// line input, a route or send, the held-back input). Every buffer is
+    /// all zeros at the start of a block, so an untouched one needs no
+    /// scan.
+    touched: bool,
 }
 
 impl Strip {
@@ -697,6 +724,8 @@ impl Strip {
             pan: 0.0,
             send_db: [SILENT_DB; RETURNS],
             send_pre: [false; RETURNS],
+            vol_bal: [1.0; 2],
+            send_g: [0.0; RETURNS],
             source: ids::source::STEREO as u8,
             monitor: ids::monitor::AUTO as u8,
             arm: false,
@@ -717,6 +746,9 @@ impl Strip {
             peak: [0.0; 2],
             peak_in: [0.0; 2],
             quiet: 0,
+            probe: Probe::new(u64::MAX),
+            clean: false,
+            touched: true,
         }
     }
 
@@ -725,9 +757,17 @@ impl Strip {
         let Some(p) = PARAMS.get(id as usize) else { return };
         let v = p.clamp(value);
         match id {
-            ids::VOLUME => self.vol_db = v,
-            ids::PAN => self.pan = v,
-            6..=9 => self.send_db[(id - 6) as usize] = v,
+            ids::VOLUME | ids::PAN => {
+                if id == ids::VOLUME { self.vol_db = v } else { self.pan = v }
+                let g = level(self.vol_db);
+                let (bl, br) = balance(self.pan * 0.01);
+                self.vol_bal = [g * bl, g * br];
+            }
+            6..=9 => {
+                let r = (id - 6) as usize;
+                self.send_db[r] = v;
+                self.send_g[r] = level(v);
+            }
             10..=13 => self.send_pre[(id - 10) as usize] = v >= 0.5,
             ids::MONITOR => self.monitor = v as u8,
             ids::ARM => self.arm = v >= 0.5,
@@ -740,10 +780,8 @@ impl Strip {
     fn targets(&mut self, plan: &Plan, k: usize, heard: bool) {
         let monitored = self.role != Role::Input || self.monitor == ids::monitor::ON as u8 || (self.monitor == ids::monitor::AUTO as u8 && self.arm);
         self.aud.target = if heard && monitored { 1.0 } else { 0.0 };
-        let g = level(self.vol_db);
-        let (bl, br) = balance(self.pan * 0.01);
-        self.vp[0].target = g * bl;
-        self.vp[1].target = g * br;
+        self.vp[0].target = self.vol_bal[0];
+        self.vp[1].target = self.vol_bal[1];
         if self.role == Role::Master {
             return;
         }
@@ -771,7 +809,7 @@ impl Strip {
         }
         if self.role.has_sends() {
             for r in 0..RETURNS {
-                let g = level(self.send_db[r]);
+                let g = self.send_g[r];
                 let pre = self.send_pre[r];
                 self.send[r][0].target = if pre { g } else { 0.0 };
                 self.send[r][1].target = if pre { 0.0 } else { g };
@@ -876,6 +914,8 @@ pub struct Mixer {
     started: bool,
     last_len: usize,
     stats: MixerStats,
+    profiling: bool,
+    probe: Probe,
 }
 
 impl Mixer {
@@ -895,7 +935,7 @@ impl Mixer {
         let mut m = Mixer {
             rate,
             max_block,
-            plan: Plan { topo, arrive: vec![0; topo.len()], out: vec![0; topo.len()], max_comp },
+            plan: Plan { topo, arrive: vec![0; topo.len()], out: vec![0; topo.len()], lats: vec![0; topo.len()], max_comp },
             strips,
             order: Vec::with_capacity(topo.len()),
             sw: Switches::new(),
@@ -920,10 +960,12 @@ impl Mixer {
             started: false,
             last_len: 0,
             stats: MixerStats::default(),
+            profiling: false,
+            probe: Probe::new(u64::MAX),
         };
         m.reorder();
         m.aud = topo.audible(&m.sw);
-        m.align();
+        m.align(true);
         m.retarget(true);
         m
     }
@@ -953,7 +995,9 @@ impl Mixer {
             return None;
         }
         let k = self.plan.topo.order(s)?;
-        let [l, r] = &mut self.strips[k].buf;
+        let st = &mut self.strips[k];
+        st.touched = true;
+        let [l, r] = &mut st.buf;
         Some((l.as_mut_slice(), r.as_mut_slice()))
     }
 
@@ -1155,6 +1199,28 @@ impl Mixer {
         })
     }
 
+    /// Times the whole mixer, every strip and every insert per block (see
+    /// [`Mixer::probe`], [`Mixer::strip_probe`] and [`Chain::probe`]), at
+    /// two clock reads each. Off by default; the Dev pages switch it on.
+    pub fn set_profiling(&mut self, on: bool) {
+        self.profiling = on;
+        for st in &mut self.strips {
+            st.chain.set_profiling(on);
+        }
+    }
+
+    pub fn profiling(&self) -> bool { self.profiling }
+
+    /// The whole mixer's time per block, while profiling.
+    pub fn probe(&self) -> &Probe { &self.probe }
+    pub fn probe_mut(&mut self) -> &mut Probe { &mut self.probe }
+
+    /// A strip's time per block (its inserts, fader and routing; a strip
+    /// that skipped its work while quiet still records its scan), while
+    /// profiling.
+    pub fn strip_probe(&self, s: StripId) -> Option<&Probe> { self.plan.topo.order(s).map(|k| &self.strips[k].probe) }
+    pub fn strip_probe_mut(&mut self, s: StripId) -> Option<&mut Probe> { self.plan.topo.order(s).map(|k| &mut self.strips[k].probe) }
+
     /// Master safety, for its meters and [`MasterSafety::stats`].
     pub fn safety(&self) -> &MasterSafety { &self.safety }
 
@@ -1184,7 +1250,7 @@ impl Mixer {
         }
         mpfree_node::Node::reset(&mut self.safety);
         self.started = false;
-        self.align();
+        self.align(true);
         self.retarget(true);
     }
 
@@ -1215,11 +1281,22 @@ impl Mixer {
         true
     }
 
-    /// Works out every compensation delay from the chains' latencies.
-    fn align(&mut self) {
+    /// Works out every compensation delay from the chains' latencies (only
+    /// when one changed, unless `force`).
+    fn align(&mut self, force: bool) {
         let Mixer { plan, strips, safety, started, .. } = self;
+        let mut changed = force;
+        for (st, l) in strips.iter().zip(plan.lats.iter_mut()) {
+            let now = st.chain.latency();
+            changed |= now != *l;
+            *l = now;
+        }
+        if !changed {
+            return;
+        }
         let topo = plan.topo;
-        let lat = |k: usize| strips[k].chain.latency();
+        let lats = &plan.lats;
+        let lat = |k: usize| lats[k];
         let n = topo.len();
         let span = |lo: usize, hi: usize, out: &[u32]| out[lo..hi].iter().copied().max().unwrap_or(0);
         for k in 0..topo.track(0) {
@@ -1368,12 +1445,16 @@ impl Mixer {
         if len == 0 {
             return;
         }
+        let whole = self.profiling.then(Span::start);
         self.apply_edits();
-        self.align();
+        self.align(false);
         self.start_ducks();
         let sw_end = self.gather_globals();
-        let Mixer { plan, strips, order, aud, epochs, scratch, stats, caps, hw, safety, tap_step, duck_step, line_len, .. } = self;
+        let Mixer { plan, strips, order, aud, epochs, scratch, stats, caps, hw, safety, tap_step, duck_step, line_len, profiling, .. } = self;
+        let profiling = *profiling;
         let (topo, tap_step, duck_step, line_len) = (plan.topo, *tap_step, *duck_step, *line_len);
+        // With no capture point in use, nothing needs to look for one.
+        let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) { caps } else { &mut [] };
         let base = Ctx { sidechain: None, ..*ctx };
         let (left, right) = (&mut left[..len], &mut right[..len]);
         for st in strips.iter_mut().take(topo.inputs) {
@@ -1388,7 +1469,8 @@ impl Mixer {
             let k = k as usize;
             let (lo, rest) = strips.split_at_mut(k);
             let Some((st, hi)) = rest.split_first_mut() else { break };
-            guard(st, len, stats);
+            let span = profiling.then(Span::start);
+            let fed = guard(st, len, stats);
             take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
             {
                 let key = |j: u16| {
@@ -1402,9 +1484,12 @@ impl Mixer {
             take(caps, k, CapturePoint::BeforeFader, &st.buf, 0, len);
             if st.role == Role::Master {
                 run_strip(st, k, hi, len, epochs, aud.get(k), plan, scratch, caps, tap_step, duck_step, Some((&mut *left, &mut *right)));
+                if let Some(span) = span { st.probe.stop(span, len as u32); }
                 continue;
             }
-            let silent = st.buf[0][..len].iter().chain(&st.buf[1][..len]).all(|&v| v == 0.0);
+            // An empty chain leaves the block as it came in.
+            let silent = if st.chain.is_empty() { !fed } else { !sounding(&st.buf[0][..len], &st.buf[1][..len]) };
+            st.clean = silent;
             if silent && st.quiet >= line_len && epochs.is_empty() && st.events.is_empty() && st.duck == Duck::Idle && st.settled() {
                 // Nothing in, nothing in its delay lines, nothing moving:
                 // the strip would only add zeros.
@@ -1413,6 +1498,7 @@ impl Mixer {
                 run_strip(st, k, hi, len, epochs, aud.get(k), plan, scratch, caps, tap_step, duck_step, None);
             }
             st.quiet = if silent { st.quiet.saturating_add(len) } else { 0 };
+            if let Some(span) = span { st.probe.stop(span, len as u32); }
         }
         mpfree_node::Node::process(safety, &base, &[], left, right);
         let m = topo.master();
@@ -1425,8 +1511,11 @@ impl Mixer {
         let master = &mut strips[m];
         peak(&mut master.peak, left, right);
         for st in strips.iter_mut() {
-            for b in &mut st.buf {
-                b[..len].fill(0.0);
+            st.touched = false;
+            if !std::mem::take(&mut st.clean) {
+                for b in &mut st.buf {
+                    b[..len].fill(0.0);
+                }
             }
         }
         for b in hw.iter_mut() {
@@ -1436,6 +1525,7 @@ impl Mixer {
         self.aud = topo.audible(&sw_end);
         self.started = true;
         self.last_len = len;
+        if let Some(span) = whole { self.probe.stop(span, len as u32); }
     }
 }
 
@@ -1468,18 +1558,57 @@ fn may_key(topo: &Topo, j: usize, k: usize) -> bool {
 }
 
 /// Silences a strip's input for the block if it holds a non-finite sample.
-fn guard(st: &mut Strip, len: usize, stats: &mut MixerStats) {
+/// Returns whether anything is left (not all zeros).
+fn guard(st: &mut Strip, len: usize, stats: &mut MixerStats) -> bool {
+    if !st.touched {
+        return false;
+    }
     let [bl, br] = &mut st.buf;
     let (bl, br) = (&mut bl[..len], &mut br[..len]);
-    if !bl.iter().chain(&*br).all(|v| v.is_finite()) {
+    let (bad, sound) = scan(bl, br);
+    if bad {
         bl.fill(0.0);
         br.fill(0.0);
         stats.bad_input += 1;
+        return false;
     }
+    sound
+}
+
+/// Whether a block holds a non-finite sample, and whether it holds
+/// anything but zeros, in one pass the compiler can vectorise (no early
+/// exit, integer lanes).
+#[inline]
+fn scan(l: &[f32], r: &[f32]) -> (bool, bool) {
+    // The largest magnitude's bits: infinities and NaNs sort above every
+    // finite value, zeros below everything. With the sign bit cleared the
+    // bits fit an i32, whose max every SIMD set has.
+    let mut m = 0i32;
+    for x in [l, r] {
+        for &v in x {
+            m = m.max((v.to_bits() & 0x7fff_ffff) as i32);
+        }
+    }
+    (m >= 0x7f80_0000, m != 0)
+}
+
+/// Whether a block holds anything but zeros (or minus zeros).
+#[inline]
+fn sounding(l: &[f32], r: &[f32]) -> bool {
+    let mut any = 0u32;
+    for (&a, &b) in l.iter().zip(r) {
+        any |= (a.to_bits() | b.to_bits()) & 0x7fff_ffff;
+    }
+    any != 0
 }
 
 /// Copies the line input into an input strip, following its source.
 fn fill_input(st: &mut Strip, hw: &[Vec<f32>; 2], len: usize) {
+    if st.source == ids::source::OFF as u8 && st.events.is_empty() {
+        // Already silent: buffers start every block at zero.
+        return;
+    }
+    st.touched = true;
     let mut at = 0;
     let mut ei = 0;
     while at < len {
@@ -1530,6 +1659,7 @@ fn hold_input(st: &mut Strip, len: usize, tap_step: f32, sc: &mut Scratch) {
         st.in_used = false;
         return;
     }
+    st.touched = true;
     if !st.in_used {
         // The line has not been kept up: start it from silence.
         st.in_line.clear();
@@ -1682,14 +1812,16 @@ fn run_chunk(st: &mut Strip, k: usize, hi: &mut [Strip], a: usize, b: usize, sc:
     if sends && st.tap_send.fading() { st.tap_send.weights(tap_step, ws); }
     for (r, w) in st.routes.iter_mut().zip(w_route.iter()) {
         if r.idle() { continue; }
-        let dst = &mut hi[r.dest as usize - k - 1].buf;
-        add(&st.post_line, &r.tap, &w[..n], post_l, post_r, &mut r.g, dst, a);
+        let dst = &mut hi[r.dest as usize - k - 1];
+        dst.touched = true;
+        add(&st.post_line, &r.tap, &w[..n], post_l, post_r, &mut r.g, &mut dst.buf, a);
     }
     if sends {
         for r in 0..RETURNS {
             // Returns come after every strip with sends.
             let j = hi.len() - 1 - RETURNS + r;
             let [gp, gq] = &mut st.send[r];
+            hi[j].touched |= !(gp.settled() && gp.value == 0.0 && gq.settled() && gq.value == 0.0);
             if !(gp.settled() && gp.value == 0.0) {
                 add(&st.pre_line, &st.tap_send, ws, pre_l, pre_r, gp, &mut hi[j].buf, a);
             }
@@ -1726,10 +1858,26 @@ fn add(line: &Line, tap: &Tap, w: &[f32], now_l: &[f32], now_r: &[f32], g: &mut 
             }
         }
     } else if !tap.fading() {
-        for i in 0..n {
-            let v = g.next();
-            dl[i] += line.at(0, i, tap.d) * v;
-            dr[i] += line.at(1, i, tap.d) * v;
+        let (l0, l1) = line.runs(0, tap.d, n);
+        let (r0, r1) = line.runs(1, tap.d, n);
+        let m = l0.len();
+        if g.settled() {
+            let v = g.value;
+            for i in 0..m {
+                dl[i] += l0[i] * v;
+                dr[i] += r0[i] * v;
+            }
+            for i in m..n {
+                dl[i] += l1[i - m] * v;
+                dr[i] += r1[i - m] * v;
+            }
+        } else {
+            for i in 0..n {
+                let v = g.next();
+                let (a, b) = if i < m { (l0[i], r0[i]) } else { (l1[i - m], r1[i - m]) };
+                dl[i] += a * v;
+                dr[i] += b * v;
+            }
         }
     } else {
         for i in 0..n {

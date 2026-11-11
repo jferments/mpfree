@@ -267,6 +267,13 @@ fn the_mixer_never_allocates() {
             if back.len() < back.capacity() { back.push(ins) } else { spare.push(ins) }
         }
         if block % 1111 == 0 { m.reset(); }
+        // Profiling on and off while playing, with the screen taking its
+        // windows.
+        if block % 500 == 0 { m.set_profiling(block % 1000 == 0); }
+        if block % 100 == 0 {
+            let _ = (m.probe_mut().take_window(), m.strip_probe_mut(StripId::Track(0)).map(|p| p.take_window()));
+            let _ = m.chain_mut(StripId::Track(0)).and_then(|c| c.probe_mut(0)).map(|p| p.take_window());
+        }
         frame += len as u64;
     }
     watch(false);
@@ -275,5 +282,6 @@ fn the_mixer_never_allocates() {
     assert!(m.stats().bad_input > 0, "the input guard ran");
     assert!(m.stats().nan_resets > 0, "the NaN guard ran");
     assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+    assert!(m.probe().lifetime().blocks > 0, "profiling recorded blocks");
     drop(back);
 }
