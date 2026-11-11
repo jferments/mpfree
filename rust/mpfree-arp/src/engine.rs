@@ -109,6 +109,49 @@ impl Order {
         Order::Chord,
     ];
 
+    /// Which of `total` places (the held notes times the octaves, lowest
+    /// first; for As played, in press order) count `c` of the order plays.
+    /// None for the random orders, which draw from the engine's generator.
+    /// Chord plays every note; this gives the position as for Up.
+    pub const fn place(self, total: usize, c: usize) -> Option<usize> {
+        if total == 0 {
+            return None;
+        }
+        Some(match self {
+            Order::Up | Order::Played | Order::Chord => c % total,
+            Order::Down => total - 1 - c % total,
+            Order::UpDown if total == 1 => 0,
+            Order::UpDown => {
+                let p = c % (2 * total - 2);
+                if p < total { p } else { 2 * total - 2 - p }
+            }
+            Order::UpDownInclusive => {
+                let p = c % (2 * total);
+                if p < total { p } else { 2 * total - 1 - p }
+            }
+            Order::Converge | Order::Diverge => {
+                let k = if matches!(self, Order::Converge) { c % total } else { total - 1 - c % total };
+                if k % 2 == 0 { total - 1 - k / 2 } else { k / 2 }
+            }
+            Order::Random | Order::RandomOther | Order::RandomOnce => return None,
+        })
+    }
+
+    /// How many counts the order takes before it repeats; None for the
+    /// random orders.
+    pub const fn cycle(self, total: usize) -> Option<usize> {
+        if total == 0 {
+            return None;
+        }
+        Some(match self {
+            Order::UpDown if total == 1 => 1,
+            Order::UpDown => 2 * total - 2,
+            Order::UpDownInclusive => 2 * total,
+            Order::Random | Order::RandomOther | Order::RandomOnce => return None,
+            _ => total,
+        })
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Order::Up => "Up",
@@ -894,24 +937,10 @@ impl Engine {
         let total = (n * usize::from(self.settings.octaves)).min(MAX_ORDER);
         let c = self.arp_counter as usize;
         self.arp_counter += 1;
-        let i = match order {
-            Order::Up | Order::Played | Order::Chord => c % total,
-            Order::Down => total - 1 - c % total,
-            Order::UpDown if total == 1 => 0,
-            Order::UpDown => {
-                let p = c % (2 * total - 2);
-                if p < total { p } else { 2 * total - 2 - p }
-            }
-            Order::UpDownInclusive => {
-                let p = c % (2 * total);
-                if p < total { p } else { 2 * total - 1 - p }
-            }
-            Order::Converge | Order::Diverge => {
-                let k = if order == Order::Converge { c % total } else { total - 1 - c % total };
-                if k % 2 == 0 { total - 1 - k / 2 } else { k / 2 }
-            }
-            Order::Random => self.random(total),
-            Order::RandomOther => {
+        let i = match order.place(total, c) {
+            Some(i) => i,
+            None if order == Order::Random => self.random(total),
+            None if order == Order::RandomOther => {
                 let full = if total == 128 { u128::MAX } else { (1u128 << total) - 1 };
                 if self.bag & full == full {
                     self.bag = 0;
@@ -931,7 +960,8 @@ impl Engine {
                 self.bag |= 1 << pick;
                 pick
             }
-            Order::RandomOnce => {
+            None => {
+                // Random once.
                 if self.once_len != total {
                     for p in 0..total {
                         self.once[p] = p as u8;
@@ -1157,6 +1187,25 @@ mod tests {
         e.press(1, 100);
         let delay = STEP * 16 / 50; // (66 - 50) / 50 of a step
         assert_eq!(ons(&run(&mut e, STEP * 4, 128)), [(0, 1), (STEP + delay, 1), (2 * STEP, 1), (3 * STEP + delay, 1)]);
+    }
+
+    #[test]
+    fn order_places_repeat_after_their_cycle() {
+        for order in Order::ALL {
+            for total in 1..=12 {
+                match order.cycle(total) {
+                    Some(n) => {
+                        for c in 0..n {
+                            let p = order.place(total, c).unwrap();
+                            assert!(p < total, "{order:?} {total} {c}");
+                            assert_eq!(order.place(total, c + n), Some(p), "{order:?} {total} {c}");
+                        }
+                    }
+                    None => assert_eq!(order.place(total, 0), None, "{order:?}"),
+                }
+            }
+            assert_eq!(order.place(0, 0), None);
+        }
     }
 
     fn arp_notes(order: Order, octaves: u8, steps: u64) -> Vec<u8> {
