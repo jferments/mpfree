@@ -225,7 +225,7 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
     let mut c = Clip::new(name, length);
     for &(tick, note, velocity) in notes {
         let len = SIXTEENTH.min(length - tick);
-        c.add_note(Note { tick, len, note, velocity }).expect("sample note in range");
+        c.add_note(Note { tick, len, note, velocity, chance: 100 }).expect("sample note in range");
     }
     c
 }

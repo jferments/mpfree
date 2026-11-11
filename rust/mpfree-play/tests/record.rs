@@ -139,7 +139,7 @@ fn ons(played: &[Out]) -> Vec<(u64, u8)> {
 /// A bar with a note on each beat (notes 10 to 13), playing from tick 0.
 fn four_beats() -> Session {
     let mut c = Clip::new("beats", 3840);
-    c.notes = (0..4).map(|i| Note { tick: i * 960, len: 100, note: 10 + i as u8, velocity: 100 }).collect();
+    c.notes = (0..4).map(|i| Note { tick: i * 960, len: 100, note: 10 + i as u8, velocity: 100, chance: 100 }).collect();
     let mut s = session(c, 0);
     s.frames = 2 * 88_200;
     s
@@ -307,7 +307,7 @@ fn a_loop_jump_ends_the_replace_pass_and_a_new_take_replaces_again() {
     // overdub, and keeps note 9 played at 1200. Punching out and in starts
     // take 2, which replaces what the playhead reaches after the punch in.
     let mut c = Clip::new("two bars", 7680);
-    c.notes = (0..8).map(|i| Note { tick: i * 960, len: 100, note: 20 + i as u8, velocity: 100 }).collect();
+    c.notes = (0..8).map(|i| Note { tick: i * 960, len: 100, note: 20 + i as u8, velocity: 100, chance: 100 }).collect();
     let mut s = session(c, 0);
     let bar = 88_200;
     s.commands = vec![
@@ -340,7 +340,7 @@ fn a_take_undoes_and_redoes_as_a_whole() {
     // The loop-jump session: take 1 erases bar 1 and records note 9, take 2
     // erases note 9.
     let mut c = Clip::new("two bars", 7680);
-    c.notes = (0..8).map(|i| Note { tick: i * 960, len: 100, note: 20 + i as u8, velocity: 100 }).collect();
+    c.notes = (0..8).map(|i| Note { tick: i * 960, len: 100, note: 20 + i as u8, velocity: 100, chance: 100 }).collect();
     let original = c.notes.clone();
     let mut s = session(c, 0);
     let bar = 88_200;
@@ -381,7 +381,7 @@ fn a_late_note_joins_its_own_take() {
     // take 1, and undoing take 2 leaves it.
     let mut c = Clip::new("bar", 3840);
     c.quantise = Quantise::new(960, 100);
-    c.notes = vec![Note { tick: 0, len: 100, note: 30, velocity: 100 }, Note { tick: 1920, len: 100, note: 31, velocity: 100 }];
+    c.notes = vec![Note { tick: 0, len: 100, note: 30, velocity: 100, chance: 100 }, Note { tick: 1920, len: 100, note: 31, velocity: 100, chance: 100 }];
     let mut s = session(c, 0);
     s.commands = vec![(0, Command::Record), (at(0, 1905.0), Command::Record), (at(0, 1910.0), Command::Record)];
     s.live = vec![(at(0, 1900.0), on(1)), (at(0, 2000.0), off(1)), (at(0, 2500.0), on(2)), (at(0, 2600.0), off(2))];
