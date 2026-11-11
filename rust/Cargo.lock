@@ -532,6 +532,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-instruments"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-lanes"
 version = "0.1.0"
 dependencies = [
