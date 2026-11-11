@@ -427,12 +427,12 @@ class HelloTests(unittest.TestCase):
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 10: Developer tools and Map controls",
+                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 12: Developer tools and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 10: Performance", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 12: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 10: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 12: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -454,12 +454,14 @@ class HelloTests(unittest.TestCase):
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
         self.add_journal([(130.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
-        answers = "\n\n" + "\n\n\n" * 10
+        answers = "\n\n" + "\n\n\n" * 12
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 7 of 10: Clips: record, overdub and undo", res.stdout)
-        self.assertIn("Phase 8 of 10: Audio looper: loop the pads", res.stdout)
-        self.assertIn("Phase 10 of 10: Menus, console and STOP", res.stdout)
+        self.assertIn("Phase 7 of 12: Clips: record, overdub and undo", res.stdout)
+        self.assertIn("Phase 8 of 12: Audio looper: loop the pads", res.stdout)
+        self.assertIn("Phase 9 of 12: Sample tab: Wave and Chop", res.stdout)
+        self.assertIn("Phase 10 of 12: Prefs, System info and saving", res.stdout)
+        self.assertIn("Phase 12 of 12: Menus, console and STOP", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
@@ -470,6 +472,9 @@ class HelloTests(unittest.TestCase):
         write(f"{self.root}/proc/interrupts", " 61:        42          0  rockchip_gpio_irq   6 Edge      ili2117\n")
         self.add_journal([(10.5, "mpfree-hello[211]: touchscreen: /dev/input/event0 (ILI2117 Touchscreen); read-only, not grabbed"),
                           (11.0, "mpfree-hello[211]: touch-reader: seeded=yes contacts=0 events=0"),
+                          (12.0, "mpfree-hello[211]: saved settings: pad curve Hard, screen velocity 100, latch "
+                                 "replace, audio buffer 3 periods, developer tools on"),
+                          (12.5, "mpfree-hello[211]: saving: settings and found buttons are kept in /run/mpfree-data"),
                           (20.0, "mpfree-hello[211]: +9.000 s Private: 99 25 40 = pad 1 down, velocity 64"),
                           (20.5, "mpfree-hello[211]: +9.500 s Private: 90 27 7F = button 39 pressed"),
                           (20.6, "mpfree-hello[211]: pad level: Full Level (every hit 127)"),
@@ -481,11 +486,14 @@ class HelloTests(unittest.TestCase):
                           (35.0, "mpfree-hello[211]: time: transport: Record"),
                           (40.0, "mpfree-hello[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
                           (60.0, "mpfree-hello[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
-        answers = "\n\n" + "s\n" * 10
+        answers = "\n\n" + "s\n" * 12
         res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("touch interrupts at the start: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
+                     "    saved settings: pad curve Hard, screen velocity 100, latch replace, audio buffer 3 periods, "
+                     "developer tools on",
+                     "    saving: settings and found buttons are kept in /run/mpfree-data",
                      "Session summary (the whole run since power-on",
                      "    touch-reader: seeded=yes contacts=0 events=0", "    pad level: Full Level (every hit 127)",
                      "    button guide done: MENU = button 123, REC = button 7", "    time: transport: Record",
