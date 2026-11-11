@@ -344,8 +344,20 @@ fn extreme_settings_stay_finite() {
         }
     }
     let mut s = init();
-    for id in [FEEDBACK, LFO_PMD, LFO_AMD, LFO_PMS, LFO_SPEED, PRESSURE, LEVEL] {
+    for id in [FEEDBACK, LFO_PMD, LFO_AMD, LFO_PMS, LFO_SPEED, LEVEL] {
         s.set_param(id, f32::MAX);
+    }
+    // Every pressure slot at full depth on each target in turn.
+    for t in 0..8 {
+        for n in 0..4 {
+            s.set_param(press_target(n), t as f32);
+            s.set_param(press_depth(n), 100.0);
+        }
+        s.set_param(PRESS_HOLDOFF, 0.0);
+        let ev = [(0, on(0, 127)), (0, on(127, 127)), (10, NodeEvent::Pressure { note: 127, value: 127 }), (10, NodeEvent::Pressure { note: 0, value: 127 })];
+        let (l, _) = render(&mut s, 8_000, &ev, |_| 128);
+        assert!(l.iter().all(|x| x.is_finite()), "target {t}");
+        s.reset();
     }
     for n in 1..=6 {
         s.set_param(op_id(n, op::LEVEL), 99.0);
