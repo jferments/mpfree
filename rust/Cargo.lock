@@ -146,6 +146,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-time-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-play",
+ "mpfree-seq",
+ "mpfree-transport",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-touch"
 version = "0.1.0"
 
