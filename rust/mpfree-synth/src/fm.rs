@@ -8,8 +8,12 @@
 //!   feedback (0 to 7) on one operator or, for algorithms 4 and 6, around a
 //!   loop of two or three.
 //! - **Global.** A pitch envelope, an LFO (six waves, speed, delay, pitch and
-//!   amplitude depth, key sync), transpose, poly or mono, bend, and pad
-//!   pressure for extra vibrato.
+//!   amplitude depth, key sync), transpose, poly or mono, bend.
+//! - **Pressure.** Pad pressure goes through the shared shaper
+//!   ([`mpfree_node::pressure`]) into four slots
+//!   ([`crate::pressure::FM_TARGETS`]): brightness (every modulator's level
+//!   together), a level swell, vibrato, the LFO's rate, tremolo, pitch and
+//!   feedback.
 //!
 //! The envelopes work in the DX7's way: in decibels, falling at a constant
 //! rate, with the attack curving over as it nears its level, and rates and
@@ -23,10 +27,11 @@
 //! every [`CTRL`] frames aligned to the absolute frame, with operator gains
 //! ramped across each step, so the output does not depend on the block size.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs, PressureMode, PressureShape, Smooth, Timed};
 
 use crate::dsp::{note_hz, Rng};
 use crate::fm_params::*;
+use crate::pressure::{swell_gain, Depths, Slot};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -393,7 +398,11 @@ struct Voice {
     /// The feedback path's last two outputs.
     fb: [f32; 2],
     peg: PitchEnv,
-    press: Smooth,
+    press: Pressure,
+    /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
+    pv: f32,
+    /// Feedback gain (pressure can move it).
+    fb_scale: f32,
     kill_gain: f32,
     kill_step: f32,
 }
@@ -408,7 +417,9 @@ impl Voice {
             ops: [OpState::default(); 6],
             fb: [0.0; 2],
             peg: PitchEnv::default(),
-            press: Smooth::new(0.0),
+            press: Pressure::new(),
+            pv: 0.0,
+            fb_scale: 0.0,
             kill_gain: 1.0,
             kill_step: 0.0,
         }
@@ -460,7 +471,6 @@ struct Patch {
     poly: usize,
     mono: bool,
     bend_range: f32,
-    pressure: f32,
 }
 
 pub struct Fm {
@@ -473,8 +483,15 @@ pub struct Fm {
     lfo_phase: f32,
     lfo_held: f32,
     lfo_value: f32,
+    /// The LFO's wave without the delay's fade-in (pressure vibrato and
+    /// tremolo start at once).
+    lfo_raw: f32,
     /// Seconds since the LFO delay last started.
     lfo_time: f32,
+    /// The pressure shaper worked out for the control rate, and the slots.
+    press_c: PressureCoefs,
+    depths: Depths,
+    chord: PressureChord,
     bend: Smooth,
     out: Smooth,
     stack: [u8; MAX_POLY],
@@ -512,7 +529,11 @@ impl Fm {
             lfo_phase: 0.0,
             lfo_held: 0.0,
             lfo_value: 0.0,
+            lfo_raw: 0.0,
             lfo_time: 0.0,
+            press_c: PressureCoefs::default(),
+            depths: Depths::default(),
+            chord: PressureChord::default(),
             bend: Smooth::new(0.0),
             out: Smooth::new(1.0),
             stack: [0; MAX_POLY],
@@ -555,6 +576,30 @@ impl Fm {
     /// Voices sounding or fading.
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|v| v.state != State::Free).count()
+    }
+
+    /// The pressure each sounding voice uses now (0 to 1), in voice order,
+    /// for the Synth tab's live bars. Returns how many it wrote.
+    pub fn pressures(&self, out: &mut [f32]) -> usize {
+        let mut n = 0;
+        for v in self.voices.iter().filter(|v| v.sounding()) {
+            if n == out.len() {
+                break;
+            }
+            out[n] = v.pv;
+            n += 1;
+        }
+        n
+    }
+
+    /// Works out the pressure shaper and slots from the values.
+    fn update_pressure(&mut self) {
+        let shape = PressureShape::from_params(PRESS_BASE, |id| self.values[id as usize]);
+        self.press_c = shape.coefs(self.rate as f32 / CTRL as f32);
+        let slots: [Slot; 4] = std::array::from_fn(|n| Slot { target: self.v(press_target(n)) as u8, depth: self.v(press_depth(n)) / 100.0 });
+        // Off: pressure does nothing, and a level swell plays at the preset's
+        // full level (not at its resting dip).
+        self.depths = if shape.mode == PressureMode::Off { Depths::default() } else { Depths::from_slots(&slots) };
     }
 
     fn v(&self, id: u16) -> f32 {
@@ -611,8 +656,8 @@ impl Fm {
             poly: (self.v(POLYPHONY) as usize).clamp(1, MAX_POLY),
             mono: self.v(VOICE_MODE) >= 0.5,
             bend_range: self.v(BEND_RANGE),
-            pressure: self.v(PRESSURE) / 99.0,
         };
+        self.update_pressure();
     }
 
     // ---- notes ----
@@ -643,6 +688,7 @@ impl Fm {
             if held && v.state == State::On {
                 // Legato: a new pitch, no new attack.
                 v.note = note;
+                v.press.start();
                 self.voice_control(0, false);
                 return;
             }
@@ -675,7 +721,8 @@ impl Fm {
         if !v.sounding() {
             v.ops = [OpState::default(); 6];
             v.fb = [0.0; 2];
-            v.press.snap(0.0);
+            v.press.clear();
+            v.pv = 0.0;
             v.kill_gain = 1.0;
         } else if sync {
             for o in &mut v.ops {
@@ -683,6 +730,7 @@ impl Fm {
             }
         }
         v.state = State::On;
+        v.press.start();
         v.note = note;
         v.velocity = velocity.min(127);
         v.age = self.clock;
@@ -722,6 +770,7 @@ impl Fm {
 
     fn release(v: &mut Voice) {
         v.state = State::Release;
+        v.press.release();
         for o in &mut v.ops {
             o.env.key_off();
         }
@@ -768,7 +817,7 @@ impl Fm {
             NodeEvent::Pressure { note, value } => {
                 for v in &mut self.voices {
                     if v.sounding() && v.note == note {
-                        v.press.target = f32::from(value.min(127)) / 127.0;
+                        v.press.set(value);
                     }
                 }
             }
@@ -784,9 +833,30 @@ impl Fm {
         let secs = CTRL as f32 / self.rate as f32;
         self.bend.next();
         self.out.next();
-        // LFO: phase, wave, and the delay's fade-in.
+        // Pressure: the chord (Highest mode) aims before the voices step.
+        let c = &self.press_c;
+        let chord = if c.mode == PressureMode::Highest {
+            self.chord.step(c, self.voices.iter().filter(|v| v.sounding()).map(|v| (v.state == State::On, v.press.aim(c))))
+        } else {
+            0.0
+        };
+        let mut top = 0.0f32;
+        for v in self.voices.iter_mut().filter(|v| v.state != State::Free) {
+            let own = v.press.step(c);
+            v.pv = match c.mode {
+                PressureMode::PerNote => own,
+                PressureMode::Highest => chord,
+                PressureMode::Off => 0.0,
+            };
+            if v.sounding() {
+                top = top.max(v.pv);
+            }
+        }
+        // LFO: phase, wave, and the delay's fade-in. Pressure on LFO rate
+        // follows the highest pressure (the LFO is shared).
         let prev = self.lfo_phase;
-        self.lfo_phase = (self.lfo_phase + lfo_hz(self.patch.lfo_speed) * secs).fract();
+        let speed = lfo_hz(self.patch.lfo_speed) * (self.depths.get(target::LFO_RATE) * 2.0 * top).exp2();
+        self.lfo_phase = (self.lfo_phase + speed * secs).fract();
         if self.lfo_phase < prev {
             self.lfo_held = self.rng.bipolar();
         }
@@ -802,6 +872,7 @@ impl Fm {
         self.lfo_time += secs;
         let d = 5.0 * (f32::from(self.patch.lfo_delay) / 99.0).powf(2.5);
         let fade = if d <= 0.0 { 1.0 } else { ((self.lfo_time - 0.5 * d) / (0.5 * d)).clamp(0.0, 1.0) };
+        self.lfo_raw = wave;
         self.lfo_value = wave * fade;
         for i in 0..POOL {
             if self.voices[i].state != State::Free {
@@ -818,13 +889,22 @@ impl Fm {
         let secs = CTRL as f32 / rate;
         let n = CTRL as f32 * EG_RATE / rate;
         let lfo = self.lfo_value;
+        let raw = self.lfo_raw;
         let bend = self.bend.value * p.bend_range;
+        let d = self.depths;
         let v = &mut self.voices[i];
-        let press = v.press.next();
+        let press = v.pv;
         let peg = if advance { v.peg.run(secs, &p.peg_rates, &p.peg_levels) } else { v.peg.level };
-        let vib = lfo * (f32::from(p.pmd) / 99.0 * PMS_SEMIS[usize::from(p.pms.min(7))] + press * p.pressure * 0.6);
-        let pitch = f32::from(v.note) + p.transpose + peg * 12.0 + vib;
+        let vib = lfo * f32::from(p.pmd) / 99.0 * PMS_SEMIS[usize::from(p.pms.min(7))] + raw * press * d.get(target::VIBRATO);
+        let pitch = f32::from(v.note) + p.transpose + peg * 12.0 + vib + press * d.get(target::PITCH) * 12.0;
         let am = (1.0 - lfo) * 0.5 * f32::from(p.amd) / 99.0;
+        // Carriers: the swell and tremolo. Modulators: brightness, in level
+        // units (32 to an output level step, 0.75 dB).
+        let carrier_gain = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), press)
+            * (1.0 - d.get(target::TREMOLO).abs().min(1.0) * press * (0.5 - 0.5 * raw));
+        let bright = press * d.get(target::BRIGHTNESS) * 24.0 * 32.0;
+        let fb = (f32::from(p.fb.min(7)) + press * d.get(target::FEEDBACK) * 7.0).clamp(0.0, 7.0);
+        v.fb_scale = if fb <= 0.0 { 0.0 } else { (fb - 8.0).exp2() };
         let mut carriers_done = true;
         for (j, o) in v.ops.iter_mut().enumerate() {
             let q = &p.ops[j];
@@ -840,10 +920,20 @@ impl Fm {
             let rs = scale_rate(v.note, q.rs);
             let level = if advance { o.env.run(n, &q.rates, &q.levels, outlevel, rs) } else { o.env.level };
             let level = level - AMS_UNITS[usize::from(q.ams.min(3))] * am;
-            let target = if q.on && q.out > 0 { DxEnv::gain(level) } else { 0.0 };
+            let carrier = p.route.carriers & (1 << j) != 0;
+            let target = if !(q.on && q.out > 0) {
+                0.0
+            } else if carrier {
+                DxEnv::gain(level) * carrier_gain
+            } else if level > FLOOR {
+                // Brightness never brings a silent modulator back.
+                DxEnv::gain((level + bright).max(FLOOR))
+            } else {
+                0.0
+            };
             o.gstep = (target - o.g) / CTRL as f32;
             // A carrier is done once it is near silent (-80 dB) and not climbing.
-            if p.route.carriers & (1 << j) != 0 && q.on && (target > 1e-4 || !o.env.falling()) {
+            if carrier && q.on && (target > 1e-4 || !o.env.falling()) {
                 carriers_done = false;
             }
         }
@@ -871,7 +961,6 @@ impl Fm {
 
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let r = self.patch.route;
-        let fb_scale = if self.patch.fb == 0 { 0.0 } else { (f32::from(self.patch.fb.min(7)) - 8.0).exp2() };
         let gain = VOICE_GAIN * self.out.value;
         let tab = &self.sine[..];
         for v in &mut self.voices {
@@ -881,7 +970,7 @@ impl Fm {
             for k in from..to {
                 let mut m = [0f32; 6];
                 let mut out = 0.0;
-                let fb_in = (v.fb[0] + v.fb[1]) * fb_scale;
+                let fb_in = (v.fb[0] + v.fb[1]) * v.fb_scale;
                 for j in (0..6).rev() {
                     let o = &mut v.ops[j];
                     let mut input = m[j];
@@ -966,9 +1055,7 @@ impl Node for Fm {
         self.bend.set_time(cr, 4.0);
         self.out.set_time(cr, 15.0);
         self.out.snap(self.out.target);
-        for v in &mut self.voices {
-            v.press.set_time(cr, 20.0);
-        }
+        self.update_pressure();
     }
 
     fn reset(&mut self) {
@@ -978,6 +1065,7 @@ impl Node for Fm {
         self.stack_len = 0;
         self.lfo_phase = 0.0;
         self.lfo_time = 0.0;
+        self.chord.clear();
         self.meter_voices = 0.0;
         self.bend.snap(0.0);
         let rate = self.rate;
