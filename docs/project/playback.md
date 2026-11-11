@@ -32,6 +32,13 @@ The control thread compiles the project and the playing clips (`Launch { track, 
 
 The audio thread only reads the view. After an edit, the control thread compiles a new one and swaps it in, the same pattern as the sampler's `EngineView`. A clip plays from `origin` on and loops.
 
+**Recording edits in place.** Recording is the exception, because it changes a clip on every note. A recorded or erased note or lock goes into the view in place, where compiling again would put it:
+
+- `PlayView::add_note(track, slot, &note)` and `add_lock(track, slot, &lock, replaced)` for what `Takes::add` and `Takes::add_lock` put in (`add_lock` returns the lock it replaced);
+- `remove_note` and `remove_lock` for what `Takes::erase` and `Takes::erase_lock` took out.
+
+They update the clip playing and the clip cued, whichever shows that slot. `PlayView::make_room(notes, locks)` sets room aside in the armed track's clips after a compile, so these never allocate; each returns false when the view has no room left, or does not hold what is erased, and then the host compiles instead. A note goes after the notes at its place, as the clip's newest, so the order is a compile's (a stable sort), and a test compares the two after thousands of random edits.
+
 ## Launching on the bar line (cues, T9)
 
 A clip launched while the music plays does not cut in at once. It waits for the next bar line, the way the MPC's Next Sequence mode switches sequences at the end of a bar.
@@ -163,6 +170,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 
   With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
 - `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads and knob moves with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. Some notes play by chance, and every track has locks (the instrument's, a pad's, the strip's). It sees no allocation and no free.
+- `tests/in_place.rs` (3): thousands of random recorded and erased notes and locks, with and without quantise and speed, into the playing clip, a cued one, and the playing clip cued again, put in place leave the view equal to a fresh compile; a view with little room asks for a compile and the result is the same; with room set aside, recording in place allocates nothing once the take has begun.
+- `mpfree-hello`'s `recording_neither_compiles_nor_allocates_on_every_note`: the pad player records sixteen notes a second over a replace pass for 5.5 bars without an allocation or a free, its view equals a fresh compile, and the screens are told at most four times a second.
 
 ## Listening
 
@@ -212,12 +221,12 @@ The player's `Lock` and `Unlock` events are ignored for now: they need the mod r
 
 It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
 
-Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
+Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, undo and redo, a capture) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Recording does not compile: each recorded or erased note or lock goes into the clip and into the view in place, in room set aside at each compile (`RECORD_ROOM`, 1024 notes and 1024 locks in the armed track's clips; a new take's lists have room for `TAKE_ROOM`, 256). Once a take has begun, a recording period allocates nothing, and the screens hear about the recorded notes at most four times a second. It is also far cheaper: on the workstation, with 8 clips of 500 notes playing, compiling after each recorded note took 66 to 90 µs (2 to 3 % of a 128-frame period, and several times that on the MPC One); putting the note in place takes 0.3 µs. Moving the other edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
 
 ## Next
 
 - Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
-- Move edits out of the audio loop.
+- Move the other edits (launches, arming, undo, capture) out of the audio loop, and the screen's state with them.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - Launching on the bar line (cues) is built. Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), scenes (a row of clips launched together), and a new clip that waits for its bar line without stopping the track's clip first.
 - The step sequencer's model is built (steps with velocity, length, nudge and chance, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.

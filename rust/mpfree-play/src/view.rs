@@ -1,7 +1,11 @@
 //! The play view: the project compiled for the audio thread.
 //!
 //! The control thread compiles a new view after every edit and swaps it in;
-//! the audio thread only reads it. Compiling sorts each clip's notes,
+//! the audio thread only reads it. Recording is the exception: a recorded
+//! or erased note or lock goes into the view in place
+//! ([`PlayView::add_note`] and the others), where a compile would put it,
+//! in room set aside by [`PlayView::make_room`], so recording neither
+//! compiles nor allocates on every note. Compiling sorts each clip's notes,
 //! applies quantise and speed, and resolves which swing each clip uses, so
 //! playback is a binary search and a few multiplications per clip.
 //!
@@ -144,6 +148,100 @@ pub(crate) struct ClipView {
     pub locks: Vec<LockView>,
 }
 
+impl ClipView {
+    /// A note of the clip, compiled: quantise and speed applied.
+    fn note_view(&self, n: &Note) -> NoteView {
+        let at = self
+            .quantise
+            .map_or(n.tick as f64, |q| q.apply(n.tick as f64));
+        NoteView {
+            // Quantise can move a note at the very end onto the next pass's start.
+            local: at.rem_euclid(self.length as f64),
+            len: self.speed.to_song(n.len as f64),
+            note: n.note,
+            velocity: n.velocity,
+            src: *n,
+        }
+    }
+
+    /// A lock of the clip, compiled: quantise applied, like its note.
+    fn lock_view(&self, l: &Lock) -> LockView {
+        let at = self
+            .quantise
+            .map_or(l.tick as f64, |q| q.apply(l.tick as f64));
+        LockView {
+            local: at.rem_euclid(self.length as f64),
+            addr: l.addr,
+            value: l.value,
+            src: *l,
+        }
+    }
+
+    /// Put `n`, the clip's newest note, where a compile would: after the
+    /// notes at or before its place, which come earlier in the clip. False
+    /// if there is no room left (that would allocate).
+    fn add_note(&mut self, n: &Note) -> bool {
+        if self.notes.len() == self.notes.capacity() {
+            return false;
+        }
+        let v = self.note_view(n);
+        let i = self.notes.partition_point(|x| x.local <= v.local);
+        self.notes.insert(i, v);
+        true
+    }
+
+    /// Take out a note equal to `n`. False if there is none.
+    fn remove_note(&mut self, n: &Note) -> bool {
+        match self.notes.iter().position(|x| x.src == *n) {
+            Some(i) => {
+                self.notes.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Put lock `l` where a compile would: in the place of `replaced` (the
+    /// clip put it in that lock's place), else after the locks at or before
+    /// its place, as the clip's newest. False if `replaced` is not there,
+    /// or there is no room left.
+    fn add_lock(&mut self, l: &Lock, replaced: Option<&Lock>) -> bool {
+        let v = self.lock_view(l);
+        if let Some(old) = replaced {
+            return match self.locks.iter().position(|x| x.src == *old) {
+                // Same tick, so the same place.
+                Some(i) if self.locks[i].local == v.local => {
+                    self.locks[i] = v;
+                    true
+                }
+                _ => false,
+            };
+        }
+        if self.locks.len() == self.locks.capacity() {
+            return false;
+        }
+        let i = self.locks.partition_point(|x| x.local <= v.local);
+        self.locks.insert(i, v);
+        true
+    }
+
+    /// Take out a lock equal to `l`. False if there is none.
+    fn remove_lock(&mut self, l: &Lock) -> bool {
+        match self.locks.iter().position(|x| x.src == *l) {
+            Some(i) => {
+                self.locks.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn make_room(&mut self, notes: usize, locks: usize) {
+        self.notes.reserve(notes);
+        self.locks.reserve(locks);
+    }
+}
+
 /// A waiting cue, compiled: the clip it starts (its origin comes when it
 /// starts), or none for a stop.
 #[derive(Clone, Debug, PartialEq)]
@@ -254,6 +352,92 @@ impl PlayView {
             .sum()
     }
 
+    /// Room for `notes` more notes and `locks` more locks in the armed
+    /// track's clips (the one playing and the one cued), so that recording
+    /// can put them in with [`PlayView::add_note`] and
+    /// [`PlayView::add_lock`] without allocating. Call it on the control
+    /// thread, after compiling.
+    pub fn make_room(&mut self, notes: usize, locks: usize) {
+        let Some(t) = self.armed.and_then(|t| self.tracks.get_mut(t)) else {
+            return;
+        };
+        if let Some(c) = t.clip.as_mut() {
+            c.make_room(notes, locks);
+        }
+        if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
+            c.make_room(notes, locks);
+        }
+    }
+
+    /// The compiled clips that show clip `slot` of `track`: the one
+    /// playing and the one cued. When an edit cannot go into one of them
+    /// in place, the host compiles, so the other need not be edited.
+    fn shown(&mut self, track: usize, slot: usize) -> [Option<&mut ClipView>; 2] {
+        let Some(t) = self.tracks.get_mut(track) else {
+            return [None, None];
+        };
+        let playing = t.clip.as_mut().filter(|c| c.slot == slot);
+        let cued = t
+            .cue
+            .as_mut()
+            .filter(|c| c.slot == Some(slot))
+            .and_then(|c| c.clip.as_mut());
+        [playing, cued]
+    }
+
+    /// Note `n` was added to clip `slot` of `track`, at the end of its
+    /// notes (as [`mpfree_seq::Clip::add_note`] and [`crate::Takes::add`]
+    /// do): put it in this view where compiling the project again would,
+    /// without allocating. Real-time safe. False when the view has no
+    /// room for it ([`PlayView::make_room`]); then compile instead. A clip
+    /// the view does not show needs nothing.
+    pub fn add_note(&mut self, track: usize, slot: usize, n: &Note) -> bool {
+        self.shown(track, slot)
+            .into_iter()
+            .flatten()
+            .all(|c| c.add_note(n))
+    }
+
+    /// A note equal to `n` was taken out of clip `slot` of `track` (as
+    /// [`crate::Takes::erase`] does): take it out of this view too.
+    /// Real-time safe. False when the view does not hold it; then compile
+    /// instead.
+    pub fn remove_note(&mut self, track: usize, slot: usize, n: &Note) -> bool {
+        self.shown(track, slot)
+            .into_iter()
+            .flatten()
+            .all(|c| c.remove_note(n))
+    }
+
+    /// Lock `l` was put in clip `slot` of `track` (as
+    /// [`crate::Takes::add_lock`] does): in the place of `replaced`, the
+    /// lock it returned, or else at the end of the clip's locks. Put it in
+    /// this view where compiling again would. Real-time safe. False when
+    /// there is no room, or `replaced` is not in the view; then compile
+    /// instead.
+    pub fn add_lock(
+        &mut self,
+        track: usize,
+        slot: usize,
+        l: &Lock,
+        replaced: Option<&Lock>,
+    ) -> bool {
+        self.shown(track, slot)
+            .into_iter()
+            .flatten()
+            .all(|c| c.add_lock(l, replaced))
+    }
+
+    /// A lock equal to `l` was taken out of clip `slot` of `track` (as
+    /// [`crate::Takes::erase_lock`] does): take it out of this view too.
+    /// Real-time safe. False when the view does not hold it.
+    pub fn remove_lock(&mut self, track: usize, slot: usize, l: &Lock) -> bool {
+        self.shown(track, slot)
+            .into_iter()
+            .flatten()
+            .all(|c| c.remove_lock(l))
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {
@@ -278,52 +462,22 @@ fn clip_view(
         .and_then(Option::as_ref)
         .filter(|_| slot < SLOTS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
-    let length = clip.length as f64;
-    let mut notes: Vec<NoteView> = clip
-        .notes
-        .iter()
-        .map(|n| {
-            let at = clip
-                .quantise
-                .map_or(n.tick as f64, |q| q.apply(n.tick as f64));
-            NoteView {
-                // Quantise can move a note at the very end onto the next pass's start.
-                local: at.rem_euclid(length),
-                len: clip.speed.to_song(n.len as f64),
-                note: n.note,
-                velocity: n.velocity,
-                src: *n,
-            }
-        })
-        .collect();
-    notes.sort_by(|a, b| a.local.total_cmp(&b.local));
-    let mut locks: Vec<LockView> = clip
-        .locks
-        .iter()
-        .map(|l| {
-            let at = clip
-                .quantise
-                .map_or(l.tick as f64, |q| q.apply(l.tick as f64));
-            LockView {
-                local: at.rem_euclid(length),
-                addr: l.addr,
-                value: l.value,
-                src: *l,
-            }
-        })
-        .collect();
-    locks.sort_by(|a, b| a.local.total_cmp(&b.local));
-    Ok(ClipView {
+    let mut view = ClipView {
         slot,
         origin,
         length: clip.length,
         speed: clip.speed,
         quantise: clip.quantise,
-        song_len: clip.speed.to_song(length),
+        song_len: clip.speed.to_song(clip.length as f64),
         swing: clip.swing.or(t.swing),
-        notes,
-        locks,
-    })
+        notes: Vec::new(),
+        locks: Vec::new(),
+    };
+    view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
+    view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
+    view.locks = clip.locks.iter().map(|l| view.lock_view(l)).collect();
+    view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
+    Ok(view)
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.
