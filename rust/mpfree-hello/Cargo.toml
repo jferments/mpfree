@@ -18,3 +18,7 @@ mpfree-touch = { path = "../mpfree-touch" }
 mpfree-touch-evdev = { path = "../mpfree-touch-evdev" }
 mpfree-ui = { path = "../mpfree-ui" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-play = { path = "../mpfree-play" }
+mpfree-time-ui = { path = "../mpfree-time-ui" }

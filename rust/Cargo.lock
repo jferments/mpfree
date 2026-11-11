@@ -96,10 +96,14 @@ dependencies = [
  "mpfree-arp-ui",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-play",
  "mpfree-sampler",
  "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-time-ui",
  "mpfree-touch",
  "mpfree-touch-evdev",
+ "mpfree-transport",
  "mpfree-ui",
 ]
 
