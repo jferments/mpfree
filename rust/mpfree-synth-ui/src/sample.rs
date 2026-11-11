@@ -3,9 +3,10 @@
 //! node (a hosted plugin, an FX unit) gets from its parameters alone.
 
 use crate::view::{SynthPanel, SynthState};
-use mpfree_node::{Ctx, Curve, Kind, Node, NodeInfo, ParamInfo, Timed, Unit};
+use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
+use mpfree_synth::fm_params::{self as fp, op};
 use mpfree_synth::params as pp;
-use mpfree_synth::Poly;
+use mpfree_synth::{Fm, Poly};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -76,6 +77,38 @@ fn poly_scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
     Ok(Sample { name: s.name, about: s.about, ui, panel })
 }
 
+/// Plays a four-note chord on `node` for 300 ms with three of its pads
+/// pressed (hard, light, none, medium), so the Pressure page has live bars.
+pub fn press_chord(node: &mut dyn Node) {
+    let notes = [(60u8, 110u8), (64, 40), (67, 0), (72, 85)];
+    let mut ev: Vec<Timed> = notes.iter().map(|&(n, _)| Timed::new(0, NodeEvent::NoteOn { note: n, velocity: 110 })).collect();
+    let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+    for k in 0..56u64 {
+        if k >= 8 {
+            ev.extend(notes.iter().map(|&(note, value)| Timed::new(0, NodeEvent::Pressure { note, value })));
+        }
+        node.process(&Ctx::new(48_000, k * 256), &ev, &mut l, &mut r);
+        ev.clear();
+    }
+}
+
+/// Poly · Brass on its Pressure page, with a chord held and pressed.
+fn poly_pressure_scene(fonts: Fonts) -> Result<Sample, String> {
+    let i = preset("Brass");
+    let mut node = poly(i, &[]);
+    press_chord(&mut node);
+    let mut out = [0.0; 16];
+    let n = node.pressures(&mut out);
+    let mut st = SynthState::from_node(&node, "Keys", Color::rgb(0x3DDC97), poly_presets(), Some(i));
+    st.pressures = out[..n].to_vec();
+    let mut ui = app_ui(fonts, "Press a pad harder to swell it · Q-Links: threshold, full at, depth 1, depth 2");
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel.pages().iter().position(|p| p.name == "Pressure").ok_or("no Pressure page")?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample { name: "synth-pressure", about: "Poly · Brass, Pressure page: a 9 dB swell and +1.5 oct, a chord held with three pads pressed", ui, panel })
+}
+
 /// Index of a Poly preset by name.
 pub fn preset(name: &str) -> usize {
     Poly::presets().iter().position(|p| p.name == name).unwrap_or(0)
@@ -100,8 +133,58 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     for s in &scenes {
         out.push(poly_scene(s, fonts())?);
     }
+    out.push(poly_pressure_scene(fonts())?);
+    // Glass Keys edited for the keyboard page: the tine (operator 2) fades
+    // above C3 and the body (operator 1) lifts a little below it, as DX7
+    // electric pianos do.
+    let kbd: &[(u16, f32)] = &[
+        (fp::op_id(2, op::R_DEPTH), 45.0), (fp::op_id(2, op::R_CURVE), 1.0),
+        (fp::op_id(1, op::L_DEPTH), 30.0), (fp::op_id(1, op::L_CURVE), 3.0),
+    ];
+    for (name, about, preset, page, edits) in [
+        ("synth-fm-algo", "FM · Brass Section, Algo page: algorithm 22 drawn, feedback 7 on operator 6, the six output levels",
+         "Brass Section", "Algo", &[][..]),
+        ("synth-fm-mod", "FM · Brass Section, Mod page: a small pitch scoop and a delayed vibrato", "Brass Section", "Mod", &[]),
+        ("synth-fm-op", "FM · Glass Keys, Op 2 page: the ratio-14 tine, ringed in the algorithm, beside its envelope",
+         "Glass Keys", "Op 2", &[]),
+        ("synth-fm-kbd", "FM · Glass Keys, Kbd 1-2 page, edited: the tine fades above C3, the body lifts below it",
+         "Glass Keys", "Kbd 1-2", kbd),
+        ("synth-fm-pressure", "FM · Brass Section, Pressure page: a 9 dB swell and +12 brightness, a chord held and pressed",
+         "Brass Section", "Pressure", &[]),
+    ] {
+        out.push(fm_scene(name, about, preset, page, edits, fonts())?);
+    }
     out.push(generic_scene(fonts())?);
     Ok(out)
+}
+
+const FM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Keys track";
+
+/// FM with a factory preset, on one of its pages.
+fn fm_scene(name: &'static str, about: &'static str, preset: &str, page: &str, edits: &[(u16, f32)], fonts: Fonts)
+    -> Result<Sample, String> {
+    let presets = Fm::presets();
+    let i = presets.iter().position(|p| p.name == preset).ok_or_else(|| format!("no FM preset {preset}"))?;
+    let mut node = Fm::new(48_000);
+    node.load_preset(&presets[i]);
+    for &(id, v) in edits {
+        node.set_param(id, v);
+    }
+    let names = presets.iter().map(|p| p.name.clone()).collect();
+    let mut st = SynthState::from_node(&node, "Keys", Color::rgb(0x6EA8FE), names, Some(i));
+    st.edited = !edits.is_empty();
+    if page == "Pressure" {
+        press_chord(&mut node);
+        let mut out = [0.0; 16];
+        let n = node.pressures(&mut out);
+        st.pressures = out[..n].to_vec();
+    }
+    let mut ui = app_ui(fonts, FM_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel.pages().iter().position(|p| p.name == page).ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample { name, about, ui, panel })
 }
 
 // ---------------------------------------------------------------- example effect

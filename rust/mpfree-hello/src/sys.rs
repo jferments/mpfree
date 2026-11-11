@@ -106,3 +106,66 @@ pub fn lock_memory() -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Tests only: a pass-through global allocator that counts the calls made
+/// by threads that asked to be watched, so a test can show that a piece of
+/// the audio loop never allocates or frees. Other test threads are not
+/// counted. Not part of the program itself.
+#[cfg(test)]
+pub mod alloc_count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static WATCH: Cell<bool> = const { Cell::new(false) };
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn count() {
+        if WATCH.with(Cell::get) {
+            CALLS.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    struct Counting;
+
+    // SAFETY: every call goes straight to the system allocator.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            count();
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            count();
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            count();
+            unsafe { System.realloc(p, l, n) }
+        }
+    }
+
+    #[global_allocator]
+    static GLOBAL: Counting = Counting;
+
+    /// Allocations and frees made by this thread while running `f`.
+    pub fn calls<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        CALLS.with(|c| c.set(0));
+        WATCH.with(|w| w.set(true));
+        let r = f();
+        WATCH.with(|w| w.set(false));
+        (r, CALLS.with(Cell::get))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_counting_allocator_sees_this_threads_allocations() {
+        let (v, calls) = super::alloc_count::calls(|| vec![1u8; 64]);
+        assert_eq!(v.len(), 64);
+        assert!(calls >= 1);
+        let ((), none) = super::alloc_count::calls(|| ());
+        assert_eq!(none, 0);
+    }
+}

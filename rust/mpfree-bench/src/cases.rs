@@ -3,7 +3,7 @@
 //! must not.
 
 use mpfree_fx::ids;
-use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety, MultiFilter, Phaser};
+use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId};
 use mpfree_grain::GrainNode;
 use mpfree_looper::{Command as LooperCommand, Looper};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
@@ -170,6 +170,74 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
     }
 }
 
+/// The mixer at its default size (2 inputs, 32 pad channels, 16 tracks, 8
+/// submixes, 4 returns), fed `tracks` tracks and `pads` pad channels of
+/// program material, with a typical song's routing: pads into the drum
+/// track, drums and bass into submixes, sends to two returns. With
+/// `inserts`, the strips carry a song's worth of effects too.
+fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Case {
+    use ids::mixer::{self as mx, output};
+    let mut m = Mixer::new(MixerConfig::default(), rate, MAX_BLOCK.min(1024));
+    for p in 0..pads {
+        m.set_now(StripId::Pad(p), mx::OUTPUT, output::TRACK);
+        m.set_now(StripId::Pad(p), mx::send(1), -12.0);
+    }
+    for t in 0..tracks {
+        let s = StripId::Track(t);
+        m.set_now(s, mx::OUTPUT, output::bus(t % 3));
+        m.set_now(s, mx::PAN, (t as f32 * 37.0) % 200.0 - 100.0);
+        m.set_now(s, mx::send(0), -18.0);
+        m.set_now(s, mx::send_pre(1), 1.0);
+        m.set_now(s, mx::send(1), -24.0);
+    }
+    m.set_now(StripId::Bus(0), mx::OUTPUT, output::bus(3));
+    if inserts {
+        for t in 0..tracks.min(6) {
+            let c = m.chain_mut(StripId::Track(t)).unwrap();
+            c.push(Box::new(Eq::new()));
+            c.push(Box::new(Compressor::new()));
+        }
+        m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
+        m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
+        m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
+        m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
+        m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
+        m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
+        m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
+    }
+    // The sources' audio, rendered once so the timing is the mixer's alone
+    // (the sampler and synth cases time making it); each source reads its
+    // own offset.
+    const TABLE: usize = 8192;
+    let max = MAX_BLOCK.min(1024);
+    let (mut tl, mut tr) = (vec![0.0f32; TABLE + max], vec![0.0f32; TABLE + max]);
+    input(rate, 0, &mut Lcg(11), &mut tl, &mut tr);
+    let at = |f: u64| (f % TABLE as u64) as usize;
+    Case {
+        name: name.to_string(),
+        module: if inserts { "fx" } else { "mix" },
+        what: if inserts { "the routing below plus EQ and compressor on 6 tracks, drive and glue on submixes, reverb, delay, master EQ" } else { "a song's routing, no inserts (Master safety included)" },
+        block: Box::new(move |b, out_l, out_r| {
+            let n = out_l.len();
+            let f0 = b * n as u64;
+            for t in 0..tracks {
+                let o = at(f0 + t as u64 * 977);
+                let (il, ir) = m.track_input(t).unwrap();
+                il[..n].copy_from_slice(&tl[o..o + n]);
+                ir[..n].copy_from_slice(&tr[o..o + n]);
+            }
+            for p in 0..pads {
+                let o = at(f0 + p as u64 * 1543);
+                let (il, ir) = m.pad_input(p).unwrap();
+                il[..n].copy_from_slice(&tl[o..o + n]);
+                ir[..n].copy_from_slice(&tr[o..o + n]);
+            }
+            m.process(&Ctx::new(rate, f0), out_l, out_r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// Every case, at `rate`.
 pub fn all(rate: u32) -> Vec<Case> {
     let mut v = Vec::new();
@@ -206,6 +274,10 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
                   &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
                     (mpfree_grain::node::param::SPRAY, 50.0)])));
+    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, false)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, false)));
+    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, false)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, true)));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));

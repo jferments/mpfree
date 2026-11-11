@@ -170,7 +170,7 @@ fn main() -> ExitCode {
         (None, false) => println!("Desktop numbers only: pass --calibration FILE (from --calibrate on the MPC) for MPC estimates."),
     }
     println!();
-    println!("{:<38} {:>8} {:>8} {:>8} {:>7} {:>7} {:>8}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %", "mem MB",
+    println!("{:<50} {:>8} {:>8} {:>8} {:>7} {:>7} {:>8}  {}", "case", "mean us", "p99 us", "max us", "p99 %", "max %", "mem MB",
              if on_device || model.is_some() { "MPC worst vs module budget" } else { "" });
 
     let mut rows = Vec::new();
@@ -202,7 +202,7 @@ fn main() -> ExitCode {
         } else {
             String::new()
         };
-        println!("{:<38} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}% {:>8.2}  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
+        println!("{:<50} {:>8.1} {:>8.1} {:>8.1} {:>6.2}% {:>6.2}% {:>8.2}  {tail}{}", c.name, s.mean_ns / 1e3, s.p99_ns as f64 / 1e3,
                  s.max_ns as f64 / 1e3, 100.0 * s.p99_ns as f64 / period_ns, 100.0 * s.max_ns as f64 / period_ns, mb(c.mem_bytes),
                  if s.allocs > 0 { format!("  ALLOCATES ({} calls)", s.allocs) } else { String::new() });
         rows.push(Row { name: c.name, module: c.module, what: c.what, s, mem_bytes: c.mem_bytes });

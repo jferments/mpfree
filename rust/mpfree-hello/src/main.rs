@@ -23,7 +23,13 @@
 //!                      in kits.bin, picked with the wheel or the screen, played
 //!                      from the pads or the screen, level on Q-Link 1 (at most
 //!                      G dB), timing of each hit, Note Repeat, Latch, Full and
-//!                      Half Level, MENU and Prefs, the button guide; STOP ends it
+//!                      Half Level, MENU and Prefs, the button guide; the synth
+//!                      (Poly) as the kit list's last entry, its pages on the
+//!                      Synth tab with Q-Links 1-4 on the marked knobs; the
+//!                      Sample tab, the sampler's pad editor (Wave: Start, End,
+//!                      the loop and fades of the pad last hit, Q-Links 1-4 on
+//!                      the markers; Chop: slices put on the kit's pads; edits
+//!                      stay in memory); STOP ends it
 //!   app [--gain-db G] [--kits FILE] [--keep-screen]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
@@ -54,21 +60,29 @@
 //! never touches storage, the eMMC is hidden from this kernel anyway, and
 //! nothing it does survives a power-cycle.
 
-#![deny(unsafe_code)] // the few C calls live in sys.rs, the only module allowed unsafe code
+#![deny(unsafe_code)] // the few C calls (and a test-only counting allocator) live in sys.rs, the only module allowed unsafe code
 
 mod akai;
 mod app;
 mod alsa;
+mod debug_page;
 mod gui;
 mod kit;
+mod perf;
+mod sample_page;
 mod sampler;
+mod synth;
 mod sys;
+mod time;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_screen_log::Rotation;
+use mpfree_time_ui::{TimeAction, TransportInfo};
+use mpfree_transport::Command;
+use mpfree_synth_ui::SynthAction;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Fonts, SoftCanvas, Tone};
 use std::fs::{self, File, OpenOptions};
@@ -251,6 +265,17 @@ impl Out {
             if s.try_send(msg).is_err() {
                 self.dropped += 1;
             }
+        }
+    }
+
+    /// Like `show`, but a message that finds no room comes back, so the
+    /// audio thread can keep it (and not free it) and try again.
+    fn try_show(&mut self, msg: gui::ToUi) -> Result<(), gui::ToUi> {
+        match self.sink.as_ref() {
+            Some(s) => s.try_send(msg).map_err(|e| match e {
+                std::sync::mpsc::TrySendError::Full(m) | std::sync::mpsc::TrySendError::Disconnected(m) => m,
+            }),
+            None => Ok(()),
         }
     }
 
@@ -1003,6 +1028,12 @@ fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
     rest
 }
 
+/// Resting pad colours for kit number `k` from which pads have a sound
+/// (`sampler::Player::sounds`, which follows the Sample tab's chops).
+fn sound_colours(has: [bool; 16], k: usize) -> [[u8; 3]; 16] {
+    has.map(|h| if h { akai::kit_colour(k) } else { [0; 3] })
+}
+
 /// List a kit's sounds by pad.
 fn show_kit(out: &mut Out, kit: &kit::Kit) {
     for s in &kit.sounds {
@@ -1146,9 +1177,9 @@ fn level_value(db: f32, max: f32) -> f32 {
     ((db - LEVEL_MIN_DB) / (max - LEVEL_MIN_DB)).clamp(0.0, 1.0)
 }
 
-/// What the pad player's screen shows about each kit.
-fn kit_views(kits: &[kit::Kit]) -> Vec<gui::KitView> {
-    kits.iter().enumerate().map(|(k, kit)| {
+/// What the pad player's screen shows about each kit, then the synth.
+fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
+    let mut views: Vec<gui::KitView> = kits.iter().enumerate().map(|(k, kit)| {
         let mut pads = vec![None; 16];
         for s in &kit.sounds {
             if let Some(pad) = mpc_one::pad_index(s.note) {
@@ -1156,7 +1187,9 @@ fn kit_views(kits: &[kit::Kit]) -> Vec<gui::KitView> {
             }
         }
         gui::KitView { name: kit.name.clone(), pads, colour: akai::kit_colour(k) }
-    }).collect()
+    }).collect();
+    views.push(synth.kit_view());
+    views
 }
 
 /// The loading steps, for the progress bar.
@@ -1315,6 +1348,8 @@ struct RenderTime {
     periods: u64,
     total: Duration,
     max: Duration,
+    /// Since the last `take_window` (the Performance page's 250 ms).
+    window: (u32, Duration, Duration),
 }
 
 impl RenderTime {
@@ -1322,6 +1357,15 @@ impl RenderTime {
         self.periods += 1;
         self.total += d;
         self.max = self.max.max(d);
+        let w = &mut self.window;
+        *w = (w.0 + 1, w.1 + d, w.2.max(d));
+    }
+
+    /// Mean and largest render time since the last call, µs.
+    fn take_window(&mut self) -> (f32, f32) {
+        let (n, total, max) = std::mem::take(&mut self.window);
+        let mean = if n == 0 { 0.0 } else { total.as_secs_f32() * 1e6 / n as f32 };
+        (mean, max.as_secs_f32() * 1e6)
     }
 
     fn describe(&self) -> String {
@@ -1340,6 +1384,82 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
             time.describe(), c.steals, c.dropped_events, c.peak_grains, c.skipped_grains)
 }
 
+/// How often the screen hears the song position while it moves (the bar
+/// shows bar.beat.tick; state changes go at once).
+const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+/// How often the Sample page's playheads are sent while it shows.
+const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
+
+/// The sequencer's notes on the pads: the sampler's kit, or Poly while the
+/// synth has the pads. Each hit is noted so the screen's pads can flash.
+struct SeqPads<'a> {
+    player: &'a mut sampler::Player,
+    synth: Option<&'a mut synth::Synth>,
+    flashes: [u8; 16],
+    hits: u64,
+}
+
+impl time::Pads for SeqPads<'_> {
+    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+        let sounded = match self.synth.as_mut() {
+            Some(s) if pad < 16 => {
+                s.note_on(pad, velocity, offset);
+                true
+            }
+            Some(_) => false,
+            None => self.player.hit_at(pad, velocity, offset),
+        };
+        if sounded {
+            self.hits += 1;
+            if let Some(f) = self.flashes.get_mut(pad) {
+                *f = velocity.max(1);
+            }
+        }
+        sounded
+    }
+    fn release_at(&mut self, pad: usize, offset: u32) {
+        match self.synth.as_mut() {
+            Some(s) => s.note_off(pad, offset),
+            None => self.player.release_at(pad, offset),
+        }
+    }
+    fn stop_all(&mut self) {
+        match self.synth.as_mut() {
+            Some(s) => s.all_off(),
+            None => self.player.stop_all(),
+        }
+    }
+}
+
+/// A touch or a button for the time engine. The tempo belongs to the app
+/// (Note Repeat and the arp follow it too), so the Clips page's tempo goes
+/// there; the transport follows it each period. Returns the app's effects.
+fn time_action(out: &mut Out, time: &mut time::TimeHost, app: &mut app::App, a: TimeAction) -> Vec<app::Effect> {
+    if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
+        return app.set_tempo(bpm);
+    }
+    match time.act(a) {
+        Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
+        Ok(_) => {}
+        Err(e) => out.note(&format!("time: {e}")),
+    }
+    Vec::new()
+}
+
+/// The synth's part of the status line.
+fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
+    let c = synth.counters();
+    format!("synth: Poly ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, {} resets",
+            synth.preset_name(), time.describe(), c.notes, c.peak_voices, synth.value(mpfree_synth::params::POLYPHONY),
+            c.dropped, c.resets)
+}
+
+/// The log line for the pads moving to the synth or by an octave.
+fn synth_pads_note(synth: &synth::Synth) -> String {
+    format!("pads: Poly synth, {} (pad 1 = {}; SHIFT + wheel on Play: octave)", synth.range_text(),
+            synth::note_name(synth.note(0)))
+}
+
 fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gui::FromUi>) -> Result<(), String> {
     // 1. Kits.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
@@ -1350,13 +1470,36 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // The sampler engine plays them (and adds the Grains kit when there is room).
     progress(out, 1, "Loading drum kits", "Handing the sounds to the sampler", 0.4);
     let mut player = sampler::Player::new(&mut kits, &mpc_one::PAD_NOTES, RATE)?;
-    let n = kits.len();
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
-    out.say(&format!("pad player: {n} kits, {sounds} sounds"));
+    out.say(&format!("pad player: {} kits, {sounds} sounds", kits.len()));
     for (k, kit) in kits.iter().enumerate() {
         out.say(&format!("kit {}: {} ({} sounds)", k + 1, kit.name, kit.sounds.len()));
     }
-    out.show(gui::ToUi::Kits(kit_views(&kits)));
+    // The synth: one more entry after the kits, and the Synth tab.
+    let mut synth = synth::Synth::new(RATE);
+    out.say(&format!("synth: Poly, preset {}, as kit list entry {} ({}); the Synth tab edits it",
+                     synth.preset_name(), kits.len() + 1, synth.range_text()));
+    out.show(gui::ToUi::Kits(kit_views(&kits, &synth)));
+    out.show(gui::ToUi::Synth(synth.state()));
+    // The Sample tab edits the kits' projects on the screen thread.
+    out.show(gui::ToUi::SampleKits { projects: player.take_projects(), rate: RATE });
+    let drum_kits = kits.len();
+    let synth_kit = drum_kits;
+    let n = drum_kits + 1;
+    let mut synth_on = false;
+    let mut param_log = synth::ParamLog::default();
+    let mut synth_time = RenderTime::default();
+    // Q-Links on the Public port (no Akai session) send positions; the Synth
+    // page wants turns, so the last position of each is kept.
+    let mut qlink_at: [Option<u8>; 4] = [None; 4];
+    let mut synth_meters = synth.meters();
+    // The Sample tab: a kit view the screen had no room to take back yet
+    // (kept here, never freed on this thread), how many views were swapped
+    // in, its playheads, and whether a view changed the playing kit's pads.
+    let mut view_back: Option<gui::ToUi> = None;
+    let mut views_swapped = 0u64;
+    let mut recolour = false;
+    let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(out, 2, "Finding the pads and buttons", "The controller is a USB device inside the MPC", 0.42);
@@ -1385,6 +1528,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
+    // The time engine (transport, clips, takes) runs in this loop too.
+    let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    out.show(gui::ToUi::Time(Box::new(time.state())));
+    let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
@@ -1392,8 +1539,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
     let limit = if timed { format!("for up to {} s", o.seconds) } else { "until the power goes off".to_string() };
-    out.say(&format!("playing {limit}: pads or the screen play; the wheel or a tap picks the kit; Q-Link 1 or the \
-                      slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB); {}",
+    out.say(&format!("playing {limit}: pads or the screen play; the wheel or a tap picks the kit or the synth; Q-Link 1 \
+                      or the slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB), Q-Links 1-4 the \
+                      Synth tab's marked knobs; {}",
                      if timed { "STOP ends" } else { "STOP silences" }));
     ports.quiet = true;
     let mut fx = app.start();
@@ -1431,12 +1579,13 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
-        // Hits are timed only when they sound at once (not on a repeat grid).
-        let direct = !app.repeating();
+        let mut bank_lights = false;
+        // Hits are timed only when they sound at once (not on the arp's grid).
+        let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             match a {
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
-                    app.pad_down(pad, app.settings.screen_velocity);
+                    fx.extend(app.pad_down(pad, app.settings.screen_velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
                     screen_hits += 1;
@@ -1460,7 +1609,49 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
                 gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
+                gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
+                gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
+                gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
+                gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
+                gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
+                gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
+                gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
+                gui::FromUi::Synth(SynthAction::Set { id, value }) => {
+                    synth.set(id, value);
+                    if let Some(line) = param_log.set(&synth, id, value, t_read) {
+                        out.note(&line);
+                    }
+                }
+                gui::FromUi::SampleView(mut swap) => {
+                    if player.swap_view(&mut swap) {
+                        views_swapped += 1;
+                        recolour |= swap.kit == player.kit();
+                    }
+                    // Back to the screen thread, which frees the old view.
+                    if let Some(old) = view_back.take() {
+                        // Only one view travels at a time, so this is not
+                        // expected; the older one is freed here.
+                        drop(old);
+                        out.note("sample: two kit views waiting to go back; one freed on the audio thread");
+                    }
+                    view_back = Some(gui::ToUi::SampleViewBack(swap));
+                }
+                gui::FromUi::Synth(SynthAction::Preset(k)) => {
+                    if let Some(line) = param_log.flush(&synth) {
+                        out.note(&line);
+                    }
+                    if let Some(name) = synth.load_preset(k) {
+                        out.note(&format!("synth: preset {} of {}, {name}", k + 1, mpfree_synth::Poly::presets().len()));
+                        out.show(gui::ToUi::SynthValues(synth.values()));
+                    }
+                }
             }
+        }
+        if let Some(line) = param_log.poll(&synth, t_read) {
+            out.note(&line);
+        }
+        if let Some(m) = view_back.take() {
+            view_back = out.try_show(m).err();
         }
         ports.show_pressure = app.settings.show_pressure;
         for m in ports.poll(out, &mut buf)? {
@@ -1476,7 +1667,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
-                    app.pad_down(pad, velocity);
+                    fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
                     if direct {
@@ -1491,19 +1682,62 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     app.pressure(pad as usize, pressure);
-                    player.pressure(pad as usize, pressure);
+                    if synth_on {
+                        synth.pressure(pad as usize, pressure);
+                    } else {
+                        player.pressure(pad as usize, pressure);
+                    }
                 }
                 Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
-                Some(ControlEvent::QLinkTurn { knob: 0, delta }) => {
-                    level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
-                    out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                Some(ControlEvent::QLinkTurn { knob, delta }) => {
+                    // On the Synth page Q-Links 1-4 turn the marked knobs; while NOTE REPEAT is held
+                    // or the Arp panel is open they set the arp; otherwise Q-Link 1 is the level.
+                    let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
+                    // On the Sample page they move Start, End and the loop.
+                    let page = app.view();
+                    if matches!(page, app::View::Synth | app::View::Sample) && knob < 4 {
+                        let k = knob as usize;
+                        let ticks = if public {
+                            let was = qlink_at[k].replace(m.bytes[2]);
+                            was.map_or(0, |w| m.bytes[2] as i32 - w as i32)
+                        } else {
+                            delta as i32
+                        };
+                        if ticks != 0 && page == app::View::Synth {
+                            out.show(gui::ToUi::SynthQLink(k, ticks));
+                        } else if ticks != 0 {
+                            out.show(gui::ToUi::SampleQLink(k, ticks));
+                        }
+                    } else if let Some(e) = app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2])) {
+                        fx.extend(e);
+                    } else if knob == 0 {
+                        level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
+                        if public {
+                            qlink_at[0] = Some(m.bytes[2]);
+                        }
+                        out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                    }
                 }
                 Some(ControlEvent::Button { note, pressed }) => fx.extend(app.button(note, pressed, t)),
+                // The control mapper names the Q-Links and takes CCs nothing else knows.
+                Some(ControlEvent::QLinkTouch { knob, touched: true }) if (knob as usize) < 4 => {
+                    fx.extend(app.known_control(app::Code::Button(mpc_one::QLINK_TOUCH_NOTES[knob as usize])));
+                }
+                // Letting go of a Q-Link ends its turn on the Sample page (one undo step).
+                Some(ControlEvent::QLinkTouch { knob, touched: false }) if (knob as usize) < 4
+                    && app.view() == app::View::Sample => out.show(gui::ToUi::SampleLift),
+                None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => fx.extend(app.unknown_cc(m.bytes[1])),
                 _ => {}
+            }
+            if let Some(ControlEvent::QLinkTurn { knob, .. }) = m.event {
+                if let Some(&cc) = mpc_one::QLINK_TURN_CC.get(knob as usize) {
+                    fx.extend(app.known_control(app::Code::Cc(cc)));
+                }
             }
         }
         fx.extend(app.tick(t));
         let mut stop = false;
+        let mut later = Vec::new();
         for e in fx.drain(..) {
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
@@ -1516,14 +1750,46 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 app::Effect::Kit(d) => {
+                    let now = if synth_on { synth_kit } else { player.kit() };
+                    let from = kit_to.unwrap_or(now) as i64;
+                    kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
+                }
+                app::Effect::Octave(d) if synth_on || kit_to == Some(synth_kit) => {
+                    if synth.shift_octave(d) {
+                        out.note(&synth_pads_note(&synth));
+                        out.show(gui::ToUi::KitPads { kit: synth_kit, pads: synth.pad_labels() });
+                        rest = synth.pad_colours();
+                        ports.send_batch(out, false, "the synth's pad colours", &as_slices(&pad_colours(&rest)))?;
+                        lit = [false; 16];
+                    }
+                }
+                // SHIFT + wheel with a drum kit: the kit, as before.
+                app::Effect::Octave(d) => {
                     let from = kit_to.unwrap_or(player.kit()) as i64;
                     kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
                 }
-                app::Effect::StopSounds => player.stop_all(),
+                app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
+                app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
+                app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
+                app::Effect::SamplePad(d) => out.show(gui::ToUi::SamplePad(d)),
+                app::Effect::SampleUndo { redo } => out.show(gui::ToUi::SampleUndo(redo)),
+                app::Effect::StopSounds => {
+                    player.stop_all();
+                    synth.stop();
+                }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Note(s) => out.note(&s),
                 app::Effect::Quit => stop = true,
-                app::Effect::Show(v) => out.show(gui::ToUi::Show(v)),
+                app::Effect::Show(v) => {
+                    // Opening the Synth tab hands the pads to the synth, and
+                    // opening the Sample tab gives them back to the drum kit.
+                    if v == app::View::Synth && !synth_on {
+                        kit_to = Some(synth_kit);
+                    } else if v == app::View::Sample && synth_on {
+                        kit_to = Some(player.kit());
+                    }
+                    out.show(gui::ToUi::Show(v));
+                }
                 app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
                 app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
                 app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
@@ -1531,8 +1797,38 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+                app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
+                app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
+                app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
+                app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
+                app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
+                app::Effect::ClipsWheel { delta, scroll } => out.show(gui::ToUi::ClipsWheel { delta, scroll }),
+                app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
+                // Grains kit are banks A-H again, from kit 9 on).
+                app::Effect::Bank { button, shift } => {
+                    let now = kit_to.unwrap_or(if synth_on { synth_kit } else { player.kit() });
+                    if button < 4 {
+                        let group = if now >= drum_kits { 0 } else { now / 8 * 8 };
+                        let target = group + app::bank_target(now % 8, button, shift);
+                        if target < drum_kits {
+                            kit_to = Some(target);
+                            out.note(&format!("bank: {} (kit {}: {})", app::bank_letter(target), target + 1,
+                                              kits[target].name));
+                        } else {
+                            out.note(&format!("bank {}: no kit there ({} kits)",
+                                              app::bank_letter(group + app::bank_target(now % 8, button, shift)),
+                                              drum_kits));
+                        }
+                    }
+                    bank_lights = true;
+                }
+                // What it gives back (the tempo's status line and note) is
+                // handled with the next period's effects.
+                app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
             }
         }
+        fx.append(&mut later);
         if let Some(p) = audio_change {
             totals.periods += play.periods;
             totals.xruns += play.xruns;
@@ -1543,22 +1839,61 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             play = Playback::start(open_acva(out, p)?, p)?;
             pending.clear();
         }
-        if let Some(k) = kit_to.filter(|&k| k != player.kit()) {
-            player.select(k);
+        let playing_kit = if synth_on { synth_kit } else { player.kit() };
+        if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
             used[k] = true;
-            rest = kit_pad_colours(&kits[k], k);
-            out.note(&format!("kit {}: {} ({} sounds)", k + 1, kits[k].name, kits[k].sounds.len()));
-            ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
+            if k == synth_kit {
+                // The sampler keeps its kit; its sounds finish.
+                synth_on = true;
+                rest = synth.pad_colours();
+                out.note(&synth_pads_note(&synth));
+                ports.send_batch(out, false, "the synth's pad colours", &as_slices(&pad_colours(&rest)))?;
+            } else {
+                if synth_on {
+                    synth_on = false;
+                    synth.all_off();
+                }
+                player.select(k);
+                rest = sound_colours(player.sounds(k), k);
+                out.note(&format!("kit {}: {} ({} sounds)", k + 1, kits[k].name, kits[k].sounds.len()));
+                ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
+            }
             lit = [false; 16];
             out.show(gui::ToUi::Kit(k));
+            bank_lights = true;
         }
+        // The PAD BANK buttons found so far: the bank playing is lit.
+        if bank_lights {
+            let bank = if synth_on { None } else { Some(player.kit() % 4) };
+            for (b, note) in app.map.bank.iter().enumerate() {
+                let Some(note) = *note else { continue };
+                let value = if bank == Some(b) { app::LIGHT_ON } else { app::LIGHT_OFF };
+                if akai::app_lights(note) {
+                    ports.send(true, &akai::button_light(note, value))?;
+                } else if !unlit[note as usize & 0x7F] {
+                    unlit[note as usize & 0x7F] = true;
+                    out.note(&format!("button {note}: no light sent (Akai's app was never seen lighting it)"));
+                }
+            }
+        }
+        app.set_rolling(time.info().state.rolling());
+        time.follow_tempo(app.settings.bpm);
         app.process(PERIOD as u32, &mut events);
+        if let Some(app::Effect::Arp(v)) = app.arp_poll() {
+            out.show(gui::ToUi::Arp(Box::new(v)));
+        }
         for ev in events.as_slice() {
             let (slot, velocity) = match ev.kind {
                 mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
-                // A Grains pad stops when let go; one-shot sounds ignore it.
+                // The synth's note ends; a Grains pad stops when let go; one-shot sounds ignore it.
+                mpfree_arp::EventKind::Off { note } if synth_on => {
+                    synth.note_off(note as usize, ev.offset);
+                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
+                    continue;
+                }
                 mpfree_arp::EventKind::Off { note } => {
                     player.release_at(note as usize, ev.offset);
+                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
                     continue;
                 }
             };
@@ -1567,7 +1902,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 continue;
             }
             let v = app.velocity(velocity);
-            if player.hit_at(pad, v, ev.offset) {
+            // Recorded into the armed track while the transport records.
+            time.pad(ev.offset, mpfree_play::Event::NoteOn { note: slot, velocity: v });
+            if synth_on {
+                synth.note_on(pad, v, ev.offset);
+                hits += 1;
+            } else if player.hit_at(pad, v, ev.offset) {
                 hits += 1;
             } else {
                 silent_hits += 1;
@@ -1582,9 +1922,50 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
             }
         }
-        // Pad lights: lit while held, or while Note Repeat or Latch keeps them going.
+        // The clips play the kit's pads; the screen's pads flash with them.
+        let mut seq = SeqPads { player: &mut player, synth: synth_on.then_some(&mut synth), flashes: [0; 16], hits: 0 };
+        time.period(PERIOD as u32, &mut seq);
+        hits += seq.hits;
+        for (pad, &v) in seq.flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
+            out.show(gui::ToUi::PadFlash { pad, velocity: v });
+        }
+        // The Sample page's playheads, about 25 times a second while it shows.
+        if app.view() == app::View::Sample && heads_at.elapsed() >= SAMPLE_HEADS_EVERY {
+            let heads = player.playheads();
+            if heads != shown_heads {
+                out.show(gui::ToUi::SamplePlayheads(heads));
+                shown_heads = heads;
+            }
+            heads_at = Instant::now();
+        }
+        if time.take_changed() {
+            out.show(gui::ToUi::Time(Box::new(time.state())));
+            (shown_transport, transport_shown_at) = (time.info(), Instant::now());
+        } else {
+            let now = time.info();
+            let moved = now.position != shown_transport.position;
+            let changed = TransportInfo { position: shown_transport.position, ..now } != shown_transport;
+            if changed || moved && transport_shown_at.elapsed() >= TRANSPORT_EVERY {
+                out.show(gui::ToUi::Transport(now));
+                (shown_transport, transport_shown_at) = (now, Instant::now());
+            }
+        }
+        // A chop (or its undo) changed which pads of the playing kit have a
+        // sound: their resting colours follow.
+        if std::mem::take(&mut recolour) && !synth_on {
+            let fresh = sound_colours(player.sounds(player.kit()), player.kit());
+            for pad in 0..16 {
+                if fresh[pad] != rest[pad] {
+                    rest[pad] = fresh[pad];
+                    if !lit[pad] {
+                        ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
+                    }
+                }
+            }
+        }
+        // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
         for pad in 0..16 {
-            let want = held[pad] || (app.repeating() && app.active(pad));
+            let want = held[pad] || (app.generating() && app.active(pad));
             if want != lit[pad] {
                 lit[pad] = want;
                 let colour = if want { akai::hit_colour(rest[pad]) } else { rest[pad] };
@@ -1603,10 +1984,16 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             out.note("no session reply for 10 s");
             out.show(gui::ToUi::Session("No reply".into(), Tone::Bad));
         }
-        voices = voices.max(player.playing());
+        voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
-        let p = player.render(&mut left, &mut right, 10f32.powf(level_db / 20.0));
-        render_time.add(t_render.elapsed());
+        player.render_dry(&mut left, &mut right);
+        let t_synth = Instant::now();
+        render_time.add(t_synth - t_render);
+        synth.render(i * PERIOD as u64, app.settings.bpm, &mut left, &mut right);
+        synth_time.add(t_synth.elapsed());
+        let p = sampler::master_out(&mut left, &mut right, 10f32.powf(level_db / 20.0));
+        // The metronome goes on top; it keeps the samples within ±1 itself.
+        let p = p.max(time.mix_click(&mut left, &mut right));
         peak = peak.max(p);
         window_peak = window_peak.max(p);
         if p > 1.0 {
@@ -1657,21 +2044,36 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             last_status = Instant::now();
             out.note(&format!("status: {hits} hits ({screen_hits} from the screen), {repeats} repeats, {} underruns \
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
-                               clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}",
+                               clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
                               20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
-                              sampler_status(&player, &render_time)));
+                              sampler_status(&player, &render_time), time.describe()));
+            out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
             let seconds_left = timed.then(|| o.seconds.saturating_sub(started.elapsed().as_secs()));
             out.show(gui::ToUi::Timing(gui::Timing {
                 hits, periods: totals.periods + play.periods, underruns: totals.xruns + play.xruns,
-                voices: player.playing(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
+                voices: player.playing() + synth.active_voices(), peak_db: 20.0 * window_peak.max(1e-6).log10(), last_ms: lat.last as f32,
                 min_ms: lat.min as f32, mean_ms: lat.mean() as f32, max_ms: lat.max as f32, seconds_left,
-                periods_queued: periods,
+                periods_queued: periods, audio: {
+                    let (render_mean_us, render_max_us) = render_time.take_window();
+                    let (synth_mean_us, synth_max_us) = synth_time.take_window();
+                    let c = player.counters();
+                    debug_page::AudioNumbers {
+                        render_mean_us, render_max_us, synth_mean_us, synth_max_us,
+                        worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6, steals: c.steals,
+                        dropped: c.dropped_events + events.dropped, peak_grains: c.peak_grains,
+                    }
+                },
             }));
             window_peak = 0.0;
+            let meters = synth.meters();
+            if meters != synth_meters {
+                out.show(gui::ToUi::SynthMeters(meters.clone()));
+                synth_meters = meters;
+            }
         }
         i += 1;
         if stop {
@@ -1694,6 +2096,14 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                       peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {}",
                      kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
     out.say(&sampler_status(&player, &render_time));
+    if views_swapped > 0 {
+        out.say(&format!("sample tab: {views_swapped} edited kit views swapped in"));
+    }
+    out.say(&time.describe());
+    if let Some(line) = param_log.flush(&synth) {
+        out.say(&line);
+    }
+    out.say(&synth_status(&synth, &synth_time));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
