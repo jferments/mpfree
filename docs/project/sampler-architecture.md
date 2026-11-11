@@ -156,6 +156,7 @@ struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 12
 - **Envelopes:** AHDSR as a per-sample multiply with a per-block recomputed segment rate (exponential segments as one multiply per sample).
 - **Filter:** a topology-preserving state-variable filter (LP/HP/BP, 2-pole; 4-pole as two in series), coefficients updated per 16-frame sub-block when modulated.
 - **Declick:** 64-frame release on stop and 32-frame fade on steal or choke, as in today's `mpfree-sampler`.
+- **Pressure:** each pad has one pressure route (`Pad.pressure`: a `PressureTarget` and a depth from −1 to 1). `Event::Pressure { pad, value }` (0-127, from the pad's polyphonic aftertouch) moves that pad's playing voices; a voice that starts later begins unpressed. Pressure is smoothed with a 5 ms one-pole. Full pressure at depth 1 gives +12 dB level (the gain glides over each 16-frame sub-block, so it never clicks), +12 semitones pitch (sample voices change their step; granular voices change the grain pitch), +4 octaves of filter cutoff (needs the pad's filter on), ×16 grain density, ×8 grain length, the grain position moved by the whole region (wrapping), or +100 % spray. A negative depth moves the other way. Built and tested (`tests/pressure.rs`); it also runs in `tests/no_alloc.rs`.
 - **Voice allocation:** a fixed pool (start at 64, set by measurement). Stealing order: same pad's oldest voice if the pad's polyphony is exceeded, then the quietest releasing voice, then the oldest.
 
 ### Warp and stretch
