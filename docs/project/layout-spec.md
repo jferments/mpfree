@@ -30,7 +30,7 @@ The music tabs, in this order:
 | Tab | What it is | Owner thread |
 |---|---|---|
 | Play | Pads, kits, level, timing; Note Repeat / arp | Hello MPC (arp inside it) |
-| Clips | The time engine's launch grid, record settings, takes | Transport / time |
+| Arrange | The time engine's launch grid, record settings, takes (the Clips tab until Jay renamed it, 12:55Z) | Transport / time |
 | Synth | The synth's pages (Poly, later FM) | Synth |
 | Looper | The audio looper: loop waveform, Record / Overdub / Undo, line input meter | Transport / time |
 | Sample | The pad editor: Wave, Chop, Play, Grain, FX (Jay, 07:12Z) | Sampler |
@@ -46,18 +46,26 @@ The music tabs, in this order:
   - **The button guide.**
   - **System info, Touch lab and Calibrate touch.** These open from Prefs.
 - **Adding, removing, renaming or reordering a tab** is a layout change, so it needs Jay's approval. There is no Mix tab: the mixer opens with TRACK MIX (above). The "Steps, Clips, Looper, Arrange, Synth, Mix" bar in the synth previews is a design mock, not this list.
-- **The order is Play, Clips, Synth, Looper, Sample, then Dev.** Jay chose it at 08:15Z.
+- **The order is Play, Arrange, Synth, Looper, Sample, then Dev.** Jay chose it at 08:15Z, and renamed Clips to Arrange at 12:55Z.
 
 ## 4. The Play page
 
-- **Left: the 4 × 4 pads.** Their rectangle never moves or resizes, whatever the arp, the time engine or any panel shows.
-- **Right: a 460 px column,** top to bottom:
-  - the Note Repeat strip (56 px), only while NOTE REPEAT is held or pads are latched;
-  - the kit list;
-  - the level fader (96 px);
-  - timing (232 px).
-- **The Arp panel** takes the right-hand column while it is open. The pads stay put.
-- **The transport bar** goes under the top bar when the time engine is on.
+Built in round 8 (PR #106) from Jay's approval at 10:05Z (mockups F to I). The old big pads are gone.
+
+- **The frame, in every view:**
+  - the transport bar, with the view switch (All, Beats, Loop, Drum) on its right. One tap changes the view, and the screen keeps it while other tabs show;
+  - the view under it;
+  - at the right edge, from under the top bar to the hint line: the master bar (66 px: meter, level handle, level, LIM) and the Q-Link column (168 px: four cards, knob 1 at the top, each with its scope, name, ring and value). A drag on a card turns that knob, and a finger on a knob lights its card.
+- **The views today:**
+  - All (home): the loop strip, the kits, and the pads panel (440 px) on the right.
+  - Beats: the pattern (a note until the step grid is in), the pads, the kits.
+  - Loop: the loop big, the looper's buttons, what it records, the pads.
+  - Drum: the timing numbers, the pads, the kits.
+- **The pads panel** has a heading: "Pads · Bank A · kit". While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
+- **Q-Links on Play:** Q-Link 1 is the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
+- **NOTE REPEAT's strip** takes the top of the view's first column, so the pads don't move.
+- **The Arp panel** takes the view's left, and the pads stay on the right.
+- **Still to come:** the step grid in Beats and All; speaker mutes per layer (looper #110); throws and XY (FX); Macros as a Q-Link bank (mod #102).
 
 ## 5. Prefs (SHIFT + MENU)
 
@@ -90,7 +98,7 @@ The music tabs, in this order:
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
 - **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.
-- **REC, OVERDUB, UNDO:** they act on the page showing (Clips, Looper, Sample), otherwise on the clips.
+- **REC, OVERDUB, UNDO:** they act on the page showing (Arrange, Looper, Sample), otherwise on the clips.
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
 
 ## 7. How changes happen
@@ -102,11 +110,22 @@ The music tabs, in this order:
 ## Proposed, waiting for Jay (not part of the spec yet)
 
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
-- **Scales on the synth pads** (arp thread; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ). **Approved by Jay 09:55Z:** the pads are chromatic by default (the scale's notes lit once one is picked), and one simple, direct action switches them to In key and back (Jay likes how the Hydrasynth does it). In key fills the rows in sequence by default, with "a fourth apart" as the other choice. While the synth is on the pads, PAD BANK A to H hold a pad layout per bank (approved for now, to discuss later). Chord pads: triads on the bottom two rows, sevenths on the top two. **Still proposed:** which button or touch does the In key switch (the Hello thread proposes it with the new Play page), and the status chip text "Poly · A minor · in key".
-- **SHIFT + REC = Capture on every page** (time thread, 09:35Z, as the sequencer plan had it; patch shift-rec-capture-17e5961.patch). Without it, Capture works from the Takes panel's button on Clips (#80).
+- **Scales on the synth pads** (arp thread; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ). **Approved by Jay 09:55Z:** the pads are chromatic by default (the scale's notes lit once one is picked), and one simple, direct action switches them to In key and back (Jay likes how the Hydrasynth does it). In key fills the rows in sequence by default, with "a fourth apart" as the other choice. While the synth is on the pads, PAD BANK A to H hold a pad layout per bank (approved for now, to discuss later). Chord pads: triads on the bottom two rows, sevenths on the top two. **Jay 12:22Z (card):** the switch is a Chromatic | In key chip in the pads panel header, on the Play page and on the Synth tab; one tap switches the bank playing, and the status chip reads "Poly · A minor · in key". SHIFT + PAD BANK stays banks E to H.
+- **SHIFT + REC = Capture on every page** (time thread, 09:35Z, as the sequencer plan had it; patch shift-rec-capture-17e5961.patch). Without it, Capture works from the Takes panel's button on Arrange (#80).
 - **A new Play page** (Jay, 09:34Z and 09:40Z): the big pads go. Play is the home for finger drumming, live looping and making beats, with a small pad map, the four Q-Links in a column beside the knobs, and a thin master bar. Mockups A to E (09:52Z, /mnt/project-files/hello-mpc/play-mockups/). **Jay 10:05Z:** the all-in-one layout (D) is the default home view, and a one-tap switch goes to the other views (Beats, Loop, Drum) and back; a speaker icon beside each instrument (and loop layer) mutes it, instead of a Mutes panel, and the space goes to XY or effects. Round 2 mockups F to I (10:08Z) show that; not built yet. **Jay 10:16Z, the direction for now:** the Looper tab stays and becomes the loop's editor and setup (mockup J-looper-tab, 10:14Z), while Play's looper strip is for performing the loop. The tab has a list of loops with a memory gauge; one lane per layer with level, pan, solo, mute and delete; half length, double, reverse, nudge, trim, seam fade, merging layers and the undo history; recording and input setup; and sending a loop to a pad, a clip, a save or resampling. Several loops, mixing per layer and the edit tools are new engine work for the time thread. With it: the Clips tab becomes **Arrange** (clip launching, takes, Capture; scenes and the song later), and the graphical pad editor becomes the first, half-screen sub-page of Sample (Pads, Wave, Chop, Play, Grain, FX).
 - **The mixer's hardware controls** (FX thread, 10:09Z; panel in #83, `mpfree-mixer-ui`): while the mixer overlay is open, the data wheel sets the selected strip's volume, Q-Links 1-4 its volume, pan, send A and send B, and pads 1-16 select strips on the page. The panel sizes to whatever area the layout gives it: 10 strips and the master at full width, about 7 if the new Play page's right column stays up. **Hello proposes:** while the mixer is open, that column shows only the Q-Links (labelled from the selected strip), so there is no second master meter.
 - **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
+- **The FX chain editor and macros** (mod thread, 11:39Z; code in PR #102; pictures in /mnt/project-files/mod/chain-ui/, redrawn at 11:59Z to Hello's points below):
+  - **The chain editor:** a track's effects in order (on/off, up, down, remove, "+ Add effect", up to 8), the selected effect's knobs, and a Modulate panel for the knob last touched (put it on macro 1 to 8, learn it to a Q-Link, add an LFO or a follower). It opens from a mixer strip's insert row and from the Sample tab's FX sub-tab.
+  - **Macros:** the Play page's Q-Link column can show "Macros 1-4" or "Macros 5-8" as a bank. The full Macros and Morph panel (8 macros, up to 8 targets each, and a morph between two saved scenes A and B) is either a fifth Play view or opens from a long press on a macro card.
+  - **Hello proposes:**
+    - the full panel opens from a long press on a macro card, over the page and under the top bar as the mixer does, so Play keeps its four approved views and no tab is added;
+    - from the mixer, the chain editor takes the mixer's place with a Back to the mixer; from Sample, it sits inside the FX sub-tab, under Sample's pad bar;
+    - the Q-Link column is the width the Play page gives it, not a wider column of its own;
+    - while the chain editor is open, the Q-Links default to the selected effect's first four knobs, with Macros 1-4 and 5-8 as banks;
+    - the Q-Links reach the mod engine through Hello's binding hook (round 8), and their cards use the mixer's card shape (agreed with the mod thread at 11:12Z);
+    - a Q-Link the user learns to a knob belongs to the page it was learned on; Macros 1-8 work on every page.
+  - **Agreed between threads (12:04Z):** the Sample tab's FX sub-tab shows the pad's chain first, with a Pad / Track switch (sampler thread), and the insert row works as the mixer already sends it (FX thread).
 
 ## Where things stand (2026-11-11 08:10Z)
 
@@ -116,6 +135,7 @@ The music tabs, in this order:
 | Round 6, #68 (merged) | Play, Clips, Synth, Console, Prefs (+ Debug in debug mode) |
 | Looper patch (round 7) | Play, Clips, Synth, Looper, (Debug), Console, Prefs |
 | #75 Sample tab (merged) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
-| Round 7 (this spec) | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
+| Round 7 | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
+| Round 8 (this spec) | Play, Arrange, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
 | #72 themes, arp b1aa92e | No tab change (#72 restyles the drawing only) |
 | Preview pictures (not the app) | synth-ui "Steps, Clips, Looper, Arrange, Synth, Mix"; time-ui "Play, Clips, Debug, Console, Prefs"; sampler-ui "Play, Sample, Debug, Prefs"; arp-ui "Play, Debug, Console, Prefs"; wave preview "Record, Sound, Perform, Browse" |

@@ -32,7 +32,7 @@ impl Chip {
 /// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
 /// Every crate's preview draws this bar ([`Header::app`]), never a list of its
 /// own; adding, removing, renaming or reordering a tab needs Jay's approval.
-pub const APP_TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+pub const APP_TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
 /// The tab after them while Prefs > "Show developer tools" is on.
 pub const DEV_TAB: &str = "Dev";
 
@@ -1297,7 +1297,7 @@ mod tests {
 
     #[test]
     fn the_app_bar_is_the_approved_one() {
-        assert_eq!(APP_TABS, ["Play", "Clips", "Synth", "Looper", "Sample"]);
+        assert_eq!(APP_TABS, ["Play", "Arrange", "Synth", "Looper", "Sample"]);
         assert_eq!(Header::app("Synth").active, 2);
         assert_eq!(Header::app("Prefs").active, usize::MAX);
     }

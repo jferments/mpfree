@@ -57,8 +57,9 @@ pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
-    /// The time engine's launch grid, record settings and takes.
-    Clips,
+    /// Arrange: the time engine's launch grid, record settings and takes
+    /// (the Clips tab until Jay renamed it, 12:55Z).
+    Arrange,
     /// The synth's page (mpfree-synth-ui): the controls of Poly or FM.
     Synth,
     /// The audio looper: the loop's waveform, its buttons and the line
@@ -103,7 +104,7 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
-        View::Clips,
+        View::Arrange,
         View::Synth,
         View::Looper,
         View::Sample,
@@ -164,7 +165,7 @@ impl View {
     pub fn name(self) -> &'static str {
         match self {
             View::Play => "Play",
-            View::Clips => "Clips",
+            View::Arrange => "Arrange",
             View::Synth => "Synth",
             View::Looper => "Looper",
             View::Sample => "Sample",
@@ -614,7 +615,7 @@ pub enum Effect {
     Recorded(Pattern, usize),
     /// The data wheel in the workspace: turn the selected cell.
     WorkspaceWheel(i32),
-    /// The data wheel on the Clips page: step the selected record setting,
+    /// The data wheel on the Arrange page: step the selected record setting,
     /// or (with SHIFT) scroll the grid.
     ClipsWheel {
         delta: i32,
@@ -1190,7 +1191,7 @@ impl App {
         fx
     }
 
-    /// The tempo, set from elsewhere (the Clips page): Note Repeat, the arp
+    /// The tempo, set from elsewhere (the Arrange page): Note Repeat, the arp
     /// and the transport follow it.
     pub fn set_tempo(&mut self, bpm: f64) -> Vec<Effect> {
         self.settings.bpm = bpm.clamp(30.0, 300.0);
@@ -1246,7 +1247,7 @@ impl App {
             }
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
-            View::Clips => vec![Effect::ClipsWheel {
+            View::Arrange => vec![Effect::ClipsWheel {
                 delta,
                 scroll: self.shift,
             }],
@@ -1272,7 +1273,7 @@ impl App {
             && matches!(
                 self.view,
                 View::Play
-                    | View::Clips
+                    | View::Arrange
                     | View::Synth
                     | View::Looper
                     | View::Sample
@@ -2573,7 +2574,7 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Clips,
+                View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
@@ -2677,7 +2678,7 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Clips,
+                View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
@@ -3615,8 +3616,8 @@ mod tests {
     #[test]
     fn the_clips_page_takes_the_wheel_and_the_tempo() {
         let mut app = ready();
-        app.open_tab(View::Clips);
-        assert_eq!(app.view(), View::Clips);
+        app.open_tab(View::Arrange);
+        assert_eq!(app.view(), View::Arrange);
         assert_eq!(
             app.wheel(1),
             vec![Effect::ClipsWheel {
@@ -3631,11 +3632,11 @@ mod tests {
                 scroll: true
             }]
         );
-        // MENU there opens the options and goes back to Clips.
+        // MENU there opens the options and goes back to Arrange.
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Options);
         press(&mut app, MENU);
-        assert_eq!(app.view(), View::Clips);
+        assert_eq!(app.view(), View::Arrange);
         // The page's tempo is the app's: Note Repeat and the arp follow it.
         let fx = app.set_tempo(96.5);
         assert_eq!(app.settings.bpm, 96.5);

@@ -12,7 +12,7 @@
 //! [`TimeHost::mix_click`] adds the click while counting in and recording.
 //!
 //! Every pad note also goes into the capture history, so CAPTURE
-//! ([`TimeAction::Capture`]: the Clips page's Capture button) keeps the
+//! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
 //! last phrase in the armed track even when nothing was recording, as an
 //! undoable take (`mpfree-capture`).
 //!
