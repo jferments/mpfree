@@ -273,3 +273,89 @@ or active bootloader execution are included.
 Static evidence cannot confirm silicon MaskROM, unsigned SPL acceptance,
 the existence of an independent eMMC restore path, or runtime Fastboot
 authorization: those remain deliberately separate hardware proof gates.
+
+
+## Fourth owner ZIP: 2026-11-11T132338Z_3414727 (Q89–Q110)
+
+41 report/log files passed the owner ZIP_INDEX SHA256 checks.
+All major V4 analyses and firmware comparisons completed.
+
+### Verified findings and limitations
+
+- Ghidra recognized 213 SPL and 1050 U-Boot functions; V3+V4
+  processed all of their entries. Three P3 decompilations at
+  00100080, 00100200, 00100260 FAILED (memory-range errors).
+  There is also an ARM instruction-decoding warning in SPL.
+  Processed is NOT the same thing as successfully decompiled.
+- Both examined 3.10 MPC One board DTBs add one boot-relevant
+  property relative to 3.6: mode-update = 0x5242c301. This
+  aliases the existing mode-loader value 0x5242c301 in the
+  PMU ff730094 reboot-mode node, not a new physical boot request.
+- Executable boot-script contents match between 3.6 and 3.10
+  after removing the legacy-image wrapper and trailing newline.
+- Firmware 3.10 contains az01-bootloader-sig (9,616-byte ARM ELF)
+  absent from the examined factory 3.6 rootfs. The machine code
+  contains a 32-byte memcmp of calculated values, and a mismatch
+  branches to errx. The program also uses SHA256 and RC4.
+  This is a userspace integrity utility with a fatal error path
+  WHEN THE CLI EXECUTES; invocation at boot and RC4's role
+  are not established. It does NOT prove silicon secure boot.
+- 3.10 also contains az0x-loadpin-trustpoints and an early
+  oneshot LoadPin systemd unit; both absent from 3.6 factory
+  files. The unit runs before local-fs-pre.target, but this
+  is Linux/kernel policy, not a BootROM verification rule.
+- az01-update and libaz01-prog.so.1.3 exist in both systems,
+  but have different SHA256 hashes. Symbols remain similar;
+  functional equivalence cannot be assumed.
+- New 3.10 az01config contains open/read/crc32_z/write/fsync
+  call sites; the file path and command mode must be traced.
+  Do NOT execute it as part of offline reverse engineering.
+- The 3.10 ramfs-update.squashfs was found and file listed,
+  but its internal scripts remain to be inspected offline.
+- Existing Fastboot boot_done has a bootm then reset path;
+  permission value 0x0014d690 is runtime unknown.
+- Both board DTBs differ in one SELECTED boot node, which does
+  not prove the entire DTB differs only in that node.
+
+### New questions (Q89–Q110)
+
+| ID | Open question | Next offline evidence or hardware proof |
+| --- | --- | --- |
+| Q89 | Which Linux callers use update vs loader reboot mode? | Service/helper string xrefs and known register values |
+| Q90 | Can update be distinguished from loader in the PMU? | No: same numeric value; investigate downstream context |
+| Q91 | What is the bootloader-sig mismatch action? | V5 ELF call/control-flow decompilation |
+| Q92 | What does RC4 do in bootloader-sig? | Trace RC4 key, input, output relationship to SHA digest |
+| Q93 | Which partitions and exact ranges are hashed? | V5 ELF static file path and argument xrefs |
+| Q94 | What is primary vs fallback bootloader in this utility? | Map partitions P1/P2/P11 against ELF source paths |
+| Q95 | Is bootloader-sig run automatically at boot? | Search startup services and execution references |
+| Q96 | What does LoadPin helper open and ioctl? | Imported ELF decompilation and service definition |
+| Q97 | Are LoadPin failures fatal to a successful boot? | Kernel config plus init/systemd dependencies |
+| Q98 | Can az01config update P2 environment? | Examine open/write/fsync paths, never execute CLI |
+| Q99 | What code changed between 3.6 and 3.10 updater ELF? | Function/body and import relocation comparison |
+| Q100 | Which signature checks are mandatory for update images? | Library caller graph and conditional branches |
+| Q101 | Can rootfs-only 3.10 execute bootloader write paths? | Trace PART selection and code invocation separately |
+| Q102 | Are three failed P3 Ghidra functions executable code? | Raw ARM/Thumb memory and entry-point validation |
+| Q103 | Can valid-eMMC RK3288 enter genuine silicon MaskROM? | ROM reset mode and physical USB enumeration |
+| Q104 | How can mmc1 be booted when mmc0 script succeeds? | Transient U-Boot input, UART, keys, SD detect |
+| Q105 | Is scriptaddr zero a safe temporary boot-script buffer? | Source/sysboot and U-Boot relocation analysis |
+| Q106 | Does Fastboot GETVAR require the same permission as download? | Dispatch permission/read-only graph |
+| Q107 | What happens after a Fastboot RAM-boot failure? | Validate bootm reset path and PMU state |
+| Q108 | Is there a proven independent eMMC restore route? | Genuine ROM readback/restore verification |
+| Q109 | Does independent Linux bypass userspace LoadPin policy? | Separate ROM/SPL/U-Boot/kernel/userspace trust |
+| Q110 | What cannot be resolved by another offline run? | Evidence ledger and safe, optional hardware probes |
+
+### Next broad but focused V5 pass
+
+1. offline-bootchain-v5-synthesis.py consumes all recognized V3/V4
+   function call graphs/decompilation results: reconstructs direct
+   shortest paths, groups global-state interactions, ranks indirect
+   callbacks and labels unproved hardware assumptions.
+2. offline-bootchain-v5-elf-import.py imports only the three newly
+   significant 3.10 helpers (bootloader-sig, loadpin, az01config)
+   into EPHEMERAL private Ghidra projects, automatically deleted.
+   It emits function pseudocode and strings/xrefs into the single ZIP.
+3. No firmware execution, live MPC access, flashing, environment
+   edits, boot-partition writes, ROM requests or OTP programming.
+
+This replaces endless undirected re-decompilation with testable
+questions and explicit hardware-proof gates.
