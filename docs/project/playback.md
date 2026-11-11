@@ -30,7 +30,18 @@ The control thread compiles the project and the playing clips (`Launch { track, 
 - applies quantise and speed
 - picks the swing to use
 
-The audio thread only reads the view. After an edit, the control thread compiles a new one and swaps it in, the same pattern as the sampler's `EngineView`. Launching clips on a grid (T9) will produce the `Launch` values. For now a clip plays from `origin` on and loops.
+The audio thread only reads the view. After an edit, the control thread compiles a new one and swaps it in, the same pattern as the sampler's `EngineView`. A clip plays from `origin` on and loops.
+
+## Launching on the bar line (cues, T9)
+
+A clip launched while the music plays does not cut in at once. It waits for the next bar line, the way the MPC's Next Sequence mode switches sequences at the end of a bar.
+
+- **A cue.** `PlayView::compile_cued` takes the launches and the `Cue { track, slot }` values waiting on the tracks, one per track. `slot: None` is a stop.
+- **The next bar line the playhead plays.** That is usually the next bar. In a loop whose end comes first, it is the loop start's bar line, right after the jump back. A cue made while stopped waits for the first bar line played after PLAY.
+- **The switch.** On that tick the track's clip stops and the cued clip starts from its first tick. Notes of the old clip still sounding end on the same tick, before the new clip's notes start. A stop does the same with no new clip.
+- **Then it keeps its place against the song.** A started clip's origin is `anchored`: the bar line, moved back by whole passes to before any position the song can reach (`EARLIEST`, about 12 days at 120 BPM). So after a loop jump back or a locate it plays on in phase, and doesn't go silent until it reaches the bar line again.
+- **The control thread catches up.** `Player::started()` names each switch (track, slot, the tick, the new origin). The app applies it with `Started::apply`, which makes the clip the track's launch and removes the cue, and compiles again. Until that view arrives, the player and the recorder carry the switch themselves, so when the view arrives changes nothing that plays.
+- **Recording.** On the armed track, notes held at the switch end on its bar line, in the clip that was playing. Notes played from that tick on go into the new clip. A switch ends a replace pass, and the take goes on as overdub.
 
 ## Playing (`Player::process`)
 
@@ -117,7 +128,16 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
   - a note that quantise moves past a punch out arrives after the next take has begun and erased a note, and still joins its own take. Tagging it when it is handed over instead of when it ends, or adding it to the latest take, makes the test fail.
   - a busy take (300 random notes, punch in and out, a loop, a tempo change, a locate, a stop, overdub off then on, a quantised clip at 3/4 speed) gives the same recorded notes, the same erased notes and the same clip at periods of 1 to 8192 frames and two random sequences. Placing notes by the span's start instead of their frame makes it fail.
 - `src/takes.rs` unit tests: a new take ends redo, old takes are forgotten past the limit, and missing clips and notes change nothing.
-- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. It sees no allocation and no free.
+- `tests/cue.rs` has 9 tests, each run at periods of 1, 64, 128, 1000 and 4096 frames, with the switch applied by the control thread at once, 3 or 40 periods later, or never. Every way must give the same events.
+  - a launch waits for the bar line and starts the clip from its top; a note held over the bar line ends on it; a stop waits too
+  - cues on two tracks start on the same bar line
+  - in a loop, a cue made in its last bar starts at the loop start; a clip started in a loop's first bar plays on in place after the jump back
+  - a cue made while stopped waits for the first bar line played
+  - notes held over the switch go into the old clip, and notes played after it (in the same period too) into the new one
+  - a switch on the armed track ends the replace pass
+
+  With the player forgetting a switch before the view shows it, or the recorder switching after the notes played in the same period, the tests fail.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 periods of five tracks, one through the arp at 1/32s and one recording live pads with replace recording, with loops, tempo changes, locates, punch in and out, stop and panic. A launch and a stop are cued, and the view is never compiled again, so the player carries both switches itself. It sees no allocation and no free.
 
 ## Listening
 
@@ -141,11 +161,16 @@ All the sounds are synthesised in the tool. It prints the take track bar by bar 
 The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 - **The transport bar** goes under the header on the Play and Clips pages. It has Stop, Play and Rec buttons, the record mode (Overdub or Replace), bar.beat.tick, BPM, the meter, swing and the loop, and an Undo button that only answers when there is a take to undo. Chips sit on the right; the arp's chip moves here.
-- **The Clips page** is a launch grid of 8 tracks by 16 slots, 6 slots at a time. A ring shows one pass of a playing clip, amber marks a clip waiting for the next bar, and red marks recording. Tapping a clip launches it from the next bar, or stops it if it is playing. Tapping an empty slot makes a clip there and records into it. Tapping a track's name arms the track.
+- **The Clips page** is a launch grid of 8 tracks by 16 slots, 6 slots at a time. A ring shows one pass of a playing clip, amber marks a clip waiting for the next bar, and red marks recording. Tapping an empty slot makes a clip there and records into it. Tapping a track's name arms the track. While the music plays:
+  - tapping a clip cues it. Its cell shows where it starts ("from 6.1"), and the track's playing clip shows "until 6.1".
+  - tapping the playing clip cues a stop ("stops 6.1").
+  - tapping what is cued takes the cue back.
+
+  While stopped, a tap launches or stops at once. A clip launched while stopped plays as if it had started on the bar line before the position, wherever the song goes after. `clips_after` works out the launches and cues after a tap.
 - **The record settings** set the armed track, the record mode, the count-in (0 to 4 bars), the loop (off, 1, 2, 4, 8 or 16 bars from bar 1) and the tempo.
 - **The takes list** shows the newest take first and dims undone takes, with Undo and Redo.
 
-`TimeState::from_engine` reads what they show from the transport, the project, the launches and the takes, and `action()` turns touches into `TimeAction`s. `mpfree-time-preview` draws sample screens from a real transport, player, recorder and take undo as PNG files.
+`TimeState::from_engine` reads what they show from the transport, the project, the launches and the takes (the app sets the cues and Capture's label), and `action()` turns touches into `TimeAction`s. `mpfree-time-preview` draws sample screens from a real transport, player, recorder and take undo as PNG files.
 
 ## In the pad player (`TimeHost`)
 
@@ -158,11 +183,13 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
 
 It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
 
-Edits (launches, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
+Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
 
 ## Next
 
 - Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
 - Move edits out of the audio loop.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
+- Launching on the bar line (cues) is built. Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), scenes (a row of clips launched together), and a new clip that waits for its bar line without stopping the track's clip first.
+- The step sequencer: steps with velocity, length, nudge and chance, 16 to a page.
 - The looper (T4).
