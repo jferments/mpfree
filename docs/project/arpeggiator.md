@@ -146,6 +146,8 @@ All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-arch
 - On drum pads an octave is 12 pads: with Octaves at 2, pad 1's octave up plays pad 13, and anything past pad 16 is skipped. Octave steps in patterns (`1+`) work the same way.
 - Q-Link turns arrive as steps of 1 or 2. Rate and octaves change every 3 and 4 units, so one detent does not skip values. Without Akai's session the Q-Links send positions (0-127), and those set the value directly.
 
+**MIDI out of the arp (`mpfree_arp::midi`).** `MidiOut` turns the engine's events into note-on and note-off messages on one channel, through a `NoteMap`: `Same` (the notes are MIDI notes already), `Chromatic { base }` (pad slots: pad 1 sends `base`; `NoteMap::PADS` starts at C1, 36) or a 16-note table for a drum map. It counts the note-ons it sent per note, so each gets exactly one note-off even when a note plays again before it ends, and changing the channel or the map, or `all_off` (STOP), ends every sounding note first. It never allocates. `midi_file` writes the messages as a Standard MIDI File (format 0, 960 ticks per quarter note). No port is opened anywhere yet: which MIDI port the MPC sends on, and whether it may, goes through the Hello MPC thread and needs the owner's go.
+
 ## Making custom patterns
 
 Three ways, all producing the same `Pattern`:
@@ -176,7 +178,7 @@ cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-arp --bin
     --chords "57,60,64,67;53,57,60,64" --mode pattern --pattern "1 3 2 3 x:2 . 4 x | oct 0 0 1"
 ```
 
-It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and two hashes: `events` (the notes played; the same on every computer, so it can be compared with Claude's run) and `audio` (the WAV bytes; repeats on one computer, but the synth's maths comes from the system library, so it can differ between computers). Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--ramp 30:16`, `--retrigger`, `--bars`, `--seed`, `--name`.
+It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs, a `.mid` file of each (the same notes, at the job's tempo: drum pads on channel 10 from C1 up, other notes on channel 1 as played) plus a `report.txt` that lists each file with its length, note count, peak level, dropped events and two hashes: `events` (the notes played; the same on every computer, so it can be compared with Claude's run) and `audio` (the WAV bytes; repeats on one computer, but the synth's maths comes from the system library, so it can differ between computers). Run it through `tools/mpc-one/results.py run`, and the report goes into the results zip; the WAVs stay in the work folder for listening. Options: `--mode`, `--order`, `--pattern` or `--builtin NAME`, `--chords`, `--notes` or `--pads 1,3`, `--bpm`, `--rate 1/16T`, `--octaves`, `--gate`, `--swing`, `--strum`, `--scale d_dorian`, `--ramp 30:16`, `--retrigger`, `--bars`, `--seed`, `--name`.
 
 ## Implementation plan
 
@@ -188,7 +190,7 @@ It writes to `~/mpfree-work/arp-render-<UTC>/` (or `--out DIR`): the WAVs plus a
 | C (engine side done; screens drawn) | Done: record on pads (Step and Free time), pattern library files, `Engine::position`. Done too: the step strip and the pattern workspace with its record screen (`mpfree-arp-ui`). Wired into the pad player with B (recording in Step mode). Still to do: Free time recording on the device, pattern library files on the device, edit lanes on screen | B | yes |
 | D (engine done, PR #35 and this PR) | Lanes with their own lengths (polymeter): octave, degree, velocity, gate, nudge; scales applied last. Still to do: the UI | C for the UI | no (engine), then yes |
 | E (engine done except transport items, PR #35 and this PR) | Done: mutate with keep-original, rotate, Random no-repeat and Random once, strum, retrigger on a new note, repeat count, per-lane random amounts, velocity ramp. Still to do: retrigger on beat or bar (needs a transport) | D | no, then yes |
-| F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`, waits for the transport crate to drive it), MIDI clock in and out, MIDI out of the arp, capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
+| F | Transport and MIDI: sync to the sequencer's clock (engine side done: `Engine::sync`; the transport thread drives it from round 7), MIDI clock in and out, MIDI out of the arp (done as bytes: `mpfree_arp::MidiOut` and MIDI files, no port yet), capture to a track, MIDI file import | sequencer and MIDI I/O work | yes |
 
 Each device step follows the project's device safety rule and the paced-test pattern: built and rehearsed on the workstation first, RAM-only on the test build, storage hashes before and after, one Enter per phase.
 
