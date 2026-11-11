@@ -361,5 +361,11 @@ python3 "$ROOT/tools/mpc-one/bootchain-evidence-ledger.py" "$REPORT_DIR" \
     >"$REPORT_DIR/evidence-ledger-console.txt" 2>&1 ||
     echo "WARNING: evidence ledger generation failed; logs will be included in ZIP." >&2
 
+echo
+echo "V5: synthesizing cross-stage calls, globals, permission and signature paths..."
+python3 "$ROOT/tools/mpc-one/offline-bootchain-v5-synthesis.py" "$REPORT_DIR" \
+    >"$REPORT_DIR/bootchain-v5-synthesis-console.txt" 2>&1 ||
+    echo "WARNING: V5 synthesis failed; its error and prior reports remain in the ZIP." >&2
+
 echo "NEXT: upload the single ZIP generated at exit, not individual reports."
 echo "DO NOT commit the ZIP or proprietary reports to public GitHub."
