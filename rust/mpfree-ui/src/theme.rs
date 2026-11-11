@@ -473,9 +473,11 @@ impl Theme {
                     "grid" => Backdrop::Grid,
                     "dots" => Backdrop::Dots,
                     "scanlines" => Backdrop::Scanlines,
-                    _ => return Err(format!(
+                    _ => {
+                        return Err(format!(
                         "backdrop: expected solid, gradient, grid, dots or scanlines, got {v:?}"
-                    )),
+                    ))
+                    }
                 }
             }
             "backdrop_to" => self.backdrop_to = col(v)?,
@@ -484,16 +486,17 @@ impl Theme {
             "face_body" => self.face_body = face(v)?,
             "face_title" => self.face_title = face(v)?,
             "startup" => {
-                self.startup =
-                    match v {
-                        "galaxy" => Startup::Galaxy,
-                        "console" => Startup::Console,
-                        "synthwave" => Startup::Synthwave,
-                        "spaceship" => Startup::Spaceship,
-                        _ => return Err(format!(
+                self.startup = match v {
+                    "galaxy" => Startup::Galaxy,
+                    "console" => Startup::Console,
+                    "synthwave" => Startup::Synthwave,
+                    "spaceship" => Startup::Spaceship,
+                    _ => {
+                        return Err(format!(
                             "startup: expected galaxy, console, synthwave or spaceship, got {v:?}"
-                        )),
+                        ))
                     }
+                }
             }
             _ => return Err(format!("unknown key {key:?}")),
         }
