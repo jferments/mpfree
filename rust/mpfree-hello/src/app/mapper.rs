@@ -86,9 +86,10 @@ pub const CONTROLS: [Control; 35] = [
     c("MENU", Job::Menu),
     c("MAIN", Job::None),
     c("BROWSE", Job::None),
-    // Asked for by the FX thread's mixer proposal (Track Mix opens the
-    // mixer); that the MPC One has a button by this name is not checked yet.
-    c("TRACK MIX", Job::None),
+    // For the FX thread's mixer proposal. Named after the MPC 3.6 guide's
+    // MPC One top panel (p. 348, item 17, as the FX thread cites it);
+    // not yet seen by the pad player.
+    c("TRACK MIX / PAD MIX", Job::None),
     c("-", Job::Minus),
     c("+", Job::Plus),
     c("Q-LINK", Job::None),
