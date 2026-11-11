@@ -34,18 +34,19 @@ A `ModEngine` looks after its **targets**: the parameters that a macro, a matrix
 2. **Morph:** once scenes A and B both hold the parameter, the morph position glides it between them, and a turn of its knob edits the scene the morph is nearer.
 3. **Macro:** a macro mapped to it puts it at `from + (to - from) × curve(macro)`. One macro per parameter; mapping it again moves it. Curves: linear, exp, log, S.
 4. **Lock:** a parameter lock replaces all of the above until it is unlocked.
-5. **Matrix:** each row aimed at it adds `source × depth (× via)`; the sum is clamped to the knob's travel.
+5. **Touch:** a hand on the control (`ModEvent::Touch`) replaces all of the above until it lets go (`ModEvent::Untouch`). Locks and unlocks keep landing underneath, so it lets go to whatever they hold by then. See [A hand on a control](#a-hand-on-a-control).
+6. **Matrix:** each row aimed at it adds `source × depth (× via)`; the sum is clamped to the knob's travel.
 
 Sources: 8 LFOs (sine, triangle, saws, square, sample and hold, drift; free 0.01 to 40 Hz or synced 1/32 to 8 bars; phase; retrigger), 4 envelope followers on audio the host passes in (attack, release, floor, gain), the 8 macros, and 8 host values (velocity, pressure, a touch strip ...). A row's `via` scales it by a second source, so the mod wheel can set an LFO's depth.
 
-Macros and the morph position are targets too, so they can be locked on a step, swept by an LFO and (macros) stored in the scenes.
+Macros and the morph position are targets too, so they can be locked on a step, held by a hand, swept by an LFO and (macros) stored in the scenes.
 
-**Switches** (toggles and choices) can be moved by a macro, a lock or the morph, but the matrix refuses them, so nothing chatters between two settings. A synth's voice mode is never a target (changing it ends every note).
+**Switches** (toggles and choices) can be moved by a macro, a lock, a touch or the morph, but the matrix refuses them, so nothing chatters between two settings. A synth's voice mode is never a target (changing it ends every note).
 
 ## Timing and cost
 
 - The engine runs every **32 frames of absolute time** (not of the block), so it sends the same events, frame for frame, however the host cuts its blocks; a test checks that for blocks of 1 to 8192 frames.
-- Sets, locks and unlocks take effect on their own frame, before a tick on the same frame, so a lock reaches a node before a note-on on that frame.
+- Sets, locks, touches and their ends take effect on their own frame, before a tick on the same frame, so a lock reaches a node before a note-on on that frame.
 - A target is only worked out when something moved it, and only sent when its value changed. A parameter that nothing modulates goes out exactly as it was set.
 - Nodes smooth their own parameters, so the 32-frame steps never zipper.
 - `process` never allocates, locks or panics, and nor do the changes (`add_target`, `map`, `add_row`, `remove_target`, `capture_scene` ...) while there is room: 512 targets, 64 rows, 8 targets per macro.
@@ -66,8 +67,27 @@ Jay chose the Elektron way on 2026-11-11. The time engine's side (locks in clips
 - A lock lasts for its own note: the track's next note without a lock on that parameter sends `Unlock`, and the parameter goes back to what the layers below give. Stop, locate, a loop back and a clip switch unlock everything; a muted track sends none.
 - A lock moves the whole instrument, not one voice of a poly synth. A pad's lock (`Pad(t, p)`) reaches the voice that starts on that frame.
 - Instrument, pad, mixer strip and insert parameters can be locked, and so can a macro's value and the morph position.
-- Turning a Q-Link while recording records a lock: the app sends `ModEvent::Lock` (not `Set`) and passes the move to the time engine (`TimeHost::knob`), which puts it on the held pad's note, else on a note that started in the last 240 ticks, else on the nearest grid line as a trigless lock.
-- A lock sits above the morph and the macros and below the matrix, so an LFO still moves a locked value.
+- Turning a Q-Link while recording records a lock: the app passes the move to the time engine (`TimeHost::knob`), which puts it on the held pad's note, else on a note that started in the last 240 ticks, else on the nearest grid line as a trigless lock. So the move is heard while it is being recorded, the app also sends it to the engine as `ModEvent::Touch`, and `Untouch` when the hand lets go. A `Lock` from the hand would be cut off by the player's `Unlock` at the track's next note without a lock.
+- A lock sits above the morph and the macros and below a hand and the matrix, so an LFO still moves a locked value.
+- FX moves (a clip's recorded knob, XY pad and Perform FX moves, from the FX thread's `mpfree-moves`) reach the engine the same way, as `Lock` and `Unlock`. A step's own lock beats a move lane on the same parameter for that step (agreed by the time engine and FX threads).
+
+## A hand on a control
+
+A clip can be moving a parameter (a move lane, or locks) while the user grabs its control. As in a DAW's "touch" mode, the hand takes over until it lets go:
+
+- The host sends `ModEvent::Touch { addr, value }` for each move while a finger or knob is on the control, and `ModEvent::Untouch { addr }` when it lets go. The target follows the hand. Locks keep landing underneath, so on `Untouch` the target goes back, on that frame, to whatever the lane or lock holds by then.
+- The matrix still adds on top, so an LFO keeps moving around the hand.
+- There is one touch per target, and the last touch wins. When two controls can hold the same parameter, the host sends `Untouch` when the last of them lets go.
+- Stop, locate and the player's unlock-all leave a touch alone; only `Untouch` or removing the target ends it. `ModEngine::is_touched` says whether a hand holds a target.
+- A touch on a parameter that is not a target passes through as a plain value, as a set does.
+
+Which moves the host sends as `Touch` (the rest stay `Set`):
+
+- The XY pad and the DJ knob, whenever their parameter has a move lane in the playing clip.
+- A Q-Link turned on a parameter that has a lane.
+- Any of these while recording (see [Parameter locks](#parameter-locks)).
+- Whether a live hand also beats a step's own lock when not recording is Jay's pick, asked in the FX thread on 2026-11-11. The engine can't tell a lane from a step's locks, so it works either way. The recommendation was that a hand always beats a lane, and beats a step's lock only while recording, as on Elektron machines, where a locked step keeps its value while you turn the knob live.
+- The touchscreen's XY pad and DJ knob report touch down and up. Akai sells the MPC One's Q-Links as touch-sensitive, but nobody has yet confirmed that MPFree's controller code sees the touch. Until it does, the host sends `Untouch` about 500 ms after a Q-Link's last detent.
 
 ## Q-Link bindings
 
@@ -103,7 +123,7 @@ As of 2026-11-11 the crates are on `main` (PR #102), tested and benched on the d
    - The sampler adds "FX" to `mpfree_sampler_ui::wave_tab::BUILT`, and the FX sub-tab shows the chain editor.
    - The Q-Link column takes `Bindings::with_macros`, and a long press on a macro card opens the macros panel.
    - Chain edits go to `Mixer::edit` (bypass is `Chain::set_on`), and parameter moves go to the engine as `ModEvent::Set`.
-2. **The engine in the audio loop** waits on PR #122. The host owns a `ModEngine` and turns the player's `Lock` and `Unlock` into `ModEvent`s at the same frame offset. It calls `add_target` for every address a compiled clip locks, and routes the engine's output by owner (see [Where each piece goes](#where-each-piece-goes)). Q-Link turns also go to `TimeHost::knob` while recording. The mod thread writes this and hands it to the Hello thread's round.
+2. **The engine in the audio loop** waits on PR #122. The host owns a `ModEngine` and turns the player's `Lock` and `Unlock` into `ModEvent`s at the same frame offset. It calls `add_target` for every address a compiled clip locks, and routes the engine's output by owner (see [Where each piece goes](#where-each-piece-goes)). Hands go to the engine as `Touch` and `Untouch` (see [A hand on a control](#a-hand-on-a-control)), and Q-Link turns also go to `TimeHost::knob` while recording. The mod thread writes this and hands it to the Hello thread's round.
 3. **Effect pages** wait on PR #116 (`mpfree-fx-ui`). `ChainAction::OpenPage(slot)` lets a tap on the selected insert's name open its full effect page, and the effect's picture (`mpfree_fx_ui::visual`) goes above the knobs.
 4. **Not blocked:**
    - An effect picker for "+ Add effect" (`ChainAction::AddEffect` has nothing to open yet).

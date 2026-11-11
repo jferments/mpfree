@@ -23,7 +23,10 @@
 //!    curve(macro)`. One macro per parameter.
 //! 4. **Lock:** a parameter lock replaces all of the above until it is
 //!    unlocked.
-//! 5. **Matrix:** every row aimed at it adds `source × depth (× via)`,
+//! 5. **Touch:** a hand on the control ([`ModEvent::Touch`]) replaces all
+//!    of the above until it lets go ([`ModEvent::Untouch`]); locks keep
+//!    landing underneath, so it lets go to what they hold by then.
+//! 6. **Matrix:** every row aimed at it adds `source × depth (× via)`,
 //!    and the sum is clamped to the knob's travel.
 //!
 //! Macros and the morph position are targets too (`Owner::Macro`,
@@ -34,8 +37,8 @@
 //!
 //! The engine runs at control rate: every [`DEFAULT_TICK`] (32) frames of
 //! absolute time, not of the block, so it gives the same events however
-//! the host cuts its blocks. Sets and locks take effect on their exact
-//! frame, before any tick on that frame. A target is only worked out when
+//! the host cuts its blocks. Sets, locks and touches take effect on their
+//! exact frame, before any tick on that frame. A target is only worked out when
 //! something moved it, and only sent when its value changed. Nodes smooth
 //! their own parameters, so a 32-frame step never zippers.
 //!
@@ -50,8 +53,8 @@
 //! LFOs and envelopes inside a synth or an effect, and per-voice
 //! modulation (velocity, pressure, key tracking per note), stay inside
 //! the node. This matrix is per track or per bus. Switches (toggles and
-//! choices) can be moved by a macro, a lock or the morph but not swept
-//! by the matrix. A synth's voice mode is never a target.
+//! choices) can be moved by a macro, a lock, a touch or the morph but not
+//! swept by the matrix. A synth's voice mode is never a target.
 
 #![forbid(unsafe_code)]
 
