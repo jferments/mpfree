@@ -96,6 +96,11 @@ The music tabs, in this order:
 - **Anything in the shared layout is a proposal.** Send it to the owner. Jay approves it, this file is updated, and then it lands.
 - **Previews draw the real bar.** Every crate's preview pictures use the canonical tab list from one shared constant (to be added in mpfree-ui), not a list of their own.
 
+## Proposed, waiting for Jay (not part of the spec yet)
+
+- **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
+- **Per-pad pressure calibration** (synth thread, 08:53Z): a Touch-lab-style page, opened from a Prefs row, that stores a scale per pad. It needs saved settings (storage spec).
+
 ## Where things stand (2026-11-11 08:10Z)
 
 | Where | Tab bar |
