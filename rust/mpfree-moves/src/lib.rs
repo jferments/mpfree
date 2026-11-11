@@ -38,8 +38,19 @@
 //! [`Moves::put`] writes a gesture into a clip's lanes, replacing what was
 //! there over the ticks it covers. That is how the moves just played are
 //! captured into a clip, the way CAPTURE keeps the notes.
+//! [`Moves::put_saving`] hands over what a write replaces, so an undo can
+//! put it back exactly with [`Moves::restore`].
+//!
+//! # Editing
+//!
+//! The step pages move ticks around: [`Moves::copy_range`] copies a
+//! stretch over another, [`Moves::cut`] takes one out and closes the gap,
+//! [`Moves::insert`] opens a gap, and [`Moves::truncate`] cuts a clip
+//! short. Each keeps what every lane does on the ticks it does not touch.
+//! [`Moves::check`] says whether a clip's moves are sound.
 #![forbid(unsafe_code)]
 
+mod edit;
 mod log;
 
 pub use log::{Gesture, Input, LogEntry, MoveLog, GAP_BARS, MAX_ACTIVE, MAX_INPUT, MAX_LOG};
@@ -301,7 +312,8 @@ pub enum Out {
 pub enum MovesError {
     /// No room: [`MAX_LANES`] lanes or [`MAX_POINTS`] in the lane.
     Full,
-    /// The clip has no length, or the points are not in tick order.
+    /// The clip has no length, the points are not in tick order, or (for
+    /// [`Moves::check`]) the moves are not sound.
     Bad,
 }
 
@@ -489,6 +501,22 @@ impl Moves {
         points: &[(f64, f32, Kind)],
         len: u32,
     ) -> Result<(), MovesError> {
+        self.put_saving(target, map, points, len, |_, _, _| {})
+    }
+
+    /// [`Moves::put`], first calling `save(from, to, old)` for each range
+    /// of clip ticks `from..to` the write may change (one, or two when the
+    /// gesture crosses the loop's end), with the points the lane has
+    /// there (none for a new lane). [`Moves::restore`] with them undoes
+    /// the write exactly. Nothing is saved when the write is refused.
+    pub fn put_saving(
+        &mut self,
+        target: Target,
+        map: Map,
+        points: &[(f64, f32, Kind)],
+        len: u32,
+        mut save: impl FnMut(u32, u32, &[Point]),
+    ) -> Result<(), MovesError> {
         if len == 0
             || points.iter().any(|p| !p.0.is_finite())
             || points.windows(2).any(|w| w[1].0 < w[0].0)
@@ -498,13 +526,14 @@ impl Moves {
         let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
             return Ok(());
         };
+        // A crossing adds two points; thinning comes after, so ask for all.
+        let have = self.lane(target).map_or(0, |l| l.points.len());
+        if have + points.len() + 3 > MAX_POINTS {
+            return Err(MovesError::Full);
+        }
         let k = self.lane_index(target, map)?;
         let lane = &mut self.lanes[k];
         let stepped = lane.map.stepped();
-        // A crossing adds two points; thinning comes after, so ask for all.
-        if lane.points.len() + points.len() + 3 > MAX_POINTS {
-            return Err(MovesError::Full);
-        }
         let lenf = f64::from(len);
         // Keep the last `len` ticks of a gesture longer than the clip.
         let keep_from = (last.0 - lenf + 1.0).max(first.0);
@@ -526,6 +555,23 @@ impl Moves {
         let crosses = pass_of(last.0) > pass_of(keep_from);
         let end_tick = tick_in(last.0, pass_of(last.0));
         let back = lane_back(&lane.points, end_tick);
+        // What the write may change: from the tick before its first point
+        // (a lead into an old ramp) to the tick after its last (an end
+        // moved on a tick), through the loop's end when it crosses.
+        let lo = tick_in(keep_from, 0).saturating_sub(1);
+        let hi = (end_tick + 2).min(len);
+        let reach: &[(u32, u32)] = if !crosses {
+            &[(lo, hi)]
+        } else if hi > lo {
+            &[(0, len)]
+        } else {
+            &[(lo, len), (0, hi)]
+        };
+        for &(a, b) in reach {
+            let i = lane.points.partition_point(|p| p.tick < a);
+            let j = lane.points.partition_point(|p| p.tick < b);
+            save(a, b, &lane.points[i..j]);
+        }
         // The new points go on the end of the lane, a piece per pass.
         let old_len = lane.points.len();
         let mut split = None;
@@ -566,6 +612,42 @@ impl Moves {
         if after > 0 {
             let a = lane.points.len() - after;
             place(lane, a, lane.points.len(), back, stepped, len);
+        }
+        Ok(())
+    }
+
+    /// Puts back the points the lane for `target` had over clip ticks
+    /// `from..to`, as [`Moves::put_saving`] saved them, in place of what it
+    /// has there (making the lane with `map` if it has gone). A lane left
+    /// with no points goes (freeing it). Otherwise it does not allocate
+    /// while the lane has room.
+    pub fn restore(
+        &mut self,
+        target: Target,
+        map: Map,
+        from: u32,
+        to: u32,
+        old: &[Point],
+    ) -> Result<(), MovesError> {
+        if old.iter().any(|p| p.tick < from || p.tick >= to)
+            || old.windows(2).any(|w| w[1].tick <= w[0].tick)
+        {
+            return Err(MovesError::Bad);
+        }
+        let k = match self.lanes.iter().position(|l| l.target == target) {
+            Some(k) => k,
+            None if old.is_empty() => return Ok(()),
+            None => self.lane_index(target, map)?,
+        };
+        let points = &mut self.lanes[k].points;
+        let a = points.partition_point(|p| p.tick < from);
+        let b = points.partition_point(|p| p.tick < to);
+        if points.len() - (b - a) + old.len() > MAX_POINTS {
+            return Err(MovesError::Full);
+        }
+        replace_range(points, a, b, old);
+        if points.is_empty() {
+            self.lanes.remove(k);
         }
         Ok(())
     }
@@ -688,6 +770,22 @@ fn place(lane: &mut Lane, a: usize, b: usize, back: Option<(f32, Kind)>, stepped
     lane.points[lo..b].rotate_right(n);
     remove_range(&mut lane.points, lo + n, lo + n + (hi - lo));
     thin(&mut lane.points, lo, lo + n);
+}
+
+/// Puts `new` in place of `v[a..b]`, without allocating while `v` has
+/// room.
+fn replace_range(v: &mut Vec<Point>, a: usize, b: usize, new: &[Point]) {
+    let n = new.len();
+    if n <= b - a {
+        v[a..a + n].copy_from_slice(new);
+        remove_range(v, a + n, b);
+    } else {
+        let extra = n - (b - a);
+        let end = v.len();
+        v.resize(end + extra, Point::end(0));
+        v.copy_within(b..end, b + extra);
+        v[a..a + n].copy_from_slice(new);
+    }
 }
 
 /// Removes `v[a..b]` without allocating.

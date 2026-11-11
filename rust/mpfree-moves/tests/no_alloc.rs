@@ -1,5 +1,6 @@
 //! Playing moves, chasing them and logging them must not allocate or
-//! free; nor must writing a gesture into a lane with room.
+//! free; nor must writing a gesture into a lane with room, keeping what
+//! it replaced, or putting that back.
 //!
 //! This test file is its own program, so its global allocator (a
 //! pass-through to the system allocator) does not affect the library.
@@ -83,6 +84,12 @@ fn playing_logging_and_writing_with_room_never_allocate() {
         })
         .collect();
 
+    // Room to keep what the gesture writes over, for an undo.
+    let mut undo: Vec<Point> = Vec::with_capacity(8192);
+    let mut ranges = [(0u32, 0u32, 0usize, 0usize); 2];
+    let mut n_ranges = 0;
+    let before = moves.clone();
+
     let mut t = Box::new(Transport::new(48_000, 128.0).unwrap());
     let mut block = Box::new(Block::new());
     let mut log = Box::new(MoveLog::new());
@@ -133,14 +140,41 @@ fn playing_logging_and_writing_with_room_never_allocate() {
             );
         }
         if period == 10_000 {
-            // A gesture into a lane with room.
+            // A gesture into a lane with room, keeping what it replaces.
             moves
-                .put(Target::Fixed(addr(0)), Map::linear(0.0, 1.0), &gesture, len)
+                .put_saving(
+                    Target::Fixed(addr(0)),
+                    Map::linear(0.0, 1.0),
+                    &gesture,
+                    len,
+                    |a, b, old| {
+                        let at = undo.len();
+                        undo.extend_from_slice(old);
+                        ranges[n_ranges] = (a, b, at, undo.len());
+                        n_ranges += 1;
+                    },
+                )
                 .unwrap();
+        }
+        if period == 15_000 {
+            // And undone.
+            for &(a, b, i, j) in ranges[..n_ranges].iter().rev() {
+                moves
+                    .restore(
+                        Target::Fixed(addr(0)),
+                        Map::linear(0.0, 1.0),
+                        a,
+                        b,
+                        &undo[i..j],
+                    )
+                    .unwrap();
+            }
         }
     }
     watch(false);
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "allocations or frees");
+    assert!(n_ranges > 0);
+    assert!(moves == before, "the undo put the lane back");
     assert!(sent > 10_000);
     assert!(log.seq() > 1000);
     assert_eq!(log.dropped(), 0);
