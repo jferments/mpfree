@@ -366,7 +366,7 @@ impl QLinkColumn {
             .iter()
             .map(|c| c.target.map(|a| song.place(a)).unwrap_or_default())
             .collect();
-        let title = match song.bindings.title() {
+        let title = match song.bindings.title().as_str() {
             "" => "Q-Links".to_string(),
             t => format!("Q-Links · {t}"),
         };
