@@ -37,8 +37,8 @@ use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
 };
 use crate::model::{
-    ChannelPick, Fade, GrainParams, LayerSelect, LoopMode, MasterFx, PlayMode, PressureRoute,
-    PressureTarget, Project, WarpMethod, PADS,
+    ChannelPick, Fade, GrainParams, Keys, LayerSelect, LoopMode, MasterFx, PadsPlay, PlayMode,
+    PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::Warps;
 
@@ -49,6 +49,8 @@ pub const KILL_FRAMES: u16 = 64;
 pub const STEAL_FRAMES: u16 = 32;
 /// Events that can wait for the next render.
 pub const MAX_EVENTS: usize = 256;
+/// A voice's note when its pad was hit, not played as a keygroup.
+const NO_NOTE: u8 = 255;
 /// Grains alive at once across every granular voice. Past it, new grains
 /// are skipped. A first guess, to be set by measurement on the MPC.
 pub const GRAIN_BUDGET: usize = 256;
@@ -144,6 +146,7 @@ pub struct ViewPad {
     vel_to_level: f32,
     vel_to_start: f32,
     pressure: PressureRoute,
+    keys: Option<Keys>,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -152,14 +155,32 @@ pub struct EngineView {
     pub revision: u64,
     pads: Vec<Option<ViewPad>>,
     master: MasterFx,
+    pads_play: PadsPlay,
 }
 
 impl EngineView {
-    /// Whether pad `i` has something to play.
+    /// Whether a hit on pad `i` plays something.
     pub fn has_pad(&self, i: usize) -> bool {
-        self.pads
-            .get(i)
-            .is_some_and(|p| p.as_ref().is_some_and(|p| !p.layers.is_empty()))
+        let sounds = |p: &Option<ViewPad>| p.as_ref().is_some_and(|p| !p.layers.is_empty());
+        match self.pads_play {
+            PadsPlay::Pads => self.pads.get(i).is_some_and(sounds),
+            // With the pads playing notes: a keygroup holds its note.
+            PadsPlay::Keys { from } => {
+                let note = usize::from(from) + i;
+                note < 128
+                    && self.pads.iter().any(|p| {
+                        sounds(p)
+                            && p.as_ref()
+                                .and_then(|p| p.keys)
+                                .is_some_and(|k| k.contains(note as u8))
+                    })
+            }
+        }
+    }
+
+    /// What the pads play.
+    pub fn pads_play(&self) -> PadsPlay {
+        self.pads_play
     }
 
     /// Layer `layer` of pad `pad`, as resolved.
@@ -172,6 +193,7 @@ impl EngineView {
             revision: 0,
             pads: vec![None; PADS],
             master: MasterFx::default(),
+            pads_play: PadsPlay::Pads,
         }
     }
 
@@ -299,6 +321,7 @@ impl EngineView {
                     vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
                     vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
                     pressure: p.pressure,
+                    keys: p.keys,
                 }
             }));
         }
@@ -306,6 +329,7 @@ impl EngineView {
             revision: project.revision(),
             pads,
             master: *project.master(),
+            pads_play: project.pads_play(),
         }
     }
 }
@@ -324,6 +348,15 @@ pub enum Event {
     Pressure {
         pad: u8,
         value: u8,
+    },
+    /// A note through the keygroups: every pad whose [`Keys`] hold it
+    /// plays, a semitone higher for each note above its root.
+    Key {
+        note: u8,
+        velocity: u8,
+    },
+    KeyOff {
+        note: u8,
     },
     /// Releases every voice (gate-style), e.g. on STOP.
     AllOff,
@@ -397,6 +430,8 @@ struct Voice {
     /// tempo moves it.
     warp_bpm: f64,
     plain_step: i64,
+    /// The note a keygroup voice plays ([`NO_NOTE`] for a pad hit).
+    note: u8,
 }
 
 impl Voice {
@@ -697,11 +732,25 @@ impl Engine {
     /// Applies an event now (before the next rendered frame).
     pub fn apply(&mut self, ev: Event) {
         match ev {
-            Event::NoteOn { pad, velocity } => self.note_on(pad, velocity),
-            Event::NoteOff { pad } => self.note_off(pad),
+            // With the pads playing notes, a pad is the note it plays.
+            Event::NoteOn { pad, velocity } => match self.pad_note(pad) {
+                Some(note) => self.key(note, velocity),
+                None => self.note_on(pad, velocity, NO_NOTE, 0),
+            },
+            Event::NoteOff { pad } => match self.pad_note(pad) {
+                Some(note) => self.release(|v| v.note == note),
+                None => self.release(|v| v.pad == pad && v.note == NO_NOTE),
+            },
+            Event::Key { note, velocity } => self.key(note.min(127), velocity),
+            Event::KeyOff { note } => self.release(|v| v.note == note),
             Event::Pressure { pad, value } => {
+                let note = self.pad_note(pad);
                 for v in &mut self.voices {
-                    if v.active && v.pad == pad && v.kill_left == 0 {
+                    let this = match note {
+                        Some(n) => v.note == n,
+                        None => v.pad == pad && v.note == NO_NOTE,
+                    };
+                    if v.active && this && v.kill_left == 0 {
                         v.press_target = f32::from(value.min(127)) / 127.0;
                     }
                 }
@@ -734,9 +783,35 @@ impl Engine {
         }
     }
 
-    fn note_off(&mut self, pad: u8) {
+    /// The note pad `pad` plays, when the pads play notes.
+    fn pad_note(&self, pad: u8) -> Option<u8> {
+        match self.view.pads_play {
+            PadsPlay::Keys { from } => Some(from.saturating_add(pad).min(127)),
+            PadsPlay::Pads => None,
+        }
+    }
+
+    /// Every keygroup holding `note` plays it.
+    fn key(&mut self, note: u8, velocity: u8) {
+        if velocity == 0 {
+            self.release(|v| v.note == note);
+            return;
+        }
+        for p in 0..self.view.pads.len() {
+            let Some(k) = self.view.pads[p].as_ref().and_then(|vp| vp.keys) else {
+                continue;
+            };
+            if k.contains(note) {
+                let semis = i32::from(note) - i32::from(k.root);
+                self.note_on(p as u8, velocity, note, semis);
+            }
+        }
+    }
+
+    /// Lets go of the held voices `which` picks.
+    fn release(&mut self, which: impl Fn(&Voice) -> bool) {
         for (v, g) in self.voices.iter_mut().zip(&mut self.grains) {
-            if !v.active || v.pad != pad || !v.held {
+            if !v.active || !which(v) || !v.held {
                 continue;
             }
             match v.mode {
@@ -763,9 +838,11 @@ impl Engine {
         }
     }
 
-    fn note_on(&mut self, pad: u8, velocity: u8) {
+    /// Pad `pad` plays: hit (`note` is [`NO_NOTE`]) or as the keygroup
+    /// for `note`, `semis` semitones from its root.
+    fn note_on(&mut self, pad: u8, velocity: u8, note: u8, semis: i32) {
         if velocity == 0 {
-            self.note_off(pad);
+            self.release(|v| v.pad == pad && v.note == note);
             return;
         }
         let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
@@ -778,7 +855,12 @@ impl Engine {
         // A second hit on a held toggle pad stops it instead of starting it.
         let mut toggled_off = false;
         for v in &mut self.voices {
-            if v.active && v.pad == pad && v.held && v.mode == Some(PlayMode::Toggle) {
+            if v.active
+                && v.pad == pad
+                && v.note == note
+                && v.held
+                && v.mode == Some(PlayMode::Toggle)
+            {
                 v.held = false;
                 if let Some(a) = &mut v.amp {
                     a.release();
@@ -862,11 +944,11 @@ impl Engine {
                     None => break,
                 }
             }
-            self.start_voice(p, li, level, vel);
+            self.start_voice(p, li, level, vel, note, semis);
         }
     }
 
-    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32) {
+    fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, semis: i32) {
         let Some(vp) = self.view.pads[p].as_ref() else {
             return;
         };
@@ -913,10 +995,16 @@ impl Engine {
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
         let lp = l.sustain_loop.as_ref();
-        let step = if l.warp_bpm > 0.0 {
-            warped_step(l.step, self.tempo, l.warp_bpm)
-        } else {
+        // A keygroup a few semitones from its root reads that much faster.
+        let plain = if semis == 0 {
             l.step
+        } else {
+            ((l.step as f64 * (f64::from(semis) / 12.0).exp2()).round() as i64).max(1)
+        };
+        let step = if l.warp_bpm > 0.0 {
+            warped_step(plain, self.tempo, l.warp_bpm)
+        } else {
+            plain
         };
         self.clock += 1;
         let v = &mut self.voices[slot];
@@ -964,7 +1052,10 @@ impl Engine {
             last_r: 0.0,
             granular,
             src_rate: l.src_rate,
-            grain_base: l.grain,
+            grain_base: GrainParams {
+                pitch: l.grain.pitch + semis as f32,
+                ..l.grain
+            },
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -975,11 +1066,14 @@ impl Engine {
             press_fc: 1.0,
             press_count: 0,
             warp_bpm: l.warp_bpm,
-            plain_step: l.step,
+            plain_step: plain,
+            note,
         };
         if granular {
             let g = &mut self.grains[slot];
-            g.set_params(l.grain);
+            let mut grain = l.grain;
+            grain.pitch += semis as f32;
+            g.set_params(grain);
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
