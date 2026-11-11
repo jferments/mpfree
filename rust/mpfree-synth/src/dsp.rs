@@ -5,7 +5,7 @@
 use std::f32::consts::PI;
 
 /// A small seeded generator (SplitMix64), so renders repeat exactly.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Rng(u64);
 
 impl Rng {

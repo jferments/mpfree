@@ -254,7 +254,7 @@ fn now(position: Tick) -> Now {
 fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
     let played = notes
         .iter()
-        .map(|&(tick, song)| Played { note: Note { tick, len: 100, note: 4, velocity: 100 }, song: Some(song) })
+        .map(|&(tick, song)| Played { note: Note { tick, len: 100, note: 4, velocity: 100, chance: 100 }, song: Some(song) })
         .collect();
     Phrase { played, length, bar: BAR, song_start: Some(song_start), id: 7 }
 }
@@ -285,7 +285,7 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
 fn kept_free_a_new_clip_starts_on_the_next_bar() {
     let mut p = project();
     let mut takes = Takes::default();
-    let phrase = Phrase { played: vec![Played { note: Note { tick: 0, len: 10, note: 1, velocity: 9 }, song: None }],
+    let phrase = Phrase { played: vec![Played { note: Note { tick: 0, len: 10, note: 1, velocity: 9, chance: 100 }, song: None }],
                           length: BAR, bar: BAR, song_start: None, id: 1 };
     let k = keep(&phrase, &mut p, &[], &mut takes, 1, now(3 * BAR + 5), "c").unwrap();
     assert_eq!((k.slot, k.launch.map(|l| l.origin)), (1, Some(4 * BAR)), "slot 1 holds the beat");

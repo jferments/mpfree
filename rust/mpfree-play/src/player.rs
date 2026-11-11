@@ -23,6 +23,11 @@
 //! goes on as overdub. Erased notes are not played; [`Player::erased`]
 //! names them for the control thread to remove (`Clip::remove_note`).
 //!
+//! **Chance.** A note with a chance below 100 % rolls each time it comes
+//! round. The roll is a hash of the note and the absolute frame it would
+//! play on, so it is the same for any period size, yet differs on every
+//! pass, transport loops included.
+//!
 //! **Cues** (see [`crate::view`]). A track's waiting cue starts on the
 //! first bar line the playhead plays: the clip so far plays the ticks
 //! before it, its notes still sounding end on it, and the cued clip plays
@@ -98,6 +103,8 @@ pub struct Stats {
     pub late_offs: u64,
     /// Notes replace recording erased.
     pub erased: u64,
+    /// Notes their chance left out.
+    pub skipped: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,10 +125,13 @@ struct Start {
     note: u8,
     velocity: u8,
     off: Tick,
+    /// Percent; below 100 the note rolls with `key`.
+    chance: u8,
+    key: u64,
 }
 
 const NO_SOUND: Sounding = Sounding { track: 0, dest: 0, note: 0, off: 0, seq: 0 };
-const NO_START: Start = Start { tick: 0, track: 0, dest: 0, note: 0, velocity: 0, off: 0 };
+const NO_START: Start = Start { tick: 0, track: 0, dest: 0, note: 0, velocity: 0, off: 0, chance: 100, key: 0 };
 
 pub struct Player {
     sounding: [Sounding; MAX_ACTIVE],
@@ -144,7 +154,7 @@ pub struct Player {
     n_started: usize,
 }
 
-const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
+const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1, chance: 100 }, take: 0 };
 
 impl Default for Player {
     fn default() -> Self {
@@ -302,6 +312,10 @@ impl Player {
             // Notes ending on or before this tick end first.
             self.end_until(s.tick, first, span, out);
             let (offset, frame) = place(span, s.tick);
+            if s.chance < 100 && mix(s.key ^ frame) % 100 >= u64::from(s.chance) {
+                self.stats.skipped += 1;
+                continue;
+            }
             if let Some(j) = self.find(s.track, s.dest, s.note) {
                 out.send(Out { offset, frame, track: s.track, dest: s.dest, event: Event::NoteOff { note: s.note } });
                 self.remove(j);
@@ -409,7 +423,9 @@ impl Player {
                     self.stats.dropped += 1;
                     continue;
                 }
-                self.starts[self.n_starts] = Start { tick, track, dest, note: n.note, velocity: n.velocity, off };
+                let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64) ^ u64::from(n.note);
+                self.starts[self.n_starts] =
+                    Start { tick, track, dest, note: n.note, velocity: n.velocity, off, chance: n.src.chance, key };
                 self.n_starts += 1;
             }
             pass += 1.0;
@@ -449,6 +465,14 @@ impl Player {
         self.sounding.copy_within(i + 1..self.n_sounding, i);
         self.n_sounding -= 1;
     }
+}
+
+/// A 64-bit mix (splitmix64's finaliser), for the chance rolls.
+fn mix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Offset in the period and absolute frame of a tick in a span.

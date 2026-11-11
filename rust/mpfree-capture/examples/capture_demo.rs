@@ -214,10 +214,10 @@ impl Session {
         let hits = [(0, KICK, 120), (BEAT, SNARE, 110), (1680, KICK, 96), (3 * BEAT, SNARE, 116), (BAR, KICK, 118),
                     (BAR + BEAT, SNARE, 108), (BAR + 2160, KICK, 90), (BAR + 2400, KICK, 104), (BAR + 3 * BEAT, SNARE, 116)];
         for (tick, note, velocity) in hits {
-            beat.add_note(Note { tick, len: S, note, velocity }).expect("in range");
+            beat.add_note(Note { tick, len: S, note, velocity, chance: 100 }).expect("in range");
         }
         for i in 0..16 {
-            beat.add_note(Note { tick: i * 2 * S, len: S / 2, note: HAT, velocity: if i % 2 == 0 { 80 } else { 58 } })
+            beat.add_note(Note { tick: i * 2 * S, len: S / 2, note: HAT, velocity: if i % 2 == 0 { 80 } else { 58 }, chance: 100 })
                 .expect("in range");
         }
         drums.slots[0] = Some(beat);
