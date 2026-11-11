@@ -1670,3 +1670,44 @@ bash tools/ghidra/run_p1_sram_analysis.sh
 ~~~
 
 Expected result: **~/mpfree-work/mpfree-ghidra-p1-sram-<timestamp>.json**, alongside a new private Ghidra project and console log. These new scripts are not yet validated on the owner's workstation; a completed Ghidra report must be inspected before interpreting its SPL behavior. Keep extracted proprietary code and any decompiler output out of the public repo. No physical ROM access was attempted.
+
+
+## 36. First real RK3288 SRAM-stage Ghidra report received; entry-vector cleanup and next-stage audit (2026-11-11)
+
+**User artifacts actually examined:** workstation execution console + private JSON report `mpfree-ghidra-p1-sram-20261110T231751.json` from new Python PyGhidra pipeline. Owner-run synthetic tests: **9 passed** in 0.005s. Original p1 hash verified; extracted 32768-byte RK32 stage SHA256 **6faade107d83bb8f0782bf4df0cf86e3aee772b3e52c587d6a1ef83062fa652f**. Ghidra headless ARM:LE:32:v7 import at **0xff704000**, pre-script ARM seed at **0xff704004** succeeded, automatic analysis and post-script completed, JSON generated and project saved. Console contained a **nonfatal** Ghidra pcode/decompiler constructor warning at `0xff7041e2`. The program-specific filename/memory SHA values match across console and JSON. This is a successful static-research run, **not a live MaskROM or self-built code-execution test**.
+
+### 36.1 Important disassembly caveat: candidate entry includes apparent zero padding
+
+First decoded instructions from the exported JSON:
+- `0xff704004`–`0xff70401c`: seven **zero 32-bit words**, which Ghidra decodes as `andeq r0,r0,r0`. Zero bytes can be alignment, reserved space or a vector table; **not evidence that BootROM executes a meaningful seven-instruction function**.
+- `0xff704020`: **`b 0xff704064`**.
+- `0xff704064`: **`b 0xff7040b4`**.
+- `0xff704068` onward: recognizable ARM startup code, including `mrs r0,cpsr`, exception-mode and interrupt masking logic.
+- `0xff704098`/`0xff70409c`/`0xff7040a0`: Ghidra recognizes calls to `0xff7040b8`, `0xff704118` and `0xff705208`. These are candidate code paths; the true branch from `0xff7040b4` must be inspected to establish they are actually reachable at reset.
+- `0xff7040b8`: decompiled CP15 operations to invalidate TLB/I-cache, synchronize barriers, change control bits. These are consistent with early ARM startup.
+- `0xff705208`: candidate runtime initialization/dispatch function, with calls to `0xff7055b0`, `0xff7055bc`, `0xff704164`, `0xff705444`. Substantial further functions exist.
+- Ghidra's entry-point *pseudocode* merges control-flow regions and should not be taken literally until startup bytes, ARM/Thumb states, exception vector conventions and real function boundaries are verified. Notably `0xff704060` is decoded as `bl 0xff704060` (self-call), which may be nonexecuted padding or a decoding artifact, not a valid runtime recursion.
+
+The earlier `MPFreeSPLAudit.py` report listed **120 functions because its export was hard-capped at MAX_FUNCTIONS=120** and decompiled the first 12. This is *not* a complete 120-function program inventory, and it is a bad basis for declaring that MMC/ROM functions are absent. The first export terminates at `0xff70706c`, with many calls to targets as high as `0xff709128`.
+
+### 36.2 No magic literal does not exclude ROM return
+
+A scan of all 32768 bytes found **zero** occurrences of the 32-bit little-endian U-Boot `0xEF08A53C` back-to-BROM magic. That excludes a direct stored literal of this value *in the exported p1 stage*, but does **not** establish whether the image calls into a ROM function, constructs a marker dynamically, returns to BootROM via Rockchip reset registers, uses an InMusic-specific handoff or loads p3 directly through the MMC controller. ROM-driven next-stage loading may require a specific stage layout and flash offsets; the header's nominal 512 KiB second-stage allowance does **not** prove that the separate p3 image is loaded by ROM.
+
+### 36.3 Next iteration committed: deep audit on the already-created Ghidra project
+
+**Added**:
+- `tools/ghidra/MPFreeSPLDeepAudit.py` Python 3 post-script: validates the exact stage SHA256; records **raw little-endian startup words alongside decoded instructions**, targets/fallthrough, incoming references; enumerates **all** Ghidra-detected functions rather than capping at 120; generates static call-graph reachability and notes indirect calls; scans for exact storage-controller/SoC register base literals, internal pointers and back-to-BROM marker; deep-decompiles selected initialization/boot functions.
+- `tools/ghidra/run_p1_deep_audit.sh` Python-enabled headless launcher: opens the **existing saved p1 Ghidra project**, `-readOnly -noanalysis`, no import/rebase/project modification; writes a **local private JSON**. Prefer the most recent `MPFree_P1_SRAM_*.gpr` (or explicit `MPFREE_P1_PROJECT`). It is not yet run on owner's machine.
+
+Run on the Linux workstation:
+
+~~~bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+bash tools/ghidra/run_p1_deep_audit.sh
+~~~
+
+Expected result `~/mpfree-work/mpfree-ghidra-p1-deep-*.json`. Upload private report and accompanying errors/log if any. **Do not commit proprietary decompilation or extracted binaries.**
+
+**Research priority:** resolve what executes at `0xff7040b4`, the instruction-state transitions around `0xff704118`/`0xff7041e2`, and which routines initialize eMMC (`0xff0f0000` family) and acquire p3 or return to ROM. The Python audit's exact literal search is a **lead only**: hardware base addresses can be calculated and may not appear verbatim. Secure fuse-programming-voltage circuit and physical MaskROM entry remain separately unresolved Tier 3 blockers.
