@@ -55,6 +55,8 @@ fn grains_never_allocate() {
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     let mut views = [GrainView::default(); MAX_GRAINS];
+    let mut fx = GrainFx::new(rate, 2.0, 9).unwrap();
+    fx.set_params(Params { position: 0.9, spray: 0.2, size_ms: 70.0, density: 60.0, spread: 0.8, ..Params::default() });
 
     watch(true);
     let mut t = 0u64;
@@ -94,10 +96,18 @@ fn grains_never_allocate() {
             v.grains(&mut views);
         }
         live.write_planar(&l, &r);
+        // The granular effect on the mix, with mix glides and freeze.
+        if period % 100 == 0 { fx.set_mix(((period / 100) % 4) as f32 / 3.0); }
+        fx.set_frozen(period % 300 > 150);
+        if period % 500 == 499 { fx.set_params(Params { position: (period % 7) as f32 / 7.0, ..*fx.params() }); }
+        fx.process(&mut budget, t, &mut l[..50], &mut r[..50]);
+        fx.process(&mut budget, t + 50, &mut l[50..], &mut r[50..]);
+        fx.grains(&mut views);
         t += 128;
     }
     watch(false);
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "the grain engine allocated or freed");
     assert!(budget.skipped > 0, "the budget was never full; the test is not busy enough");
     assert!(voices.iter().map(|v| v.stats().spawned).sum::<u64>() > 1000);
+    assert!(fx.stats().spawned > 100, "the effect made grains: {:?}", fx.stats());
 }
