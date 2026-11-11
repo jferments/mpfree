@@ -33,12 +33,14 @@ REPORT="$OUT/mpfree-ghidra-p3-python-$STAMP.json"
 LOG="$OUT/ghidra/python-followup-$STAMP.log"
 export MPFREE_REPORT_DIR="$OUT"
 
-echo "PyGhidra launcher: snap run ghidra.ghidra -H"
-echo "Saved project: $PROJECTS/$project"
-echo "Read-only: yes"
-echo "Output: $REPORT"
-echo "On first launch, PyGhidra may offer to create a Python venv."
-snap run ghidra.ghidra -H     "$PROJECTS" "$project"     -process p3-uimage-payload.bin     -noanalysis     -readOnly     -scriptPath "$ROOT/tools/ghidra"     -postScript MPFreePythonFollowup.py "$REPORT"     -log "$LOG"
+echo "PyGhidra launcher: snap run ghidra.ghidra -H \
+    "$PROJECTS" "$project" \
+    -process p3-uimage-payload.bin \
+    -noanalysis \
+    -readOnly \
+    -scriptPath "$ROOT/tools/ghidra" \
+    -postScript MPFreePythonFollowup.py "$REPORT" \
+    -log "$LOG"
 
 if [[ ! -s "$REPORT" ]]; then
     echo "ERROR: Python script did not create report; see $LOG" >&2
