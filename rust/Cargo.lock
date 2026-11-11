@@ -444,6 +444,7 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-screen-log",
  "mpfree-seq",
+ "mpfree-store",
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-time-ui",
