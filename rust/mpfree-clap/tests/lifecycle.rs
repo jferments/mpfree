@@ -16,9 +16,17 @@ fn init_and_deinit_balance() {
     n.prepare(44_100, 128);
     let c = n.control();
     drop(l);
-    assert_eq!(testplug::LIVE_INITS.load(Ordering::SeqCst), 1, "the plugin keeps its file started");
+    assert_eq!(
+        testplug::LIVE_INITS.load(Ordering::SeqCst),
+        1,
+        "the plugin keeps its file started"
+    );
     drop(n);
-    assert_eq!(testplug::LIVE_INITS.load(Ordering::SeqCst), 1, "so does its control handle");
+    assert_eq!(
+        testplug::LIVE_INITS.load(Ordering::SeqCst),
+        1,
+        "so does its control handle"
+    );
     drop(c);
     assert_eq!(testplug::LIVE_INITS.load(Ordering::SeqCst), 0);
 }

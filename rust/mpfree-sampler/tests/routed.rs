@@ -20,18 +20,27 @@ struct Channels {
 
 impl Channels {
     fn new(block: usize) -> Channels {
-        Channels { left: vec![vec![0.0; block]; PAIRS], right: vec![vec![0.0; block]; PAIRS], off: vec![], asked: vec![] }
+        Channels {
+            left: vec![vec![0.0; block]; PAIRS],
+            right: vec![vec![0.0; block]; PAIRS],
+            off: vec![],
+            asked: vec![],
+        }
     }
 
     fn clear(&mut self) {
-        for c in self.left.iter_mut().chain(self.right.iter_mut()) { c.fill(0.0); }
+        for c in self.left.iter_mut().chain(self.right.iter_mut()) {
+            c.fill(0.0);
+        }
     }
 }
 
 impl PadOut for Channels {
     fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         self.asked.push(pad);
-        if pad >= PAIRS || self.off.contains(&pad) { return None; }
+        if pad >= PAIRS || self.off.contains(&pad) {
+            return None;
+        }
         Some((&mut self.left[pad][..], &mut self.right[pad][..]))
     }
 }
@@ -54,23 +63,47 @@ fn kit() -> Project {
     let one = Region::whole(&s);
     let mut lp = Region::whole(&s);
     lp.mode = PlayMode::Loop;
-    lp.sustain_loop = Some(Loop { start: 2000, end: 6000, crossfade: 300, mode: LoopMode::Forward });
+    lp.sustain_loop = Some(Loop {
+        start: 2000,
+        end: 6000,
+        crossfade: 300,
+        mode: LoopMode::Forward,
+    });
     let mut gate = Region::whole(&s);
     gate.mode = PlayMode::Gate;
     gate.reverse = true;
     gate.tune_cents = 700;
     let mut grains = Region::whole(&s);
     grains.mode = PlayMode::Granular;
-    grains.grain = GrainParams { density: 200.0, size_ms: 40.0, spray: 0.4, ..GrainParams::default() };
+    grains.grain = GrainParams {
+        density: 200.0,
+        size_ms: 40.0,
+        spray: 0.4,
+        ..GrainParams::default()
+    };
 
-    p.set_pad(0, Some(Pad::new("one", Layer::new(one))), None).unwrap();
+    p.set_pad(0, Some(Pad::new("one", Layer::new(one))), None)
+        .unwrap();
     let mut pad = Pad::new("loop", Layer::new(lp));
-    pad.filter = Filter { kind: FilterKind::LowPass, poles: 4, cutoff_hz: 1500.0, resonance: 0.4, env_octaves: 2.0 };
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 4,
+        cutoff_hz: 1500.0,
+        resonance: 0.4,
+        env_octaves: 2.0,
+    };
     p.set_pad(1, Some(pad), None).unwrap();
     let mut pad = Pad::new("gate", Layer::new(gate));
-    pad.amp = Ahdsr { attack_ms: 3.0, hold_ms: 0.0, decay_ms: 40.0, sustain: 0.5, release_ms: 20.0 };
+    pad.amp = Ahdsr {
+        attack_ms: 3.0,
+        hold_ms: 0.0,
+        decay_ms: 40.0,
+        sustain: 0.5,
+        release_ms: 20.0,
+    };
     p.set_pad(2, Some(pad), None).unwrap();
-    p.set_pad(3, Some(Pad::new("grains", Layer::new(grains))), None).unwrap();
+    p.set_pad(3, Some(Pad::new("grains", Layer::new(grains))), None)
+        .unwrap();
     p
 }
 
@@ -83,17 +116,58 @@ fn engine(p: &Project) -> Engine {
 /// The same hits and lifts, block by block, on frames inside the block.
 fn events(block: u32) -> Vec<(u32, Event)> {
     match block {
-        0 => vec![(0, Event::NoteOn { pad: 0, velocity: 120 }), (17, Event::NoteOn { pad: 1, velocity: 90 })],
-        2 => vec![(5, Event::NoteOn { pad: 2, velocity: 100 }), (99, Event::NoteOn { pad: 3, velocity: 110 })],
+        0 => vec![
+            (
+                0,
+                Event::NoteOn {
+                    pad: 0,
+                    velocity: 120,
+                },
+            ),
+            (
+                17,
+                Event::NoteOn {
+                    pad: 1,
+                    velocity: 90,
+                },
+            ),
+        ],
+        2 => vec![
+            (
+                5,
+                Event::NoteOn {
+                    pad: 2,
+                    velocity: 100,
+                },
+            ),
+            (
+                99,
+                Event::NoteOn {
+                    pad: 3,
+                    velocity: 110,
+                },
+            ),
+        ],
         9 => vec![(64, Event::NoteOff { pad: 2 })],
-        14 => vec![(1, Event::NoteOff { pad: 1 }), (33, Event::NoteOff { pad: 3 })],
-        20 => vec![(70, Event::NoteOn { pad: 0, velocity: 60 })],
+        14 => vec![
+            (1, Event::NoteOff { pad: 1 }),
+            (33, Event::NoteOff { pad: 3 }),
+        ],
+        20 => vec![(
+            70,
+            Event::NoteOn {
+                pad: 0,
+                velocity: 60,
+            },
+        )],
         _ => vec![],
     }
 }
 
 fn play(e: &mut Engine, block: u32) {
-    for (o, ev) in events(block) { e.schedule(o, ev); }
+    for (o, ev) in events(block) {
+        e.schedule(o, ev);
+    }
 }
 
 /// [`play`], but only the events for `pads`.
@@ -103,7 +177,9 @@ fn play_only(e: &mut Engine, block: u32, pads: &[u8]) {
             Event::NoteOn { pad, .. } | Event::NoteOff { pad } => pad,
             _ => continue,
         };
-        if pads.contains(&pad) { e.schedule(o, ev); }
+        if pads.contains(&pad) {
+            e.schedule(o, ev);
+        }
     }
 }
 
@@ -120,13 +196,30 @@ fn the_pads_pairs_add_up_to_the_mixed_render() {
         mixed.render(&mut l, &mut r);
         routed.render_routed(128, &mut ch);
         for k in 0..128 {
-            let (sl, sr): (f32, f32) = (ch.left.iter().map(|c| c[k]).sum(), ch.right.iter().map(|c| c[k]).sum());
-            assert!((sl - l[k]).abs() < 1e-5 && (sr - r[k]).abs() < 1e-5, "block {block} frame {k}: {sl} {sr} vs {} {}", l[k], r[k]);
+            let (sl, sr): (f32, f32) = (
+                ch.left.iter().map(|c| c[k]).sum(),
+                ch.right.iter().map(|c| c[k]).sum(),
+            );
+            assert!(
+                (sl - l[k]).abs() < 1e-5 && (sr - r[k]).abs() < 1e-5,
+                "block {block} frame {k}: {sl} {sr} vs {} {}",
+                l[k],
+                r[k]
+            );
         }
         for (pad, h) in heard.iter_mut().enumerate() {
-            *h = h.max(ch.left[pad].iter().chain(&ch.right[pad]).fold(0f32, |m, x| m.max(x.abs())));
+            *h = h.max(
+                ch.left[pad]
+                    .iter()
+                    .chain(&ch.right[pad])
+                    .fold(0f32, |m, x| m.max(x.abs())),
+            );
         }
-        assert_eq!(mixed.active_voices(), routed.active_voices(), "block {block}");
+        assert_eq!(
+            mixed.active_voices(),
+            routed.active_voices(),
+            "block {block}"
+        );
         ch.clear();
     }
     // Every pad hit is heard on its own pair, and no other pair hears anything.
@@ -146,11 +239,31 @@ fn each_pair_is_that_pad_alone_and_is_added_to_from_the_events_frame() {
     let mut alone = engine(&p);
     let mut both = engine(&p);
     let mut ch = Channels::new(256);
-    for c in ch.left.iter_mut().chain(ch.right.iter_mut()) { c.fill(1.0); }
+    for c in ch.left.iter_mut().chain(ch.right.iter_mut()) {
+        c.fill(1.0);
+    }
     let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
-    alone.schedule(40, Event::NoteOn { pad: 1, velocity: 90 });
-    both.schedule(40, Event::NoteOn { pad: 1, velocity: 90 });
-    both.schedule(3, Event::NoteOn { pad: 0, velocity: 127 });
+    alone.schedule(
+        40,
+        Event::NoteOn {
+            pad: 1,
+            velocity: 90,
+        },
+    );
+    both.schedule(
+        40,
+        Event::NoteOn {
+            pad: 1,
+            velocity: 90,
+        },
+    );
+    both.schedule(
+        3,
+        Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        },
+    );
     alone.render(&mut l, &mut r);
     both.render_routed(256, &mut ch);
     for k in 0..256 {
@@ -158,9 +271,18 @@ fn each_pair_is_that_pad_alone_and_is_added_to_from_the_events_frame() {
         assert!((ch.right[1][k] - 1.0 - r[k]).abs() < 1e-6, "frame {k}");
     }
     assert!(l[40..].iter().any(|x| x.abs() > 0.01), "pad 1 plays");
-    assert!(ch.left[1][..40].iter().all(|x| *x == 1.0), "nothing before the hit's frame");
-    assert!(ch.left[0][..3].iter().all(|x| *x == 1.0) && ch.left[0][3..40].iter().any(|x| *x != 1.0), "pad 0 starts on frame 3");
-    assert!(ch.left[5].iter().all(|x| *x == 1.0), "pads that don't play are left alone");
+    assert!(
+        ch.left[1][..40].iter().all(|x| *x == 1.0),
+        "nothing before the hit's frame"
+    );
+    assert!(
+        ch.left[0][..3].iter().all(|x| *x == 1.0) && ch.left[0][3..40].iter().any(|x| *x != 1.0),
+        "pad 0 starts on frame 3"
+    );
+    assert!(
+        ch.left[5].iter().all(|x| *x == 1.0),
+        "pads that don't play are left alone"
+    );
 }
 
 #[test]
@@ -187,18 +309,37 @@ fn a_pad_without_an_output_goes_unheard_but_plays_on_and_ends_on_time() {
             assert!((heard[k] - ol[k]).abs() < 1e-6, "block {block} frame {k}");
         }
         assert!(ch.left[1].iter().chain(&ch.left[3]).all(|x| *x == 0.0));
-        assert_eq!(mixed.active_voices(), routed.active_voices(), "block {block}");
+        assert_eq!(
+            mixed.active_voices(),
+            routed.active_voices(),
+            "block {block}"
+        );
         assert_eq!(mixed.live_grains(), routed.live_grains(), "block {block}");
         ch.clear();
     }
-    assert_eq!((routed.pad_voices(1), routed.pad_voices(3), mixed.pad_voices(1)), (0, 0, 0), "the unheard pads were lifted and ended");
+    assert_eq!(
+        (
+            routed.pad_voices(1),
+            routed.pad_voices(3),
+            mixed.pad_voices(1)
+        ),
+        (0, 0, 0),
+        "the unheard pads were lifted and ended"
+    );
 }
 
 #[test]
 fn the_master_effect_only_runs_on_the_mixed_render() {
     let mut p = kit();
     let mut plain = engine(&p);
-    p.set_master(MasterFx { mix: 0.8, ..MasterFx::default() }, None).unwrap();
+    p.set_master(
+        MasterFx {
+            mix: 0.8,
+            ..MasterFx::default()
+        },
+        None,
+    )
+    .unwrap();
     let mut wet = engine(&p);
     assert!(wet.set_master_fx(Engine::make_master_fx(RATE)).is_none());
     let (mut a, mut b) = (Channels::new(128), Channels::new(128));

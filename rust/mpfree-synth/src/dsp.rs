@@ -9,7 +9,9 @@ use std::f32::consts::PI;
 pub struct Rng(u64);
 
 impl Rng {
-    pub fn new(seed: u64) -> Rng { Rng(seed) }
+    pub fn new(seed: u64) -> Rng {
+        Rng(seed)
+    }
     #[inline]
     pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -20,10 +22,14 @@ impl Rng {
     }
     /// Uniform in [0, 1).
     #[inline]
-    pub fn unit(&mut self) -> f32 { (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32 }
+    pub fn unit(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
     /// Uniform in [-1, 1).
     #[inline]
-    pub fn bipolar(&mut self) -> f32 { self.unit() * 2.0 - 1.0 }
+    pub fn bipolar(&mut self) -> f32 {
+        self.unit() * 2.0 - 1.0
+    }
 }
 
 /// The polynomial band-limited step correction at phase `t` for a phase
@@ -52,7 +58,12 @@ pub enum Wave {
 
 impl Wave {
     pub fn from_index(i: f32) -> Wave {
-        match i as i32 { 1 => Wave::Pulse, 2 => Wave::Triangle, 3 => Wave::Sine, _ => Wave::Saw }
+        match i as i32 {
+            1 => Wave::Pulse,
+            2 => Wave::Triangle,
+            3 => Wave::Sine,
+            _ => Wave::Saw,
+        }
     }
 }
 
@@ -76,7 +87,9 @@ pub fn osc(wave: Wave, t: &mut f32, dt: f32, pw: f32) -> f32 {
         Wave::Sine => (2.0 * PI * p).sin(),
     };
     let mut n = p + dt;
-    if n >= 1.0 { n -= 1.0; }
+    if n >= 1.0 {
+        n -= 1.0;
+    }
     *t = n;
     y
 }
@@ -94,7 +107,12 @@ pub enum FilterMode {
 
 impl FilterMode {
     pub fn from_index(i: f32) -> FilterMode {
-        match i as i32 { 1 => FilterMode::Lp12, 2 => FilterMode::Bp12, 3 => FilterMode::Hp12, _ => FilterMode::Lp24 }
+        match i as i32 {
+            1 => FilterMode::Lp12,
+            2 => FilterMode::Bp12,
+            3 => FilterMode::Hp12,
+            _ => FilterMode::Lp24,
+        }
     }
 }
 
@@ -124,7 +142,16 @@ impl FilterCoefs {
         let damp = 2.0 - 1.95 * res;
         let a1 = 1.0 / (1.0 + g * (g + damp));
         let a2 = g * a1;
-        FilterCoefs { big_g: g / (1.0 + g), inv_1g: 1.0 / (1.0 + g), k, makeup: 1.0 + 0.6 * k, a1, a2, a3: g * a2, damp }
+        FilterCoefs {
+            big_g: g / (1.0 + g),
+            inv_1g: 1.0 / (1.0 + g),
+            k,
+            makeup: 1.0 + 0.6 * k,
+            a1,
+            a2,
+            a3: g * a2,
+            damp,
+        }
     }
 }
 
@@ -135,7 +162,9 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn clear(&mut self) { self.s = [0.0; 4]; }
+    pub fn clear(&mut self) {
+        self.s = [0.0; 4];
+    }
 
     #[inline]
     pub fn process(&mut self, mode: FilterMode, c: &FilterCoefs, x: f32) -> f32 {
@@ -143,7 +172,8 @@ impl Filter {
             FilterMode::Lp24 => {
                 // Zero-delay-feedback ladder (Zavalishin), linear core.
                 let g = c.big_g;
-                let sig = c.inv_1g * (g * g * g * self.s[0] + g * g * self.s[1] + g * self.s[2] + self.s[3]);
+                let sig = c.inv_1g
+                    * (g * g * g * self.s[0] + g * g * self.s[1] + g * self.s[2] + self.s[3]);
                 let g4 = g * g * g * g;
                 let y4 = (g4 * x + sig) / (1.0 + c.k * g4);
                 let mut u = x - c.k * y4;
@@ -177,7 +207,9 @@ impl Filter {
 /// above that it blends in a `tanh` stage pushed by `gain`.
 #[inline]
 pub fn drive(x: f32, gain: f32, amount: f32) -> f32 {
-    if amount <= 0.0 { return x; }
+    if amount <= 0.0 {
+        return x;
+    }
     x + ((x * gain).tanh() / gain.sqrt() - x) * amount
 }
 
@@ -203,7 +235,16 @@ pub struct Env {
 }
 
 impl Default for Env {
-    fn default() -> Env { Env { level: 0.0, stage: Stage::Idle, ca: 1.0, cd: 1.0, cr: 1.0, sustain: 1.0 } }
+    fn default() -> Env {
+        Env {
+            level: 0.0,
+            stage: Stage::Idle,
+            ca: 1.0,
+            cd: 1.0,
+            cr: 1.0,
+            sustain: 1.0,
+        }
+    }
 }
 
 /// The per-step coefficient that covers about 99 % of a segment in `ms`
@@ -221,10 +262,21 @@ impl Env {
         self.sustain = s.clamp(0.0, 1.0);
     }
     /// Starts the attack from the current level, so a retrigger never clicks.
-    pub fn gate_on(&mut self) { self.stage = Stage::Attack; }
-    pub fn gate_off(&mut self) { if self.stage != Stage::Idle { self.stage = Stage::Release; } }
-    pub fn idle(&self) -> bool { self.stage == Stage::Idle }
-    pub fn clear(&mut self) { self.level = 0.0; self.stage = Stage::Idle; }
+    pub fn gate_on(&mut self) {
+        self.stage = Stage::Attack;
+    }
+    pub fn gate_off(&mut self) {
+        if self.stage != Stage::Idle {
+            self.stage = Stage::Release;
+        }
+    }
+    pub fn idle(&self) -> bool {
+        self.stage == Stage::Idle
+    }
+    pub fn clear(&mut self) {
+        self.level = 0.0;
+        self.stage = Stage::Idle;
+    }
 
     #[inline]
     #[allow(clippy::should_implement_trait)]
@@ -233,12 +285,18 @@ impl Env {
             Stage::Idle => {}
             Stage::Attack => {
                 self.level += (1.3 - self.level) * self.ca;
-                if self.level >= 1.0 { self.level = 1.0; self.stage = Stage::Decay; }
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.stage = Stage::Decay;
+                }
             }
             Stage::Decay => self.level += (self.sustain - self.level) * self.cd,
             Stage::Release => {
                 self.level += (-0.01 - self.level) * self.cr;
-                if self.level <= 0.0 { self.level = 0.0; self.stage = Stage::Idle; }
+                if self.level <= 0.0 {
+                    self.level = 0.0;
+                    self.stage = Stage::Idle;
+                }
             }
         }
         self.level
@@ -257,7 +315,13 @@ pub enum LfoShape {
 
 impl LfoShape {
     pub fn from_index(i: f32) -> LfoShape {
-        match i as i32 { 1 => LfoShape::Triangle, 2 => LfoShape::Saw, 3 => LfoShape::Square, 4 => LfoShape::SampleHold, _ => LfoShape::Sine }
+        match i as i32 {
+            1 => LfoShape::Triangle,
+            2 => LfoShape::Saw,
+            3 => LfoShape::Square,
+            4 => LfoShape::SampleHold,
+            _ => LfoShape::Sine,
+        }
     }
 }
 
@@ -269,18 +333,28 @@ pub fn lfo_value(shape: LfoShape, p: f32, held: f32) -> f32 {
         LfoShape::Sine => (2.0 * PI * p).sin(),
         LfoShape::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
         LfoShape::Saw => 2.0 * p - 1.0,
-        LfoShape::Square => if p < 0.5 { 1.0 } else { -1.0 },
+        LfoShape::Square => {
+            if p < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
         LfoShape::SampleHold => held,
     }
 }
 
 /// `2^x`, the pitch and cutoff curve.
 #[inline]
-pub fn exp2(x: f32) -> f32 { x.exp2() }
+pub fn exp2(x: f32) -> f32 {
+    x.exp2()
+}
 
 /// The frequency of a (fractional) MIDI note.
 #[inline]
-pub fn note_hz(note: f32) -> f32 { 440.0 * exp2((note - 69.0) / 12.0) }
+pub fn note_hz(note: f32) -> f32 {
+    440.0 * exp2((note - 69.0) / 12.0)
+}
 
 #[cfg(test)]
 mod tests {
@@ -291,7 +365,9 @@ mod tests {
         let mut t = 0.0;
         let dt = 440.0 / 48_000.0;
         let mut peak = 0.0f32;
-        for _ in 0..48_000 { peak = peak.max(osc(Wave::Saw, &mut t, dt, 0.5).abs()); }
+        for _ in 0..48_000 {
+            peak = peak.max(osc(Wave::Saw, &mut t, dt, 0.5).abs());
+        }
         assert!(peak <= 1.05, "peak {peak}");
     }
 
@@ -300,12 +376,18 @@ mod tests {
         let mut e = Env::default();
         e.set(1.0, 10.0, 0.5, 10.0, 48_000.0);
         e.gate_on();
-        for _ in 0..100 { e.next(); }
+        for _ in 0..100 {
+            e.next();
+        }
         assert_eq!(e.stage, Stage::Decay);
-        for _ in 0..4800 { e.next(); }
+        for _ in 0..4800 {
+            e.next();
+        }
         assert!((e.level - 0.5).abs() < 0.01);
         e.gate_off();
-        for _ in 0..4800 { e.next(); }
+        for _ in 0..4800 {
+            e.next();
+        }
         assert!(e.idle());
         assert_eq!(e.level, 0.0);
     }
@@ -316,7 +398,9 @@ mod tests {
             let c = FilterCoefs::new(500.0, 0.0, 48_000.0);
             let mut f = Filter::default();
             let mut y = 0.0;
-            for _ in 0..48_000 { y = f.process(mode, &c, 1.0); }
+            for _ in 0..48_000 {
+                y = f.process(mode, &c, 1.0);
+            }
             assert!((y - 1.0).abs() < 0.02, "{mode:?} dc {y}");
             // A 10 kHz sine comes out far quieter.
             let mut f = Filter::default();
@@ -324,7 +408,9 @@ mod tests {
             for i in 0..48_000 {
                 let x = (2.0 * PI * 10_000.0 * i as f32 / 48_000.0).sin();
                 let y = f.process(mode, &c, x);
-                if i > 4800 { peak = peak.max(y.abs()); }
+                if i > 4800 {
+                    peak = peak.max(y.abs());
+                }
             }
             assert!(peak < 0.05, "{mode:?} 10 kHz peak {peak}");
         }
@@ -335,7 +421,9 @@ mod tests {
         let c = FilterCoefs::new(500.0, 0.3, 48_000.0);
         let mut f = Filter::default();
         let mut y = 1.0;
-        for _ in 0..48_000 { y = f.process(FilterMode::Hp12, &c, 1.0); }
+        for _ in 0..48_000 {
+            y = f.process(FilterMode::Hp12, &c, 1.0);
+        }
         assert!(y.abs() < 1e-3);
     }
 }

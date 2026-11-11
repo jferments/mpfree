@@ -34,14 +34,23 @@ pub enum AnalysisError {
 }
 
 impl std::fmt::Display for AnalysisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for AnalysisError {}
 
 /// Mixes 1 or 2 interleaved channels to mono. Non-finite samples become 0.
 pub fn mono(data: &[f32], channels: usize) -> Result<Vec<f32>, AnalysisError> {
-    if channels == 0 || channels > 2 { return Err(AnalysisError::BadInput("channels")); }
-    if !data.len().is_multiple_of(channels) { return Err(AnalysisError::BadInput("length")); }
+    if channels == 0 || channels > 2 {
+        return Err(AnalysisError::BadInput("channels"));
+    }
+    if !data.len().is_multiple_of(channels) {
+        return Err(AnalysisError::BadInput("length"));
+    }
     let clean = |x: f32| if x.is_finite() { x } else { 0.0 };
-    Ok(data.chunks_exact(channels).map(|f| f.iter().map(|x| clean(*x)).sum::<f32>() / channels as f32).collect())
+    Ok(data
+        .chunks_exact(channels)
+        .map(|f| f.iter().map(|x| clean(*x)).sum::<f32>() / channels as f32)
+        .collect())
 }

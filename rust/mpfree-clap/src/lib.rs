@@ -156,14 +156,19 @@ pub struct Library {
 impl Library {
     /// Loads a `.clap` file and starts it. Control thread only.
     pub fn open(path: &Path) -> Result<Library, Error> {
-        let cpath = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| Error::Open("path has a NUL byte".into()))?;
+        let cpath = CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|_| Error::Open("path has a NUL byte".into()))?;
         // SAFETY: dlopen/dlsym/dlerror with valid C strings; the handle is
         // closed in Lib's drop, or here on failure.
         unsafe {
             let handle = libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
             if handle.is_null() {
                 let e = libc::dlerror();
-                let msg = if e.is_null() { "unknown error".to_string() } else { CStr::from_ptr(e).to_string_lossy().into_owned() };
+                let msg = if e.is_null() {
+                    "unknown error".to_string()
+                } else {
+                    CStr::from_ptr(e).to_string_lossy().into_owned()
+                };
                 return Err(Error::Open(msg));
             }
             let sym = libc::dlsym(handle, c"clap_entry".as_ptr());
@@ -183,7 +188,11 @@ impl Library {
         unsafe { Self::start(ptr::null_mut(), entry, &cpath) }
     }
 
-    unsafe fn start(handle: *mut c_void, entry: *const clap_plugin_entry, path: &CStr) -> Result<Library, Error> {
+    unsafe fn start(
+        handle: *mut c_void,
+        entry: *const clap_plugin_entry,
+        path: &CStr,
+    ) -> Result<Library, Error> {
         let close = || {
             if !handle.is_null() {
                 libc::dlclose(handle);
@@ -199,9 +208,14 @@ impl Library {
             close();
             return Err(Error::Init);
         }
-        let factory = (*entry).get_factory.map_or(ptr::null(), |g| g(CLAP_PLUGIN_FACTORY_ID.as_ptr() as *const c_char))
-            as *const clap_plugin_factory;
-        let lib = Arc::new(Lib { handle, entry, factory });
+        let factory = (*entry).get_factory.map_or(ptr::null(), |g| {
+            g(CLAP_PLUGIN_FACTORY_ID.as_ptr() as *const c_char)
+        }) as *const clap_plugin_factory;
+        let lib = Arc::new(Lib {
+            handle,
+            entry,
+            factory,
+        });
         if factory.is_null() {
             return Err(Error::NoFactory);
         }
@@ -231,13 +245,19 @@ impl Library {
     /// Control thread only.
     pub fn create(&self, id: &str) -> Result<ClapNode, Error> {
         let cid = CString::new(id).map_err(|_| Error::NoPlugin(id.to_string()))?;
-        let desc = self.plugins().into_iter().find(|d| d.id == id).ok_or_else(|| Error::NoPlugin(id.to_string()))?;
+        let desc = self
+            .plugins()
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| Error::NoPlugin(id.to_string()))?;
         let host = HostBox::new();
         let f = self.lib.factory;
         // SAFETY: valid factory and host; the host box outlives the plugin
         // (Instance drops the plugin first).
         unsafe {
-            let plugin = (*f).create_plugin.map_or(ptr::null(), |c| c(f, &host.clap, cid.as_ptr()));
+            let plugin = (*f)
+                .create_plugin
+                .map_or(ptr::null(), |c| c(f, &host.clap, cid.as_ptr()));
             if plugin.is_null() {
                 return Err(Error::Create(id.to_string()));
             }
@@ -263,11 +283,19 @@ impl Library {
             inst.latency = inst.ext(CLAP_EXT_LATENCY);
             inst.tail = inst.ext(CLAP_EXT_TAIL);
             let (notes_in, midi) = inst.note_input();
-            let kind = if notes_in { Kind::Instrument } else { Kind::Effect };
+            let kind = if notes_in {
+                Kind::Instrument
+            } else {
+                Kind::Effect
+            };
             let (params, map) = inst.scan_params(&desc.id);
             inst.values = map.iter().map(|_| AtomicU32::new(0)).collect();
             let info = intern_info(&desc, kind);
-            let mut by_clap: Vec<(clap_id, u16)> = map.iter().enumerate().map(|(i, m)| (m.id, i as u16)).collect();
+            let mut by_clap: Vec<(clap_id, u16)> = map
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.id, i as u16))
+                .collect();
             by_clap.sort_unstable();
             let inst = Arc::new(inst);
             inst.refresh_values(&map);
@@ -416,7 +444,9 @@ unsafe fn request(h: *const clap_host, bit: u32) {
 
 unsafe fn main_only(h: *const clap_host) {
     if let Some(b) = host_box(h) {
-        if b.audio_thread.load(Ordering::Relaxed) == this_thread() && MAIN_THREAD.load(Ordering::Relaxed) != this_thread() {
+        if b.audio_thread.load(Ordering::Relaxed) == this_thread()
+            && MAIN_THREAD.load(Ordering::Relaxed) != this_thread()
+        {
             b.misplaced.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -432,18 +462,35 @@ unsafe extern "C" fn host_request_callback(h: *const clap_host) {
     request(h, request::CALLBACK);
 }
 
-static HOST_LOG: clap_host_log = clap_host_log { log: Some(host_log) };
-static HOST_THREAD_CHECK: clap_host_thread_check =
-    clap_host_thread_check { is_main_thread: Some(host_is_main), is_audio_thread: Some(host_is_audio) };
-static HOST_PARAMS: clap_host_params =
-    clap_host_params { rescan: Some(host_params_rescan), clear: Some(host_params_clear), request_flush: Some(host_params_flush) };
-static HOST_STATE: clap_host_state = clap_host_state { mark_dirty: Some(host_state_dirty) };
-static HOST_LATENCY: clap_host_latency = clap_host_latency { changed: Some(host_latency_changed) };
-static HOST_TAIL: clap_host_tail = clap_host_tail { changed: Some(host_tail_changed) };
-static HOST_AUDIO_PORTS: clap_host_audio_ports =
-    clap_host_audio_ports { is_rescan_flag_supported: Some(host_ports_flag), rescan: Some(host_ports_rescan) };
-static HOST_NOTE_PORTS: clap_host_note_ports =
-    clap_host_note_ports { supported_dialects: Some(host_note_dialects), rescan: Some(host_ports_rescan) };
+static HOST_LOG: clap_host_log = clap_host_log {
+    log: Some(host_log),
+};
+static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_check {
+    is_main_thread: Some(host_is_main),
+    is_audio_thread: Some(host_is_audio),
+};
+static HOST_PARAMS: clap_host_params = clap_host_params {
+    rescan: Some(host_params_rescan),
+    clear: Some(host_params_clear),
+    request_flush: Some(host_params_flush),
+};
+static HOST_STATE: clap_host_state = clap_host_state {
+    mark_dirty: Some(host_state_dirty),
+};
+static HOST_LATENCY: clap_host_latency = clap_host_latency {
+    changed: Some(host_latency_changed),
+};
+static HOST_TAIL: clap_host_tail = clap_host_tail {
+    changed: Some(host_tail_changed),
+};
+static HOST_AUDIO_PORTS: clap_host_audio_ports = clap_host_audio_ports {
+    is_rescan_flag_supported: Some(host_ports_flag),
+    rescan: Some(host_ports_rescan),
+};
+static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
+    supported_dialects: Some(host_note_dialects),
+    rescan: Some(host_ports_rescan),
+};
 
 unsafe extern "C" fn host_get_extension(_h: *const clap_host, id: *const c_char) -> *const c_void {
     if id.is_null() {
@@ -568,7 +615,9 @@ struct PMap {
 
 impl Instance {
     unsafe fn ext<T>(&self, id: &[u8]) -> *const T {
-        (*self.plugin).get_extension.map_or(ptr::null(), |g| g(self.plugin, id.as_ptr() as *const c_char)) as *const T
+        (*self.plugin).get_extension.map_or(ptr::null(), |g| {
+            g(self.plugin, id.as_ptr() as *const c_char)
+        }) as *const T
     }
 
     /// Whether the plugin takes notes, and whether its main note port takes
@@ -583,8 +632,13 @@ impl Instance {
             return (false, false);
         }
         let mut info: clap_note_port_info = std::mem::zeroed();
-        let ok = (*np).get.is_some_and(|g| g(self.plugin, 0, true, &mut info));
-        (true, ok && info.supported_dialects & CLAP_NOTE_DIALECT_MIDI != 0)
+        let ok = (*np)
+            .get
+            .is_some_and(|g| g(self.plugin, 0, true, &mut info));
+        (
+            true,
+            ok && info.supported_dialects & CLAP_NOTE_DIALECT_MIDI != 0,
+        )
     }
 
     /// The visible parameters, as `'static` descriptions and a map to CLAP
@@ -602,29 +656,54 @@ impl Instance {
                 break;
             }
             let mut info: clap_param_info = std::mem::zeroed();
-            if !(*pp).get_info.is_some_and(|g| g(self.plugin, i, &mut info)) || info.flags & CLAP_PARAM_IS_HIDDEN != 0 {
+            if !(*pp).get_info.is_some_and(|g| g(self.plugin, i, &mut info))
+                || info.flags & CLAP_PARAM_IS_HIDDEN != 0
+            {
                 continue;
             }
             let name = fixed_str(&info.name);
             let module = fixed_str(&info.module);
-            let group = module.split('/').find(|s| !s.is_empty()).unwrap_or("Plugin").to_string();
+            let group = module
+                .split('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or("Plugin")
+                .to_string();
             let (min, max) = (info.min_value as f32, info.max_value as f32);
-            let (min, max) = if min.is_finite() && max.is_finite() && min <= max { (min, max) } else { (0.0, 1.0) };
+            let (min, max) = if min.is_finite() && max.is_finite() && min <= max {
+                (min, max)
+            } else {
+                (0.0, 1.0)
+            };
             let default = (info.default_value as f32).clamp(min, max);
             let default = if default.is_finite() { default } else { min };
             let stepped = info.flags & CLAP_PARAM_IS_STEPPED != 0;
             let mut choices = None;
-            if stepped && info.flags & CLAP_PARAM_IS_ENUM != 0 && min == 0.0 && max >= 1.0 && (max as usize) < MAX_CHOICES {
-                let names: Option<Vec<String>> = (0..=max as usize).map(|k| self.text(info.id, k as f64)).collect();
+            if stepped
+                && info.flags & CLAP_PARAM_IS_ENUM != 0
+                && min == 0.0
+                && max >= 1.0
+                && (max as usize) < MAX_CHOICES
+            {
+                let names: Option<Vec<String>> = (0..=max as usize)
+                    .map(|k| self.text(info.id, k as f64))
+                    .collect();
                 choices = names;
             }
             let curve = match (stepped, choices.is_some()) {
                 (true, true) => CurveSpec::Choice(choices.unwrap_or_default()),
-                (true, false) if min == 0.0 && max == 1.0 && info.flags & CLAP_PARAM_IS_BYPASS != 0 => CurveSpec::Toggle,
+                (true, false)
+                    if min == 0.0 && max == 1.0 && info.flags & CLAP_PARAM_IS_BYPASS != 0 =>
+                {
+                    CurveSpec::Toggle
+                }
                 (true, false) => CurveSpec::Stepped,
                 _ => CurveSpec::Linear,
             };
-            let default = if stepped { default.round().clamp(min, max) } else { default };
+            let default = if stepped {
+                default.round().clamp(min, max)
+            } else {
+                default
+            };
             owned.push(OwnedParam {
                 name,
                 group,
@@ -634,7 +713,10 @@ impl Instance {
                 curve,
                 readonly: info.flags & CLAP_PARAM_IS_READONLY != 0,
             });
-            map.push(PMap { id: info.id, cookie: info.cookie });
+            map.push(PMap {
+                id: info.id,
+                cookie: info.cookie,
+            });
         }
         (intern_params(plugin_id, owned), map)
     }
@@ -646,7 +728,10 @@ impl Instance {
             return None;
         }
         let mut buf = [0 as c_char; 128];
-        if (*pp).value_to_text.is_some_and(|f| f(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32)) {
+        if (*pp)
+            .value_to_text
+            .is_some_and(|f| f(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32))
+        {
             buf[buf.len() - 1] = 0;
             Some(CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
         } else {
@@ -663,7 +748,11 @@ impl Instance {
         for (i, m) in map.iter().enumerate() {
             let mut v = 0f64;
             // SAFETY: main-thread call on a live plugin.
-            let ok = unsafe { (*pp).get_value.is_some_and(|g| g(self.plugin, m.id, &mut v)) };
+            let ok = unsafe {
+                (*pp)
+                    .get_value
+                    .is_some_and(|g| g(self.plugin, m.id, &mut v))
+            };
             if ok {
                 self.values[i].store((v as f32).to_bits(), Ordering::Relaxed);
             }
@@ -671,7 +760,9 @@ impl Instance {
     }
 
     fn mark_audio(&self) {
-        self.host.audio_thread.store(this_thread(), Ordering::Relaxed);
+        self.host
+            .audio_thread
+            .store(this_thread(), Ordering::Relaxed);
     }
 }
 
@@ -717,13 +808,24 @@ fn key_of(p: &OwnedParam) -> OwnedParamKey {
         CurveSpec::Toggle => "t".to_string(),
         CurveSpec::Choice(n) => format!("c{}", n.join("\u{1}")),
     };
-    OwnedParamKey(p.name.clone(), p.group.clone(), p.min.to_bits(), p.max.to_bits(), p.default.to_bits(), curve, p.readonly)
+    OwnedParamKey(
+        p.name.clone(),
+        p.group.clone(),
+        p.min.to_bits(),
+        p.max.to_bits(),
+        p.default.to_bits(),
+        curve,
+        p.readonly,
+    )
 }
 
 /// Each distinct (plugin, parameter list) is leaked once.
 fn intern_params(plugin_id: &str, list: Vec<OwnedParam>) -> &'static [ParamInfo] {
     static TABLE: OnceLock<Mutex<HashMap<ParamKey, &'static [ParamInfo]>>> = OnceLock::new();
-    let key = (plugin_id.to_string(), list.iter().map(key_of).collect::<Vec<_>>());
+    let key = (
+        plugin_id.to_string(),
+        list.iter().map(key_of).collect::<Vec<_>>(),
+    );
     let table = TABLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(p) = t.get(&key) {
@@ -767,7 +869,11 @@ fn intern_info(d: &PluginDesc, kind: Kind) -> &'static NodeInfo {
     if let Some(i) = t.get(&key) {
         return i;
     }
-    let info: &'static NodeInfo = Box::leak(Box::new(NodeInfo { id: leak(&format!("clap:{}", d.id)), name: leak(&d.name), kind }));
+    let info: &'static NodeInfo = Box::leak(Box::new(NodeInfo {
+        id: leak(&format!("clap:{}", d.id)),
+        name: leak(&d.name),
+        kind,
+    }));
     t.insert(key, info);
     info
 }
@@ -828,7 +934,10 @@ unsafe extern "C" fn in_size(list: *const clap_input_events) -> u32 {
     (*((*list).ctx as *const InList)).len
 }
 
-unsafe extern "C" fn in_get(list: *const clap_input_events, index: u32) -> *const clap_event_header {
+unsafe extern "C" fn in_get(
+    list: *const clap_input_events,
+    index: u32,
+) -> *const clap_event_header {
     let l = &*((*list).ctx as *const InList);
     if index < l.len {
         &(*l.slots.add(index as usize)).header
@@ -843,7 +952,10 @@ struct OutList<'a> {
     values: &'a [AtomicU32],
 }
 
-unsafe extern "C" fn out_push(list: *const clap_output_events, ev: *const clap_event_header) -> bool {
+unsafe extern "C" fn out_push(
+    list: *const clap_output_events,
+    ev: *const clap_event_header,
+) -> bool {
     if ev.is_null() {
         return false;
     }
@@ -888,7 +1000,10 @@ unsafe impl Send for ClapNode {}
 impl ClapNode {
     /// The handle for main-thread work (state, the plugin's requests).
     pub fn control(&self) -> ClapControl {
-        ClapControl { inst: Arc::clone(&self.inst), map: self.map.iter().map(|m| m.id).collect() }
+        ClapControl {
+            inst: Arc::clone(&self.inst),
+            map: self.map.iter().map(|m| m.id).collect(),
+        }
     }
 
     /// The CLAP id of parameter `id` (its index), for project files.
@@ -898,7 +1013,10 @@ impl ClapNode {
 
     /// The parameter index of CLAP id `clap`.
     pub fn param_index(&self, clap: u32) -> Option<u16> {
-        self.by_clap.binary_search_by_key(&clap, |&(id, _)| id).ok().map(|k| self.by_clap[k].1)
+        self.by_clap
+            .binary_search_by_key(&clap, |&(id, _)| id)
+            .ok()
+            .map(|k| self.by_clap[k].1)
     }
 
     pub fn kind(&self) -> Kind {
@@ -916,7 +1034,10 @@ impl ClapNode {
 
     /// Messages the plugin logged, and how many were warnings or worse.
     pub fn logs(&self) -> (u32, u32) {
-        (self.inst.host.logs.load(Ordering::Relaxed), self.inst.host.warnings.load(Ordering::Relaxed))
+        (
+            self.inst.host.logs.load(Ordering::Relaxed),
+            self.inst.host.warnings.load(Ordering::Relaxed),
+        )
     }
 
     /// Main-thread-only host calls the plugin made from the audio thread.
@@ -960,12 +1081,25 @@ impl ClapNode {
         let mut ports = Ports::default();
         let ap = self.inst.audio_ports;
         for is_input in [true, false] {
-            let n = if ap.is_null() { 0 } else { (*ap).count.map_or(0, |c| c(self.inst.plugin, is_input)) };
+            let n = if ap.is_null() {
+                0
+            } else {
+                (*ap).count.map_or(0, |c| c(self.inst.plugin, is_input))
+            };
             for i in 0..n.min(16) {
                 let mut info: clap_audio_port_info = std::mem::zeroed();
-                let ok = (*ap).get.is_some_and(|g| g(self.inst.plugin, i, is_input, &mut info));
-                let ch = if ok { info.channel_count.clamp(1, 32) as usize } else { 2 };
-                let mut port = Port { chans: (0..ch).map(|_| vec![0f32; max_block]).collect(), ptrs: Vec::new() };
+                let ok = (*ap)
+                    .get
+                    .is_some_and(|g| g(self.inst.plugin, i, is_input, &mut info));
+                let ch = if ok {
+                    info.channel_count.clamp(1, 32) as usize
+                } else {
+                    2
+                };
+                let mut port = Port {
+                    chans: (0..ch).map(|_| vec![0f32; max_block]).collect(),
+                    ptrs: Vec::new(),
+                };
                 port.ptrs = port.chans.iter_mut().map(|c| c.as_mut_ptr()).collect();
                 let main = ok && info.flags & CLAP_AUDIO_PORT_IS_MAIN != 0;
                 if is_input {
@@ -1008,7 +1142,13 @@ impl ClapNode {
     }
 
     fn header(ty: u16, size: usize, time: u32) -> clap_event_header {
-        clap_event_header { size: size as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: ty, flags: CLAP_EVENT_IS_LIVE }
+        clap_event_header {
+            size: size as u32,
+            time,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: ty,
+            flags: CLAP_EVENT_IS_LIVE,
+        }
     }
 
     fn note(&mut self, ty: u16, time: u32, key: u8, velocity: f64) {
@@ -1025,7 +1165,11 @@ impl ClapNode {
 
     fn expression(&mut self, time: u32, which: i32, key: i16, value: f64) {
         let expr = clap_event_note_expression {
-            header: Self::header(CLAP_EVENT_NOTE_EXPRESSION, std::mem::size_of::<clap_event_note_expression>(), time),
+            header: Self::header(
+                CLAP_EVENT_NOTE_EXPRESSION,
+                std::mem::size_of::<clap_event_note_expression>(),
+                time,
+            ),
             expression_id: which,
             note_id: -1,
             port_index: 0,
@@ -1037,9 +1181,15 @@ impl ClapNode {
     }
 
     fn param_ev(&mut self, time: u32, index: u16, value: f32) {
-        let Some(m) = self.map.get(usize::from(index)).copied() else { return };
+        let Some(m) = self.map.get(usize::from(index)).copied() else {
+            return;
+        };
         let param = clap_event_param_value {
-            header: Self::header(CLAP_EVENT_PARAM_VALUE, std::mem::size_of::<clap_event_param_value>(), time),
+            header: Self::header(
+                CLAP_EVENT_PARAM_VALUE,
+                std::mem::size_of::<clap_event_param_value>(),
+                time,
+            ),
             param_id: m.id,
             cookie: m.cookie,
             note_id: -1,
@@ -1061,7 +1211,12 @@ impl ClapNode {
                     self.note(CLAP_EVENT_NOTE_OFF, time, note, 0.0);
                 } else {
                     self.held[usize::from(note)] = true;
-                    self.note(CLAP_EVENT_NOTE_ON, time, note, f64::from(velocity.min(127)) / 127.0);
+                    self.note(
+                        CLAP_EVENT_NOTE_ON,
+                        time,
+                        note,
+                        f64::from(velocity.min(127)) / 127.0,
+                    );
                 }
             }
             NodeEvent::NoteOff { note } if notes && note < 128 => {
@@ -1069,14 +1224,23 @@ impl ClapNode {
                 self.note(CLAP_EVENT_NOTE_OFF, time, note, 0.0);
             }
             NodeEvent::Pressure { note, value } if notes && note < 128 => {
-                self.expression(time, CLAP_NOTE_EXPRESSION_PRESSURE, i16::from(note), f64::from(value.min(127)) / 127.0);
+                self.expression(
+                    time,
+                    CLAP_NOTE_EXPRESSION_PRESSURE,
+                    i16::from(note),
+                    f64::from(value.min(127)) / 127.0,
+                );
             }
             NodeEvent::Bend { value } if notes => {
                 let v = f64::from(value).clamp(-1.0, 1.0);
                 if self.midi {
                     let b = (v * 8191.0 + 8192.0).round().clamp(0.0, 16383.0) as u16;
                     let midi = clap_event_midi {
-                        header: Self::header(CLAP_EVENT_MIDI, std::mem::size_of::<clap_event_midi>(), time),
+                        header: Self::header(
+                            CLAP_EVENT_MIDI,
+                            std::mem::size_of::<clap_event_midi>(),
+                            time,
+                        ),
                         port_index: 0,
                         data: [0xE0, (b & 0x7F) as u8, (b >> 7) as u8],
                     };
@@ -1084,7 +1248,12 @@ impl ClapNode {
                 } else {
                     for k in 0..128u8 {
                         if self.held[usize::from(k)] {
-                            self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(k), v * BEND_SEMITONES);
+                            self.expression(
+                                time,
+                                CLAP_NOTE_EXPRESSION_TUNING,
+                                i16::from(k),
+                                v * BEND_SEMITONES,
+                            );
                         }
                     }
                 }
@@ -1111,14 +1280,25 @@ impl ClapNode {
 
     /// Runs the plugin over `len` frames starting `at` frames into the
     /// block, with this chunk's events already in `self.events`.
-    unsafe fn run(&mut self, ctx: &Ctx, at: usize, len: usize, left: &mut [f32], right: &mut [f32]) {
+    unsafe fn run(
+        &mut self,
+        ctx: &Ctx,
+        at: usize,
+        len: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         let effect = self.kind == Kind::Effect;
         // Inputs: the track's sound into the main input (an effect), zeros
         // elsewhere.
         for (i, port) in self.ports.inputs.iter_mut().enumerate() {
             for (c, ch) in port.chans.iter_mut().enumerate() {
                 let src: Option<&[f32]> = if effect && Some(i) == self.ports.main_in {
-                    Some(if c % 2 == 0 { &left[at..at + len] } else { &right[at..at + len] })
+                    Some(if c % 2 == 0 {
+                        &left[at..at + len]
+                    } else {
+                        &right[at..at + len]
+                    })
                 } else {
                     None
                 };
@@ -1136,12 +1316,18 @@ impl ClapNode {
         let beats_per_frame = ctx.bpm / 60.0 / f64::from(ctx.rate.max(1));
         let beats = ctx.beats + at as f64 * beats_per_frame;
         let secs = (ctx.frame + at as u64) as f64 / f64::from(ctx.rate.max(1));
-        let mut flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE;
+        let mut flags = CLAP_TRANSPORT_HAS_TEMPO
+            | CLAP_TRANSPORT_HAS_BEATS_TIMELINE
+            | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE;
         if ctx.playing {
             flags |= CLAP_TRANSPORT_IS_PLAYING;
         }
         let transport = clap_event_transport {
-            header: Self::header(CLAP_EVENT_TRANSPORT, std::mem::size_of::<clap_event_transport>(), 0),
+            header: Self::header(
+                CLAP_EVENT_TRANSPORT,
+                std::mem::size_of::<clap_event_transport>(),
+                0,
+            ),
             flags,
             song_pos_beats: (beats * CLAP_BEATTIME_FACTOR) as i64,
             song_pos_seconds: (secs * CLAP_SECTIME_FACTOR) as i64,
@@ -1156,10 +1342,23 @@ impl ClapNode {
             tsig_num: 4,
             tsig_denom: 4,
         };
-        let in_list = InList { slots: self.events.as_ptr(), len: self.events.len() as u32 };
-        let in_events = clap_input_events { ctx: &in_list as *const InList as *mut c_void, size: Some(in_size), get: Some(in_get) };
-        let out_list = OutList { by_clap: &self.by_clap, values: &self.inst.values };
-        let out_events = clap_output_events { ctx: &out_list as *const OutList as *mut c_void, try_push: Some(out_push) };
+        let in_list = InList {
+            slots: self.events.as_ptr(),
+            len: self.events.len() as u32,
+        };
+        let in_events = clap_input_events {
+            ctx: &in_list as *const InList as *mut c_void,
+            size: Some(in_size),
+            get: Some(in_get),
+        };
+        let out_list = OutList {
+            by_clap: &self.by_clap,
+            values: &self.inst.values,
+        };
+        let out_events = clap_output_events {
+            ctx: &out_list as *const OutList as *mut c_void,
+            try_push: Some(out_push),
+        };
         let process = clap_process {
             steady_time: (ctx.frame + at as u64) as i64,
             frames_count: len as u32,
@@ -1171,14 +1370,18 @@ impl ClapNode {
             in_events: &in_events,
             out_events: &out_events,
         };
-        let status = (*self.inst.plugin).process.map_or(CLAP_PROCESS_ERROR, |p| p(self.inst.plugin, &process));
+        let status = (*self.inst.plugin)
+            .process
+            .map_or(CLAP_PROCESS_ERROR, |p| p(self.inst.plugin, &process));
         self.stats.blocks += 1;
         if status == CLAP_PROCESS_ERROR {
             // Silence from an instrument; the dry input stays for an effect.
             self.stats.errors += 1;
             return;
         }
-        let Some(out) = self.ports.main_out.and_then(|o| self.ports.outputs.get(o)) else { return };
+        let Some(out) = self.ports.main_out.and_then(|o| self.ports.outputs.get(o)) else {
+            return;
+        };
         let ol = &out.chans[0][..len];
         let or = &out.chans[if out.chans.len() > 1 { 1 } else { 0 }][..len];
         if effect {
@@ -1205,7 +1408,9 @@ impl Node for ClapNode {
     }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        let Some(p) = self.params.get(usize::from(id)) else { return };
+        let Some(p) = self.params.get(usize::from(id)) else {
+            return;
+        };
         if p.readonly {
             return;
         }
@@ -1221,7 +1426,10 @@ impl Node for ClapNode {
     }
 
     fn param(&self, id: u16) -> f32 {
-        self.inst.values.get(usize::from(id)).map_or(f32::NAN, |v| f32::from_bits(v.load(Ordering::Relaxed)))
+        self.inst
+            .values
+            .get(usize::from(id))
+            .map_or(f32::NAN, |v| f32::from_bits(v.load(Ordering::Relaxed)))
     }
 
     fn prepare(&mut self, rate: u32, max_block: usize) {
@@ -1232,7 +1440,9 @@ impl Node for ClapNode {
         // SAFETY: main thread, plugin inactive.
         unsafe {
             self.build_ports(max_block);
-            let ok = (*self.inst.plugin).activate.is_some_and(|a| a(self.inst.plugin, f64::from(rate), 1, max_block as u32));
+            let ok = (*self.inst.plugin)
+                .activate
+                .is_some_and(|a| a(self.inst.plugin, f64::from(rate), 1, max_block as u32));
             self.active = ok;
             if !ok {
                 self.stats.activate_failed += 1;
@@ -1272,7 +1482,11 @@ impl Node for ClapNode {
         self.inst.mark_audio();
         if !self.processing {
             // SAFETY: audio thread, active.
-            let ok = unsafe { (*self.inst.plugin).start_processing.is_none_or(|s| s(self.inst.plugin)) };
+            let ok = unsafe {
+                (*self.inst.plugin)
+                    .start_processing
+                    .is_none_or(|s| s(self.inst.plugin))
+            };
             if !ok {
                 self.stats.errors += 1;
                 return;
@@ -1331,7 +1545,10 @@ impl Drop for ClapNode {
 
 impl fmt::Debug for ClapNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClapNode").field("id", &self.info.id).field("active", &self.active).finish()
+        f.debug_struct("ClapNode")
+            .field("id", &self.info.id)
+            .field("active", &self.active)
+            .finish()
     }
 }
 
@@ -1375,7 +1592,10 @@ impl ClapControl {
             return None;
         }
         let mut w = WriteBuf(Vec::new());
-        let os = clap_ostream { ctx: &mut w as *mut WriteBuf as *mut c_void, write: Some(ostream_write) };
+        let os = clap_ostream {
+            ctx: &mut w as *mut WriteBuf as *mut c_void,
+            write: Some(ostream_write),
+        };
         // SAFETY: main-thread call; the stream lives across it.
         let ok = unsafe { (*st).save.is_some_and(|s| s(self.inst.plugin, &os)) };
         ok.then_some(w.0)
@@ -1389,11 +1609,21 @@ impl ClapControl {
             return false;
         }
         let mut r = ReadBuf(bytes, 0);
-        let is = clap_istream { ctx: &mut r as *mut ReadBuf as *mut c_void, read: Some(istream_read) };
+        let is = clap_istream {
+            ctx: &mut r as *mut ReadBuf as *mut c_void,
+            read: Some(istream_read),
+        };
         // SAFETY: main-thread call; the stream lives across it.
         let ok = unsafe { (*st).load.is_some_and(|l| l(self.inst.plugin, &is)) };
         if ok {
-            let map: Vec<PMap> = self.map.iter().map(|&id| PMap { id, cookie: ptr::null_mut() }).collect();
+            let map: Vec<PMap> = self
+                .map
+                .iter()
+                .map(|&id| PMap {
+                    id,
+                    cookie: ptr::null_mut(),
+                })
+                .collect();
             self.inst.refresh_values(&map);
         }
         ok

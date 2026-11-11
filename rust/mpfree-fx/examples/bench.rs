@@ -7,7 +7,10 @@ use std::time::Instant;
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
-use mpfree_fx::{Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety, MultiFilter, Phaser};
+use mpfree_fx::{
+    Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
+    MasterSafety, MultiFilter, Phaser,
+};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -31,41 +34,102 @@ fn time(name: &str, process: &mut Process) {
         process(&Ctx::new(RATE, (b * BLOCK) as u64), &mut l, &mut r);
     }
     let secs = start.elapsed().as_secs_f64();
-    println!("  {name:<28} {:>6.2} % of real time ({:.2} us per block)", 100.0 * secs / SECONDS as f64, 1e6 * secs / blocks as f64);
+    println!(
+        "  {name:<28} {:>6.2} % of real time ({:.2} us per block)",
+        100.0 * secs / SECONDS as f64,
+        1e6 * secs / blocks as f64
+    );
     std::hint::black_box(&l);
 }
 
 fn node(name: &str, mut n: Box<dyn Node>, params: &[(u16, f32)]) {
     n.prepare(RATE, MAX_BLOCK);
-    for &(id, v) in params { n.set_param(id, v); }
+    for &(id, v) in params {
+        n.set_param(id, v);
+    }
     n.reset();
     time(name, &mut |ctx, l, r| n.process(ctx, &[], l, r));
 }
 
 fn main() {
     println!("mpfree-fx, one stereo instance on {BLOCK}-frame blocks at {RATE} Hz:");
-    node("Multi filter (LP 12)", Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0)]);
-    node("Multi filter (LP 24, drive)", Box::new(MultiFilter::new()), &[(ids::filter::CUTOFF, 800.0), (ids::filter::SLOPE, 1.0), (ids::filter::DRIVE, 12.0)]);
-    node("DJ filter", Box::new(DjFilter::new()), &[(ids::dj_filter::POSITION, -40.0)]);
+    node(
+        "Multi filter (LP 12)",
+        Box::new(MultiFilter::new()),
+        &[(ids::filter::CUTOFF, 800.0)],
+    );
+    node(
+        "Multi filter (LP 24, drive)",
+        Box::new(MultiFilter::new()),
+        &[
+            (ids::filter::CUTOFF, 800.0),
+            (ids::filter::SLOPE, 1.0),
+            (ids::filter::DRIVE, 12.0),
+        ],
+    );
+    node(
+        "DJ filter",
+        Box::new(DjFilter::new()),
+        &[(ids::dj_filter::POSITION, -40.0)],
+    );
     node("Drive (Eco 2x)", Box::new(Drive::new()), &[]);
-    node("Drive (HQ 4x)", Box::new(Drive::new()), &[(ids::drive::QUALITY, 1.0)]);
+    node(
+        "Drive (HQ 4x)",
+        Box::new(Drive::new()),
+        &[(ids::drive::QUALITY, 1.0)],
+    );
     node("Crush", Box::new(Crush::new()), &[]);
     node("Delay", Box::new(Delay::new()), &[]);
     node("Compressor", Box::new(Compressor::new()), &[]);
-    node("EQ (4 bands and both cuts)", Box::new(Eq::new()), &[
-        (ids::eq::LOW_SLOPE, 2.0), (ids::eq::HIGH_SLOPE, 2.0),
-        (ids::eq::gain(0), 3.0), (ids::eq::gain(1), -4.0), (ids::eq::gain(2), 5.0), (ids::eq::gain(3), 2.0),
-    ]);
+    node(
+        "EQ (4 bands and both cuts)",
+        Box::new(Eq::new()),
+        &[
+            (ids::eq::LOW_SLOPE, 2.0),
+            (ids::eq::HIGH_SLOPE, 2.0),
+            (ids::eq::gain(0), 3.0),
+            (ids::eq::gain(1), -4.0),
+            (ids::eq::gain(2), 5.0),
+            (ids::eq::gain(3), 2.0),
+        ],
+    );
     node("Chorus (2 voices)", Box::new(Chorus::new()), &[]);
-    node("Chorus (4 voices)", Box::new(Chorus::new()), &[(ids::chorus::VOICES, 4.0)]);
+    node(
+        "Chorus (4 voices)",
+        Box::new(Chorus::new()),
+        &[(ids::chorus::VOICES, 4.0)],
+    );
     node("Flanger", Box::new(Flanger::new()), &[]);
     node("Phaser (4 stages)", Box::new(Phaser::new()), &[]);
-    node("Phaser (12 stages)", Box::new(Phaser::new()), &[(ids::phaser::STAGES, 4.0)]);
-    node("Lo-fi", Box::new(LoFi::new()), &[(ids::lofi::AMOUNT, 100.0)]);
+    node(
+        "Phaser (12 stages)",
+        Box::new(Phaser::new()),
+        &[(ids::phaser::STAGES, 4.0)],
+    );
+    node(
+        "Lo-fi",
+        Box::new(LoFi::new()),
+        &[(ids::lofi::AMOUNT, 100.0)],
+    );
     node("Master safety", Box::new(MasterSafety::new()), &[]);
-    for (k, name) in ["Plate", "Room", "Hall", "Cloud", "Echoes"].iter().enumerate() {
-        node(&format!("Cloud reverb ({name})"), Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)]);
-        node(&format!("Cloud reverb ({name}, Light)"), Box::new(Cloud::new()), &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0), (ids::cloud::QUALITY, 1.0)]);
+    for (k, name) in ["Plate", "Room", "Hall", "Cloud", "Echoes"]
+        .iter()
+        .enumerate()
+    {
+        node(
+            &format!("Cloud reverb ({name})"),
+            Box::new(Cloud::new()),
+            &[(ids::cloud::CHARACTER, k as f32), (ids::cloud::MIX, 100.0)],
+        );
+        node(
+            &format!("Cloud reverb ({name}, Light)"),
+            Box::new(Cloud::new()),
+            &[
+                (ids::cloud::CHARACTER, k as f32),
+                (ids::cloud::MIX, 100.0),
+                (ids::cloud::QUALITY, 1.0),
+            ],
+        );
     }
     let mut chain = Chain::new();
     chain.prepare(RATE, MAX_BLOCK);
@@ -74,5 +138,7 @@ fn main() {
     chain.push(Box::new(Delay::new()));
     chain.push(Box::new(Compressor::new()));
     chain.set_param(1, ids::filter::CUTOFF, 800.0);
-    time("Chain: drive, filter, delay, comp", &mut |ctx, l, r| chain.process(ctx, l, r));
+    time("Chain: drive, filter, delay, comp", &mut |ctx, l, r| {
+        chain.process(ctx, l, r)
+    });
 }

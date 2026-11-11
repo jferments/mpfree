@@ -6,7 +6,9 @@
 pub struct Rng(u64);
 
 impl Rng {
-    pub fn new(seed: u64) -> Self { Rng(seed) }
+    pub fn new(seed: u64) -> Self {
+        Rng(seed)
+    }
 
     #[inline]
     pub fn next_u64(&mut self) -> u64 {
@@ -19,11 +21,15 @@ impl Rng {
 
     /// Uniform in [0, 1).
     #[inline]
-    pub fn unit(&mut self) -> f32 { (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32 }
+    pub fn unit(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
 
     /// Uniform in [-1, 1).
     #[inline]
-    pub fn bipolar(&mut self) -> f32 { self.unit() * 2.0 - 1.0 }
+    pub fn bipolar(&mut self) -> f32 {
+        self.unit() * 2.0 - 1.0
+    }
 }
 
 #[cfg(test)]
