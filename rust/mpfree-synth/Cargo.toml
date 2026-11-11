@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-synth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MPFree's native synth instruments on the shared mpfree-node interface: real-time safe, block-size independent"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
