@@ -265,6 +265,14 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         &[],
         fonts(),
     )?);
+    out.push(drum_scene(
+        "synth-drums-kit",
+        "Drums · Electro Kit, Kit page: the kit as the pads lie, pad 1's hit, every pad's level",
+        "Electro Kit",
+        16,
+        &[],
+        fonts(),
+    )?);
     out.push(pluck_scene(
         "synth-pluck-string",
         "Pluck · Steel String, String page: Karplus-Strong decay, brightness, pick and position",
@@ -332,7 +340,7 @@ fn fm_scene(
 
 const DRUM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: pad page · pads play the kit";
 
-/// The drum synth with a factory kit, on pad `pad`'s page.
+/// The drum synth with a factory kit, on pad `pad`'s page (16: the Kit page).
 fn drum_scene(
     name: &'static str,
     about: &'static str,
@@ -356,7 +364,13 @@ fn drum_scene(
     st.edited = !edits.is_empty();
     let mut ui = app_ui(fonts, DRUM_HINT);
     let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
-    panel.show_page(&mut ui, crate::pages::drum_page(pad));
+    // Past the last pad: the Kit page, after the pads' pages.
+    let page = if pad < 16 {
+        crate::pages::drum_page(pad)
+    } else {
+        16
+    };
+    panel.show_page(&mut ui, page);
     ui.show(PAGE)?;
     Ok(Sample {
         name,

@@ -13,6 +13,9 @@
 //!   envelopes, LFO), worked out from its values.
 //! - [`fm_visual`]: FM's: the algorithm diagram, operator envelopes,
 //!   keyboard scaling, the pitch envelope and the LFO.
+//! - [`kit_visual`]: Drums' (the kit, a hit's parts, its sweep, the pads'
+//!   levels) and Pluck's (the pick or the mallet, the harmonics or modes,
+//!   their decays).
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -24,6 +27,7 @@
 pub mod draw;
 pub mod fm_visual;
 pub mod format;
+pub mod kit_visual;
 pub mod pages;
 pub mod sample;
 pub mod view;
