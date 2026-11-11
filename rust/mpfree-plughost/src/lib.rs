@@ -31,7 +31,7 @@ pub mod shm;
 pub mod wire;
 
 use mpfree_clap::{intern_info, intern_params};
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
+use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
 use shm::{Mapping, ShmEvent};
 use std::io;
 use std::os::fd::AsRawFd;
@@ -459,6 +459,14 @@ fn flatten(t: &Timed, n: usize) -> ShmEvent {
             e(shm::EV_PRESSURE, u32::from(note), u32::from(value), 0.0)
         }
         NodeEvent::Bend { value } => e(shm::EV_BEND, 0, 0, value),
+        NodeEvent::Expression { note, kind, value } => {
+            let k = match kind {
+                Expr::Slide => 0,
+                Expr::Tone => 1,
+                Expr::Release => 2,
+            };
+            e(shm::EV_EXPRESSION, u32::from(note), k, value)
+        }
         NodeEvent::AllOff => e(shm::EV_ALL_OFF, 0, 0, 0.0),
         NodeEvent::Param { id, value } => e(shm::EV_PARAM, u32::from(id), 0, value),
     }
