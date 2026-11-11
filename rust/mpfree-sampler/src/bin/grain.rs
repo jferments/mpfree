@@ -2,7 +2,7 @@
 //! Workstation only: no MPC, ALSA or network access. It reads one WAV and
 //! writes only inside the output folder it is given.
 //!
-//! It renders six presets that show what the engine does, each to its own
+//! It renders seven presets that show what the engine does, each to its own
 //! WAV, and writes `grain-report.txt` with the grain counts and how fast
 //! each render ran (and, with `--demo`, `demo-input.wav`, the source):
 //!
@@ -13,6 +13,9 @@
 //! - `stutter-120.wav`: grains locked to sixteenths at 120 BPM.
 //! - `freeze-live.wav`: the input played through as a live signal, with the
 //!   granular effect frozen on it partway through.
+//! - `pressure-pad.wav`: the input on four granular pads in the sampler
+//!   engine, one after another, each pressed harder then lighter: pressure
+//!   on grain density, then grain size, then position, then pitch.
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -23,6 +26,9 @@ use std::time::Instant;
 
 use mpfree_grain::{Budget, Clip, GrainVoice, LiveBuffer, Params, TempoSync, Window};
 use mpfree_sampler::chop::demo_beat;
+use mpfree_sampler::dsp::Ahdsr;
+use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::model::{GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source};
 use mpfree_sampler::PreparedSample;
 
 #[path = "shared/wav_out.rs"]
@@ -104,7 +110,8 @@ struct Rendered {
     name: &'static str,
     left: Vec<f32>,
     right: Vec<f32>,
-    spawned: u64,
+    /// Grains started, where the render can count them.
+    spawned: Option<u64>,
     skipped: u64,
     peak_grains: usize,
     millis: f64,
@@ -126,7 +133,7 @@ fn render(name: &'static str, data: &[f32], rate: u32, p: Params, frames: usize,
     }
     let millis = t.elapsed().as_secs_f64() * 1000.0;
     let s = v.stats();
-    Rendered { name, left, right, spawned: s.spawned, skipped: s.skipped, peak_grains: s.peak_active, millis }
+    Rendered { name, left, right, spawned: Some(s.spawned), skipped: s.skipped, peak_grains: s.peak_active, millis }
 }
 
 /// The input streams through as if live, and the granular effect plays on
@@ -160,7 +167,57 @@ fn render_live(data: &[f32], rate: u32, frames: usize, seed: u64) -> Rendered {
     }
     let millis = t.elapsed().as_secs_f64() * 1000.0;
     let s = v.stats();
-    Rendered { name: "freeze-live", left, right, spawned: s.spawned, skipped: s.skipped, peak_grains: s.peak_active, millis }
+    Rendered { name: "freeze-live", left, right, spawned: Some(s.spawned), skipped: s.skipped, peak_grains: s.peak_active, millis }
+}
+
+/// Four granular pads on the input, played one after another through the
+/// sampler engine. Each is held for most of its quarter while its pressure
+/// swells from nothing to full and back, then released.
+fn render_pressure(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, Box<dyn Error>> {
+    let source = Source::new("input", rate, 2, data.to_vec())?;
+    let mut project = Project::new();
+    project.add_source(source.clone());
+    let routes = [
+        (PressureTarget::GrainDensity, 1.0), // 12 grains a second up to 192
+        (PressureTarget::GrainSize, 1.0),    // 80 ms grains up to 640 ms
+        (PressureTarget::GrainPosition, 0.6), // reads from 30 % of the way in up to 90 %
+        (PressureTarget::Pitch, 1.0),        // up an octave
+    ];
+    for (i, &(target, depth)) in routes.iter().enumerate() {
+        let mut r = Region::whole(&source);
+        r.mode = PlayMode::Granular;
+        r.grain = GrainParams { position: 0.3, spray: 0.05, size_ms: 80.0, density: 12.0, spread: 0.6, ..GrainParams::default() };
+        let mut pad = Pad::new("pressure", Layer::new(r));
+        pad.amp = Ahdsr { attack_ms: 20.0, hold_ms: 0.0, decay_ms: 0.0, sustain: 1.0, release_ms: 300.0 };
+        pad.pressure = PressureRoute { target, depth };
+        project.set_pad(i, Some(pad), None)?;
+    }
+    let mut e = Engine::new(rate, 8);
+    e.set_view(EngineView::build(&project, rate));
+    let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+    let quarter = frames / 4;
+    let held = quarter * 85 / 100;
+    let mut peak_grains = 0;
+    let t = Instant::now();
+    let mut at = 0;
+    while at < frames {
+        let n = BLOCK.min(frames - at);
+        let pad = (at / quarter).min(3);
+        let into = at - pad * quarter;
+        let pad = pad as u8;
+        if into < n { e.apply(Event::NoteOn { pad, velocity: 110 }); }
+        if into < held {
+            let swell = (std::f64::consts::PI * into as f64 / held as f64).sin();
+            e.apply(Event::Pressure { pad, value: (127.0 * swell).round() as u8 });
+        } else if into < held + n {
+            e.apply(Event::NoteOff { pad });
+        }
+        e.render(&mut left[at..at + n], &mut right[at..at + n]);
+        peak_grains = peak_grains.max(e.live_grains());
+        at += n;
+    }
+    let millis = t.elapsed().as_secs_f64() * 1000.0;
+    Ok(Rendered { name: "pressure-pad", left, right, spawned: None, skipped: e.stats().skipped_grains, peak_grains, millis })
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -198,6 +255,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     ];
     let mut outs: Vec<Rendered> = presets.iter().map(|&(name, p, n)| render(name, &data, rate, p, n, o.seed)).collect();
     outs.push(render_live(&data, rate, frames, o.seed));
+    outs.push(render_pressure(&data, rate, frames)?);
 
     let mut rep = String::new();
     writeln!(rep, "mpfree-grain report")?;
@@ -213,13 +271,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         let level = if peak > 0.891 { 0.891 / peak } else { 1.0 };
         for x in r.left.iter_mut().chain(r.right.iter_mut()) { *x *= level; }
         let secs = r.left.len() as f64 / f64::from(rate);
+        let spawned = r.spawned.map_or("-".to_string(), |n| n.to_string());
         writeln!(rep, "{:<14} {:>7.2} {:>8} {:>7} {:>6} {:>8.1}dB {:>10.1} {:>9.0}",
-            r.name, secs, r.spawned, r.skipped, r.peak_grains, 20.0 * peak.max(1e-9).log10(), r.millis, secs * 1000.0 / r.millis.max(1e-6))?;
+            r.name, secs, spawned, r.skipped, r.peak_grains, 20.0 * peak.max(1e-9).log10(), r.millis, secs * 1000.0 / r.millis.max(1e-6))?;
         write_wav(&o.out.join(format!("{}.wav", r.name)), rate, &r.left, &r.right)?;
     }
     writeln!(rep)?;
     writeln!(rep, "level is the peak before any gain change; renders over -1 dBFS were turned down to -1 dBFS.")?;
     writeln!(rep, "x realtime is how many times faster than real time this workstation rendered it (one voice).")?;
+    writeln!(rep, "pressure-pad plays through the sampler engine, which does not count grains started (-).")?;
     writeln!(rep, "result: {}", if all_ok { "PASS (every preset made sound)" } else { "FAIL (a preset was silent or not finite)" })?;
     fs::write(o.out.join("grain-report.txt"), &rep)?;
     print!("{rep}");
