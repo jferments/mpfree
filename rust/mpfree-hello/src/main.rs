@@ -1666,8 +1666,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
-    out.say(&format!("mixer: drums, synth and loop on tracks 1-3, the line input on input 1 (heard with the looper's \
-                      Monitor), Master safety {} at {:.1} dBFS", "safe limiter", -0.3));
+    out.say(&format!("mixer: the kit's 16 pads on pad channels into track 1 (drums), synth and loop on tracks 2-3, the \
+                      line input on input 1 (heard with the looper's Monitor), Master safety {} at {:.1} dBFS",
+                     "safe limiter", -0.3));
     let limit = if timed { format!("for up to {} s", o.seconds) } else { "until the power goes off".to_string() };
     out.say(&format!("playing {limit}: pads or the screen play; the wheel or a tap picks the kit or the synth; Q-Link 1 \
                       or the slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB), Q-Links 1-4 the \
@@ -2231,7 +2232,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
-        player.render_dry(&mut drums_l, &mut drums_r);
+        // Each pad of the playing kit into its pad channel (Pad Mix); they
+        // all go to the Drums track.
+        let mut pads = mix.pads();
+        player.render_routed(PERIOD, &mut pads);
+        let played = pads.played();
+        mix.drums(played, &mut drums_l, &mut drums_r);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
         engines.add(engines::SAMPLER, t_synth - t_render);
@@ -2260,8 +2266,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
-        let (p, caught) = mix.period(&ctx, [(&drums_l, &drums_r), (&synth_l, &synth_r), (&loop_l, &loop_r)],
-                                     looper.input(), &mut left, &mut right);
+        let (p, caught) = mix.period(&ctx, (&synth_l, &synth_r), (&loop_l, &loop_r), looper.input(), &mut left,
+                                     &mut right);
         if caught {
             clipped += 1;
         }
