@@ -5,7 +5,8 @@
 //! - **Granular playback** of a region of a sample: [`Clip`].
 //! - **Granular effect** on a live signal: [`LiveBuffer`], a circular buffer
 //!   the audio thread writes into, with freeze. [`GrainFx`] packages it as
-//!   an insert with a wet/dry mix.
+//!   an insert with a wet/dry mix, and [`GrainNode`] puts that in any FX
+//!   chain as an `mpfree_node::Node`.
 //!
 //! A [`GrainVoice`] spawns grains from either, each with its own position,
 //! length, pitch, direction, pan and window, and mixes them into the output.
@@ -23,12 +24,14 @@
 
 pub mod buffer;
 pub mod fx;
+pub mod node;
 pub mod rng;
 pub mod voice;
 pub mod window;
 
 pub use buffer::{Clip, GrainSource, LiveBuffer};
 pub use fx::GrainFx;
+pub use node::GrainNode;
 pub use rng::Rng;
 pub use voice::{quantise, Budget, GrainView, GrainVoice, Params, Stats, TempoSync, MAX_GRAINS};
 pub use window::{Window, WindowTable};
