@@ -184,7 +184,9 @@ try:
             if caller:
                 entry=int(caller.getEntryPoint().getOffset())
                 selected[entry]=caller
-    for address,fn in sorted(selected.items()):
+    # Preserve anchor-first insertion order; address-sorting would discard
+    # high-address Fastboot functions if the one-hop caller set exceeds 160.
+    for address,fn in selected.items():
         if len(out["functions"])>=160:break
         entry={"address":H(address), "name":str(fn.getName()),
                "incoming":xrefs(address,50),"calls":[]}
