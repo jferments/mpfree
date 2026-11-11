@@ -50,22 +50,27 @@ The music tabs, in this order:
 
 ## 4. The Play page
 
-Built in round 8 (PR #106) from Jay's approval at 10:05Z (mockups F to I). The old big pads are gone.
+Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real data and working controls (13:56Z on; side-by-side sheets in /mnt/project-files/hello-mpc/round8-play/compare/). The old big pads are gone.
 
 - **The frame, in every view:**
-  - the transport bar, with the view switch (All, Beats, Loop, Drum) on its right. One tap changes the view, and the screen keeps it while other tabs show;
+  - the transport bar: the state, the position, the tempo, the bar and step dots, and the view switch (All, Beats, Loop, Drum) on its right. One tap changes the view, and the screen keeps it while other tabs show;
   - the view under it;
-  - at the right edge, from under the top bar to the hint line: the master bar (66 px: meter, level handle, level, LIM) and the Q-Link column (168 px: four cards, knob 1 at the top, each with its scope, name, ring and value). A drag on a card turns that knob, and a finger on a knob lights its card.
-- **The views today:**
-  - All (home): the loop strip, the kits, and the pads panel (440 px) on the right.
-  - Beats: the pattern (a note until the step grid is in), the pads, the kits.
-  - Loop: the loop big, the looper's buttons, what it records, the pads.
-  - Drum: the timing numbers, the pads, the kits.
-- **The pads panel** has a heading: "Pads · Bank A · kit". While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
-- **Q-Links on Play:** Q-Link 1 is the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
-- **NOTE REPEAT's strip** takes the top of the view's first column, so the pads don't move.
-- **The Arp panel** takes the view's left, and the pads stay on the right.
-- **Still to come:** the step grid in Beats and All; speaker mutes per layer (looper #110); throws and XY (FX); Macros as a Q-Link bank (mod #102).
+  - at the right edge, from under the top bar to the hint line: the master bar (66 px: meter with peak hold, level handle, level, LIM when the limiter works) and the Q-Link column (168 px: four cards, knob 1 at the top, each with its scope, name, ring and value). A drag on a card turns that knob, and a finger on a knob lights its card.
+- **The views:**
+  - All (home): the loop strip (150 px), the pattern beside the mini pads (270 px), then the throws beside the XY pad (280 px).
+  - Beats: the whole pattern (every lane), then the mini pads (300 px) beside all eight throws. A tap on a lit step picks it for the Q-Links (velocity, length, nudge, chance).
+  - Loop: the loop big with its buttons (Record, Overdub, Stop, Undo, Redo, Mute, Clear) and the input in its heading, then the mini pads, four throws and the XY pad.
+  - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
+- **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
+- **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). Speaker mutes per layer come with the looper's per-layer mix (#110).
+- **Throws and the XY pad** play performance effects on the master while held; Drop drums mutes the kick, snare and hat pads while held.
+- **The mini pads** have a heading: "Pads · Bank A" and the kit (the Drum view: how hits play, "velocity on"). While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
+- **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
+- **The header** keeps to the CPU and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
+- **The hint line** starts where the panels do (left-aligned, as the mockups).
+- **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
+- **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
+- **Still to come:** speaker mutes per loop layer (#110); half length and double on the loop strip (looper edit tools); the FX thread's Perform engine in place of the stand-in (#116); Macros as a Q-Link bank (mod #102).
 
 ## 5. Prefs (SHIFT + MENU)
 
@@ -126,6 +131,12 @@ Built in round 8 (PR #106) from Jay's approval at 10:05Z (mockups F to I). The o
     - the Q-Links reach the mod engine through Hello's binding hook (round 8), and their cards use the mixer's card shape (agreed with the mod thread at 11:12Z);
     - a Q-Link the user learns to a knob belongs to the page it was learned on; Macros 1-8 work on every page.
   - **Agreed between threads (12:04Z):** the Sample tab's FX sub-tab shows the pad's chain first, with a Pad / Track switch (sampler thread), and the insert row works as the mixer already sends it (FX thread).
+
+- **Effect pages, the Perform FX page and the DJ knob** (FX thread, 14:06Z; code in PR #116, crate `mpfree-fx-ui`; previews in /mnt/project-files/fx/fx-ui/):
+  - an effect's page (title, drawings, tiles, presets, its own Q-Link strip) opens over the current page under the top bar, with Back, as the mixer does: from a tap on the selected insert's name in the chain editor, and from a mixer return or master strip's insert row;
+  - the Perform FX page (16 pads with lights, the XY pad with Hold, the selected pad's settings) opens the same way from the Perform FX insert on the master; its pads and XY view can also sit in a Play view;
+  - the DJ knob is Q-Link 1 on that page (it stops at the middle on the way through), and can be a Play Q-Link too.
+  - **Hello proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad move onto the Perform engine when #116 merges, with no layout change.
 
 ## Where things stand (2026-11-11 08:10Z)
 
