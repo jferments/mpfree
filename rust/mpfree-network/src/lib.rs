@@ -141,7 +141,7 @@ impl BoundedPlayout {
             || !(1..=MAX_FRAMES as u16).contains(&block_frames)
             || !(1..=MAX_WINDOW_BLOCKS).contains(&capacity_blocks)
             || usize::from(channels) * usize::from(block_frames) * 4 > MAX_PCM_DATA
-            || start_frame % u64::from(block_frames) != 0
+            || !start_frame.is_multiple_of(u64::from(block_frames))
         {
             return Err(PacketError::InvalidGeometry);
         }
@@ -161,7 +161,7 @@ impl BoundedPlayout {
         if packet.stream_id != self.stream_id
             || packet.frames != self.block_frames
             || packet.channels != self.channels
-            || packet.start_frame % u64::from(self.block_frames) != 0
+            || !packet.start_frame.is_multiple_of(u64::from(self.block_frames))
             || packet.validate().is_err()
         {
             self.counters.rejected += 1;

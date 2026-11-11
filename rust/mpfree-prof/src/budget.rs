@@ -7,7 +7,7 @@
 //! is the **worst** block, not the mean: one slow block in ten thousand is
 //! an audible click.
 //!
-//! The table is a proposal (2026-11-11) for Jay to confirm. The rule behind
+//! Jay agreed the table on 2026-11-11. The rule behind
 //! it: the whole audio thread stays under 60 % of a period in its worst
 //! block, which leaves 40 % for the kernel, interrupts, ALSA and a late
 //! wake-up under PREEMPT_RT. The split follows what round 6 measured on the
