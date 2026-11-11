@@ -170,3 +170,18 @@ projects, symlinks or unrelated files are included. Keep private.
 
 No static analysis can prove true MaskROM access, a reliable
 independent eMMC restore route, or owner-SPL acceptance.
+
+
+### First-stage DDR and board-descriptor addendum
+
+The P1 SRAM loader's verified text table contains U-Boot SPL 2016.05,
+a Rockchip DMC driver, SDRAM parameter and PHY timing property names, an
+MMC controller, and UART2. Therefore the new pass also runs
+offline-spl-fdt.py on the owner eMMC backup. It looks for an FDT header
+inside the verified SRAM-stage payload, validates FDT extents, and uses
+dtc *offline* to summarize timing and peripheral configuration. The
+output is private p1-embedded-spl-dtb.json inside the single ZIP.
+
+This improves the chances of reconstructing an owner-built SPL's DDR
+initialization requirements, but cannot verify real DDR training or
+establish that a candidate owner SPL is BootROM-accepted.
