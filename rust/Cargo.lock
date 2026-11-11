@@ -521,6 +521,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-library"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
