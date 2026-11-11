@@ -185,7 +185,7 @@ for va, f in all_functions.items():
 # Syntactic reachability in the already-decoded Ghidra graph. Do not equate it
 # to dynamic execution, especially until correct ARM/Thumb states are verified.
 queue = deque(va for va in (BASE + 0x04, BASE + 0x60,
-                            BASE + 0x1208, BASE + 0x1208) if va in all_functions)
+                            BASE + 0x1208, BASE + 0x1350) if va in all_functions)
 seen = set()
 while queue and len(seen) < 500:
     va = queue.popleft()
