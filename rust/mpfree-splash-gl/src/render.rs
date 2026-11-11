@@ -2,9 +2,9 @@
 
 use crate::shaders;
 use glow::HasContext;
+use mpfree_splash::blockfont;
 use mpfree_splash::galaxy::{self, ARMS, HEART_SPEED, TILT, TURN_SECONDS, WIND};
 use mpfree_splash::title::{self, TitleFont};
-use mpfree_splash::blockfont;
 
 /// The disc texture's side, in pixels. Drawn once at start.
 const DISC_SIZE: i32 = 2048;
@@ -56,7 +56,11 @@ fn compile(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Program, Stri
 
 /// A fragment shader with the version line, precision and noise functions in front.
 fn with_noise(body: &str) -> String {
-    format!("#version 300 es\nprecision highp float;\n{}\n{}", shaders::NOISE, body)
+    format!(
+        "#version 300 es\nprecision highp float;\n{}\n{}",
+        shaders::NOISE,
+        body
+    )
 }
 
 fn floats(v: &[f32]) -> Vec<u8> {
@@ -110,9 +114,23 @@ fn make_stars(heart: f32) -> Vec<f32> {
     for _ in 0..1600 {
         let (x, y) = (unit(), unit());
         let t = unit();
-        let rgb = if t < 0.15 { [1.0, 0.8, 0.6] } else if t < 0.35 { [0.7, 0.8, 1.0] } else { [1.0, 1.0, 1.0] };
+        let rgb = if t < 0.15 {
+            [1.0, 0.8, 0.6]
+        } else if t < 0.35 {
+            [0.7, 0.8, 1.0]
+        } else {
+            [1.0, 1.0, 1.0]
+        };
         let big = unit().powi(6);
-        push(x, y, rgb, 0.35 + 0.65 * unit(), 0.0, 1.5 + 6.0 * big, unit());
+        push(
+            x,
+            y,
+            rgb,
+            0.35 + 0.65 * unit(),
+            0.0,
+            1.5 + 6.0 * big,
+            unit(),
+        );
     }
     // Along the arms (same spiral as the disc texture), with some everywhere.
     for i in 0..9000 {
@@ -121,24 +139,55 @@ fn make_stars(heart: f32) -> Vec<f32> {
         let arm = (i % 4) as f32 * std::f32::consts::FRAC_PI_2;
         let gauss = (0..4).map(|_| unit()).sum::<f32>() * 1.732 - 3.464;
         let on_arm = unit() < 0.75;
-        let offset = if on_arm { arm + gauss * (0.12 + 0.18 * rn) } else { unit() * std::f32::consts::TAU };
+        let offset = if on_arm {
+            arm + gauss * (0.12 + 0.18 * rn)
+        } else {
+            unit() * std::f32::consts::TAU
+        };
         let a = offset + WIND * (r / heart).ln();
         let t = unit();
-        let rgb = if t < 0.05 { [1.0, 0.45, 0.75] } else if t < 0.6 { [0.65, 0.78, 1.0] } else { [1.0, 0.97, 0.92] };
+        let rgb = if t < 0.05 {
+            [1.0, 0.45, 0.75]
+        } else if t < 0.6 {
+            [0.65, 0.78, 1.0]
+        } else {
+            [1.0, 0.97, 0.92]
+        };
         let b = (0.25 + 0.75 * unit().powi(2)) * (1.2 - rn) * if on_arm { 1.0 } else { 0.5 };
-        push(r * a.cos(), r * a.sin(), rgb, b * 1.6, 1.0, 2.0 + 3.5 * unit().powi(4), unit());
+        push(
+            r * a.cos(),
+            r * a.sin(),
+            rgb,
+            b * 1.6,
+            1.0,
+            2.0 + 3.5 * unit().powi(4),
+            unit(),
+        );
     }
     // The heart.
     for _ in 0..1500 {
         let r = ((0..4).map(|_| unit()).sum::<f32>() * 1.732 - 3.464).abs() * 0.45 * heart;
         let a = unit() * std::f32::consts::TAU;
-        push(r * a.cos(), r * a.sin(), [1.0, 0.85, 0.6], 0.3 + 0.5 * unit(), 2.0, 1.5 + 2.0 * unit().powi(3), unit());
+        push(
+            r * a.cos(),
+            r * a.sin(),
+            [1.0, 0.85, 0.6],
+            0.3 + 0.5 * unit(),
+            2.0,
+            1.5 + 2.0 * unit().powi(3),
+            unit(),
+        );
     }
     v
 }
 
 impl Renderer {
-    pub fn new(gl: glow::Context, width: i32, height: i32, font: TitleFont) -> Result<Renderer, String> {
+    pub fn new(
+        gl: glow::Context,
+        width: i32,
+        height: i32,
+        font: TitleFont,
+    ) -> Result<Renderer, String> {
         unsafe {
             let textured = compile(&gl, shaders::FULLSCREEN_VS, shaders::TEXTURE_FS)?;
             let disc_prog = compile(&gl, shaders::DISC_VS, shaders::TEXTURE_FS)?;
@@ -154,7 +203,9 @@ impl Renderer {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vb));
             gl.buffer_data_u8_slice(
                 glow::ARRAY_BUFFER,
-                &floats(&[-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0]),
+                &floats(&[
+                    -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+                ]),
                 glow::STATIC_DRAW,
             );
             gl.enable_vertex_attrib_array(0);
@@ -166,11 +217,26 @@ impl Renderer {
             let heart = heart_px / radius_px;
             let disc_tex = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(disc_tex));
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, DISC_SIZE, DISC_SIZE, 0, glow::RGBA,
-                            glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                DISC_SIZE,
+                DISC_SIZE,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(disc_tex), 0);
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(disc_tex),
+                0,
+            );
             if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
                 return Err("the disc framebuffer is incomplete".into());
             }
@@ -178,16 +244,38 @@ impl Renderer {
             gl.use_program(Some(disc_gen));
             gl.uniform_1_f32(gl.get_uniform_location(disc_gen, "heart").as_ref(), heart);
             gl.uniform_1_f32(gl.get_uniform_location(disc_gen, "wind").as_ref(), WIND);
-            gl.uniform_4_f32(gl.get_uniform_location(disc_gen, "arms").as_ref(), ARMS[0], ARMS[1], ARMS[2], ARMS[3]);
+            gl.uniform_4_f32(
+                gl.get_uniform_location(disc_gen, "arms").as_ref(),
+                ARMS[0],
+                ARMS[1],
+                ARMS[2],
+                ARMS[3],
+            );
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.delete_framebuffer(fbo);
             gl.delete_program(disc_gen);
             gl.generate_mipmap(glow::TEXTURE_2D);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR_MIPMAP_LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
 
             // Stars.
             let data = make_stars(heart);
@@ -247,17 +335,44 @@ impl Renderer {
             }
             let sky = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(sky));
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, width, height, 0, glow::RGBA, glow::UNSIGNED_BYTE,
-                            glow::PixelUnpackData::Slice(None));
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                width,
+                height,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(sky), 0);
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(sky),
+                0,
+            );
             gl.viewport(0, 0, width, height);
             gl.disable(glow::BLEND);
             gl.use_program(Some(self.sky_prog));
-            gl.uniform_2_f32(gl.get_uniform_location(self.sky_prog, "size").as_ref(), width as f32, height as f32);
+            gl.uniform_2_f32(
+                gl.get_uniform_location(self.sky_prog, "size").as_ref(),
+                width as f32,
+                height as f32,
+            );
             gl.bind_vertex_array(Some(self.quad));
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -293,7 +408,12 @@ impl Renderer {
             let mut rgba = Vec::with_capacity(mask.width * mask.height * 4);
             for i in 0..mask.width * mask.height {
                 let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                rgba.extend_from_slice(&[q(mask.ink[i]), q(mask.halo[i]), q(glow_px[i] * 1.6), 255]);
+                rgba.extend_from_slice(&[
+                    q(mask.ink[i]),
+                    q(mask.halo[i]),
+                    q(glow_px[i] * 1.6),
+                    255,
+                ]);
             }
             if let Some(t) = self.title_tex.take() {
                 gl.delete_texture(t);
@@ -301,12 +421,37 @@ impl Renderer {
             let tex = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, mask.width as i32, mask.height as i32, 0, glow::RGBA,
-                            glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&rgba)));
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                mask.width as i32,
+                mask.height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&rgba)),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
             self.title_tex = Some(tex);
             self.title_box = (mask.width as f32, mask.height as f32);
             // The shader works in units of 1/12 cap height (the block font's units).
@@ -352,9 +497,15 @@ impl Renderer {
             gl.uniform_1_f32(gl.get_uniform_location(p, "radius").as_ref(), self.radius);
             gl.uniform_1_f32(gl.get_uniform_location(p, "tilt").as_ref(), TILT);
             gl.uniform_1_f32(gl.get_uniform_location(p, "spin").as_ref(), spin);
-            gl.uniform_1_f32(gl.get_uniform_location(p, "heart_speed").as_ref(), HEART_SPEED);
+            gl.uniform_1_f32(
+                gl.get_uniform_location(p, "heart_speed").as_ref(),
+                HEART_SPEED,
+            );
             gl.uniform_1_f32(gl.get_uniform_location(p, "time").as_ref(), seconds);
-            gl.uniform_1_f32(gl.get_uniform_location(p, "scale").as_ref(), (h / 800.0).max(0.5));
+            gl.uniform_1_f32(
+                gl.get_uniform_location(p, "scale").as_ref(),
+                (h / 800.0).max(0.5),
+            );
             gl.bind_vertex_array(Some(self.stars));
             gl.draw_arrays(glow::POINTS, 0, self.star_count);
 
@@ -363,12 +514,23 @@ impl Renderer {
             gl.use_program(Some(p));
             gl.uniform_1_i32(gl.get_uniform_location(p, "tex").as_ref(), 0);
             gl.uniform_2_f32(gl.get_uniform_location(p, "screen").as_ref(), w, h);
-            gl.uniform_2_f32(gl.get_uniform_location(p, "box").as_ref(), self.title_box.0, self.title_box.1);
-            gl.uniform_2_f32(gl.get_uniform_location(p, "tex_size").as_ref(), self.title_box.0, self.title_box.1);
+            gl.uniform_2_f32(
+                gl.get_uniform_location(p, "box").as_ref(),
+                self.title_box.0,
+                self.title_box.1,
+            );
+            gl.uniform_2_f32(
+                gl.get_uniform_location(p, "tex_size").as_ref(),
+                self.title_box.0,
+                self.title_box.1,
+            );
             gl.uniform_1_f32(gl.get_uniform_location(p, "time").as_ref(), seconds);
             gl.uniform_1_f32(gl.get_uniform_location(p, "ppu").as_ref(), self.title_ppu);
             gl.uniform_1_f32(gl.get_uniform_location(p, "pad").as_ref(), self.title_pad);
-            gl.uniform_1_f32(gl.get_uniform_location(p, "line_pitch").as_ref(), self.title_pitch);
+            gl.uniform_1_f32(
+                gl.get_uniform_location(p, "line_pitch").as_ref(),
+                self.title_pitch,
+            );
             gl.uniform_1_f32(gl.get_uniform_location(p, "cap").as_ref(), self.title_cap);
             gl.bind_texture(glow::TEXTURE_2D, self.title_tex);
             gl.bind_vertex_array(Some(self.quad));
@@ -379,22 +541,50 @@ impl Renderer {
 
     /// Renders one frame offscreen at `width` x `height` and returns its RGB
     /// pixels, top row first.
-    pub fn snapshot(&mut self, width: i32, height: i32, seconds: f32) -> Result<Vec<[u8; 3]>, String> {
+    pub fn snapshot(
+        &mut self,
+        width: i32,
+        height: i32,
+        seconds: f32,
+    ) -> Result<Vec<[u8; 3]>, String> {
         self.resize(width, height)?;
         let gl = &self.gl;
         unsafe {
             let tex = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, width, height, 0, glow::RGBA, glow::UNSIGNED_BYTE,
-                            glow::PixelUnpackData::Slice(None));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                width,
+                height,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(tex),
+                0,
+            );
             self.draw(seconds);
             let gl = &self.gl;
             let mut raw = vec![0u8; (width * height * 4) as usize];
             gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
-            gl.read_pixels(0, 0, width, height, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut raw)));
+            gl.read_pixels(
+                0,
+                0,
+                width,
+                height,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut raw)),
+            );
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.delete_framebuffer(fbo);
             gl.delete_texture(tex);
