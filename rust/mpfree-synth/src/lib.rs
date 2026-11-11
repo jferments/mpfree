@@ -14,6 +14,11 @@
 //! - [`Pluck`]: plucked strings (Karplus-Strong) and struck bars and bells
 //!   (a modal bank), with factory presets.
 //!
+//! - [`Wavetable`]: two wavetable oscillators scanning band-limited frame
+//!   stacks with phase warps and unison, Poly's filter and envelopes, ten
+//!   factory tables, and [`wavetable::import`] for WAVs, Serum-style tables
+//!   and a pad's sample.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //!
@@ -33,9 +38,11 @@ pub mod pluck;
 pub mod pluck_params;
 pub mod poly;
 pub mod pressure;
+pub mod wavetable;
 
 pub use drum::Drums;
 pub use fm::Fm;
 pub use params::{Preset, PARAMS, PRESETS};
 pub use pluck::Pluck;
 pub use poly::Poly;
+pub use wavetable::Wavetable;
