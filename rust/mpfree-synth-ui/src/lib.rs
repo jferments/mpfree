@@ -13,6 +13,8 @@
 //!   envelopes, LFO), worked out from its values.
 //! - [`fm_visual`]: FM's: the algorithm diagram, operator envelopes,
 //!   keyboard scaling, the pitch envelope and the LFO.
+//! - [`wt_visual`]: the Wavetable synth's: each table as a 3D stack of
+//!   frames with the one its Position reads drawn bright and warped.
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -29,5 +31,6 @@ pub mod sample;
 pub mod view;
 pub mod visual;
 pub mod widgets;
+pub mod wt_visual;
 
 pub use view::{SynthAction, SynthPanel, SynthState};

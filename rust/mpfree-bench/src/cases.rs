@@ -17,7 +17,8 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::{Drums, Pluck, Poly, PRESETS};
+use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
+use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -137,12 +138,31 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
 /// A synth playing `voices`-note chords that change every half second, so
 /// note starts, releases and steals are all in the numbers.
 fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case {
-    let mut s = Poly::new(rate);
+    chords(
+        name,
+        rate,
+        Box::new(Poly::new(rate)),
+        values,
+        POLYPHONY,
+        voices,
+    )
+}
+
+/// Any instrument node playing [`synth`]'s chords; `polyphony` is its voice
+/// count parameter.
+fn chords(
+    name: String,
+    rate: u32,
+    mut s: Box<dyn Node>,
+    values: &[(u16, f32)],
+    polyphony: u16,
+    voices: usize,
+) -> Case {
     s.prepare(rate, MAX_BLOCK);
     for &(id, v) in values {
         s.set_param(id, v);
     }
-    s.set_param(POLYPHONY, voices as f32);
+    s.set_param(polyphony, voices as f32);
     let mut events: Vec<Timed> = Vec::with_capacity(2 * voices);
     let mut held: Vec<u8> = Vec::with_capacity(voices);
     let mut seed = Lcg(3);
@@ -531,6 +551,40 @@ pub fn all(rate: u32) -> Vec<Case> {
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
+    // Wavetable: the first case also holds the factory tables (built once
+    // per process, shared by every instance).
+    for preset in WT_PRESETS {
+        v.push(measured(|| {
+            chords(
+                format!("Wavetable {}, 8 voices", preset.name),
+                rate,
+                Box::new(Wavetable::new(rate)),
+                preset.values,
+                wt::POLYPHONY,
+                8,
+            )
+        }));
+    }
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 8 voices, both osc, unison 4".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 4.0)],
+            wt::POLYPHONY,
+            8,
+        )
+    }));
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 16 voices, both osc, unison 8".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 8.0)],
+            wt::POLYPHONY,
+            16,
+        )
+    }));
     v.push(measured(|| {
         sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
     }));
