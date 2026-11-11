@@ -113,6 +113,7 @@ fn effects_and_the_chain_never_allocate() {
     chain.push(Box::new(Flanger::new()));
     chain.push(Box::new(Phaser::new()));
     chain.push(Box::new(LoFi::new()));
+    chain.push(Box::new(Comb::new()));
     chain.push(Box::new(MasterSafety::new()));
     // The same nodes on their own, outside a chain.
     let mut solo: Vec<Box<dyn Node>> = vec![
@@ -129,6 +130,7 @@ fn effects_and_the_chain_never_allocate() {
         Box::new(Flanger::new()),
         Box::new(Phaser::new()),
         Box::new(LoFi::new()),
+        Box::new(Comb::new()),
     ];
     for n in &mut solo {
         n.prepare(rate, MAX_BLOCK);

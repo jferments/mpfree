@@ -4,7 +4,7 @@
 
 use mpfree_fx::ids;
 use mpfree_fx::{
-    Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
+    Chain, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
     MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser, StripId,
 };
 use mpfree_grain::GrainNode;
@@ -668,6 +668,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect("Delay", rate, Box::new(Delay::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Comb", rate, Box::new(Comb::new()), &[])
     }));
     v.push(measured(|| {
         effect("Compressor", rate, Box::new(Compressor::new()), &[])
