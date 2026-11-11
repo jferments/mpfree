@@ -1,0 +1,17 @@
+[package]
+name = "mpfree-fx-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Effect pages for the MPC One: a page per effect with its drawn curve (EQ, filters, comb, drive, delay, modulation, reverb, compressor, master), tiles, presets and Q-Links, and the Perform FX page with its pads and XY pad, built on mpfree-ui and the Synth tab's widgets"
+
+[dependencies]
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-synth-ui = { path = "../mpfree-synth-ui" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-fx-preview"
+path = "src/bin/preview.rs"
