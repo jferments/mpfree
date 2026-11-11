@@ -10,3 +10,7 @@ name = "mpfree_arp"
 path = "src/lib.rs"
 
 [dependencies]
+
+[[bin]]
+name = "mpfree-arp-render"
+path = "src/bin/render.rs"
