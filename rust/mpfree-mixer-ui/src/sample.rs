@@ -15,7 +15,7 @@ use crate::state::{default_name, MixState, MixView};
 use crate::view::{MixerIcon, MixerView};
 
 /// The music tabs, as the approved layout spec lists them.
-pub const TABS: [&str; 5] = ["Play", "Clips", "Synth", "Looper", "Sample"];
+pub const TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
 
 /// A preview page: the header with the mixer icon beside it, the mixer,
 /// the hint line.
