@@ -1192,3 +1192,29 @@ The owner ran another read-only remote SSH survey **on the actual MPC One** and 
 **Highest-value next evidence:** the running Linux FDT node `/usb-otg-mux` and the exact GPIO/regulator/pinctrl or hardware-mux implementation it references. The sysfs `of-mux` driver name alone does **not** prove an external discrete analog switch; it might select a PHY role or GPIO mux. Even an established Linux role does **not** prove the default electrical path at cold power-on, before ROM code executes. A safe remote audit can read `available_states`, list and hex-dump selected nonsecret properties from `/proc/device-tree/usb-otg-mux` and `/proc/device-tree/usb@ff580000`, inspect `/sys/kernel/debug/gpio` if already mounted, and read driver symlinks. Do **not** change sysfs mux `state`, `soft_connect`, bind a gadget, reset into a new mode or write boot partitions.
 
 The concurrent **Fastboot RAM-boot** investigation remains in progress independently (§§15–21); this USB survey does not alter the bootm CRC and downloaded-image findings or establish the initial permission-gate state.
+
+## 26. MPC One live FDT identifies USB role selector as virtual-mux; physical USB-B path likely direct (2026-11-10)
+
+The owner supplied read-only SSH output from the running MPC One (`mpc-usb-mux-devicetree.txt`). **This requires a correction to prior speculation** that the `usb-otg-mux` might necessarily be a physical board switch.
+
+- `/sys/devices/platform/usb-otg-mux/state`: `peripheral`; `available_states`: `otg host peripheral`.
+- Live `/proc/device-tree/usb-otg-mux`: `compatible = "virtual-mux"`, `status="okay"`, `default-state` property, and child nodes `state-host`, `state-otg`, `state-peripheral`. The owner's BusyBox `od` lacks GNU `-t`, so this run **did not read** the `default-state` property contents.
+- Live `/proc/device-tree/usb@ff580000`: `compatible="rockchip,rk3288-usb", "rockchip,rk3066-usb", "snps,dwc2"`, `dr_mode="peripheral"`, `status="okay"`. It has a `usb2-phy` reference.
+- Live `/proc/device-tree/usb@ff540000`: same DWC2 compatible family, `dr_mode="host"`, `status="okay"`.
+- Live `/sys/kernel/debug/gpio` labels `gpio-249 (USB_MUX_CTRL)`, but **no consumer or output drive value is shown** for that line; its name does not establish a physical multiplexer or a dependency for MaskROM. `gpio-12` is separately held high by `usb-otg-regulator`, and `gpio-218` held high by `vcc-host1-regulator`.
+
+An independently published decompilation of the **RK3288 AZ01 ACVA** device tree shows this exact `virtual-mux` with `default-state = "peripheral"`, and three child `fragment@0/__overlay__` nodes updating `dr_mode` to `otg`, `host`, or `peripheral`, respectively: https://deathcamel58.github.io/denon-reverse-engineering/rk3288-az01-acva-dts.html . This is good model-family corroboration, **not proof the live runtime default-state bytes are identical**. A separate MPC One-compatible USB-audio research project reports that **MPC One and One+ connect USB device capability directly to USB-B**, unlike MPC Live II / X / Force where an external/internal hub-routing mux can intervene; reference: https://github.com/jacob-sabella/mpc-addin-usb-audio . Again, electrical routing remains unmeasured.
+
+**Updated interpretation:** the reported `usb-otg-mux` is a virtual *Linux role/configuration selector*, not evidence of a discrete USB data-path switch. It makes external mux reset-state speculation a less compelling blocker for *MPC One specifically*. MaskROM feasibility is still **not proven**, because immutable BootROM may choose a distinct PHY/USB mode and because no safe ROM entry or compatible DDR stage has been validated. No GPIOs, registers, boot partitions or USB gadget bindings were changed.
+
+Next read-only confirmation from remote SSH (BusyBox compatible):
+
+```sh
+printf 'Live default-state: '; tr '\\000' '\\n' </proc/device-tree/usb-otg-mux/default-state
+for mode in otg host peripheral; do
+  f="/proc/device-tree/usb-otg-mux/state-$mode/fragment@0/__overlay__/dr_mode"
+  [ -r "$f" ] && { printf '%s overlay dr_mode: ' "$mode"; tr '\\000' '\\n' <"$f"; }
+done
+```
+
+On the **Fastboot / Ghidra track**, full program-level analysis is *not complete*: the user's imported p3 payload was still at base `0x00000000` rather than linked base `0x00100000`, and most xrefs/decompilation were therefore unavailable. Offline Thumb disassembly has established command dispatch, download/callback flow, bootm CRC call graph, but not end-to-end Linux handoff, default runtime unlock state, safe available DRAM or ROM entry. To finish, import a **separate** correctly based p3 program, analyze functions/xrefs and document the outstanding concrete call graph; do not substitute inferred function names for confirmed dynamic behavior.
