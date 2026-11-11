@@ -33,5 +33,8 @@ mpfree-store = { path = "../mpfree-store" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-mixer-ui = { path = "../mpfree-mixer-ui" }
 mpfree-mod = { path = "../mpfree-mod" }
+# The chain editor and the macros panel (modpanels.rs), and the effects they add.
+mpfree-chain-ui = { path = "../mpfree-chain-ui" }
+mpfree-fx-ui = { path = "../mpfree-fx-ui" }
 # Profiling (block timing, /proc process table). Not its counting-alloc feature.
 mpfree-prof = { path = "../mpfree-prof" }

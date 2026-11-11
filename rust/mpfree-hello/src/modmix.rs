@@ -17,11 +17,21 @@
 //!   events. An insert is found by its slot id, so a lock follows the effect
 //!   when it moves.
 //!
-//! Nothing here allocates after [`ModMix::new`].
+//! - The chain editor's and the macros panel's set-up changes (a macro's
+//!   targets, matrix rows, scenes) come in as [`Change`]s
+//!   ([`ModMix::change`]); a parameter a change names becomes a target
+//!   then. The set-up saves as text with the macros' names
+//!   ([`ModMix::save`], [`ModMix::load`]). See `modpanels.rs`.
+//!
+//! Locks, turns and [`ModMix::process`] don't allocate after
+//! [`ModMix::new`]; set-up changes and saving run on the same loop between
+//! periods, as the mixer panel's edits do, and may.
 
 use mpfree_fx::mpfree_node::{Ctx, ParamInfo, Timed};
 use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, StripId};
-use mpfree_mod::{ModEngine, ModEvent, ModTimed, DEFAULT_TICK, FOLLOWERS};
+use mpfree_mod::{
+    Change, ModEngine, ModError, ModEvent, ModTimed, DEFAULT_TICK, FOLLOWERS, MACROS,
+};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
 
 /// Events one period can carry (locks, unlocks, the host's turns).
@@ -32,6 +42,9 @@ pub struct ModMix {
     events: Vec<ModTimed>,
     unrouted: u64,
     dropped: u64,
+    /// The macros' names on their cards ("Wash", "Grit"), saved with the
+    /// set-up.
+    names: Vec<String>,
 }
 
 /// The mixer's id for a strip.
@@ -61,7 +74,7 @@ pub fn strip_of(id: StripId) -> Option<Strip> {
 
 /// A mixer parameter's description and its value now, if `addr` names one
 /// the mixer has.
-fn describe(mixer: &Mixer, addr: ParamAddr) -> Option<(ParamInfo, f32)> {
+pub fn describe(mixer: &Mixer, addr: ParamAddr) -> Option<(ParamInfo, f32)> {
     match addr.owner {
         Owner::Strip(s) => {
             let sid = strip_id(s);
@@ -89,12 +102,30 @@ impl ModMix {
             events: Vec::with_capacity(EVENTS),
             unrouted: 0,
             dropped: 0,
+            names: (1..=MACROS).map(|m| format!("Macro {m}")).collect(),
         }
     }
 
-    #[cfg(test)]
     pub fn engine(&self) -> &ModEngine {
         &self.engine
+    }
+
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Renames macro `m` (a blank name puts back "Macro n").
+    // Used once the panels are on the app's screens (after round 9).
+    #[allow(dead_code)]
+    pub fn rename(&mut self, m: usize, name: &str) {
+        if let Some(n) = self.names.get_mut(m) {
+            let name = name.trim();
+            *n = if name.is_empty() {
+                format!("Macro {}", m + 1)
+            } else {
+                name.to_string()
+            };
+        }
     }
 
     /// Locks and values the mixer has no place for (a pad's sound, an
@@ -120,18 +151,110 @@ impl ModMix {
     pub fn lock(&mut self, mixer: &Mixer, offset: u32, addr: ParamAddr, value: Option<f32>) {
         let ev = match value {
             Some(value) => {
-                if !self.engine.is_target(addr) {
-                    if let Some((info, now)) = describe(mixer, addr) {
-                        // Full (512 targets): the lock passes through as a
-                        // plain value, as for a parameter it doesn't know.
-                        let _ = self.engine.add_target(addr, info, now);
-                    }
-                }
+                // Not held (the engine full, or no such parameter): the
+                // lock passes through as a plain value, as for a parameter
+                // the engine doesn't know.
+                self.hold(mixer, addr);
                 ModEvent::Lock { addr, value }
             }
             None => ModEvent::Unlock { addr },
         };
         self.queue(offset, ev);
+    }
+
+    /// Makes a mixer parameter a target, with the value the mixer has now,
+    /// if it isn't one. False when the engine can't hold it (full, or not
+    /// a parameter the mixer has). Macros and the morph always are.
+    pub fn hold(&mut self, mixer: &Mixer, addr: ParamAddr) -> bool {
+        if self.engine.is_target(addr) {
+            return true;
+        }
+        describe(mixer, addr)
+            .is_some_and(|(info, now)| self.engine.add_target(addr, info, now).is_ok())
+    }
+
+    /// A hand on a control (a knob on the chain editor, a macro, the
+    /// morph), by `ModEvent::hand`'s rule: a `Set`, or a `Touch` that beats
+    /// the step locks while `recording`. False when the engine doesn't
+    /// hold `addr`: then the host sets it itself (nothing can lock or
+    /// modulate a parameter the engine doesn't hold).
+    pub fn hand(&mut self, addr: ParamAddr, value: f32, recording: bool) -> bool {
+        if !self.engine.is_target(addr) {
+            return false;
+        }
+        self.queue(0, ModEvent::hand(addr, value, false, recording));
+        true
+    }
+
+    /// The hand let go of `addr` (nothing happens after a plain `Set`).
+    pub fn release(&mut self, addr: ParamAddr) {
+        if self.engine.is_target(addr) {
+            self.queue(0, ModEvent::Untouch { addr });
+        }
+    }
+
+    /// A set-up change from the chain editor or the macros panel. A
+    /// parameter it maps or modulates becomes a target first.
+    pub fn change(&mut self, mixer: &Mixer, c: Change) -> Result<(), ModError> {
+        match c {
+            Change::Map { map, .. } if !self.hold(mixer, map.target) => {
+                return Err(ModError::Unknown(map.target))
+            }
+            Change::AddRow(row) if !self.hold(mixer, row.target) => {
+                return Err(ModError::Unknown(row.target))
+            }
+            _ => {}
+        }
+        self.engine.change(c)
+    }
+
+    /// An insert left its strip: the engine stops holding its parameters
+    /// (and their macro maps and rows go with them).
+    pub fn forget(&mut self, owner: Owner) {
+        let gone: Vec<ParamAddr> = self.engine.targets().filter(|a| a.owner == owner).collect();
+        for a in gone {
+            self.engine.remove_target(a);
+        }
+    }
+
+    /// The set-up as `key = value` lines: [`ModEngine::save`]'s, then the
+    /// macros' names (`name.0 = Wash`) for any not called "Macro n".
+    // Used once the panels are on the app's screens (after round 9).
+    #[allow(dead_code)]
+    pub fn save(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = self.engine.save();
+        for (m, n) in self.names.iter().enumerate() {
+            if *n != format!("Macro {}", m + 1) {
+                let _ = writeln!(out, "name.{m} = {n}");
+            }
+        }
+        out
+    }
+
+    /// Takes back what [`ModMix::save`] wrote, once the mixer has its
+    /// inserts (a line about a parameter it doesn't have is skipped).
+    /// Returns how many lines were skipped.
+    // Used once the panels are on the app's screens (after round 9).
+    #[allow(dead_code)]
+    pub fn load(&mut self, mixer: &Mixer, text: &str) -> usize {
+        let mut rest = String::new();
+        let mut names: Vec<String> = (1..=MACROS).map(|m| format!("Macro {m}")).collect();
+        for line in text.lines() {
+            let named = line.trim().strip_prefix("name.").and_then(|l| {
+                let (m, n) = l.split_once('=')?;
+                Some((m.trim().parse::<usize>().ok()?, n.trim()))
+            });
+            match named {
+                Some((m, n)) if m < MACROS && !n.is_empty() => names[m] = n.to_string(),
+                _ => {
+                    rest.push_str(line);
+                    rest.push('\n');
+                }
+            }
+        }
+        self.names = names;
+        self.engine.load(&rest, &|a| describe(mixer, a))
     }
 
     /// A turn of a mixer control by the host. Returns false when the engine
