@@ -8,7 +8,7 @@ use mpfree_fx::{
     MasterSafety, Mixer, MixerConfig, MultiFilter, Phaser, StripId,
 };
 use mpfree_grain::GrainNode;
-use mpfree_looper::{Command as LooperCommand, Looper};
+use mpfree_looper::{Command as LooperCommand, Looper, Phase as LooperPhase, MAX_LOOPS};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_prof::alloc;
@@ -819,6 +819,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
+    v.push(measured(|| looper_loops(rate, 60)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1213,6 +1214,116 @@ fn looper(rate: u32, seconds: u32) -> Case {
     }
 }
 
+/// The looper with its transport and line input, run a period at a time.
+struct LoopRig {
+    t: Transport,
+    lp: Looper,
+    block: TBlock,
+    rate: u32,
+    frame: u64,
+    seed: Lcg,
+    line_in: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl LoopRig {
+    /// One period of `l.len()` frames: the input from `l` and `r` goes in,
+    /// the loops come out in them.
+    fn period(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len();
+        for (i, (a, c)) in l.iter().zip(r.iter()).enumerate() {
+            input_frame(&mut self.line_in, i, *a, *c);
+        }
+        self.out[..2 * n].fill(0.0);
+        self.t.process(n as u32, &mut self.block);
+        self.lp
+            .process(&self.block, &self.line_in[..2 * n], &mut self.out[..2 * n]);
+        for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+            *a = self.out[2 * i];
+            *c = self.out[2 * i + 1];
+        }
+        self.frame += n as u64;
+    }
+
+    /// Play `seconds` of program material in, 128 frames at a time.
+    fn run(&mut self, seconds: f64) {
+        let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+        let end = self.frame + (seconds * f64::from(self.rate)) as u64;
+        while self.frame < end {
+            input(self.rate, self.frame, &mut self.seed, &mut l, &mut r);
+            self.period(&mut l, &mut r);
+        }
+    }
+}
+
+/// [`MAX_LOOPS`] one-bar loops (2 s at 120 BPM) of three layers each,
+/// all playing.
+fn loops_rig(rate: u32, seconds: u32) -> LoopRig {
+    let mut g = LoopRig {
+        t: Transport::new(rate, 120.0).expect("transport"),
+        lp: Looper::new(rate, seconds),
+        block: TBlock::new(),
+        rate,
+        frame: 0,
+        seed: Lcg(29),
+        line_in: vec![0.0; 2 * MAX_BLOCK],
+        out: vec![0.0; 2 * MAX_BLOCK],
+    };
+    g.t.command(0, T::Play);
+    for k in 0..MAX_LOOPS {
+        // The pass from the next bar line, going straight into an overdub
+        // for a bar, then one more overdub.
+        let phase = |g: &LoopRig| g.lp.loop_status(k).map(|s| s.phase);
+        g.lp.select_loop(k);
+        g.lp.command(LooperCommand::SetBars(Some(1)));
+        g.lp.command(LooperCommand::Record);
+        while phase(&g) != Some(LooperPhase::Recording) {
+            g.run(0.05);
+        }
+        g.lp.command(LooperCommand::Overdub);
+        while phase(&g) != Some(LooperPhase::Overdubbing) {
+            g.run(0.05);
+        }
+        g.run(2.0);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(0.25);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(2.0);
+        g.lp.command(LooperCommand::Overdub);
+        g.run(0.25);
+    }
+    g
+}
+
+/// Every loop playing at once ([`loops_rig`]), recorded before the timing
+/// starts. Timed: an overdub every other 2 s, on one loop after another,
+/// so the block mixes every layer of every loop and writes one more.
+fn looper_loops(rate: u32, seconds: u32) -> Case {
+    let mut g = loops_rig(rate, seconds);
+    let every = 2 * u64::from(rate);
+    let mut next = g.frame + every;
+    let mut turn = 0usize;
+    Case {
+        name: format!("Looper ({seconds} s), {MAX_LOOPS} loops of 3 layers playing"),
+        module: "looper",
+        what: "every loop playing, with an overdub on one loop after another",
+        block: Box::new(move |_, l, r| {
+            if g.frame >= next {
+                next += every;
+                if turn.is_multiple_of(2) {
+                    g.lp.select_loop(turn / 2 % MAX_LOOPS);
+                }
+                g.lp.command(LooperCommand::Overdub);
+                turn += 1;
+            }
+            let f = g.frame;
+            input(rate, f, &mut g.seed, l, r);
+            g.period(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 fn input_frame(buf: &mut [f32], i: usize, l: f32, r: f32) {
     buf[2 * i] = l;
     buf[2 * i + 1] = r;
@@ -1517,6 +1628,33 @@ mod tests {
         assert!(scaling(44_100)
             .iter()
             .all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
+    }
+
+    #[test]
+    fn the_loops_case_has_every_loop_playing() {
+        let mut c = measured(|| looper_loops(44_100, 60));
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        let mut energy = 0.0f64;
+        for b in 0..1_500u64 {
+            (c.block)(b, &mut l, &mut r);
+            energy += l
+                .iter()
+                .chain(r.iter())
+                .map(|v| f64::from(v.abs()))
+                .sum::<f64>();
+        }
+        assert!(energy > 1_000.0, "{energy}");
+        let g = loops_rig(44_100, 60);
+        for k in 0..MAX_LOOPS {
+            let s = g.lp.loop_status(k).unwrap();
+            assert_eq!(
+                (s.phase, s.layers, s.frames),
+                (LooperPhase::Playing, 3, 88_200),
+                "loop {k}"
+            );
+        }
+        let st = g.lp.stats();
+        assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));
     }
 
     #[test]
