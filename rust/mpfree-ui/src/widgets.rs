@@ -191,7 +191,8 @@ impl Widget for PadGrid {
             }
             let body = cell.inset(3);
             let lit = if pad.held { 1.0 } else { pad.level };
-            let (fill, ink, sub) = match pad.color {
+            let color = pad.color.map(|c| t.content(c));
+            let (fill, ink, sub) = match color {
                 Some(c) => {
                     let fill = t.surface.mix(c, 0.20 + 0.80 * lit);
                     let bright = lit > 0.45;
@@ -200,7 +201,7 @@ impl Widget for PadGrid {
                 }
                 None => (t.surface, t.text_faint, t.text_faint),
             };
-            if let (Some(c), true) = (pad.color, lit > 0.0) {
+            if let (Some(c), true) = (color, lit > 0.0) {
                 cx.canvas.stroke_round_rect(cell, t.radius + 3, 3, c.with_alpha((150.0 * lit) as u8));
             }
             cx.canvas.fill_round_rect(body, t.radius, fill);
@@ -290,7 +291,7 @@ impl Widget for ListView {
                 cx.canvas.fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
             }
             let mut text = row.inset_xy(14, 0);
-            if let Some(c) = item.color {
+            if let Some(c) = item.color.map(|c| t.content(c)) {
                 cx.canvas.fill_round_rect(Rect::new(text.x, row.y + row.h / 2 - 6, 12, 12), 4, c);
                 text = text.take_left(22).1;
             }

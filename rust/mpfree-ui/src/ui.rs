@@ -4,6 +4,7 @@
 use crate::canvas::Canvas;
 use crate::geom::Rect;
 use crate::layout;
+use crate::style::Styled;
 use crate::text::{Align, FontId, Fonts};
 use crate::theme::Theme;
 use crate::Color;
@@ -107,6 +108,8 @@ pub trait Widget: Any + Send {
 
 struct Page {
     name: String,
+    spec: String,
+    margin: bool,
     slots: Vec<(usize, Rect)>,
 }
 
@@ -122,7 +125,8 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(theme: Theme, fonts: Fonts, width: i32, height: i32) -> Ui {
+    pub fn new(theme: Theme, mut fonts: Fonts, width: i32, height: i32) -> Ui {
+        fonts.set_roles(theme.face_body, theme.face_title);
         Ui { theme, fonts, size: (width, height), widgets: Vec::new(), pages: Vec::new(), current: 0, full: true,
              fingers: Vec::new() }
     }
@@ -141,33 +145,74 @@ impl Ui {
 
     /// Add a page from a layout spec. Every slot must name a widget added already.
     pub fn add_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        let margin = self.theme.gap;
-        self.add_page_with_margin(name, spec, margin)
+        self.add_page_with_margin(name, spec, true)
     }
 
     /// Like `add_page`, but the page fills the screen to its edges (no outer
     /// margin), for a full-screen picture such as the loading page.
     pub fn add_full_page(&mut self, name: &str, spec: &str) -> Result<(), String> {
-        self.add_page_with_margin(name, spec, 0)
+        self.add_page_with_margin(name, spec, false)
     }
 
-    fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: i32) -> Result<(), String> {
+    fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
         let node = layout::parse(spec)?;
         let g = self.theme.gap;
-        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(margin);
+        let area = Rect::new(0, 0, self.size.0, self.size.1).inset(if margin { g } else { 0 });
         let mut slots = Vec::new();
         for (slot, r) in layout::solve(&node, area, g) {
             let i = self.widgets.iter().position(|(n, _, _)| *n == slot)
                 .ok_or_else(|| format!("page {name}: no widget called '{slot}'"))?;
             slots.push((i, r));
         }
-        let page = Page { name: name.to_string(), slots };
+        let page = Page { name: name.to_string(), spec: spec.to_string(), margin, slots };
         match self.pages.iter().position(|p| p.name == name) {
             Some(i) => self.pages[i] = page,
             None => self.pages.push(page),
         }
         self.full = true;
         Ok(())
+    }
+
+    /// Rearrange an existing page: a new layout spec over the same widgets.
+    /// On an error the page keeps its old layout.
+    pub fn set_layout(&mut self, page: &str, spec: &str) -> Result<(), String> {
+        let p = self.pages.iter().find(|p| p.name == page).ok_or_else(|| format!("no page called '{page}'"))?;
+        let margin = p.margin;
+        self.add_page_with_margin(page, spec, margin)
+    }
+
+    /// The layout spec a page was made from.
+    pub fn layout_of(&self, page: &str) -> Option<&str> {
+        self.pages.iter().find(|p| p.name == page).map(|p| p.spec.as_str())
+    }
+
+    /// Rearrange pages from a layout file: one `Page name = spec` per line
+    /// (see [`layout::parse_file`]). Every line is checked before any page
+    /// changes, so a mistake leaves the screen as it was.
+    pub fn apply_layouts(&mut self, text: &str) -> Result<(), String> {
+        let entries = layout::parse_file(text)?;
+        let before: Vec<(String, String)> = self.pages.iter().map(|p| (p.name.clone(), p.spec.clone())).collect();
+        for (page, spec) in &entries {
+            if let Err(e) = self.set_layout(page, spec) {
+                for (name, spec) in &before {
+                    let _ = self.set_layout(name, spec);
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Switch theme: colours, effects and font roles change at once, and
+    /// pages are laid out again with the new spacing. Redraws everything.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.fonts.set_roles(theme.face_body, theme.face_title);
+        self.theme = theme;
+        let pages: Vec<(String, String)> = self.pages.iter().map(|p| (p.name.clone(), p.spec.clone())).collect();
+        for (name, spec) in pages {
+            let _ = self.set_layout(&name, &spec);
+        }
+        self.full = true;
     }
 
     pub fn page(&self) -> &str {
@@ -259,12 +304,15 @@ impl Ui {
         let Some(page) = self.pages.get(self.current) else { return Vec::new() };
         let mut damage = Vec::new();
         let screen = Rect::new(0, 0, self.size.0, self.size.1);
+        let mut styled = Styled::new(canvas, &self.theme);
+        let canvas: &mut dyn Canvas = &mut styled;
         if self.full {
             canvas.set_clip(screen);
             canvas.fill_rect(screen, self.theme.bg);
             damage.push(screen);
         }
-        let Ui { theme, fonts, widgets, full, .. } = self;
+        let theme = &self.theme;
+        let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
         for &(wi, r) in &page.slots {
             let (_, w, dirty) = &mut widgets[wi];
             if !(*full || *dirty || w.animating()) {

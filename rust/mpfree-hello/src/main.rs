@@ -41,6 +41,8 @@
 //! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
 //! also goes to stdout, which the workstation shows, and to the report file.
 //! `--font`, `--bold-font` and `--mono-font FILE` swap the built-in fonts.
+//! `--theme NAME|FILE` picks the look: default, console, synthwave,
+//! spaceship, or a theme file (see mpfree-ui's theme.rs). It only reads the file.
 //!
 //! It writes only to: /dev/fb0 and the framebuffer's sysfs `pan` file (the
 //! screen), the ACVA PCM device (sound), the controller's Public and Private
@@ -70,7 +72,7 @@ use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_screen_log::Rotation;
 use mpfree_ui::fb::FbTarget;
-use mpfree_ui::{Fonts, SoftCanvas, Tone};
+use mpfree_ui::{Fonts, SoftCanvas, Theme, Tone};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -105,6 +107,7 @@ struct Options {
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
+    theme: Option<String>,
     kits: PathBuf,
     keep_screen: bool,
 }
@@ -121,6 +124,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         font: None,
         bold_font: None,
         mono_font: None,
+        theme: None,
         kits: PathBuf::from(KIT_PATH),
         keep_screen: false,
     };
@@ -144,6 +148,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
+            "--theme" => o.theme = Some(value()?),
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
             _ => return Err(format!("unknown argument {arg}")),
@@ -276,6 +281,16 @@ impl Drop for Out {
 fn open_screen(o: &Options) -> Result<FbTarget, String> {
     let rotation = panel_rotation()?;
     FbTarget::open(&o.fb, &o.sysfs, rotation)
+}
+
+/// The theme from --theme: a built-in name or a theme file (read only).
+fn load_theme(o: &Options) -> Result<Theme, String> {
+    let Some(name) = &o.theme else { return Ok(Theme::dark()) };
+    if let Some(t) = Theme::builtin(name) {
+        return Ok(t);
+    }
+    let text = fs::read_to_string(name).map_err(|e| format!("theme {name}: {e} (built in: {})", mpfree_ui::theme::BUILTIN.join(", ")))?;
+    Theme::parse(&text).map_err(|e| format!("{name}: {e}"))
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -1230,7 +1245,11 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         println!("touchscreen: {path} ({name}); read-only, not grabbed");
         Ok(t)
     });
-    let player = gui::Player::new(fonts, size, timed, backdrop);
+    let mut player = gui::Player::new(fonts, size, timed, backdrop);
+    match load_theme(o) {
+        Ok(t) => player.ui.set_theme(t),
+        Err(e) => out.say(&format!("{e}; using the default theme")),
+    }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
     // The screen thread starts before this thread asks for real-time priority,
@@ -1975,6 +1994,7 @@ fn preview(o: &Options) -> Result<(), String> {
     let dir = o.preview.as_ref().unwrap();
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let fonts = || Fonts::with_files(o.font.as_deref(), o.bold_font.as_deref(), o.mono_font.as_deref());
+    let theme = load_theme(o)?;
     let mut c = gui::Console::new(fonts()?, "touch", None);
     for l in ["===== mpfree-hello touch =====", "touchscreen: /dev/input/event0 (ili2117); read-only, not grabbed",
               "touch the screen now, with one finger and then two (10 s)", "touch: 1 contact(s): slot 0: x 1024 y 512",
@@ -1990,6 +2010,7 @@ fn preview(o: &Options) -> Result<(), String> {
         return Err(e);
     }
     for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        p.ui.set_theme(theme.clone());
         let (w, h) = p.ui.size();
         let mut canvas = SoftCanvas::new(w, h);
         p.ui.paint(&mut canvas);
