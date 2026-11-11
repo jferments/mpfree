@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Times every MPFree audio engine at the MPC One's period (128 frames, 44.1 kHz) against its budget, on the desktop or on the device"
+
+[dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-synth = { path = "../mpfree-synth" }
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-grain = { path = "../mpfree-grain" }
+mpfree-sampler = { path = "../mpfree-sampler" }
