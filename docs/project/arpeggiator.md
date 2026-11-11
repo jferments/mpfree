@@ -127,7 +127,7 @@ All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-arch
 | Control | Play page | NOTE REPEAT held | Arp panel | Pattern workspace |
 |---|---|---|---|---|
 | NOTE REPEAT | Hold: the arp in the panel's mode (Repeat until the panel picks another; Repeat if it picks Direct). Press while latched: let go | Let go: back to playing as pressed, unless latched | Same | Same |
-| SHIFT + NOTE REPEAT | Latch on or off | Same | Same | Same |
+| NOTE REPEAT twice (within 0.4 s), or SHIFT + NOTE REPEAT | Latch on or off | Same | Same | Same |
 | MENU | Play options | Opens the Arp panel | The options; MENU again comes back | Nothing yet |
 | NOTE REPEAT + MENU | | Opens or closes the panel | Closes it | Back to the panel |
 | - / + | Kit | Mode: Repeat, Arp, Pattern | Mode tabs, Direct included | Kit |
@@ -138,8 +138,8 @@ All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-arch
 | Pads | Play as pressed | Play through the arp | Play through the arp in the panel's mode | Sound as pressed; while recording, each press writes the next step |
 | Arp chip (header, touch) | Opens the panel | Same | Closes it | Back to the panel |
 
-- The **quick band** takes over the Play page while NOTE REPEAT is held or pads are latched: the pads at full width, with the rate buttons, Latch and the next steps under them. Let go (or unlatch) and the kits, level and timing come back.
-- The **Arp panel** takes the Play page's right-hand column. With it open the pads play through its mode, so the NOTE REPEAT light is on; closing it, or picking Direct, plays them as pressed again.
+- The **quick band** takes the Play page's right-hand column while NOTE REPEAT is held or pads are latched: the rate buttons (straight rates on top, each triplet under its rate), Latch, and the next steps. The pads stay exactly where they were. Let go (or unlatch) and the kits, level and timing come back.
+- The **Arp panel** takes the same column, step strip included, so the pads never move or resize between Play, the band and the panel. With it open the pads play through its mode, so the NOTE REPEAT light is on; closing it, or picking Direct, plays them as pressed again.
 - The **pattern workspace** opens from the panel's Edit pattern and Record on pads (Pattern mode). Recording writes one step per press (Step mode, no clock), at least 8 steps, and stops when they are full; the pads sound as pressed meanwhile and are named for what they write. Save keeps the pattern in the list until the power goes off (the test build has no storage).
 - The button guide no longer opens at power-on for these buttons. It asks only for buttons nobody has pressed yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. Prefs > Find the buttons again asks for all nine.
 - On drum pads an octave is 12 pads: with Octaves at 2, pad 1's octave up plays pad 13, and anything past pad 16 is skipped. Octave steps in patterns (`1+`) work the same way.
