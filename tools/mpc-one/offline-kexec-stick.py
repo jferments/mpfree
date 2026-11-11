@@ -9,7 +9,8 @@ from ~/mpfree-work and writes one new private folder there:
   ~/mpfree-work/kexec-stick-<UTC>-XXXXXX/
     stick.img     disk image for the USB stick (GPT): partition 1 holds a
                   modified COPY of the version's root filesystem, partition 2
-                  is an empty log partition the test boot writes its logs to
+                  is an empty log partition the test boot writes its logs to;
+                  only with --app, partition 3 holds the drum kits (read-only)
     zImage        the version's kernel, unchanged
     kexec.dtb     its device tree for this unit: Akai's board file plus what
                   U-Boot adds at boot, with the eMMC and SD card controllers
@@ -35,6 +36,18 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     mpfree-screen-log (rust/mpfree-screen-log, built for ARM beforehand) reads
     `journalctl -f` and draws it on /dev/fb0, turned by the panel's rotation
     from the device tree; it writes only the framebuffer
+  - only with --splash: a startup screen first. Our program mpfree-splash
+    (rust/mpfree-splash, built for ARM beforehand) draws the galaxy on
+    /dev/fb0 for 6 seconds, in the --splash-font font if one is given, and
+    the log display starts when it ends; it writes only the framebuffer
+  - only with --app: the pad player starts at power-on instead of the log
+    display. Our program mpfree-hello (rust/mpfree-hello, built for ARM
+    beforehand) runs `app`: a loading screen (over the galaxy, with --splash)
+    with a progress bar, then the pad player. SHIFT + STOP shows the system
+    log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
+    go on partition 3, which it mounts read-only. If the program stops with
+    an error, the log display starts instead. Besides the screen, the
+    controller and the sound card, it writes only /run/mpfree-hello (RAM)
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
     starts and after, and if eth0 failed to start, starts it again at 20, 45
@@ -59,6 +72,16 @@ Inputs, found automatically:
                     RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
                     cargo build --manifest-path rust/Cargo.toml --release --locked \
                       --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
+
+Optional inputs:
+  --splash FILE       the startup-screen program (mpfree-splash), a static ARM
+                      EABI5 hard-float executable built like the screen log
+  --splash-font FILE  a TrueType or OpenType font for its title (only with
+                      --splash); without it the title uses built-in letters
+  --app FILE          the pad player (mpfree-hello), built like the screen log
+  --kits FILE         its drum kits (only with --app); default: kits.bin in
+                      the newest ~/mpfree-work/factory-kit-*/ folder. They are
+                      Akai's sounds: the stick stays private
 
 The device tree also gets the Ethernet PHY's ID (Realtek RTL8211E, as 3.6.0
 reads it on the reference unit). 3.6.0 holds the PHY in reset when it shuts
@@ -208,6 +231,7 @@ while :; do
   {{ ip addr; ip route; }} > "$d/network.txt" 2>&1
   cat /proc/cmdline > "$d/cmdline.txt" 2>&1
   cp /run/mpfree-test-eth/*.txt "$d/" 2>/dev/null
+  cp /run/mpfree-hello/hello.txt "$d/" 2>/dev/null
   sync
   sleep 10
 done
@@ -216,7 +240,7 @@ done
 SCREEN_UNIT = """[Unit]
 Description=MPFree test boot: show the live log on the MPC's screen
 DefaultDependencies=no
-After=systemd-journald.service
+After=systemd-journald.service{after}
 Conflicts=shutdown.target
 Before=shutdown.target
 IgnoreOnIsolate=yes
@@ -232,6 +256,56 @@ Nice=10
 [Install]
 WantedBy=sysinit.target
 """
+# Only with --splash. The log display waits for it (After= in its unit); if it fails, the log simply starts.
+SPLASH_SECONDS = 6
+SPLASH_UNIT = """[Unit]
+Description=MPFree test boot: startup screen before the live log
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target mpfree-test-screen.service
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation {rotation} --seconds {seconds}{font}
+TimeoutStartSec={timeout}
+
+[Install]
+WantedBy=sysinit.target
+"""
+# Only with --app, in place of the log display (which starts if the app fails). The kits partition
+# is mounted read-only; the app finds the screen, the controller and the sound card itself, showing
+# its progress on a loading screen.
+APP_SCRIPT = """#!/bin/sh
+# MPFree test boot: start the pad player. Its drum kits are on the stick's partition 3, mounted read-only.
+dev=/dev/disk/by-partuuid/{kits_uuid}
+i=0
+while [ ! -e "$dev" ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
+mkdir -p /run/mpfree-kits
+if ! grep -q ' /run/mpfree-kits ' /proc/mounts; then
+  mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||
+    echo "mpfree-test-app: the kit partition did not mount" > /dev/kmsg
+fi
+exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep}
+"""
+APP_UNIT = """[Unit]
+Description=MPFree test boot: the pad player, from power-on
+DefaultDependencies=no
+After=systemd-journald.service systemd-udevd.service{after}
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+OnFailure=mpfree-test-screen.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+
+[Install]
+WantedBy=sysinit.target
+"""
+KITS_MAX = 48 << 20
+KITS_MAGIC = b"MPFKITS1"
 # Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
 LOG_UNIT = """[Unit]
 Description=MPFree test boot: copy logs to the USB stick's log partition
@@ -437,6 +511,94 @@ def screen_log_program():
     path = os.path.realpath(os.environ.get("MPFREE_SCREEN_LOG", SCREEN_LOG_BUILT))
     if not os.path.isfile(path):
         raise Stop(f"missing {path}: build the screen log program first (see the top of this file, or the docs)")
+    return path, static_arm_program(path)
+
+
+FONT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+
+
+def splash_inputs(args):
+    """The startup-screen program and its font, if asked for. Returns (program bytes, font name, font bytes)."""
+    if args.splash_font and not args.splash:
+        raise Stop("--splash-font needs --splash")
+    if not args.splash:
+        return None, None, None
+    path = os.path.realpath(args.splash)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build the startup-screen program first")
+    program = static_arm_program(path)
+    if not args.splash_font:
+        return program, None, None
+    font_path = os.path.realpath(args.splash_font)
+    with open(font_path, "rb") as fh:
+        font = fh.read(SCREEN_LOG_MAX + 1)
+    ext = os.path.splitext(font_path)[1].lower()
+    if len(font) > SCREEN_LOG_MAX or font[:4] not in FONT_MAGIC or ext not in (".ttf", ".otf"):
+        raise Stop(f"{font_path} is not a single TrueType or OpenType font (.ttf or .otf) under 16 MiB")
+    return program, "splash-font" + ext, font
+
+
+def app_inputs(args, work):
+    """The pad player and its kits, if asked for. Returns (program path, bytes, kits path, kits bytes)."""
+    if args.kits and not args.app:
+        raise Stop("--kits needs --app")
+    if not args.app:
+        return None, None, None, None
+    path = os.path.realpath(args.app)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build the pad player (mpfree-hello) first")
+    program = static_arm_program(path)
+    kits = args.kits
+    if not kits:
+        folders = sorted(glob.glob(os.path.join(work, "factory-kit-[0-9]*", "kits.bin")))
+        if not folders:
+            raise Stop(f"no drum kits under {work}: run offline-factory-kit.py first, or pass --kits")
+        kits = folders[-1]
+    kits = os.path.realpath(kits)
+    with open(kits, "rb") as fh:
+        data = fh.read(KITS_MAX + 1)
+    if len(data) > KITS_MAX or len(data) < 12 or data[:8] != KITS_MAGIC:
+        raise Stop(f"{kits} is not a kits file made by offline-factory-kit.py, or is over {KITS_MAX} bytes")
+    return path, program, kits, data
+
+
+def make_kits_fs(kits, scratch):
+    """A small ext4 filesystem (no journal, so a read-only mount never writes) holding only /kits.bin,
+    owned by root and read back. Returns its path."""
+    path = os.path.join(scratch, "kits.img")
+    size_k = (len(kits) + (8 << 20)) // (1 << 20) * 1024
+    res = run(["mke2fs", "-q", "-F", "-t", "ext4", "-O", "^has_journal", "-L", "MPFREE-KITS",
+               "-E", "root_owner=0:0", path, f"{size_k}k"])
+    if res.returncode != 0:
+        raise Stop("mke2fs failed for the kits partition:\n" + res.stdout)
+    local = os.path.join(scratch, "kits.bin")
+    with open(local, "wb") as fh:
+        fh.write(kits)
+    commands = [f"write {quote(local)} /kits.bin", "sif /kits.bin mode 0100644", "sif /kits.bin uid 0",
+                "sif /kits.bin gid 0"]
+    script = os.path.join(scratch, "debugfs-kits.txt")
+    with open(script, "w") as fh:
+        fh.write("\n".join(commands) + "\n")
+    res = run(["debugfs", "-w", "-f", script, path])
+    expected = {f"debugfs: {c}" for c in commands}
+    for line in res.stdout.splitlines():
+        if not line.strip() or line.startswith("debugfs ") or line in expected or \
+                re.match(r"^Allocated inode: \d+$", line):
+            continue
+        raise Stop(f"debugfs reported a problem in the kits partition: {line}")
+    fs = Image(path)
+    if res.returncode != 0 or fs.kind("/kits.bin") != "regular" or fs.read("/kits.bin", scratch) != kits or \
+            fs.stat("/kits.bin") != (0o644, (0, 0)):
+        raise Stop("the kits partition did not read back as written")
+    fsck = run(["e2fsck", "-fn", path])
+    if fsck.returncode != 0:
+        raise Stop("e2fsck found problems in the kits partition:\n" + fsck.stdout)
+    os.unlink(local)
+    return path
+
+
+def static_arm_program(path):
+    """The file's bytes, checked to be a static ARM EABI5 hard-float executable."""
     with open(path, "rb") as fh:
         data = fh.read(SCREEN_LOG_MAX + 1)
     problem = None
@@ -457,7 +619,7 @@ def screen_log_program():
             problem = "dynamically linked (it must be static: 3.10.0's C library may differ)"
     if problem:
         raise Stop(f"{path} is {problem}; rebuild it as shown at the top of this file")
-    return path, data
+    return data
 
 
 def newest(pattern):
@@ -537,8 +699,14 @@ def running_release(pre, work, target_release):
     return release, how
 
 
-def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation):
-    """Change the copy with debugfs -w, then read every change back. Returns the root-account note."""
+def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
+                 app=None, kits_uuid=None):
+    """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
+
+    With `app` (the pad player's bytes) and `kits_uuid` (partition 3), the pad player starts at
+    power-on in place of the log display, which stays installed for when the app fails."""
+    if (app is None) != (kits_uuid is None):
+        raise Stop("the pad player needs its kits partition, and the other way round")
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
         if kind not in ("symlink", None) or (kind == "symlink" and img.link(top) not in (f"usr{top}", f"/usr{top}")):
@@ -547,8 +715,10 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
         found = img.kind(path)
         if found is None or (kind and found != kind):
             raise Stop(f"the image has no {kind or 'file'} {path}; this tool does not know this layout")
+    splash_program, font_name, font = splash
+    extra = len(splash_program or b"") + len(font or b"") + len(app or b"")
     free_bytes, free_inodes = img.free()
-    if free_bytes < len(screen_log) + (4 << 20) or free_inodes < 64:
+    if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
     new_paths = (["/etc/systemd/system/" + u for u in MASK_UNITS] +
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
@@ -559,8 +729,12 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
                   "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service",
                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service",
+                  "/etc/systemd/system/mpfree-test-app.service",
+                  "/etc/systemd/system/sysinit.target.wants/mpfree-test-app.service",
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
-                 ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS])
+                 ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS] +
+                 (["/etc/systemd/system/mpfree-test-splash.service",
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -580,7 +754,23 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
     add("/etc/systemd/system/mpfree-test-sshd.service", SSHD_UNIT, 0o644)
     add("/etc/systemd/system/mpfree-test-logs.service", LOG_UNIT, 0o644)
     add("/etc/mpfree-test/mpfree-screen-log", screen_log, 0o755)
-    add("/etc/systemd/system/mpfree-test-screen.service", SCREEN_UNIT.format(rotation=rotation), 0o644)
+    add("/etc/systemd/system/mpfree-test-screen.service",
+        SCREEN_UNIT.format(rotation=rotation, after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if splash_program:
+        add("/etc/mpfree-test/mpfree-splash", splash_program, 0o755)
+        font_args = ""
+        if font:
+            add(f"/etc/mpfree-test/{font_name}", font, 0o644)
+            font_args = f" --font /etc/mpfree-test/{font_name} --tracking 0.15"
+        add("/etc/systemd/system/mpfree-test-splash.service",
+            SPLASH_UNIT.format(rotation=rotation, seconds=SPLASH_SECONDS, font=font_args,
+                               timeout=SPLASH_SECONDS + 14), 0o644)
+    if app is not None:
+        add("/etc/mpfree-test/mpfree-hello", app, 0o755)
+        add("/etc/mpfree-test/start-app.sh",
+            APP_SCRIPT.format(kits_uuid=kits_uuid, keep=" --keep-screen" if splash_program else ""), 0o755)
+        add("/etc/systemd/system/mpfree-test-app.service",
+            APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
     with open(ETHERNET_DETAILS, "rb") as fh:
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
@@ -619,10 +809,17 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
         "/etc/systemd/system/mpfree-test-sshd.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"] = \
         "/etc/systemd/system/mpfree-test-logs.service"
-    links["/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"] = \
-        "/etc/systemd/system/mpfree-test-screen.service"
+    if app is None:
+        links["/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"] = \
+            "/etc/systemd/system/mpfree-test-screen.service"
+    else:
+        links["/etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"] = \
+            "/etc/systemd/system/mpfree-test-app.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"] = \
         "/etc/systemd/system/mpfree-test-ethernet.service"
+    if splash_program:
+        links["/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] = \
+            "/etc/systemd/system/mpfree-test-splash.service"
 
     commands = ["mkdir /etc/mpfree-test"]
     for folder in MADE_IF_MISSING:
@@ -669,7 +866,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation)
     return root_note, stubbed, absent, sorted(links), sorted(files)
 
 
-def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch):
+def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None, kits_uuid=None):
     fs_bytes = os.path.getsize(fs_image)
     if fs_bytes % SECTOR:
         raise Stop("the rootfs image size is not a whole number of sectors")
@@ -681,7 +878,9 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch):
     if res.returncode != 0:
         raise Stop("mke2fs failed for the log partition:\n" + res.stdout)
     root_start, log_start = ALIGN, ALIGN + root_sectors
-    total = log_start + log_sectors + ALIGN
+    kits_start = log_start + log_sectors
+    kits_sectors = -(-os.path.getsize(kits_image) // SECTOR // ALIGN) * ALIGN if kits_image else 0
+    total = kits_start + kits_sectors + ALIGN
     with open(out_path, "xb") as fh:
         fh.truncate(total * SECTOR)
     table = (f"label: gpt\nunit: sectors\nfirst-lba: {ALIGN}\n"
@@ -689,17 +888,23 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch):
              f"name=\"mpfree-test-root\"\n"
              f"start={log_start}, size={log_sectors}, type={LINUX_FS_TYPE}, uuid={log_uuid}, "
              f"name=\"mpfree-test-log\"\n")
+    if kits_image:
+        table += (f"start={kits_start}, size={kits_sectors}, type={LINUX_FS_TYPE}, uuid={kits_uuid}, "
+                  f"name=\"mpfree-test-kits\"\n")
     res = subprocess.run(["sfdisk", "-q", "--no-reread", "--no-tell-kernel", out_path], input=table,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if res.returncode != 0:
         raise Stop("sfdisk failed on the image file:\n" + res.stdout)
-    for src, start in ((fs_image, root_start), (log_img, log_start)):
+    copies = [(fs_image, root_start), (log_img, log_start)] + ([(kits_image, kits_start)] if kits_image else [])
+    for src, start in copies:
         with open(src, "rb") as fin, open(out_path, "r+b") as fout:
             fout.seek(start * SECTOR)
             shutil.copyfileobj(fin, fout, 1 << 20)
     res = run(["sfdisk", "--json", out_path])
     parts = json.loads(res.stdout)["partitiontable"]["partitions"] if res.returncode == 0 else []
     want = [(root_start, root_sectors, root_uuid), (log_start, log_sectors, log_uuid)]
+    if kits_image:
+        want.append((kits_start, kits_sectors, kits_uuid))
     got = [(p["start"], p["size"], p["uuid"].lower()) for p in parts]
     if got != want or any(p["type"].upper() != LINUX_FS_TYPE for p in parts):
         raise Stop(f"the stick image's partition table is not what was asked for: {got}")
@@ -707,12 +912,18 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch):
         raise Stop("partition 1 of the stick image does not match the changed rootfs")
     if sha256(out_path, log_start * SECTOR, LOG_SIZE) != sha256(log_img):
         raise Stop("partition 2 of the stick image does not match the log filesystem")
+    if kits_image and sha256(out_path, kits_start * SECTOR, os.path.getsize(kits_image)) != sha256(kits_image):
+        raise Stop("partition 3 of the stick image does not match the kits filesystem")
     return total * SECTOR
 
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", help="the version's rootfs image (default: found as described above)")
+    ap.add_argument("--splash", help="the startup-screen program (mpfree-splash, static ARM)")
+    ap.add_argument("--splash-font", help="a .ttf or .otf font for the startup screen's title (with --splash)")
+    ap.add_argument("--app", help="the pad player (mpfree-hello, static ARM), started at power-on")
+    ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
     args = ap.parse_args(argv)
     for tool in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"):
         if not shutil.which(tool):
@@ -728,6 +939,8 @@ def main(argv):
     if len(pubkey.splitlines()) != 1 or run(["ssh-keygen", "-l", "-f", pub_path]).returncode != 0:
         raise Stop(f"{pub_path} is not a single public key")
     screen_path, screen_log = screen_log_program()
+    splash = splash_inputs(args)
+    app_path, app, kits_path, kits = app_inputs(args, work)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     os.makedirs(work, exist_ok=True)
@@ -738,7 +951,7 @@ def main(argv):
     try:
         OUT.say("MPFree kexec test-boot builder (workstation only, no MPC contact, no device writes)")
         OUT.say(f"output folder: {outdir}")
-        need = 2 * os.path.getsize(image) + (256 << 20)
+        need = 2 * os.path.getsize(image) + 3 * len(kits or b"") + (256 << 20)
         if shutil.disk_usage(outdir).free < need:
             raise Stop(f"not enough free space in {work}: {need >> 20} MiB needed")
         source_sha = sha256(image)
@@ -804,8 +1017,28 @@ def main(argv):
         root_uuid, log_uuid = str(uuid.uuid4()), str(uuid.uuid4())
         OUT.say(f"screen log program: {screen_path} ({len(screen_log)} bytes, "
                 f"sha256 {hashlib.sha256(screen_log).hexdigest()}, static ARM EABI5 hard-float)")
+        if splash[0]:
+            OUT.say(f"startup screen program: {os.path.realpath(args.splash)} ({len(splash[0])} bytes, "
+                    f"sha256 {hashlib.sha256(splash[0]).hexdigest()}, static ARM EABI5 hard-float), "
+                    f"shown for {SPLASH_SECONDS} s before the log")
+            if splash[2]:
+                OUT.say(f"startup screen font: {os.path.realpath(args.splash_font)} ({len(splash[2])} bytes, "
+                        f"sha256 {hashlib.sha256(splash[2]).hexdigest()})")
+            else:
+                OUT.say("startup screen font: none given, so the title uses built-in letters")
+        else:
+            OUT.say("startup screen: none (no --splash)")
+        kits_uuid = str(uuid.uuid4()) if app else None
+        if app:
+            OUT.say(f"pad player: {app_path} ({len(app)} bytes, sha256 {hashlib.sha256(app).hexdigest()}, "
+                    "static ARM EABI5 hard-float), started at power-on in place of the log display"
+                    + (", over the startup screen" if splash[0] else ""))
+            OUT.say(f"drum kits: {kits_path} ({struct.unpack_from('<I', kits, 8)[0]} kits, {len(kits)} bytes, "
+                    f"sha256 {hashlib.sha256(kits).hexdigest()}), on partition 3, mounted read-only")
+        else:
+            OUT.say("pad player: none (no --app); the log display starts at power-on")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
-                                                                  screen_log, rotation)
+                                                                  screen_log, rotation, splash, app, kits_uuid)
         for path in links:
             OUT.say(f"link     {path} -> {img.link(path)}")
         for path in written:
@@ -819,9 +1052,13 @@ def main(argv):
 
         OUT.say("=== Stick image ===")
         stick = os.path.join(outdir, "stick.img")
-        size = make_stick(copy, stick, root_uuid, log_uuid, scratch)
+        kits_image = make_kits_fs(kits, scratch) if app else None
+        size = make_stick(copy, stick, root_uuid, log_uuid, scratch, kits_image, kits_uuid)
         OUT.say(f"stick.img: {size} bytes ({-(-size // (1 << 20))} MiB); partition 1 root PARTUUID {root_uuid}, "
                 f"partition 2 logs PARTUUID {log_uuid}")
+        if kits_image:
+            OUT.say(f"partition 3 kits PARTUUID {kits_uuid} (ext4 without a journal, only /kits.bin, "
+                    f"sha256 {sha256(kits_image)})")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
         cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
                    "sysctl.kernel.kexec_load_disabled=1")
@@ -841,7 +1078,8 @@ def main(argv):
         OUT.say()
         OUT.say(f"DONE. Files in {outdir}")
         OUT.say("Nothing was written to any device. The stick image holds a test SSH host key and")
-        OUT.say("your public key, and the folder quotes Akai's files: keep it private, never commit it.")
+        OUT.say("your public key, and the folder quotes Akai's files" + (" and holds Akai's sounds" if app else "")
+                + ": keep it private, never commit it.")
         ok = True
         return 0
     except (Stop, dtb.DtbError, OSError) as err:

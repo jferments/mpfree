@@ -109,7 +109,7 @@ Prioritize low menu depth, immediate physical control, reliable audio, reversibl
 ## Open decisions
 
 - Engine language: **DECIDED — Rust-first**, retaining C/C++ compatibility adapters for established instruments, DSP and plugin hosting; see [ADR-0001](../decisions/adr-0001-rust-first.md). Hardware real-time performance remains unqualified.
-- UI: Qt Quick vs SDL or other lightweight renderer.
+- UI: **DECIDED (owner, 2026-11-09)**: SDL3 and a custom Rust retained-mode UI on OpenGL ES 3. The custom UI is [`mpfree-ui`](../../rust/mpfree-ui), drawing in software to the framebuffer until a GLES canvas is qualified; see [UI architecture](ui-architecture.md).
 - Audio: **DECIDED — direct ALSA on the device**, with JACK/PipeWire/CPAL as desktop backends behind an `AudioDevice` trait; see [ADR-0002](../decisions/adr-0002-direct-alsa-audio.md). On-device xrun and latency qualification still pending.
 - Licensing: GPL-3.0-or-later, MPL-2.0, or other approved FOSS license.
 - Plugin API: LV2, CLAP, custom internal graph, or combination; hardware and licensing constraints apply.

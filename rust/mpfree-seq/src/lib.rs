@@ -142,6 +142,18 @@ impl Clip {
         Ok(())
     }
 
+    /// Remove one note equal to `note`, for example one that replace
+    /// recording erased. False if the clip has none.
+    pub fn remove_note(&mut self, note: &Note) -> bool {
+        match self.notes.iter().position(|n| n == note) {
+            Some(i) => {
+                self.notes.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn note_ok(&self, n: &Note) -> bool {
         (0..self.length).contains(&n.tick)
             && (1..=MAX_CLIP_TICKS).contains(&n.len)
@@ -263,6 +275,10 @@ mod tests {
         c.notes = vec![Note { tick: 0, len: 1, note: 0, velocity: 1 }; MAX_NOTES];
         assert_eq!(c.add_note(Note { tick: 0, len: 1, note: 0, velocity: 1 }), Err(ModelError::TooManyNotes));
         assert_eq!(c.check(), Ok(()));
+        // Equal notes are the same note: removing one leaves the rest.
+        assert!(c.remove_note(&Note { tick: 0, len: 1, note: 0, velocity: 1 }));
+        assert_eq!(c.notes.len(), MAX_NOTES - 1);
+        assert!(!c.remove_note(&Note { tick: 5, len: 1, note: 0, velocity: 1 }));
     }
 
     #[test]

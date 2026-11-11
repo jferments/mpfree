@@ -16,12 +16,19 @@
 //! `AllOff`. A note that starts while the same note is still sounding on the
 //! same track ends the old one first, on the same frame.
 //!
+//! **Replace recording.** The first time in a take that the transport
+//! records with overdub off, the armed track's notes are erased as the
+//! playhead reaches them, for one pass of its clip: until the clip wraps,
+//! the transport jumps, recording stops or overdub turns on. Then the take
+//! goes on as overdub. Erased notes are not played; [`Player::erased`]
+//! names them for the control thread to remove (`Clip::remove_note`).
+//!
 //! **No allocation, locks or panics** in `process`: fixed tables only. Full
 //! tables are counted in [`Stats`], never silently dropped.
 
 use std::ops::Range;
 
-use mpfree_seq::DestId;
+use mpfree_seq::{DestId, Note};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -31,8 +38,20 @@ use crate::view::{ClipView, PlayView};
 pub const MAX_ACTIVE: usize = 256;
 /// Notes starting in one span.
 pub const MAX_STARTS: usize = 256;
+/// Notes replace recording can erase in one period.
+pub const MAX_ERASED: usize = 256;
 /// `dest` and `track` of an event meant for every destination.
 pub const ALL: u16 = u16::MAX;
+
+/// A note replace recording erased: remove it from clip `slot` of `track`.
+/// `take` numbers the take that erased it, as in [`crate::Taken`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Erased {
+    pub track: usize,
+    pub slot: usize,
+    pub note: Note,
+    pub take: u32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -70,6 +89,8 @@ pub struct Stats {
     pub dropped: u64,
     /// Note-offs that came after their tick (should stay 0).
     pub late_offs: u64,
+    /// Notes replace recording erased.
+    pub erased: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -102,7 +123,17 @@ pub struct Player {
     n_starts: usize,
     seq: u64,
     stats: Stats,
+    erased: [Erased; MAX_ERASED],
+    n_erased: usize,
+    /// Replace recording: the armed clip's pass being replaced.
+    replacing: Option<i64>,
+    /// This take (since the last record-on) has had its replace pass.
+    replaced: bool,
+    /// Record-ons so far: the number of the latest take.
+    take: u32,
 }
+
+const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
 
 impl Default for Player {
     fn default() -> Self {
@@ -119,7 +150,18 @@ impl Player {
             n_starts: 0,
             seq: 0,
             stats: Stats::default(),
+            erased: [NO_ERASED; MAX_ERASED],
+            n_erased: 0,
+            replacing: None,
+            replaced: false,
+            take: 0,
         }
+    }
+
+    /// The notes replace recording erased in the last
+    /// [`Player::process`] call, in the order the playhead reached them.
+    pub fn erased(&self) -> &[Erased] {
+        &self.erased[..self.n_erased]
     }
 
     pub fn stats(&self) -> Stats {
@@ -133,6 +175,7 @@ impl Player {
 
     /// Play one period: the transport's `block` for it, the clips in `view`.
     pub fn process(&mut self, view: &PlayView, block: &Block, out: &mut impl Sink) {
+        self.n_erased = 0;
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
@@ -151,6 +194,18 @@ impl Player {
     }
 
     fn marker(&mut self, m: &Marker, out: &mut impl Sink) {
+        match m.mark {
+            Mark::RecordOn { .. } => {
+                self.replacing = None;
+                self.replaced = false;
+                self.take = self.take.wrapping_add(1);
+            }
+            Mark::RecordOff { .. } => self.replacing = None,
+            _ => {}
+        }
+        if matches!(m.mark, Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. }) {
+            self.replacing = None;
+        }
         match m.mark {
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => self.end_all(m.offset, m.frame, out),
             Mark::Panic => {
@@ -174,13 +229,15 @@ impl Player {
         if ticks.is_empty() {
             return;
         }
+        self.replace_state(view, span, &ticks);
         self.n_starts = 0;
         for (i, track) in view.tracks.iter().enumerate() {
-            if track.mute {
+            let replace = if view.armed == Some(i) { self.replacing } else { None };
+            if track.mute && replace.is_none() {
                 continue;
             }
             if let Some(clip) = &track.clip {
-                self.collect(clip, i as u16, track.dest, span.swing, &ticks);
+                self.collect(clip, i as u16, track.dest, span.swing, &ticks, replace, !track.mute);
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -225,8 +282,37 @@ impl Player {
         self.end_until(ticks.end - 1, first, span, out);
     }
 
-    /// The notes of `clip` whose tick is in `ticks`.
-    fn collect(&mut self, clip: &ClipView, track: u16, dest: DestId, transport_swing: Swing, ticks: &Range<Tick>) {
+    /// Start or end the replace pass for this span.
+    fn replace_state(&mut self, view: &PlayView, span: &Span, ticks: &Range<Tick>) {
+        if span.state != State::Recording || span.overdub {
+            self.replacing = None;
+            return;
+        }
+        if self.replaced {
+            return;
+        }
+        let clip = view.armed.and_then(|t| view.tracks.get(t)).and_then(|t| t.clip.as_ref());
+        if let Some(clip) = clip.filter(|c| c.song_len > 0.0 && ticks.end > c.origin) {
+            let from = (ticks.start - clip.origin).max(0) as f64;
+            self.replacing = Some((from / clip.song_len).floor() as i64);
+            self.replaced = true;
+        }
+    }
+
+    /// The notes of `clip` whose tick is in `ticks`. With `replace`, the
+    /// notes of that pass are erased instead; without `sound`, the rest are
+    /// not played.
+    #[allow(clippy::too_many_arguments)]
+    fn collect(
+        &mut self,
+        clip: &ClipView,
+        track: u16,
+        dest: DestId,
+        transport_swing: Swing,
+        ticks: &Range<Tick>,
+        replace: Option<i64>,
+        sound: bool,
+    ) {
         if clip.notes.is_empty() || clip.song_len <= 0.0 {
             return;
         }
@@ -255,6 +341,19 @@ impl Player {
                 let straight = start + clip.speed.to_song(n.local);
                 let tick = swing.apply(straight).round() as Tick;
                 if !ticks.contains(&tick) {
+                    continue;
+                }
+                if replace == Some(pass as i64) {
+                    if self.n_erased == MAX_ERASED {
+                        self.stats.dropped += 1;
+                    } else {
+                        self.erased[self.n_erased] = Erased { track: usize::from(track), slot: clip.slot, note: n.src, take: self.take };
+                        self.n_erased += 1;
+                        self.stats.erased += 1;
+                    }
+                    continue;
+                }
+                if !sound {
                     continue;
                 }
                 let off = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
