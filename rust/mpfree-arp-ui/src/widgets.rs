@@ -52,6 +52,68 @@ impl Widget for Segments {
     }
 }
 
+// ---------------------------------------------------------------- rate bar
+
+/// The quick band's buttons: one per rate, big enough to hit mid-roll
+/// without looking hard, then Latch, set apart. A tap on rate `i` gives
+/// `Tab(i)`; a tap on Latch gives `Tab(rates.len())`.
+pub struct RateBar {
+    pub rates: Vec<String>,
+    /// The rate playing now.
+    pub active: usize,
+    pub latched: bool,
+}
+
+/// The time engine's smallest touch target, in pixels.
+pub const MIN_TOUCH: i32 = 76;
+const RATE_GAP: i32 = 8;
+/// The extra space between the last rate and Latch.
+const LATCH_GAP: i32 = 24;
+
+impl RateBar {
+    pub fn new(rates: &[&str]) -> RateBar {
+        RateBar { rates: rates.iter().map(|s| s.to_string()).collect(), active: 0, latched: false }
+    }
+
+    /// Button `i`: the rates, then Latch at `i == rates.len()`.
+    pub fn button(&self, r: Rect, i: usize) -> Rect {
+        let inner = r.inset_xy(12, 8);
+        let n = self.rates.len() as i32 + 1;
+        let w = (inner.w - RATE_GAP * (n - 1) - LATCH_GAP) / n;
+        let extra = if i == self.rates.len() { LATCH_GAP } else { 0 };
+        Rect::new(inner.x + i as i32 * (w + RATE_GAP) + extra, inner.y, w, inner.h)
+    }
+}
+
+impl Widget for RateBar {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_rect(r, t.bg);
+        for (i, name) in self.rates.iter().enumerate() {
+            let b = self.button(r, i);
+            let on = i == self.active;
+            cx.canvas.fill_round_rect(b, 10, if on { t.bg.mix(t.accent, 0.25) } else { t.raised });
+            if on {
+                cx.canvas.stroke_round_rect(b, 10, 2, t.accent);
+            }
+            let font = if on { FontId::Bold } else { FontId::Sans };
+            cx.text(font, t.size_title, b, Align::Center, if on { t.text } else { t.text_dim }, name);
+        }
+        let b = self.button(r, self.rates.len());
+        let ink = if self.latched { t.warn } else { t.text_dim };
+        cx.canvas.fill_round_rect(b, 10, if self.latched { t.bg.mix(t.warn, 0.22) } else { t.surface });
+        cx.canvas.stroke_round_rect(b, 10, if self.latched { 2 } else { 1 }, if self.latched { t.warn } else { t.outline });
+        cx.text(FontId::Bold, t.size_body, b, Align::Center, ink, if self.latched { "LATCHED" } else { "LATCH" });
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        (0..=self.rates.len()).find(|&i| self.button(r, i).contains(x, y)).map(EventKind::Tab)
+    }
+}
+
 // ---------------------------------------------------------------- sliders
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -213,7 +275,7 @@ impl Widget for StepStrip {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         if self.cells.is_empty() {
-            cx.text(FontId::Sans, t.size_body, r, Align::Center, t.text_faint, "hold pads to hear the steps");
+            cx.text(FontId::Sans, t.size_body, r, Align::Center, t.text_faint, "hold pads to see the next steps");
             return;
         }
         for (i, c) in self.cells.iter().enumerate() {

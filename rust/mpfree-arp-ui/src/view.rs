@@ -1,13 +1,24 @@
-//! The Arp page: what it shows, worked out from the engine, and what its
-//! touches mean.
+//! The arp's two screens: what they show, worked out from the engine, and
+//! what their touches mean.
 //!
-//! The page does not own the engine. The app copies what the page needs into
-//! an [`ArpState`] (from [`ArpState::from_engine`]), calls [`ArpPage::update`]
-//! when it changes, and turns the page's [`ArpAction`]s into engine calls.
-//! The pads, the header and the hint line belong to the app; the page only
-//! adds its own widgets and the layouts that place them.
+//! - The **Arp panel** shows every setting of one track's arp beside the
+//!   pads: mode tabs, the list the wheel moves through, the Q-Link sliders or
+//!   the pattern buttons, and the step strip while the arp is generating.
+//! - The **quick band** comes up over the pads while NOTE REPEAT is held, or
+//!   while notes are latched: big rate buttons, Latch, and the next steps.
+//!
+//! The arp is a way of playing the pads, not a place, so neither is a
+//! top-level tab: the app shows the panel in its Play page's right-hand
+//! column and the band over its pads, and puts [`chip`] in its header. The
+//! design is in the arpeggiator design doc (`docs/project/arpeggiator.md`).
+//!
+//! The screens do not own the engine. The app copies what they need into an
+//! [`ArpState`] (from [`ArpState::from_engine`]), calls [`ArpPanel::update`]
+//! when it changes, and turns their [`ArpAction`]s into engine calls. The
+//! pads, the header and the hint line belong to the app; the panel only adds
+//! its own widgets and the layouts that place them.
 
-use crate::widgets::{Button, ButtonRow, CellKind, Segments, SliderStack, StepCell, StepStrip};
+use crate::widgets::{Button, ButtonRow, CellKind, RateBar, Segments, SliderStack, StepCell, StepStrip};
 use mpfree_arp::{Engine, Held, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES};
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -18,13 +29,22 @@ pub const LIST: &str = "arp-list";
 pub const QLINKS: &str = "arp-qlinks";
 pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
+pub const RATES: &str = "arp-rates";
 
-/// Direct, Repeat and Arp: the list (rates or orders) over the Q-Link sliders.
+/// Direct: nothing is generated, so there is no step strip and the pads get
+/// the room back.
+pub const DIRECT_LAYOUT: &str =
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, hint:26)";
+/// Repeat and Arp: the list (rates or orders) over the Q-Link sliders, and
+/// the step strip.
 pub const ARP_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, arp-steps:64, hint:26)";
-/// Pattern: the pattern list over the pattern buttons.
+/// Pattern: the pattern list over the pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128):460):*, arp-steps:64, hint:26)";
+/// The quick band over the pads: the rate buttons and Latch, then the next
+/// steps. The rate row is tall enough for 76 px buttons.
+pub const QUICK_LAYOUT: &str = "col(header:60, pads:*, arp-rates:92, arp-steps:64, hint:26)";
 
 /// The mode tabs, in [`Mode`] order.
 pub const MODE_TABS: [&str; 4] = ["Direct", "Repeat", "Arp", "Pattern"];
@@ -96,6 +116,8 @@ pub enum ArpAction {
     Button(PatternButton),
     /// A cell of the step strip was tapped: step `i` of the pattern.
     Step(usize),
+    /// The band's Latch button: latch on, or off (clearing the notes).
+    Latch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,69 +263,105 @@ pub fn pattern_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
     (cells, first, last.map(|l| l - first))
 }
 
-/// The arp's header chips: latch, tempo, and what the generator does.
-pub fn chips(st: &ArpState) -> Vec<Chip> {
+/// The arp chip: what the arp does, in one line, for the app's header on
+/// every page. Tapping it opens the panel (the app's job). Off and latched
+/// look different at a glance.
+pub fn chip(st: &ArpState) -> Chip {
     let s = &st.settings;
     let what = match s.mode {
-        Mode::Direct => "Direct".to_string(),
-        Mode::Repeat => format!("Repeat · {}", s.rate.label()),
-        Mode::Arp => format!("Arp · {} · {} oct", s.order.label(), s.octaves),
+        Mode::Direct => {
+            return if st.latched { Chip::new("Latch on", Tone::Warn) } else { Chip::new("Arp off", Tone::Dim) };
+        }
+        Mode::Repeat => format!("Repeat {}", s.rate.label()),
+        Mode::Arp => format!("Arp: {} {}", s.order.label(), s.rate.label()),
         Mode::Pattern => {
             let name = st.patterns.get(st.pattern_index).map_or("pattern", |(n, _)| n.as_str());
-            format!("Pattern · {name}{}", if st.pattern_changed { " *" } else { "" })
+            format!("Pattern: {name}{} {}", if st.pattern_changed { "*" } else { "" }, s.rate.label())
         }
     };
-    // The header lays chips out from the right edge, so the last one here
-    // is the leftmost: latch, tempo, then what the generator does.
-    vec![
-        Chip::new(what, Tone::Dim),
-        Chip::new(format!("{:.1} BPM", st.bpm), Tone::Good),
-        Chip::new(if st.latched { "LATCH" } else { "latch off" }, if st.latched { Tone::Warn } else { Tone::Dim }),
-    ]
+    if st.latched {
+        Chip::new(format!("{what}, latched"), Tone::Warn)
+    } else {
+        Chip::new(what, Tone::Accent)
+    }
 }
 
-/// The hint line for each mode.
+/// The header chips for the sample screens: the arp chip, then the tempo
+/// at the right edge. (The header lays chips out from the right edge, so the
+/// last one here is the leftmost.)
+pub fn chips(st: &ArpState) -> Vec<Chip> {
+    vec![Chip::new(format!("{:.1} BPM", st.bpm), Tone::Good), chip(st)]
+}
+
+/// The hint line under the panel, for each mode.
 pub fn hint(mode: Mode) -> &'static str {
     match mode {
-        Mode::Direct => "Pads play as pressed · SHIFT+NOTE REPEAT: latch · tap a mode to start the arp",
+        Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · SHIFT+NOTE REPEAT: latch",
         Mode::Repeat => "Hold or latch pads · Wheel: rate · Q-Links: rate, gate, swing, octaves",
         Mode::Arp => "Hold or latch pads · Wheel: order · Q-Links: rate, gate, swing, octaves · TAP TEMPO",
         Mode::Pattern => "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern",
     }
 }
 
-/// The Arp page's widgets and their meaning. It keeps nothing but which mode
-/// it last laid out, so the app can rebuild it at any time.
-pub struct ArpPage {
-    /// The page name the layouts are added under.
-    pub name: String,
-    mode: Option<Mode>,
+/// The hint line under the quick band.
+pub fn quick_hint(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Pattern => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: pattern · let go: back to your page",
+        Mode::Arp => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: order · let go: back to your page",
+        _ => "Tap a rate while you play · press harder for louder · let go: back to your page",
+    }
 }
 
-impl ArpPage {
-    /// Adds the page's widgets to `ui` (the app adds `header`, `pads` and
-    /// `hint` first) and its page, laid out for `st`.
-    pub fn add(ui: &mut Ui, name: &str, st: &ArpState) -> Result<ArpPage, String> {
+/// The panel's layout for a mode.
+pub fn layout_for(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Direct => DIRECT_LAYOUT,
+        Mode::Repeat | Mode::Arp => ARP_LAYOUT,
+        Mode::Pattern => PATTERN_LAYOUT,
+    }
+}
+
+/// The arp panel's and the quick band's widgets and their meaning. It keeps
+/// nothing but the layout it last used, so the app can rebuild it at any
+/// time.
+pub struct ArpPanel {
+    /// The page name the panel's layouts are added under.
+    pub name: String,
+    /// The page name of the quick band.
+    pub quick: String,
+    layout: Option<&'static str>,
+}
+
+impl ArpPanel {
+    /// Adds the widgets to `ui` (the app adds `header`, `pads` and `hint`
+    /// first), the panel's page `name` laid out for `st`, and the quick
+    /// band's page `quick`.
+    pub fn add(ui: &mut Ui, name: &str, quick: &str, st: &ArpState) -> Result<ArpPanel, String> {
         ui.add(MODES, Segments::new(&MODE_TABS));
         ui.add(LIST, ListView::new("Order · Wheel"));
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
         ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
         ui.add(STEPS, StepStrip::new(8));
-        let mut page = ArpPage { name: name.to_string(), mode: None };
-        page.update(ui, st)?;
-        Ok(page)
+        let rates: Vec<&str> = Rate::ALL.iter().map(|r| r.label()).collect();
+        ui.add(RATES, RateBar::new(&rates));
+        ui.add_page(quick, QUICK_LAYOUT)?;
+        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None };
+        panel.update(ui, st)?;
+        Ok(panel)
     }
 
-    /// Shows `st`. The layout changes when the mode moves to or from Pattern.
+    /// Shows `st` on both. The panel's layout follows the mode
+    /// ([`layout_for`]).
     pub fn update(&mut self, ui: &mut Ui, st: &ArpState) -> Result<(), String> {
         let s = &st.settings;
-        if self.mode != Some(s.mode) {
-            let was_pattern = self.mode == Some(Mode::Pattern);
-            if self.mode.is_none() || was_pattern != (s.mode == Mode::Pattern) {
-                let layout = if s.mode == Mode::Pattern { PATTERN_LAYOUT } else { ARP_LAYOUT };
-                ui.add_page(&self.name, layout)?;
-            }
-            self.mode = Some(s.mode);
+        let layout = layout_for(s.mode);
+        if self.layout != Some(layout) {
+            ui.add_page(&self.name, layout)?;
+            self.layout = Some(layout);
+        }
+        if let Some(b) = ui.get_mut::<RateBar>(RATES) {
+            b.active = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
+            b.latched = st.latched;
         }
         if let Some(m) = ui.get_mut::<Segments>(MODES) {
             m.active = MODES_ALL.iter().position(|x| *x == s.mode).unwrap_or(0);
@@ -356,8 +414,8 @@ impl ArpPage {
         Ok(())
     }
 
-    /// What a touch on one of the page's widgets asks for; None for touches
-    /// on other widgets or that change nothing. `st` is what the page shows.
+    /// What a touch on one of the arp's widgets asks for; None for touches
+    /// on other widgets or that change nothing. `st` is what they show.
     pub fn action(&self, ev: &UiEvent, st: &ArpState, qlink: &mut Option<usize>) -> Option<ArpAction> {
         let s = st.settings;
         match (ev.widget.as_str(), &ev.kind) {
@@ -377,6 +435,8 @@ impl ArpPage {
                 .get(*i)
                 .map(|b| ArpAction::Button(*b)),
             (STEPS, EventKind::Select(i)) if s.mode == Mode::Pattern => Some(ArpAction::Step(*i)),
+            (RATES, EventKind::Tab(i)) if *i == Rate::ALL.len() => Some(ArpAction::Latch),
+            (RATES, EventKind::Tab(i)) => Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r)),
             _ => None,
         }
     }
@@ -425,18 +485,81 @@ mod tests {
         }
     }
 
+    fn sample(name: &str) -> crate::sample::Sample {
+        samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == name).unwrap()
+    }
+
     #[test]
     fn every_sample_screen_lays_out_and_draws() {
         for mut s in samples(Fonts::embedded).unwrap() {
             let mut canvas = SoftCanvas::new(1280, 800);
             s.ui.paint(&mut canvas);
-            for name in ["header", "pads", MODES, LIST, STEPS, "hint"] {
+            let mode = s.state.settings.mode;
+            let mut want = vec!["header", "pads", "hint"];
+            let mut gone = vec![];
+            if s.quick {
+                want.extend([RATES, STEPS]);
+                gone.extend([MODES, LIST, QLINKS, ACTIONS]);
+            } else {
+                want.extend([MODES, LIST]);
+                want.push(if mode == Mode::Pattern { ACTIONS } else { QLINKS });
+                // The strip shows only while the arp is generating.
+                if mode == Mode::Direct { gone.push(STEPS) } else { want.push(STEPS) }
+                gone.push(RATES);
+            }
+            for name in want {
                 let r = s.ui.rect_of(name).unwrap_or_else(|| panic!("{}: no {name}", s.name));
                 assert!(r.w > 0 && r.h > 0 && r.right() <= 1280 && r.bottom() <= 800, "{}: {name} {r:?}", s.name);
             }
-            let side = if s.state.settings.mode == Mode::Pattern { ACTIONS } else { QLINKS };
-            assert!(s.ui.rect_of(side).is_some(), "{}: no {side}", s.name);
+            for name in gone {
+                assert!(s.ui.rect_of(name).is_none(), "{}: {name} should not show", s.name);
+            }
+            // The arp is not a tab: the header holds the app's tabs and the chip.
+            let header = s.ui.get::<mpfree_ui::widgets::Header>("header").unwrap();
+            assert!(!header.tabs.iter().any(|t| t == "Arp"), "{}", s.name);
+            assert_eq!(header.chips.last().map(|c| c.text.clone()), Some(chip(&s.state).text), "{}", s.name);
         }
+    }
+
+    #[test]
+    fn the_quick_band_has_big_rate_buttons_and_latch() {
+        let mut s = sample("quick-hat-roll");
+        let r = s.ui.rect_of(RATES).unwrap();
+        let bar = s.ui.get::<RateBar>(RATES).unwrap();
+        assert_eq!(bar.rates, ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]);
+        assert_eq!((bar.active, bar.latched), (3, false));
+        for i in 0..=bar.rates.len() {
+            let b = bar.button(r, i);
+            assert!(b.w >= crate::widgets::MIN_TOUCH && b.h >= crate::widgets::MIN_TOUCH, "button {i}: {b:?}");
+            assert!(b.right() <= r.right(), "button {i}: {b:?}");
+        }
+        let (rate32, latch) = (bar.button(r, 5), bar.button(r, 7));
+        let ev = s.ui.touch(1, Touch::Down, rate32.x + 10, rate32.y + 10).unwrap();
+        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Rate(Rate::ThirtySecond)));
+        s.ui.touch(1, Touch::Up, 0, 0);
+        let ev = s.ui.touch(1, Touch::Down, latch.x + 10, latch.y + 10).unwrap();
+        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Latch));
+        s.ui.touch(1, Touch::Up, 0, 0);
+        // A held hat repeats; the strip shows the pad.
+        assert_eq!(s.ui.get::<StepStrip>(STEPS).unwrap().cells[0].label, "3");
+    }
+
+    #[test]
+    fn the_chip_says_what_the_arp_does_and_whether_it_is_latched() {
+        let mut st = state(Settings { mode: Mode::Arp, ..Settings::default() }, &[0, 2], 1);
+        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp: Up 1/16, latched".to_string(), Tone::Warn));
+        st.latched = false;
+        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp: Up 1/16".to_string(), Tone::Accent));
+        st.settings.mode = Mode::Repeat;
+        st.settings.rate = Rate::ThirtySecondTriplet;
+        assert_eq!(chip(&st).text, "Repeat 1/32T");
+        st.settings.mode = Mode::Pattern;
+        st.pattern_changed = true;
+        assert_eq!(chip(&st).text, format!("Pattern: {}* 1/32T", st.patterns[0].0));
+        st.settings.mode = Mode::Direct;
+        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp off".to_string(), Tone::Dim));
+        st.latched = true;
+        assert_eq!(chip(&st).text, "Latch on");
     }
 
     #[test]
@@ -511,7 +634,7 @@ mod tests {
 
     #[test]
     fn taps_become_actions() {
-        let mut s = samples(Fonts::embedded).unwrap().remove(0);
+        let mut s = sample("arp-up-2-oct");
         let mut qlink = None;
         let tap = |ui: &mut Ui, name: &str, fx: f32, fy: f32| {
             let r = ui.rect_of(name).unwrap();
@@ -546,7 +669,7 @@ mod tests {
         ui.add("header", mpfree_ui::widgets::Header::new(&["Arp"]));
         ui.add("pads", mpfree_ui::widgets::PadGrid::new(16, 4));
         ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
-        let mut page = ArpPage::add(&mut ui, "Arp", &st).unwrap();
+        let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
         ui.show("Arp").unwrap();
         assert!(ui.rect_of(ACTIONS).is_some() && ui.rect_of(QLINKS).is_none());
         let b = ui.get::<ButtonRow>(ACTIONS).unwrap();
@@ -564,5 +687,11 @@ mod tests {
         st.settings.mode = Mode::Arp;
         page.update(&mut ui, &st).unwrap();
         assert!(ui.rect_of(QLINKS).is_some() && ui.rect_of(ACTIONS).is_none());
+        // Direct: the strip goes, and the pads take its room.
+        let pads = ui.rect_of("pads").unwrap();
+        st.settings.mode = Mode::Direct;
+        page.update(&mut ui, &st).unwrap();
+        assert!(ui.rect_of(STEPS).is_none() && ui.rect_of(QLINKS).is_some());
+        assert!(ui.rect_of("pads").unwrap().h > pads.h);
     }
 }
