@@ -174,6 +174,12 @@ faster" as unproven.
 
 ## Measuring on the device
 
+**First results (round 7):** [docs/perf/mpc-one-round7.md](../perf/mpc-one-round7.md).
+The MPC is about 6.6× slower than the build workstation on average, but 4×
+for synth-like work and 9 to 13× for memory-heavy engines (reverb, sampler,
+grains), so one desktop factor is not a safe estimate. The device's
+calibration file is [docs/perf/mpc-one-calibration.txt](../perf/mpc-one-calibration.txt).
+
 `tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
 (the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
 it copies the two builds to `/run/mpfree-bench`, runs each with fixed
