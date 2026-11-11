@@ -1,34 +1,33 @@
-//! The Looper tab: the loop's waveform with its bar lines and playhead, the
-//! looper's buttons, the meter of what it records (the pads or the line
-//! input) and the looper's state.
+//! The Looper tab (mockup J): the loops and the memory they share, the
+//! picked loop's editor with a row per layer, how the looper records and
+//! what to do with the loop, with the picked layer on the Q-Links. And the
+//! Play page's loop strip (mockups F and H), which shows the same loop.
 //!
-//! The buttons tap as `Tab(i)` with `i` one of [`BUTTONS`]; the app turns
-//! them into looper commands (`App::looper_tap`). REC, OVERDUB and UNDO on
-//! the MPC do the same while this tab is showing.
+//! The panels are [`crate::looper_tab`]'s; this fills them from the
+//! looper's view. REC, OVERDUB and UNDO on the MPC work the looper while
+//! this tab shows (`App::looper_tap`), as do the strip's buttons on Play.
 
-use crate::app::Settings;
-use crate::looping::{bars_text, LoopSource, LoopWave, LooperView};
-use mpfree_arp_ui::widgets::{Button, ButtonRow};
-use mpfree_looper::{LayerInfo, Phase, MAX_LAYERS};
+use crate::app::{Item, Settings};
+use crate::looper_tab::{
+    level_frac, level_text, LayerRow, LoopEditor, LoopList, LoopRow, LoopSettings, SettingRow,
+    UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS, RECORDING, TOOLS, USE,
+};
+use crate::looping::{LoopSource, LoopWave, LooperView};
+use mpfree_looper::{LayerCommand, LayerInfo, Phase, MAX_LAYERS, MAX_LOOPS};
 use mpfree_ui::draw;
-use mpfree_ui::wave::{Beats, Waveform};
-use mpfree_ui::widgets::StatList;
+use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const LOOPER_PAGE: &str = "Looper";
-pub const LOOPER_LAYOUT: &str =
-    "col(header:60, row(col(lwave:*, lbuttons:72):*, col(lmeter:150, lstatus:*):430):*, hint:26)";
-const WAVE: &str = "lwave";
-const BUTTONS_ID: &str = "lbuttons";
-const METER: &str = "lmeter";
-const STATUS: &str = "lstatus";
+/// Mockup J: the loops on the left, the editor over the recording set-up
+/// and Use the loop, the Q-Links on the right.
+pub const LOOPER_LAYOUT: &str = "col(header:60, row(lloops:220, col(leditor:*, \
+     row(lrecording:*, luse:330):206):*, lqlinks:168):*, hint:26)";
 
-/// The buttons, in tap order.
-pub const BUTTONS: [&str; 7] = [
-    "Record", "Overdub", "Undo", "Redo", "Clear", "Mute", "Monitor",
-];
+/// The looper's presses, as `App::looper_tap` takes them.
 pub const B_RECORD: usize = 0;
 pub const B_OVERDUB: usize = 1;
 pub const B_UNDO: usize = 2;
@@ -36,101 +35,6 @@ pub const B_REDO: usize = 3;
 pub const B_CLEAR: usize = 4;
 pub const B_MUTE: usize = 5;
 pub const B_MONITOR: usize = 6;
-
-/// The meter's scale: -60 to 0 dBFS.
-const FLOOR_DB: f32 = -60.0;
-
-/// The level of what the looper records: one bar per channel, the peak
-/// since the last update and a held peak, marked red near full scale.
-#[derive(Default)]
-pub struct Meter {
-    /// The source's name.
-    pub title: String,
-    pub on: bool,
-    pub db: [f32; 2],
-    pub hold: [f32; 2],
-    pub note: String,
-}
-
-impl Meter {
-    fn fraction(db: f32) -> f32 {
-        if !db.is_finite() {
-            return 0.0;
-        }
-        ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
-    }
-}
-
-impl Widget for Meter {
-    fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        let t = cx.theme.clone();
-        let right = if self.on {
-            let top = self.hold[0].max(self.hold[1]);
-            if top.is_finite() {
-                format!("peak {top:.1} dBFS")
-            } else {
-                "silent".to_string()
-            }
-        } else {
-            "off".to_string()
-        };
-        let body = cx.titled_panel(r, &self.title, &right);
-        if body.h < 20 {
-            return;
-        }
-        let lane_h = ((body.h - 30) / 2).clamp(8, 26);
-        for ch in 0..2 {
-            let y = body.y + 4 + ch as i32 * (lane_h + 8);
-            let label = Rect::new(body.x, y, 22, lane_h);
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                label,
-                Align::Left,
-                t.text_dim,
-                if ch == 0 { "L" } else { "R" },
-            );
-            let lane = Rect::new(body.x + 24, y, (body.w - 24).max(1), lane_h);
-            cx.canvas.fill_round_rect(lane, 4, t.raised);
-            if !self.on {
-                continue;
-            }
-            let f = Meter::fraction(self.db[ch]);
-            let w = (lane.w as f32 * f).round() as i32;
-            let hot = self.db[ch] > -1.0;
-            let tone = if hot {
-                t.bad
-            } else if self.db[ch] > -12.0 {
-                t.warn
-            } else {
-                t.good
-            };
-            if w > 0 {
-                cx.canvas
-                    .fill_round_rect(Rect::new(lane.x, lane.y, w, lane.h), 4, tone);
-            }
-            let h = (lane.w as f32 * Meter::fraction(self.hold[ch])).round() as i32;
-            if h > 0 {
-                cx.canvas
-                    .fill_rect(Rect::new(lane.x + h - 2, lane.y, 2, lane.h), t.text);
-            }
-        }
-        let foot = Rect::new(body.x, body.bottom() - 20, body.w, 20);
-        let note = if self.on {
-            self.note.as_str()
-        } else {
-            "Turn it on in Prefs or MENU (Line input)"
-        };
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            foot,
-            Align::Left,
-            t.text_dim,
-            note,
-        );
-    }
-}
 
 /// The Play page's looper panel (the All and Loop views), as mockups F and
 /// H draw it: "LOOPER" with a chip per layer, the length on the right, and
@@ -310,39 +214,9 @@ impl Widget for LoopStrip {
             .fill_round_rect(panel, 10, t.bg.mix(t.surface, 0.4));
         let w = LoopStrip::wave_area(r);
         let play = self.play_x(w);
-        let mid = w.y + w.h / 2;
-        let half = w.h as f32 / 2.0 - 2.0;
         match self.wave.as_ref().filter(|wv| wv.frames > 0) {
             Some(wave) => {
-                let cols = crate::looping::WAVE_COLUMNS;
-                let mut x = 0;
-                while x < w.w {
-                    let col = (x as usize * cols / w.w.max(1) as usize).min(cols - 1);
-                    let past = play.is_some_and(|p| w.x + x < p);
-                    let mut acc = 0.0f32;
-                    for (li, layer) in wave.layers.iter().enumerate() {
-                        let amp = layer.get(col).copied().unwrap_or(0.0);
-                        if amp <= 0.001 {
-                            continue;
-                        }
-                        let y0 = (acc * half) as i32;
-                        acc += amp;
-                        let y1 = (acc * half).min(half) as i32;
-                        let c = if self.is_heard(li) {
-                            LAYER_COLOURS[li % LAYER_COLOURS.len()]
-                        } else {
-                            t.text_faint.mix(t.surface, 0.45)
-                        };
-                        let c = if past { c } else { c.mix(t.surface, 0.35) };
-                        if y1 > y0 {
-                            cx.canvas
-                                .fill_rect(Rect::new(w.x + x, mid - y1, 2, y1 - y0), c);
-                            cx.canvas
-                                .fill_rect(Rect::new(w.x + x, mid + y0, 2, y1 - y0), c);
-                        }
-                    }
-                    x += 3;
-                }
+                crate::looper_tab::paint_layers(cx, w, wave, play, &self.heard);
                 // Bar lines and numbers.
                 let bars = self.bars.max(1);
                 for b in 0..bars {
@@ -499,45 +373,113 @@ impl Widget for LoopStrip {
     }
 }
 
+/// The Recording and input panel's rows, left column then right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetRow {
+    RecordFrom,
+    FirstPass,
+    Start,
+    After,
+    InputPeak,
+    LineInput,
+    Monitor,
+    Latency,
+    Tempo,
+}
+
+/// The rows in order: the first five in the left column, the line
+/// input's four in the right.
+pub const SET_ROWS: [SetRow; 9] = [
+    SetRow::RecordFrom,
+    SetRow::FirstPass,
+    SetRow::Start,
+    SetRow::After,
+    SetRow::Tempo,
+    SetRow::LineInput,
+    SetRow::InputPeak,
+    SetRow::Monitor,
+    SetRow::Latency,
+];
+
+/// The setting row `i` steps, and by how much for a tap at `delta`
+/// (on and off rows and the source flip whichever half is tapped).
+pub fn setting_item(i: usize, delta: i32, set: &Settings) -> Option<(Item, i32)> {
+    let flip = |on: bool| if on { -1 } else { 1 };
+    Some(match SET_ROWS.get(i)? {
+        SetRow::RecordFrom => (Item::LoopSource, flip(set.loop_source == LoopSource::Line)),
+        SetRow::FirstPass => (Item::LoopBars, delta),
+        SetRow::LineInput => (Item::LineInput, flip(set.line_input)),
+        SetRow::Monitor => (Item::LoopMonitor, flip(set.loop_monitor)),
+        SetRow::Latency => (Item::LoopLatency, delta),
+        _ => return None,
+    })
+}
+
+/// Use the loop's rows: title and what it does.
+const USE_ROWS: [(&str, &str); 4] = [
+    ("To a pad", "a sample on the Sample tab"),
+    ("To a clip", "audio on the Arrange page"),
+    ("Save loop", "on the stick, with its layers"),
+    ("Resample", "the loop through its FX"),
+];
+
+/// A Q-Link turn on the Looper tab: what it asks of the looper.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoopTurn {
+    /// The picked layer's level or pan, by play order.
+    Layer(usize, LayerCommand),
+    /// The picked loop's level, 0 to 2.
+    Level(f32),
+    /// Q-Link 4: the line input's level, as on the Play page.
+    Line(i32),
+}
+
+/// A take being recorded: its loop, its layer, and how many hits of each
+/// group of sounds went into it.
+type Take = (usize, usize, Vec<(&'static str, u32)>);
+
 pub struct LooperPage {
-    /// The frames of the wave shown, to know when the bar lines change.
-    frames: u64,
-    hold: [f32; 2],
+    /// The input's peak, held for about 2 s of updates.
+    hold: f32,
     hold_age: u32,
-    /// The layers' names, by what was played into each ("Drums", "Bass");
-    /// kept past an undo, so a redo finds its name again.
-    names: Vec<String>,
-    /// The take recording now: its layer, and how many hits of each group
-    /// of sounds went into it.
-    take: Option<(usize, Vec<(&'static str, u32)>)>,
-    /// The layers' ids and mix as of the last view, play order.
+    /// Each loop's layers' names, by what was played into each ("Drums",
+    /// "Bass"); kept past an undo, so a redo finds its name again.
+    names: Vec<Vec<String>>,
+    /// The take recording now: its loop and layer, and how many hits of
+    /// each group of sounds went into it.
+    take: Option<Take>,
+    /// The picked loop's layers' ids and mix as of the last view.
     layers: [Option<LayerInfo>; MAX_LAYERS],
+    /// The loop the controls act on.
+    selected: usize,
+    /// The layer on the Q-Links, play order.
+    layer: usize,
+    /// The last view, for the Q-Links.
+    view: LooperView,
+    /// A Q-Link was turned: the cards show what it set, not the view, for
+    /// a moment (the looper takes a period or two to answer).
+    turned: Option<Instant>,
 }
 
 impl LooperPage {
     pub fn add(ui: &mut Ui) -> Result<LooperPage, String> {
-        ui.add(WAVE, Waveform::new());
-        let mut row = ButtonRow::one_line(&BUTTONS.map(|b| (b, Tone::Normal)));
-        row.buttons[B_RECORD].tone = Tone::Bad;
-        row.buttons[B_OVERDUB].tone = Tone::Warn;
-        ui.add(BUTTONS_ID, row);
-        ui.add(
-            METER,
-            Meter {
-                title: LoopSource::Pads.name().to_string(),
-                ..Meter::default()
-            },
-        );
-        ui.add(STATUS, StatList::new("Looper"));
+        ui.add(LOOPS, LoopList::default());
+        ui.add(EDITOR, LoopEditor::default());
+        ui.add(RECORDING, LoopSettings::default());
+        ui.add(USE, UseLoop::default());
+        ui.add(QLINKS, QLinkColumn::new());
         ui.add(LOOP_STRIP, LoopStrip::default());
         ui.add_page(LOOPER_PAGE, LOOPER_LAYOUT)?;
         let mut p = LooperPage {
-            frames: 0,
-            hold: [f32::NEG_INFINITY; 2],
+            hold: f32::NEG_INFINITY,
             hold_age: 0,
-            names: Vec::new(),
+            names: vec![Vec::new(); MAX_LOOPS],
             take: None,
             layers: [None; MAX_LAYERS],
+            selected: 0,
+            layer: 0,
+            view: LooperView::default(),
+            turned: None,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -546,7 +488,7 @@ impl LooperPage {
     /// A pad played a sound of `group` ("Drums", "Bass", "Synth"): it
     /// names the layer recording now, if one is.
     pub fn hit(&mut self, group: &'static str) {
-        if let Some((_, counts)) = &mut self.take {
+        if let Some((_, _, counts)) = &mut self.take {
             match counts.iter_mut().find(|(g, _)| *g == group) {
                 Some((_, n)) => *n += 1,
                 None => counts.push((group, 1)),
@@ -554,23 +496,37 @@ impl LooperPage {
         }
     }
 
-    /// The layers' names as they are (the previews name theirs).
+    /// The picked loop's layers' names as they are (the previews name
+    /// theirs).
     pub fn set_names(&mut self, names: &[&str]) {
-        self.names = names.iter().map(|n| n.to_string()).collect();
+        self.names[self.selected] = names.iter().map(|n| n.to_string()).collect();
     }
 
-    /// Layer `k`'s id and mix as of the last view (for its speaker).
-    pub fn layer_info(&self, k: usize) -> Option<LayerInfo> {
-        self.layers.get(k).copied().flatten()
-    }
-
-    /// The name of layer `k`, as the strip shows it.
+    /// The name of the picked loop's layer `k`, as the strip shows it.
     pub fn layer_name(&self, k: usize) -> String {
-        self.names
+        self.names[self.selected]
             .get(k)
             .filter(|n| !n.is_empty())
             .cloned()
             .unwrap_or_else(|| format!("Layer {}", k + 1))
+    }
+
+    /// Layer `k`'s id and mix as of the last view (for its controls).
+    pub fn layer_info(&self, k: usize) -> Option<LayerInfo> {
+        self.layers.get(k).copied().flatten()
+    }
+
+    /// The first empty loop, for New loop.
+    pub fn first_empty(&self) -> Option<usize> {
+        self.view.loops.iter().position(|l| l.phase == Phase::Empty)
+    }
+
+    /// A tap on a layer's row: that layer goes on the Q-Links.
+    pub fn pick_layer(&mut self, ui: &mut Ui, k: usize) {
+        self.layer = k;
+        let v = self.view.clone();
+        self.refresh_editor(ui, &v);
+        self.refresh_qlinks(ui, &v);
     }
 
     /// Follows the looper's takes: a new one starts counting, one that
@@ -578,36 +534,41 @@ impl LooperPage {
     /// or "Line in" when the line was the source.
     fn follow_takes(&mut self, v: &LooperView) {
         let s = &v.status;
+        let n = v.selected.min(MAX_LOOPS - 1);
         let now = match s.phase {
             Phase::Recording => Some(0),
             Phase::Overdubbing => Some(s.layers.saturating_sub(1)),
             _ => None,
         };
-        if s.phase == Phase::Empty {
-            self.names.clear();
+        for (i, l) in v.loops.iter().enumerate() {
+            let phase = if i == n { s.phase } else { l.phase };
+            if phase == Phase::Empty {
+                self.names[i].clear();
+            }
         }
-        if self.take.as_ref().map(|t| t.0) != now {
-            self.take = now.map(|k| (k, Vec::new()));
+        if self.take.as_ref().map(|t| (t.0, t.1)) != now.map(|k| (n, k)) {
+            self.take = now.map(|k| (n, k, Vec::new()));
         }
-        let Some((k, counts)) = &self.take else {
+        let Some((n, k, counts)) = &self.take else {
             return;
         };
         let base = match v.source {
             LoopSource::Line => "Line in",
-            LoopSource::Pads => match counts.iter().max_by_key(|(_, n)| *n) {
+            LoopSource::Pads => match counts.iter().max_by_key(|(_, c)| *c) {
                 Some((g, _)) => g,
                 None => "",
             },
         };
-        let k = *k;
+        let (n, k) = (*n, *k);
+        let names = &self.names[n];
         let name = if base.is_empty() {
             String::new()
         } else {
             let same = (0..k)
                 .filter(|&i| {
-                    self.names
+                    names
                         .get(i)
-                        .is_some_and(|n| n == base || n.starts_with(&format!("{base} ")))
+                        .is_some_and(|m| m == base || m.starts_with(&format!("{base} ")))
                 })
                 .count();
             if same == 0 {
@@ -616,268 +577,321 @@ impl LooperPage {
                 format!("{base} {}", same + 1)
             }
         };
-        if self.names.len() <= k {
-            self.names.resize(k + 1, String::new());
+        let names = &mut self.names[n];
+        if names.len() <= k {
+            names.resize(k + 1, String::new());
         }
-        self.names[k] = name;
+        names[k] = name;
     }
 
     /// The new loop waveform (empty when the loop was cleared), on the
     /// Looper tab and on the Play page's strip.
     pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>) {
-        let width = ui
-            .rect_on(LOOPER_PAGE, WAVE)
-            .map_or(600, |r| Waveform::wave_rect(r).w);
-        self.frames = wave.frames;
-        let set = |w: &mut Waveform, width: i32| {
-            if wave.frames == 0 {
-                w.set_peaks(None, width);
-                w.set_playheads(&[]);
-            } else {
-                w.set_peaks(Some(wave.clone()), width);
-            }
-        };
-        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
-            set(w, width);
+        let wave = Some(wave).filter(|w| w.frames > 0);
+        if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+            e.wave = wave.clone();
         }
         if let Some(s) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
-            s.wave = Some(wave.clone()).filter(|w| w.frames > 0);
+            s.wave = wave;
+        }
+    }
+
+    /// A Q-Link turned `ticks` detents on the Looper tab (SHIFT: `fine`):
+    /// the picked layer's level and pan, the loop's level, and the line
+    /// input's level. The card follows at once.
+    pub fn qlink(&mut self, ui: &mut Ui, k: usize, ticks: i32, fine: bool) -> Option<LoopTurn> {
+        if ticks == 0 {
+            return None;
+        }
+        let d = ticks as f32 * if fine { 0.1 } else { 0.5 };
+        let turn = match k {
+            0 | 1 => {
+                let info = self.layers.get_mut(self.layer)?.as_mut()?;
+                if k == 0 {
+                    let db = (20.0 * info.level.max(1e-6).log10()).max(-60.0);
+                    let db = (db + d).clamp(-60.0, 6.0);
+                    info.level = if db <= -60.0 {
+                        0.0
+                    } else {
+                        10f32.powf(db / 20.0)
+                    };
+                    LoopTurn::Layer(self.layer, LayerCommand::Level(info.level))
+                } else {
+                    let step = if fine { 0.01 } else { 0.02 };
+                    info.pan = (info.pan + ticks as f32 * step).clamp(-1.0, 1.0);
+                    LoopTurn::Layer(self.layer, LayerCommand::Pan(info.pan))
+                }
+            }
+            2 => {
+                let s = &mut self.view.status;
+                if s.phase == Phase::Empty {
+                    return None;
+                }
+                let db = (20.0 * s.level.max(1e-6).log10()).max(-60.0);
+                let db = (db + d).clamp(-60.0, 6.0);
+                s.level = if db <= -60.0 {
+                    0.0
+                } else {
+                    10f32.powf(db / 20.0)
+                };
+                LoopTurn::Level(s.level)
+            }
+            3 => return Some(LoopTurn::Line(ticks)),
+            _ => return None,
+        };
+        self.turned = Some(Instant::now());
+        if let LoopTurn::Layer(l, _) = turn {
+            if let (Some(Some(info)), Some(slot)) =
+                (self.layers.get(l), self.view.layers.get_mut(l))
+            {
+                *slot = Some(*info);
+            }
+        }
+        let v = self.view.clone();
+        self.refresh_qlinks(ui, &v);
+        self.refresh_editor(ui, &v);
+        Some(turn)
+    }
+
+    /// Q-Link 4's card: the Play page's line level, given by the caller.
+    pub fn set_line_card(&mut self, ui: &mut Ui, card: QLinkCard) {
+        if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
+            if q.cards[3] != card {
+                q.cards[3] = card;
+            }
+        }
+    }
+
+    fn refresh_qlinks(&mut self, ui: &mut Ui, v: &LooperView) {
+        let n = v.selected;
+        let loop_scope = format!("Loop {}", n + 1);
+        let layer = self.layers.get(self.layer).copied().flatten();
+        let scope = format!("Layer {}", self.layer + 1);
+        let (c0, c1) = match layer {
+            Some(l) => {
+                let mut pan = QLinkCard::new("Pan", &scope, &pan_text(l.pan), (l.pan + 1.0) / 2.0);
+                pan.bipolar = true;
+                (
+                    QLinkCard::new("Level", &scope, &level_text(l.level), level_frac(l.level)),
+                    pan,
+                )
+            }
+            None => {
+                let mut pan = QLinkCard::new("Pan", "No layer", "-", 0.5);
+                pan.bipolar = true;
+                (QLinkCard::new("Level", "No layer", "-", 0.0), pan)
+            }
+        };
+        let s = &v.status;
+        let c2 = if s.phase == Phase::Empty {
+            QLinkCard::new("Loop level", &loop_scope, "-", 0.0)
+        } else {
+            QLinkCard::new(
+                "Loop level",
+                &loop_scope,
+                &level_text(s.level),
+                level_frac(s.level),
+            )
+        };
+        if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
+            let cards = [c0, c1, c2];
+            if q.cards[..3] != cards {
+                q.cards[..3].clone_from_slice(&cards);
+            }
+            q.title = "Looper".to_string();
+        }
+    }
+
+    fn refresh_editor(&mut self, ui: &mut Ui, v: &LooperView) {
+        let s = &v.status;
+        let n = v.selected;
+        let empty = s.phase == Phase::Empty;
+        let title = format!("Loop {} · Editor", n + 1);
+        let right = if empty {
+            "empty".to_string()
+        } else {
+            let mut parts = Vec::new();
+            let bars = bars_of(s.ticks, v.beats_per_bar);
+            if bars > 0 {
+                let bpm = 60.0 * f64::from(v.rate) / v.frames_per_beat.max(1.0);
+                parts.push(format!(
+                    "{bars} bar{} at {bpm:.0} BPM",
+                    if bars == 1 { "" } else { "s" }
+                ));
+            }
+            if s.frames > 0 {
+                parts.push(format!(
+                    "{:.1} s",
+                    s.frames as f64 / f64::from(v.rate.max(1))
+                ));
+            }
+            parts.push(format!("input: {}", v.source.name().to_lowercase()));
+            parts.join(" · ")
+        };
+        let names: Vec<String> = (0..s.layers)
+            .map(|k| self.names[n].get(k).cloned().unwrap_or_default())
+            .collect();
+        let layers: Vec<LayerRow> = (0..s.layers)
+            .map(|k| {
+                let info = self.layers.get(k).copied().flatten();
+                let what = if k == 0 { "first pass" } else { "overdub" };
+                let detail = match names.get(k).filter(|n| !n.is_empty()) {
+                    Some(name) => format!("{what} · {}", name.to_lowercase()),
+                    None => what.to_string(),
+                };
+                LayerRow {
+                    name: format!("Layer {}", k + 1),
+                    detail,
+                    colour: LAYER_COLOURS[k % LAYER_COLOURS.len()],
+                    muted: info.is_some_and(|l| l.muted),
+                    solo: info.is_some_and(|l| l.solo),
+                    heard: info.is_none_or(|l| l.audible),
+                    level: info.map_or(1.0, |l| l.level),
+                    recording: info.is_some_and(|l| l.recording),
+                }
+            })
+            .collect();
+        let tools: Vec<(String, bool)> = TOOLS.iter().map(|t| (t.to_string(), false)).collect();
+        let note = empty_note(v);
+        let position = (!empty && s.frames > 0).then_some(s.position);
+        let bars = bars_of(s.ticks, v.beats_per_bar);
+        let picked = self.layer.min(s.layers.saturating_sub(1));
+        let r = ui.rect_on(LOOPER_PAGE, EDITOR);
+        if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+            if e.title != title
+                || e.right != right
+                || e.tools != tools
+                || e.layers != layers
+                || e.note != note
+                || e.position != position
+                || e.bars != bars
+                || e.picked != picked
+            {
+                e.title = title;
+                e.right = right;
+                e.tools = tools;
+                e.layers = layers;
+                e.note = note;
+                e.position = position;
+                e.bars = bars;
+                e.picked = picked;
+                if let Some(r) = r {
+                    e.follow_in(r);
+                }
+            }
         }
     }
 
     pub fn update(&mut self, ui: &mut Ui, v: &LooperView, settings: &Settings) {
-        self.follow_takes(v);
+        let mut v = v.clone();
+        v.selected = v.selected.min(MAX_LOOPS - 1);
+        v.loops[v.selected] = v.status;
+        self.follow_takes(&v);
+        if self.selected != v.selected {
+            self.layer = 0;
+        }
+        self.selected = v.selected;
+        // A Q-Link turned a moment ago: keep what it set until the looper
+        // has caught up.
+        let fresh = self
+            .turned
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+        if fresh {
+            v.layers = self.view.layers;
+            v.status.level = self.view.status.level;
+        }
         self.layers = v.layers;
-        let s = &v.status;
-        // The meter, with a peak held for about 2 s of updates.
+        self.layer = self.layer.min(v.status.layers.saturating_sub(1));
+        let v = &v;
+        // The input's peak, held for about 2 s of updates.
         self.hold_age += 1;
-        if self.hold_age > 8 {
-            self.hold = [f32::NEG_INFINITY; 2];
+        let peak = v.meter_db[0].max(v.meter_db[1]);
+        if self.hold_age > 8 || peak > self.hold {
+            self.hold = peak;
             self.hold_age = 0;
         }
-        for ch in 0..2 {
-            self.hold[ch] = self.hold[ch].max(v.meter_db[ch]);
-        }
-        // Ready to record: the pads always are, the line input once it is on.
-        let ready = v.source == LoopSource::Pads || v.line_on;
-        let note = if v.line.overruns + v.line.short + v.line.errors > 0 {
+        // The loops.
+        let last = v
+            .loops
+            .iter()
+            .rposition(|l| l.phase != Phase::Empty)
+            .map_or(0, |i| i + 1);
+        let shown = last.max(v.selected + 1).clamp(4, MAX_LOOPS);
+        let rows: Vec<LoopRow> = (0..shown)
+            .map(|i| {
+                let l = &v.loops[i];
+                LoopRow {
+                    name: format!("Loop {}", i + 1),
+                    detail: loop_detail(l, v.beats_per_bar),
+                    state: state_of(l).map(|(a, b)| (a.to_string(), b)),
+                    colour: LOOP_COLOURS[i % LOOP_COLOURS.len()],
+                }
+            })
+            .collect();
+        let rate = f64::from(v.rate.max(1));
+        let memory = (
             format!(
-                "{} overruns, {} short periods, {} errors",
-                v.line.overruns, v.line.short, v.line.errors
-            )
-        } else if v.source == LoopSource::Pads {
-            "Before the click and the loop".to_string()
-        } else if v.monitor {
-            "Monitor on: you hear the input".to_string()
-        } else {
-            "Monitor off".to_string()
-        };
-        if let Some(m) = ui.get_mut::<Meter>(METER) {
-            let next = (
-                v.source.name().to_string(),
-                ready,
-                v.meter_db,
-                self.hold,
-                note,
-            );
-            if (m.title.clone(), m.on, m.db, m.hold, m.note.clone()) != next {
-                (m.title, m.on, m.db, m.hold, m.note) = next;
+                "{:.0} s of {:.0} s",
+                v.memory.used as f64 / rate,
+                v.memory.capacity as f64 / rate
+            ),
+            if v.memory.capacity == 0 {
+                0.0
+            } else {
+                v.memory.used as f32 / v.memory.capacity as f32
+            },
+        );
+        let new_loop = v.loops.iter().any(|l| l.phase == Phase::Empty);
+        if let Some(l) = ui.get_mut::<LoopList>(LOOPS) {
+            if l.rows != rows
+                || l.picked != v.selected
+                || l.memory != memory
+                || l.new_loop != new_loop
+            {
+                l.rows = rows;
+                l.picked = v.selected;
+                l.memory = memory;
+                l.new_loop = new_loop;
             }
         }
-        // The buttons: what each does now.
-        let empty = s.phase == Phase::Empty;
-        let record = match s.phase {
-            Phase::Empty => "Record",
-            Phase::Armed => "Cancel",
-            Phase::Recording if s.ending => "Ending",
-            Phase::Recording => "End",
-            Phase::Playing => "Overdub",
-            Phase::Overdubbing => "Stop dub",
-        };
-        let overdub = match s.phase {
-            Phase::Overdubbing => "Stop dub",
-            Phase::Recording if s.overdub_next => "Dub next",
-            _ => "Overdub",
-        };
-        let want = [
-            Button {
-                label: record.to_string(),
-                tone: Tone::Bad,
-                disabled: !ready && s.phase == Phase::Empty,
-            },
-            Button {
-                label: overdub.to_string(),
-                tone: Tone::Warn,
-                disabled: !matches!(
-                    s.phase,
-                    Phase::Playing | Phase::Overdubbing | Phase::Recording
-                ),
-            },
-            Button {
-                label: "Undo".to_string(),
-                tone: Tone::Normal,
-                disabled: !(matches!(
-                    s.phase,
-                    Phase::Armed | Phase::Recording | Phase::Overdubbing
-                ) || s.layers > 1),
-            },
-            Button {
-                label: "Redo".to_string(),
-                tone: Tone::Normal,
-                disabled: s.redo == 0,
-            },
-            Button {
-                label: "Clear".to_string(),
-                tone: Tone::Normal,
-                disabled: empty,
-            },
-            Button {
-                label: if s.muted { "Unmute" } else { "Mute" }.to_string(),
-                tone: if s.muted { Tone::Warn } else { Tone::Normal },
-                disabled: false,
-            },
-            Button {
-                label: if v.monitor { "Monitor on" } else { "Monitor" }.to_string(),
-                tone: if v.monitor { Tone::Good } else { Tone::Normal },
-                disabled: !v.line_on,
-            },
-        ];
-        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS_ID) {
-            if b.buttons != want {
-                b.buttons = want.to_vec();
+        // The editor and the Q-Links.
+        self.refresh_editor(ui, v);
+        self.refresh_qlinks(ui, v);
+        // How it records.
+        let ready = v.source == LoopSource::Pads || v.line_on;
+        let set_rows: Vec<SettingRow> = SET_ROWS
+            .iter()
+            .map(|r| setting_row(*r, v, settings, self.hold, ready))
+            .collect();
+        if let Some(w) = ui.get_mut::<LoopSettings>(RECORDING) {
+            let right = "the Play strip uses these".to_string();
+            if w.rows != set_rows || w.right != right {
+                w.rows = set_rows;
+                w.right = right;
             }
         }
-        // The state.
-        let phase = match s.phase {
-            Phase::Empty if ready => ("Empty: Record arms it".to_string(), Tone::Dim),
-            Phase::Empty => ("Empty: turn on Line input first".to_string(), Tone::Dim),
-            Phase::Armed => ("Armed: starts on the next bar".to_string(), Tone::Warn),
-            Phase::Recording => (
-                format!(
-                    "Recording the first pass{}",
-                    if s.ending {
-                        ", ends on the next bar"
-                    } else {
-                        ""
-                    }
-                ),
-                Tone::Bad,
-            ),
-            Phase::Playing => ("Playing".to_string(), Tone::Good),
-            Phase::Overdubbing => ("Overdubbing".to_string(), Tone::Bad),
-        };
-        let bars = |ticks: i64| ticks as f64 / (960.0 * f64::from(v.beats_per_bar.max(1)));
-        let rows = vec![
-            ("State".to_string(), phase.0, phase.1),
-            (
-                "Records from".to_string(),
-                format!("{}{}", v.source.name(), if ready { "" } else { " (off)" }),
-                if ready { Tone::Normal } else { Tone::Warn },
-            ),
-            (
-                "Layers".to_string(),
-                if empty {
-                    "-".to_string()
-                } else {
-                    format!("{} ({} to redo)", s.layers, s.redo)
-                },
-                Tone::Normal,
-            ),
-            (
-                "Loop".to_string(),
-                if s.frames == 0 {
-                    "-".to_string()
-                } else {
-                    format!(
-                        "{:.0} bars, {:.2} s",
-                        bars(s.ticks),
-                        s.frames as f64 / 44_100.0
-                    )
-                },
-                Tone::Normal,
-            ),
-            (
-                "First pass length".to_string(),
-                bars_text(s.bars),
-                Tone::Normal,
-            ),
-            (
-                "Latency".to_string(),
-                match v.source {
-                    LoopSource::Pads => "none (the pads are in time)".to_string(),
-                    LoopSource::Line => format!(
-                        "{} frames, {:.1} ms{}",
-                        s.latency,
-                        s.latency as f64 / 44.1,
-                        if settings.loop_latency_set {
-                            ""
-                        } else {
-                            " (estimated)"
-                        }
-                    ),
-                },
-                Tone::Dim,
-            ),
-            (
-                "Level".to_string(),
-                format!(
-                    "{:.1} dB{}",
-                    20.0 * s.level.max(1e-6).log10(),
-                    if s.muted { ", muted" } else { "" }
-                ),
-                if s.muted { Tone::Warn } else { Tone::Normal },
-            ),
-            (
-                "Memory".to_string(),
-                format!("{:.0} s for all layers", s.capacity as f64 / 44_100.0),
-                Tone::Dim,
-            ),
-            (
-                "Problems".to_string(),
-                format!(
-                    "{} refused, {} thrown away",
-                    v.stats.refused, v.stats.aborted
-                ),
-                if v.stats.refused + v.stats.aborted > 0 {
-                    Tone::Warn
-                } else {
-                    Tone::Dim
-                },
-            ),
-        ];
-        if let Some(st) = ui.get_mut::<StatList>(STATUS) {
-            st.set(rows);
-        }
-        // The bar lines (from the loop's own length) and the playhead.
-        let fpb = v.frames_per_beat;
-        let frames = self.frames;
-        let mark = |w: &mut Waveform| {
-            if frames > 0 && fpb > 0.0 {
-                let beats = Some(Beats {
-                    first: 0.0,
-                    frames_per_beat: fpb,
-                    per_bar: v.beats_per_bar.max(1),
-                });
-                if w.beats() != beats {
-                    w.set_beats(beats);
-                }
-                let at = (f64::from(s.position) * frames as f64) as u64;
-                if s.phase != Phase::Empty {
-                    w.set_playheads(&[at.min(frames.saturating_sub(1))]);
-                }
-            } else if w.beats().is_some() {
-                w.set_beats(None);
+        // What to do with it (the looper's bounce comes next).
+        let use_rows: Vec<(String, String, bool)> = USE_ROWS
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string(), false))
+            .collect();
+        if let Some(w) = ui.get_mut::<UseLoop>(USE) {
+            if w.rows != use_rows {
+                w.rows = use_rows;
             }
-        };
-        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
-            mark(w);
         }
-        // The Play page's strip: the same loop, its layers and its state.
+        self.view = v.clone();
+        self.update_strip(ui, v);
+    }
+
+    /// The Play page's strip: the same loop, its layers and its state.
+    fn update_strip(&mut self, ui: &mut Ui, v: &LooperView) {
+        let s = &v.status;
         let empty = s.phase == Phase::Empty;
         let n_bars = if s.frames == 0 {
             0
         } else {
-            bars(s.ticks).round().max(1.0) as usize
+            bars_of(s.ticks, v.beats_per_bar)
         };
         let right = if empty {
             String::new()
@@ -995,13 +1009,162 @@ fn record_label(s: &mpfree_looper::Status) -> &'static str {
     }
 }
 
+/// What the panel shows of `row`.
+fn setting_row(row: SetRow, v: &LooperView, set: &Settings, peak: f32, ready: bool) -> SettingRow {
+    let on_off = |b: bool| if b { "on" } else { "off" }.to_string();
+    let (label, value, tone, steps) = match row {
+        SetRow::RecordFrom => (
+            "Record from",
+            format!("{}{}", v.source.name(), if ready { "" } else { " (off)" }),
+            if ready { Tone::Normal } else { Tone::Warn },
+            true,
+        ),
+        SetRow::FirstPass => (
+            "First pass",
+            match set.loop_bars {
+                Some(1) => "1 bar".to_string(),
+                Some(n) => format!("{n} bars"),
+                None => "free".to_string(),
+            },
+            Tone::Normal,
+            true,
+        ),
+        SetRow::Start => ("Start", "next bar line".to_string(), Tone::Dim, false),
+        SetRow::After => ("After recording", "play".to_string(), Tone::Dim, false),
+        SetRow::InputPeak => (
+            "Input peak",
+            if peak.is_finite() {
+                format!("{peak:.1} dBFS")
+            } else {
+                "silent".to_string()
+            },
+            if peak > -1.0 {
+                Tone::Bad
+            } else if peak > -6.0 {
+                Tone::Warn
+            } else {
+                Tone::Normal
+            },
+            false,
+        ),
+        SetRow::LineInput => ("Line input", on_off(set.line_input), Tone::Normal, true),
+        SetRow::Monitor => (
+            "Monitor",
+            on_off(v.monitor),
+            if set.line_input {
+                Tone::Normal
+            } else {
+                Tone::Dim
+            },
+            set.line_input,
+        ),
+        SetRow::Latency => match v.source {
+            LoopSource::Pads => ("Latency", "none (pads)".to_string(), Tone::Dim, false),
+            LoopSource::Line => (
+                "Latency",
+                format!(
+                    "{} frames{}",
+                    v.status.latency,
+                    if set.loop_latency_set {
+                        ""
+                    } else {
+                        " (estimate)"
+                    }
+                ),
+                if set.loop_latency_set {
+                    Tone::Normal
+                } else {
+                    Tone::Warn
+                },
+                true,
+            ),
+        },
+        SetRow::Tempo => (
+            "At another tempo",
+            "like tape".to_string(),
+            Tone::Dim,
+            false,
+        ),
+    };
+    SettingRow {
+        label: label.to_string(),
+        value,
+        tone,
+        steps,
+    }
+}
+
+/// Bars in a loop of `ticks`, rounded (0 before it has a length).
+fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
+    if ticks <= 0 {
+        return 0;
+    }
+    (ticks as f64 / (960.0 * f64::from(beats_per_bar.max(1))))
+        .round()
+        .max(1.0) as usize
+}
+
+/// A loop's line in the list: "4 bars · 3 layers", "empty".
+fn loop_detail(l: &mpfree_looper::Status, beats_per_bar: u32) -> String {
+    match l.phase {
+        Phase::Empty => "empty".to_string(),
+        Phase::Armed => "waits for the bar line".to_string(),
+        Phase::Recording => "recording the first pass".to_string(),
+        _ => {
+            let bars = bars_of(l.ticks, beats_per_bar);
+            format!(
+                "{bars} bar{} · {} layer{}",
+                if bars == 1 { "" } else { "s" },
+                l.layers,
+                if l.layers == 1 { "" } else { "s" }
+            )
+        }
+    }
+}
+
+/// A loop's state as a word and a tone; None when empty.
+fn state_of(l: &mpfree_looper::Status) -> Option<(&'static str, Tone)> {
+    match l.phase {
+        Phase::Empty => None,
+        Phase::Armed => Some(("ARMED", Tone::Warn)),
+        Phase::Recording => Some(("RECORDING", Tone::Bad)),
+        Phase::Overdubbing => Some(("OVERDUB", Tone::Warn)),
+        Phase::Playing if l.muted => Some(("MUTED", Tone::Dim)),
+        Phase::Playing => Some(("PLAYING", Tone::Good)),
+    }
+}
+
+/// What an empty loop says in its wave's place.
+fn empty_note(v: &LooperView) -> String {
+    if v.status.phase != Phase::Empty {
+        return String::new();
+    }
+    format!(
+        "Empty: REC records the {}",
+        match v.source {
+            LoopSource::Pads => "pads and the synth",
+            LoopSource::Line => "line input",
+        }
+    )
+}
+
+/// A pan as the card prints it: "L 12", "C", "R 30".
+pub fn pan_text(pan: f32) -> String {
+    let p = (pan * 50.0).round() as i32;
+    match p {
+        0 => "C".to_string(),
+        p if p < 0 => format!("L {}", -p),
+        p => format!("R {p}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::looper_tab::{LoopEditor, LoopList, LoopSettings, UseLoop};
     use mpfree_ui::{Fonts, SoftCanvas, Theme};
 
-    #[test]
-    fn layers_are_named_by_what_was_played_into_them() {
+    fn page() -> (Ui, LooperPage) {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add(
             "header",
@@ -1011,7 +1174,148 @@ mod tests {
             "hint",
             mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Left),
         );
-        let mut page = LooperPage::add(&mut ui).unwrap();
+        let page = LooperPage::add(&mut ui).unwrap();
+        ui.show(LOOPER_PAGE).unwrap();
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+        (ui, page)
+    }
+
+    fn layer(id: u8) -> LayerInfo {
+        LayerInfo {
+            id,
+            level: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+            audible: true,
+            recording: false,
+        }
+    }
+
+    /// Loop 1 playing four bars at 92 BPM with three layers (the third
+    /// muted), loop 2 two bars and muted, 16 s of 60 s used.
+    fn two_loops() -> LooperView {
+        let mut v = LooperView {
+            frames_per_beat: 44_100.0 * 60.0 / 92.0,
+            ..LooperView::default()
+        };
+        let s = &mut v.status;
+        s.phase = Phase::Playing;
+        s.layers = 3;
+        s.frames = 460_174;
+        s.ticks = 4 * 4 * 960;
+        s.level = 1.0;
+        s.muted = false;
+        v.loops[0] = v.status;
+        let mut second = v.status;
+        second.layers = 1;
+        second.ticks = 2 * 4 * 960;
+        second.muted = true;
+        v.loops[1] = second;
+        for k in 0..3 {
+            v.layers[k] = Some(layer(10 + k as u8));
+        }
+        if let Some(l) = v.layers[2].as_mut() {
+            l.muted = true;
+            l.audible = false;
+        }
+        v.memory = mpfree_looper::Memory {
+            used: 16 * 44_100,
+            capacity: 60 * 44_100,
+        };
+        v
+    }
+
+    #[test]
+    fn the_tab_lists_the_loops_and_the_picked_loops_layers() {
+        let (mut ui, mut page) = page();
+        page.update(&mut ui, &two_loops(), &Settings::default());
+        let list = ui.get::<LoopList>(LOOPS).unwrap();
+        let rows: Vec<(&str, &str, Option<&str>)> = list
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.detail.as_str(),
+                    r.state.as_ref().map(|s| s.0.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Loop 1", "4 bars · 3 layers", Some("PLAYING")),
+                ("Loop 2", "2 bars · 1 layer", Some("MUTED")),
+                ("Loop 3", "empty", None),
+                ("Loop 4", "empty", None),
+            ]
+        );
+        assert_eq!(list.memory.0, "16 s of 60 s");
+        assert!((list.memory.1 - 16.0 / 60.0).abs() < 1e-4);
+        assert!(list.new_loop && list.picked == 0);
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.title, "Loop 1 · Editor");
+        assert!(
+            e.right.starts_with("4 bars at 92 BPM · 10.4 s"),
+            "{}",
+            e.right
+        );
+        assert_eq!(e.layers.len(), 3);
+        assert_eq!(
+            (e.layers[0].detail.as_str(), e.layers[1].detail.as_str()),
+            ("first pass", "overdub")
+        );
+        assert!(e.layers[2].muted && !e.layers[2].heard && e.layers[0].heard);
+        assert!(
+            e.tools.iter().all(|t| !t.1),
+            "the tools wait for the looper's edits"
+        );
+        // As on mockup J, the three layers fit under the wave.
+        let r = ui.rect_of(EDITOR).unwrap();
+        assert_eq!(e.row_rects(LoopEditor::parts(r).2).len(), 3);
+        let set = ui.get::<LoopSettings>(RECORDING).unwrap();
+        let labels: Vec<&str> = set.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Record from",
+                "First pass",
+                "Start",
+                "After recording",
+                "At another tempo",
+                "Line input",
+                "Input peak",
+                "Monitor",
+                "Latency"
+            ]
+        );
+        assert_eq!(set.rows[0].value, "Pads and synth");
+        assert!(
+            !set.rows[7].steps,
+            "monitoring needs the line input on first"
+        );
+        let use_loop = ui.get::<UseLoop>(USE).unwrap();
+        assert_eq!(use_loop.rows.len(), 4);
+        assert!(use_loop.rows.iter().all(|r| !r.2));
+        // A loop picked further down shows the list down to it.
+        let mut v = two_loops();
+        v.selected = 5;
+        v.status = v.loops[5];
+        page.update(&mut ui, &v, &Settings::default());
+        let list = ui.get::<LoopList>(LOOPS).unwrap();
+        assert_eq!((list.rows.len(), list.picked), (6, 5));
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.title, "Loop 6 · Editor");
+        assert_eq!((e.layers.len(), e.right.as_str()), (0, "empty"));
+        assert!(e.note.starts_with("Empty: REC records"), "{}", e.note);
+        assert_eq!(page.first_empty(), Some(2));
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+    }
+
+    #[test]
+    fn layers_are_named_by_what_was_played_into_them_in_each_loop() {
+        let (mut ui, mut page) = page();
         let mut v = LooperView::default();
         fn step(
             ui: &mut Ui,
@@ -1023,30 +1327,18 @@ mod tests {
         ) {
             v.status.phase = phase;
             v.status.layers = layers;
-            v.status.frames = 1000;
+            v.status.frames = if phase == Phase::Empty { 0 } else { 1000 };
             page.update(ui, v, &Settings::default());
             for h in hits {
                 page.hit(h);
             }
             page.update(ui, v, &Settings::default());
         }
-        step(
-            &mut ui,
-            &mut v,
-            &mut page,
-            Phase::Recording,
-            1,
-            &["Drums", "Drums", "Bass"],
-        );
+        let drums = ["Drums", "Drums", "Bass"];
+        step(&mut ui, &mut v, &mut page, Phase::Recording, 1, &drums);
         step(&mut ui, &mut v, &mut page, Phase::Playing, 1, &["Bass"]);
-        step(
-            &mut ui,
-            &mut v,
-            &mut page,
-            Phase::Overdubbing,
-            2,
-            &["Bass", "Drums", "Bass"],
-        );
+        let bass = ["Bass", "Drums", "Bass"];
+        step(&mut ui, &mut v, &mut page, Phase::Overdubbing, 2, &bass);
         step(&mut ui, &mut v, &mut page, Phase::Playing, 2, &[]);
         step(
             &mut ui,
@@ -1072,80 +1364,111 @@ mod tests {
             "{}",
             strip.right_wide
         );
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.layers[1].detail, "overdub · bass");
+        // Loop 2 has names of its own; loop 1 keeps its.
+        let first = v.status;
+        v.loops[0] = first;
+        v.selected = 1;
+        v.status = v.loops[1];
+        step(&mut ui, &mut v, &mut page, Phase::Recording, 1, &["Synth"]);
+        step(&mut ui, &mut v, &mut page, Phase::Playing, 1, &[]);
+        assert_eq!(page.layer_name(0), "Synth");
+        v.loops[1] = v.status;
+        v.selected = 0;
+        v.status = first;
+        page.update(&mut ui, &v, &Settings::default());
+        assert_eq!(page.layer_name(2), "Drums 2");
         // A clear forgets them.
         step(&mut ui, &mut v, &mut page, Phase::Empty, 0, &[]);
         assert_eq!(page.layer_name(0), "Layer 1");
     }
 
     #[test]
-    fn the_page_draws_and_its_buttons_follow_the_state() {
-        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
-        ui.add(
-            "header",
-            mpfree_ui::widgets::Header::new(&["Play", "Looper"]),
-        );
-        ui.add(
-            "hint",
-            mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Center),
-        );
-        let mut page = LooperPage::add(&mut ui).unwrap();
-        ui.show(LOOPER_PAGE).unwrap();
-        let mut c = SoftCanvas::new(1280, 800);
-        ui.paint(&mut c);
-        let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
-        assert!(
-            !b.buttons[B_RECORD].disabled,
-            "the pads can always be recorded"
-        );
-        let line = LooperView {
-            source: LoopSource::Line,
-            ..LooperView::default()
+    fn a_setting_row_steps_its_option() {
+        let set = Settings::default();
+        assert_eq!(set.loop_source, LoopSource::Pads);
+        assert!(!set.line_input);
+        let item = |i: usize, d: i32, s: &Settings| setting_item(i, d, s);
+        // The source and the on-off rows flip whichever half is tapped.
+        assert_eq!(item(0, -1, &set), Some((Item::LoopSource, 1)));
+        assert_eq!(item(1, -1, &set), Some((Item::LoopBars, -1)));
+        assert_eq!(item(2, 1, &set), None, "Start waits for the looper");
+        assert_eq!(item(4, 1, &set), None);
+        assert_eq!(item(5, -1, &set), Some((Item::LineInput, 1)));
+        assert_eq!(item(6, 1, &set), None, "the peak is a meter");
+        assert_eq!(item(7, 1, &set), Some((Item::LoopMonitor, 1)));
+        assert_eq!(item(8, -1, &set), Some((Item::LoopLatency, -1)));
+        assert_eq!(item(9, 1, &set), None);
+        let on = Settings {
+            loop_source: LoopSource::Line,
+            line_input: true,
+            loop_monitor: true,
+            ..Settings::default()
         };
-        page.update(&mut ui, &line, &Settings::default());
-        let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
-        assert!(
-            b.buttons[B_RECORD].disabled,
-            "Record waits for the line input"
-        );
-        assert!(b.buttons[B_MONITOR].disabled);
-        let mut v = LooperView {
-            source: LoopSource::Line,
-            line_on: true,
-            ..LooperView::default()
-        };
-        v.status.phase = Phase::Playing;
-        v.status.layers = 2;
-        v.status.frames = 88_200;
-        v.status.ticks = 3_840;
-        v.frames_per_beat = 22_050.0;
-        page.set_wave(
-            &mut ui,
-            Arc::new(LoopWave {
-                frames: 88_200,
-                ..LoopWave::default()
-            }),
-        );
+        assert_eq!(item(0, 1, &on), Some((Item::LoopSource, -1)));
+        assert_eq!(item(5, 1, &on), Some((Item::LineInput, -1)));
+        assert_eq!(item(7, 1, &on), Some((Item::LoopMonitor, -1)));
+        assert_eq!(SET_ROWS.len(), 9);
+    }
+
+    #[test]
+    fn the_q_links_turn_the_picked_layer_and_the_loop() {
+        let (mut ui, mut page) = page();
+        let v = two_loops();
         page.update(&mut ui, &v, &Settings::default());
-        let b = ui.get::<ButtonRow>(BUTTONS_ID).unwrap();
-        assert_eq!(b.buttons[B_RECORD].label, "Overdub");
-        assert!(
-            !b.buttons[B_UNDO].disabled
-                && b.buttons[B_REDO].disabled
-                && !b.buttons[B_CLEAR].disabled
-        );
-        ui.paint(&mut c);
-        // A tap on Undo comes back as Tab(2).
-        let r = ui.rect_of(BUTTONS_ID).unwrap();
-        let undo = ui
-            .get::<ButtonRow>(BUTTONS_ID)
-            .unwrap()
-            .button_rect(r, B_UNDO);
-        let e = ui
-            .touch(1, mpfree_ui::Touch::Down, undo.x + 5, undo.y + 5)
-            .unwrap();
+        page.pick_layer(&mut ui, 1);
+        assert_eq!(ui.get::<LoopEditor>(EDITOR).unwrap().picked, 1);
+        let card = |ui: &Ui, k: usize| {
+            let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
+            (q.cards[k].scope.clone(), q.cards[k].value.clone())
+        };
+        assert_eq!(card(&ui, 0), ("Layer 2".to_string(), "0.0 dB".to_string()));
+        // Q1: the layer's level, half a dB a detent.
+        let Some(LoopTurn::Layer(1, LayerCommand::Level(l))) = page.qlink(&mut ui, 0, 2, false)
+        else {
+            panic!("Q1 turns the picked layer's level");
+        };
+        assert!((l - 10f32.powf(1.0 / 20.0)).abs() < 1e-4);
+        assert_eq!(card(&ui, 0).1, "1.0 dB");
+        // SHIFT turns it in tenths.
+        page.qlink(&mut ui, 0, -3, true);
+        assert_eq!(card(&ui, 0).1, "0.7 dB");
+        // Q2: its pan.
         assert_eq!(
-            (e.widget.as_str(), e.kind),
-            (BUTTONS_ID, mpfree_ui::EventKind::Tab(B_UNDO))
+            page.qlink(&mut ui, 1, -6, false),
+            Some(LoopTurn::Layer(1, LayerCommand::Pan(-0.12)))
         );
+        assert_eq!(card(&ui, 1).1, "L 6");
+        // Q3: the loop's level; Q4: the line input's.
+        let Some(LoopTurn::Level(l)) = page.qlink(&mut ui, 2, -2, false) else {
+            panic!("Q3 turns the loop's level");
+        };
+        assert!((l - 10f32.powf(-1.0 / 20.0)).abs() < 1e-4);
+        assert_eq!(card(&ui, 2), ("Loop 1".to_string(), "-1.0 dB".to_string()));
+        assert_eq!(page.qlink(&mut ui, 3, 4, true), Some(LoopTurn::Line(4)));
+        assert_eq!(page.qlink(&mut ui, 0, 0, false), None);
+        // The looper's next view (from before the turn) does not undo the
+        // cards while it catches up.
+        page.update(&mut ui, &v, &Settings::default());
+        assert_eq!(card(&ui, 0).1, "0.7 dB");
+        assert_eq!(card(&ui, 1).1, "L 6");
+        assert_eq!(page.layer_info(1).map(|l| l.id), Some(11));
+        // An empty loop has no layer or level to turn.
+        let (mut ui, mut page) = self::page();
+        page.update(&mut ui, &LooperView::default(), &Settings::default());
+        assert_eq!(page.qlink(&mut ui, 0, 1, false), None);
+        assert_eq!(page.qlink(&mut ui, 2, 1, false), None);
+        assert_eq!(card(&ui, 0).0, "No layer");
+    }
+
+    #[test]
+    fn a_pan_reads_as_the_cards_print_it() {
+        assert_eq!(pan_text(0.0), "C");
+        assert_eq!(pan_text(-0.24), "L 12");
+        assert_eq!(pan_text(0.6), "R 30");
+        assert_eq!(bars_of(0, 4), 0);
+        assert_eq!(bars_of(4 * 960, 4), 1);
+        assert_eq!(bars_of(7 * 960, 4), 2);
     }
 }

@@ -1907,6 +1907,27 @@ impl App {
         let items = self.items();
         let i = i.min(items.len() - 1);
         self.selected = i;
+        self.apply_item(items[i], delta)
+    }
+
+    /// A row of the Looper tab's Recording and input panel stepped by
+    /// `delta` (a tap steps +1): the same settings as the looper's options
+    /// menu. Only the looper's own rows step here.
+    pub fn looper_setting(&mut self, item: Item, delta: i32) -> Vec<Effect> {
+        match item {
+            Item::LoopSource
+            | Item::LineInput
+            | Item::LoopMonitor
+            | Item::LoopBars
+            | Item::LoopLatency
+            | Item::LoopLevel => self.apply_item(item, delta),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Step `item` by `delta`'s sign; the settings (and the menu, when it
+    /// shows) follow.
+    fn apply_item(&mut self, item: Item, delta: i32) -> Vec<Effect> {
         let d = delta.signum();
         let mut fx = Vec::new();
         self.save_dirty = true;
@@ -1915,7 +1936,7 @@ impl App {
             all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
         }
         let s = &mut self.settings;
-        match items[i] {
+        match item {
             Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
             Item::ScreenVelocity => {
                 s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
@@ -2044,7 +2065,9 @@ impl App {
             Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
-        fx.push(self.menu_view());
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
         fx
     }
 

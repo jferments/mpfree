@@ -290,6 +290,8 @@ pub enum ToUi {
     SampleViewBack(Box<ViewSwap>),
     /// On the Sample page: a Q-Link (0-3) turned by this many detents.
     SampleQLink(usize, i32),
+    /// On the Looper tab: a Q-Link (0-3) turned by this many detents.
+    LooperQLink(usize, i32),
     /// On the Sample page: a Q-Link let go (the turn is one undo step).
     SampleLift,
     /// On the Sample page: the wheel (zoom).
@@ -420,12 +422,19 @@ pub enum FromUi {
     MapButton(usize),
     /// A button on the Looper tab (`looper_page::BUTTONS`).
     Looper(usize),
-    /// A loop layer's control (its speaker on the Play page's loop), by the
-    /// layer's id.
+    /// A loop layer's control (its speaker on the Play page's loop, its row
+    /// on the Looper tab), by the layer's id.
     LoopLayer {
         id: u8,
         command: mpfree_looper::LayerCommand,
     },
+    /// The Looper tab: pick loop `n` for the controls.
+    LoopPick(usize),
+    /// The Looper tab: the picked loop's level, 0 to 2 (Q-Link 3).
+    LoopLevel(f32),
+    /// The Looper tab's Recording and input panel: a setting stepped (the
+    /// same settings as the looper's options menu).
+    LooperSetting(crate::app::Item, i32),
     /// What a touch on the mixer panel (or a Q-Link while it is open)
     /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
     /// on the audio thread.
@@ -943,6 +952,76 @@ impl Player {
     }
 
     /// A Q-Link on the Play page (no arp): what it turns there.
+    /// The Looper tab and the Play strip from the last looper view; Q-Link
+    /// 4's card is the Play page's line level.
+    fn refresh_looper(&mut self) {
+        self.looper_page
+            .update(&mut self.ui, &self.looper, &self.settings);
+        let card = self.play.card(Knob::LineLevel, None);
+        self.looper_page.set_line_card(&mut self.ui, card);
+    }
+
+    /// A Q-Link on the Looper tab: the picked layer's level and pan, the
+    /// loop's level, the line input's level.
+    fn looper_qlink(&mut self, k: usize, ticks: i32) {
+        use crate::looper_page::LoopTurn;
+        let fine = self.status.shift;
+        match self.looper_page.qlink(&mut self.ui, k, ticks, fine) {
+            Some(LoopTurn::Layer(l, command)) => {
+                if let Some(info) = self.looper_page.layer_info(l) {
+                    self.outbox.push(FromUi::LoopLayer {
+                        id: info.id,
+                        command,
+                    });
+                }
+            }
+            Some(LoopTurn::Level(v)) => self.outbox.push(FromUi::LoopLevel(v)),
+            Some(LoopTurn::Line(t)) => {
+                if let Some(Turn::Fx(fx)) = self.play.turn_knob(Knob::LineLevel, t, fine) {
+                    self.outbox.push(FromUi::PlayFx(fx));
+                }
+                let card = self.play.card(Knob::LineLevel, None);
+                self.looper_page.set_line_card(&mut self.ui, card);
+            }
+            None => {}
+        }
+    }
+
+    /// What the Looper tab's panels asked for: the first as the answer to
+    /// the touch, the rest after it.
+    fn looper_acts(&mut self) -> Option<FromUi> {
+        use crate::looper_tab::LoopAct;
+        let mut out = Vec::new();
+        for a in crate::looper_tab::take_actions(&mut self.ui) {
+            match a {
+                LoopAct::Pick(n) => out.push(FromUi::LoopPick(n)),
+                LoopAct::NewLoop => {
+                    if let Some(n) = self.looper_page.first_empty() {
+                        out.push(FromUi::LoopPick(n));
+                    }
+                }
+                LoopAct::Layer(k) => self.looper_page.pick_layer(&mut self.ui, k),
+                LoopAct::LayerCmd(k, command) => {
+                    if let Some(l) = self.looper_page.layer_info(k) {
+                        out.push(FromUi::LoopLayer { id: l.id, command });
+                    }
+                }
+                LoopAct::Setting(i, d) => {
+                    if let Some((item, d)) = crate::looper_page::setting_item(i, d, &self.settings)
+                    {
+                        out.push(FromUi::LooperSetting(item, d));
+                    }
+                }
+                // The looper's edits and bounce come with its next part.
+                LoopAct::Tool(_) | LoopAct::Use(_) => {}
+            }
+        }
+        let mut it = out.into_iter();
+        let first = it.next();
+        self.outbox.extend(it);
+        first
+    }
+
     fn play_qlink(&mut self, k: usize, ticks: i32) {
         match self.play.turn(k, ticks, self.status.shift) {
             Some(Turn::Fx(fx)) => self.outbox.push(FromUi::PlayFx(fx)),
@@ -1098,8 +1177,9 @@ impl Player {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange => CLIPS_HINT.to_string(),
-                View::Looper => format!("REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   PLAY / STOP: \
-                                         the transport   ·   MENU: looper options   ·   {stop}"),
+                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
+                                         line   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
+                                         {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   MENU: engine, scale   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
@@ -1440,12 +1520,19 @@ impl Player {
                 }
             }
             ToUi::QLinkTouch(k, on) => {
-                if let Some(q) = self
-                    .ui
-                    .get_mut::<QLinkColumn>(play_page::QLINKS)
-                    .filter(|q| q.touched.get(k) != Some(&on))
-                {
-                    q.touched[k] = on;
+                for column in [play_page::QLINKS, crate::looper_tab::QLINKS] {
+                    if let Some(q) = self
+                        .ui
+                        .get_mut::<QLinkColumn>(column)
+                        .filter(|q| q.touched.get(k) != Some(&on))
+                    {
+                        q.touched[k] = on;
+                    }
+                }
+            }
+            ToUi::LooperQLink(k, ticks) => {
+                if self.view == View::Looper {
+                    self.looper_qlink(k, ticks);
                 }
             }
             ToUi::Session(text, tone) => {
@@ -1463,14 +1550,12 @@ impl Player {
             ToUi::Looper(v) => {
                 self.looper = *v;
                 if matches!(self.view, View::Looper | View::Play) {
-                    self.looper_page
-                        .update(&mut self.ui, &self.looper, &self.settings);
+                    self.refresh_looper();
                 }
             }
             ToUi::LoopWave(w) => {
                 self.looper_page.set_wave(&mut self.ui, w);
-                self.looper_page
-                    .update(&mut self.ui, &self.looper, &self.settings);
+                self.refresh_looper();
             }
             // Nothing until the panel is in the Ui (mpfree_mixer_ui::add).
             ToUi::Mixer(st) => {
@@ -2133,7 +2218,17 @@ impl Player {
             }
             ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
             ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
-            ("lbuttons", EventKind::Tab(i)) => Some(FromUi::Looper(i)),
+            (
+                crate::looper_tab::LOOPS
+                | crate::looper_tab::EDITOR
+                | crate::looper_tab::RECORDING
+                | crate::looper_tab::USE,
+                _,
+            ) => self.looper_acts(),
+            (crate::looper_tab::QLINKS, EventKind::Step { index, delta }) => {
+                self.looper_qlink(index, delta);
+                None
+            }
             (play_page::PADS, EventKind::Pad { index, down }) => {
                 Some(FromUi::Pad { pad: index, down })
             }
@@ -3330,73 +3425,73 @@ fn sample_app() -> crate::app::App {
 /// with the real app and engine behind it).
 /// The Looper tab with a real loop: two bars of the pads (a kick and hats)
 /// and an overdub (a bass line), recorded by the looper on a transport.
+/// The Looper tab as mockup J: loop 1 is mockup F's beat (drums, bass and
+/// a chop, the chop muted, the bass on the Q-Links), loop 2 two bars of
+/// hats, muted.
 fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     use crate::looping::{LoopHost, PERIOD};
-    use mpfree_looper::Command as L;
+    use mpfree_looper::{Command as L, Phase};
     use mpfree_transport::{Block, Command as T, Transport};
-    use std::f32::consts::TAU;
+    const RATE: u32 = 44_100;
     let mut p = sample_player(fonts);
     p.apply(ToUi::Show(View::Looper));
-    let mut h = LoopHost::new(44_100, 20);
-    let mut t = Transport::new(44_100, 120.0).map_err(|e| format!("{e:?}"))?;
+    // Loop 2, on a looper of its own (the view takes its line).
+    let mut h = LoopHost::new(RATE, 20);
+    let mut t = Transport::new(RATE, 92.0).map_err(|e| format!("{e:?}"))?;
     let mut b = Block::new();
+    h.select(1);
     h.command(L::SetBars(Some(2)));
     h.command(L::SetLatency(0));
     h.command(L::Record);
     t.command(0, T::Play);
-    const BEAT: u64 = 22_050;
-    const LOOP: u64 = 8 * BEAT;
-    let mut wave = None;
-    // Two passes, an overdub on the third, and into the fourth.
-    let periods = (3 * LOOP + 5 * BEAT) / PERIOD as u64;
-    for i in 0..periods {
-        let start = i * PERIOD as u64;
-        if start <= 2 * LOOP && 2 * LOOP < start + PERIOD as u64 {
-            h.command(L::Overdub);
-        }
-        if start <= 3 * LOOP && 3 * LOOP < start + PERIOD as u64 {
-            h.command(L::Overdub);
+    let beat = (f64::from(RATE) * 60.0 / 92.0) as u64;
+    let len = 8 * beat;
+    for i in 0..(len + len / 8) / PERIOD as u64 {
+        if i == len / PERIOD as u64 {
+            h.command(L::Mute(true));
         }
         if !t.process(PERIOD as u32, &mut b) {
             return Err("the transport refused a period".into());
         }
         let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
         for f in 0..PERIOD {
-            let n = start + f as u64;
-            let in_beat = (n % BEAT) as f32 / 44_100.0;
-            let half = (n % (BEAT / 2)) as f32 / 44_100.0;
-            let mut v = if n < LOOP {
-                // The first pass: a kick on the beats, a hat between.
-                let kick = (TAU * (50.0 + 90.0 * (-in_beat * 30.0).exp()) * in_beat).sin()
-                    * (-in_beat * 9.0).exp();
-                let noise = ((n.wrapping_mul(2_654_435_761) >> 7) % 2000) as f32 / 1000.0 - 1.0;
-                let hat = if (n / (BEAT / 2)) % 2 == 1 {
-                    noise * (-half * 60.0).exp() * 0.25
-                } else {
-                    0.0
-                };
-                0.7 * kick + hat
-            } else if (2 * LOOP..3 * LOOP).contains(&n) {
-                // The overdub: a bass note on each beat, up a fifth on 3 and 4.
-                let note = if (n / BEAT) % 4 >= 2 { 82.4 } else { 55.0 };
-                0.35 * (TAU * note * in_beat).sin() * (-in_beat * 3.0).exp()
-            } else {
-                0.0
-            };
-            v = v.clamp(-1.0, 1.0);
+            let n = i * PERIOD as u64 + f as u64;
+            let half = (n % (beat / 2)) as f32 / RATE as f32;
+            let noise = ((n.wrapping_mul(2_654_435_761) >> 7) % 2000) as f32 / 1000.0 - 1.0;
+            let v = noise * (-half * 50.0).exp() * 0.3;
             (l[f], r[f]) = (v, v);
         }
         h.take_pads(&l, &r);
         h.period(&b, &mut l, &mut r);
         h.changes(String::new);
-        if let Some(w) = h.wave_step(i, 344) {
-            wave = Some(w);
-        }
     }
-    p.apply(ToUi::LoopWave(wave.ok_or("no wave")?));
-    let mut v = h.view(120.0);
+    let second = h.view(92.0);
+    if second.loops[1].phase != Phase::Playing || !second.loops[1].muted {
+        return Err(format!("loop 2 is {:?}", second.loops[1].phase));
+    }
+    // Loop 1 and its layers, as the Play page's previews have them.
+    let (wave, view) = recorded_loop();
+    let mut v = view.clone();
+    v.loops[1] = second.loops[1];
+    v.memory.used += second.memory.used;
+    // The memory the app gives the loops (main's LOOP_SECONDS).
+    v.memory.capacity = 60 * RATE as usize;
     v.meter_db = [-6.5, -6.5];
+    if let Some(l) = v.layers[2].as_mut() {
+        l.muted = true;
+        l.audible = false;
+    }
+    if let Some(l) = v.layers[1].as_mut() {
+        l.level = 10f32.powf(-3.5 / 20.0);
+        l.pan = -0.24;
+    }
+    if let Some(l) = v.layers[2].as_mut() {
+        l.level = 10f32.powf(-6.0 / 20.0);
+    }
     p.apply(ToUi::Looper(Box::new(v)));
+    p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
+    p.apply(ToUi::LoopWave(Arc::clone(wave)));
+    p.looper_page.pick_layer(&mut p.ui, 1);
     Ok(p)
 }
 
@@ -4145,6 +4240,77 @@ mod tests {
                 command: mpfree_looper::LayerCommand::Mute(false),
             })
         );
+    }
+
+    /// The Looper tab (mockup J): a loop tapped is picked, a layer's
+    /// speaker works it by its id, a Q-Link turns the picked layer, and a
+    /// setting steps the looper's option.
+    #[test]
+    fn the_looper_tab_picks_loops_and_works_layers() {
+        use crate::looper_tab::{LoopEditor, LoopList, LoopSettings, EDITOR, LOOPS, RECORDING};
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        assert!(p.take_actions().is_empty());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        // Loop 2, then a new loop (loop 3, the first empty one).
+        let r = p.ui.rect_of(LOOPS).unwrap();
+        let (rows, new, _) = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            tap(&mut p, (rows[1].x + 10, rows[1].y + 10)),
+            Some(FromUi::LoopPick(1))
+        );
+        let new = new.unwrap();
+        assert_eq!(
+            tap(&mut p, (new.x + 10, new.y + 10)),
+            Some(FromUi::LoopPick(2))
+        );
+        // The chop's speaker (it is muted) unmutes it by its id.
+        let (_, view) = recorded_loop();
+        let ids: Vec<u8> = (0..3).map(|k| view.layers[k].unwrap().id).collect();
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.picked, 1, "the bass is on the Q-Links");
+        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
+        let parts = LoopEditor::row_parts(rr);
+        assert_eq!(
+            tap(&mut p, parts.speaker),
+            Some(FromUi::LoopLayer {
+                id: ids[2],
+                command: mpfree_looper::LayerCommand::Mute(false),
+            })
+        );
+        assert!(p.take_actions().is_empty());
+        // The chop is picked now: Q1 turns its level.
+        p.apply(ToUi::LooperQLink(0, 2));
+        let acts = p.take_actions();
+        assert!(
+            matches!(
+                acts.as_slice(),
+                [FromUi::LoopLayer { id, command: mpfree_looper::LayerCommand::Level(_) }]
+                    if *id == ids[2]
+            ),
+            "{acts:?}"
+        );
+        p.apply(ToUi::LooperQLink(2, 1));
+        assert!(matches!(
+            p.take_actions().as_slice(),
+            [FromUi::LoopLevel(_)]
+        ));
+        // Line input, right half: on.
+        let r = p.ui.rect_of(RECORDING).unwrap();
+        let rects = p.ui.get::<LoopSettings>(RECORDING).unwrap().row_rects(r);
+        let line = rects[5];
+        assert_eq!(
+            tap(&mut p, (line.right() - 6, line.y + 6)),
+            Some(FromUi::LooperSetting(crate::app::Item::LineInput, 1))
+        );
+        // The hint says what the tab's controls do.
+        let hint = &p.ui.get::<Label>("hint").unwrap().text;
+        assert!(hint.contains("Tap a loop or a layer"), "{hint}");
     }
 
     #[test]
