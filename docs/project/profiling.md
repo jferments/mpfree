@@ -21,6 +21,7 @@ device, in the same units, against one budget. This page is how.
 | `procs` | `mpfree-prof` | Every process on the machine from `/proc`: CPU, memory, threads, real-time policy. The data for the Dev tools process page. Read-only. |
 | `report` | `mpfree-prof` | Probe summaries as "CPU by engine" rows and a log line, each with its budget verdict. |
 | `mpfree-bench` | `rust/mpfree-bench` | Runs every engine at the MPC's period against its budget. Builds for the desktop and for the MPC. |
+| `Lane` | `rust/mpfree-lanes` | Runs part of each period on another core and joins it before the mix, with a deadline and a fallback. `mpfree-bench --lanes` measures the handoff and the split. See [Concurrency](concurrency.md). |
 
 ## Budgets (agreed with Jay, 2026-11-11)
 
@@ -125,7 +126,9 @@ On the desktop, the biggest holders are the looper (20 MB for 60 s of
 stereo), the Cloud reverb (9.4 MB per instance), the master grain effect and
 Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
 period; memory is per instance, so an engine that is cheap to run can still
-be costly to have many of.
+be costly to have many of. The sampler's Rec tab (line input into the
+sampler, once it lands after round 8) adds one 75 s stereo buffer, 26.46
+MB, only while the line input is on, and nothing otherwise.
 
 `--compare A.json B.json` puts two reports side by side, case by case:
 B's p99 and worst as a share of A's, and any change in memory. Use it for
@@ -157,6 +160,19 @@ On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
 against the module budget. On the MPC (the armv7 build) the numbers are the
 device's own.
+
+### Lanes (`--lanes`)
+
+```text
+cargo run --release -p mpfree-bench -- --lanes [--lane-cores A,B] [--quick]
+```
+
+Runs only the lane cases: the same work on one core and split over two
+(see [Concurrency](concurrency.md)). It is the one mode that starts more
+threads: a worker per lane case, at normal priority, closed before the next
+case. `--lane-cores A,B` pins the bench's thread to core A and the workers to
+core B (3,2 on the MPC); without it nothing is pinned. The default run is
+unchanged.
 
 ### The cost model
 
