@@ -16,7 +16,9 @@
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source};
+use mpfree_sampler::model::{
+    GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
+};
 
 use crate::kit::{Kit, Sound, MAX_KITS, MAX_VOICES};
 
@@ -78,11 +80,25 @@ fn kit_pad(name: &str, region: Region) -> Pad {
 fn grain_pad(name: &str, source: &Source, row: usize) -> Pad {
     let mut r = Region::whole(source);
     r.mode = PlayMode::Granular;
-    r.grain = GrainParams { position: 0.1, spray: 0.05, size_ms: 60.0, density: 25.0, pitch_spray: 0.1, scan: 0.25,
-                            spread: 0.7, ..GrainParams::default() };
+    r.grain = GrainParams {
+        position: 0.1,
+        spray: 0.05,
+        size_ms: 60.0,
+        density: 25.0,
+        pitch_spray: 0.1,
+        scan: 0.25,
+        spread: 0.7,
+        ..GrainParams::default()
+    };
     let mut pad = kit_pad(name, r);
     pad.polyphony = 2;
-    pad.amp = Ahdsr { attack_ms: 5.0, hold_ms: 0.0, decay_ms: 0.0, sustain: 1.0, release_ms: 250.0 };
+    pad.amp = Ahdsr {
+        attack_ms: 5.0,
+        hold_ms: 0.0,
+        decay_ms: 0.0,
+        sustain: 1.0,
+        release_ms: 250.0,
+    };
     let (target, depth) = GRAIN_ROWS[row];
     pad.pressure = PressureRoute { target, depth };
     pad
@@ -105,11 +121,15 @@ impl Player {
             let mut project = Project::new();
             let mut has = [false; 16];
             for (p, &note) in pad_notes.iter().enumerate() {
-                let Some(s) = kit.sounds.iter_mut().find(|s| s.note == note) else { continue };
-                let source = Source::new(&s.name, rate, 2, floats(s)).map_err(|e| format!("kit {} ({}), {}: {e:?}", k + 1, kit.name, s.name))?;
+                let Some(s) = kit.sounds.iter_mut().find(|s| s.note == note) else {
+                    continue;
+                };
+                let source = Source::new(&s.name, rate, 2, floats(s))
+                    .map_err(|e| format!("kit {} ({}), {}: {e:?}", k + 1, kit.name, s.name))?;
                 s.audio = Vec::new();
                 project.add_source(source.clone());
-                project.set_pad(p, Some(kit_pad(&s.name, Region::whole(&source))), None)
+                project
+                    .set_pad(p, Some(kit_pad(&s.name, Region::whole(&source))), None)
                     .map_err(|e| format!("kit {} ({}), {}: {e:?}", k + 1, kit.name, s.name))?;
                 has[p] = true;
                 if k == 0 {
@@ -125,18 +145,37 @@ impl Player {
             let mut grain_sounds = Vec::new();
             for (p, source) in &first {
                 project.add_source(source.clone());
-                let name = kits[0].sounds.iter().find(|s| s.note == pad_notes[*p]).map_or(String::new(), |s| s.name.clone());
-                project.set_pad(*p, Some(grain_pad(&name, source, p / 4)), None).map_err(|e| format!("Grains, {name}: {e:?}"))?;
+                let name = kits[0]
+                    .sounds
+                    .iter()
+                    .find(|s| s.note == pad_notes[*p])
+                    .map_or(String::new(), |s| s.name.clone());
+                project
+                    .set_pad(*p, Some(grain_pad(&name, source, p / 4)), None)
+                    .map_err(|e| format!("Grains, {name}: {e:?}"))?;
                 has[*p] = true;
-                grain_sounds.push(Sound { note: pad_notes[*p], name, audio: Vec::new() });
+                grain_sounds.push(Sound {
+                    note: pad_notes[*p],
+                    name,
+                    audio: Vec::new(),
+                });
             }
             views.push(Some(EngineView::build(&project, rate)));
             sounds.push(has);
-            kits.push(Kit { name: format!("Grains: {}", kits[0].name), sounds: grain_sounds });
+            kits.push(Kit {
+                name: format!("Grains: {}", kits[0].name),
+                sounds: grain_sounds,
+            });
         }
         let mut engine = Engine::new(rate, MAX_VOICES);
         engine.set_view(views[0].take().expect("built above"));
-        Ok(Player { engine, views, kit: 0, sounds, peak_grains: 0 })
+        Ok(Player {
+            engine,
+            views,
+            kit: 0,
+            sounds,
+            peak_grains: 0,
+        })
     }
 
     #[cfg(test)]
@@ -154,7 +193,9 @@ impl Player {
         if k == self.kit || k >= self.views.len() {
             return;
         }
-        let Some(view) = self.views[k].take() else { return };
+        let Some(view) = self.views[k].take() else {
+            return;
+        };
         self.views[self.kit] = Some(self.engine.set_view(view));
         self.kit = k;
     }
@@ -167,7 +208,13 @@ impl Player {
         }
         let velocity = engine_velocity(velocity);
         if velocity > 0 {
-            self.engine.schedule(offset, Event::NoteOn { pad: pad as u8, velocity });
+            self.engine.schedule(
+                offset,
+                Event::NoteOn {
+                    pad: pad as u8,
+                    velocity,
+                },
+            );
         }
         true
     }
@@ -176,14 +223,21 @@ impl Player {
     /// sounds ignore it; a Grains pad stops making grains and fades out.
     pub fn release_at(&mut self, pad: usize, offset: u32) {
         if pad < 16 {
-            self.engine.schedule(offset, Event::NoteOff { pad: pad as u8 });
+            self.engine
+                .schedule(offset, Event::NoteOff { pad: pad as u8 });
         }
     }
 
     /// Pad pressure, 0 to 127, from the next render on.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
-            self.engine.schedule(0, Event::Pressure { pad: pad as u8, value });
+            self.engine.schedule(
+                0,
+                Event::Pressure {
+                    pad: pad as u8,
+                    value,
+                },
+            );
         }
     }
 
@@ -199,8 +253,12 @@ impl Player {
 
     pub fn counters(&self) -> Counters {
         let s = self.engine.stats();
-        Counters { steals: s.steals, dropped_events: s.dropped_events, peak_grains: self.peak_grains,
-                   skipped_grains: s.skipped_grains }
+        Counters {
+            steals: s.steals,
+            dropped_events: s.dropped_events,
+            peak_grains: self.peak_grains,
+            skipped_grains: s.skipped_grains,
+        }
     }
 
     /// Renders the next period into `left` and `right`, scaled by `master`.
@@ -224,17 +282,25 @@ mod tests {
     use super::*;
     use crate::kit::{self, Mixer};
 
-    const NOTES: [u8; 16] = [0x25, 0x24, 0x2A, 0x52, 0x28, 0x26, 0x2E, 0x2C, 0x30, 0x2F, 0x2D, 0x2B, 0x31, 0x37, 0x33, 0x35];
+    const NOTES: [u8; 16] = [
+        0x25, 0x24, 0x2A, 0x52, 0x28, 0x26, 0x2E, 0x2C, 0x30, 0x2F, 0x2D, 0x2B, 0x31, 0x37, 0x33,
+        0x35,
+    ];
 
     fn tone(frames: usize, f: f32) -> Vec<i16> {
-        (0..frames).flat_map(|i| {
-            let x = (i as f32 * f).sin();
-            [(x * 12000.0) as i16, (x * -9000.0) as i16]
-        }).collect()
+        (0..frames)
+            .flat_map(|i| {
+                let x = (i as f32 * f).sin();
+                [(x * 12000.0) as i16, (x * -9000.0) as i16]
+            })
+            .collect()
     }
 
     fn kits() -> Vec<Kit> {
-        let a = kit::build(&[(NOTES[0], "Kick", &tone(3000, 0.01)[..]), (NOTES[5], "Snare", &tone(2000, 0.07)[..])]);
+        let a = kit::build(&[
+            (NOTES[0], "Kick", &tone(3000, 0.01)[..]),
+            (NOTES[5], "Snare", &tone(2000, 0.07)[..]),
+        ]);
         let b = kit::build(&[(NOTES[0], "Clap", &tone(1500, 0.03)[..])]);
         kit::parse_kits(&kit::build_kits(&[("House", a), ("Trap", b)])).unwrap()
     }
@@ -275,7 +341,10 @@ mod tests {
             let want: Vec<f32> = want.into_iter().chain(run_mixer(&mut mixer, 30)).collect();
             let got: Vec<f32> = got.into_iter().chain(run(&mut p, 30).0).collect();
             for (k, (a, b)) in want.iter().zip(&got).enumerate() {
-                assert!((a - b).abs() <= tolerance * a.abs().max(0.01), "velocity {velocity}, sample {k}: {a} vs {b}");
+                assert!(
+                    (a - b).abs() <= tolerance * a.abs().max(0.01),
+                    "velocity {velocity}, sample {k}: {a} vs {b}"
+                );
             }
             assert!(want.iter().any(|&x| x.abs() > 0.1));
             assert_eq!((mixer.playing(), p.playing()), (0, 0));
@@ -348,9 +417,17 @@ mod tests {
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         assert_eq!((ks.len(), p.kits()), (3, 3));
         assert_eq!(ks[2].name, "Grains: House");
-        let names: Vec<(u8, &str)> = ks[2].sounds.iter().map(|s| (s.note, s.name.as_str())).collect();
+        let names: Vec<(u8, &str)> = ks[2]
+            .sounds
+            .iter()
+            .map(|s| (s.note, s.name.as_str()))
+            .collect();
         assert_eq!(names, [(NOTES[0], "Kick"), (NOTES[5], "Snare")]);
-        assert!(ks.iter().all(|k| k.sounds.iter().all(|s| s.audio.is_empty())), "audio handed to the engine");
+        assert!(
+            ks.iter()
+                .all(|k| k.sounds.iter().all(|s| s.audio.is_empty())),
+            "audio handed to the engine"
+        );
         p.select(2);
         assert!(p.hit_at(5, 127, 0));
         p.pressure(5, 127); // pad 6 is on the second row: longer grains
@@ -379,7 +456,10 @@ mod tests {
         for v in 1..=127u8 {
             let level = (f32::from(engine_velocity(v)) / 127.0).powi(2);
             let want = f32::from(v) / 127.0;
-            assert!((level - want).abs() <= 0.01, "velocity {v}: {level} vs {want}");
+            assert!(
+                (level - want).abs() <= 0.01,
+                "velocity {v}: {level} vs {want}"
+            );
         }
     }
 }

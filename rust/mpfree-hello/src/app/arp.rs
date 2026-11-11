@@ -20,7 +20,9 @@
 
 use super::{App, Effect, Item, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
-use mpfree_arp::{Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
+use mpfree_arp::{
+    Chord, Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote,
+};
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
 
@@ -56,7 +58,10 @@ pub struct WorkspaceView {
 
 /// The built-in patterns, by name.
 pub fn built_in_patterns() -> Vec<(String, Pattern)> {
-    Library::built_in().iter().map(|(n, p)| (n.to_string(), *p)).collect()
+    Library::built_in()
+        .iter()
+        .map(|(n, p)| (n.to_string(), *p))
+        .collect()
 }
 
 /// Q-Link turn units per change of rate, gate, swing and octaves: rate and
@@ -85,6 +90,8 @@ pub enum ArpItem {
     Scale,
     Root,
     Snap,
+    Chord,
+    Run,
     Strum,
     Retrigger,
     SwingFrom,
@@ -92,9 +99,18 @@ pub enum ArpItem {
 
 /// The Options menu opened from the Arp panel: the tempo, then the arp's
 /// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
-pub(super) const ARP_OPTIONS: [Item; 8] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
-                                           Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Snap), Item::Arp(ArpItem::Strum),
-                                           Item::Arp(ArpItem::Retrigger), Item::Arp(ArpItem::SwingFrom)];
+pub(super) const ARP_OPTIONS: [Item; 10] = [
+    Item::Tempo,
+    Item::Arp(ArpItem::Accent),
+    Item::Arp(ArpItem::Scale),
+    Item::Arp(ArpItem::Root),
+    Item::Arp(ArpItem::Snap),
+    Item::Arp(ArpItem::Chord),
+    Item::Arp(ArpItem::Run),
+    Item::Arp(ArpItem::Strum),
+    Item::Arp(ArpItem::Retrigger),
+    Item::Arp(ArpItem::SwingFrom),
+];
 
 /// Accent level steps by this much per press or wheel click.
 const ACCENT_STEP: i32 = 8;
@@ -140,31 +156,47 @@ impl App {
 
     /// Recording on the pads in Free time.
     pub fn free_time_recording(&self) -> bool {
-        self.recorder.is_some_and(|r| r.mode() == RecordMode::FreeTime)
+        self.recorder
+            .is_some_and(|r| r.mode() == RecordMode::FreeTime)
     }
 
     fn workspace_view(&self, open: bool) -> WorkspaceView {
-        WorkspaceView { name: self.pattern_name(), pattern: self.pattern, open, recording: self.recorder.is_some(),
-                        free_time: self.record_mode == RecordMode::FreeTime }
+        WorkspaceView {
+            name: self.pattern_name(),
+            pattern: self.pattern,
+            open,
+            recording: self.recorder.is_some(),
+            free_time: self.record_mode == RecordMode::FreeTime,
+        }
     }
 
     /// The mode NOTE REPEAT and Latch turn on.
     fn held_mode(&self) -> Mode {
-        if self.arp_mode == Mode::Direct { Mode::Repeat } else { self.arp_mode }
+        if self.arp_mode == Mode::Direct {
+            Mode::Repeat
+        } else {
+            self.arp_mode
+        }
     }
 
     /// The Arp panel or the workspace is on screen, or a menu opened from
     /// the panel.
     pub fn panel_open(&self) -> bool {
-        matches!(self.view, View::Arp | View::Pattern) || (self.view == View::Options && self.back == View::Arp)
+        matches!(self.view, View::Arp | View::Pattern)
+            || (self.view == View::Options && self.back == View::Arp)
     }
 
     fn pattern_changed(&self) -> bool {
-        self.patterns.get(self.pattern_index).is_some_and(|(_, p)| *p != self.pattern)
+        self.patterns
+            .get(self.pattern_index)
+            .is_some_and(|(_, p)| *p != self.pattern)
     }
 
     fn pattern_name(&self) -> String {
-        self.patterns.get(self.pattern_index).map(|(n, _)| n.clone()).unwrap_or_else(|| "Pattern".to_string())
+        self.patterns
+            .get(self.pattern_index)
+            .map(|(n, _)| n.clone())
+            .unwrap_or_else(|| "Pattern".to_string())
     }
 
     pub fn arp_view(&self) -> Effect {
@@ -209,7 +241,14 @@ impl App {
     /// button, or NOTE REPEAT alone while latched (which lets go).
     pub(super) fn toggle_latch(&mut self) -> Vec<Effect> {
         self.latched = !self.latched;
-        let mut fx = vec![Effect::Note(if self.latched { "Latch on" } else { "Latch off" }.to_string())];
+        let mut fx = vec![Effect::Note(
+            if self.latched {
+                "Latch on"
+            } else {
+                "Latch off"
+            }
+            .to_string(),
+        )];
         fx.extend(self.arp_changed());
         fx
     }
@@ -239,10 +278,15 @@ impl App {
     }
 
     fn load_pattern(&mut self, i: usize) -> Vec<Effect> {
-        let Some((name, p)) = self.patterns.get(i).cloned() else { return Vec::new() };
+        let Some((name, p)) = self.patterns.get(i).cloned() else {
+            return Vec::new();
+        };
         self.pattern_index = i;
         self.set_pattern(p);
-        vec![Effect::Note(format!("arp pattern: {name} ({})", p.to_text()))]
+        vec![Effect::Note(format!(
+            "arp pattern: {name} ({})",
+            p.to_text()
+        ))]
     }
 
     /// A touch on the Arp panel or the quick band.
@@ -266,7 +310,11 @@ impl App {
             ArpAction::Button(b) => self.pattern_button(b),
             ArpAction::Step(i) => {
                 let mut e = Editor::new(self.pattern);
-                if e.tap(i) { self.set_pattern(*e.pattern()) } else { Vec::new() }
+                if e.tap(i) {
+                    self.set_pattern(*e.pattern())
+                } else {
+                    Vec::new()
+                }
             }
             ArpAction::Latch => self.toggle_latch(),
             ArpAction::OpenPanel if self.view != View::Arp => self.toggle_panel(),
@@ -301,10 +349,17 @@ impl App {
                 fx
             }
             Mode::Pattern => {
-                let i = (self.pattern_index as i32 + delta).clamp(0, self.patterns.len() as i32 - 1) as usize;
-                if i == self.pattern_index { Vec::new() } else { self.load_pattern(i) }
+                let i = (self.pattern_index as i32 + delta).clamp(0, self.patterns.len() as i32 - 1)
+                    as usize;
+                if i == self.pattern_index {
+                    Vec::new()
+                } else {
+                    self.load_pattern(i)
+                }
             }
-            Mode::Direct | Mode::Repeat => self.set_rate(step_in(&Rate::ALL, self.settings.rate, delta)),
+            Mode::Direct | Mode::Repeat => {
+                self.set_rate(step_in(&Rate::ALL, self.settings.rate, delta))
+            }
         }
     }
 
@@ -316,7 +371,11 @@ impl App {
         } else {
             step_in(&GENERATING, self.held_mode(), d)
         };
-        if m == self.arp_mode { Vec::new() } else { self.set_mode(m) }
+        if m == self.arp_mode {
+            Vec::new()
+        } else {
+            self.set_mode(m)
+        }
     }
 
     /// A Q-Link turned. While NOTE REPEAT is held or on the panel, Q-Links
@@ -403,21 +462,31 @@ impl App {
             r.set_accent_from(ACCENT_FROM);
             self.recorder = Some(r);
             fx.push(Effect::Note(match r.mode() {
-                RecordMode::Step => format!("recording a pattern on the pads: {} steps, one per press", r.length()),
+                RecordMode::Step => format!(
+                    "recording a pattern on the pads: {} steps, one per press",
+                    r.length()
+                ),
                 RecordMode::FreeTime => {
-                    format!("recording in Free time: {} steps loop; presses land on the nearest step", r.length())
+                    format!(
+                        "recording in Free time: {} steps loop; presses land on the nearest step",
+                        r.length()
+                    )
                 }
             }));
         } else if let Some(r) = self.recorder.take() {
             if let Some(p) = self.recorded_pattern(&r) {
                 self.set_pattern(p);
             }
-            fx.push(Effect::Note(format!("recording stopped: {}", self.pattern.to_text())));
+            fx.push(Effect::Note(format!(
+                "recording stopped: {}",
+                self.pattern.to_text()
+            )));
         } else {
             return fx;
         }
         let mut w = self.workspace_view(false);
-        w.free_time = self.free_time_recording() || (!on && self.record_mode == RecordMode::FreeTime);
+        w.free_time =
+            self.free_time_recording() || (!on && self.record_mode == RecordMode::FreeTime);
         fx.push(Effect::Workspace(w));
         fx.extend(self.arp_changed());
         fx
@@ -441,11 +510,16 @@ impl App {
     /// The pattern being recorded changed: play it and show it, with the
     /// cursor on `next`.
     fn show_recorded(&mut self, next: usize) -> Vec<Effect> {
-        let Some(r) = self.recorder else { return Vec::new() };
+        let Some(r) = self.recorder else {
+            return Vec::new();
+        };
         if let Some(p) = self.recorded_pattern(&r) {
             self.set_pattern(p);
         }
-        vec![Effect::Recorded(self.pattern, next.min(self.pattern.len().saturating_sub(1)))]
+        vec![Effect::Recorded(
+            self.pattern,
+            next.min(self.pattern.len().saturating_sub(1)),
+        )]
     }
 
     /// A pad press while recording. Step time writes the next step; Free
@@ -453,12 +527,19 @@ impl App {
     pub(super) fn record_press(&mut self, slot: u8, velocity: u8) -> Vec<Effect> {
         let v = self.velocity(velocity);
         let position = self.engine.position();
-        let Some(r) = self.recorder.as_mut() else { return Vec::new() };
+        let Some(r) = self.recorder.as_mut() else {
+            return Vec::new();
+        };
         let wrote = match r.mode() {
             RecordMode::Step => r.press(slot, v),
             RecordMode::FreeTime => r.press_at(slot, v, position),
         };
-        let (full, written, length, free) = (r.is_full(), r.written(), r.length(), r.mode() == RecordMode::FreeTime);
+        let (full, written, length, free) = (
+            r.is_full(),
+            r.written(),
+            r.length(),
+            r.mode() == RecordMode::FreeTime,
+        );
         match wrote {
             Wrote::Step { index, .. } => {
                 let next = if free { index } else { written.min(length - 1) };
@@ -478,7 +559,9 @@ impl App {
     /// step ties the steps it covered.
     pub(super) fn record_release(&mut self, slot: u8) -> Vec<Effect> {
         let position = self.engine.position();
-        let Some(r) = self.recorder.as_mut() else { return Vec::new() };
+        let Some(r) = self.recorder.as_mut() else {
+            return Vec::new();
+        };
         let before = r.steps().to_vec();
         r.release(slot, position);
         if r.steps() == before.as_slice() {
@@ -507,7 +590,9 @@ impl App {
 
     /// Undo (Step time) or Clear while recording.
     fn record_edit(&mut self, clear: bool) -> Vec<Effect> {
-        let Some(r) = self.recorder.as_mut() else { return Vec::new() };
+        let Some(r) = self.recorder.as_mut() else {
+            return Vec::new();
+        };
         let done = if clear {
             r.clear();
             true
@@ -517,9 +602,20 @@ impl App {
         if !done {
             return Vec::new();
         }
-        let next = if r.mode() == RecordMode::Step { r.written().min(r.length() - 1) } else { 0 };
+        let next = if r.mode() == RecordMode::Step {
+            r.written().min(r.length() - 1)
+        } else {
+            0
+        };
         let mut fx = self.show_recorded(next);
-        fx.push(Effect::Note(if clear { "recording cleared" } else { "last step taken back" }.to_string()));
+        fx.push(Effect::Note(
+            if clear {
+                "recording cleared"
+            } else {
+                "last step taken back"
+            }
+            .to_string(),
+        ));
         fx
     }
 
@@ -530,24 +626,37 @@ impl App {
         let lib = match Library::parse(text) {
             Ok(lib) => lib,
             Err(errors) => {
-                let mut fx: Vec<Effect> =
-                    errors.iter().take(20).map(|e| Effect::Note(format!("arp patterns file, {e}"))).collect();
-                fx.push(Effect::Note(format!("arp patterns file not used ({} bad lines); the built-in patterns stay",
-                                             errors.len())));
+                let mut fx: Vec<Effect> = errors
+                    .iter()
+                    .take(20)
+                    .map(|e| Effect::Note(format!("arp patterns file, {e}")))
+                    .collect();
+                fx.push(Effect::Note(format!(
+                    "arp patterns file not used ({} bad lines); the built-in patterns stay",
+                    errors.len()
+                )));
                 return fx;
             }
         };
         let (mut replaced, mut added) = (0, 0);
         let mut scales = 0;
         for (name, up, down) in lib.scales() {
-            match self.custom_scales.iter_mut().find(|(n, ..)| n.eq_ignore_ascii_case(name)) {
+            match self
+                .custom_scales
+                .iter_mut()
+                .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+            {
                 Some(slot) => *slot = (name.to_string(), up, down),
                 None => self.custom_scales.push((name.to_string(), up, down)),
             }
             scales += 1;
         }
         for (name, p) in lib.iter() {
-            match self.patterns.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            match self
+                .patterns
+                .iter_mut()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            {
                 Some(slot) => {
                     slot.1 = *p;
                     replaced += 1;
@@ -565,8 +674,10 @@ impl App {
         }
         let mut fx = self.load_pattern(self.pattern_index);
         fx.push(Effect::Patterns(self.patterns.clone()));
-        fx.push(Effect::Note(format!("arp patterns file: {added} added, {replaced} built-in ones replaced, \
-                                      {scales} scales of your own")));
+        fx.push(Effect::Note(format!(
+            "arp patterns file: {added} added, {replaced} built-in ones replaced, \
+                                      {scales} scales of your own"
+        )));
         fx
     }
 
@@ -583,8 +694,11 @@ impl App {
         for (name, up, down) in &self.custom_scales {
             let _ = lib.put_scale(name, &mpfree_arp::scale::scale_text(*up, *down));
         }
-        format!("# MPFree arp patterns, saved by the pad player. One per line: Name = pattern;\n\
-                 # your scales after [scales]. The syntax is in docs/project/arpeggiator.md.\n{}", lib.to_text())
+        format!(
+            "# MPFree arp patterns, saved by the pad player. One per line: Name = pattern;\n\
+                 # your scales after [scales]. The syntax is in docs/project/arpeggiator.md.\n{}",
+            lib.to_text()
+        )
     }
 
     // ------------------------------------------------------------ transport
@@ -609,7 +723,10 @@ impl App {
                 self.engine.sync(&c);
             }
             None if self.engine.synced() => {
-                self.engine.sync(&mpfree_arp::Clock { playing: false, ..mpfree_arp::Clock::playing(0, 0, self.settings.bpm) });
+                self.engine.sync(&mpfree_arp::Clock {
+                    playing: false,
+                    ..mpfree_arp::Clock::playing(0, 0, self.settings.bpm)
+                });
                 self.engine.set_tempo(self.settings.bpm);
             }
             None => {}
@@ -629,17 +746,26 @@ impl App {
         match i {
             0 => None,
             i if i < SCALES.len() => Some((SCALES[i].name, SCALES[i].mask, SCALES[i].down)),
-            i => self.custom_scales.get(i - SCALES.len()).map(|(n, u, d)| (n.as_str(), *u, *d)),
+            i => self
+                .custom_scales
+                .get(i - SCALES.len())
+                .map(|(n, u, d)| (n.as_str(), *u, *d)),
         }
     }
 
     fn scale_choice(&self) -> usize {
-        if self.arp.scale.is_some() { self.scale_pick } else { 0 }
+        if self.arp.scale.is_some() {
+            self.scale_pick
+        } else {
+            0
+        }
     }
 
     /// The arp's scale from the Scale row's choice and the root.
     fn apply_scale_pick(&mut self) {
-        self.arp.scale = self.scale_entry(self.scale_pick).map(|(_, up, down)| Scale::with_down(self.scale_root, up, down));
+        self.arp.scale = self
+            .scale_entry(self.scale_pick)
+            .map(|(_, up, down)| Scale::with_down(self.scale_root, up, down));
     }
 
     fn scale_text(&self) -> String {
@@ -653,46 +779,100 @@ impl App {
         let s = &self.arp;
         match item {
             ArpItem::Accent => ("Accent level", s.accent.to_string()),
-            ArpItem::Scale => ("Scale", match self.scale_entry(self.scale_choice()) {
-                None => "Off".to_string(),
-                Some((name, ..)) => name.to_string(),
-            }),
-            ArpItem::Root => ("Scale root", NOTE_NAMES[usize::from(self.scale_root)].to_string()),
+            ArpItem::Scale => (
+                "Scale",
+                match self.scale_entry(self.scale_choice()) {
+                    None => "Off".to_string(),
+                    Some((name, ..)) => name.to_string(),
+                },
+            ),
+            ArpItem::Root => (
+                "Scale root",
+                NOTE_NAMES[usize::from(self.scale_root)].to_string(),
+            ),
             ArpItem::Snap => ("Out-of-key notes", snap_text(s.snap).to_string()),
-            ArpItem::Strum => ("Strum", if s.strum == 0 { "Off".to_string() } else { format!("{} % of a step", s.strum) }),
-            ArpItem::Retrigger => ("New notes restart", if s.retrigger { "On" } else { "Off" }.to_string()),
-            ArpItem::SwingFrom => ("Swing from", if self.swing_from_transport { "Transport" } else { "Arp" }.to_string()),
+            ArpItem::Chord => ("Chord on each pad", s.chord.label().to_string()),
+            ArpItem::Run => ("Scale run", if s.run { "On" } else { "Off" }.to_string()),
+            ArpItem::Strum => (
+                "Strum",
+                if s.strum == 0 {
+                    "Off".to_string()
+                } else {
+                    format!("{} % of a step", s.strum)
+                },
+            ),
+            ArpItem::Retrigger => (
+                "New notes restart",
+                if s.retrigger { "On" } else { "Off" }.to_string(),
+            ),
+            ArpItem::SwingFrom => (
+                "Swing from",
+                if self.swing_from_transport {
+                    "Transport"
+                } else {
+                    "Arp"
+                }
+                .to_string(),
+            ),
         }
     }
 
     pub(super) fn arp_item_help(item: ArpItem) -> Vec<&'static str> {
         match item {
-            ArpItem::Accent => vec!["How loud accented steps play: pattern steps",
-                                    "marked with an accent, and steps recorded",
-                                    "from hits of 110 or more. FULL LEVEL and",
-                                    "Half Level override it."],
-            ArpItem::Scale => vec!["Keeps the arp's notes in key: a pad off the",
-                                   "scale plays the scale note below it, and the",
-                                   "octaves and Degree lanes move along the scale.",
-                                   "For a synth on the pads; leave it Off for drum",
-                                   "kits, whose pads are sounds, not notes."],
-            ArpItem::Root => vec!["The scale's first note. Pad 1 counts as C,",
-                                  "pad 2 as C# and so on up."],
-            ArpItem::Snap => vec!["With a scale on, what a held note outside it",
-                                  "plays: the scale note below it, the one above,",
-                                  "the nearer of the two (below when they are as",
-                                  "near), or nothing: its steps stay silent."],
-            ArpItem::Strum => vec!["Spreads the notes of a chord step across the",
-                                   "step, lowest first, like a strum. Off plays",
-                                   "them together."],
-            ArpItem::Retrigger => vec!["On: each new pad press starts the arp's order",
-                                       "and the pattern again from the first step.",
-                                       "Off: they carry on where they are."],
-            ArpItem::SwingFrom => vec!["Transport: while the sequencer plays with",
-                                       "swing on, the arp swings with it, on the",
-                                       "sequencer's grid. Arp: always the arp's own",
-                                       "swing (Q-Link 3). Stopped, or with the",
-                                       "sequencer's swing off, it is the arp's own."],
+            ArpItem::Accent => vec![
+                "How loud accented steps play: pattern steps",
+                "marked with an accent, and steps recorded",
+                "from hits of 110 or more. FULL LEVEL and",
+                "Half Level override it.",
+            ],
+            ArpItem::Scale => vec![
+                "Keeps the arp's notes in key: a pad off the",
+                "scale plays the scale note below it, and the",
+                "octaves and Degree lanes move along the scale.",
+                "For a synth on the pads; leave it Off for drum",
+                "kits, whose pads are sounds, not notes.",
+            ],
+            ArpItem::Root => vec![
+                "The scale's first note. Pad 1 counts as C,",
+                "pad 2 as C# and so on up.",
+            ],
+            ArpItem::Snap => vec![
+                "With a scale on, what a held note outside it",
+                "plays: the scale note below it, the one above,",
+                "the nearer of the two (below when they are as",
+                "near), or nothing: its steps stay silent.",
+            ],
+            ArpItem::Chord => vec![
+                "Each pad you hold plays a chord built from",
+                "the scale (from the major scale on the pad",
+                "without one), and the arp runs over all its",
+                "notes: one pad is enough for an arpeggio.",
+                "For a synth on the pads, not drum kits.",
+            ],
+            ArpItem::Run => vec![
+                "Arp and Pattern: the steps go through every",
+                "scale note between your lowest and highest",
+                "held notes (an octave up from one note), in",
+                "the order you picked. Every semitone without",
+                "a scale.",
+            ],
+            ArpItem::Strum => vec![
+                "Spreads the notes of a chord step across the",
+                "step, lowest first, like a strum. Off plays",
+                "them together.",
+            ],
+            ArpItem::Retrigger => vec![
+                "On: each new pad press starts the arp's order",
+                "and the pattern again from the first step.",
+                "Off: they carry on where they are.",
+            ],
+            ArpItem::SwingFrom => vec![
+                "Transport: while the sequencer plays with",
+                "swing on, the arp swings with it, on the",
+                "sequencer's grid. Arp: always the arp's own",
+                "swing (Q-Link 3). Stopped, or with the",
+                "sequencer's swing off, it is the arp's own.",
+            ],
         }
     }
 
@@ -700,20 +880,34 @@ impl App {
     pub(super) fn step_arp_item(&mut self, item: ArpItem, d: i32) -> Vec<Effect> {
         let before = (self.arp, self.scale_root, self.scale_pick);
         match item {
-            ArpItem::Accent => self.arp.accent = (i32::from(self.arp.accent) + ACCENT_STEP * d).clamp(1, 127) as u8,
+            ArpItem::Accent => {
+                self.arp.accent = (i32::from(self.arp.accent) + ACCENT_STEP * d).clamp(1, 127) as u8
+            }
             ArpItem::Scale => {
-                self.scale_pick = (self.scale_choice() as i32 + d).clamp(0, self.scale_choices() as i32 - 1) as usize;
+                self.scale_pick = (self.scale_choice() as i32 + d)
+                    .clamp(0, self.scale_choices() as i32 - 1)
+                    as usize;
                 self.apply_scale_pick();
             }
             ArpItem::Root => {
                 self.scale_root = (i32::from(self.scale_root) + d).clamp(0, 11) as u8;
-                self.arp.scale = self.arp.scale.map(|s| Scale::with_down(self.scale_root, s.mask, s.down));
+                self.arp.scale = self
+                    .arp
+                    .scale
+                    .map(|s| Scale::with_down(self.scale_root, s.mask, s.down));
             }
             ArpItem::Snap => {
-                let at = Snap::ALL.iter().position(|&x| x == self.arp.snap).unwrap_or(0) as i32;
+                let at = Snap::ALL
+                    .iter()
+                    .position(|&x| x == self.arp.snap)
+                    .unwrap_or(0) as i32;
                 self.arp.snap = Snap::ALL[(at + d).clamp(0, Snap::ALL.len() as i32 - 1) as usize];
             }
-            ArpItem::Strum => self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8,
+            ArpItem::Chord => self.arp.chord = step_in(&Chord::ALL, self.arp.chord, d),
+            ArpItem::Run => self.arp.run = d > 0,
+            ArpItem::Strum => {
+                self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8
+            }
             ArpItem::Retrigger => self.arp.retrigger = d > 0,
             ArpItem::SwingFrom => {
                 let t = d > 0;
@@ -721,7 +915,10 @@ impl App {
                     return Vec::new();
                 }
                 self.swing_from_transport = t;
-                return vec![Effect::Note(format!("arp swing from: {}", if t { "transport" } else { "arp" }))];
+                return vec![Effect::Note(format!(
+                    "arp swing from: {}",
+                    if t { "transport" } else { "arp" }
+                ))];
             }
         }
         if (self.arp, self.scale_root, self.scale_pick) == before {
@@ -731,9 +928,20 @@ impl App {
         let note = match item {
             ArpItem::Accent => format!("arp accent level: {}", self.arp.accent),
             ArpItem::Scale | ArpItem::Root => format!("arp scale: {}", self.scale_text()),
-            ArpItem::Snap => format!("arp out-of-key notes: {}", snap_text(self.arp.snap).to_ascii_lowercase()),
+            ArpItem::Snap => format!(
+                "arp out-of-key notes: {}",
+                snap_text(self.arp.snap).to_ascii_lowercase()
+            ),
+            ArpItem::Chord => format!(
+                "arp chord on each pad: {}",
+                self.arp.chord.label().to_ascii_lowercase()
+            ),
+            ArpItem::Run => format!("arp scale run: {}", if self.arp.run { "on" } else { "off" }),
             ArpItem::Strum => format!("arp strum: {} %", self.arp.strum),
-            ArpItem::Retrigger => format!("arp new notes restart: {}", if self.arp.retrigger { "on" } else { "off" }),
+            ArpItem::Retrigger => format!(
+                "arp new notes restart: {}",
+                if self.arp.retrigger { "on" } else { "off" }
+            ),
             ArpItem::SwingFrom => unreachable!("returned above"),
         };
         vec![Effect::Note(note)]
@@ -753,15 +961,19 @@ impl App {
                 if let Some(slot) = self.patterns.get_mut(self.pattern_index) {
                     slot.1 = p;
                 }
-                let mut fx = vec![Effect::Patterns(self.patterns.clone()),
-                                  // A library line, so the report carries it home.
-                                  Effect::Note(format!("arp-pattern-saved: {name} = {}", p.to_text())),
-                                  Effect::Workspace(self.workspace_view(true))];
+                let mut fx = vec![
+                    Effect::Patterns(self.patterns.clone()),
+                    // A library line, so the report carries it home.
+                    Effect::Note(format!("arp-pattern-saved: {name} = {}", p.to_text())),
+                    Effect::Workspace(self.workspace_view(true)),
+                ];
                 if self.pattern_file {
                     fx.push(Effect::SavePatterns(self.library_text()));
                 } else {
-                    fx.push(Effect::Note("the pattern stays in memory until the power goes off (no patterns file)"
-                        .to_string()));
+                    fx.push(Effect::Note(
+                        "the pattern stays in memory until the power goes off (no patterns file)"
+                            .to_string(),
+                    ));
                 }
                 fx
             }

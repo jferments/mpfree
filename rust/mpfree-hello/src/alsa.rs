@@ -94,8 +94,13 @@ impl Interval {
         }
         match self.single() {
             Some(v) => v.to_string(),
-            None => format!("{}{}..{}{}", if self.openmin { "(" } else { "[" }, self.min, self.max,
-                            if self.openmax { ")" } else { "]" }),
+            None => format!(
+                "{}{}..{}{}",
+                if self.openmin { "(" } else { "[" },
+                self.min,
+                self.max,
+                if self.openmax { ")" } else { "]" }
+            ),
         }
     }
 }
@@ -236,7 +241,11 @@ impl Pcm {
     /// Open a playback device without waiting if something else holds it, then
     /// switch to blocking writes.
     pub fn open_playback(path: &str) -> io::Result<Pcm> {
-        let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(sys::O_NONBLOCK)
+            .open(path)?;
         sys::clear_nonblock(file.as_raw_fd())?;
         Ok(Pcm { file })
     }
@@ -269,7 +278,10 @@ impl Pcm {
     /// shows as an error with raw_os_error() == Some(32) (EPIPE).
     pub fn write_frames(&self, interleaved: &[i32]) -> io::Result<u32> {
         if !sys::IS_DEVICE_ABI {
-            return Err(io::Error::new(io::ErrorKind::Unsupported, "device calls are for 32-bit ARM only"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "device calls are for 32-bit ARM only",
+            ));
         }
         let frames = (interleaved.len() / 2) as u32;
         // struct snd_xferi { snd_pcm_sframes_t result; void *buf; snd_pcm_uframes_t frames; } (32-bit)
@@ -308,8 +320,13 @@ pub fn parse_rawmidi_info(b: &[u8; RAWMIDI_INFO_SIZE]) -> RawMidiInfo {
     };
     // device 0, subdevice 4, stream 8, card 12, flags 16, id 20 (64), name 84 (80), subname 164 (32),
     // subdevices_count 196, subdevices_avail 200, reserved 204 (64).
-    RawMidiInfo { subdevice: get(b, 4), stream: get(b, 8), name: text(84, 80), subname: text(164, 32),
-                  subdevices: get(b, 196) }
+    RawMidiInfo {
+        subdevice: get(b, 4),
+        stream: get(b, 8),
+        name: text(84, 80),
+        subname: text(164, 32),
+        subdevices: get(b, 196),
+    }
 }
 
 pub enum Direction {
@@ -322,14 +339,22 @@ pub enum Direction {
 /// as alsa-lib does for hw:CARD,0,SUB. Non-blocking. The caller checks the
 /// returned info before using it.
 pub fn open_rawmidi(card: u32, subdevice: u32, dir: Direction) -> io::Result<(File, RawMidiInfo)> {
-    let ctl = OpenOptions::new().read(true).open(format!("/dev/snd/controlC{card}"))?;
-    sys::ioctl_int(ctl.as_raw_fd(), CTL_RAWMIDI_PREFER_SUBDEVICE, subdevice as i32)?;
+    let ctl = OpenOptions::new()
+        .read(true)
+        .open(format!("/dev/snd/controlC{card}"))?;
+    sys::ioctl_int(
+        ctl.as_raw_fd(),
+        CTL_RAWMIDI_PREFER_SUBDEVICE,
+        subdevice as i32,
+    )?;
     let mut opts = OpenOptions::new();
     match dir {
         Direction::Input => opts.read(true),
         Direction::Output => opts.write(true),
     };
-    let midi = opts.custom_flags(sys::O_NONBLOCK).open(format!("/dev/snd/midiC{card}D0"))?;
+    let midi = opts
+        .custom_flags(sys::O_NONBLOCK)
+        .open(format!("/dev/snd/midiC{card}D0"))?;
     drop(ctl);
     let mut info = info_request(&dir);
     sys::ioctl_buf(midi.as_raw_fd(), RAWMIDI_INFO, &mut info)?;
@@ -340,10 +365,14 @@ pub fn open_rawmidi(card: u32, subdevice: u32, dir: Direction) -> io::Result<(Fi
 /// file's substreams to describe, and fails with ENODEV if that one is not open.
 pub fn info_request(dir: &Direction) -> [u8; RAWMIDI_INFO_SIZE] {
     let mut info = [0u8; RAWMIDI_INFO_SIZE];
-    put(&mut info, 8, match dir {
-        Direction::Output => RAWMIDI_STREAM_OUTPUT,
-        Direction::Input => RAWMIDI_STREAM_INPUT,
-    });
+    put(
+        &mut info,
+        8,
+        match dir {
+            Direction::Output => RAWMIDI_STREAM_OUTPUT,
+            Direction::Input => RAWMIDI_STREAM_INPUT,
+        },
+    );
     info
 }
 
@@ -378,10 +407,20 @@ mod tests {
         assert!(!p.mask_has(PARAM_ACCESS, 0));
         assert!(p.mask_has(PARAM_FORMAT, FORMAT_S32_LE));
         assert!(!p.mask_has(PARAM_FORMAT, 2)); // S16_LE
-        for (param, v) in [(PARAM_CHANNELS, 2), (PARAM_RATE, 44_100), (PARAM_PERIOD_SIZE, 128), (PARAM_PERIODS, 3),
-                           (PARAM_SAMPLE_BITS, 32), (PARAM_FRAME_BITS, 64)] {
+        for (param, v) in [
+            (PARAM_CHANNELS, 2),
+            (PARAM_RATE, 44_100),
+            (PARAM_PERIOD_SIZE, 128),
+            (PARAM_PERIODS, 3),
+            (PARAM_SAMPLE_BITS, 32),
+            (PARAM_FRAME_BITS, 64),
+        ] {
             let i = p.interval(param);
-            assert_eq!((i.min, i.max, i.integer, i.empty), (v, v, true, false), "param {param}");
+            assert_eq!(
+                (i.min, i.max, i.integer, i.empty),
+                (v, v, true, false),
+                "param {param}"
+            );
             assert_eq!(i.single(), Some(v));
         }
         let b = p.interval(PARAM_BUFFER_SIZE);
@@ -389,7 +428,7 @@ mod tests {
         assert_eq!(b.describe(), format!("[0..{}]", u32::MAX));
         assert_eq!(get(&p.0, HW_RMASK), u32::MAX);
         assert_eq!(get(&p.0, 0), 0); // flags
-        // The FORMAT mask is the second 32-byte mask; S32_LE is bit 10 of its first word.
+                                     // The FORMAT mask is the second 32-byte mask; S32_LE is bit 10 of its first word.
         assert_eq!(get(&p.0, HW_MASKS + 32), 1 << 10);
         // RATE is the fourth interval (8, 9, 10, 11).
         assert_eq!(get(&p.0, HW_INTERVALS + 3 * 12), 44_100);
@@ -415,8 +454,16 @@ mod tests {
         b[164..187].copy_from_slice(b"MPC Studio Live Private");
         put(&mut b, 196, 3);
         let i = parse_rawmidi_info(&b);
-        assert_eq!(i, RawMidiInfo { subdevice: 1, stream: 1, name: "MPC One MIDI".into(),
-                                    subname: "MPC Studio Live Private".into(), subdevices: 3 });
+        assert_eq!(
+            i,
+            RawMidiInfo {
+                subdevice: 1,
+                stream: 1,
+                name: "MPC One MIDI".into(),
+                subname: "MPC Studio Live Private".into(),
+                subdevices: 3
+            }
+        );
     }
 
     #[test]
