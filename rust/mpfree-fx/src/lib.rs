@@ -21,6 +21,10 @@
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
 //!   look-ahead peak limiter that counts overs, and Soft clip and Raw modes.
+//! - [`Perform`]: sixteen pads of performance effects (stutter, beat
+//!   repeat, reverse, half speed, tape stop, vinyl brake, pitch drop,
+//!   trance gate, filter sweeps, crush, echo throws, a noise riser) that
+//!   start on the next grid line and snap back when let go.
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
 //!
@@ -53,6 +57,7 @@ mod master;
 mod mixer;
 mod modfx;
 mod oversample;
+mod perform;
 mod svf;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
@@ -71,6 +76,11 @@ pub use mixer::{
 };
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use oversample::{Down2, Up2};
+pub use perform::{
+    state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
+    LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
+    SLOTS as PERFORM_SLOTS,
+};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 
 pub use mpfree_node;
@@ -90,6 +100,7 @@ pub mod ids {
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
+    pub use crate::perform::ids as perform;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
 }

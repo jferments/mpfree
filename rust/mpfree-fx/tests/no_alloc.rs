@@ -442,3 +442,68 @@ fn the_mixer_never_allocates() {
     assert!(m.probe().lifetime().blocks > 0, "profiling recorded blocks");
     drop(back);
 }
+
+#[test]
+fn perform_fx_never_allocates() {
+    // Every pad pressed and let go at random, with the transport playing
+    // and stopped, settings moving, the echo waking and sleeping, resets.
+    let rate = 48_000;
+    let mut p = Perform::new();
+    p.prepare(rate, MAX_BLOCK);
+    let params = p.params().to_vec();
+    let mut rng = Lcg(23);
+    let mut l = vec![0.0f32; 512];
+    let mut r = vec![0.0f32; 512];
+    let mut events: Vec<Timed> = Vec::with_capacity(64);
+    let mut frame = 0u64;
+    watch(true);
+    for block in 0..6000u64 {
+        let len = 1 + (rng.next() as usize) % 512;
+        for i in 0..len {
+            l[i] = 0.5 * (rng.unit() * 2.0 - 1.0);
+            r[i] = 0.5 * (rng.unit() * 2.0 - 1.0);
+        }
+        events.clear();
+        for _ in 0..(rng.next() % 4) {
+            let at = (rng.next() as usize % (len + 2)) as u32;
+            let note = (rng.next() % 18) as u8;
+            let ev = match rng.next() % 6 {
+                0 | 1 => NodeEvent::NoteOn {
+                    note,
+                    velocity: 100,
+                },
+                2 | 3 => NodeEvent::NoteOff { note },
+                4 => {
+                    let q = &params[rng.next() as usize % params.len()];
+                    NodeEvent::Param {
+                        id: q.id,
+                        value: q.min + (q.max - q.min) * rng.unit(),
+                    }
+                }
+                _ => NodeEvent::AllOff,
+            };
+            events.push(Timed::new(at, ev));
+        }
+        events.sort_unstable_by_key(|e| e.offset);
+        let bpm = 70.0 + (block / 500) as f64 * 15.0;
+        let ctx = Ctx {
+            bpm,
+            beats: frame as f64 * bpm / 60.0 / rate as f64,
+            playing: (block / 700) % 4 != 3,
+            ..Ctx::new(rate, frame)
+        };
+        p.process(&ctx, &events, &mut l[..len], &mut r[..len]);
+        if block % 1999 == 0 {
+            p.reset();
+        }
+        let _ = (p.tail_frames(), p.param(5));
+        frame += len as u64;
+    }
+    watch(false);
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "allocations or frees on the audio path"
+    );
+    assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+}
