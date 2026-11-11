@@ -55,6 +55,29 @@ class RK3288RomTests(unittest.TestCase):
                     self.assertIn("First-stage identifier: RK32", output.getvalue())
                     self.assertIn("no file or hardware was modified", output.getvalue())
 
+    def test_upstream_second_stage_allowance(self):
+        self.assertEqual(rom.RK_MAX_BOOT_SIZE, 512 * 1024)
+        with tempfile.TemporaryDirectory() as root:
+            backup, sha = self.make_backup(Path(root))
+            # This deliberately represents the exact owner's 64-sector
+            # init + 1024-sector default maximum boot-stage allowance.
+            with backup.open("r+b") as fd:
+                fd.seek(rom.IDBLOCK_LBA * rom.SECTOR)
+                encrypted_header = fd.read(rom.SECTOR)
+                header = bytearray(rom.rc4(encrypted_header))
+                struct.pack_into("<H", header, 506, 64)
+                struct.pack_into("<H", header, 508, 1088)
+                fd.seek(rom.IDBLOCK_LBA * rom.SECTOR)
+                fd.write(rom.rc4(bytes(header)))
+            # The modified fixture no longer matches the original fixture hash.
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rom.inspect_idblock(backup, None)
+            text = output.getvalue()
+            self.assertIn("Declared init+boot size: 1088 sectors (557056 bytes)", text)
+            self.assertIn("Nominal second-stage allowance: 524288 bytes", text)
+            self.assertIn("not proof that 512 KiB", text)
+
     def test_idblock_bad_magic_and_wrong_hash(self):
         with tempfile.TemporaryDirectory() as root:
             backup, sha = self.make_backup(Path(root), bad_magic=True)
@@ -86,6 +109,16 @@ class RK3288RomTests(unittest.TestCase):
             link.symlink_to(original)
             with self.assertRaisesRegex(ValueError, "symlink"):
                 rom.inspect_rkimage(link)
+
+    def test_rkimage_max_size_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            file = Path(root) / "maxsize.rkimage"
+            file.write_bytes(b"RK32" + bytes(32768 - 4))
+            with contextlib.redirect_stdout(io.StringIO()):
+                rom.inspect_rkimage(file)
+            file.write_bytes(b"RK32" + bytes(32769 - 4))
+            with self.assertRaisesRegex(ValueError, "32768 bytes"):
+                rom.inspect_rkimage(file)
 
     def test_invalid_rkimage(self):
         with tempfile.TemporaryDirectory() as root:
