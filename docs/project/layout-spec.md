@@ -2,7 +2,7 @@
 
 **Status:** APPROVED by Jay on 2026-11-11 at 08:15Z ("Approve, Synth before Looper"). Every thread works to this. Any change to it needs Jay's approval again.
 **Owner:** the Hello MPC thread ("Build round 6 with looper, synths and sampler"). Send layout proposals there.
-**Shared layout means:** the top bar, the tab set and its order, the Play page's structure, the right-hand column, the pad grid, the hint line, Prefs, and the global buttons (MENU, SHIFT + MENU, STOP, SHIFT + STOP, NOTE REPEAT).
+**Shared layout means:** the top bar, the tab set and its order, the Play page's structure, the right-hand column, the pad grid, the hint line, Prefs, and the global buttons (MENU, SHIFT + MENU, STOP, SHIFT + STOP, SHIFT + ERASE, NOTE REPEAT, the mode buttons).
 
 ## 1. The screen
 
@@ -113,12 +113,25 @@ Built in round 9 to mockup J (Jay's direction, 10:16Z), with real data; side-by-
 - **MENU:** the page's options. On System info or the Touch screen rows, back to Prefs.
 - **SHIFT + MENU:** Prefs.
 - **STOP:** the transport, then silence.
-- **SHIFT + STOP:** the Console. It works without developer tools too, but has no strip then.
+- **SHIFT + STOP:** as on the MPC: stop, silence everything and go back to bar 1 (Jay, 20:40Z, control map decision 2).
+- **SHIFT + ERASE:** the Console and back (it moved off SHIFT + STOP). It works without developer tools too, but has no strip then. ERASE alone waits for live erase.
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
 - **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.
 - **REC, OVERDUB, UNDO:** they act on the page showing (Arrange, Looper, Sample), otherwise on the clips.
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
+- **SHIFT + REC:** Capture, on every page.
+- **SHIFT + PLAY START:** the metronome on or off.
+- **The mode buttons** go to the page with the same job (Jay, 20:40Z; the control map doc, https://claude.ai/artifact/CzSwDDjX1Ngc7LkhXP4KqD):
+  - MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+  - STEP SEQ: Play's Beats view.
+  - NEXT SEQ: Arrange.
+  - SAMPLER: Sample. SHIFT + SAMPLER: Looper.
+  - SAMPLE EDIT: Sample, on its Wave editor.
+  - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise Sample > Pads.
+  - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
+- **Found with Map controls first:** ERASE and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
+- **Still to come from the control map:** FILL (hold PLAY while the transport plays; double-press latches) when the trig conditions land; TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; Q-LINK (macro banks); SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
 
 ## 7. How changes happen
 

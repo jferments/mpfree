@@ -13,7 +13,7 @@
 //! - Map controls: every MPC One control in a list, found, skipped or still
 //!   to find, and a card for the one picked (`app::mapper`).
 //!
-//! - Console: the system log (the same page SHIFT + STOP opens), here with
+//! - Console: the system log (the same page SHIFT + ERASE opens), here with
 //!   the strip.
 //!
 //! A strip under the header switches between the pages.
