@@ -107,6 +107,10 @@ struct Options {
     mono_font: Option<PathBuf>,
     kits: PathBuf,
     keep_screen: bool,
+    /// An arp pattern library file to read at start (read-only).
+    patterns: Option<PathBuf>,
+    /// Save in the pattern workspace also writes `patterns`.
+    save_patterns: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -123,6 +127,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         mono_font: None,
         kits: PathBuf::from(KIT_PATH),
         keep_screen: false,
+        patterns: None,
+        save_patterns: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -146,6 +152,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
+            "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
+            "--save-patterns" => o.save_patterns = true,
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -166,6 +174,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.keepalive && o.command != "pads" {
         return Err("--keepalive goes with pads".to_string());
+    }
+    if o.patterns.is_some() && o.command != "app" {
+        return Err("--patterns goes with app".to_string());
+    }
+    if o.save_patterns && o.patterns.is_none() {
+        return Err("--save-patterns needs --patterns FILE (the file it writes)".to_string());
     }
     Ok(o)
 }
@@ -1269,6 +1283,43 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     result
 }
 
+/// The largest arp pattern library file read (a 64-step pattern with five
+/// full lanes is about 1 KB, so this is hundreds of patterns).
+const PATTERNS_MAX_BYTES: u64 = 256 * 1024;
+
+/// Reads the arp pattern library file (read-only).
+fn read_patterns(path: &Path) -> Result<String, String> {
+    let f = File::open(path).map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    f.take(PATTERNS_MAX_BYTES + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > PATTERNS_MAX_BYTES {
+        return Err(format!("larger than {} KB", PATTERNS_MAX_BYTES / 1024));
+    }
+    Ok(text)
+}
+
+/// Writes the arp pattern library file whole, never half: to `FILE.part`
+/// beside it, flushed to the disk, then renamed over `FILE`. A failure
+/// leaves `FILE` as it was and removes the `.part`. Returns the log line.
+fn write_patterns(path: &Path, text: &str) -> String {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let result = (|| -> io::Result<()> {
+        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&part)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        fs::rename(&part, path)
+    })();
+    match result {
+        Ok(()) => format!("arp patterns: saved {} bytes to {}", text.len(), path.display()),
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            format!("arp patterns: not saved to {} ({e}); {} is as it was", path.display(), path.display())
+        }
+    }
+}
+
 /// The system log, followed (`journalctl -f`, read-only) into the Console page.
 fn follow_journal(tx: SyncSender<gui::ToUi>) {
     let spawned = thread::Builder::new().name("mpfree-journal".into()).spawn(move || {
@@ -1397,6 +1448,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                      if timed { "STOP ends" } else { "STOP silences" }));
     ports.quiet = true;
     let mut fx = app.start();
+    // The arp's pattern library file, if one was given.
+    let (saved_tx, saved_rx) = std::sync::mpsc::channel::<String>();
+    if let Some(path) = &o.patterns {
+        match read_patterns(path) {
+            Ok(text) => fx.extend(app.load_patterns(&text)),
+            Err(e) => out.note(&format!("arp patterns file {}: {e}; the built-in patterns stay", path.display())),
+        }
+        app.pattern_file = o.save_patterns;
+    }
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
@@ -1445,7 +1505,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
-                    app.pad_up(pad);
+                    fx.extend(app.pad_up(pad));
                     held[pad] = false;
                     awaiting[pad] = false;
                     out.show(gui::ToUi::PadUp(pad));
@@ -1487,7 +1547,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
-                    app.pad_up(pad as usize);
+                    fx.extend(app.pad_up(pad as usize));
                     held[pad as usize] = false;
                     awaiting[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
@@ -1546,7 +1606,22 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
                 app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
                 app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
+                app::Effect::SavePatterns(text) => {
+                    // A file write can take a while (a USB stick): not on this thread.
+                    if let Some(path) = o.patterns.clone() {
+                        let tx = saved_tx.clone();
+                        let spawned = thread::Builder::new()
+                            .name("mpfree-patterns".into())
+                            .spawn(move || drop(tx.send(write_patterns(&path, &text))));
+                        if let Err(e) = spawned {
+                            out.note(&format!("arp patterns: not saved ({e})"));
+                        }
+                    }
+                }
             }
+        }
+        while let Ok(line) = saved_rx.try_recv() {
+            out.note(&line);
         }
         if let Some(p) = audio_change {
             totals.periods += play.periods;
@@ -2064,6 +2139,31 @@ mod tests {
         assert!(parse_args(&args("format")).is_err());
         assert!(parse_args(&args("")).is_err());
         assert!(parse_args(&args("pads click")).is_err());
+        let o = parse_args(&args("app --patterns /tmp/p.txt --save-patterns")).unwrap();
+        assert_eq!((o.patterns, o.save_patterns), (Some(PathBuf::from("/tmp/p.txt")), true));
+        assert!(parse_args(&args("app --save-patterns")).is_err(), "nothing to write to");
+        assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
+    }
+
+    #[test]
+    fn the_patterns_file_is_written_whole_or_not_at_all() {
+        let dir = std::env::temp_dir().join(format!("mpfree-patterns-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("patterns.txt");
+        let line = write_patterns(&file, "Skip = 1 . 3\n");
+        assert!(line.starts_with("arp patterns: saved 13 bytes"), "{line}");
+        assert_eq!(read_patterns(&file).unwrap(), "Skip = 1 . 3\n");
+        assert!(!dir.join("patterns.txt.part").exists());
+        // A folder that isn't there: nothing written, the old file kept.
+        let line = write_patterns(&dir.join("missing").join("p.txt"), "x = 1\n");
+        assert!(line.contains("not saved"), "{line}");
+        assert_eq!(read_patterns(&file).unwrap(), "Skip = 1 . 3\n");
+        // Too big to read.
+        fs::write(&file, vec![b'#'; PATTERNS_MAX_BYTES as usize + 1]).unwrap();
+        assert!(read_patterns(&file).unwrap_err().contains("larger than"));
+        assert!(read_patterns(&dir.join("none.txt")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
         for step in ["lights", "setup", "drums"] {
             let o = parse_args(&args(&format!("{step} --seconds 20"))).unwrap();
             assert_eq!((o.command.as_str(), o.seconds), (step, 20));
