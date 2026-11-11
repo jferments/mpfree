@@ -1,21 +1,27 @@
-//! What the pad player's controls do: the buttons, the wheel, the screen's
-//! tabs and menus, the button guide, Note Repeat and Latch.
+//! What the pad player's controls do: the buttons, the wheel, the Q-Links,
+//! the screen's tabs and menus, the button guide, Note Repeat, Latch and the
+//! arp (the quick band, the Arp panel and the pattern workspace; the rules
+//! are in the `arp` submodule).
 //!
 //! Pure logic, no I/O: the audio thread hands it the controller's events and
 //! the screen's actions, and carries out the `Effect`s it returns (lights,
 //! pages, kit changes). Pads go through the arpeggiator thread's engine
-//! (`mpfree-arp`), which plays them directly or repeats them (Note Repeat and
-//! Latch) on their exact frames. Pads are fed as slots 0..15 (pad 1 = 0), as
-//! that engine expects.
+//! (`mpfree-arp`), which plays them directly, repeats them (Note Repeat and
+//! Latch) or arpeggiates them on their exact frames. Pads are fed as slots
+//! 0..15 (pad 1 = 0), as that engine expects.
 //!
 //! Buttons: SHIFT 49, FULL LEVEL 39, STOP 81 and PLAY 82 are measured
-//! (docs/hardware/controller-protocol.md). TAP TEMPO is taken to be 53, the
-//! light that blinks at the tempo, until the guide confirms it. MENU, NOTE
-//! REPEAT, - and + are unknown, so the guide asks for them by name. That
-//! Half Level is SHIFT + FULL LEVEL and Latch is SHIFT + NOTE REPEAT is read
-//! from the panel's print, not measured.
+//! (docs/hardware/controller-protocol.md); MENU 123, NOTE REPEAT 11, TAP
+//! TEMPO 53, - 55 and + 54 were pressed in the round 5 button guide, so the
+//! guide no longer runs at power-on (Prefs still has it). Latch as SHIFT +
+//! NOTE REPEAT worked in round 5; Half Level as SHIFT + FULL LEVEL is read
+//! from the panel's print and not yet tried.
 
-use mpfree_arp::{Engine, Events, LatchMode, Mode, Rate};
+mod arp;
+
+pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
+
+use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, Recorder};
 use mpfree_controller::mpc_one::button;
 
 /// Button lights take the button's note as the CC number on the Private
@@ -34,6 +40,10 @@ pub enum View {
     Options,
     /// The button guide.
     Guide,
+    /// The Arp panel beside the pads (not a tab: it belongs to Play).
+    Arp,
+    /// The pattern workspace (full screen; Back returns to the panel).
+    Pattern,
 }
 
 pub const TABS: [&str; 4] = ["Play", "Debug", "Console", "Prefs"];
@@ -45,7 +55,7 @@ impl View {
 
     pub fn tab(self) -> Option<usize> {
         match self {
-            View::Play => Some(0),
+            View::Play | View::Arp | View::Pattern => Some(0),
             View::Debug => Some(1),
             View::Console => Some(2),
             View::Prefs => Some(3),
@@ -100,11 +110,16 @@ pub enum GuideStep {
     TapTempo,
     Minus,
     Plus,
+    Rec,
+    Overdub,
+    Undo,
+    PlayStart,
 }
 
 impl GuideStep {
-    const ALL: [GuideStep; 5] =
-        [GuideStep::Menu, GuideStep::NoteRepeat, GuideStep::TapTempo, GuideStep::Minus, GuideStep::Plus];
+    const ALL: [GuideStep; 9] =
+        [GuideStep::Menu, GuideStep::NoteRepeat, GuideStep::TapTempo, GuideStep::Minus, GuideStep::Plus,
+         GuideStep::Rec, GuideStep::Overdub, GuideStep::Undo, GuideStep::PlayStart];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -113,6 +128,10 @@ impl GuideStep {
             GuideStep::TapTempo => "TAP TEMPO",
             GuideStep::Minus => "- (next to the wheel)",
             GuideStep::Plus => "+ (next to the wheel)",
+            GuideStep::Rec => "REC",
+            GuideStep::Overdub => "OVERDUB",
+            GuideStep::Undo => "UNDO",
+            GuideStep::PlayStart => "PLAY START",
         }
     }
 
@@ -125,7 +144,7 @@ impl GuideStep {
     }
 }
 
-/// Buttons whose numbers came from the guide (or the TAP TEMPO guess).
+/// The buttons the guide asks for: measured in round 5, or learned again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ButtonMap {
     pub menu: Option<u8>,
@@ -133,11 +152,18 @@ pub struct ButtonMap {
     pub tap_tempo: Option<u8>,
     pub minus: Option<u8>,
     pub plus: Option<u8>,
+    /// For the time engine (transport and recording); nothing uses them yet.
+    pub rec: Option<u8>,
+    pub overdub: Option<u8>,
+    pub undo: Option<u8>,
+    pub play_start: Option<u8>,
 }
 
 impl ButtonMap {
-    pub fn guessed() -> ButtonMap {
-        ButtonMap { tap_tempo: Some(button::TAP_TEMPO), ..ButtonMap::default() }
+    /// The numbers the round 5 guide found on the reference MPC One.
+    pub fn measured() -> ButtonMap {
+        ButtonMap { menu: Some(button::MENU), note_repeat: Some(button::NOTE_REPEAT), tap_tempo: Some(button::TAP_TEMPO),
+                    minus: Some(button::MINUS), plus: Some(button::PLUS), ..ButtonMap::default() }
     }
 
     fn get(&self, s: GuideStep) -> Option<u8> {
@@ -147,6 +173,10 @@ impl ButtonMap {
             GuideStep::TapTempo => self.tap_tempo,
             GuideStep::Minus => self.minus,
             GuideStep::Plus => self.plus,
+            GuideStep::Rec => self.rec,
+            GuideStep::Overdub => self.overdub,
+            GuideStep::Undo => self.undo,
+            GuideStep::PlayStart => self.play_start,
         }
     }
 
@@ -157,6 +187,10 @@ impl ButtonMap {
             GuideStep::TapTempo => &mut self.tap_tempo,
             GuideStep::Minus => &mut self.minus,
             GuideStep::Plus => &mut self.plus,
+            GuideStep::Rec => &mut self.rec,
+            GuideStep::Overdub => &mut self.overdub,
+            GuideStep::Undo => &mut self.undo,
+            GuideStep::PlayStart => &mut self.play_start,
         };
         *slot = Some(note);
     }
@@ -274,6 +308,18 @@ pub enum Effect {
     ClearConsole,
     /// A line for the log.
     Note(String),
+    /// What the arp screens show: the panel, the quick band and the chip.
+    Arp(ArpView),
+    /// The arp's pattern list (names and patterns), when it changes.
+    Patterns(Vec<(String, Pattern)>),
+    /// The pattern workspace: open it on a pattern, or start or stop
+    /// recording on the pads.
+    Workspace(WorkspaceView),
+    /// A step recorded on the pads: the pattern so far (the steps not yet
+    /// written are rests) and the next step to write.
+    Recorded(Pattern, usize),
+    /// The data wheel in the workspace: turn the selected cell.
+    WorkspaceWheel(i32),
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
@@ -294,22 +340,53 @@ pub struct App {
     /// The page to go back to from Console, Options or the guide.
     back: View,
     selected: usize,
+    /// The buttons the guide asks for this time, and which one it is on.
+    guide_steps: Vec<GuideStep>,
     guide: usize,
     guide_note: String,
     taps: Vec<f64>,
     /// When the tempo's beats started (seconds), for the TAP TEMPO light.
     beat_zero: f64,
     tap_light: bool,
+    /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
+    /// when it is Direct.
+    arp_mode: Mode,
+    /// The arp's other settings (order, octaves, gate, swing); the rate is
+    /// `settings.rate` and the mode follows the buttons and pages.
+    arp: mpfree_arp::Settings,
+    /// The patterns to pick from (built in; Save changes them in memory).
+    patterns: Vec<(String, Pattern)>,
+    pattern_index: usize,
+    /// The pattern the engine plays (edited, mutated or recorded from the
+    /// list's).
+    pattern: Pattern,
+    mutations: u32,
+    /// Recording a pattern on the pads (Step mode) in the workspace.
+    recorder: Option<Recorder>,
+    /// Q-Link turns not yet used, per knob (rate and octaves need several).
+    qlink_turns: [i32; 4],
+    /// What the arp screens were last sent: the step and the notes, and
+    /// whether anything else changed since.
+    sent_step: u64,
+    sent_notes: mpfree_arp::NoteSet,
+    arp_dirty: bool,
 }
 
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
         let settings = Settings::default();
         let engine = Engine::new(sample_rate, settings.bpm);
-        let mut app = App { settings, map: ButtonMap::guessed(), engine, timed, shift: false, repeat_held: false,
+        let patterns = arp::built_in_patterns();
+        let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
+        let sent_notes = engine.active().clone();
+        let mut app = App { settings, map: ButtonMap::measured(), engine, timed, shift: false, repeat_held: false,
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
-                            selected: 0, guide: 0, guide_note: String::new(), taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false };
+                            selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
+                            taps: Vec::new(), beat_zero: 0.0,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
+                            pattern_index: 0, pattern, mutations: 0, recorder: None, qlink_turns: [0; 4],
+                            sent_step: 0, sent_notes, arp_dirty: true };
+        app.engine.set_pattern(pattern);
         app.update_engine();
         app
     }
@@ -322,12 +399,14 @@ impl App {
     /// The first page once everything is ready, and the lights to start with.
     pub fn start(&mut self) -> Vec<Effect> {
         let mut fx = vec![self.status(), Effect::Settings(self.settings.clone()),
-                          Effect::Light(button::FULL_LEVEL, LIGHT_OFF)];
-        if self.map.menu.is_none() || self.map.note_repeat.is_none() {
-            self.guide = 0;
-            self.guide_note.clear();
+                          Effect::Light(button::FULL_LEVEL, LIGHT_OFF), Effect::Patterns(self.patterns.clone()),
+                          self.arp_view()];
+        fx.extend(self.repeat_light());
+        // At power-on the guide asks only for buttons nobody has pressed yet.
+        let unknown: Vec<GuideStep> = GuideStep::ALL.iter().copied().filter(|&s| self.map.get(s).is_none()).collect();
+        if !unknown.is_empty() {
             self.back = View::Play;
-            self.view = View::Guide;
+            self.open_guide(unknown);
             fx.push(self.guide_view());
         }
         fx.push(Effect::Show(self.view));
@@ -345,12 +424,17 @@ impl App {
 
     // ------------------------------------------------------------ pads
 
-    pub fn pad_down(&mut self, slot: usize, velocity: u8) {
+    /// A pad pressed: it plays, and writes a step while recording a pattern.
+    pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
         self.engine.press(slot as u8, velocity.max(1));
+        self.record_press(slot as u8, velocity)
     }
 
     pub fn pad_up(&mut self, slot: usize) {
         self.engine.release(slot as u8);
+        if let Some(r) = self.recorder.as_mut() {
+            r.release(slot as u8, 0.0);
+        }
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
@@ -367,13 +451,20 @@ impl App {
         self.engine.active().contains(slot as u8)
     }
 
+    /// NOTE REPEAT is held or Latch is on.
     pub fn repeating(&self) -> bool {
         self.repeat_held || self.latched
     }
 
+    /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
+    /// may sound later than the press, and latched pads stay lit.
+    pub fn generating(&self) -> bool {
+        self.engine.settings().mode != Mode::Direct
+    }
+
     fn update_engine(&mut self) {
-        let mut s = self.engine.settings();
-        s.mode = if self.repeating() { Mode::Repeat } else { Mode::Direct };
+        let mut s = self.arp;
+        s.mode = self.engine_mode();
         s.rate = self.settings.rate;
         self.engine.set_settings(s);
         let latch = if self.latched { self.settings.latch_mode } else { LatchMode::Off };
@@ -381,6 +472,15 @@ impl App {
             self.engine.set_latch(latch);
         }
         self.engine.set_tempo(self.settings.bpm);
+        self.arp_dirty = true;
+    }
+
+    #[cfg(test)]
+    fn status_now(&self) -> Status {
+        match self.status() {
+            Effect::Status(s) => s,
+            _ => unreachable!(),
+        }
     }
 
     fn status(&self) -> Effect {
@@ -388,8 +488,9 @@ impl App {
                                 latched: self.latched, rate: self.settings.rate.label(), bpm: self.settings.bpm })
     }
 
+    /// The NOTE REPEAT light: on while the pads play through the arp.
     fn repeat_light(&self) -> Option<Effect> {
-        self.map.note_repeat.map(|n| Effect::Light(n, if self.repeating() { LIGHT_ON } else { LIGHT_OFF }))
+        self.map.note_repeat.map(|n| Effect::Light(n, if self.generating() { LIGHT_ON } else { LIGHT_OFF }))
     }
 
     // ------------------------------------------------------------ buttons
@@ -409,9 +510,7 @@ impl App {
         if !pressed {
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
-                self.update_engine();
-                fx.push(self.status());
-                fx.extend(self.repeat_light());
+                fx.extend(self.arp_changed());
             }
             return fx;
         }
@@ -439,27 +538,31 @@ impl App {
                 fx.extend(self.stop());
             }
         } else if Some(note) == self.map.note_repeat {
-            if shift {
-                self.latched = !self.latched;
-                fx.push(Effect::Note(if self.latched { "Latch on" } else { "Latch off" }.to_string()));
-            } else if self.latched {
-                self.latched = false;
-                fx.push(Effect::Note("Latch off".to_string()));
+            if shift || self.latched {
+                // SHIFT + NOTE REPEAT toggles Latch; NOTE REPEAT alone lets it go.
+                fx.extend(self.toggle_latch());
             } else {
                 self.repeat_held = true;
+                self.qlink_turns = [0; 4];
+                fx.extend(self.arp_changed());
             }
-            self.update_engine();
-            fx.push(self.status());
-            fx.extend(self.repeat_light());
         } else if Some(note) == self.map.menu {
-            let target = if shift { View::Prefs } else { View::Options };
-            fx.extend(self.toggle(target));
+            if self.repeat_held {
+                // NOTE REPEAT + MENU opens and closes the Arp panel.
+                fx.extend(self.toggle_panel());
+            } else if shift {
+                fx.extend(self.toggle(View::Prefs));
+            } else if self.view != View::Pattern {
+                fx.extend(self.toggle(View::Options));
+            }
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
+            } else if self.repeat_held || self.view == View::Arp {
+                fx.extend(self.arp_mode_step(d));
             } else {
                 fx.push(Effect::Kit(d));
             }
@@ -528,6 +631,9 @@ impl App {
                 let last = self.items().len() as i32 - 1;
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
+            View::Pattern => vec![Effect::WorkspaceWheel(delta)],
+            // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
+            _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
             _ => vec![Effect::Kit(delta)],
         }
     }
@@ -538,8 +644,10 @@ impl App {
         matches!(self.view, View::Options | View::Prefs)
     }
 
+    /// Show `v`. The page left is remembered for going back, unless it is
+    /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
-        if matches!(self.view, View::Play | View::Debug | View::Console) {
+        if self.view != v && matches!(self.view, View::Play | View::Debug | View::Console | View::Arp) {
             self.back = self.view;
         }
         self.view = v;
@@ -549,6 +657,7 @@ impl App {
             fx.push(self.menu_view());
         }
         fx.push(Effect::Show(v));
+        fx.extend(self.after_view_change());
         fx
     }
 
@@ -557,10 +666,28 @@ impl App {
         if self.view == v {
             let back = if self.back == v { View::Play } else { self.back };
             self.view = back;
-            vec![Effect::Show(back)]
+            let mut fx = vec![Effect::Show(back)];
+            fx.extend(self.after_view_change());
+            fx
         } else {
             self.show(v)
         }
+    }
+
+    /// The Arp panel and the workspace play the pads through the arp, so
+    /// the engine and the NOTE REPEAT light follow the page. Leaving the
+    /// workspace stops recording.
+    fn after_view_change(&mut self) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if self.view != View::Pattern && self.recorder.is_some() {
+            fx.extend(self.set_recording(false));
+        }
+        let was = self.generating();
+        self.update_engine();
+        if self.generating() != was {
+            fx.extend(self.repeat_light());
+        }
+        fx
     }
 
     /// A tab touched on the screen.
@@ -629,8 +756,9 @@ impl App {
                                  "plays about 2.9 ms sooner after a hit, with",
                                  "more risk of clicks (underruns). Changing it",
                                  "restarts the sound."],
-            Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +",
-                                      "again, one at a time."],
+            Item::FindButtons => vec!["Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +,",
+                                      "REC, OVERDUB, UNDO and PLAY START again,",
+                                      "one at a time."],
             Item::TouchLab => vec!["Timed touchscreen tests: taps, long presses,",
                                    "drags, swipes, flings and held fingers. Each",
                                    "step's result goes to the system log. Exit,",
@@ -714,16 +842,13 @@ impl App {
                 }
             }
             Item::FindButtons => {
-                self.guide = 0;
-                self.guide_note.clear();
-                self.view = View::Guide;
+                self.open_guide(GuideStep::ALL.to_vec());
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::Rate => {
                 s.rate = cycle(&Rate::ALL, s.rate, d);
-                self.update_engine();
-                fx.push(self.status());
+                fx.extend(self.arp_changed());
             }
             Item::Tempo => {
                 s.bpm = (s.bpm + d as f64).clamp(30.0, 300.0).round();
@@ -738,9 +863,7 @@ impl App {
             }
             Item::Latch => {
                 self.latched = d > 0;
-                self.update_engine();
-                fx.push(self.status());
-                fx.extend(self.repeat_light());
+                fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
             Item::MidiLog => s.midi_paused = d > 0,
@@ -755,16 +878,29 @@ impl App {
 
     // ------------------------------------------------------------ guide
 
+    /// Start the guide on `steps`, one at a time.
+    fn open_guide(&mut self, steps: Vec<GuideStep>) {
+        self.guide_steps = steps;
+        self.guide = 0;
+        self.guide_note.clear();
+        self.view = View::Guide;
+    }
+
+    fn guide_step(&self) -> Option<GuideStep> {
+        self.guide_steps.get(self.guide).copied()
+    }
+
     fn guide_view(&self) -> Effect {
+        let now = self.guide_step();
         let found = GuideStep::ALL.iter().map(|&s| {
             let v = match self.map.get(s) {
                 Some(n) => format!("button {n}"),
-                None if GuideStep::ALL[self.guide.min(4)] == s && self.guide < GuideStep::ALL.len() => "now".to_string(),
+                None if now == Some(s) => "now".to_string(),
                 None => "-".to_string(),
             };
             (s.short().to_string(), v)
         }).collect();
-        let (heading, mut lines) = match GuideStep::ALL.get(self.guide) {
+        let (heading, mut lines) = match now {
             Some(step) => (format!("Press {}", step.label()), vec![
                 "MPFree does not know this button's number yet.".to_string(),
                 "Press it once; the number goes in the log for next time.".to_string(),
@@ -781,19 +917,16 @@ impl App {
     fn guide_press(&mut self, note: u8) -> Vec<Effect> {
         // STOP skips a button, so the guide can be finished without touch.
         if note == button::STOP {
-            return self.guide_button(if self.guide < GuideStep::ALL.len() { 0 } else { 1 });
+            return self.guide_button(if self.guide_step().is_some() { 0 } else { 1 });
         }
-        let Some(&step) = GuideStep::ALL.get(self.guide) else { return vec![self.guide_view()] };
+        let Some(step) = self.guide_step() else { return vec![self.guide_view()] };
         if let Some(name) = self.map.name(note).filter(|_| self.map.get(step) != Some(note)) {
             if self.map.get(step).is_none() || GuideStep::ALL.iter().all(|&s| s.short() != name) {
                 self.guide_note = format!("That was {name} (button {note}).");
                 return vec![self.guide_view()];
             }
         }
-        // A guessed number is replaced by what was pressed.
-        if step == GuideStep::TapTempo {
-            self.map.tap_tempo = None;
-        }
+        // Asked again from Prefs: what was pressed replaces what was known.
         self.map.set(step, note);
         self.guide_note = format!("{} is button {note}.", step.short());
         let mut fx = vec![Effect::Note(format!("button guide: {} is button {note}", step.short()))];
@@ -803,18 +936,19 @@ impl App {
 
     fn next_guide_step(&mut self) -> Vec<Effect> {
         self.guide += 1;
-        if self.guide < GuideStep::ALL.len() {
+        if self.guide_step().is_some() {
             return vec![self.guide_view()];
         }
         self.finish_guide()
     }
 
     fn finish_guide(&mut self) -> Vec<Effect> {
-        self.guide = GuideStep::ALL.len();
+        self.guide = self.guide_steps.len();
         self.view = self.back;
         let mut fx = vec![Effect::Note(format!("button guide done: {}", self.map.describe())), self.status()];
         fx.extend(self.repeat_light());
         fx.push(Effect::Show(self.view));
+        fx.extend(self.after_view_change());
         fx
     }
 
@@ -823,8 +957,7 @@ impl App {
         if self.view != View::Guide {
             return Vec::new();
         }
-        if i == 0 && self.guide < GuideStep::ALL.len() {
-            let step = GuideStep::ALL[self.guide];
+        if let (0, Some(step)) = (i, self.guide_step()) {
             self.guide_note = format!("Skipped {}.", step.short());
             let mut fx = vec![Effect::Note(format!("button guide: {} skipped", step.short()))];
             fx.extend(self.next_guide_step());
@@ -838,18 +971,32 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_arp::EventKind;
+    use mpfree_arp::{EventKind, Order};
+    use mpfree_arp_ui::view::{ArpAction, PatternButton};
+    use mpfree_arp_ui::workspace::WsAction;
 
-    const MENU: u8 = 123;
-    const REPEAT: u8 = 11;
+    const MENU: u8 = button::MENU;
+    const REPEAT: u8 = button::NOTE_REPEAT;
 
+    /// The pad player with every button known (the time engine's four get
+    /// made-up numbers, so the guide stays closed).
     fn ready() -> App {
         let mut app = App::new(44_100, false);
-        app.map.menu = Some(MENU);
-        app.map.note_repeat = Some(REPEAT);
+        (app.map.rec, app.map.overdub, app.map.undo, app.map.play_start) = (Some(90), Some(91), Some(92), Some(93));
         let fx = app.start();
         assert!(fx.contains(&Effect::Show(View::Play)));
         app
+    }
+
+    fn held(app: &mut App, note: u8, f: impl FnOnce(&mut App) -> Vec<Effect>) -> Vec<Effect> {
+        app.button(note, true, 0.0);
+        let fx = f(app);
+        app.button(note, false, 0.0);
+        fx
+    }
+
+    fn notes(app: &mut App, frames: u32) -> Vec<u8> {
+        ons(app, frames).into_iter().map(|(_, n, _)| n).collect()
     }
 
     fn press(app: &mut App, note: u8) -> Vec<Effect> {
@@ -992,23 +1139,32 @@ mod tests {
     }
 
     #[test]
-    fn stop_skips_a_button_in_the_guide() {
+    fn at_power_on_the_guide_asks_only_for_unknown_buttons() {
         let mut app = App::new(44_100, false);
-        app.start();
+        assert_eq!(app.map.menu, Some(123));
+        assert_eq!((app.map.note_repeat, app.map.tap_tempo, app.map.minus, app.map.plus), (Some(11), Some(53), Some(55), Some(54)));
+        let fx = app.start();
+        assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press REC")));
         let fx = press(&mut app, button::STOP);
-        assert!(fx.contains(&Effect::Note("button guide: MENU skipped".into())));
+        assert!(fx.contains(&Effect::Note("button guide: REC skipped".into())));
         assert_eq!(app.view(), View::Guide);
-        for _ in 0..4 {
-            press(&mut app, button::STOP);
-        }
+        // PLAY is named, not taken for PLAY START.
+        press(&mut app, button::STOP);
+        press(&mut app, button::STOP);
+        let fx = press(&mut app, button::PLAY);
+        assert!(matches!(&fx[0], Effect::Guide(g) if g.lines[0].contains("PLAY (button 82)")));
+        press(&mut app, button::STOP);
         assert_eq!(app.view(), View::Play);
-        assert_eq!(app.map.menu, None);
+        assert_eq!(app.map.rec, None);
+        assert_eq!(app.map.menu, Some(MENU));
     }
 
     #[test]
     fn the_guide_learns_buttons_by_name() {
-        let mut app = App::new(44_100, false);
-        let fx = app.start();
+        let mut app = ready();
+        app.map = ButtonMap::default();
+        app.tab(3);
+        let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.iter().any(|e| matches!(e, Effect::Guide(g) if g.heading == "Press MENU")));
         // A measured button is named, not taken.
@@ -1023,19 +1179,173 @@ mod tests {
         assert_eq!(app.map.note_repeat, None);
         press(&mut app, REPEAT);
         assert_eq!(app.map.note_repeat, Some(REPEAT));
-        // TAP TEMPO replaces the guess.
         press(&mut app, 54);
         assert_eq!(app.map.tap_tempo, Some(54));
         app.guide_button(0); // skip -
         let fx = app.guide_button(1); // done
         assert_eq!(app.view(), View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.contains("MENU = button 123")
-                                             && n.contains("- = not found"))));
-        // The guide again from Prefs.
+                                             && n.contains("- = not found") && n.contains("UNDO = not found"))));
+        // The guide again from Prefs, every button.
         app.tab(3);
         let fx = app.step_item(4, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
+        assert_eq!(app.guide_steps.len(), 9);
+    }
+
+    #[test]
+    fn note_repeat_turns_on_the_arp_mode_the_panel_picked() {
+        let mut app = ready();
+        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        // Hold NOTE REPEAT: Repeat, and - / + pick the mode, the wheel the order.
+        app.button(REPEAT, true, 0.0);
+        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        press(&mut app, button::PLUS);
+        assert_eq!(app.engine.settings().mode, Mode::Arp);
+        app.wheel(1);
+        assert_eq!(app.engine.settings().order, Order::ALL[1]);
+        let fx = app.button(REPEAT, false, 0.0);
+        assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
+        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)], "the wheel is the kit again");
+        // Held again: the arp, not Repeat.
+        app.pad_down(0, 100);
+        app.pad_down(4, 100);
+        let fx = app.button(REPEAT, true, 0.0);
+        assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_ON)));
+        let _ = ons(&mut app, 128);
+        let got = notes(&mut app, 4 * 5513);
+        assert!(got.contains(&0) && got.contains(&4), "{got:?}");
+        assert!(got.len() >= 3, "{got:?}");
+    }
+
+    #[test]
+    fn note_repeat_and_menu_open_the_arp_panel() {
+        let mut app = ready();
+        held(&mut app, REPEAT, |a| a.button(MENU, true, 0.0));
+        app.button(MENU, false, 0.0);
+        assert_eq!(app.view(), View::Arp);
+        // The panel plays the pads through its mode, Repeat to begin with.
+        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        assert!(app.generating());
+        // - / + walk its tabs, Direct included.
+        let fx = press(&mut app, button::MINUS);
+        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
+        press(&mut app, button::PLUS);
+        press(&mut app, button::PLUS);
+        press(&mut app, button::PLUS);
+        assert_eq!(app.engine.settings().mode, Mode::Pattern);
+        // The wheel picks a pattern, the Q-Links rate, gate, swing and octaves.
+        app.wheel(2);
+        assert_eq!(app.pattern_index, 2);
+        assert_eq!(*app.engine.pattern(), app.patterns[2].1);
+        assert_eq!(app.qlink(1, 5, None), Some(vec![Effect::Status(app.status_now()), Effect::Light(REPEAT, LIGHT_ON)]));
+        assert_eq!(app.engine.settings().gate, 60);
+        assert_eq!(app.qlink(3, 3, None), Some(Vec::new()), "octaves need a longer turn");
+        app.qlink(3, 1, None);
+        assert_eq!(app.engine.settings().octaves, 2);
+        app.qlink(0, 3, None);
+        assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
+        app.qlink(2, 0, Some(127));
+        assert_eq!(app.engine.settings().swing, 75, "absolute positions without Akai's session");
+        // MENU: the options, and back to the panel.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        assert!(app.generating(), "the panel's options keep the arp on");
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Arp);
+        // The chip (or NOTE REPEAT + MENU) closes it: the pads play as pressed.
+        app.toggle_panel();
+        assert_eq!(app.view(), View::Play);
+        assert!(!app.generating());
+        assert_eq!(app.qlink(0, 1, None), None, "Q-Link 1 is the level again");
+    }
+
+    #[test]
+    fn pads_arpeggiate_on_the_panel() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.arp_action(ArpAction::Order(Order::Down));
+        app.pad_down(0, 100);
+        app.pad_down(2, 100);
+        app.pad_up(0);
+        app.pad_up(2);
+        assert!(ons(&mut app, 20_000).is_empty(), "not latched: nothing after letting go");
+        app.arp_action(ArpAction::Latch);
+        app.pad_down(0, 100);
+        app.pad_down(2, 100);
+        app.pad_up(0);
+        app.pad_up(2);
+        let got = notes(&mut app, 4 * 5513 + 100);
+        assert_eq!(&got[..4], &[2, 0, 2, 0], "Down over pads 1 and 3: {got:?}");
+        // The screens hear of it once per change.
+        assert!(matches!(app.arp_poll(), Some(Effect::Arp(v)) if v.latched && v.notes.len() == 2));
+        assert_eq!(app.arp_poll(), None);
+        let _ = ons(&mut app, 5513);
+        assert!(app.arp_poll().is_some(), "a new step");
+        press(&mut app, button::STOP);
+        assert!(!app.latched);
+    }
+
+    #[test]
+    fn the_workspace_records_on_the_pads() {
+        let mut app = ready();
+        app.toggle_panel();
+        let fx = app.arp_action(ArpAction::Button(PatternButton::Record));
+        assert_eq!(app.view(), View::Pattern);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if w.open && !w.recording)));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.open && w.recording)));
+        assert_eq!(app.engine.settings().mode, Mode::Direct, "pads sound as pressed while recording");
+        let len = app.recorder.unwrap().length();
+        assert_eq!(len, 8, "at least 8 steps, though Straight has 1");
+        // Pad 1 writes "1", pad 16 a rest, pad 13 the next note.
+        let fx = app.pad_down(0, 100);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Recorded(p, 1) if p.len() == len)));
+        app.pad_up(0);
+        assert_eq!(ons(&mut app, 128).len(), 1, "the pad still sounds");
+        app.pad_down(15, 100);
+        app.pad_up(15);
+        let mut fx = Vec::new();
+        for _ in 2..len {
+            fx = app.pad_down(12, 120);
+            app.pad_up(12);
+        }
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.recording)), "full: recording stops");
+        assert_eq!(app.pattern.steps()[0], mpfree_arp::Step::play(mpfree_arp::Pick::Index(1)));
+        assert_eq!(app.pattern.steps()[1], mpfree_arp::Step::Rest);
+        assert!(matches!(app.pattern.steps()[2], mpfree_arp::Step::Play { accent: true, .. }), "a hard hit");
+        assert_eq!(app.engine.settings().mode, Mode::Repeat, "the panel's mode again");
+        // Save keeps it in the list (in memory); Back returns to the panel.
+        let p = app.pattern;
+        let fx = app.workspace_action(WsAction::Save(p));
+        assert!(fx.iter().any(|e| matches!(e, Effect::Patterns(l) if l[0].1 == p)));
+        app.workspace_action(WsAction::Back);
+        assert_eq!(app.view(), View::Arp);
+    }
+
+    #[test]
+    fn leaving_the_workspace_stops_recording_and_edits_reach_the_engine() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Button(PatternButton::Edit));
+        let edited = Pattern::parse("1 . 2! _").unwrap();
+        app.workspace_action(WsAction::Changed(edited));
+        assert_eq!(*app.engine.pattern(), edited);
+        assert!(matches!(app.arp_view(), Effect::Arp(v) if v.pattern_changed));
+        app.workspace_action(WsAction::Record(true));
+        assert!(app.recorder.is_some());
+        let fx = app.tab(1);
+        assert!(app.recorder.is_none());
+        assert!(fx.iter().any(|e| matches!(e, Effect::Workspace(w) if !w.recording)));
+        assert_eq!(app.workspace_action(WsAction::Back), Vec::new(), "only in the workspace");
+        // Original goes back to the list's pattern.
+        app.tab(0);
+        app.toggle_panel();
+        app.arp_action(ArpAction::Button(PatternButton::Original));
+        assert!(matches!(app.arp_view(), Effect::Arp(v) if !v.pattern_changed));
     }
 
     #[test]
