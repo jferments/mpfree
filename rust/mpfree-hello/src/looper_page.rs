@@ -9,7 +9,7 @@
 use crate::app::Settings;
 use crate::looping::{bars_text, LoopSource, LoopWave, LooperView};
 use mpfree_arp_ui::widgets::{Button, ButtonRow};
-use mpfree_looper::Phase;
+use mpfree_looper::{LayerInfo, Phase, MAX_LAYERS};
 use mpfree_ui::draw;
 use mpfree_ui::wave::{Beats, Waveform};
 use mpfree_ui::widgets::StatList;
@@ -149,6 +149,11 @@ pub struct LoopStrip {
     pub right_wide: String,
     /// The layers' names, layer 1 first ("Drums", "Bass").
     pub names: Vec<String>,
+    /// Each layer's speaker: muted (crossed out), layer 1 first.
+    pub muted: Vec<bool>,
+    /// Each layer heard (not muted, and not left out by another's solo);
+    /// the others are drawn grey.
+    pub heard: Vec<bool>,
     /// The pill: "PLAYING", "OVERDUB"; None while empty.
     pub state: Option<(String, Tone)>,
     /// Shown in the loop's place while it is empty.
@@ -163,6 +168,8 @@ pub struct LoopStrip {
     /// The playhead's x and everything else as last drawn, so a playhead
     /// move redraws only the columns it passed.
     drawn: RefCell<Option<(Rect, StripLook, i32)>>,
+    /// Where each layer's speaker was drawn, layer 1 first, for a tap.
+    speakers: RefCell<Vec<Rect>>,
 }
 
 /// What the strip shows apart from the playhead.
@@ -171,6 +178,8 @@ struct StripLook {
     right: String,
     right_wide: String,
     names: Vec<String>,
+    muted: Vec<bool>,
+    heard: Vec<bool>,
     state: Option<(String, Tone)>,
     note: String,
     bars: usize,
@@ -215,6 +224,8 @@ impl Default for LoopStrip {
             right: String::new(),
             right_wide: String::new(),
             names: Vec::new(),
+            muted: Vec::new(),
+            heard: Vec::new(),
             state: None,
             note: String::new(),
             position: None,
@@ -225,6 +236,7 @@ impl Default for LoopStrip {
                 .map(|b| (b.to_string(), false))
                 .collect(),
             drawn: RefCell::new(None),
+            speakers: RefCell::new(Vec::new()),
         }
     }
 }
@@ -260,6 +272,8 @@ impl LoopStrip {
             right: self.right.clone(),
             right_wide: self.right_wide.clone(),
             names: self.names.clone(),
+            muted: self.muted.clone(),
+            heard: self.heard.clone(),
             state: self.state.clone(),
             note: self.note.clone(),
             bars: self.bars,
@@ -267,6 +281,11 @@ impl LoopStrip {
             buttons: self.buttons.clone(),
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize as u64),
         }
+    }
+
+    /// Layer `k` is heard (as far as the strip knows).
+    fn is_heard(&self, k: usize) -> bool {
+        self.heard.get(k).copied().unwrap_or(true)
     }
 
     fn play_x(&self, w: Rect) -> Option<i32> {
@@ -309,7 +328,11 @@ impl Widget for LoopStrip {
                         let y0 = (acc * half) as i32;
                         acc += amp;
                         let y1 = (acc * half).min(half) as i32;
-                        let c = LAYER_COLOURS[li % LAYER_COLOURS.len()];
+                        let c = if self.is_heard(li) {
+                            LAYER_COLOURS[li % LAYER_COLOURS.len()]
+                        } else {
+                            t.text_faint.mix(t.surface, 0.45)
+                        };
                         let c = if past { c } else { c.mix(t.surface, 0.35) };
                         if y1 > y0 {
                             cx.canvas
@@ -361,37 +384,57 @@ impl Widget for LoopStrip {
             };
             draw::pill(cx, panel.right() - sw - 10, panel.y + 8, 26, state, c, true);
         }
-        // The layers, beside the title.
-        let mut lx = r.x + 12 + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
-        let shown = self.layers.min(4);
-        for li in 0..shown {
+        // The layers beside the title, each with its speaker, as many as
+        // fit before the heading's right-hand text.
+        let (head, _) = draw::card_head(r);
+        let right_w = if right.is_empty() {
+            0
+        } else {
+            cx.measure(FontId::Sans, draw::HEAD_PX, right) + 20
+        };
+        let end = head.right() - right_w;
+        let mut lx = head.x + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
+        let cy = head.y + head.h / 2;
+        let mut speakers = Vec::new();
+        for li in 0..self.layers {
             let name = self
                 .names
                 .get(li)
                 .cloned()
                 .unwrap_or_else(|| format!("Layer {}", li + 1));
             let tw = cx.measure(FontId::Sans, draw::HEAD_PX, &name);
-            draw::dot(cx, lx + 4, r.y + 19, 4, LAYER_COLOURS[li]);
+            // The dot, the name, a gap, the speaker.
+            let sx = lx + 12 + tw + 18;
+            let more = self.layers - li - 1;
+            let room = if more > 0 { 36 } else { 0 };
+            if sx + 12 + room > end {
+                cx.text(
+                    FontId::Sans,
+                    draw::HEAD_PX,
+                    Rect::new(lx, head.y, 60, head.h),
+                    Align::Left,
+                    t.text_faint,
+                    &format!("+{}", self.layers - li),
+                );
+                break;
+            }
+            let heard = self.is_heard(li);
+            let colour = LAYER_COLOURS[li % LAYER_COLOURS.len()];
+            draw::dot(cx, lx + 4, cy, 4, if heard { colour } else { t.text_faint });
             cx.text(
                 FontId::Sans,
                 draw::HEAD_PX,
-                Rect::new(lx + 12, r.y + 10, tw + 4, 18),
+                Rect::new(lx + 12, head.y, tw + 4, head.h),
                 Align::Left,
-                t.text_dim,
+                if heard { t.text_dim } else { t.text_faint },
                 &name,
             );
-            lx += tw + 30;
+            let muted = self.muted.get(li).copied().unwrap_or(false);
+            draw::speaker(cx, sx, cy, t.text_dim, muted);
+            speakers.push(draw::speaker_hit(sx, cy));
+            lx = sx + 12 + 18;
         }
-        if self.layers > shown {
-            cx.text(
-                FontId::Sans,
-                draw::HEAD_PX,
-                Rect::new(lx, r.y + 10, 60, 18),
-                Align::Left,
-                t.text_faint,
-                &format!("+{}", self.layers - shown),
-            );
-        }
+        *self.speakers.borrow_mut() = speakers;
         if let Some(row) = btns {
             for (br, (label, on)) in self.button_rects(row).iter().zip(&self.buttons) {
                 let lit = if label == "Overdub" || label == "Stop dub" {
@@ -445,6 +488,9 @@ impl Widget for LoopStrip {
         if phase != Touch::Down {
             return None;
         }
+        if let Some(k) = self.speakers.borrow().iter().position(|h| h.contains(x, y)) {
+            return Some(EventKind::Toggle(k));
+        }
         let row = LoopStrip::parts(r).1?;
         self.button_rects(row)
             .iter()
@@ -464,6 +510,8 @@ pub struct LooperPage {
     /// The take recording now: its layer, and how many hits of each group
     /// of sounds went into it.
     take: Option<(usize, Vec<(&'static str, u32)>)>,
+    /// The layers' ids and mix as of the last view, play order.
+    layers: [Option<LayerInfo>; MAX_LAYERS],
 }
 
 impl LooperPage {
@@ -489,6 +537,7 @@ impl LooperPage {
             hold_age: 0,
             names: Vec::new(),
             take: None,
+            layers: [None; MAX_LAYERS],
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -508,6 +557,11 @@ impl LooperPage {
     /// The layers' names as they are (the previews name theirs).
     pub fn set_names(&mut self, names: &[&str]) {
         self.names = names.iter().map(|n| n.to_string()).collect();
+    }
+
+    /// Layer `k`'s id and mix as of the last view (for its speaker).
+    pub fn layer_info(&self, k: usize) -> Option<LayerInfo> {
+        self.layers.get(k).copied().flatten()
     }
 
     /// The name of layer `k`, as the strip shows it.
@@ -593,6 +647,7 @@ impl LooperPage {
 
     pub fn update(&mut self, ui: &mut Ui, v: &LooperView, settings: &Settings) {
         self.follow_takes(v);
+        self.layers = v.layers;
         let s = &v.status;
         // The meter, with a peak held for about 2 s of updates.
         self.hold_age += 1;
@@ -853,6 +908,13 @@ impl LooperPage {
             }
         };
         let names: Vec<String> = (0..s.layers).map(|k| self.layer_name(k)).collect();
+        let info = |k: usize| v.layers.get(k).copied().flatten();
+        let muted: Vec<bool> = (0..s.layers)
+            .map(|k| info(k).is_some_and(|l| l.muted))
+            .collect();
+        let heard: Vec<bool> = (0..s.layers)
+            .map(|k| info(k).is_none_or(|l| l.audible))
+            .collect();
         let state = match s.phase {
             Phase::Empty => None,
             Phase::Armed => Some(("ARMED", Tone::Warn)),
@@ -896,6 +958,8 @@ impl LooperPage {
             if st.right != right
                 || st.right_wide != right_wide
                 || st.names != names
+                || st.muted != muted
+                || st.heard != heard
                 || st.state != state
                 || st.note != note
                 || st.position != position
@@ -906,6 +970,8 @@ impl LooperPage {
                 st.right = right;
                 st.right_wide = right_wide;
                 st.names = names;
+                st.muted = muted;
+                st.heard = heard;
                 st.state = state;
                 st.note = note;
                 st.position = position;
