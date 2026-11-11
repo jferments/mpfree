@@ -529,17 +529,23 @@ impl Poly {
         let w1 = Wave::from_index(f32::from(s.wave1));
         let w2 = Wave::from_index(f32::from(s.wave2));
         let mode = FilterMode::from_index(f32::from(s.mode));
+        // Silent sources are skipped (their phases wait).
+        let (use1, use2, use_sub, use_noise) = (s.lvl1 != 0.0, s.lvl2 != 0.0, s.sub != 0.0, s.noise != 0.0);
         for v in &mut self.voices {
             if v.state == State::Free { continue; }
             for k in from..to {
                 let mut l = 0.0;
                 let mut r = 0.0;
                 for u in 0..s.unison {
-                    let a = osc(w1, &mut v.ph1[u], v.dt1[u], v.pw1) * s.lvl1 + osc(w2, &mut v.ph2[u], v.dt2[u], v.pw2) * s.lvl2;
+                    let mut a = 0.0;
+                    if use1 { a += osc(w1, &mut v.ph1[u], v.dt1[u], v.pw1) * s.lvl1; }
+                    if use2 { a += osc(w2, &mut v.ph2[u], v.dt2[u], v.pw2) * s.lvl2; }
                     l += a * v.pan_l[u];
                     r += a * v.pan_r[u];
                 }
-                let c = osc(Wave::Pulse, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub + self.rng.bipolar() * s.noise;
+                let mut c = 0.0;
+                if use_sub { c += osc(Wave::Pulse, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub; }
+                if use_noise { c += self.rng.bipolar() * s.noise; }
                 let l = drive(l + c, s.drive_gain, s.drive_amt);
                 let r = drive(r + c, s.drive_gain, s.drive_amt);
                 let l = v.filt[0].process(mode, &v.coefs, l);
