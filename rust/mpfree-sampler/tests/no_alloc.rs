@@ -2,7 +2,8 @@
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
 //! loops, layers, chokes, stealing, filters, sample-accurate events,
-//! granular pads and pad pressure.
+//! granular pads, pad pressure, and swapping prebuilt views (the pad player
+//! switches kits that way).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -98,6 +99,16 @@ fn render_and_events_never_allocate() {
     }
     let mut e = Engine::new(rate, 24);
     e.set_view(EngineView::build(&p, rate));
+    // A second view, swapped in and out while voices play: only the views
+    // move, nothing is built or dropped.
+    let mut q = Project::new();
+    q.add_source(s.clone());
+    for i in 0..16usize {
+        let mut r = Region::whole(&s);
+        r.start = (i as u64) * 1000;
+        q.set_pad(i, Some(Pad::new("k", Layer::new(r))), None).unwrap();
+    }
+    let mut spare = Some(EngineView::build(&q, rate));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     e.render(&mut l, &mut r); // warm up outside the watch
@@ -121,6 +132,7 @@ fn render_and_events_never_allocate() {
         if block % 5 == 0 { e.schedule(block % 90, Event::NoteOff { pad: 16 + ((block + 1) % 4) as u8 }); }
         e.schedule(block * 17 % 128, Event::Pressure { pad: (block % 20) as u8, value: (block * 37 % 128) as u8 });
         if block % 300 == 299 { e.apply(Event::AllOff); }
+        if block % 50 == 25 { spare = Some(e.set_view(spare.take().unwrap())); }
         e.render(&mut l, &mut r);
         rec.push_planar(&l, &r);
     }
