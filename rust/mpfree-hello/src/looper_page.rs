@@ -1189,6 +1189,7 @@ mod tests {
             solo: false,
             audible: true,
             recording: false,
+            faded: 1.0,
         }
     }
 
