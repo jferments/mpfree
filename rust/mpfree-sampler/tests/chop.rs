@@ -180,3 +180,43 @@ fn root_pitch_of_the_source_and_of_each_slice() {
     assert_eq!(a.pitch_of(half, half), None);
     assert_eq!(a.pitch_of(10 * half, 11 * half), None);
 }
+
+#[test]
+fn chop_to_pads_adds_the_set_and_the_pads_in_one_undo_step_from_a_template() {
+    let s = Source::new("s", RATE, 2, vec![0.1; 16_000]).unwrap();
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut region = Region::whole(&s);
+    (region.gain_db, region.tune_cents, region.channels, region.start) = (-3.0, 120, ChannelPick::Left, 4_000);
+    let mut template = Pad::new("Break", Layer::new(region));
+    (template.level_db, template.mute_group, template.polyphony) = (-6.0, Some(2), 1);
+    p.set_pad(0, Some(template.clone()), None).unwrap();
+    p.set_pad(9, Some(Pad::new("keep", Layer::new(Region::whole(&s)))), None).unwrap();
+    p.clear_history();
+    let c = ChopSet::grid("Break", &s, 8).unwrap();
+    // Slices 2..6 (the third to the sixth) on pads 8..12.
+    let set = p.chop_to_pads(c.clone(), 2, 4, 8, Some(&template)).unwrap();
+    assert_eq!((set, p.chop_sets.len()), (0, 1));
+    let pad = p.pad(9).unwrap();
+    assert_eq!(pad.name, "Break 2", "numbered from 1 within what was chopped");
+    assert_eq!((pad.level_db, pad.mute_group, pad.polyphony), (-6.0, Some(2), 1), "the template's pad settings");
+    let r = &pad.layers[0].region;
+    assert_eq!((r.start, r.end), c.bounds(3).unwrap(), "the slice, not the template's start");
+    assert_eq!((r.gain_db, r.tune_cents, r.channels), (-3.0, 120, ChannelPick::Left), "the template's region settings");
+    assert_eq!(pad.layers.len(), 1);
+    assert_eq!(p.pad(11).unwrap().name, "Break 4");
+    assert!(p.pad(12).is_none());
+    assert!(p.undo(), "one undo takes the pads and the set back");
+    assert!(p.chop_sets.is_empty() && p.pad(8).is_none());
+    assert_eq!(p.pad(9).unwrap().name, "keep");
+    assert!(!p.can_undo());
+    assert!(p.redo());
+    assert_eq!((p.chop_sets.len(), p.pad(10).unwrap().name.as_str()), (1, "Break 3"));
+    // Without a template the pads are plain; a bad request changes nothing.
+    let before = p.revision();
+    assert!(p.chop_to_pads(c.clone(), 6, 4, 0, None).is_err(), "only 8 slices");
+    assert!(p.chop_to_pads(c.clone(), 0, 8, 124, None).is_err(), "past the last pad");
+    assert_eq!((p.revision(), p.chop_sets.len()), (before, 1));
+    p.chop_to_pads(c, 0, 1, 20, None).unwrap();
+    assert_eq!(p.pad(20).unwrap().level_db, Pad::new("x", Layer::new(Region::whole(&s))).level_db);
+}

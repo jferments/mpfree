@@ -197,6 +197,11 @@ impl Player {
         self.kit
     }
 
+    /// Which of kit `kit`'s 16 pads have a sound (none past the last kit).
+    pub fn sounds(&self, kit: usize) -> [bool; 16] {
+        self.sounds.get(kit).copied().unwrap_or([false; 16])
+    }
+
     /// Play kit `k` from the next hit on. Sounds already playing finish.
     /// Swaps views: it never allocates or frees.
     pub fn select(&mut self, k: usize) {
@@ -218,10 +223,17 @@ impl Player {
     /// Puts `swap`'s view in place for kit `swap.kit` (in the engine, if
     /// that kit is playing) and leaves the view it replaces in `swap`, to
     /// be freed off the audio thread. Sounds already playing finish as they
-    /// started; the next hit plays the new view. Never allocates or frees.
+    /// started; the next hit plays the new view, and the pads with a sound
+    /// are the view's (a chop adds some). Never allocates or frees.
     /// Returns false, leaving `swap` as it was, if there is no such kit.
     pub fn swap_view(&mut self, swap: &mut ViewSwap) -> bool {
         let Some(view) = swap.view.take() else { return false };
+        // A chop can put sounds on pads that had none (and undo take them away).
+        if let Some(has) = self.sounds.get_mut(swap.kit) {
+            for (p, h) in has.iter_mut().enumerate() {
+                *h = view.has_pad(p);
+            }
+        }
         if swap.kit == self.kit {
             swap.view = Some(self.engine.set_view(view));
         } else if let Some(slot) = self.views.get_mut(swap.kit) {
@@ -503,6 +515,30 @@ mod tests {
         assert_eq!(none.view.as_ref().map(|v| v.revision), Some(projects[1].revision()));
         p.select(1);
         assert!(p.hit_at(0, 127, 0));
+    }
+
+    #[test]
+    fn a_chopped_kit_plays_its_new_pads_once_its_view_swaps_in() {
+        use mpfree_sampler::model::ChopSet;
+        let mut kits = kits();
+        let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
+        let mut projects = player.take_projects();
+        let empty = (0..16).find(|&p| !player.sounds(0)[p]).expect("a pad without a sound in kit 1");
+        assert!(!player.hit_at(empty, 100, 0));
+        let from = (0..16).find(|&p| player.sounds(0)[p]).unwrap();
+        let project = &mut projects[0];
+        let source = project.source(project.pad(from).unwrap().layers[0].region.source).unwrap().clone();
+        let c = ChopSet::grid("chop", &source, 2).unwrap();
+        let template = project.pad(from).cloned();
+        project.chop_to_pads(c, 0, 1, empty, template.as_ref()).unwrap();
+        let mut swap = ViewSwap { kit: 0, view: Some(EngineView::build(project, 44_100)) };
+        assert!(player.swap_view(&mut swap));
+        assert!(player.sounds(0)[empty] && player.hit_at(empty, 100, 0));
+        // Undone, the pad is silent again.
+        project.undo();
+        let mut swap = ViewSwap { kit: 0, view: Some(EngineView::build(project, 44_100)) };
+        assert!(player.swap_view(&mut swap));
+        assert!(!player.hit_at(empty, 100, 0));
     }
 
     #[test]

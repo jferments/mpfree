@@ -47,10 +47,12 @@ pub const WHEEL: &str = "smp-wheel";
 /// waveform beside the Region list, the Q-Link cards and the wheel card,
 /// and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, smp-bar:60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
-                          row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:22)";
+                          row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:26)";
 
-/// The pad editor's tabs. Only Wave is built so far.
+/// The pad editor's tabs.
 pub const TABS: [&str; 5] = ["Wave", "Chop", "Play", "Grain", "FX"];
+/// The tabs built so far; the others are drawn faint.
+pub const BUILT: [&str; 2] = ["Wave", "Chop"];
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or turn the wheel to zoom · tap the wave to \
@@ -359,7 +361,7 @@ pub fn moved(r: &Region, m: Mark, to: u64, frames: u64) -> Region {
 }
 
 /// The next zero crossing at or after `at`, within `ahead` frames.
-fn next_zero_crossing(x: &[f32], at: usize, ahead: usize) -> Option<usize> {
+pub(crate) fn next_zero_crossing(x: &[f32], at: usize, ahead: usize) -> Option<usize> {
     let end = x.len().min(at.saturating_add(ahead).saturating_add(1));
     (at.max(1)..end).find(|&i| x[i] == 0.0 || (x[i - 1] < 0.0) != (x[i] < 0.0))
         .map(|i| if x[i - 1].abs() < x[i].abs() { i - 1 } else { i })
@@ -397,7 +399,7 @@ impl WaveTab {
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &WaveState) -> Result<WaveTab, String> {
         let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| *t == "Wave").collect();
+        bar.enabled = TABS.iter().map(|t| BUILT.contains(t)).collect();
         ui.add(BAR, bar);
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());

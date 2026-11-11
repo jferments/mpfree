@@ -26,9 +26,10 @@
 //!                      Half Level, MENU and Prefs, the button guide; the synth
 //!                      (Poly) as the kit list's last entry, its pages on the
 //!                      Synth tab with Q-Links 1-4 on the marked knobs; the
-//!                      Sample tab, the sampler's pad editor (Start, End, the
-//!                      loop and fades of the pad last hit, Q-Links 1-4 on the
-//!                      markers; edits stay in memory); STOP ends it
+//!                      Sample tab, the sampler's pad editor (Wave: Start, End,
+//!                      the loop and fades of the pad last hit, Q-Links 1-4 on
+//!                      the markers; Chop: slices put on the kit's pads; edits
+//!                      stay in memory); STOP ends it
 //!   app [--gain-db G] [--kits FILE] [--keep-screen]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
@@ -1027,6 +1028,12 @@ fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
     rest
 }
 
+/// Resting pad colours for kit number `k` from which pads have a sound
+/// (`sampler::Player::sounds`, which follows the Sample tab's chops).
+fn sound_colours(has: [bool; 16], k: usize) -> [[u8; 3]; 16] {
+    has.map(|h| if h { akai::kit_colour(k) } else { [0; 3] })
+}
+
 /// List a kit's sounds by pad.
 fn show_kit(out: &mut Out, kit: &kit::Kit) {
     for s in &kit.sounds {
@@ -1488,9 +1495,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let mut synth_meters = synth.meters();
     // The Sample tab: a kit view the screen had no room to take back yet
     // (kept here, never freed on this thread), how many views were swapped
-    // in, and its playheads.
+    // in, its playheads, and whether a view changed the playing kit's pads.
     let mut view_back: Option<gui::ToUi> = None;
     let mut views_swapped = 0u64;
+    let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
@@ -1617,6 +1625,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
+                        recolour |= swap.kit == player.kit();
                     }
                     // Back to the screen thread, which frees the old view.
                     if let Some(old) = view_back.take() {
@@ -1845,7 +1854,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     synth.all_off();
                 }
                 player.select(k);
-                rest = kit_pad_colours(&kits[k], k);
+                rest = sound_colours(player.sounds(k), k);
                 out.note(&format!("kit {}: {} ({} sounds)", k + 1, kits[k].name, kits[k].sounds.len()));
                 ports.send_batch(out, false, &format!("kit {}'s pad colours", k + 1), &as_slices(&pad_colours(&rest)))?;
             }
@@ -1939,6 +1948,19 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
             if changed || moved && transport_shown_at.elapsed() >= TRANSPORT_EVERY {
                 out.show(gui::ToUi::Transport(now));
                 (shown_transport, transport_shown_at) = (now, Instant::now());
+            }
+        }
+        // A chop (or its undo) changed which pads of the playing kit have a
+        // sound: their resting colours follow.
+        if std::mem::take(&mut recolour) && !synth_on {
+            let fresh = sound_colours(player.sounds(player.kit()), player.kit());
+            for pad in 0..16 {
+                if fresh[pad] != rest[pad] {
+                    rest[pad] = fresh[pad];
+                    if !lit[pad] {
+                        ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
+                    }
+                }
             }
         }
         // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
