@@ -31,6 +31,8 @@ use mpfree_touch_evdev::{EvdevFile, TouchReader, TouchSource};
 use mpfree_arp::{Mode, Pattern};
 use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
 use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
+use mpfree_time_ui::view::{self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE};
+use mpfree_time_ui::TimeAction;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::widgets::{Card, Chip, Fader, Header, Label, ListItem, ListView, Loading, LogPanel, OptionList,
                          OptionRow, PadGrid, StatList};
@@ -44,6 +46,12 @@ use std::time::{Duration, Instant};
 
 pub const CONSOLE_LAYOUT: &str = "col(header:60, log:*, hint:26)";
 pub const PLAY_LAYOUT: &str = "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
+
+/// A page's layout with the time engine's transport bar under the header
+/// (the Play page and the arp's panel and quick band).
+pub fn with_bar(layout: &str) -> String {
+    time_view::with_transport(layout).unwrap_or_else(|| layout.to_string())
+}
 pub const DEBUG_LAYOUT: &str = "col(header:60, row(midi:*, col(events:*, timing:232):460):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
@@ -204,8 +212,16 @@ pub enum ToUi {
     Workspace(Box<WorkspaceView>),
     /// A step recorded on the pads: the pattern so far and the next step.
     Recorded(Box<Pattern>, usize),
+    /// Everything the time engine's screens show, when the clips, the
+    /// launches or the takes change.
+    Time(Box<TimeState>),
+    /// The transport alone (the position moves every period).
+    Transport(TransportInfo),
     /// The data wheel in the workspace.
     WorkspaceWheel(i32),
+    /// The data wheel on the Clips page: step the selected record setting,
+    /// or scroll the grid.
+    ClipsWheel { delta: i32, scroll: bool },
     Quit,
 }
 
@@ -225,6 +241,8 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
+    /// A touch on the transport bar or the Clips page.
+    Time(TimeAction),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -266,6 +284,9 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
+    /// The time engine's bar and Clips page, and what they show.
+    time_page: TimePage,
+    pub time: TimeState,
 }
 
 impl Player {
@@ -291,8 +312,9 @@ impl Player {
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let time_page = TimePage::add_to(&mut ui).expect("clips layout");
         ui.add_full_page("Loading", "loading").expect("loading layout");
-        ui.add_page("Play", PLAY_LAYOUT).expect("play layout");
+        ui.add_page("Play", &with_bar(PLAY_LAYOUT)).expect("play layout");
         ui.add_page("Debug", DEBUG_LAYOUT).expect("debug layout");
         ui.add_page("Console", SYSLOG_LAYOUT).expect("console layout");
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
@@ -303,7 +325,8 @@ impl Player {
         let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
         let arp = ArpState { settings: mpfree_arp::Settings::default(), pattern, patterns, pattern_index: 0,
                              pattern_changed: false, notes: Vec::new(), step: 0, latched: false, bpm: 120.0 };
-        let arp_panel = ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
+        let mut arp_panel = ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
+        arp_panel.set_layout_wrap(&mut ui, with_bar).expect("arp layouts with the bar");
         let workspace = PatternWorkspace::add(&mut ui, PATTERN_PAGE, RECORD_PAGE, &name, pattern)
             .expect("workspace layouts");
         ui.add("touchlab", TouchLabView::new());
@@ -317,7 +340,8 @@ impl Player {
                              session: ("Starting".to_string(), Tone::Dim),
                              console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
                              arp_panel, workspace, arp, qlink_focus: None, arp_chip: None, fingers: Vec::new(),
-                             outbox: Vec::new() };
+                             outbox: Vec::new(), time_page, time: TimeState::default() };
+        p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
         p.refresh_chips();
         p.refresh_hint();
@@ -436,6 +460,7 @@ impl Player {
             match self.view {
                 View::Play => format!("Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   \
                                        MENU: options   ·   {stop}"),
+                View::Clips => CLIPS_HINT.to_string(),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   MENU: options   ·   {stop}"),
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + STOP: back"
                     .to_string(),
@@ -687,6 +712,26 @@ impl Player {
                 }
                 self.refresh_arp();
             }
+            ToUi::Time(st) => {
+                self.time = *st;
+                self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::Transport(info) => {
+                self.time.transport = info;
+                self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::ClipsWheel { delta, scroll: true } => {
+                self.time_page.scroll(&self.ui, delta);
+                self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::ClipsWheel { delta, scroll: false } => {
+                // The row last touched (the armed track to begin with).
+                let index = self.ui.get::<OptionList>(time_view::RECORD).map_or(0, |l| l.selected);
+                let ev = UiEvent { widget: time_view::RECORD.to_string(), kind: EventKind::Step { index, delta } };
+                if let Some(a) = time_view::action(&ev, &self.time) {
+                    self.outbox.push(FromUi::Time(a));
+                }
+            }
             ToUi::Quit => {}
         }
     }
@@ -788,6 +833,7 @@ impl Player {
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play => "Play".to_string(),
+            View::Clips => CLIPS_PAGE.to_string(),
             View::Debug => "Debug".to_string(),
             View::Console => "Console".to_string(),
             View::Prefs => "Prefs".to_string(),
@@ -799,6 +845,10 @@ impl Player {
         let relabel = (self.view == View::Pattern) != (v == View::Pattern);
         self.switch_page(&page);
         self.view = v;
+        if v == View::Clips {
+            // How many slots fit is known once the grid is on screen.
+            self.time_page.update(&mut self.ui, &self.time);
+        }
         if relabel {
             self.label_pads();
         }
@@ -868,6 +918,9 @@ impl Player {
                 a.map(|a| FromUi::Workspace(Box::new(a)))
             }
             (w, _) if w.starts_with("arp-") => self.arp_panel.action(&ev, &self.arp, &mut self.qlink_focus).map(FromUi::Arp),
+            (time_view::TRANSPORT | time_view::CLIPS | time_view::RECORD | time_view::TAKES, _) => {
+                time_view::action(&ev, &self.time).map(FromUi::Time)
+            }
             _ => None,
         }
     }
@@ -1209,7 +1262,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
-            Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit => {}
+            Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
+            Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit
+            | Effect::Time(_) => {}
         }
     }
 }
@@ -1234,6 +1289,71 @@ fn quiet_player(fonts: Fonts) -> Player {
         }
     }
     p
+}
+
+/// The Clips page with the real time engine behind it: tapping Track 1's
+/// first slot recorded a two-bar beat from the pads (kick, snare, hats),
+/// REC punched out at bar 3, the clip plays on at 3.2, and Track 2 is
+/// armed for the next one.
+pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
+    use crate::time::{Pads, TimeHost};
+    use mpfree_play::Event;
+    struct Silent;
+    impl Pads for Silent {
+        fn hit_at(&mut self, _pad: usize, _velocity: u8, _offset: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _pad: usize, _offset: u32) {}
+        fn stop_all(&mut self) {}
+    }
+    const RATE: u32 = 44_100;
+    const PERIOD: u32 = 128;
+    const BAR: i64 = 4 * 960;
+    let mut host = TimeHost::new(RATE, 120.0)?;
+    host.act(TimeAction::NewClip { track: 0, slot: 0 })?;
+    // (song tick, pad, velocity): kick on 1 and 3 (and the "and" of 3),
+    // snare on 2 and 4, closed hat on every eighth; twice.
+    let mut hits = Vec::new();
+    for bar in 0..2 {
+        for (tick, pad, velocity) in [(0, 0, 118), (1920, 0, 104), (2400, 0, 90), (960, 1, 112), (2880, 1, 116)] {
+            hits.push((bar * BAR + tick, pad, velocity));
+        }
+        for eighth in 0..8 {
+            hits.push((bar * BAR + eighth * 480, 2, if eighth % 2 == 0 { 96 } else { 70 }));
+        }
+    }
+    let mut notes: Vec<(i64, Event)> = hits.iter()
+        .flat_map(|&(t, pad, velocity)| [(t, Event::NoteOn { note: pad, velocity }), (t + 120, Event::NoteOff { note: pad })])
+        .collect();
+    notes.sort_by_key(|n| n.0);
+    let ticks_per_frame = 960.0 * 120.0 / 60.0 / f64::from(RATE);
+    let mut next = 0;
+    let mut run_to = |host: &mut TimeHost, end: i64| -> Result<(), String> {
+        for _ in 0..100_000 {
+            let at = host.info().position;
+            if at >= end {
+                return Ok(());
+            }
+            let period_end = at as f64 + f64::from(PERIOD) * ticks_per_frame;
+            while next < notes.len() && (notes[next].0 as f64) < period_end {
+                let offset = ((notes[next].0 - at).max(0) as f64 / ticks_per_frame) as u32;
+                host.pad(offset.min(PERIOD - 1), notes[next].1);
+                next += 1;
+            }
+            host.period(PERIOD, &mut Silent);
+        }
+        Err(format!("the sample never reached tick {end}"))
+    };
+    // The first period starts recording at bar 1.
+    run_to(&mut host, 2 * BAR - 120)?;
+    host.act(TimeAction::Transport(mpfree_transport::Command::Record))?;
+    run_to(&mut host, 2 * BAR + 960 + 240)?;
+    host.act(TimeAction::Arm(Some(1)))?;
+    run_to(&mut host, 2 * BAR + 960 + 300)?;
+    let mut p = quiet_player(fonts);
+    p.apply(ToUi::Time(Box::new(host.state())));
+    p.apply(ToUi::Show(View::Clips));
+    Ok(p)
 }
 
 /// A sample player with an app behind it (every button known, so no guide).
@@ -1293,6 +1413,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(g.button(button_play(), true, 0.0));
     apply_effects(&mut guide, fx);
     out.push(("guide", guide));
+    match sample_clips(fonts()) {
+        Ok(p) => out.push(("clips", p)),
+        Err(e) => eprintln!("clips sample: {e}"),
+    }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -1361,14 +1485,56 @@ mod tests {
     use std::io::ErrorKind;
 
     #[test]
+    fn the_clips_page_shows_the_engine_and_turns_taps_into_actions() {
+        use mpfree_time_ui::widgets::{BarButton, ClipGrid, TransportBar};
+        use mpfree_transport::Command;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        assert_eq!(p.page(), CLIPS_PAGE);
+        // Recorded from the pads: two bars of kick, snare and hats.
+        assert_eq!(p.time.done.iter().map(|t| (t.number, t.added)).collect::<Vec<_>>(), vec![(1, 26)]);
+        assert_eq!((p.time.armed, p.time.launch(0).map(|l| l.slot)), (Some(1), Some(0)));
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let cell = |p: &Player, track, slot| {
+            let r = p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().cell_rect(grid, track, slot).unwrap();
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let empty = cell(&p, 1, 0);
+        assert_eq!(tap(&mut p, empty), Some(FromUi::Time(TimeAction::NewClip { track: 1, slot: 0 })));
+        let playing = cell(&p, 0, 0);
+        assert_eq!(tap(&mut p, playing), Some(FromUi::Time(TimeAction::StopClip(0))));
+        // The bar knows its buttons once drawn, as on the screen.
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let play = TransportBar::button_rect(p.ui.rect_of(time_view::TRANSPORT).unwrap(), BarButton::Play).unwrap();
+        assert_eq!(tap(&mut p, (play.x + play.w / 2, play.y + play.h / 2)),
+                   Some(FromUi::Time(TimeAction::Transport(Command::Play))));
+        // The wheel steps the selected record setting: the armed track first.
+        p.apply(ToUi::ClipsWheel { delta: 1, scroll: false });
+        assert_eq!(p.take_actions(), vec![FromUi::Time(TimeAction::Arm(Some(2)))]);
+        // SHIFT + wheel scrolls the grid.
+        p.apply(ToUi::ClipsWheel { delta: 1, scroll: true });
+        assert_eq!(p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title, "Clips · slots 2–7 of 16");
+        assert!(p.take_actions().is_empty());
+    }
+
+    #[test]
     fn layouts_fit_the_screen() {
         let mut p = Player::new(Fonts::embedded(), SCREEN, false, None);
         assert_eq!(p.ui.rect_of("loading"), Some(mpfree_ui::Rect::new(0, 0, 1280, 800)));
         p.apply(ToUi::Show(View::Play));
         let pads = p.ui.rect_of("pads").unwrap();
         assert!(pads.w > 700 && pads.h > 600, "{pads:?}");
+        // Under the transport bar four kits show at once; the list scrolls
+        // to the selected kit.
         let kits = p.ui.rect_of("kits").unwrap();
-        assert!(kits.h >= 300, "{kits:?}");
+        assert!(kits.h >= 14 + 34 + 4 * 46, "{kits:?}");
+        assert_eq!(p.ui.rect_of(time_view::TRANSPORT).map(|r| (r.y, r.h)), Some((84, 44)));
+        p.apply(ToUi::Show(View::Clips));
+        let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
+        assert!(clips.w > 780 && clips.h > 560, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
         assert!(p.ui.rect_of("options").unwrap().h > 600);
         let c = Console::new(Fonts::embedded(), "touch", None);
