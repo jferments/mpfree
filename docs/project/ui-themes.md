@@ -59,7 +59,7 @@ corners       = chamfer
 - `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents). The built-in themes pass; a test keeps it that way.
 - Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
 
-Today `mpfree-hello --theme NAME|FILE` picks the theme (for `--preview` and on the device). A theme picker in Prefs, and a themes folder on the stick, come next.
+The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree-hello --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one. A themes folder on the stick comes next.
 
 ## The built-in themes
 
@@ -130,7 +130,7 @@ What each crate should change (small, mechanical):
 
 ## Later
 
-- Theme picker in Prefs (live switch with `Ui::set_theme`), themes folder on the stick.
+- Themes folder on the stick (theme files added to the Appearance row).
 - Startup screens in the boot path: `--framebuffer` is ready; the test stick runs `mpfree-splash` today, and the Hello thread switches it to `mpfree-startup` for round 8.
 - With the GLES canvas, the same effects become shaders (bloom, scanlines, real blur) with no theme or widget changes.
 - Optional per-theme sounds (UI clicks) and pad-light palettes.
