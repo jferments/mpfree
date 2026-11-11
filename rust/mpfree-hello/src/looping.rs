@@ -8,8 +8,9 @@
 //!   arrives goes through a small FIFO; a period with too little input is
 //!   filled with silence and counted.
 //! - [`LoopHost`] runs the looper on the transport's block each period and
-//!   mixes the loop (and the input, when Monitor is on) into the output after
-//!   the master level, next to the metronome. It records from a
+//!   gives the loop to the mixer's Loop track and the line input to its
+//!   input strip, which is heard when Monitor is on (see `mixing.rs`). It
+//!   records from a
 //!   [`LoopSource`]: the pad player's own sound (the default, which opens
 //!   nothing) or the line input. It logs a `looper:` line for each press and
 //!   each change, and builds the loop's waveform for the Looper tab a slice
@@ -413,7 +414,8 @@ pub struct LoopHost {
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
-    /// Periods where the loop or the input had to be kept within ±1.
+    /// Periods where the loop or the input had to be kept within ±1
+    /// (without the mixer: [`LoopHost::period`]).
     pub clipped: u64,
     wave: WaveBuilder,
     /// The recorded source's peaks since the last view.
@@ -466,20 +468,61 @@ impl LoopHost {
         format!("looper: {what}")
     }
 
-    /// The pad player's sound for this period, after the master level and
-    /// before the click: what the looper records from [`LoopSource::Pads`].
-    /// Call it before [`LoopHost::period`] each period.
+    /// The pad player's sound for this period (the drums and the synth as
+    /// the engines make them, before the mixer): what the looper records
+    /// from [`LoopSource::Pads`]. Call it before [`LoopHost::run`] each
+    /// period.
     pub fn take_pads(&mut self, left: &[f32; PERIOD], right: &[f32; PERIOD]) {
         self.pads_l = *left;
         self.pads_r = *right;
     }
 
-    /// One period: read the line input, run the looper on the transport's
-    /// `block` with the source's sound, and add the loop (and the line
-    /// input, with Monitor on) to the output, kept within ±1. Returns the
-    /// output's peak, and a note for the log if the input had a problem.
+    /// One period for the mixer: read the line input, run the looper on the
+    /// transport's `block` with the source's sound, and write the loop's
+    /// sound into `left` and `right` (the Loop track). The line input of
+    /// the period is [`LoopHost::input`]: the mixer's input strip hears it,
+    /// following [`LoopHost::monitor`]. A note comes back if the input had
+    /// a problem.
+    pub fn run(&mut self, block: &Block, left: &mut [f32; PERIOD], right: &mut [f32; PERIOD]) -> Option<String> {
+        let note = self.record(block);
+        for f in 0..PERIOD {
+            left[f] = self.out[2 * f];
+            right[f] = self.out[2 * f + 1];
+        }
+        note
+    }
+
+    /// The line input of the last period (silence while it is closed).
+    pub fn input(&self) -> (&[f32; PERIOD], &[f32; PERIOD]) {
+        (&self.input_l, &self.input_r)
+    }
+
+    /// One period without the mixer (the screen's samples): as
+    /// [`LoopHost::run`], then the loop (and the line input, with Monitor
+    /// on) added to the output, kept within ±1. Returns the output's peak,
+    /// and a note for the log if the input had a problem.
     pub fn period(&mut self, block: &Block, left: &mut [f32; PERIOD], right: &mut [f32; PERIOD])
                   -> (f32, Option<String>) {
+        let note = self.record(block);
+        let mut peak = 0f32;
+        let mut over = false;
+        let mon = if self.monitor { 1.0 } else { 0.0 };
+        for f in 0..PERIOD {
+            let l = left[f] + self.out[2 * f] + mon * self.input_l[f];
+            let r = right[f] + self.out[2 * f + 1] + mon * self.input_r[f];
+            over |= l.abs() > 1.0 || r.abs() > 1.0;
+            left[f] = l.clamp(-1.0, 1.0);
+            right[f] = r.clamp(-1.0, 1.0);
+            peak = peak.max(left[f].abs()).max(right[f].abs());
+        }
+        if over {
+            self.clipped += 1;
+        }
+        (peak, note)
+    }
+
+    /// Reads the line input and runs the looper into `self.out`.
+    fn record(&mut self, block: &Block) -> Option<String> {
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
             LoopSource::Pads => (&self.pads_l, &self.pads_r),
@@ -500,21 +543,7 @@ impl LoopHost {
         }
         self.out.fill(0.0);
         self.looper.process(block, &self.input, &mut self.out);
-        let mut peak = 0f32;
-        let mut over = false;
-        let mon = if self.monitor { 1.0 } else { 0.0 };
-        for f in 0..PERIOD {
-            let l = left[f] + self.out[2 * f] + mon * self.input_l[f];
-            let r = right[f] + self.out[2 * f + 1] + mon * self.input_r[f];
-            over |= l.abs() > 1.0 || r.abs() > 1.0;
-            left[f] = l.clamp(-1.0, 1.0);
-            right[f] = r.clamp(-1.0, 1.0);
-            peak = peak.max(left[f].abs()).max(right[f].abs());
-        }
-        if over {
-            self.clipped += 1;
-        }
-        (peak, note)
+        note
     }
 
     /// Lines for the log when the looper's phase or layers changed since

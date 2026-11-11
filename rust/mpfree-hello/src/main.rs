@@ -76,6 +76,7 @@ mod gui;
 mod kit;
 mod looper_page;
 mod looping;
+mod mixing;
 mod perf;
 mod sample_page;
 mod sampler;
@@ -1663,6 +1664,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     let max_db = o.gain_db;
     let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+    // The mixer sums everything; the Level is its master fader (mixing.rs).
+    let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    out.say(&format!("mixer: drums, synth and loop on tracks 1-3, the line input on input 1 (heard with the looper's \
+                      Monitor), Master safety {} at {:.1} dBFS", "safe limiter", -0.3));
     let limit = if timed { format!("for up to {} s", o.seconds) } else { "until the power goes off".to_string() };
     out.say(&format!("playing {limit}: pads or the screen play; the wheel or a tap picks the kit or the synth; Q-Link 1 \
                       or the slider sets the level (now {level_db:.1} dB, at most {max_db:.1} dB), Q-Links 1-4 the \
@@ -1686,6 +1691,11 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     }
     app.pattern_file = store.saves();
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
+    // Each engine's period, for its track, and the pads' sound for the looper.
+    let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let (mut synth_l, mut synth_r) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let (mut loop_l, mut loop_r) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
     let mut events = mpfree_arp::Events::new();
@@ -1749,8 +1759,17 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
                 gui::FromUi::Level(v) => {
                     level_db = LEVEL_MIN_DB + v.clamp(0.0, 1.0) * (max_db - LEVEL_MIN_DB);
+                    mix.set_level(level_db);
                     out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
                 }
+                // The mixer panel. Its master fader is the Level, so the Play page follows it.
+                gui::FromUi::Mixer(a) => {
+                    if let Some(db) = mix.action(&a) {
+                        level_db = db;
+                        out.show(gui::ToUi::Level { db: level_db, value: level_value(level_db, max_db) });
+                    }
+                }
+                gui::FromUi::MixerShown(v) => mix.show(v),
                 gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
@@ -1865,6 +1884,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                         fx.extend(e);
                     } else if knob == 0 {
                         level_db = qlink_level(level_db, max_db, MIDI_PORTS[m.port].1, &m.bytes, delta);
+                        mix.set_level(level_db);
                         if public {
                             qlink_at[0] = Some(m.bytes[2]);
                         }
@@ -2211,28 +2231,46 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         voices = voices.max(player.playing() + synth.active_voices());
         let t_render = Instant::now();
-        player.render_dry(&mut left, &mut right);
+        player.render_dry(&mut drums_l, &mut drums_r);
         let t_synth = Instant::now();
         render_time.add(t_synth - t_render);
         engines.add(engines::SAMPLER, t_synth - t_render);
-        synth.render(i * PERIOD as u64, app.settings.bpm, &mut left, &mut right);
+        synth_l.fill(0.0);
+        synth_r.fill(0.0);
+        synth.render(i * PERIOD as u64, app.settings.bpm, &mut synth_l, &mut synth_r);
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
-        let t_mix = Span::start();
-        let p = sampler::master_out(&mut left, &mut right, 10f32.powf(level_db / 20.0));
-        // What the looper records from the pads: before the click.
-        looper.take_pads(&left, &right);
-        // The metronome goes on top; it keeps the samples within ±1 itself.
-        let p = p.max(time.mix_click(&mut left, &mut right));
-        engines.stop(engines::MIX, t_mix);
-        // The loop (and the input, with Monitor on) goes on top too.
+        // What the looper records from the pads: the drums and the synth as
+        // the engines make them, before the mixer (the loop plays back
+        // through the mixer, so the Level is applied once).
+        for f in 0..PERIOD {
+            pads_l[f] = drums_l[f] + synth_l[f];
+            pads_r[f] = drums_r[f] + synth_r[f];
+        }
+        looper.take_pads(&pads_l, &pads_r);
+        // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
-        let (loop_peak, line_note) = looper.period(time.block(), &mut left, &mut right);
+        let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
-        let p = p.max(loop_peak);
+        // The mixer: every sound summed, the Level (master fader), Master
+        // safety. The input strip follows the line input and Monitor.
+        let t_mix = Span::start();
+        mix.follow(looper.line.is_open(), looper.monitor);
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        let (p, caught) = mix.period(&ctx, [(&drums_l, &drums_r), (&synth_l, &synth_r), (&loop_l, &loop_r)],
+                                     looper.input(), &mut left, &mut right);
+        if caught {
+            clipped += 1;
+        }
+        // The metronome goes on top; it keeps the samples within ±1 itself.
+        let p = p.max(time.mix_click(&mut left, &mut right));
+        engines.stop(engines::MIX, t_mix);
+        if let Some(st) = mix.poll_state(Instant::now()) {
+            out.show(gui::ToUi::Mixer(Box::new(st)));
+        }
         if let Some(note) = line_note {
             out.note(&note);
             // The input closed itself after errors: its row says Off again
@@ -2253,9 +2291,6 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         peak = peak.max(p);
         window_peak = window_peak.max(p);
-        if p > 1.0 {
-            clipped += 1;
-        }
         for f in 0..PERIOD {
             frames[2 * f] = float_to_s32(left[f]);
             frames[2 * f + 1] = float_to_s32(right[f]);

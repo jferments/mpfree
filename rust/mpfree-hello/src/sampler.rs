@@ -313,8 +313,8 @@ impl Player {
         master_out(left, right, master)
     }
 
-    /// The engine's sound alone, before the level: the pad player adds the
-    /// synth to it, then calls [`master_out`].
+    /// The engine's sound alone, before the level: the Drums track of the
+    /// pad player's mixer (`mixing.rs`).
     pub fn render_dry(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.engine.render(left, right);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
@@ -333,7 +333,9 @@ impl Player {
 }
 
 /// The level, then the clip to full scale. Returns the peak before the
-/// clip (above 1.0 means the period clipped).
+/// clip (above 1.0 means the period clipped). The pad player's mixer does
+/// this now (the Level is its master fader, Master safety its limit).
+#[cfg(test)]
 pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
     let mut peak = 0f32;
     for s in left.iter_mut().chain(right.iter_mut()) {

@@ -299,6 +299,9 @@ pub enum ToUi {
     Looper(Box<LooperView>),
     /// The loop's waveform (no frames: the loop was cleared).
     LoopWave(Arc<LoopWave>),
+    /// What the mixer panel shows (its strips and meters), a few times a
+    /// second while it is open (`mixing.rs`).
+    Mixer(Box<mpfree_mixer_ui::MixState>),
     Quit,
 }
 
@@ -333,6 +336,14 @@ pub enum FromUi {
     MapButton(usize),
     /// A button on the Looper tab (`looper_page::BUTTONS`).
     Looper(usize),
+    /// What a touch on the mixer panel meant (`mpfree_mixer_ui::take_actions`),
+    /// for the mixer on the audio thread.
+    #[allow(dead_code)] // the panel's wiring sends it
+    Mixer(mpfree_mixer_ui::MixAction),
+    /// The mixer panel opened on a view, or closed (`None`): the audio
+    /// thread sends its state only while it is open.
+    #[allow(dead_code)] // the panel's wiring sends it
+    MixerShown(Option<mpfree_mixer_ui::MixView>),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -799,6 +810,8 @@ impl Player {
                 self.looper_page.set_wave(&mut self.ui, w);
                 self.looper_page.update(&mut self.ui, &self.looper, &self.settings);
             }
+            // Nothing until the panel is in the Ui (mpfree_mixer_ui::add).
+            ToUi::Mixer(st) => mpfree_mixer_ui::update(&mut self.ui, *st),
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
