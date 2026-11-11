@@ -20,6 +20,9 @@ pub const MAP: &str = "map";
 /// (the patterns Save keeps and the owner's own scales).
 pub const ARP: &str = "arp";
 pub const ARP_PATTERNS: &str = "patterns.txt";
+/// The Dev tab's Touch page keeps its tuning as these settings
+/// (`mpfree_touch::tuning::Tuning::to_pairs`).
+pub const TOUCH: &str = "touch";
 
 /// A control's key in the "map" settings: its name in lower case, words
 /// joined by "-" ("PAD BANK A/E" is pad-bank-a-e).
