@@ -1,26 +1,29 @@
 //! The synthwave theme's startup screen: a striped sun rising over rolling
-//! neon wireframe hills, with "MPFree OS" slashed across the sun in a brush
-//! marker face, stretched and leaning, its strokes torn into sharp points.
-//! It is the default theme's startup screen.
+//! neon wireframe hills, with "MPFree OS" cut across the sun in MPFree's
+//! blade letters (see [`crate::blade`]): angular, leaning strokes with torn,
+//! jagged starts and knife-point ends, yellow to pink over a hard shadow,
+//! with a pink slash under them. It is the default theme's startup screen.
 //!
 //! Made once: the sky with its stars, the sun's halo, and the title layers
-//! (outline, glow, the letters with their pink-to-yellow fill, the streaks
-//! beside them, the version below). A frame copies the sky,
+//! (the letters with their yellow-to-pink fill, their shadow, the slash, the
+//! version below). A frame copies the sky,
 //! places the sun, and draws the hills: rows of a height field from near to
 //! far, each row filling only what nothing nearer already covers (a
 //! "floating horizon"), with glowing lines along and across the rows.
 //!
 //! - 0.0 s: the sun rises behind the hills while they start rolling in.
-//! - 1.3 s: the title is slashed on from the left, then its glow strikes.
+//! - 1.3 s: the title is cut on from the left, then the slash whips under it.
 //! - 2.0 s: the version flickers on.
 //! - 3.0 s: settled; the hills keep rolling and the stars twinkle.
 
+use crate::blade;
 use crate::gfx::{self, add, hex, mix3, over, pack, smoothstep, Mask, Rng, Sprite};
 use crate::Scene;
 use mpfree_ui::SoftCanvas;
 
 const LINE: u32 = 0xFF2BD6;
-const CYAN: u32 = 0x37E8FF;
+/// The title's drop shadow.
+const SHADOW: u32 = 0x0A0410;
 
 pub struct Synthwave {
     w: usize,
@@ -31,14 +34,13 @@ pub struct Synthwave {
     sun_r: f32,
     halo: Mask,
     hor: Vec<f32>,
-    title_glow: Sprite,
-    title_edge: Sprite,
     title: Sprite,
+    title_shadow: Sprite,
     title_h: i32,
-    streaks: Sprite,
+    slash: Sprite,
+    slash_shadow: Sprite,
     sub: Sprite,
     sub_edge: Sprite,
-    sub_glow: Sprite,
 }
 
 fn disc(m: &mut Mask, cx: f32, cy: f32, r: f32) {
@@ -111,71 +113,76 @@ impl Synthwave {
         disc(&mut halo, hs as f32 / 2.0, hs as f32 / 2.0, sun_r * 0.95);
         let halo = halo.blurred((sun_r * 0.28) as usize, 3);
 
-        // The title: "MPFree OS" in Permanent Marker, stretched, leaning
-        // hard forward and wavering, with torn, pointed ends on the strokes.
-        let marker = gfx::font_marker();
+        // The title: "MPFree OS" in MPFree's blade letters, yellow to pink
+        // with a hard drop shadow, a pink slash under it and "v0.1" below.
         let text = format!("{} OS", crate::TITLE);
-        let max_w = w as f32 * 0.80;
-        let mut size = 168.0 * s;
-        let mut raw = gfx::text_mask(&marker, size, 2.0, &text);
-        let (stretch, lean) = (1.14, 0.34);
-        let wide = raw.w as f32 * stretch + raw.h as f32 * lean;
-        if wide > max_w {
-            size *= max_w / wide;
-            raw = gfx::text_mask(&marker, size, 2.0, &text);
+        let max_w = w as f32 * 0.86;
+        let mut cap = 170.0 * s;
+        let mut tm = blade::render(
+            &text,
+            cap,
+            blade::Style {
+                seed: 3,
+                ..Default::default()
+            },
+        );
+        if tm.w as f32 > max_w {
+            cap *= max_w / tm.w as f32;
+            tm = blade::render(
+                &text,
+                cap,
+                blade::Style {
+                    seed: 3,
+                    ..Default::default()
+                },
+            );
         }
-        let tm = gfx::slash_letters(&raw, stretch, lean, s);
-        let th = tm.h as f32;
-        let cuts: Vec<(f32, f32)> = vec![(0.58, 0.022), (0.68, 0.03), (0.77, 0.036), (0.86, 0.04)];
+        let (tw, th) = (tm.w as f32, tm.h as f32);
         let tx = (w as i32 - tm.w as i32) / 2;
-        let ty = (horizon as f32 - sun_r * 0.45 - th * 0.95) as i32;
+        let ty = (h as f32 * 0.42 - th) as i32;
         let title = Sprite::from(tx, ty, &tm, |_, y| {
             let v = y as f32 / th;
-            let c = if v < 0.5 {
-                mix3(hex(0xFF2EB4), hex(0xFF6A3D), v / 0.5)
+            pack(if v < 0.55 {
+                mix3(hex(0xFFF34A), hex(0xFF8A6A), v / 0.55)
             } else {
-                mix3(hex(0xFF6A3D), hex(0xFFE45C), (v - 0.5) / 0.5)
-            };
-            pack(c)
+                mix3(hex(0xFF8A6A), hex(0xFF2ED0), (v - 0.55) / 0.45)
+            })
         });
-        let pad = 24;
-        let edge = tm.padded(pad).dilated(4);
-        let title_edge = Sprite::from(tx - pad as i32, ty - pad as i32, &edge, |_, _| 0x1A0430);
-        let glow = edge.blurred(9, 3);
-        let title_glow = Sprite::from(tx - pad as i32, ty - pad as i32, &glow, |_, _| 0xFF2E97);
-        // Streaks: thin lines running out of the cuts to both sides.
-        let mut sm = Mask::new(w, tm.h);
-        let cx = w as f32 / 2.0;
-        for &(at, wd) in &cuts {
-            let y0 = ((at - wd / 2.0) * th) as usize;
-            let y1 = (((at + wd / 2.0) * th) as usize).min(tm.h);
-            let reach = w as f32 * (0.36 + at * 0.12);
-            for y in y0..y1 {
-                for x in 0..w {
-                    let d = (x as f32 - cx).abs() / reach;
-                    if d < 1.0 {
-                        sm.a[y * w + x] = ((1.0 - d).powf(0.6) * 200.0) as u8;
-                    }
-                }
-            }
-        }
-        let streaks = Sprite::from(0, ty, &sm, |_, y| {
-            pack(mix3(hex(0xFF2EB4), hex(0xFFB03D), y as f32 / th))
-        });
+        let drop = ((10.0 * s) as i32, (11.0 * s) as i32);
+        let title_shadow = Sprite::from(tx + drop.0, ty + drop.1, &tm, |_, _| SHADOW);
+        // The slash: a long thin wedge rising to the right under the title.
+        let (lw, lh) = (tw * 0.92, tw * 0.05);
+        let lm = blade::fill(
+            &[vec![
+                (0.0, lh),
+                (lw, 0.0),
+                (lw - 7.5 * s, lh * 0.4),
+                (lw / 8.0, lh * 0.825),
+                (15.0 * s, lh),
+            ]],
+            lw.ceil() as usize + 1,
+            lh.ceil() as usize + 1,
+        );
+        let lx = tx + (tw * 0.04) as i32;
+        let ly = ty + tm.h as i32 - (lh * 0.2) as i32;
+        let slash = Sprite::from(lx, ly, &lm, |_, _| 0xFF2ED0);
+        let slash_shadow =
+            Sprite::from(lx + (8.0 * s) as i32, ly + (9.0 * s) as i32, &lm, |_, _| {
+                SHADOW
+            });
 
-        let sans = gfx::font_sans();
-        let sub_m = gfx::text_mask(&sans, 30.0 * s, 10.0 * s, crate::VERSION);
+        let sub_m = blade::render(
+            crate::VERSION,
+            52.0 * s,
+            blade::Style {
+                seed: 5,
+                ..Default::default()
+            },
+        );
         let sx = (w as i32 - sub_m.w as i32) / 2;
-        let sy = ty + tm.h as i32 + (6.0 * s) as i32;
-        let sh = sub_m.h as f32;
-        let sub = Sprite::from(sx, sy, &sub_m, |_, y| {
-            pack(mix3(hex(0xE8FDFF), hex(0x37E8FF), y as f32 / sh))
-        });
-        let sub_edge = Sprite::from(sx - 12, sy - 12, &sub_m.padded(12).dilated(3), |_, _| {
-            0x12052A
-        });
-        let sg = sub_m.padded(12).blurred(5, 3);
-        let sub_glow = Sprite::from(sx - 12, sy - 12, &sg, |_, _| CYAN);
+        let sy = ly + lm.h as i32 + (h as f32 * 0.012) as i32;
+        let sub = Sprite::from(sx, sy, &sub_m, |_, _| 0xFFF6D0);
+        let sub_edge = Sprite::from(sx - 4, sy - 4, &sub_m.padded(4).dilated(3), |_, _| 0x12062A);
         Synthwave {
             w,
             h,
@@ -185,14 +192,13 @@ impl Synthwave {
             sun_r,
             halo,
             hor: vec![0.0; w],
-            title_glow,
-            title_edge,
             title,
+            title_shadow,
             title_h: tm.h as i32,
-            streaks,
+            slash,
+            slash_shadow,
             sub,
             sub_edge,
-            sub_glow,
         }
     }
 
@@ -385,26 +391,17 @@ impl Scene for Synthwave {
         }
         self.sun(&mut px, t);
         self.hills(&mut px, t);
-        // The title: slashed on from the left with a hot edge, then its glow strikes.
+        // The title: cut on from the left behind a hot edge, then the slash
+        // whips across under it, then the version flickers on.
         if t > 1.3 {
             let wipe = smoothstep(1.3, 1.65, t);
-            let span = self.title_glow.w as f32 + 80.0;
-            let upto = (wipe * span) as i32;
-            let g = neon(t, 1.6);
-            self.streaks.draw_upto(
-                &mut px,
-                w,
-                (wipe * 200.0) as u32,
-                true,
-                upto + self.title_glow.x,
-            );
-            if g > 0 {
-                self.title_glow.draw(&mut px, w, (g * 230) >> 8, true);
-            }
-            self.title_edge.draw_upto(&mut px, w, 256, false, upto);
+            let upto = (wipe * (self.title.w as f32 + 80.0)) as i32;
+            let drop = self.title_shadow.x - self.title.x;
+            self.title_shadow
+                .draw_upto(&mut px, w, 256, false, upto - drop - 24);
             self.title.draw_upto(&mut px, w, 256, false, upto - 24);
             if wipe < 1.0 {
-                let x = (self.title_glow.x + upto) as f32;
+                let x = (self.title.x + upto) as f32;
                 let (y0, y1) = (
                     self.title.y as f32 - 10.0,
                     (self.title.y + self.title_h) as f32 + 10.0,
@@ -423,10 +420,14 @@ impl Scene for Synthwave {
                 }
             }
         }
+        if t > 1.6 {
+            let upto = (smoothstep(1.6, 1.8, t) * self.slash.w as f32) as i32;
+            self.slash_shadow.draw_upto(&mut px, w, 256, false, upto);
+            self.slash.draw_upto(&mut px, w, 256, false, upto);
+        }
         let k = neon(t, 2.0);
         if k > 0 {
-            self.sub_edge.draw(&mut px, w, (k * 200) >> 8, false);
-            self.sub_glow.draw(&mut px, w, (k * 300) >> 8, true);
+            self.sub_edge.draw(&mut px, w, (k * 220) >> 8, false);
             self.sub.draw(&mut px, w, k, false);
         }
         out.px = px;
