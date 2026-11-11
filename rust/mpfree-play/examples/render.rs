@@ -581,6 +581,8 @@ impl EventLog {
             Event::NoteOn { note, velocity } => (1u8, note, velocity),
             Event::NoteOff { note } => (0, note, 0),
             Event::AllOff => (2, 0, 0),
+            // The demo has no parameter locks (and its hash stays).
+            Event::Lock { .. } | Event::Unlock { .. } => return,
         };
         if kind == 1 {
             self.notes += 1;
@@ -638,6 +640,7 @@ fn to_sampler(engine: &mut Engine, o: &Out) {
         },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
+        Event::Lock { .. } | Event::Unlock { .. } => return,
     };
     engine.schedule(o.offset, ev);
 }
