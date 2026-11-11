@@ -13,7 +13,8 @@
 //!   `--calibration` (a file `--calibrate` printed on the MPC) it adds an
 //!   estimate for the MPC and a verdict against the module's budget.
 //! - On the MPC (an ARM build) the numbers are the device's own, and the
-//!   verdicts use them directly.
+//!   verdicts follow `budget::judge`: an engine on its p99.9 block, the whole
+//!   period on its worst.
 //! - `--check-allocs` exits with status 2 if any engine allocated inside a
 //!   block (the counting allocator is installed in this program).
 //! - `--calibrate` times the reference kernels and prints a calibration file.
@@ -111,9 +112,7 @@ struct Row {
 
 /// A module's budget, as a share of the period; "period" is the whole
 /// audio thread's.
-fn budget_pct(module: &str) -> Option<f64> {
-    if module == "period" { Some(budget::AUDIO_THREAD_WORST_PCT) } else { budget::for_module(module).map(|b| b.worst_pct) }
-}
+fn budget_pct(module: &str) -> Option<f64> { budget::pct_for(module) }
 
 /// Megabytes (2^20 bytes), for the memory column.
 fn mb(bytes: i64) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
@@ -362,11 +361,12 @@ fn main() -> ExitCode {
             let pct = MPC.pct(worst_ns);
             format!("{:>5.1} % of {:>4.1} % {}: {}", pct, b, c.module, Verdict::of(pct, b).word())
         });
-        // The p99.9 block is the "worst" for verdicts: the single worst block
-        // on a desktop is usually the OS, not the engine. On the device both
-        // are shown and the max is what underruns.
+        // On the device the verdict follows budget::judge (Jay's rule: an
+        // engine on its p99.9 block, the whole period on its worst). A desktop
+        // estimate always uses the p99.9: the single worst block on a desktop
+        // is usually the OS, not the engine.
         let tail = if on_device {
-            verdict(s.max_ns as f64)
+            verdict(budget::judged_ns(c.module, &s) as f64)
         } else if let Some((m, _)) = &model {
             let (e, _, hi) = m.estimate(s.p999_ns as f64);
             format!("{} (up to {:.1} %)", verdict(e), MPC.pct(hi))

@@ -29,6 +29,14 @@ thousand is an audible click. The whole audio thread stays under **60 %** of
 a period in its worst block (1.74 ms), which leaves 40 % for the kernel,
 interrupts, ALSA and a late wake-up.
 
+**Which block is judged** (Jay, 2026-11-11, after round 7): an engine's
+verdict uses its **p99.9** block, and the whole period's verdict uses its
+**worst** block. In round 7 a single stray period marked looper, time and
+mix OVER although their p99s fit; the period's worst block is still judged
+strictly because it is what underruns. `budget::judge(module, &summary,
+MPC)` applies the rule, and the report, the bench (on the device) and the
+Dev page should all use it.
+
 | Module | Worst block | µs | Covers |
 | --- | --- | --- | --- |
 | sampler | 25 % | 726 | Every pad voice, granular pads, the master grain effect. Round 6: worst 24.1 %. |
@@ -223,7 +231,8 @@ data side is here:
 - **CPU by engine**: the audio loop's `Profiler` windows through
   `report::engine_rows`: one row per engine and per slot (`synth/Poly
   (track 1)`, `fx/Cloud reverb (master)`), mean, p99 and worst as shares of
-  the period, real CPU used, the budget and a fits / tight / OVER verdict,
+  the period, real CPU used, the budget and a fits / tight / OVER verdict
+  (`budget::judge`: p99.9 for an engine, worst for the period),
   and any allocation on the audio thread in red. The same rows go to the log
   every 30 s with the existing `perf:` line, so test-round results carry
   them.
