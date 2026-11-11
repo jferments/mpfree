@@ -54,10 +54,19 @@ pub fn clean_name(s: &str, fallback: &str) -> String {
 
 /// The name with ` 2`, ` 3` ... before its extension until `taken` says no.
 pub fn unique_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    unique(name, split_ext(name), taken)
+}
+
+/// The name with ` 2`, ` 3` ... at the end until `taken` says no (for
+/// folders, whose dots are not extensions).
+pub fn unique_folder_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    unique(name, (name, ""), taken)
+}
+
+fn unique(name: &str, (stem, ext): (&str, &str), taken: impl Fn(&str) -> bool) -> String {
     if !taken(name) {
         return name.to_string();
     }
-    let (stem, ext) = split_ext(name);
     for n in 2..10_000 {
         let mut stem = stem.to_string();
         let tail = format!(" {n}{ext}");
@@ -188,6 +197,10 @@ mod tests {
             "Snare.wav"
         );
         assert_eq!(unique_name("Folder", |n| n == "Folder"), "Folder 2");
+        assert_eq!(
+            unique_folder_name("Take 21.04", |n| n == "Take 21.04"),
+            "Take 21.04 2"
+        );
     }
 
     #[test]

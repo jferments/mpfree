@@ -28,10 +28,12 @@
 
 pub mod audio;
 pub mod name;
+pub mod project;
 pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
-pub use name::{clean_name, natural_cmp, unique_name, valid_name};
+pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
+pub use project::{Meta, Part, Snapshot, Version};
 pub use worker::{Done, Job, Outcome, Worker};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -480,7 +482,7 @@ impl Library {
     pub fn new_folder(&self, parent: &Loc, name: &str) -> io::Result<Loc> {
         self.check_writable(parent)?;
         let (pp, _) = self.existing(parent)?;
-        let name = unique_name(name, |n| parent.join(n).is_ok_and(|l| self.exists(&l)));
+        let name = unique_folder_name(name, |n| parent.join(n).is_ok_and(|l| self.exists(&l)));
         let loc = parent.join(&name)?;
         mkdir(&pp.join(&name))?;
         sync_dir(&pp)?;
@@ -567,9 +569,12 @@ impl Library {
         if !dm.is_dir() {
             return Err(err(io::ErrorKind::InvalidInput, "not a folder".into()));
         }
-        let name = unique_name(from.name(), |n| {
-            folder.join(n).is_ok_and(|l| self.exists(&l))
-        });
+        let taken = |n: &str| folder.join(n).is_ok_and(|l| self.exists(&l));
+        let name = if m.is_dir() {
+            unique_folder_name(from.name(), taken)
+        } else {
+            unique_name(from.name(), taken)
+        };
         let loc = folder.join(&name)?;
         let dst = dst_dir.join(&name);
         if m.is_dir() {
