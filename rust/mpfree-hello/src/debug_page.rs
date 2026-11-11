@@ -4,13 +4,24 @@
 //!   temperature and clock (`perf.rs`, read by the screen thread), and the
 //!   audio loop's own numbers (render time against the 2.9 ms period,
 //!   underruns, steals, grains), with the last minute of render time drawn.
+//! - CPU by engine: each stage of the audio loop (the whole period, the
+//!   sampler, the synth, the looper, the transport, the mix) as mean, p99
+//!   and worst against the period and its budget (`engines.rs`).
+//! - Processes: every process on the MPC from /proc, busiest first, with
+//!   memory, threads and scheduling, and each core's CPU (mpfree-prof's
+//!   `procs`; names only, never command lines).
 //! - Map controls: every MPC One control in a list, found, skipped or still
 //!   to find, and a card for the one picked (`app::mapper`).
 //!
-//! A strip under the header switches between the three pages.
+//! - Console: the system log (the same page SHIFT + STOP opens), here with
+//!   the strip.
+//!
+//! A strip under the header switches between the pages.
 
 use crate::app::{MapView, Mark, View, DEBUG_PAGES};
+use crate::engines;
 use crate::perf::ProcView;
+use mpfree_prof::procs;
 use mpfree_arp_ui::widgets::Segments;
 use mpfree_ui::widgets::{Card, ListItem, ListView, StatList};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Tone, Ui, Widget};
@@ -18,11 +29,17 @@ use std::collections::VecDeque;
 
 pub const STRIP: &str = "dtabs";
 pub const PERF_PAGE: &str = "Performance";
+pub const ENGINES_PAGE: &str = "CPU by engine";
+pub const PROCS_PAGE: &str = "Processes";
 pub const MAP_PAGE: &str = "Map controls";
+pub const CONSOLE_PAGE: &str = "Dev console";
 pub const DEBUG_LAYOUT: &str = "col(header:60, dtabs:52, row(midi:*, col(events:*, timing:232):460):*, hint:26)";
 pub const PERF_LAYOUT: &str =
     "col(header:60, dtabs:52, row(col(threads:*, graph:210):*, col(audio:*, system:*):500):*, hint:26)";
+pub const ENGINES_LAYOUT: &str = "col(header:60, dtabs:52, row(engnow:*, engsession:560):*, hint:26)";
+pub const PROCS_LAYOUT: &str = "col(header:60, dtabs:52, row(procs:*, cores:420):*, hint:26)";
 pub const MAP_LAYOUT: &str = "col(header:60, dtabs:52, row(controls:*, col(mapcard:*, mapinfo:236):660):*, hint:26)";
+pub const CONSOLE_LAYOUT: &str = "col(header:60, dtabs:52, syslog:*, hint:26)";
 
 /// How much render time the graph keeps: one value per screen update of
 /// the timing (every 250 ms), a minute's worth.
@@ -90,7 +107,7 @@ impl Widget for Graph {
     }
 }
 
-/// The Debug tab's widgets and what they show.
+/// The Dev tab's widgets and what they show.
 pub struct DebugPages {
     history: VecDeque<f32>,
     audio: AudioNumbers,
@@ -106,13 +123,18 @@ fn found_colour(m: Mark) -> Option<Color> {
 }
 
 impl DebugPages {
-    /// Adds the widgets and the three pages ("Debug" is the MIDI log).
+    /// Adds the widgets and the pages ("Debug" is the MIDI log; the Console
+    /// page uses the "syslog" widget, added with the plain Console page).
     pub fn add(ui: &mut Ui) -> Result<DebugPages, String> {
-        ui.add(STRIP, Segments::new(&["MIDI", "Performance", "Map controls"]));
+        ui.add(STRIP, Segments::new(&["MIDI", "Performance", "CPU by engine", "Processes", "Map controls", "Console"]));
         ui.add("threads", StatList::new("Threads, CPU (100 % = one core)"));
         ui.add("graph", Graph::new("Audio render, % of a 2.9 ms period, last minute", 100.0, 70.0));
         ui.add("audio", StatList::new("Audio loop"));
         ui.add("system", StatList::new("Process and system"));
+        ui.add("engnow", StatList::new("Audio loop, now: mean · p99 · worst (share of a period)"));
+        ui.add("engsession", StatList::new("Since the start, against the budgets"));
+        ui.add("procs", StatList::new("Processes, busiest first (100 % = one core)"));
+        ui.add("cores", StatList::new("CPU and memory"));
         ui.add("controls", ListView::new("Controls"));
         let mut card = Card::new("Map controls");
         card.buttons = vec!["Listen".to_string(), "Skip".to_string(), "Clear".to_string()];
@@ -120,11 +142,16 @@ impl DebugPages {
         ui.add("mapinfo", StatList::new("Pressed last, and measured controls"));
         ui.add_page("Debug", DEBUG_LAYOUT)?;
         ui.add_page(PERF_PAGE, PERF_LAYOUT)?;
+        ui.add_page(ENGINES_PAGE, ENGINES_LAYOUT)?;
+        ui.add_page(PROCS_PAGE, PROCS_LAYOUT)?;
         ui.add_page(MAP_PAGE, MAP_LAYOUT)?;
+        ui.add_page(CONSOLE_PAGE, CONSOLE_LAYOUT)?;
         let mut d = DebugPages { history: VecDeque::new(), audio: AudioNumbers::default(),
                                  proc_view: ProcView::default() };
         d.show_audio(ui);
         d.show_proc(ui);
+        DebugPages::set_engines(ui, &[(None, None); 6]);
+        DebugPages::set_procs(ui, &procs::ProcView::default());
         Ok(d)
     }
 
@@ -133,7 +160,10 @@ impl DebugPages {
         match v {
             View::Debug => Some("Debug"),
             View::Perf => Some(PERF_PAGE),
+            View::Engines => Some(ENGINES_PAGE),
+            View::Procs => Some(PROCS_PAGE),
             View::Map => Some(MAP_PAGE),
+            View::Console => Some(CONSOLE_PAGE),
             _ => None,
         }
     }
@@ -207,6 +237,27 @@ impl DebugPages {
         }
     }
 
+    /// The CPU by engine page, from the audio loop's published numbers.
+    pub fn set_engines(ui: &mut Ui, s: &engines::Snapshot) {
+        if let Some(l) = ui.get_mut::<StatList>("engnow") {
+            l.set(engines::now_rows(s));
+        }
+        if let Some(l) = ui.get_mut::<StatList>("engsession") {
+            l.set(engines::session_rows(s));
+        }
+    }
+
+    /// The Processes page, from one /proc sample.
+    pub fn set_procs(ui: &mut Ui, v: &procs::ProcView) {
+        let (list, side) = procs_rows(v);
+        if let Some(l) = ui.get_mut::<StatList>("procs") {
+            l.set(list);
+        }
+        if let Some(l) = ui.get_mut::<StatList>("cores") {
+            l.set(side);
+        }
+    }
+
     pub fn set_map(ui: &mut Ui, m: &MapView) {
         if let Some(l) = ui.get_mut::<ListView>("controls") {
             l.title = format!("Controls: {} found, {} skipped, {} left", m.found, m.skipped, m.left);
@@ -236,6 +287,41 @@ impl DebugPages {
     }
 }
 
+/// A StatList's rows: label, value, tone.
+type Rows = Vec<(String, String, Tone)>;
+
+/// How many processes the list shows (the busiest).
+const PROCS_SHOWN: usize = 14;
+
+/// The Processes page's rows: the busiest processes (name and pid, then
+/// scheduling and threads; CPU and memory), and the machine (total and
+/// per-core CPU, how many processes).
+pub fn procs_rows(v: &procs::ProcView) -> (Rows, Rows) {
+    let cpu_tone = |c: f64| if c >= 80.0 { Tone::Bad } else if c >= 40.0 { Tone::Warn } else { Tone::Normal };
+    let mut list: Rows = v.rows.iter().take(PROCS_SHOWN).map(|r| {
+        let mem = if r.rss_kb >= 1024 { format!("{:.0} MB", r.rss_kb as f64 / 1024.0) } else { format!("{} kB", r.rss_kb) };
+        (format!("{} ({}) · {} · {} thr", r.name, r.pid, r.policy, r.threads), format!("{:.1} % · {mem}", r.cpu_pct),
+         cpu_tone(r.cpu_pct))
+    }).collect();
+    if list.is_empty() {
+        list.push(("Reading /proc once a second while this page shows".to_string(), "-".to_string(), Tone::Dim));
+    } else if v.over_s == 0.0 {
+        list.push(("CPU shows from the second sample".to_string(), String::new(), Tone::Dim));
+    }
+    let mut side = vec![
+        ("All cores".to_string(), v.total_cpu_pct.map_or("-".to_string(), |c| format!("{c:.1} %")),
+         v.total_cpu_pct.map_or(Tone::Dim, cpu_tone)),
+    ];
+    for (i, c) in v.core_cpu_pct.iter().enumerate() {
+        side.push((format!("Core {i}"), format!("{c:.1} %"), cpu_tone(*c)));
+    }
+    let mem_kb: u64 = v.rows.iter().map(|r| r.rss_kb).sum();
+    side.push(("Processes".to_string(), v.rows.len().to_string(), Tone::Normal));
+    side.push(("Their memory in use (RSS, summed)".to_string(), format!("{:.0} MB", mem_kb as f64 / 1024.0), Tone::Normal));
+    side.push(("Read from".to_string(), "/proc/<pid>/stat, names only".to_string(), Tone::Dim));
+    (list, side)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,7 +332,7 @@ mod tests {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", mpfree_ui::widgets::Header::new(&["Play"]));
         ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Center));
-        for w in ["midi", "events", "timing"] {
+        for w in ["midi", "events", "timing", "syslog"] {
             ui.add(w, StatList::new(w));
         }
         let mut d = DebugPages::add(&mut ui).unwrap();
@@ -254,9 +340,21 @@ mod tests {
         assert!(ui.rect_of("controls").unwrap().h > 560);
         ui.show(PERF_PAGE).unwrap();
         assert!(ui.rect_of("threads").unwrap().h > 300);
+        ui.show(ENGINES_PAGE).unwrap();
+        assert!(ui.rect_of("engnow").unwrap().h > 500);
+        ui.show(PROCS_PAGE).unwrap();
+        assert!(ui.rect_of("procs").unwrap().h > 500);
         for _ in 0..HISTORY + 10 {
             d.set_audio(&mut ui, AudioNumbers { render_max_us: PERIOD_US / 2.0, ..AudioNumbers::default() });
         }
+        let row = |pid: u32, name: &str, cpu: f64| procs::ProcRow { pid, name: name.into(), state: 'S', cpu_pct: cpu,
+                                                                      rss_kb: 2048, threads: 3, policy: "FIFO 70".into(), nice: 0 };
+        let (list, side) = procs_rows(&procs::ProcView { over_s: 1.0, rows: vec![row(9, "mpfree-hello", 85.0), row(1, "init", 0.0)],
+                                                         total_cpu_pct: Some(25.0), core_cpu_pct: vec![90.0, 10.0] });
+        assert_eq!(list[0], ("mpfree-hello (9) · FIFO 70 · 3 thr".to_string(), "85.0 % · 2 MB".to_string(), Tone::Bad));
+        assert_eq!(side[2], ("Core 1".to_string(), "10.0 %".to_string(), Tone::Normal));
+        assert_eq!(side[3].1, "2");
+        assert_eq!(procs_rows(&procs::ProcView::default()).0[0].2, Tone::Dim);
         let g = ui.get_mut::<Graph>("graph").unwrap();
         assert_eq!(g.values.len(), HISTORY);
         assert_eq!(g.right, "now 50 %");

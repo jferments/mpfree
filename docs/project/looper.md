@@ -1,8 +1,8 @@
 # Looper: audio loops on the transport
 
-**Status:** engine crate (roadmap step T4), 2026-11-11. The code is [`rust/mpfree-looper`](../../rust/mpfree-looper): host-only and tested, not yet wired to the audio thread or the line input. Nothing here has run on the MPC, and MPFree has never opened the MPC One's capture device (see [Line input](#line-input-on-the-mpc-one) below).
+**Status:** engine crate (roadmap step T4), 2026-11-11, on main. Round 6 wires it into the pad player with a Looper tab and the line input ([below](#in-the-pad-player-round-6)). Nothing here has run on the MPC yet, and MPFree has never opened the MPC One's capture device (see [Line input](#line-input-on-the-mpc-one) below).
 
-One stereo loop on the transport, recorded from the line input. It follows the transport's bars, so it stays in time with the clips, the arp and the metronome.
+One stereo loop on the transport, recorded from the line input or the pad player's own sound. It follows the transport's bars, so it stays in time with the clips, the arp and the metronome.
 
 ## How it plays
 
@@ -27,7 +27,7 @@ One stereo loop on the transport, recorded from the line input. It follows the t
 
 The player hears the loop late (the output buffer) and their playing reaches the input late (the input buffer and the converters). `SetLatency(frames)` makes up for both: input that arrives `latency` frames after a moment belongs to that moment, so it is written that much earlier in the loop. The demo checks that the first pass lines up with what was played, to the frame, with 640 frames of latency.
 
-On the MPC One the latency is not measured yet. The playback buffer is 384 frames and the capture buffer was 256 frames while Akai's service ran; the converters add an unknown amount. It will be measured with a cable from an output to an input, and that needs Jay's go (see below).
+On the MPC One the latency is not measured yet. The playback buffer is 384 frames and the capture buffer was 256 frames while Akai's service ran; the converters add an unknown amount. It will be measured with a cable from an output to an input, and that needs the owner's go (see below).
 
 ## The API
 
@@ -64,19 +64,30 @@ Writes `~/mpfree-work/looper-demo.wav` (45.5 s). A player plays into the line in
 
 ## Line input on the MPC One
 
-Read-only facts so far (from Jay's device reports while Akai's `acvs` service ran):
+Read-only facts so far (from the owner's device reports while Akai's `acvs` service ran):
 
 - The audio device is ALSA card 1, device 0, stereo S32_LE at 44.1 kHz, 128-frame periods. Playback has a 384-frame buffer; capture had a 256-frame buffer.
 - **Not verified:** which physical jacks the two capture channels are (line in L/R is the likely reading, not checked), and that playback channels 1 and 2 are the main L/R outputs (inferred from MPFree's sound coming out of them, not traced). Akai's routing, gain staging and any mixer controls on the capture path are unknown.
 
-The plan, with rule zero (nothing state-changing on the device without Jay's go):
+The plan, with rule zero (nothing state-changing on the device without the owner's go):
 
 1. A read-only probe: the capture device's info in `/proc/asound`, its device node, and its hardware limits, with nothing opened for capture.
-2. Line input off by default in the pad player, behind a Prefs row ("Line input: off/on"), never saved as on across boots. Opening capture is a state change: it is a separate step that waits for Jay's go, with the exact change, the undo (switch it off, or quit) and what a partial failure looks like.
+2. Line input off by default in the pad player, behind a Prefs row ("Line input: off/on"), never saved as on across boots. Opening capture is a state change: it is a separate step that waits for the owner's go, with the exact change, the undo (switch it off, or quit) and what a partial failure looks like.
 3. Then an input meter, then the loop.
+
+## In the pad player (round 6)
+
+[`looping.rs`](../../rust/mpfree-hello/src/looping.rs) runs the looper in the pad player's audio loop, after the master level, next to the click, and [`looper_page.rs`](../../rust/mpfree-hello/src/looper_page.rs) is its **Looper** tab ([the guide](../guides/hello-mpc.md#round-6-the-looper-the-synth-and-the-sampler-in-one-pad-player)).
+
+- **What it records.** By default the pads and the synth, after the master level and before the click and the loop, so nothing on the MPC is opened and no latency needs making up. With the line input on, the line input, with the latency estimate below.
+- **The line input.** `alsa.rs` opens the ACVA card's capture device without waiting (`O_NONBLOCK`) at the settings Akai's app used (stereo S32_LE, 44.1 kHz, 128-frame periods, a 256-frame buffer), starts it, and reads whatever has arrived each period into a FIFO of 8 periods. A period with too little input gets silence and is counted (after the first 4); more than 3 periods waiting are dropped to 2, counted; an overrun prepares and starts it again, counted; more than 3 read errors in a row close it. It is off at every start; the row comes back Off whenever it closes.
+- **Monitor** adds the line input to the outputs (about 9 ms late at 3 periods).
+- **Latency estimate**: the output buffer plus one input period, `(periods + 1) × 128` frames (512 at 3 periods). The converters add an unknown amount: measure it with a cable from an output to the input and set it in the Looper options.
+- **Logging**: a `looper:` line for each press and change (with the song position), `line input:` lines when it opens, closes or fails, and every 30 s `status: looper: ...` with the render time.
+- **Tests**: `cargo test -p mpfree-hello looping` (the FIFO, the pads recorded to the frame, a missing device, and no allocation in a steady period) and `looper_page`.
 
 ## Next
 
-- The line input in the pad player (`alsa.rs` capture, the Prefs switch, the meter), then a Looper tab (input meter, monitor, Record, Overdub, Undo, Clear, the loop's waveform) next to the sampler and synth.
+- The `line` step on the MPC (round 6, after the owner's go): does Akai's driver record on the test build, which jack is L and which R, and the input's level.
 - Measure the round-trip latency on the MPC One.
 - Time-stretch, so a loop keeps its pitch at another tempo; more than one loop; saving loops with the project.

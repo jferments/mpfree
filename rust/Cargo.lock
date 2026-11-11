@@ -364,6 +364,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-arp"
 version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
 
 [[package]]
 name = "mpfree-arp-ui"
@@ -463,12 +466,15 @@ dependencies = [
  "mpfree-capture",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-looper",
  "mpfree-node",
  "mpfree-play",
+ "mpfree-prof",
  "mpfree-sampler",
  "mpfree-sampler-ui",
  "mpfree-screen-log",
  "mpfree-seq",
+ "mpfree-store",
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-time-ui",
@@ -484,6 +490,10 @@ version = "0.1.0"
 dependencies = [
  "mpfree-transport",
 ]
+
+[[package]]
+name = "mpfree-midi-clock"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-mixer-ui"
@@ -544,6 +554,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-scale"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-screen-log"
 version = "0.1.0"
 
@@ -571,6 +585,10 @@ dependencies = [
  "mpfree-screen-log",
  "ratatui",
 ]
+
+[[package]]
+name = "mpfree-store"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-synth"

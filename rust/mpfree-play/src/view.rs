@@ -314,9 +314,9 @@ mod tests {
         let mut t = Track::new("drums", 3);
         let mut c = Clip::new("beat", 960);
         c.notes = vec![
-            Note { tick: 500, len: 10, note: 1, velocity: 90 },
-            Note { tick: 0, len: 10, note: 0, velocity: 100 },
-            Note { tick: 950, len: 10, note: 2, velocity: 80 },
+            Note { tick: 500, len: 10, note: 1, velocity: 90, chance: 100 },
+            Note { tick: 0, len: 10, note: 0, velocity: 100, chance: 100 },
+            Note { tick: 950, len: 10, note: 2, velocity: 80, chance: 100 },
         ];
         c.quantise = Quantise::new(240, 100);
         c.speed = Speed::new(2, 1).unwrap();
