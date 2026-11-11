@@ -2134,9 +2134,9 @@ mod tests {
         assert_eq!(m.title, "Arp options");
         assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
                    ["Tempo", "Accent level", "Scale", "Scale root", "Out-of-key notes", "Chord on each pad", "Scale run",
-                    "Strum", "New notes restart", "Swing from"]);
-        assert_eq!(m.rows[9].1, "Transport");
-        assert_eq!((m.rows[5].1.as_str(), m.rows[6].1.as_str()), ("Off", "Off"));
+                    "Chords take turns", "Strum", "New notes restart", "Swing from"]);
+        assert_eq!(m.rows[10].1, "Transport");
+        assert_eq!((m.rows[5].1.as_str(), m.rows[6].1.as_str(), m.rows[7].1.as_str()), ("Off", "Off", "Off"));
         assert_eq!(m.rows[4].1, "Note below");
         assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
         assert!(app.generating(), "the arp plays on under its options");
@@ -2183,6 +2183,16 @@ mod tests {
         app.step_item(row(&app, ArpItem::Run), 1);
         assert!(app.engine.settings().run);
         app.step_item(row(&app, ArpItem::Run), -1);
+        // Held chords take turns: a progression.
+        app.step_item(row(&app, ArpItem::Turns), 1);
+        app.step_item(row(&app, ArpItem::Turns), 1);
+        let fx = app.step_item(row(&app, ArpItem::Turns), 1);
+        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Bar);
+        assert!(fx.contains(&Effect::Note("arp chords take turns: every bar".to_string())));
+        for _ in 0..4 {
+            app.step_item(row(&app, ArpItem::Turns), -1);
+        }
+        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Off);
         app.step_item(row(&app, ArpItem::Chord), -5);
         app.step_item(row(&app, ArpItem::Chord), -1);
         assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Off);

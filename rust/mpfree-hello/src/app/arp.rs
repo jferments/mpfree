@@ -20,7 +20,7 @@
 
 use super::{App, Effect, Item, View};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES, SCALES};
-use mpfree_arp::{Chord, Held, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
+use mpfree_arp::{Chord, Held, Turns, Library, Mode, Order, Pattern, Rate, RecordMode, Recorder, Settings, Step, Wrote};
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
 
@@ -87,6 +87,7 @@ pub enum ArpItem {
     Snap,
     Chord,
     Run,
+    Turns,
     Strum,
     Retrigger,
     SwingFrom,
@@ -94,9 +95,9 @@ pub enum ArpItem {
 
 /// The Options menu opened from the Arp panel: the tempo, then the arp's
 /// own settings. (Rate, mode, gate, swing and octaves are on the panel.)
-pub(super) const ARP_OPTIONS: [Item; 10] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
+pub(super) const ARP_OPTIONS: [Item; 11] = [Item::Tempo, Item::Arp(ArpItem::Accent), Item::Arp(ArpItem::Scale),
                                             Item::Arp(ArpItem::Root), Item::Arp(ArpItem::Snap), Item::Arp(ArpItem::Chord),
-                                            Item::Arp(ArpItem::Run), Item::Arp(ArpItem::Strum),
+                                            Item::Arp(ArpItem::Run), Item::Arp(ArpItem::Turns), Item::Arp(ArpItem::Strum),
                                             Item::Arp(ArpItem::Retrigger), Item::Arp(ArpItem::SwingFrom)];
 
 /// Accent level steps by this much per press or wheel click.
@@ -663,6 +664,7 @@ impl App {
             ArpItem::Snap => ("Out-of-key notes", snap_text(s.snap).to_string()),
             ArpItem::Chord => ("Chord on each pad", s.chord.label().to_string()),
             ArpItem::Run => ("Scale run", if s.run { "On" } else { "Off" }.to_string()),
+            ArpItem::Turns => ("Chords take turns", s.turns.label().to_string()),
             ArpItem::Strum => ("Strum", if s.strum == 0 { "Off".to_string() } else { format!("{} % of a step", s.strum) }),
             ArpItem::Retrigger => ("New notes restart", if s.retrigger { "On" } else { "Off" }.to_string()),
             ArpItem::SwingFrom => ("Swing from", if self.swing_from_transport { "Transport" } else { "Arp" }.to_string()),
@@ -698,6 +700,12 @@ impl App {
                                  "held notes (an octave up from one note), in",
                                  "the order you picked. Every semitone without",
                                  "a scale."],
+            ArpItem::Turns => vec!["Hold two or more pads and they take turns",
+                                   "instead of sounding together: the steps play",
+                                   "from one pad (its chord, with Chord on each",
+                                   "pad), then the next, in the order you pressed",
+                                   "them, a beat or a bar each. Hold Am, F, C and",
+                                   "G to arpeggiate that progression."],
             ArpItem::Strum => vec!["Spreads the notes of a chord step across the",
                                    "step, lowest first, like a strum. Off plays",
                                    "them together."],
@@ -731,6 +739,7 @@ impl App {
             }
             ArpItem::Chord => self.arp.chord = step_in(&Chord::ALL, self.arp.chord, d),
             ArpItem::Run => self.arp.run = d > 0,
+            ArpItem::Turns => self.arp.turns = step_in(&Turns::ALL, self.arp.turns, d),
             ArpItem::Strum => self.arp.strum = (i32::from(self.arp.strum) + STRUM_STEP * d).clamp(0, 100) as u8,
             ArpItem::Retrigger => self.arp.retrigger = d > 0,
             ArpItem::SwingFrom => {
@@ -752,6 +761,7 @@ impl App {
             ArpItem::Snap => format!("arp out-of-key notes: {}", snap_text(self.arp.snap).to_ascii_lowercase()),
             ArpItem::Chord => format!("arp chord on each pad: {}", self.arp.chord.label().to_ascii_lowercase()),
             ArpItem::Run => format!("arp scale run: {}", if self.arp.run { "on" } else { "off" }),
+            ArpItem::Turns => format!("arp chords take turns: {}", self.arp.turns.label().to_ascii_lowercase()),
             ArpItem::Strum => format!("arp strum: {} %", self.arp.strum),
             ArpItem::Retrigger => format!("arp new notes restart: {}", if self.arp.retrigger { "on" } else { "off" }),
             ArpItem::SwingFrom => unreachable!("returned above"),
