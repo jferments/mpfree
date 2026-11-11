@@ -3,7 +3,8 @@
 //! (five tracks, one of them through the arp, one recording, with loops,
 //! tempo changes, locates, punch in and out, stop and panic, parameter
 //! locks on every track, trig conditions, ratchets and FILL, and FX
-//! moves on every track) at period sizes from 1 to 4096 frames.
+//! moves on every track and recorded from Perform FX gestures) at period
+//! sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -16,8 +17,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
-use mpfree_seq::mpfree_moves::{Kind, Map, Target};
-use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
+use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
 use mpfree_seq::{Clip, Cond, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -198,6 +199,7 @@ fn playing_never_allocates() {
     let mut rec = Recorder::new();
     let mut recorded = 0usize;
     let mut recorded_locks = 0usize;
+    let mut recorded_moves = 0usize;
     let mut started = 0usize;
 
     watch(true);
@@ -266,9 +268,31 @@ fn playing_never_allocates() {
                 value: (i % 100) as f32 / 100.0,
             },
         );
+        // Perform FX gestures: the XY pad's two axes moving, letting go
+        // now and then, and a master insert's knob.
+        for (k, addr) in [
+            ParamAddr::new(Owner::Insert(Strip::Master, 1), 0),
+            ParamAddr::new(Owner::Insert(Strip::Master, 1), 1),
+            RelAddr::new(OnTrack::Inst, 2).on(3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let input = if (i + k as u64).is_multiple_of(23) {
+                Input::End { addr }
+            } else {
+                Input::Move {
+                    addr,
+                    value: ((i * 7 + k as u64) % 50) as f32 / 50.0,
+                    map: Map::linear(0.0, 1.0),
+                }
+            };
+            rec.input_move((i as u32 * (11 + k as u32)) % n, input);
+        }
         rec.process(&view, &block);
         recorded += rec.taken().len();
         recorded_locks += rec.taken_locks().len();
+        recorded_moves += rec.taken_moves().count();
     }
     watch(false);
     assert_eq!(
@@ -283,6 +307,7 @@ fn playing_never_allocates() {
     assert!(arp_notes > 500, "{arp_notes}");
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");
+    assert!(recorded_moves > 200, "{recorded_moves}");
     assert!(recorded_locks > 500, "{recorded_locks}");
     assert_eq!(rec.stray_locks(), 0);
     assert_eq!(rec.dropped(), 0);
