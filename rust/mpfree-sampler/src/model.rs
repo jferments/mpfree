@@ -1638,6 +1638,44 @@ impl Project {
         Ok(())
     }
 
+    /// Adds `sources` and puts `pads` (keygroups that use them) on
+    /// consecutive pads from `to_pad`, and the pads then play notes from
+    /// `from`: an instrument made by [`crate::autosample`], as one undo
+    /// step. Nothing changes if any pad is refused.
+    pub fn put_instrument(
+        &mut self,
+        to_pad: usize,
+        sources: Vec<Source>,
+        pads: Vec<Pad>,
+        from: u8,
+    ) -> Result<(), ModelError> {
+        if pads.is_empty() || to_pad + pads.len() > PADS || from > 127 - 15 {
+            return Err(ModelError::BadPad);
+        }
+        let had = self.sources.len();
+        let mut steps = Vec::with_capacity(sources.len() + pads.len() + 1);
+        for s in sources {
+            let id = s.id();
+            if self.source(id).is_none() {
+                self.sources.push(s);
+                steps.push(Undo::AddSource { id });
+            }
+        }
+        if let Some(e) = pads.iter().find_map(|p| self.check_pad(p).err()) {
+            self.sources.truncate(had);
+            return Err(e);
+        }
+        steps.extend(self.place_pads(pads, to_pad));
+        let play = PadsPlay::Keys { from };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
     /// The keygroups (pad indices) that play `note`, in pad order.
     pub fn keygroups_for(&self, note: u8) -> Vec<usize> {
         (0..PADS)
