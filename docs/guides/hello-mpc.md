@@ -1,6 +1,6 @@
 # Hello MPC (Phase 1) on the kexec test build
 
-**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4, [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui) with MPFree's first GUI, is ready to run.
+**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Round 5, [straight into the pad player at power-on](#round-5-straight-into-the-pad-player), is ready to run.
 
 Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
 
@@ -10,14 +10,15 @@ The program is [`mpfree-hello`](../../rust/mpfree-hello/src/main.rs), a static A
 
 1. checks the program on the workstation (a static ARM EABI5 hard-float executable);
 2. connects **only to the test build**: it uses the test build's own SSH host key, so stock 3.6.0 is refused before anything runs. On the test build it checks, read-only, the release, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
-3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash;
+3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only step is `app`, nothing is copied;
 4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_HELLO_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table;
 5. after the lights, drums, setup and play steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
 
-The first step that draws on the screen stops our own log display (`mpfree-test-screen`), since both would draw on `/dev/fb0`; it is started again at the end.
+The first step that draws on the screen stops our own log display (`mpfree-test-screen`) or pad player (`mpfree-test-app`, on a stick built with `--app`), whichever runs, since both would draw on `/dev/fb0`; it is started again at the end.
 
 | Step | What the program does | Writes to |
 |---|---|---|
+| app | nothing new runs: it reads the log of the pad player that started at power-on, phase by phase ([round 5](#round-5-straight-into-the-pad-player)). Without other steps nothing is copied | nothing |
 | inventory | lists sound cards, PCM and MIDI devices, input devices, the framebuffer, panel rotation, real-time limits | nothing but its report |
 | screen | stops our own log display (`mpfree-test-screen`, started again at the end), draws the Hello MPC card | `/dev/fb0` and its sysfs `pan` file |
 | touch | shows your touches for 10 s; reads the ILI2117 device without grabbing it | the screen |
@@ -78,7 +79,7 @@ The host tool takes the newest `~/mpfree-work/factory-kit-*/kits.bin`, or the fi
 
 Wrap every command in `python3 tools/mpc-one/results.py run NAME -- ...` so the output lands in the round's results folder. Afterwards: switch the MPC off, take out the stick, wait 10 s, switch it on, and run the boot-map survey to confirm nothing on the eMMC changed.
 
-`mpfree-hello --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console.png`, `play.png`, `debug.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
+`mpfree-hello --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console`, `loading`, `loading-failed`, `play`, `debug`, `syslog`, `prefs`, `options` and `guide`, each `.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
 
 ## Round 1 results (2026-11-10)
 
@@ -154,6 +155,45 @@ What round 4 runs (`MPFREE_HELLO_STEPS=screen,play`):
 It sends the controller nothing new: the session, Akai's setup and pad colours, all as in round 3. Only the colours differ, since each kit's pads rest in one of the seven colours seen from Akai's app.
 
 The report gives the pad-to-sound time (minimum, mean, maximum), underruns, and the hits from the pads and the screen.
+
+### Round 4 results (2026-11-10)
+
+From the owner's results zip (clone at `a0b136f`):
+
+- **Storage:** the hashes of `p1`–`p6`, the U-Boot environment and both boot areas match the baseline after the power-cycle, with 0 sectors written.
+- **Sound:** 323 hits in 120 s from the pads, with kits 1, 3, 4, 5 and 6, up to 16 sounds at once, peak −9.0 dBFS, no clipping. ACVA ran 41343 periods with 0 underruns; the gap between periods averaged 2.903 ms and was at most 2.973 ms.
+- **Pad to sound:** mean 8.68 ms (8.63 to 8.70 ms), from reading the MIDI message to the end of its period leaving the card's buffer. Up to one 2.9 ms period before the message is read is not counted.
+- **Screen:** 1958 frames, 3.7 ms each on average, the slowest 38.5 ms. The owner saw the log display at the screen's edges, behind the pad player. The cause, from the kernel source: a write of exactly one whole native row gives the framebuffer emulation a zero-width damage rectangle, so those rows were never flushed. `FbTarget` now writes at least two whole rows at a time, and the app's pages fill the whole screen.
+- **Touch:** one touch registered in 120 s (not yet explained; round 5 asks).
+- **Velocity:** the pads used the whole range, 1 to 127, but 91 of the 323 hits (28 %) arrived as exactly 127, so firm hits saturate in the controller before any curve of ours sees them (inferred from the numbers; Akai's own pad sensitivity settings are not decoded).
+- **Buttons:** one unknown button, number 11, was pressed five times. Round 5's button guide learns which buttons MENU, NOTE REPEAT, TAP TEMPO, − and + are.
+
+## Round 5: straight into the pad player
+
+The owner asked (2026-11-10) to go from the loading screen to the app without running a command and without the console on screen, with a progress bar and plain messages while it starts, a button to switch to the raw console, pad velocity, Full Level and Half Level, Latch with Note Repeat, and MENU and SHIFT + MENU for options and Prefs.
+
+**At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the galaxy for 6 s, then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
+
+**Controls** (logic in [`app.rs`](../../rust/mpfree-hello/src/app.rs), with tests):
+
+| Control | What it does |
+|---|---|
+| Pads | Play, through the velocity curve (Prefs: soft, linear or hard) |
+| FULL LEVEL | Every hit at 127; lit while on. SHIFT + FULL LEVEL: Half Level, every hit at 64 |
+| NOTE REPEAT (held) | Held pads repeat on the grid (Play options: rate, tempo) |
+| SHIFT + NOTE REPEAT | Latch: pads keep repeating after you let go; new pads replace them. NOTE REPEAT again turns it off. Uses the [`mpfree-arp`](../project/arpeggiator.md) engine |
+| MENU | The current page's options; again to close. SHIFT + MENU: Prefs |
+| In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it |
+| TAP TEMPO | Sets the tempo; its light blinks with it |
+| Wheel, − / + | The kit (outside menus) |
+| Q-Link 1, the slider | The level |
+| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back |
+
+The button numbers for MENU, NOTE REPEAT, TAP TEMPO, − and + are not measured yet, so on the first start a **button guide** asks for each one. STOP skips one. The numbers go in the log for next time.
+
+Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow.
+
+**The check** (`MPFREE_HELLO_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
 
 ### The factory drum kits
 
