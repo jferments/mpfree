@@ -20,8 +20,8 @@
 //!
 //! --preview writes only PNG files in DIR.
 
-use mpfree_startup::{scene, Scene};
 use mpfree_screen_log::Rotation;
+use mpfree_startup::{scene, Scene};
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Rect, SoftCanvas, Theme};
 use std::fs::{self, OpenOptions};
@@ -47,7 +47,14 @@ fn make_sized(name: &str, (w, h): (i32, i32)) -> Result<Box<dyn Scene>, String> 
 
 /// Play the scene on the framebuffer in real time, then leave its last
 /// frame showing.
-fn framebuffer(name: &str, fb: &Path, sysfs: &Path, rotation: Rotation, seconds: Option<f32>, fps: f32) -> Result<(), String> {
+fn framebuffer(
+    name: &str,
+    fb: &Path,
+    sysfs: &Path,
+    rotation: Rotation,
+    seconds: Option<f32>,
+    fps: f32,
+) -> Result<(), String> {
     let mut target = FbTarget::open(fb, sysfs, rotation)?;
     let (w, h) = target.logical_size();
     let mut s = make_sized(name, (w, h))?;
@@ -75,16 +82,27 @@ fn framebuffer(name: &str, fb: &Path, sysfs: &Path, rotation: Rotation, seconds:
 
 fn write_png(path: &Path, c: &SoftCanvas) -> Result<(), String> {
     let png = mpfree_ui::png::encode_rgb(c.width() as u32, c.height() as u32, &c.to_rgb());
-    OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(&png))
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn preview(dir: &Path, names: &[&str], fps: f32, seconds: Option<f32>) -> Result<(), String> {
     for name in names {
         let mut s = make(name)?;
-        let d = if names.len() > 1 { dir.join(name) } else { dir.to_path_buf() };
+        let d = if names.len() > 1 {
+            dir.join(name)
+        } else {
+            dir.to_path_buf()
+        };
         fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-        if fs::read_dir(&d).map(|mut r| r.next().is_some()).unwrap_or(false) {
+        if fs::read_dir(&d)
+            .map(|mut r| r.next().is_some())
+            .unwrap_or(false)
+        {
             return Err(format!("{} is not empty", d.display()));
         }
         let len = seconds.unwrap_or(s.length() + 1.0);
@@ -121,9 +139,13 @@ fn bench(names: &[&str], frames: usize) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir: Option<PathBuf> = None;
-    let (mut theme, mut fps, mut seconds, mut frames, mut do_bench) = (None, 30.0f32, None, 120usize, false);
+    let (mut theme, mut fps, mut seconds, mut frames, mut do_bench) =
+        (None, 30.0f32, None, 120usize, false);
     let mut on_fb = false;
-    let (mut fb, mut sysfs) = (PathBuf::from("/dev/fb0"), PathBuf::from("/sys/class/graphics/fb0"));
+    let (mut fb, mut sysfs) = (
+        PathBuf::from("/dev/fb0"),
+        PathBuf::from("/sys/class/graphics/fb0"),
+    );
     // The MPC One's panel is mounted left side up (device tree rotation = 270).
     let mut rotation = Rotation::Deg270;
     let mut i = 0;
@@ -132,21 +154,36 @@ fn main() {
             let a = args[i].as_str();
             let mut val = || {
                 i += 1;
-                args.get(i).cloned().ok_or_else(|| format!("{a} needs a value"))
+                args.get(i)
+                    .cloned()
+                    .ok_or_else(|| format!("{a} needs a value"))
             };
             match a {
                 "--preview" => dir = Some(PathBuf::from(val()?)),
                 "--theme" => theme = Some(val()?),
                 "--fps" => fps = val()?.parse().map_err(|_| "--fps: a number".to_string())?,
-                "--seconds" => seconds = Some(val()?.parse().map_err(|_| "--seconds: a number".to_string())?),
-                "--frames" => frames = val()?.parse().map_err(|_| "--frames: a number".to_string())?,
+                "--seconds" => {
+                    seconds = Some(
+                        val()?
+                            .parse()
+                            .map_err(|_| "--seconds: a number".to_string())?,
+                    )
+                }
+                "--frames" => {
+                    frames = val()?
+                        .parse()
+                        .map_err(|_| "--frames: a number".to_string())?
+                }
                 "--bench" => do_bench = true,
                 "--framebuffer" => on_fb = true,
                 "--fb" => fb = PathBuf::from(val()?),
                 "--sysfs" => sysfs = PathBuf::from(val()?),
                 "--rotation" => {
                     let v = val()?;
-                    rotation = v.parse::<u32>().ok().and_then(Rotation::from_degrees)
+                    rotation = v
+                        .parse::<u32>()
+                        .ok()
+                        .and_then(Rotation::from_degrees)
                         .ok_or_else(|| format!("--rotation must be 0, 90, 180 or 270, not {v}"))?;
                 }
                 _ => return Err(format!("unknown option {a}\n{USAGE}")),

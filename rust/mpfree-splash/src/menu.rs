@@ -50,7 +50,11 @@ impl BootMenu {
         BootMenu {
             mpfree_available,
             countdown: countdown.max(1.0),
-            selected: if mpfree_available { Choice::MpFree } else { Choice::Factory },
+            selected: if mpfree_available {
+                Choice::MpFree
+            } else {
+                Choice::Factory
+            },
             since: now,
             touched: false,
             decided: None,
@@ -70,7 +74,11 @@ impl BootMenu {
         if self.decided.is_some() || !self.mpfree_available || delta == 0 {
             return;
         }
-        self.selected = if delta > 0 { Choice::Factory } else { Choice::MpFree };
+        self.selected = if delta > 0 {
+            Choice::Factory
+        } else {
+            Choice::MpFree
+        };
         self.touched = true;
         self.since = now;
     }
@@ -110,7 +118,10 @@ impl BootMenu {
         if !self.mpfree_available {
             return MenuText {
                 options: vec![(Choice::Factory.label(), true)],
-                hints: vec!["No MPFree USB stick found".into(), format!("Starting factory OS in {}", left(NO_STICK_SECONDS))],
+                hints: vec![
+                    "No MPFree USB stick found".into(),
+                    format!("Starting factory OS in {}", left(NO_STICK_SECONDS)),
+                ],
             };
         }
         let options = vec![
@@ -119,8 +130,14 @@ impl BootMenu {
         ];
         let hints = match self.decided {
             Some(c) => vec![format!("Starting {}", c.label())],
-            None if !self.touched => vec![format!("MPFree OS starts in {}", left(self.countdown)), "Turn the wheel to choose".into()],
-            None => vec!["Press PLAY or a pad".into(), format!("to start {}", self.selected.label())],
+            None if !self.touched => vec![
+                format!("MPFree OS starts in {}", left(self.countdown)),
+                "Turn the wheel to choose".into(),
+            ],
+            None => vec![
+                "Press PLAY or a pad".into(),
+                format!("to start {}", self.selected.label()),
+            ],
         };
         MenuText { options, hints }
     }
@@ -134,7 +151,8 @@ pub struct MenuText {
 
 /// Characters across the options line, gaps included.
 fn options_width(t: &MenuText) -> usize {
-    t.options.iter().map(|(l, _)| l.len() + 2).sum::<usize>() + 2 * t.options.len().saturating_sub(1)
+    t.options.iter().map(|(l, _)| l.len() + 2).sum::<usize>()
+        + 2 * t.options.len().saturating_sub(1)
 }
 
 /// Whether the 8x8-pixel menu fits a canvas this size (otherwise the caller
@@ -148,8 +166,19 @@ pub fn fits_pixels(width: usize, height: usize) -> bool {
 pub fn draw_pixels(out: &mut [[u8; 3]], width: usize, height: usize, t: &MenuText) {
     let rows = 1 + t.hints.len();
     let panel_h = rows * 12 + 10;
-    let panel_w = (t.hints.iter().map(|h| h.len()).max().unwrap_or(0).max(options_width(t)) * 8 + 24).min(width);
-    let top = (height * 3 / 4).saturating_sub(panel_h / 2).min(height.saturating_sub(panel_h));
+    let panel_w = (t
+        .hints
+        .iter()
+        .map(|h| h.len())
+        .max()
+        .unwrap_or(0)
+        .max(options_width(t))
+        * 8
+        + 24)
+        .min(width);
+    let top = (height * 3 / 4)
+        .saturating_sub(panel_h / 2)
+        .min(height.saturating_sub(panel_h));
     let left = (width - panel_w) / 2;
     for y in top..(top + panel_h).min(height) {
         for x in left..left + panel_w {
@@ -161,7 +190,11 @@ pub fn draw_pixels(out: &mut [[u8; 3]], width: usize, height: usize, t: &MenuTex
     }
     let mut text = |s: &str, x0: usize, y0: usize, fg: [u8; 3], bg: Option<[u8; 3]>| {
         for (i, ch) in s.bytes().enumerate() {
-            let glyph = if (font::FIRST..=font::LAST).contains(&ch) { font::GLYPHS[(ch - font::FIRST) as usize] } else { [0; 8] };
+            let glyph = if (font::FIRST..=font::LAST).contains(&ch) {
+                font::GLYPHS[(ch - font::FIRST) as usize]
+            } else {
+                [0; 8]
+            };
             for (gy, bits) in glyph.iter().enumerate() {
                 for gx in 0..8 {
                     let (x, y) = (x0 + i * 8 + gx, y0 + gy);
@@ -236,7 +269,11 @@ mod tests {
         let mut m = BootMenu::new(true, 5.0, 0.0);
         m.wheel(1, 1.0);
         assert_eq!(m.tick(1.0 + IDLE_SECONDS - 0.1), None);
-        assert_eq!(m.tick(1.0 + IDLE_SECONDS), None, "back to the default, countdown restarts");
+        assert_eq!(
+            m.tick(1.0 + IDLE_SECONDS),
+            None,
+            "back to the default, countdown restarts"
+        );
         assert_eq!(m.selected(), Choice::MpFree);
         assert_eq!(m.tick(1.0 + IDLE_SECONDS + 5.0), Some(Choice::MpFree));
     }
@@ -246,7 +283,11 @@ mod tests {
         let mut m = BootMenu::new(false, 5.0, 0.0);
         assert_eq!(m.selected(), Choice::Factory);
         m.wheel(-1, 0.5);
-        assert_eq!(m.selected(), Choice::Factory, "the wheel can't pick MPFree without a stick");
+        assert_eq!(
+            m.selected(),
+            Choice::Factory,
+            "the wheel can't pick MPFree without a stick"
+        );
         assert_eq!(m.tick(NO_STICK_SECONDS - 0.1), None);
         assert_eq!(m.tick(NO_STICK_SECONDS), Some(Choice::Factory));
         assert!(m.lines(0.0).hints[0].contains("No MPFree"));

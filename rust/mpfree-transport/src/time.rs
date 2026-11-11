@@ -77,10 +77,16 @@ impl TempoMap {
         if segments.iter().any(|s| !valid_bpm(s.bpm)) {
             return Err(MapError::BadTempo);
         }
-        if segments.windows(2).any(|w| w[1].start - w[0].start < MIN_SPAN_TICKS) {
+        if segments
+            .windows(2)
+            .any(|w| w[1].start - w[0].start < MIN_SPAN_TICKS)
+        {
             return Err(MapError::BadOrder);
         }
-        let mut map = TempoMap { segments: [segments[0]; MAX_SEGMENTS], len: segments.len() };
+        let mut map = TempoMap {
+            segments: [segments[0]; MAX_SEGMENTS],
+            len: segments.len(),
+        };
         map.segments[..segments.len()].copy_from_slice(segments);
         Ok(map)
     }
@@ -125,7 +131,8 @@ impl Default for Meter {
 
 impl Meter {
     pub fn new(beats: u8, unit: u8) -> Option<Meter> {
-        ((1..=32).contains(&beats) && matches!(unit, 1 | 2 | 4 | 8 | 16)).then_some(Meter { beats, unit })
+        ((1..=32).contains(&beats) && matches!(unit, 1 | 2 | 4 | 8 | 16))
+            .then_some(Meter { beats, unit })
     }
 
     pub fn beat_ticks(self) -> i64 {
@@ -172,7 +179,11 @@ impl std::fmt::Display for Position {
 /// The first multiple of `step` at or after `tick`.
 pub fn ceil_to(tick: Tick, step: i64) -> Tick {
     let r = tick.rem_euclid(step);
-    if r == 0 { tick } else { tick + step - r }
+    if r == 0 {
+        tick
+    } else {
+        tick + step - r
+    }
 }
 
 /// Swing: every second line of a grid moves later. Applied by whoever
@@ -189,13 +200,17 @@ pub struct Swing {
 
 impl Default for Swing {
     fn default() -> Self {
-        Swing { grid: PPQ / 4, amount: 50 }
+        Swing {
+            grid: PPQ / 4,
+            amount: 50,
+        }
     }
 }
 
 impl Swing {
     pub fn new(grid: u32, amount: u8) -> Option<Swing> {
-        (grid > 0 && (PPQ * 4).is_multiple_of(grid) && (50..=75).contains(&amount)).then_some(Swing { grid, amount })
+        (grid > 0 && (PPQ * 4).is_multiple_of(grid) && (50..=75).contains(&amount))
+            .then_some(Swing { grid, amount })
     }
 
     /// Where a straight tick lands once swung. The off-beat line moves from
@@ -212,7 +227,11 @@ impl Swing {
         let base = (tick / pair).floor() * pair;
         let x = tick - base;
         let off = g * f64::from(self.amount) / 50.0;
-        let y = if x < g { x * off / g } else { off + (x - g) * (pair - off) / g };
+        let y = if x < g {
+            x * off / g
+        } else {
+            off + (x - g) * (pair - off) / g
+        };
         base + y
     }
 }
@@ -247,8 +266,14 @@ mod tests {
         let s = |start, bpm| Segment { start, bpm };
         assert_eq!(TempoMap::new(&[]), Err(MapError::Empty));
         assert_eq!(TempoMap::new(&[s(0, 10.0)]), Err(MapError::BadTempo));
-        assert_eq!(TempoMap::new(&[s(0, 120.0), s(100, 90.0)]), Err(MapError::BadOrder));
-        assert_eq!(TempoMap::new(&[s(0, 120.0); 33]), Err(MapError::TooManySegments));
+        assert_eq!(
+            TempoMap::new(&[s(0, 120.0), s(100, 90.0)]),
+            Err(MapError::BadOrder)
+        );
+        assert_eq!(
+            TempoMap::new(&[s(0, 120.0); 33]),
+            Err(MapError::TooManySegments)
+        );
         let m = TempoMap::new(&[s(0, 120.0), s(3840, 90.0), s(7680, 140.0)]).unwrap();
         assert_eq!(m.bpm_at(-500), 120.0);
         assert_eq!(m.bpm_at(3839), 120.0);

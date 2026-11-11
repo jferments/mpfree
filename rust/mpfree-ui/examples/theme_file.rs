@@ -9,7 +9,10 @@ fn main() {
     match mpfree_ui::Theme::builtin(&name) {
         Some(t) => print!("{}", t.to_text()),
         None => {
-            eprintln!("no built-in theme {name:?}; try {}", mpfree_ui::theme::BUILTIN.join(", "));
+            eprintln!(
+                "no built-in theme {name:?}; try {}",
+                mpfree_ui::theme::BUILTIN.join(", ")
+            );
             std::process::exit(2);
         }
     }

@@ -40,7 +40,7 @@ pub mod widgets;
 pub use canvas::{Canvas, Image, SoftCanvas};
 pub use color::Color;
 pub use geom::Rect;
-pub use text::{Align, FontId, Fonts};
 pub use style::Styled;
+pub use text::{Align, FontId, Fonts};
 pub use theme::{Backdrop, Corners, Startup, Theme, Tone};
 pub use ui::{EventKind, PaintCx, Touch, Ui, UiEvent, Widget};

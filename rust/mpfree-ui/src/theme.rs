@@ -146,7 +146,10 @@ impl Theme {
             good: Color::rgb(0x3DDC97),
             warn: Color::rgb(0xFFC145),
             bad: Color::rgb(0xFF5C5C),
-            track: [0x6EA8FE, 0x3DDC97, 0xFFC145, 0xD46CFF, 0xFF7A59, 0x4DD8E8, 0xF26BA8, 0xA3E05B].map(Color::rgb),
+            track: [
+                0x6EA8FE, 0x3DDC97, 0xFFC145, 0xD46CFF, 0xFF7A59, 0x4DD8E8, 0xF26BA8, 0xA3E05B,
+            ]
+            .map(Color::rgb),
             radius: 14,
             gap: 12,
             pad: 14,
@@ -187,7 +190,10 @@ impl Theme {
             good: Color::rgb(0x39FF6A),
             warn: Color::rgb(0xE8FF3C),
             bad: Color::rgb(0xFF4D4D),
-            track: [0x39FF6A, 0xB8FF3C, 0x3CFFD8, 0x8CFF9E, 0xE8FF3C, 0x2BD9A0, 0x6CFF3C, 0xC6FFD2].map(Color::rgb),
+            track: [
+                0x39FF6A, 0xB8FF3C, 0x3CFFD8, 0x8CFF9E, 0xE8FF3C, 0x2BD9A0, 0x6CFF3C, 0xC6FFD2,
+            ]
+            .map(Color::rgb),
             radius: 4,
             gap: 10,
             pad: 12,
@@ -228,7 +234,10 @@ impl Theme {
             good: Color::rgb(0x2DE2E6),
             warn: Color::rgb(0xFFB443),
             bad: Color::rgb(0xFF3864),
-            track: [0xFF2E97, 0x2DE2E6, 0xFFB443, 0xB967FF, 0xF9F871, 0xFF6C11, 0x01CDFE, 0xFF71CE].map(Color::rgb),
+            track: [
+                0xFF2E97, 0x2DE2E6, 0xFFB443, 0xB967FF, 0xF9F871, 0xFF6C11, 0x01CDFE, 0xFF71CE,
+            ]
+            .map(Color::rgb),
             radius: 10,
             gap: 12,
             pad: 14,
@@ -269,7 +278,10 @@ impl Theme {
             good: Color::rgb(0x8BE9C8),
             warn: Color::rgb(0xF5C97A),
             bad: Color::rgb(0xFF6B8B),
-            track: [0xA78BFA, 0xFFFFFF, 0x7C5CFF, 0xD4C6FF, 0x5B8CFF, 0xE58BFA, 0x8BE9C8, 0xC0B5E8].map(Color::rgb),
+            track: [
+                0xA78BFA, 0xFFFFFF, 0x7C5CFF, 0xD4C6FF, 0x5B8CFF, 0xE58BFA, 0x8BE9C8, 0xC0B5E8,
+            ]
+            .map(Color::rgb),
             radius: 10,
             gap: 12,
             pad: 14,
@@ -323,7 +335,12 @@ impl Theme {
         let l = |c: Color| (c.r as u32 * 3 + c.g as u32 * 6 + c.b as u32) / 10;
         let (lc, la) = (l(c).max(1), l(self.accent).max(1));
         let k = |v: u8| ((v as u32 * lc / la).min(255)) as u8;
-        let toned = Color { r: k(self.accent.r), g: k(self.accent.g), b: k(self.accent.b), a: c.a };
+        let toned = Color {
+            r: k(self.accent.r),
+            g: k(self.accent.g),
+            b: k(self.accent.b),
+            a: c.a,
+        };
         c.mix(toned, self.tint as f32 / 255.0)
     }
 
@@ -356,13 +373,20 @@ impl Theme {
                 continue;
             }
             let at = |e: String| format!("theme line {}: {e}", n + 1);
-            let (k, v) = line.split_once('=').ok_or_else(|| at(format!("expected key = value, got {line:?}")))?;
+            let (k, v) = line
+                .split_once('=')
+                .ok_or_else(|| at(format!("expected key = value, got {line:?}")))?;
             let (k, v) = (k.trim(), v.trim());
             if k == "base" {
                 if !first {
                     return Err(at("base must come first".into()));
                 }
-                theme = Theme::builtin(v).ok_or_else(|| at(format!("no built-in theme {v:?} (try {})", BUILTIN.join(", "))))?;
+                theme = Theme::builtin(v).ok_or_else(|| {
+                    at(format!(
+                        "no built-in theme {v:?} (try {})",
+                        BUILTIN.join(", ")
+                    ))
+                })?;
             } else {
                 theme.set(k, v).map_err(at)?;
             }
@@ -373,12 +397,18 @@ impl Theme {
 
     /// Change one token by its theme-file key.
     pub fn set(&mut self, key: &str, v: &str) -> Result<(), String> {
-        let num = |v: &str| v.parse::<i32>().map_err(|_| format!("{key}: expected a whole number, got {v:?}"));
+        let num = |v: &str| {
+            v.parse::<i32>()
+                .map_err(|_| format!("{key}: expected a whole number, got {v:?}"))
+        };
         let size = |v: &str| match v.parse::<f32>() {
             Ok(x) if (6.0..=200.0).contains(&x) => Ok(x),
             _ => Err(format!("{key}: expected a size from 6 to 200, got {v:?}")),
         };
-        let byte = |v: &str| v.parse::<u8>().map_err(|_| format!("{key}: expected 0 to 255, got {v:?}"));
+        let byte = |v: &str| {
+            v.parse::<u8>()
+                .map_err(|_| format!("{key}: expected 0 to 255, got {v:?}"))
+        };
         let col = |v: &str| parse_color(v).map_err(|e| format!("{key}: {e}"));
         let face = |v: &str| match v {
             "sans" => Ok(FontId::Sans),
@@ -402,7 +432,10 @@ impl Theme {
             "warn" => self.warn = col(v)?,
             "bad" => self.bad = col(v)?,
             "track" => {
-                let cs = v.split_whitespace().map(col).collect::<Result<Vec<_>, _>>()?;
+                let cs = v
+                    .split_whitespace()
+                    .map(col)
+                    .collect::<Result<Vec<_>, _>>()?;
                 if cs.is_empty() || cs.len() > 8 {
                     return Err("track: give 1 to 8 colours".into());
                 }
@@ -423,7 +456,11 @@ impl Theme {
                     "round" => Corners::Round,
                     "chamfer" => Corners::Chamfer,
                     "square" => Corners::Square,
-                    _ => return Err(format!("corners: expected round, chamfer or square, got {v:?}")),
+                    _ => {
+                        return Err(format!(
+                            "corners: expected round, chamfer or square, got {v:?}"
+                        ))
+                    }
                 }
             }
             "glow" => self.glow = byte(v)?,
@@ -436,7 +473,9 @@ impl Theme {
                     "grid" => Backdrop::Grid,
                     "dots" => Backdrop::Dots,
                     "scanlines" => Backdrop::Scanlines,
-                    _ => return Err(format!("backdrop: expected solid, gradient, grid, dots or scanlines, got {v:?}")),
+                    _ => return Err(format!(
+                        "backdrop: expected solid, gradient, grid, dots or scanlines, got {v:?}"
+                    )),
                 }
             }
             "backdrop_to" => self.backdrop_to = col(v)?,
@@ -445,13 +484,16 @@ impl Theme {
             "face_body" => self.face_body = face(v)?,
             "face_title" => self.face_title = face(v)?,
             "startup" => {
-                self.startup = match v {
-                    "galaxy" => Startup::Galaxy,
-                    "console" => Startup::Console,
-                    "synthwave" => Startup::Synthwave,
-                    "spaceship" => Startup::Spaceship,
-                    _ => return Err(format!("startup: expected galaxy, console, synthwave or spaceship, got {v:?}")),
-                }
+                self.startup =
+                    match v {
+                        "galaxy" => Startup::Galaxy,
+                        "console" => Startup::Console,
+                        "synthwave" => Startup::Synthwave,
+                        "spaceship" => Startup::Spaceship,
+                        _ => return Err(format!(
+                            "startup: expected galaxy, console, synthwave or spaceship, got {v:?}"
+                        )),
+                    }
             }
             _ => return Err(format!("unknown key {key:?}")),
         }
@@ -478,18 +520,45 @@ impl Theme {
             s.push_str(&format!("{k:<13} = {v}\n"));
         };
         kv("name", self.name.clone());
-        for (k, v) in [("bg", self.bg), ("surface", self.surface), ("raised", self.raised), ("outline", self.outline),
-                       ("text", self.text), ("text_dim", self.text_dim), ("text_faint", self.text_faint),
-                       ("accent", self.accent), ("accent2", self.accent2), ("on_accent", self.on_accent),
-                       ("good", self.good), ("warn", self.warn), ("bad", self.bad)] {
+        for (k, v) in [
+            ("bg", self.bg),
+            ("surface", self.surface),
+            ("raised", self.raised),
+            ("outline", self.outline),
+            ("text", self.text),
+            ("text_dim", self.text_dim),
+            ("text_faint", self.text_faint),
+            ("accent", self.accent),
+            ("accent2", self.accent2),
+            ("on_accent", self.on_accent),
+            ("good", self.good),
+            ("warn", self.warn),
+            ("bad", self.bad),
+        ] {
             kv(k, c(v));
         }
-        kv("track", self.track.iter().map(|&t| c(t)).collect::<Vec<_>>().join(" "));
-        for (k, v) in [("radius", self.radius), ("gap", self.gap), ("pad", self.pad)] {
+        kv(
+            "track",
+            self.track
+                .iter()
+                .map(|&t| c(t))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        for (k, v) in [
+            ("radius", self.radius),
+            ("gap", self.gap),
+            ("pad", self.pad),
+        ] {
             kv(k, v.to_string());
         }
-        for (k, v) in [("size_brand", self.size_brand), ("size_title", self.size_title), ("size_body", self.size_body),
-                       ("size_small", self.size_small), ("size_mono", self.size_mono)] {
+        for (k, v) in [
+            ("size_brand", self.size_brand),
+            ("size_title", self.size_title),
+            ("size_body", self.size_body),
+            ("size_small", self.size_small),
+            ("size_mono", self.size_mono),
+        ] {
             kv(k, format!("{v}"));
         }
         kv("corners", format!("{:?}", self.corners).to_lowercase());
@@ -511,13 +580,25 @@ impl Theme {
     /// A user theme can still be used; the picker shows these as warnings.
     pub fn check(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let on = |c: Color, under: Color| if c.a == 255 { c } else { under.mix(c.with_alpha(255), c.a as f32 / 255.0) };
+        let on = |c: Color, under: Color| {
+            if c.a == 255 {
+                c
+            } else {
+                under.mix(c.with_alpha(255), c.a as f32 / 255.0)
+            }
+        };
         let surface = on(self.surface, self.bg);
-        for (what, fg, min) in [("text", self.text, 4.5), ("text_dim", self.text_dim, 3.0), ("accent", self.accent, 3.0)] {
+        for (what, fg, min) in [
+            ("text", self.text, 4.5),
+            ("text_dim", self.text_dim, 3.0),
+            ("accent", self.accent, 3.0),
+        ] {
             for (bgname, bg) in [("bg", self.bg), ("surface", surface)] {
                 let r = contrast(fg, bg);
                 if r < min {
-                    out.push(format!("{what} on {bgname}: contrast {r:.1}:1, below {min}:1"));
+                    out.push(format!(
+                        "{what} on {bgname}: contrast {r:.1}:1, below {min}:1"
+                    ));
                 }
             }
         }
@@ -540,7 +621,9 @@ impl Default for Theme {
 fn strip_comment(line: &str) -> &str {
     let b = line.as_bytes();
     for (i, &c) in b.iter().enumerate() {
-        if c == b'#' && (line[..i].trim().is_empty() || b.get(i + 1).is_none_or(|n| n.is_ascii_whitespace())) {
+        if c == b'#'
+            && (line[..i].trim().is_empty() || b.get(i + 1).is_none_or(|n| n.is_ascii_whitespace()))
+        {
             return &line[..i];
         }
     }
@@ -549,7 +632,9 @@ fn strip_comment(line: &str) -> &str {
 
 /// `#RRGGBB` or `#RRGGBBAA`.
 pub fn parse_color(v: &str) -> Result<Color, String> {
-    let h = v.strip_prefix('#').ok_or_else(|| format!("expected #RRGGBB, got {v:?}"))?;
+    let h = v
+        .strip_prefix('#')
+        .ok_or_else(|| format!("expected #RRGGBB, got {v:?}"))?;
     let n = u32::from_str_radix(h, 16).map_err(|_| format!("expected #RRGGBB, got {v:?}"))?;
     match h.len() {
         6 => Ok(Color::rgb(n)),
@@ -563,7 +648,11 @@ pub fn contrast(a: Color, b: Color) -> f32 {
     fn lum(c: Color) -> f32 {
         let ch = |v: u8| {
             let v = v as f32 / 255.0;
-            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
         };
         0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
     }
@@ -586,11 +675,18 @@ mod tests {
 
     #[test]
     fn the_theme_files_match_the_builtins() {
-        let files = [("default", include_str!("../themes/default.theme")), ("console", include_str!("../themes/console.theme")),
-                     ("synthwave", include_str!("../themes/synthwave.theme")),
-                     ("spaceship", include_str!("../themes/spaceship.theme"))];
+        let files = [
+            ("default", include_str!("../themes/default.theme")),
+            ("console", include_str!("../themes/console.theme")),
+            ("synthwave", include_str!("../themes/synthwave.theme")),
+            ("spaceship", include_str!("../themes/spaceship.theme")),
+        ];
         for (name, text) in files {
-            assert_eq!(Theme::parse(text).unwrap(), Theme::builtin(name).unwrap(), "themes/{name}.theme is out of date");
+            assert_eq!(
+                Theme::parse(text).unwrap(),
+                Theme::builtin(name).unwrap(),
+                "themes/{name}.theme is out of date"
+            );
         }
         let ex = Theme::parse(include_str!("../themes/example-sunrise.theme")).unwrap();
         assert_eq!(ex.name, "Sunrise");
@@ -613,20 +709,38 @@ mod tests {
         assert_eq!(t.accent, Color::rgb(0xFF6C11));
         assert_eq!(t.corners, Corners::Chamfer);
         assert_eq!(t.accent2, Theme::synthwave().accent2);
-        assert_eq!(Theme::parse("name = Mine\nbase = console").unwrap_err(), "theme line 2: base must come first");
+        assert_eq!(
+            Theme::parse("name = Mine\nbase = console").unwrap_err(),
+            "theme line 2: base must come first"
+        );
     }
 
     #[test]
     fn mistakes_name_the_line() {
-        assert_eq!(Theme::parse("accent = blue").unwrap_err(), "theme line 1: accent: expected #RRGGBB, got \"blue\"");
-        assert_eq!(Theme::parse("\nfoo = 1").unwrap_err(), "theme line 2: unknown key \"foo\"");
-        assert!(Theme::parse("base = vaporwave").unwrap_err().contains("no built-in theme"));
-        assert_eq!(Theme::parse("surface = #11223380").unwrap().surface, Color::rgb(0x112233).with_alpha(0x80));
+        assert_eq!(
+            Theme::parse("accent = blue").unwrap_err(),
+            "theme line 1: accent: expected #RRGGBB, got \"blue\""
+        );
+        assert_eq!(
+            Theme::parse("\nfoo = 1").unwrap_err(),
+            "theme line 2: unknown key \"foo\""
+        );
+        assert!(Theme::parse("base = vaporwave")
+            .unwrap_err()
+            .contains("no built-in theme"));
+        assert_eq!(
+            Theme::parse("surface = #11223380").unwrap().surface,
+            Color::rgb(0x112233).with_alpha(0x80)
+        );
     }
 
     #[test]
     fn low_contrast_is_reported() {
         let t = Theme::parse("text = #151922").unwrap();
-        assert!(t.check().iter().any(|w| w.starts_with("text on surface")), "{:?}", t.check());
+        assert!(
+            t.check().iter().any(|w| w.starts_with("text on surface")),
+            "{:?}",
+            t.check()
+        );
     }
 }

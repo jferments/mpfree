@@ -19,7 +19,9 @@
 //! the background, adds the particles, then draws the panels (small
 //! translucent rectangles) and the overlay's thin lines.
 
-use crate::gfx::{self, add, hex, light_line, mix3, over, pack, scale, smoothstep, Mask, Rng, Sprite};
+use crate::gfx::{
+    self, add, hex, light_line, mix3, over, pack, scale, smoothstep, Mask, Rng, Sprite,
+};
 use crate::Scene;
 use mpfree_ui::SoftCanvas;
 use std::f32::consts::{PI, TAU};
@@ -51,7 +53,12 @@ struct Rect {
 
 impl Rect {
     fn frac(sw: f32, sh: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect { x: (sw * x) as i32, y: (sh * y) as i32, w: (sw * w).max(8.0) as i32, h: (sh * h).max(8.0) as i32 }
+        Rect {
+            x: (sw * x) as i32,
+            y: (sh * y) as i32,
+            w: (sw * w).max(8.0) as i32,
+            h: (sh * h).max(8.0) as i32,
+        }
     }
 }
 
@@ -103,7 +110,16 @@ fn neon(t: f32, start: f32) -> u32 {
     if d < 0.0 {
         return 0;
     }
-    const STEPS: [(f32, u32); 8] = [(0.05, 200), (0.1, 0), (0.16, 256), (0.22, 40), (0.3, 256), (0.34, 90), (0.42, 256), (9e9, 256)];
+    const STEPS: [(f32, u32); 8] = [
+        (0.05, 200),
+        (0.1, 0),
+        (0.16, 256),
+        (0.22, 40),
+        (0.3, 256),
+        (0.34, 90),
+        (0.42, 256),
+        (9e9, 256),
+    ];
     STEPS.iter().find(|s| d < s.0).map(|s| s.1).unwrap_or(256)
 }
 
@@ -226,7 +242,13 @@ impl Spaceship {
                 pack(mix3(hex(0xB9A2FF), hex(0x6A5BFF), rn))
             };
             let k = ((60.0 + 200.0 * bright) * (0.6 + 0.4 * rng.f())) as u32;
-            particles.push(Particle { r: rn * radius, theta, omega: 0.16 / (0.3 + rn * 2.0), color, k });
+            particles.push(Particle {
+                r: rn * radius,
+                theta,
+                omega: 0.16 / (0.3 + rn * 2.0),
+                color,
+                k,
+            });
         }
 
         let sans = gfx::font_sans();
@@ -244,26 +266,64 @@ impl Spaceship {
             (Kind::Target, "TARGET", (0.78, 0.05, 0.19, 0.17), 1.25),
         ];
         let pad = (10.0 * s) as i32;
-        let panels: Vec<Panel> = specs.iter().map(|&(kind, name, (x, y, pw, ph), open)| {
-            let r = Rect::frac(sw, sh, x, y, pw, ph);
-            Panel { r, open, header: small(name, WHITE, r.x + pad, r.y + (7.0 * s) as i32), kind }
-        }).collect();
+        let panels: Vec<Panel> = specs
+            .iter()
+            .map(|&(kind, name, (x, y, pw, ph), open)| {
+                let r = Rect::frac(sw, sh, x, y, pw, ph);
+                Panel {
+                    r,
+                    open,
+                    header: small(name, WHITE, r.x + pad, r.y + (7.0 * s) as i32),
+                    kind,
+                }
+            })
+            .collect();
         let body = |k: Kind| {
             let p = panels.iter().find(|p| p.kind == k).expect("panel");
             (p.r.x + pad, p.r.y + (30.0 * s) as i32)
         };
         let (nx, ny) = body(Kind::Nav);
-        let readouts = ["NAV      LOCKED", "SECTOR   MPC-1", "DRIVE    IDLE", "COMMS    QUIET"].iter().enumerate()
-            .map(|(i, l)| small(l, SOFT, nx, ny + (i as f32 * 19.0 * s) as i32)).collect();
+        let readouts = [
+            "NAV      LOCKED",
+            "SECTOR   MPC-1",
+            "DRIVE    IDLE",
+            "COMMS    QUIET",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| small(l, SOFT, nx, ny + (i as f32 * 19.0 * s) as i32))
+        .collect();
         let (tx0, ty0) = body(Kind::Target);
-        let target = ["CLASS    SPIRAL SBc", "RANGE    2.4 KLY", "STARS    4.1E11", "LOCK     OK"].iter().enumerate()
-            .map(|(i, l)| small(l, if i == 3 { PINK } else { SOFT }, tx0, ty0 + (i as f32 * 19.0 * s) as i32)).collect();
+        let target = [
+            "CLASS    SPIRAL SBc",
+            "RANGE    2.4 KLY",
+            "STARS    4.1E11",
+            "LOCK     OK",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            small(
+                l,
+                if i == 3 { PINK } else { SOFT },
+                tx0,
+                ty0 + (i as f32 * 19.0 * s) as i32,
+            )
+        })
+        .collect();
         let om = gfx::text_mask(&mono, 14.0 * s, 4.0 * s, "ALL SYSTEMS ONLINE");
-        let online = Sprite::from((w as i32 - om.w as i32) / 2, (sh * 0.935) as i32, &om, |_, _| WHITE);
-        let ticks = (0..36).map(|i| {
-            let m = gfx::text_mask(&mono, 12.0 * s, 1.0, &format!("{:03}", i * 10));
-            (i * 10, Sprite::from(0, 0, &m, |_, _| 0x9D8CD6))
-        }).collect();
+        let online = Sprite::from(
+            (w as i32 - om.w as i32) / 2,
+            (sh * 0.935) as i32,
+            &om,
+            |_, _| WHITE,
+        );
+        let ticks = (0..36)
+            .map(|i| {
+                let m = gfx::text_mask(&mono, 12.0 * s, 1.0, &format!("{:03}", i * 10));
+                (i * 10, Sprite::from(0, 0, &m, |_, _| 0x9D8CD6))
+            })
+            .collect();
 
         // Stars the scan line tags: bright particles out in the arms, spread
         // round the disc.
@@ -280,7 +340,10 @@ impl Spaceship {
                 p.k > 95 && (0.32 + 0.08 * (n % 3) as f32..0.8).contains(&rn) && near(p)
             });
             if let Some(i) = found {
-                callouts.push(Callout { particle: i, label: small(name, WHITE, 0, 0) });
+                callouts.push(Callout {
+                    particle: i,
+                    label: small(name, WHITE, 0, 0),
+                });
             }
         }
 
@@ -302,7 +365,11 @@ impl Spaceship {
         let ty = (sh * 0.685) as i32;
         let title = Sprite::from(tx, ty, &tm, |_, y| {
             let v = y as f32 / th;
-            pack(if v < 0.45 { mix3(hex(0xFFFFFF), hex(0xE2D6FF), v / 0.45) } else { mix3(hex(0xE2D6FF), hex(0x9B6BFF), (v - 0.45) / 0.55) })
+            pack(if v < 0.45 {
+                mix3(hex(0xFFFFFF), hex(0xE2D6FF), v / 0.45)
+            } else {
+                mix3(hex(0xE2D6FF), hex(0x9B6BFF), (v - 0.45) / 0.55)
+            })
         });
         let pad = 24;
         let edge = tm.padded(pad).dilated(3);
@@ -310,14 +377,33 @@ impl Spaceship {
         let glow = edge.blurred(9, 3);
         let title_glow = Sprite::from(tx - pad as i32, ty - pad as i32, &glow, |_, _| VIOLET);
         let sm = gfx::text_mask(&sans, 26.0 * s, 9.0 * s, crate::VERSION);
-        let (sx, sy) = ((w as i32 - sm.w as i32) / 2, ty + tm.h as i32 + (8.0 * s) as i32);
+        let (sx, sy) = (
+            (w as i32 - sm.w as i32) / 2,
+            ty + tm.h as i32 + (8.0 * s) as i32,
+        );
         let sub = Sprite::from(sx, sy, &sm, |_, _| WHITE);
         let sub_glow = Sprite::from(sx - 12, sy - 12, &sm.padded(12).blurred(5, 3), |_, _| LILAC);
 
         Spaceship {
-            w, h, s, dark, lit, center, particles, panels, callouts,
-            title, title_h: tm.h as i32, title_edge, title_glow, sub, sub_glow,
-            readouts, target, online, ticks,
+            w,
+            h,
+            s,
+            dark,
+            lit,
+            center,
+            particles,
+            panels,
+            callouts,
+            title,
+            title_h: tm.h as i32,
+            title_edge,
+            title_glow,
+            sub,
+            sub_glow,
+            readouts,
+            target,
+            online,
+            ticks,
         }
     }
 
@@ -355,21 +441,41 @@ impl Spaceship {
                 let a = if d < 1.0 { 0 } else { 150 };
                 px[i] = over(px[i], 0x0A0616, a);
                 if d < 1.2 {
-                    px[i] = add(px[i], LILAC, (((1.2 - d.abs()).clamp(0.0, 1.0)) * 200.0) as u32);
+                    px[i] = add(
+                        px[i],
+                        LILAC,
+                        (((1.2 - d.abs()).clamp(0.0, 1.0)) * 200.0) as u32,
+                    );
                 }
             }
         }
         // Scanlines over the body, faint.
         let mut y = r.y + 2;
         while y < r.y + r.h - 2 {
-            light_line(px, w, (x0 + 3.0, y as f32), (x1 - 3.0, y as f32), VIOLET, 10, 10);
+            light_line(
+                px,
+                w,
+                (x0 + 3.0, y as f32),
+                (x1 - 3.0, y as f32),
+                VIOLET,
+                10,
+                10,
+            );
             y += (3.0 * s).max(2.0) as i32;
         }
         let ck = smoothstep(p.open + 0.15, p.open + 0.35, t);
         if ck > 0.0 {
             p.header.draw(px, w, (ck * 256.0) as u32, true);
             let ry = r.y as f32 + 24.0 * s;
-            light_line(px, w, (x0 + 8.0 * s, ry), (x1 - 8.0 * s, ry), LILAC, (90.0 * ck) as u32, (20.0 * ck) as u32);
+            light_line(
+                px,
+                w,
+                (x0 + 8.0 * s, ry),
+                (x1 - 8.0 * s, ry),
+                LILAC,
+                (90.0 * ck) as u32,
+                (20.0 * ck) as u32,
+            );
         }
         ck
     }
@@ -377,8 +483,13 @@ impl Spaceship {
     fn radar(&self, px: &mut [u32], r: Rect, t: f32, ck: f32) {
         let (w, s) = (self.w, self.s);
         let top = r.y as f32 + 28.0 * s;
-        let rad = ((r.h as f32 - 28.0 * s) / 2.0 - 8.0 * s).min(r.w as f32 / 2.0 - 10.0 * s).max(3.0);
-        let (cx, cy) = (r.x as f32 + r.w as f32 / 2.0, top + (r.y as f32 + r.h as f32 - top) / 2.0);
+        let rad = ((r.h as f32 - 28.0 * s) / 2.0 - 8.0 * s)
+            .min(r.w as f32 / 2.0 - 10.0 * s)
+            .max(3.0);
+        let (cx, cy) = (
+            r.x as f32 + r.w as f32 / 2.0,
+            top + (r.y as f32 + r.h as f32 - top) / 2.0,
+        );
         let kk = |k: f32| (k * ck) as u32;
         for ring in [1.0, 0.66, 0.33] {
             let rr = rad * ring;
@@ -392,18 +503,51 @@ impl Spaceship {
                 }
             }
         }
-        light_line(px, w, (cx - rad, cy), (cx + rad, cy), LILAC, kk(50.0), kk(50.0));
-        light_line(px, w, (cx, cy - rad), (cx, cy + rad), LILAC, kk(50.0), kk(50.0));
+        light_line(
+            px,
+            w,
+            (cx - rad, cy),
+            (cx + rad, cy),
+            LILAC,
+            kk(50.0),
+            kk(50.0),
+        );
+        light_line(
+            px,
+            w,
+            (cx, cy - rad),
+            (cx, cy + rad),
+            LILAC,
+            kk(50.0),
+            kk(50.0),
+        );
         let a = t * 2.4;
         for m in 0..28 {
             let aa = a - m as f32 * 0.03;
             let k = kk(220.0 - m as f32 * 7.5);
-            light_line(px, w, (cx, cy), (cx + aa.cos() * rad, cy + aa.sin() * rad), if m == 0 { WHITE } else { LILAC }, k / 3, k);
+            light_line(
+                px,
+                w,
+                (cx, cy),
+                (cx + aa.cos() * rad, cy + aa.sin() * rad),
+                if m == 0 { WHITE } else { LILAC },
+                k / 3,
+                k,
+            );
         }
-        for (ang, rn) in [(0.6, 0.7), (2.1, 0.4), (3.3, 0.85), (4.6, 0.55), (5.5, 0.25)] {
+        for (ang, rn) in [
+            (0.6, 0.7),
+            (2.1, 0.4),
+            (3.3, 0.85),
+            (4.6, 0.55),
+            (5.5, 0.25),
+        ] {
             let since = (a - ang).rem_euclid(TAU);
             let k = kk((-since * 1.1).exp() * 256.0);
-            let (x, y) = ((cx + ang.cos() * rad * rn) as i32, (cy + ang.sin() * rad * rn) as i32);
+            let (x, y) = (
+                (cx + ang.cos() * rad * rn) as i32,
+                (cy + ang.sin() * rad * rn) as i32,
+            );
             light_rect(px, w, x - 1, y - 1, x + 2, y + 2, PINK, k);
             light_rect(px, w, x, y, x + 1, y + 1, WHITE, k);
         }
@@ -426,7 +570,13 @@ impl Spaceship {
             let mut y = base as i32;
             while y as f32 > base - hgt {
                 let up = (base - y as f32) / (base - top);
-                let c = if up > 0.8 { WHITE } else if up > 0.55 { PINK } else { LILAC };
+                let c = if up > 0.8 {
+                    WHITE
+                } else if up > 0.55 {
+                    PINK
+                } else {
+                    LILAC
+                };
                 light_rect(px, w, x0, y - row + 1, x1, y, c, (200.0 * ck) as u32);
                 y -= row;
             }
@@ -439,7 +589,15 @@ impl Spaceship {
         while x < (r.x + r.w) as f32 - pad {
             let y = wy + (x * 0.09 / s + t * 7.0).sin() * (x * 0.021 / s - t * 1.7).sin() * amp;
             if let Some(p) = prev {
-                light_line(px, w, p, (x, y), PINK, (220.0 * ck) as u32, (220.0 * ck) as u32);
+                light_line(
+                    px,
+                    w,
+                    p,
+                    (x, y),
+                    PINK,
+                    (220.0 * ck) as u32,
+                    (220.0 * ck) as u32,
+                );
             }
             prev = Some((x, y));
             x += 2.0;
@@ -478,7 +636,11 @@ impl Spaceship {
                 continue;
             }
             let age = t - hit;
-            let k = if age < 0.12 { 256.0 } else { 120.0 + 136.0 * (-(age - 0.12) * 2.0).exp() };
+            let k = if age < 0.12 {
+                256.0
+            } else {
+                120.0 + 136.0 * (-(age - 0.12) * 2.0).exp()
+            };
             let kk = k as u32;
             let b = 6.0 * s * (1.0 + 1.5 * (1.0 - smoothstep(0.0, 0.15, age)));
             for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -489,9 +651,24 @@ impl Spaceship {
             let lx = x + 16.0 * s;
             let ly = y - 16.0 * s;
             light_line(px, w, (x + b, y - b), (lx, ly), LILAC, kk / 2, kk / 2);
-            light_line(px, w, (lx, ly), (lx + c.label.w as f32 + 4.0, ly), LILAC, kk / 2, kk / 3);
+            light_line(
+                px,
+                w,
+                (lx, ly),
+                (lx + c.label.w as f32 + 4.0, ly),
+                LILAC,
+                kk / 2,
+                kk / 3,
+            );
             let upto = (age * 900.0 * s) as i32;
-            c.label.draw_upto_at(px, w, lx as i32 + 2, ly as i32 - c.label.h() as i32 - 2, kk, upto);
+            c.label.draw_upto_at(
+                px,
+                w,
+                lx as i32 + 2,
+                ly as i32 - c.label.h() as i32 - 2,
+                kk,
+                upto,
+            );
         }
     }
 
@@ -509,7 +686,12 @@ impl Spaceship {
         let (bx0, bx1) = (sw * 0.24 - out, sw * 0.76 + out);
         let (by0, by1) = (self.h as f32 * 0.12 - out, self.h as f32 * 0.66 + out);
         let arm = 26.0 * s;
-        for (x, y, dx, dy) in [(bx0, by0, 1.0, 1.0), (bx1, by0, -1.0, 1.0), (bx0, by1, 1.0, -1.0), (bx1, by1, -1.0, -1.0)] {
+        for (x, y, dx, dy) in [
+            (bx0, by0, 1.0, 1.0),
+            (bx1, by0, -1.0, 1.0),
+            (bx0, by1, 1.0, -1.0),
+            (bx1, by1, -1.0, -1.0),
+        ] {
             light_line(px, w, (x, y), (x + dx * arm, y), LILAC, hk(170), hk(60));
             light_line(px, w, (x, y), (x, y + dy * arm), LILAC, hk(170), hk(60));
         }
@@ -531,13 +713,35 @@ impl Spaceship {
             light_line(px, w, (x, y0), (x, y0 + len), LILAC, a, a);
             if major {
                 if let Some((_, spr)) = self.ticks.iter().find(|(v, _)| *v == d.rem_euclid(360)) {
-                    spr.draw_at(px, w, x as i32 - spr.w as i32 / 2, (y0 + 16.0 * s) as i32, a.min(256));
+                    spr.draw_at(
+                        px,
+                        w,
+                        x as i32 - spr.w as i32 / 2,
+                        (y0 + 16.0 * s) as i32,
+                        a.min(256),
+                    );
                 }
             }
         }
         let cx = sw / 2.0;
-        light_line(px, w, (cx - 6.0 * s, y0 - 10.0 * s), (cx, y0 - 2.0 * s), WHITE, hk(220), hk(220));
-        light_line(px, w, (cx + 6.0 * s, y0 - 10.0 * s), (cx, y0 - 2.0 * s), WHITE, hk(220), hk(220));
+        light_line(
+            px,
+            w,
+            (cx - 6.0 * s, y0 - 10.0 * s),
+            (cx, y0 - 2.0 * s),
+            WHITE,
+            hk(220),
+            hk(220),
+        );
+        light_line(
+            px,
+            w,
+            (cx + 6.0 * s, y0 - 10.0 * s),
+            (cx, y0 - 2.0 * s),
+            WHITE,
+            hk(220),
+            hk(220),
+        );
 
         // A reticle that closes on the galaxy's core, turning.
         let rk = smoothstep(1.7, 1.9, t);
@@ -555,9 +759,33 @@ impl Spaceship {
             let p = (gx + ca * rr, gy + sa * rr);
             let arm = 14.0 * s;
             let (t1, t2) = ((-sa, ca), (-ca, -sa));
-            light_line(px, w, p, (p.0 + t1.0 * arm, p.1 + t1.1 * arm), WHITE, k2, k2);
-            light_line(px, w, p, (p.0 - t1.0 * arm, p.1 - t1.1 * arm), WHITE, k2, k2);
-            light_line(px, w, p, (p.0 + t2.0 * arm * 0.7, p.1 + t2.1 * arm * 0.7), WHITE, k2, k2);
+            light_line(
+                px,
+                w,
+                p,
+                (p.0 + t1.0 * arm, p.1 + t1.1 * arm),
+                WHITE,
+                k2,
+                k2,
+            );
+            light_line(
+                px,
+                w,
+                p,
+                (p.0 - t1.0 * arm, p.1 - t1.1 * arm),
+                WHITE,
+                k2,
+                k2,
+            );
+            light_line(
+                px,
+                w,
+                p,
+                (p.0 + t2.0 * arm * 0.7, p.1 + t2.1 * arm * 0.7),
+                WHITE,
+                k2,
+                k2,
+            );
         }
         // Once locked: a leader line out to the target panel.
         let lk = smoothstep(2.3, 2.5, t);
@@ -566,7 +794,15 @@ impl Spaceship {
                 let from = (gx + rr * 0.8, gy - rr * 0.8);
                 let to = (p.r.x as f32, (p.r.y + p.r.h) as f32 - 10.0 * s);
                 let end = (from.0 + (to.0 - from.0) * lk, from.1 + (to.1 - from.1) * lk);
-                light_line(px, w, from, end, LILAC, (160.0 * lk) as u32, (160.0 * lk) as u32);
+                light_line(
+                    px,
+                    w,
+                    from,
+                    end,
+                    LILAC,
+                    (160.0 * lk) as u32,
+                    (160.0 * lk) as u32,
+                );
             }
         }
     }
@@ -584,13 +820,27 @@ impl Spaceship {
         let bh = (8.0 * s).max(2.0);
         if t < 2.6 {
             let p = smoothstep(1.2, 2.5, t);
-            for (a, b) in [((x0, y), (x1, y)), ((x0, y + bh), (x1, y + bh)), ((x0, y), (x0, y + bh)), ((x1, y), (x1, y + bh))] {
+            for (a, b) in [
+                ((x0, y), (x1, y)),
+                ((x0, y + bh), (x1, y + bh)),
+                ((x0, y), (x0, y + bh)),
+                ((x1, y), (x1, y + bh)),
+            ] {
                 light_line(px, w, a, b, LILAC, (k * 150) >> 8, (k * 150) >> 8);
             }
             let block = (8.0 * s).max(3.0);
             let mut x = x0 + 2.0;
             while x + block - 2.0 < x0 + 2.0 + (x1 - x0 - 4.0) * p {
-                light_rect(px, w, x as i32, (y + 2.0) as i32, (x + block - 2.0) as i32, (y + bh - 1.0) as i32, LILAC, (k * 230) >> 8);
+                light_rect(
+                    px,
+                    w,
+                    x as i32,
+                    (y + 2.0) as i32,
+                    (x + block - 2.0) as i32,
+                    (y + bh - 1.0) as i32,
+                    LILAC,
+                    (k * 230) >> 8,
+                );
                 x += block;
             }
         } else {
@@ -669,10 +919,21 @@ impl Scene for Spaceship {
             self.title.draw_upto(px, w, 256, false, upto - 24);
             if wipe < 1.0 {
                 let x = (self.title_glow.x + upto) as f32;
-                let (y0, y1) = (self.title.y as f32 - 10.0, (self.title.y + self.title_h) as f32 + 10.0);
+                let (y0, y1) = (
+                    self.title.y as f32 - 10.0,
+                    (self.title.y + self.title_h) as f32 + 10.0,
+                );
                 for dx in -3i32..=3 {
                     let k = [40, 90, 180, 256, 180, 90, 40][(dx + 3) as usize];
-                    light_line(px, w, (x + dx as f32 + 30.0, y0), (x + dx as f32 - 20.0, y1), WHITE, k, k);
+                    light_line(
+                        px,
+                        w,
+                        (x + dx as f32 + 30.0, y0),
+                        (x + dx as f32 - 20.0, y1),
+                        WHITE,
+                        k,
+                        k,
+                    );
                 }
             }
         }

@@ -35,7 +35,9 @@ const CHAOS: &[u8] = b"0123456789ABCDEF<>/\\|{}[]()#$%&*+=-~^:;!?@xXoO";
 const PROMPT: &str = "> MPFree OS v0.1 :: console ready";
 
 /// Shading colours, dark to light.
-const SHADE: [u32; 7] = [0x0A2C3A, 0x0F6E6E, 0x16B26A, 0x39FF6A, 0x9BFF4A, 0xE6FF7A, 0xF4FFF0];
+const SHADE: [u32; 7] = [
+    0x0A2C3A, 0x0F6E6E, 0x16B26A, 0x39FF6A, 0x9BFF4A, 0xE6FF7A, 0xF4FFF0,
+];
 
 struct Particle {
     /// Where it ends: a cell, or None for a spare that flies away.
@@ -68,7 +70,12 @@ fn glyph_index(c: u8) -> usize {
 /// than wide, so the mask is sampled `CH / CW` times more coarsely down.
 /// It fits in `cols` x `max_rows` cells; strokes are thickened first so the
 /// terminal face's thin lines hold enough characters to shade.
-fn banner(font: &fontdue::Font, text: &str, cols: usize, max_rows: usize) -> (Vec<f32>, usize, usize) {
+fn banner(
+    font: &fontdue::Font,
+    text: &str,
+    cols: usize,
+    max_rows: usize,
+) -> (Vec<f32>, usize, usize) {
     let m = gfx::text_mask(font, 260.0, 30.0, text).padded(6).dilated(4);
     let mut sx = m.w as f32 / cols as f32;
     if m.h as f32 / (sx * CH as f32 / CW as f32) > max_rows as f32 {
@@ -81,7 +88,10 @@ fn banner(font: &fontdue::Font, text: &str, cols: usize, max_rows: usize) -> (Ve
     for r in 0..rows {
         for c in 0..cols {
             let (x0, y0) = ((c as f32 * sx) as usize, (r as f32 * sy) as usize);
-            let (x1, y1) = ((((c + 1) as f32 * sx) as usize).min(m.w), (((r + 1) as f32 * sy) as usize).min(m.h));
+            let (x1, y1) = (
+                (((c + 1) as f32 * sx) as usize).min(m.w),
+                (((r + 1) as f32 * sy) as usize).min(m.h),
+            );
             let (mut sum, mut n) = (0u32, 0u32);
             for y in y0..y1 {
                 for x in x0..x1 {
@@ -101,7 +111,8 @@ fn arm_place(next: &mut impl FnMut() -> u32) -> (f32, f32) {
     let u = (next() % 1000) as f32 / 1000.0;
     let r0 = 25.0 + u.powf(0.75) * 760.0;
     let arm = (next() % 3) as f32 * TAU / 3.0;
-    let scatter = ((next() % 1000) as f32 / 1000.0 - 0.5) * if next().is_multiple_of(4) { 2.4 } else { 0.55 };
+    let scatter =
+        ((next() % 1000) as f32 / 1000.0 - 0.5) * if next().is_multiple_of(4) { 2.4 } else { 0.55 };
     (r0, arm + 2.2 * (r0 / 60.0).ln() + scatter)
 }
 
@@ -126,7 +137,11 @@ impl Console {
                     let (gx, gy) = (ox + x as i32, oy + y as i32);
                     if gx >= 0 && gy >= 0 && (gx as usize) < CW && (gy as usize) < CH {
                         let v = bmp[y * m.width + x];
-                        g.a[gy as usize * CW + gx as usize] = if v > 100 { 255 } else { (v as u32 * 2).min(255) as u8 };
+                        g.a[gy as usize * CW + gx as usize] = if v > 100 {
+                            255
+                        } else {
+                            (v as u32 * 2).min(255) as u8
+                        };
                     }
                 }
             }
@@ -135,11 +150,19 @@ impl Console {
 
         // The picture: "MPFree" big, "OS v0.1" under it, in terminal letters.
         let (big, bc, br) = banner(&term, crate::TITLE, cols * 86 / 100, rows * 46 / 100);
-        let (small, sc, sr) = banner(&term, &format!("OS {}", crate::VERSION), cols * 56 / 100, rows * 24 / 100);
+        let (small, sc, sr) = banner(
+            &term,
+            &format!("OS {}", crate::VERSION),
+            cols * 56 / 100,
+            rows * 24 / 100,
+        );
         let total = br + 2 + sr;
         let top = rows.saturating_sub(total + 4) / 2;
         let mut grid = vec![0.0f32; cols * rows];
-        for (cov, bw, bh, c0, r0) in [(&big, bc, br, (cols - bc) / 2, top), (&small, sc, sr, (cols - sc) / 2, top + br + 2)] {
+        for (cov, bw, bh, c0, r0) in [
+            (&big, bc, br, (cols - bc) / 2, top),
+            (&small, sc, sr, (cols - sc) / 2, top + br + 2),
+        ] {
             for r in 0..bh {
                 for c in 0..bw {
                     let (gc, gr) = (c0 + c, r0 + r);
@@ -191,24 +214,57 @@ impl Console {
                     // How much ink: coverage, deeper inside, brighter towards the light.
                     let ink = (v * 0.55 + depth * 0.45 + light * 0.25).clamp(0.0, 1.0);
                     let jitter = (next() % 7) as i32 - 3;
-                    let k = ((ink * (RAMP.len() - 1) as f32) as i32 + jitter).clamp(0, RAMP.len() as i32 - 1) as usize;
-                    let tone = (0.15 + ink * 0.55 + light * 0.45).clamp(0.0, 0.999) * (SHADE.len() - 1) as f32;
+                    let k = ((ink * (RAMP.len() - 1) as f32) as i32 + jitter)
+                        .clamp(0, RAMP.len() as i32 - 1) as usize;
+                    let tone = (0.15 + ink * 0.55 + light * 0.45).clamp(0.0, 0.999)
+                        * (SHADE.len() - 1) as f32;
                     let (i, f) = (tone as usize, tone.fract());
-                    let col = pack(mix3(hex(SHADE[i]), hex(SHADE[(i + 1).min(SHADE.len() - 1)]), f));
+                    let col = pack(mix3(
+                        hex(SHADE[i]),
+                        hex(SHADE[(i + 1).min(SHADE.len() - 1)]),
+                        f,
+                    ));
                     (RAMP[k], col)
                 };
-                let d = (((c as f32 - cx).powi(2) + ((r as f32 - cy) * 1.6).powi(2)).sqrt() / max_d).min(1.0);
+                let d = (((c as f32 - cx).powi(2) + ((r as f32 - cy) * 1.6).powi(2)).sqrt()
+                    / max_d)
+                    .min(1.0);
                 let (r0, a0) = arm_place(&mut next);
-                parts.push(Particle { target: Some((c, r)), ch, color, r0, a0, order: d * 0.8 + (next() % 200) as f32 / 1000.0, seed: next() });
+                parts.push(Particle {
+                    target: Some((c, r)),
+                    ch,
+                    color,
+                    r0,
+                    a0,
+                    order: d * 0.8 + (next() % 200) as f32 / 1000.0,
+                    seed: next(),
+                });
             }
         }
         for _ in 0..2200 {
             let (r0, a0) = arm_place(&mut next);
             let color = SHADE[1 + (next() % 4) as usize];
-            parts.push(Particle { target: None, ch: b'#', color, r0, a0, order: (next() % 1000) as f32 / 1000.0, seed: next() });
+            parts.push(Particle {
+                target: None,
+                ch: b'#',
+                color,
+                r0,
+                a0,
+                order: (next() % 1000) as f32 / 1000.0,
+                seed: next(),
+            });
         }
         let prompt_row = (top + total + 4).min(rows.saturating_sub(2));
-        Console { w, h, cols, rows, glyphs, parts, bloom: Vec::new(), prompt_row }
+        Console {
+            w,
+            h,
+            cols,
+            rows,
+            glyphs,
+            parts,
+            bloom: Vec::new(),
+            prompt_row,
+        }
     }
 
     fn put(&self, px: &mut [u32], x: i32, y: i32, ch: u8, col: u32, k: u32) {
@@ -250,9 +306,13 @@ impl Scene for Console {
             let spin = 1.1 + 1.2 / (0.4 + p.r0 / 260.0);
             let swirl_a = p.a0 + spin * t + 0.25 * (t * 1.7 + p.order * 9.0).sin();
             let wobble = 1.0 + 0.08 * (t * 2.3 + p.a0 * 3.0).sin();
-            let (sx, sy) = (cx + swirl_a.cos() * p.r0 * wobble * 1.45, cy + swirl_a.sin() * p.r0 * wobble * 0.82);
+            let (sx, sy) = (
+                cx + swirl_a.cos() * p.r0 * wobble * 1.45,
+                cy + swirl_a.sin() * p.r0 * wobble * 0.82,
+            );
             let flick = CHAOS[(hash(p.seed, step) as usize) % CHAOS.len()];
-            let flick_col = gfx::SHADES_CHAOS[(hash(p.seed ^ 0xABCD, step / 2) as usize) % gfx::SHADES_CHAOS.len()];
+            let flick_col = gfx::SHADES_CHAOS
+                [(hash(p.seed ^ 0xABCD, step / 2) as usize) % gfx::SHADES_CHAOS.len()];
             match p.target {
                 None => {
                     // Spares fly outwards and fade as the picture settles.
@@ -272,11 +332,23 @@ impl Scene for Console {
                     let (x, y, ch, col, k) = if e >= 1.0 {
                         let since = t - (start + 0.9);
                         let flash = 1.0 - smoothstep(0.0, 0.25, since);
-                        let col = if flash > 0.0 { pack(mix3(hex(p.color), hex(0xFFFFFF), flash * 0.8)) } else { p.color };
+                        let col = if flash > 0.0 {
+                            pack(mix3(hex(p.color), hex(0xFFFFFF), flash * 0.8))
+                        } else {
+                            p.color
+                        };
                         // After it settles, a slow light sweep and the odd glitch.
                         let sweep = ((tx / w as f32) * 3.0 - (t - 3.6) * 1.2).rem_euclid(3.0);
-                        let lift = if sweep < 0.25 { (1.0 - (sweep - 0.125).abs() * 8.0) * 0.35 } else { 0.0 };
-                        let col = if lift > 0.0 { pack(mix3(hex(col), hex(0xEFFFE6), lift)) } else { col };
+                        let lift = if sweep < 0.25 {
+                            (1.0 - (sweep - 0.125).abs() * 8.0) * 0.35
+                        } else {
+                            0.0
+                        };
+                        let col = if lift > 0.0 {
+                            pack(mix3(hex(col), hex(0xEFFFE6), lift))
+                        } else {
+                            col
+                        };
                         let glitch = t > 3.8 && hash(p.seed, (t * 8.0) as u32).is_multiple_of(1500);
                         (tx, ty, if glitch { flick } else { p.ch }, col, 256)
                     } else {
@@ -308,11 +380,25 @@ impl Scene for Console {
             let c0 = (self.cols.saturating_sub(PROMPT.len())) / 2;
             for (i, b) in PROMPT.bytes().take(n).enumerate() {
                 if b != b' ' {
-                    self.put(px, ((c0 + i) * CW) as i32, (row * CH) as i32, b, 0x7CFF9A, 230);
+                    self.put(
+                        px,
+                        ((c0 + i) * CW) as i32,
+                        (row * CH) as i32,
+                        b,
+                        0x7CFF9A,
+                        230,
+                    );
                 }
             }
             if n < PROMPT.len() || ((t * 2.5) as u32).is_multiple_of(2) {
-                self.put(px, ((c0 + n) * CW) as i32, (row * CH) as i32, b'_', 0xEFFFE6, 256);
+                self.put(
+                    px,
+                    ((c0 + n) * CW) as i32,
+                    (row * CH) as i32,
+                    b'_',
+                    0xEFFFE6,
+                    256,
+                );
             }
         }
         let _ = self.rows;
@@ -341,7 +427,11 @@ impl Scene for Console {
         for y in 0..bh {
             let i = y * blur.w;
             for x in 0..bw {
-                self.bloom[y * bw + x] = gfx::rgb(blur.a[i + x] as u32, blur.a[i + bw + x] as u32, blur.a[i + 2 * bw + x] as u32);
+                self.bloom[y * bw + x] = gfx::rgb(
+                    blur.a[i + x] as u32,
+                    blur.a[i + bw + x] as u32,
+                    blur.a[i + 2 * bw + x] as u32,
+                );
             }
         }
         for y in 0..h {

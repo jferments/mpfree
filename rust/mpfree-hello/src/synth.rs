@@ -51,7 +51,9 @@ const FADE: u32 = 441;
 /// How long a parameter must rest before its change is logged.
 const LOG_AFTER: Duration = Duration::from_secs(1);
 
-const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 /// A note's name: 48 is C3, 61 is C#4.
 pub fn note_name(note: u8) -> String {
@@ -103,12 +105,36 @@ impl Synth {
     /// before the sound starts.
     pub fn new(rate: u32) -> Synth {
         let mut poly = Poly::new(rate);
-        let preset = Poly::presets().iter().position(|p| p.name == START_PRESET).unwrap_or(0);
+        let preset = Poly::presets()
+            .iter()
+            .position(|p| p.name == START_PRESET)
+            .unwrap_or(0);
         poly.load_preset(&Poly::presets()[preset]);
-        let meters = poly.params().iter().enumerate().filter(|(_, p)| p.readonly).map(|(i, _)| i).collect();
-        Synth { poly, rate, events: [Timed::new(0, NodeEvent::AllOff); MAX_EVENTS], len: 0, dropped_events: 0,
-                left: [0.0; SCRATCH], right: [0.0; SCRATCH], playing: [None; 16], octave: 0, preset, fade: 0,
-                fading: false, notes: 0, peak_voices: 0, resets: 0, meters }
+        let meters = poly
+            .params()
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.readonly)
+            .map(|(i, _)| i)
+            .collect();
+        Synth {
+            poly,
+            rate,
+            events: [Timed::new(0, NodeEvent::AllOff); MAX_EVENTS],
+            len: 0,
+            dropped_events: 0,
+            left: [0.0; SCRATCH],
+            right: [0.0; SCRATCH],
+            playing: [None; 16],
+            octave: 0,
+            preset,
+            fade: 0,
+            fading: false,
+            notes: 0,
+            peak_voices: 0,
+            resets: 0,
+            meters,
+        }
     }
 
     // ------------------------------------------------------------ notes
@@ -151,7 +177,11 @@ impl Synth {
 
     /// The kit list's entry for the synth.
     pub fn kit_view(&self) -> crate::gui::KitView {
-        crate::gui::KitView { name: KIT_NAME.to_string(), pads: self.pad_labels(), colour: PAD_WHITE }
+        crate::gui::KitView {
+            name: KIT_NAME.to_string(),
+            pads: self.pad_labels(),
+            colour: PAD_WHITE,
+        }
     }
 
     /// Resting pad colours: C, white and black keys.
@@ -159,7 +189,13 @@ impl Synth {
         let mut out = [[0u8; 3]; 16];
         for (p, c) in out.iter_mut().enumerate() {
             let n = self.note(p);
-            *c = if n.is_multiple_of(12) { PAD_C } else if black(n) { PAD_BLACK } else { PAD_WHITE };
+            *c = if n.is_multiple_of(12) {
+                PAD_C
+            } else if black(n) {
+                PAD_BLACK
+            } else {
+                PAD_WHITE
+            };
         }
         out
     }
@@ -183,7 +219,13 @@ impl Synth {
             self.push(offset, NodeEvent::NoteOff { note: old });
         }
         let note = self.note(pad);
-        self.push(offset, NodeEvent::NoteOn { note, velocity: velocity.min(127) });
+        self.push(
+            offset,
+            NodeEvent::NoteOn {
+                note,
+                velocity: velocity.min(127),
+            },
+        );
         self.playing[pad] = Some(note);
         self.notes += 1;
     }
@@ -198,7 +240,13 @@ impl Synth {
     /// Pad pressure, 0 to 127, on the note the pad plays.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if let Some(&Some(note)) = self.playing.get(pad) {
-            self.push(0, NodeEvent::Pressure { note, value: value.min(127) });
+            self.push(
+                0,
+                NodeEvent::Pressure {
+                    note,
+                    value: value.min(127),
+                },
+            );
         }
     }
 
@@ -248,10 +296,20 @@ impl Synth {
                 self.events[e].offset -= start as u32;
                 e += 1;
             }
-            let (sl, sr) = (&mut self.left[..end - start], &mut self.right[..end - start]);
+            let (sl, sr) = (
+                &mut self.left[..end - start],
+                &mut self.right[..end - start],
+            );
             sl.fill(0.0);
             sr.fill(0.0);
-            let ctx = Ctx { rate: self.rate, frame: frame + start as u64, bpm, beats: 0.0, playing: false, sidechain: None };
+            let ctx = Ctx {
+                rate: self.rate,
+                frame: frame + start as u64,
+                bpm,
+                beats: 0.0,
+                playing: false,
+                sidechain: None,
+            };
             self.poly.process(&ctx, &self.events[first..e], sl, sr);
             if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
                 self.poly.reset();
@@ -289,8 +347,12 @@ impl Synth {
     }
 
     pub fn counters(&self) -> Counters {
-        Counters { notes: self.notes, peak_voices: self.peak_voices, dropped: self.dropped_events + self.poly.dropped,
-                   resets: self.resets }
+        Counters {
+            notes: self.notes,
+            peak_voices: self.peak_voices,
+            dropped: self.dropped_events + self.poly.dropped,
+            resets: self.resets,
+        }
     }
 
     // ------------------------------------------------------------ the Synth tab
@@ -324,19 +386,32 @@ impl Synth {
 
     /// Every value, in the node's parameter order (for the Synth tab).
     pub fn values(&self) -> Vec<f32> {
-        self.poly.params().iter().map(|p| self.poly.param(p.id)).collect()
+        self.poly
+            .params()
+            .iter()
+            .map(|p| self.poly.param(p.id))
+            .collect()
     }
 
     /// The meters' values, by parameter index.
     pub fn meters(&self) -> Vec<(usize, f32)> {
         let params = self.poly.params();
-        self.meters.iter().map(|&i| (i, self.poly.param(params[i].id))).collect()
+        self.meters
+            .iter()
+            .map(|&i| (i, self.poly.param(params[i].id)))
+            .collect()
     }
 
     /// What the Synth tab shows.
     pub fn state(&self) -> SynthState {
         let presets = Poly::presets().iter().map(|p| p.name.to_string()).collect();
-        SynthState::from_node(&self.poly, "Pads", Color::from_pad(PAD_WHITE), presets, Some(self.preset))
+        SynthState::from_node(
+            &self.poly,
+            "Pads",
+            Color::from_pad(PAD_WHITE),
+            presets,
+            Some(self.preset),
+        )
     }
 
     pub fn param_info(&self, id: u16) -> Option<&'static ParamInfo> {
@@ -377,7 +452,11 @@ impl ParamLog {
         let p = synth.param_info(id)?;
         // The node's own (clamped) value, not the one asked for.
         let v = synth.value(id);
-        let name = if p.group == p.name { p.name.to_string() } else { format!("{} {}", p.group, p.name) };
+        let name = if p.group == p.name {
+            p.name.to_string()
+        } else {
+            format!("{} {}", p.group, p.name)
+        };
         Some(format!("synth: {name} {}", value_line(p, v)))
     }
 }
@@ -428,7 +507,10 @@ mod tests {
         assert_eq!(c[2], PAD_WHITE);
         assert_eq!(c[12], PAD_C);
         for colour in [PAD_C, PAD_WHITE, PAD_BLACK] {
-            assert!(crate::akai::RESTING_COLOURS.contains(&colour), "{colour:02X?}");
+            assert!(
+                crate::akai::RESTING_COLOURS.contains(&colour),
+                "{colour:02X?}"
+            );
         }
     }
 
@@ -441,7 +523,10 @@ mod tests {
         let mut r = [0.25f32; 128];
         s.render(frame, 120.0, &mut l, &mut r);
         frame += 128;
-        assert!(l[..10].iter().all(|&x| x == 0.25), "nothing before the note's frame");
+        assert!(
+            l[..10].iter().all(|&x| x == 0.25),
+            "nothing before the note's frame"
+        );
         assert!(l.iter().any(|&x| x != 0.25), "Poly adds to what is there");
         assert_eq!(s.active_voices(), 1);
         let sound = run(&mut s, &mut frame, 40, 128);
@@ -451,14 +536,30 @@ mod tests {
         run(&mut s, &mut frame, 300, 128);
         assert_eq!(s.active_voices(), 0);
         assert!(peak(&run(&mut s, &mut frame, 2, 128)) == 0.0);
-        assert_eq!(s.counters(), Counters { notes: 1, peak_voices: 1, dropped: 0, resets: 0 });
+        assert_eq!(
+            s.counters(),
+            Counters {
+                notes: 1,
+                peak_voices: 1,
+                dropped: 0,
+                resets: 0
+            }
+        );
     }
 
     #[test]
     fn the_same_notes_sound_the_same_in_any_block_size() {
         // (frame, pad, on); periods longer than the scratch buffers render in pieces.
-        let script = [(3u64, 0usize, true), (64, 4, true), (500, 7, true), (2000, 0, false), (2100, 4, false),
-                      (2600, 7, false), (3000, 2, true), (4000, 2, false)];
+        let script = [
+            (3u64, 0usize, true),
+            (64, 4, true),
+            (500, 7, true),
+            (2000, 0, false),
+            (2100, 4, false),
+            (2600, 7, false),
+            (3000, 2, true),
+            (4000, 2, false),
+        ];
         let go = |block: usize| {
             let mut s = Synth::new(44_100);
             let mut frame = 0u64;
@@ -468,7 +569,11 @@ mod tests {
                 for &(at, pad, on) in &script {
                     if (frame..frame + n as u64).contains(&at) {
                         let offset = (at - frame) as u32;
-                        if on { s.note_on(pad, 90, offset) } else { s.note_off(pad, offset) }
+                        if on {
+                            s.note_on(pad, 90, offset)
+                        } else {
+                            s.note_off(pad, offset)
+                        }
                     }
                 }
                 out.extend(run(&mut s, &mut frame, 1, n));
@@ -485,7 +590,12 @@ mod tests {
     #[test]
     fn stop_fades_out_within_ten_ms() {
         let mut s = Synth::new(44_100);
-        s.load_preset(Poly::presets().iter().position(|p| p.name == "Dust Pad").unwrap());
+        s.load_preset(
+            Poly::presets()
+                .iter()
+                .position(|p| p.name == "Dust Pad")
+                .unwrap(),
+        );
         let mut frame = 0;
         for pad in [0, 4, 7] {
             s.note_on(pad, 120, 0);
@@ -510,8 +620,24 @@ mod tests {
         s.note_on(2, 100, 50);
         s.pressure(9, 90); // not playing: nothing
         let evs: Vec<NodeEvent> = s.events[..s.len].iter().map(|t| t.ev).collect();
-        assert_eq!(evs, vec![NodeEvent::NoteOn { note: 50, velocity: 100 }, NodeEvent::Pressure { note: 50, value: 90 },
-                             NodeEvent::NoteOff { note: 50 }, NodeEvent::NoteOn { note: 50, velocity: 100 }]);
+        assert_eq!(
+            evs,
+            vec![
+                NodeEvent::NoteOn {
+                    note: 50,
+                    velocity: 100
+                },
+                NodeEvent::Pressure {
+                    note: 50,
+                    value: 90
+                },
+                NodeEvent::NoteOff { note: 50 },
+                NodeEvent::NoteOn {
+                    note: 50,
+                    velocity: 100
+                }
+            ]
+        );
         // After an octave change the held pad's note-off still ends its note.
         s.shift_octave(1);
         s.note_off(2, 60);
@@ -545,7 +671,9 @@ mod tests {
         s.set(pp::CUTOFF, 1e9);
         assert_eq!(s.value(pp::CUTOFF), s.param_info(pp::CUTOFF).unwrap().max);
         let meters = s.meters();
-        assert!(meters.iter().any(|&(i, _)| st.params[i].id == pp::METER_VOICES));
+        assert!(meters
+            .iter()
+            .any(|&(i, _)| st.params[i].id == pp::METER_VOICES));
     }
 
     #[test]
@@ -596,9 +724,14 @@ mod tests {
         assert_eq!(log.set(&s, pp::CUTOFF, 300.0, t0), None);
         assert_eq!(log.set(&s, pp::CUTOFF, 310.0, t0), None);
         assert_eq!(log.poll(&s, t0 + Duration::from_millis(500)), None);
-        let line = log.set(&s, pp::RESONANCE, 40.0, t0 + Duration::from_millis(600)).unwrap();
+        let line = log
+            .set(&s, pp::RESONANCE, 40.0, t0 + Duration::from_millis(600))
+            .unwrap();
         assert!(line.starts_with("synth: Filter Cutoff "), "{line}");
-        assert!(log.poll(&s, t0 + Duration::from_millis(1700)).unwrap().starts_with("synth: Filter Resonance "));
+        assert!(log
+            .poll(&s, t0 + Duration::from_millis(1700))
+            .unwrap()
+            .starts_with("synth: Filter Resonance "));
         assert_eq!(log.poll(&s, t0 + Duration::from_secs(5)), None);
     }
 }

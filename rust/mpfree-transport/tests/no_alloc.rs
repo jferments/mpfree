@@ -55,7 +55,21 @@ static GLOBAL: Counting = Counting;
 #[test]
 fn commands_and_periods_never_allocate() {
     let mut t = Transport::new(44_100, 120.0).unwrap();
-    let map = TempoMap::new(&[Segment { start: 0, bpm: 120.0 }, Segment { start: 1920, bpm: 90.0 }, Segment { start: 5760, bpm: 140.0 }]).unwrap();
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment {
+            start: 1920,
+            bpm: 90.0,
+        },
+        Segment {
+            start: 5760,
+            bpm: 140.0,
+        },
+    ])
+    .unwrap();
     t.set_tempo_map(map).unwrap();
     let mut b = Block::new();
 
@@ -78,14 +92,37 @@ fn commands_and_periods_never_allocate() {
     for i in 0..3000u64 {
         let f = t.frame();
         match i % 400 {
-            100 => { let _ = t.command(f + 10, Command::SetTempo(80.0 + (i % 7) as f64 * 9.0)); }
-            150 => { let _ = t.command(f + 3, Command::ToggleOverdub); }
-            200 => { let _ = t.command(f, Command::Locate((i as i64 * 37) % 9000 - 500)); }
-            250 => { let _ = t.command(f + 1, Command::Record); }
-            300 => { let _ = t.command(f + 2, Command::Stop); }
-            310 => { let _ = t.command(f + 2, Command::Stop); }
-            320 => { let _ = t.command(f + 2, Command::Play); }
-            399 => { let _ = t.command(f, Command::SetLoop(if i % 800 == 399 { None } else { Some((0, 3840)) })); }
+            100 => {
+                let _ = t.command(f + 10, Command::SetTempo(80.0 + (i % 7) as f64 * 9.0));
+            }
+            150 => {
+                let _ = t.command(f + 3, Command::ToggleOverdub);
+            }
+            200 => {
+                let _ = t.command(f, Command::Locate((i as i64 * 37) % 9000 - 500));
+            }
+            250 => {
+                let _ = t.command(f + 1, Command::Record);
+            }
+            300 => {
+                let _ = t.command(f + 2, Command::Stop);
+            }
+            310 => {
+                let _ = t.command(f + 2, Command::Stop);
+            }
+            320 => {
+                let _ = t.command(f + 2, Command::Play);
+            }
+            399 => {
+                let _ = t.command(
+                    f,
+                    Command::SetLoop(if i % 800 == 399 {
+                        None
+                    } else {
+                        Some((0, 3840))
+                    }),
+                );
+            }
             _ => {}
         }
         assert!(t.process(sizes[(i % sizes.len() as u64) as usize], &mut b));
@@ -102,11 +139,22 @@ fn commands_and_periods_never_allocate() {
             }
             let _ = s.tick_at(s.frame);
         }
-        marks += b.markers().iter().filter(|m| !matches!(m.mark, Mark::Swing(_))).count();
+        marks += b
+            .markers()
+            .iter()
+            .filter(|m| !matches!(m.mark, Mark::Swing(_)))
+            .count();
         let _ = (t.position(), t.state(), t.bpm(), t.stats());
     }
     watch(false);
-    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees in the transport's real-time calls");
-    assert!(beats > 50 && sixteenths > beats && ticks > 10_000 && marks > 40, "{beats} {sixteenths} {ticks} {marks}");
+    assert_eq!(
+        CALLS.load(Ordering::SeqCst),
+        0,
+        "allocations or frees in the transport's real-time calls"
+    );
+    assert!(
+        beats > 50 && sixteenths > beats && ticks > 10_000 && marks > 40,
+        "{beats} {sixteenths} {ticks} {marks}"
+    );
     assert_eq!(t.stats().block_full, 0);
 }

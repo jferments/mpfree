@@ -43,9 +43,15 @@ fn main() {
     }
     let whole = m.probe().lifetime();
     println!("{tracks} tracks, {pads} pads: whole mixer mean {:.2} us, p99 {:.2} us per {BLOCK}-frame block", whole.mean_ns / 1e3, whole.p99_ns as f64 / 1e3);
-    let mut rows: Vec<(StripId, f64)> = m.strips().map(|s| (s, m.strip_probe(s).unwrap().lifetime().mean_ns / 1e3)).collect();
+    let mut rows: Vec<(StripId, f64)> = m
+        .strips()
+        .map(|s| (s, m.strip_probe(s).unwrap().lifetime().mean_ns / 1e3))
+        .collect();
     let sum: f64 = rows.iter().map(|r| r.1).sum();
-    println!("  sum of strips {sum:.2} us, outside the strips {:.2} us", whole.mean_ns / 1e3 - sum);
+    println!(
+        "  sum of strips {sum:.2} us, outside the strips {:.2} us",
+        whole.mean_ns / 1e3 - sum
+    );
     rows.sort_by(|a, b| b.1.total_cmp(&a.1));
     for (s, us) in rows.iter().take(12) {
         println!("  {s:?}: {us:.3} us");
