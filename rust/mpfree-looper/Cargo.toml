@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-looper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The audio looper: records the line input into loops locked to the transport's bars, with overdub layers, undo and redo, a click-free loop point and input latency compensation; no allocation while running"
+
+[lib]
+name = "mpfree_looper"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
