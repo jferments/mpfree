@@ -366,6 +366,10 @@ pub struct App {
     arp: mpfree_arp::Settings,
     /// The scale's root (0 = C), kept while the scale is Off.
     scale_root: u8,
+    /// The transport's clock for the next period ([`App::set_clock`]).
+    clock: Option<mpfree_arp::Clock>,
+    /// While the transport plays: its swing (true) or the arp's own.
+    swing_from_transport: bool,
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
@@ -401,7 +405,7 @@ impl App {
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, patterns,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, clock: None, swing_from_transport: true, patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true };
@@ -464,8 +468,11 @@ impl App {
         self.engine.pressure(slot as u8, value);
     }
 
-    /// One audio period: the notes that start (or stop) in it.
+    /// One audio period: the notes that start (or stop) in it. The arp
+    /// follows the clock given by [`App::set_clock`] for this period, and
+    /// free-runs at the app's tempo without one.
     pub fn process(&mut self, frames: u32, out: &mut Events) {
+        self.sync_arp();
         self.engine.process(frames, out);
     }
 
@@ -1342,7 +1349,8 @@ mod tests {
         let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else { panic!("no menu") };
         assert_eq!(m.title, "Arp options");
         assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
-                   ["Tempo", "Accent level", "Scale", "Scale root", "Strum", "New notes restart"]);
+                   ["Tempo", "Accent level", "Scale", "Scale root", "Strum", "New notes restart", "Swing from"]);
+        assert_eq!(m.rows[6].1, "Transport");
         assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
         assert!(app.generating(), "the arp plays on under its options");
         let row = |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
@@ -1386,6 +1394,48 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4));
+    }
+
+    #[test]
+    fn the_arp_follows_the_transport_clock_and_its_swing_if_asked() {
+        // NOTE REPEAT held on pad 1 at 1/16, 120 BPM: a 16th is 5512.5 frames.
+        let gaps = |from_transport: bool, swing: Option<(u32, u8)>, synced: bool| {
+            let mut app = ready();
+            if !from_transport {
+                app.toggle_panel();
+                press(&mut app, MENU);
+                let row = app.items().iter().position(|&i| i == Item::Arp(ArpItem::SwingFrom)).unwrap();
+                let fx = app.step_item(row, -1);
+                assert!(fx.contains(&Effect::Note("arp swing from: arp".to_string())));
+                press(&mut app, MENU);
+                app.toggle_panel();
+            }
+            app.button(REPEAT, true, 0.0);
+            app.pad_down(0, 100);
+            let mut ev = Events::new();
+            let mut ons = Vec::new();
+            for i in 0..400u64 {
+                if synced {
+                    let mut c = mpfree_arp::Clock::playing(0, i * 128, 120.0);
+                    c.swing = swing;
+                    app.set_clock(Some(c));
+                }
+                app.process(128, &mut ev);
+                ons.extend(ev.as_slice().iter().filter(|e| matches!(e.kind, EventKind::On { .. }))
+                    .map(|e| i * 128 + u64::from(e.offset)));
+            }
+            ons.windows(2).skip(1).take(4).map(|w| w[1] - w[0]).collect::<Vec<_>>()
+        };
+        let straight = gaps(true, None, true);
+        assert!(straight.iter().all(|&g| g.abs_diff(5512) <= 1), "{straight:?}");
+        // The transport swings 1/16s at 75 %: long, short, long, short.
+        let swung = gaps(true, Some((240, 75)), true);
+        assert!(swung.iter().all(|&g| g.abs_diff(8269) <= 1 || g.abs_diff(2756) <= 1), "{swung:?}");
+        assert_ne!(swung[0], swung[1]);
+        // Swing from: Arp ignores it; no clock at all free-runs.
+        assert_eq!(gaps(false, Some((240, 75)), true), straight);
+        let free = gaps(true, Some((240, 75)), false);
+        assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
     }
 
     #[test]
