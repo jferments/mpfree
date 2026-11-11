@@ -112,10 +112,14 @@ impl ArpState {
         }
     }
 
-    /// The notes the steps work from: the held notes, sorted, grown into
-    /// chords and scale runs as the engine grows them.
+    /// The notes the steps work from: the held notes (or, while they take
+    /// turns, the one whose turn it is), sorted, grown into chords and scale
+    /// runs as the engine grows them.
     fn sorted(&self) -> Vec<Held> {
-        let mut v = self.notes.clone();
+        let mut v = match mpfree_arp::turn_of(&self.settings, self.notes.len(), self.step.saturating_sub(1)) {
+            Some(k) => vec![self.notes[k]],
+            None => self.notes.clone(),
+        };
         v.sort_by_key(|h| h.note);
         v.truncate(MAX_NOTES);
         let mut list = [Held::default(); MAX_NOTES];
@@ -223,7 +227,10 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
         let playing = (st.step > 0).then_some(0);
         return (vec![all(&label)], 0, playing);
     }
-    let grown = s.chord != mpfree_arp::Chord::Off || s.run;
+    // Each turn of the held chords starts the order again.
+    let turns = mpfree_arp::turn_of(s, st.notes.len(), 0).is_some();
+    let since = |step: u64| (if turns { step % mpfree_arp::turn_steps(s) } else { step }) as usize;
+    let grown = s.chord != mpfree_arp::Chord::Off || s.run || turns;
     let base: Vec<Held> =
         if s.order == Order::Played && !grown { st.notes.iter().take(MAX_NOTES).copied().collect() } else { sorted };
     let total = n * usize::from(s.octaves);
@@ -232,10 +239,10 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
         let cells = (0..total.min(STRIP_CELLS))
             .map(|_| StepCell { kind: CellKind::Random, label: "?".to_string(), ..StepCell::default() })
             .collect();
-        let playing = (st.step > 0).then(|| ((st.step - 1) as usize) % total.min(STRIP_CELLS));
+        let playing = (st.step > 0).then(|| since(st.step - 1) % total.min(STRIP_CELLS));
         return (cells, 0, playing);
     };
-    let last = (st.step > 0).then(|| ((st.step - 1) as usize) % cycle);
+    let last = (st.step > 0).then(|| since(st.step - 1) % cycle);
     let first = last.map_or(0, |l| l / STRIP_CELLS * STRIP_CELLS);
     let cells = (first..cycle.min(first + STRIP_CELLS))
         .map(|c| {
@@ -726,6 +733,13 @@ mod tests {
             ["C4", "D4", "E4"],
             "a run goes up, whatever the press order"
         );
+        // Chords taking turns: the strip shows the chord whose turn it is,
+        // and the step within that turn (a beat = 4 sixteenths).
+        let s = Settings { mode: Mode::Arp, scale: c_major, chord: mpfree_arp::Chord::Triad,
+                           turns: mpfree_arp::Turns::Beat, ..Settings::default() };
+        assert_eq!(labels(state(s, &[62, 67], 4)), ["D4", "F4", "A4"]);
+        let (cells, _, playing) = arp_cells(&state(s, &[62, 67], 6));
+        assert_eq!((cells[0].label.as_str(), playing), ("G4", Some(1)));
     }
 
     #[test]
