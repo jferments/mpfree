@@ -10,6 +10,7 @@
 //! mpfree-arp-render --demo                       every order, every starter pattern, drums, lanes, scales
 //! mpfree-arp-render --chords "60,63,67,70;65,68,72,75" --mode pattern --builtin Bounce
 //! mpfree-arp-render --pads 1,3,5,7 --mode pattern --pattern "x x:2 . x | vel 127 60 90"
+//! mpfree-arp-render --patterns my-patterns.txt   every pattern in a library file (see patterns/example.txt)
 //! ```
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/arp-render-<UTC>), `--mode
@@ -27,7 +28,7 @@
 #![forbid(unsafe_code)]
 
 use mpfree_arp::scale::SCALES;
-use mpfree_arp::{Engine, EventKind, Events, LatchMode, Mode, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN};
+use mpfree_arp::{Engine, EventKind, Events, LatchMode, Library, Mode, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN};
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -342,9 +343,33 @@ fn base(name: &str, about: &str, mode: Mode) -> Job {
     }
 }
 
+/// A minor, F major, G7, E minor: the loop the demos and `--patterns` play
+/// over unless notes are given.
+fn four_chord_loop() -> Vec<Vec<u8>> {
+    vec![vec![57, 60, 64, 67], vec![53, 57, 60, 64], vec![55, 59, 62, 65], vec![52, 55, 59, 64]]
+}
+
+/// One job per pattern in a library, with the other options as given.
+fn library_jobs(lib: &Library, job: &Job, chords: Option<Vec<Vec<u8>>>) -> Vec<Job> {
+    let chords = chords.unwrap_or_else(four_chord_loop);
+    lib.iter()
+        .enumerate()
+        .map(|(i, (name, pattern))| {
+            let mut j = job.clone();
+            j.name = format!("{:02}-{}", i + 1, slug(name));
+            j.about = format!("Pattern \"{name}\" ({})", pattern.to_text());
+            j.pattern = *pattern;
+            j.settings.mode = Mode::Pattern;
+            j.settings = j.settings.clamped();
+            j.chords = chords.clone();
+            j
+        })
+        .collect()
+}
+
 fn demo_jobs() -> Vec<Job> {
     let mut jobs = Vec::new();
-    let prog = vec![vec![57, 60, 64, 67], vec![53, 57, 60, 64], vec![55, 59, 62, 65], vec![52, 55, 59, 64]];
+    let prog = four_chord_loop();
     for (i, order) in Order::ALL.into_iter().enumerate() {
         let mut j = base(&format!("order-{:02}-{}", i + 1, slug(order.label())),
                          &format!("Arp, order {}, 2 octaves, 1/16, over a four-chord loop", order.label()), Mode::Arp);
@@ -465,6 +490,7 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     let mut out = None;
     let mut job = base("custom", "", Mode::Arp);
     let mut chords: Option<Vec<Vec<u8>>> = None;
+    let mut library: Option<Library> = None;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
         *i += 1;
@@ -499,6 +525,18 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                     .ok_or(format!("--builtin {v}: unknown pattern"))?;
                 job.pattern = Pattern::parse(text).unwrap();
                 job.settings.mode = Mode::Pattern;
+            }
+            "--patterns" => {
+                let path = value(&mut i)?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("--patterns {path}: {e}"))?;
+                let lib = Library::parse(&text).map_err(|errors| {
+                    let lines: Vec<String> = errors.iter().map(|e| format!("  {path}: {e}")).collect();
+                    format!("--patterns: fix these lines:\n{}", lines.join("\n"))
+                })?;
+                if lib.is_empty() {
+                    return Err(format!("--patterns {path}: no patterns in the file"));
+                }
+                library = Some(lib);
             }
             "--chords" => {
                 let v = value(&mut i)?;
@@ -549,6 +587,12 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     if demo {
         return Ok((demo_jobs(), out));
     }
+    if let Some(lib) = library {
+        if chords.as_ref().is_some_and(|c| c.iter().any(|c| c.is_empty())) {
+            return Err("a chord is empty".into());
+        }
+        return Ok((library_jobs(&lib, &job, chords), out));
+    }
     let chords = chords.ok_or("give --demo, or notes with --chords, --notes or --pads")?;
     if chords.iter().any(|c| c.is_empty()) {
         return Err("a chord is empty".into());
@@ -594,7 +638,7 @@ fn main() {
             eprintln!("usage: mpfree-arp-render --demo | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
                        [--mode repeat|arp|pattern] [--order NAME] [--pattern TEXT | --builtin NAME] [--bpm N] [--rate 1/16] \
                        [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
-                       [--name NAME] [--out DIR]");
+                       [--name NAME] [--out DIR]\n       mpfree-arp-render --patterns FILE [the same options; --chords etc. replace the four-chord loop]");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
@@ -659,6 +703,23 @@ mod tests {
         assert!(jobs[0].drums);
         assert_eq!(jobs[0].chords, vec![vec![0, 15]]);
         assert!(parse_args(&a("--pads 17")).is_err());
+        let example = concat!(env!("CARGO_MANIFEST_DIR"), "/patterns/example.txt");
+        let (jobs, _) = parse_args(&a(&format!("--patterns {example} --bpm 96"))).unwrap();
+        assert_eq!(jobs.len(), 8);
+        assert_eq!(jobs[0].name, "01-skip");
+        assert_eq!(jobs[6].name, "07-loose-eight");
+        assert!(jobs.iter().all(|j| j.bpm == 96.0 && j.settings.mode == Mode::Pattern && j.chords.len() == 4));
+        let (jobs, _) = parse_args(&a(&format!("--pads 1,3 --patterns {example}"))).unwrap();
+        assert!(jobs.iter().all(|j| j.drums && j.chords == vec![vec![0, 2]]));
+        for job in &jobs {
+            let r = render(job);
+            assert!(r.notes > 0 && r.dropped == 0, "{}", job.name);
+        }
+        let bad = std::env::temp_dir().join(format!("mpfree-arp-render-bad-{}.txt", std::process::id()));
+        std::fs::write(&bad, "Ok = x\nBad = x y\n").unwrap();
+        let e = parse_args(&a(&format!("--patterns {}", bad.display()))).err().unwrap();
+        let _ = std::fs::remove_file(&bad);
+        assert!(e.contains("line 2: \"Bad\", token 2 \"y\""), "{e}");
         assert!(parse_args(&a("--notes 60 --order sideways")).is_err());
         assert!(parse_args(&a("--mode arp")).is_err());
         assert_eq!(order_by_name("Random once"), Some(Order::RandomOnce));

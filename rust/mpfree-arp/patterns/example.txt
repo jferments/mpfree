@@ -1,0 +1,19 @@
+# Example pattern library for mpfree-arp. Copy this file, edit it in any
+# text editor, and hear every pattern with:
+#   mpfree-arp-render --patterns my-patterns.txt
+#
+# One pattern per line: Name = steps | lanes. Blank lines and # lines are
+# ignored. Steps: . rest, _ tie, x next note, 1-9 the Nth held note (lowest
+# first), * all held notes, ? random, l lowest, h highest. After a note:
+# + or - octave, ! accent, ~ long, ' short, :N ratchet, %N chance.
+# Lanes (each loops at its own length): oct, deg, vel, gate, nudge; add ~N
+# to a lane name for a random amount, e.g. vel~20.
+
+Skip        = 1 . 3 2 . 3 x:2 .
+Lift        = 1 2 3 4 | oct 0 0 1 | vel 110 70
+Shuffle     = x x' x x' | nudge 0 12 0 8 | vel~15
+Pedal       = 1 h 1 h- 1 h 1 x
+Stairs      = 1 2 3 4 | deg 0 1 2 3 4 5 6
+Call back   = h h . l . l x . | vel 120 70 | gate 30 30 90
+Loose eight = x x x x x x x x | vel~25 | gate~30 50 | nudge~6
+Spark       = * . x:3 . * . x:4%70 x
