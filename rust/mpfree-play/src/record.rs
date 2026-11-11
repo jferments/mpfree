@@ -64,8 +64,23 @@ struct Pending {
     release: Tick,
 }
 
-const NOT_HELD: Held = Held { on: false, tick: 0, velocity: 0 };
-const NO_TAKE: Taken = Taken { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
+const NOT_HELD: Held = Held {
+    on: false,
+    tick: 0,
+    velocity: 0,
+};
+const NO_TAKE: Taken = Taken {
+    track: 0,
+    slot: 0,
+    note: Note {
+        tick: 0,
+        len: 1,
+        note: 0,
+        velocity: 1,
+        chance: 100,
+    },
+    take: 0,
+};
 
 pub struct Recorder {
     /// The armed track in the last view, to notice a change.
@@ -98,7 +113,10 @@ impl Recorder {
             input: [(0, Event::AllOff); MAX_INPUT],
             n_input: 0,
             held: [NOT_HELD; 128],
-            pending: [Pending { taken: NO_TAKE, release: 0 }; MAX_PENDING],
+            pending: [Pending {
+                taken: NO_TAKE,
+                release: 0,
+            }; MAX_PENDING],
             n_pending: 0,
             taken: [NO_TAKE; MAX_PENDING],
             n_taken: 0,
@@ -215,7 +233,11 @@ impl Recorder {
                         if self.held[n].on {
                             self.finish(view, span.swing, n, tick);
                         }
-                        self.held[n] = Held { on: true, tick, velocity };
+                        self.held[n] = Held {
+                            on: true,
+                            tick,
+                            velocity,
+                        };
                     }
                     Event::AllOff => self.finish_all(view, span.swing, tick),
                 }
@@ -244,7 +266,9 @@ impl Recorder {
             Mark::RecordOff { tick } => self.finish_all(view, self.swing, tick),
             // The playhead leaves: nothing recorded here will be reached
             // in this pass, so everything goes now.
-            Mark::Looped { end: tick, .. } | Mark::Located { from: tick, .. } | Mark::Stopped { tick } => {
+            Mark::Looped { end: tick, .. }
+            | Mark::Located { from: tick, .. }
+            | Mark::Stopped { tick } => {
                 self.finish_all(view, self.swing, tick);
                 self.release(Tick::MAX);
             }
@@ -274,20 +298,43 @@ impl Recorder {
         let h = self.held[n];
         self.held[n].on = false;
         let Some(track) = self.armed else { return };
-        let Some((clip, origin)) = self.switches.playing(view, track) else { return };
-        let Some((tick, pass)) = clip_tick(clip, origin, h.tick) else { return };
-        let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick).clamp(1, clip.length);
+        let Some((clip, origin)) = self.switches.playing(view, track) else {
+            return;
+        };
+        let Some((tick, pass)) = clip_tick(clip, origin, h.tick) else {
+            return;
+        };
+        let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick)
+            .clamp(1, clip.length);
         // Where the player will play it in this pass.
         let at = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
         let straight = origin as f64 + pass as f64 * clip.song_len + clip.speed.to_song(at);
-        let plays = clip.swing.unwrap_or(transport_swing).apply(straight).round() as Tick;
+        let plays = clip
+            .swing
+            .unwrap_or(transport_swing)
+            .apply(straight)
+            .round() as Tick;
         if self.n_pending == MAX_PENDING {
             self.dropped += 1;
             return;
         }
-        let note = Note { tick, len, note: n as u8, velocity: h.velocity.min(127) };
+        let note = Note {
+            tick,
+            len,
+            note: n as u8,
+            velocity: h.velocity.min(127),
+            chance: 100,
+        };
         // A tick of margin for rounding.
-        self.pending[self.n_pending] = Pending { taken: Taken { track, slot: clip.slot, note, take: self.take }, release: plays + 2 };
+        self.pending[self.n_pending] = Pending {
+            taken: Taken {
+                track,
+                slot: clip.slot,
+                note,
+                take: self.take,
+            },
+            release: plays + 2,
+        };
         self.n_pending += 1;
     }
 
@@ -322,7 +369,10 @@ fn clip_tick(clip: &ClipView, origin: Tick, song: Tick) -> Option<(Tick, i64)> {
     }
     let from = (song - origin) as f64;
     let mut pass = (from / clip.song_len).floor() as i64;
-    let mut tick = clip.speed.to_clip(from - pass as f64 * clip.song_len).round() as Tick;
+    let mut tick = clip
+        .speed
+        .to_clip(from - pass as f64 * clip.song_len)
+        .round() as Tick;
     if tick >= clip.length {
         tick -= clip.length;
         pass += 1;

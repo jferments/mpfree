@@ -57,7 +57,14 @@ pub struct Binding {
 impl Binding {
     /// A binding over the parameter's whole range.
     pub fn new(target: ParamAddr, info: ParamInfo, label: &str) -> Binding {
-        Binding { target, info, label: label.to_string(), colour: None, from: 0.0, to: 1.0 }
+        Binding {
+            target,
+            info,
+            label: label.to_string(),
+            colour: None,
+            from: 0.0,
+            to: 1.0,
+        }
     }
 }
 
@@ -94,7 +101,9 @@ pub struct QLinkCard {
 }
 
 impl QLinkCard {
-    pub fn enabled(&self) -> bool { self.target.is_some() }
+    pub fn enabled(&self) -> bool {
+        self.target.is_some()
+    }
 }
 
 /// Where a learned knob applies.
@@ -127,7 +136,9 @@ pub struct Bindings {
 }
 
 impl Bindings {
-    pub fn new() -> Bindings { Bindings::default() }
+    pub fn new() -> Bindings {
+        Bindings::default()
+    }
 
     /// The usual banks: bank 0 with no bindings of its own (the page's
     /// knobs show), bank 1 "Macros 1-4" and bank 2 "Macros 5-8", each knob
@@ -140,9 +151,19 @@ impl Bindings {
             b.bank_mut(bank).name = format!("Macros {}-{}", first + 1, first + KNOBS);
             for k in 0..KNOBS {
                 let m = first + k;
-                let name = names.get(m).cloned().unwrap_or_else(|| format!("Macro {}", m + 1));
+                let name = names
+                    .get(m)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Macro {}", m + 1));
                 let addr = ParamAddr::macro_value(m as u8);
-                b.bind(bank, k, Binding { colour: Some(m as u8), ..Binding::new(addr, crate::engine::macro_info(m), &name) });
+                b.bind(
+                    bank,
+                    k,
+                    Binding {
+                        colour: Some(m as u8),
+                        ..Binding::new(addr, crate::engine::macro_info(m), &name)
+                    },
+                );
             }
         }
         b.bank_mut(0).name = String::new();
@@ -165,18 +186,26 @@ impl Bindings {
     }
 
     /// The page on screen's key.
-    pub fn page_key(&self) -> &str { &self.page_key }
+    pub fn page_key(&self) -> &str {
+        &self.page_key
+    }
 
     /// Binds knob `k` of bank `b` on page `page` only.
     pub fn bind_page(&mut self, page: &str, b: usize, k: usize, binding: Binding) {
-        if k >= KNOBS { return; }
+        if k >= KNOBS {
+            return;
+        }
         self.show_without_switching(b);
-        self.values.entry(binding.target).or_insert(binding.info.default);
+        self.values
+            .entry(binding.target)
+            .or_insert(binding.info.default);
         self.scoped.insert((page_key(page), b, k), binding);
     }
 
     /// The page's own knobs.
-    pub fn page(&self) -> &[Option<Binding>; KNOBS] { &self.page }
+    pub fn page(&self) -> &[Option<Binding>; KNOBS] {
+        &self.page
+    }
 
     /// What the column's title says: the bank's name, or the page's when
     /// the bank has none ("Drive", "Macros 1-4").
@@ -193,14 +222,21 @@ impl Bindings {
         self.show((self.shown + 1) % n);
     }
 
-    pub fn banks(&self) -> &[Bank] { &self.banks }
-    pub fn shown(&self) -> usize { self.shown }
+    pub fn banks(&self) -> &[Bank] {
+        &self.banks
+    }
+    pub fn shown(&self) -> usize {
+        self.shown
+    }
 
     /// Shows bank `b` (made empty if it is past the end).
     pub fn show(&mut self, b: usize) {
         while self.banks.len() <= b {
             let n = self.banks.len();
-            self.banks.push(Bank { name: format!("Bank {}", n + 1), knobs: Default::default() });
+            self.banks.push(Bank {
+                name: format!("Bank {}", n + 1),
+                knobs: Default::default(),
+            });
         }
         self.shown = b;
     }
@@ -218,8 +254,14 @@ impl Bindings {
 
     /// Binds knob `k` of bank `b`.
     pub fn bind(&mut self, b: usize, k: usize, binding: Binding) {
-        if k >= KNOBS { return; }
-        let v = self.values.get(&binding.target).copied().unwrap_or(binding.info.default);
+        if k >= KNOBS {
+            return;
+        }
+        let v = self
+            .values
+            .get(&binding.target)
+            .copied()
+            .unwrap_or(binding.info.default);
         self.values.insert(binding.target, v);
         self.bank_mut(b).knobs[k] = Some(binding);
     }
@@ -238,25 +280,41 @@ impl Bindings {
     pub fn binding(&self, k: usize) -> Option<&Binding> {
         self.scoped
             .get(&(self.page_key.clone(), self.shown, k))
-            .or_else(|| self.banks.get(self.shown).and_then(|b| b.knobs.get(k)?.as_ref()))
+            .or_else(|| {
+                self.banks
+                    .get(self.shown)
+                    .and_then(|b| b.knobs.get(k)?.as_ref())
+            })
             .or_else(|| self.page.get(k)?.as_ref())
     }
 
     /// Tells the bindings a parameter's value (read back from the engine
     /// or its owner), so cards and turns start from it.
     pub fn observe(&mut self, addr: ParamAddr, value: f32) {
-        if let Some(v) = self.values.get_mut(&addr) { *v = value; }
+        if let Some(v) = self.values.get_mut(&addr) {
+            *v = value;
+        }
     }
 
-    pub fn value(&self, addr: ParamAddr) -> Option<f32> { self.values.get(&addr).copied() }
+    pub fn value(&self, addr: ParamAddr) -> Option<f32> {
+        self.values.get(&addr).copied()
+    }
 
     /// Arms learn: the next knob turned takes `addr`, on this page only.
-    pub fn learn(&mut self, addr: ParamAddr, info: ParamInfo, label: &str) { self.learn_for(addr, info, label, Scope::ThisPage); }
+    pub fn learn(&mut self, addr: ParamAddr, info: ParamInfo, label: &str) {
+        self.learn_for(addr, info, label, Scope::ThisPage);
+    }
 
     /// Arms learn with a choice of where the knob applies.
-    pub fn learn_for(&mut self, addr: ParamAddr, info: ParamInfo, label: &str, scope: Scope) { self.learning = Some((addr, info, label.to_string(), scope)); }
-    pub fn cancel_learn(&mut self) { self.learning = None; }
-    pub fn learning(&self) -> Option<ParamAddr> { self.learning.as_ref().map(|l| l.0) }
+    pub fn learn_for(&mut self, addr: ParamAddr, info: ParamInfo, label: &str, scope: Scope) {
+        self.learning = Some((addr, info, label.to_string(), scope));
+    }
+    pub fn cancel_learn(&mut self) {
+        self.learning = None;
+    }
+    pub fn learning(&self) -> Option<ParamAddr> {
+        self.learning.as_ref().map(|l| l.0)
+    }
 
     /// Knob `k` turned by `detents` (clockwise positive); `fine` while
     /// SHIFT is held. The value to set, or `None` when nothing changes
@@ -265,7 +323,9 @@ impl Bindings {
     /// page's knob, on this page (or every page, as armed) until it is
     /// unbound.
     pub fn turn(&mut self, k: usize, detents: i32, fine: bool) -> Option<Write> {
-        if k >= KNOBS { return None; }
+        if k >= KNOBS {
+            return None;
+        }
         if let Some((addr, info, label, scope)) = self.learning.take() {
             let b = self.shown;
             let binding = Binding::new(addr, info, &label);
@@ -278,31 +338,59 @@ impl Bindings {
             }
             return None;
         }
-        if detents == 0 { return None; }
+        if detents == 0 {
+            return None;
+        }
         let bnd = self.binding(k)?.clone();
         let info = bnd.info;
-        let now = info.clamp(self.values.get(&bnd.target).copied().unwrap_or(info.default));
+        let now = info.clamp(
+            self.values
+                .get(&bnd.target)
+                .copied()
+                .unwrap_or(info.default),
+        );
         let value = match info.curve {
-            Curve::Toggle => if detents > 0 { 1.0 } else { 0.0 },
+            Curve::Toggle => {
+                if detents > 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             // One value per detent, whatever the speed.
             Curve::Stepped | Curve::Choice(_) => {
-                let dir = if (bnd.to >= bnd.from) == (detents > 0) { 1.0 } else { -1.0 };
+                let dir = if (bnd.to >= bnd.from) == (detents > 0) {
+                    1.0
+                } else {
+                    -1.0
+                };
                 let (lo, hi) = range_values(&bnd);
                 (now + dir * detents.unsigned_abs() as f32).clamp(lo, hi)
             }
             _ => {
                 let span = bnd.to - bnd.from;
-                if span.abs() < 1e-6 { return None; }
+                if span.abs() < 1e-6 {
+                    return None;
+                }
                 let x = ((info.to_unit(now) - bnd.from) / span).clamp(0.0, 1.0);
-                let step = if fine { 1.0 / (DETENTS * 10.0) } else { 1.0 / DETENTS };
+                let step = if fine {
+                    1.0 / (DETENTS * 10.0)
+                } else {
+                    1.0 / DETENTS
+                };
                 let x = (x + detents as f32 * step).clamp(0.0, 1.0);
                 info.from_unit(bnd.from + span * x)
             }
         };
         let value = info.clamp(value);
-        if value == now { return None; }
+        if value == now {
+            return None;
+        }
         self.values.insert(bnd.target, value);
-        Some(Write { addr: bnd.target, value })
+        Some(Write {
+            addr: bnd.target,
+            value,
+        })
     }
 
     /// Knob `k` put at `pos` (0 to 1): a touch slider, or a knob read as a
@@ -312,24 +400,56 @@ impl Bindings {
         let x = pos.clamp(0.0, 1.0);
         let value = bnd.info.from_unit(bnd.from + (bnd.to - bnd.from) * x);
         let now = self.values.get(&bnd.target).copied();
-        if now == Some(value) { return None; }
+        if now == Some(value) {
+            return None;
+        }
         self.values.insert(bnd.target, value);
-        Some(Write { addr: bnd.target, value })
+        Some(Write {
+            addr: bnd.target,
+            value,
+        })
     }
 
     /// What knob `k`'s card shows.
     pub fn card(&self, k: usize) -> QLinkCard {
         let learn = if self.learning.is_some() { "learn" } else { "" };
         let Some(b) = self.binding(k) else {
-            return QLinkCard { label: String::new(), text: String::new(), sub: learn, value: 0.0, pos: 0.0, colour: None, target: None };
+            return QLinkCard {
+                label: String::new(),
+                text: String::new(),
+                sub: learn,
+                value: 0.0,
+                pos: 0.0,
+                colour: None,
+                target: None,
+            };
         };
-        let v = b.info.clamp(self.values.get(&b.target).copied().unwrap_or(b.info.default));
+        let v = b.info.clamp(
+            self.values
+                .get(&b.target)
+                .copied()
+                .unwrap_or(b.info.default),
+        );
         let span = b.to - b.from;
-        let pos = if span.abs() < 1e-6 { 0.0 } else { ((b.info.to_unit(v) - b.from) / span).clamp(0.0, 1.0) };
-        QLinkCard { label: b.label.clone(), text: value_text(&b.info, v), sub: learn, value: v, pos, colour: b.colour, target: Some(b.target) }
+        let pos = if span.abs() < 1e-6 {
+            0.0
+        } else {
+            ((b.info.to_unit(v) - b.from) / span).clamp(0.0, 1.0)
+        };
+        QLinkCard {
+            label: b.label.clone(),
+            text: value_text(&b.info, v),
+            sub: learn,
+            value: v,
+            pos,
+            colour: b.colour,
+            target: Some(b.target),
+        }
     }
 
-    pub fn cards(&self) -> [QLinkCard; KNOBS] { std::array::from_fn(|k| self.card(k)) }
+    pub fn cards(&self) -> [QLinkCard; KNOBS] {
+        std::array::from_fn(|k| self.card(k))
+    }
 
     /// The bindings as `key = value` lines: `bank.0 = Name`,
     /// `knob.0.1 = macro2.0 0.000 1.000 3 Wash` (target, from, to, colour
@@ -338,7 +458,13 @@ impl Bindings {
     pub fn save(&self) -> String {
         let line = |x: &Binding| {
             let c = x.colour.map_or("-".to_string(), |c| c.to_string());
-            format!("{} {:.4} {:.4} {c} {}", x.target, x.from, x.to, one_line(&x.label))
+            format!(
+                "{} {:.4} {:.4} {c} {}",
+                x.target,
+                x.from,
+                x.to,
+                one_line(&x.label)
+            )
         };
         let mut s = String::new();
         for (b, bank) in self.banks.iter().enumerate() {
@@ -358,10 +484,17 @@ impl Bindings {
     /// description; a target it does not know (an effect since removed)
     /// is skipped, as is any line that does not read. Returns how many
     /// lines were skipped.
-    pub fn load(text: &str, describe: &dyn Fn(ParamAddr) -> Option<ParamInfo>) -> (Bindings, usize) {
+    pub fn load(
+        text: &str,
+        describe: &dyn Fn(ParamAddr) -> Option<ParamInfo>,
+    ) -> (Bindings, usize) {
         let mut out = Bindings::new();
         let mut skipped = 0;
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
             let ok = (|| {
                 let (key, val) = line.split_once(" = ").or_else(|| line.split_once('='))?;
                 let key: Vec<&str> = key.trim().split('.').collect();
@@ -383,14 +516,20 @@ impl Bindings {
                 }
                 Some(())
             })();
-            if ok.is_none() { skipped += 1; }
+            if ok.is_none() {
+                skipped += 1;
+            }
         }
         (out, skipped)
     }
 }
 
-fn bank_no(s: &str) -> Option<usize> { s.parse().ok().filter(|b| *b < 64) }
-fn knob_no(s: &str) -> Option<usize> { s.parse().ok().filter(|k| *k < KNOBS) }
+fn bank_no(s: &str) -> Option<usize> {
+    s.parse().ok().filter(|b| *b < 64)
+}
+fn knob_no(s: &str) -> Option<usize> {
+    s.parse().ok().filter(|k| *k < KNOBS)
+}
 
 /// One saved binding: `target from to colour label`.
 fn read_binding(val: &str, describe: &dyn Fn(ParamAddr) -> Option<ParamInfo>) -> Option<Binding> {
@@ -398,16 +537,38 @@ fn read_binding(val: &str, describe: &dyn Fn(ParamAddr) -> Option<ParamInfo>) ->
     let target: ParamAddr = w.next()?.parse().ok()?;
     let from: f32 = w.next()?.parse().ok()?;
     let to: f32 = w.next()?.parse().ok()?;
-    let colour = match w.next()? { "-" => None, c => Some(c.parse().ok()?) };
+    let colour = match w.next()? {
+        "-" => None,
+        c => Some(c.parse().ok()?),
+    };
     let label = w.next().unwrap_or("");
     let info = describe(target)?;
-    if !(from.is_finite() && to.is_finite()) { return None; }
-    Some(Binding { target, info, label: label.to_string(), colour, from: from.clamp(0.0, 1.0), to: to.clamp(0.0, 1.0) })
+    if !(from.is_finite() && to.is_finite()) {
+        return None;
+    }
+    Some(Binding {
+        target,
+        info,
+        label: label.to_string(),
+        colour,
+        from: from.clamp(0.0, 1.0),
+        to: to.clamp(0.0, 1.0),
+    })
 }
 
 /// A page key as the saved lines can hold it: letters, digits, `-` and
 /// `_` (anything else becomes `_`).
-fn page_key(s: &str) -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect() }
+fn page_key(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
 /// The lowest and highest value a binding reaches.
 fn range_values(b: &Binding) -> (f32, f32) {
@@ -415,7 +576,9 @@ fn range_values(b: &Binding) -> (f32, f32) {
     (x.min(y), x.max(y))
 }
 
-fn one_line(s: &str) -> String { s.replace(['\n', '\r'], " ") }
+fn one_line(s: &str) -> String {
+    s.replace(['\n', '\r'], " ")
+}
 
 #[cfg(test)]
 mod tests {
@@ -423,23 +586,62 @@ mod tests {
     use mpfree_node::Unit;
     use mpfree_param::{Owner, Strip};
 
-    const CUT: ParamInfo = ParamInfo { id: 3, name: "Cutoff", group: "Filter", min: 20.0, max: 20000.0, default: 1000.0, unit: Unit::Hz, curve: Curve::Log, readonly: false };
-    const MODE: ParamInfo = ParamInfo { id: 4, name: "Mode", group: "Filter", min: 0.0, max: 3.0, default: 0.0, unit: Unit::None, curve: Curve::Choice(&["LP", "HP", "BP", "Notch"]), readonly: false };
+    const CUT: ParamInfo = ParamInfo {
+        id: 3,
+        name: "Cutoff",
+        group: "Filter",
+        min: 20.0,
+        max: 20000.0,
+        default: 1000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    };
+    const MODE: ParamInfo = ParamInfo {
+        id: 4,
+        name: "Mode",
+        group: "Filter",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(&["LP", "HP", "BP", "Notch"]),
+        readonly: false,
+    };
 
-    fn addr(p: u16) -> ParamAddr { ParamAddr::new(Owner::Insert(Strip::Track(0), 1), p) }
+    fn addr(p: u16) -> ParamAddr {
+        ParamAddr::new(Owner::Insert(Strip::Track(0), 1), p)
+    }
 
     #[test]
     fn turns_move_through_the_bound_range() {
         let mut b = Bindings::new();
-        b.bind(0, 0, Binding { from: 0.25, to: 0.75, ..Binding::new(addr(3), CUT, "Cutoff") });
+        b.bind(
+            0,
+            0,
+            Binding {
+                from: 0.25,
+                to: 0.75,
+                ..Binding::new(addr(3), CUT, "Cutoff")
+            },
+        );
         b.observe(addr(3), CUT.from_unit(0.25));
         let w = b.turn(0, 50, false).unwrap();
-        assert!((CUT.to_unit(w.value) - 0.5).abs() < 1e-4, "half the detents, half the bound range");
+        assert!(
+            (CUT.to_unit(w.value) - 0.5).abs() < 1e-4,
+            "half the detents, half the bound range"
+        );
         assert!(b.turn(0, 500, false).is_some());
-        assert!((CUT.to_unit(b.value(addr(3)).unwrap()) - 0.75).abs() < 1e-4, "stops at the top of the range");
+        assert!(
+            (CUT.to_unit(b.value(addr(3)).unwrap()) - 0.75).abs() < 1e-4,
+            "stops at the top of the range"
+        );
         assert_eq!(b.turn(0, 1, false), None, "already at the top");
         let c = b.card(0);
-        assert_eq!((c.pos, c.label.as_str(), c.enabled()), (1.0, "Cutoff", true));
+        assert_eq!(
+            (c.pos, c.label.as_str(), c.enabled()),
+            (1.0, "Cutoff", true)
+        );
         let fine = b.turn(0, -1, true).unwrap().value;
         let coarse = b.turn(0, -1, false).unwrap().value;
         assert!(fine > coarse);
@@ -464,20 +666,48 @@ mod tests {
         assert_eq!(b.banks().len(), 3);
         assert_eq!(b.title(), "", "no page yet");
         assert!(!b.card(0).enabled(), "bank 0 has no bindings of its own");
-        b.set_page("chain", "Filter", [Some(Binding::new(addr(4), MODE, "Mode")), Some(Binding::new(addr(3), CUT, "Cutoff")), None, None]);
-        assert_eq!((b.title(), b.card(0).label.as_str(), b.card(1).label.as_str()), ("Filter", "Mode", "Cutoff"));
+        b.set_page(
+            "chain",
+            "Filter",
+            [
+                Some(Binding::new(addr(4), MODE, "Mode")),
+                Some(Binding::new(addr(3), CUT, "Cutoff")),
+                None,
+                None,
+            ],
+        );
+        assert_eq!(
+            (
+                b.title(),
+                b.card(0).label.as_str(),
+                b.card(1).label.as_str()
+            ),
+            ("Filter", "Mode", "Cutoff")
+        );
         assert!(!b.card(2).enabled(), "a knob the page leaves free");
         b.observe(addr(3), 2000.0);
         assert_eq!(b.card(1).text, value_text(&CUT, 2000.0));
-        assert_eq!(b.turn(0, 1, false).unwrap(), Write { addr: addr(4), value: 1.0 });
+        assert_eq!(
+            b.turn(0, 1, false).unwrap(),
+            Write {
+                addr: addr(4),
+                value: 1.0
+            }
+        );
         // The macro banks.
         b.next_bank();
         assert_eq!(b.title(), "Macros 1-4");
         let c = b.card(1);
-        assert_eq!((c.label.as_str(), c.colour, c.target), ("Grit", Some(1), Some(ParamAddr::macro_value(1))));
+        assert_eq!(
+            (c.label.as_str(), c.colour, c.target),
+            ("Grit", Some(1), Some(ParamAddr::macro_value(1)))
+        );
         assert_eq!(b.card(2).label, "Macro 3");
         b.next_bank();
-        assert_eq!((b.title(), b.card(3).label.as_str()), ("Macros 5-8", "Macro 8"));
+        assert_eq!(
+            (b.title(), b.card(3).label.as_str()),
+            ("Macros 5-8", "Macro 8")
+        );
         b.next_bank();
         assert_eq!(b.shown(), 0, "round to the first");
         // A new page's knobs replace the old one's.
@@ -488,8 +718,20 @@ mod tests {
     #[test]
     fn a_learned_knob_belongs_to_its_page_unless_asked() {
         let mut b = Bindings::with_macros(&[]);
-        let play = |b: &mut Bindings| b.set_page("play", "Play", [Some(Binding::new(addr(4), MODE, "Swing")), None, None, None]);
-        let chain = |b: &mut Bindings| b.set_page("chain", "Delay", [Some(Binding::new(addr(4), MODE, "Mix")), None, None, None]);
+        let play = |b: &mut Bindings| {
+            b.set_page(
+                "play",
+                "Play",
+                [Some(Binding::new(addr(4), MODE, "Swing")), None, None, None],
+            )
+        };
+        let chain = |b: &mut Bindings| {
+            b.set_page(
+                "chain",
+                "Delay",
+                [Some(Binding::new(addr(4), MODE, "Mix")), None, None, None],
+            )
+        };
         chain(&mut b);
         b.learn(addr(3), CUT, "Reverb mix");
         b.turn(0, 1, false);
@@ -499,7 +741,11 @@ mod tests {
         b.learn_for(addr(3), CUT, "Cutoff", Scope::EveryPage);
         b.turn(1, 1, false);
         chain(&mut b);
-        assert_eq!((b.card(0).label.as_str(), b.card(1).label.as_str()), ("Reverb mix", "Cutoff"), "every page");
+        assert_eq!(
+            (b.card(0).label.as_str(), b.card(1).label.as_str()),
+            ("Reverb mix", "Cutoff"),
+            "every page"
+        );
         // The macro banks stay on every page.
         b.show(1);
         assert_eq!(b.card(0).label, "Macro 1");
@@ -515,12 +761,18 @@ mod tests {
         assert_eq!((skipped, back.banks().len()), (0, 3));
         assert_eq!(back.banks()[1].name, "Macros 1-4");
         chain(&mut back);
-        assert_eq!((back.card(0).label.as_str(), back.card(1).label.as_str()), ("Reverb mix", "Cutoff"));
+        assert_eq!(
+            (back.card(0).label.as_str(), back.card(1).label.as_str()),
+            ("Reverb mix", "Cutoff")
+        );
         play(&mut back);
         assert_eq!(back.card(0).label, "Swing");
         // Unbinding on the chain page takes its own knob off first.
         chain(&mut back);
-        assert_eq!(back.unbind(0, 0).map(|x| x.label), Some("Reverb mix".into()));
+        assert_eq!(
+            back.unbind(0, 0).map(|x| x.label),
+            Some("Reverb mix".into())
+        );
         assert_eq!(back.card(0).label, "Mix");
     }
 
@@ -539,14 +791,32 @@ mod tests {
     fn save_and_load() {
         let mut b = Bindings::new();
         b.bank_mut(0).name = "Macros 1-4".into();
-        b.bind(0, 0, Binding { colour: Some(2), ..Binding::new(ParamAddr::macro_value(0), crate::macro_info(0), "Wash") });
-        b.bind(1, 3, Binding { from: 0.9, to: 0.1, ..Binding::new(addr(3), CUT, "Tone (keys)") });
+        b.bind(
+            0,
+            0,
+            Binding {
+                colour: Some(2),
+                ..Binding::new(ParamAddr::macro_value(0), crate::macro_info(0), "Wash")
+            },
+        );
+        b.bind(
+            1,
+            3,
+            Binding {
+                from: 0.9,
+                to: 0.1,
+                ..Binding::new(addr(3), CUT, "Tone (keys)")
+            },
+        );
         let text = b.save();
-        let (c, skipped) = Bindings::load(&(text.clone() + "knob.0.1 = t9.inst.1 0 1 - Gone\nnonsense\n"), &|a| match a.owner {
-            Owner::Macro(n) => Some(crate::macro_info(n as usize)),
-            Owner::Insert(..) => Some(CUT),
-            _ => None,
-        });
+        let (c, skipped) = Bindings::load(
+            &(text.clone() + "knob.0.1 = t9.inst.1 0 1 - Gone\nnonsense\n"),
+            &|a| match a.owner {
+                Owner::Macro(n) => Some(crate::macro_info(n as usize)),
+                Owner::Insert(..) => Some(CUT),
+                _ => None,
+            },
+        );
         assert_eq!(skipped, 2);
         assert_eq!(c.save(), text);
         assert_eq!(c.banks()[1].knobs[3].as_ref().unwrap().label, "Tone (keys)");

@@ -72,13 +72,25 @@ pub fn add(ui: &mut Ui) -> Result<(), String> {
 }
 
 pub fn update_chain(ui: &mut Ui, st: ChainState) {
-    if let Some(v) = ui.get_mut::<ChainView>(CHAIN) { v.update(st); }
+    if let Some(v) = ui.get_mut::<ChainView>(CHAIN) {
+        v.update(st);
+    }
 }
 
 pub fn update_macros(ui: &mut Ui, st: MacrosState) {
-    if let Some(v) = ui.get_mut::<MacrosView>(MACROS_W) { v.update(st); }
+    if let Some(v) = ui.get_mut::<MacrosView>(MACROS_W) {
+        v.update(st);
+    }
 }
 
-pub fn take_chain_actions(ui: &mut Ui) -> Vec<ChainAction> { ui.get_mut::<ChainView>(CHAIN).map(|v| v.take_actions()).unwrap_or_default() }
+pub fn take_chain_actions(ui: &mut Ui) -> Vec<ChainAction> {
+    ui.get_mut::<ChainView>(CHAIN)
+        .map(|v| v.take_actions())
+        .unwrap_or_default()
+}
 
-pub fn take_macro_actions(ui: &mut Ui) -> Vec<MacroAction> { ui.get_mut::<MacrosView>(MACROS_W).map(|v| v.take_actions()).unwrap_or_default() }
+pub fn take_macro_actions(ui: &mut Ui) -> Vec<MacroAction> {
+    ui.get_mut::<MacrosView>(MACROS_W)
+        .map(|v| v.take_actions())
+        .unwrap_or_default()
+}

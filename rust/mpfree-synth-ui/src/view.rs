@@ -28,7 +28,10 @@ use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
 use crate::pages::{plan, qlink_targets, tile_label, Page};
 use crate::visual;
-use crate::widgets::{Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, QLINK_COLORS};
+use crate::widgets::{
+    Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals,
+    QLINK_COLORS,
+};
 use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
 use mpfree_synth::params as pp;
@@ -73,7 +76,13 @@ pub struct SynthState {
 
 impl SynthState {
     /// What the node holds now.
-    pub fn from_node(node: &dyn Node, track: &str, color: Color, presets: Vec<String>, preset: Option<usize>) -> SynthState {
+    pub fn from_node(
+        node: &dyn Node,
+        track: &str,
+        color: Color,
+        presets: Vec<String>,
+        preset: Option<usize>,
+    ) -> SynthState {
         let params = node.params();
         SynthState {
             info: node.info(),
@@ -144,7 +153,11 @@ struct Strip {
 
 impl Strip {
     fn new() -> Strip {
-        Strip { cards: Vec::new(), pages: Vec::new(), node_pages: Vec::new() }
+        Strip {
+            cards: Vec::new(),
+            pages: Vec::new(),
+            node_pages: Vec::new(),
+        }
     }
 
     fn push(&mut self, card: Card, page: &str) {
@@ -156,7 +169,8 @@ impl Strip {
 /// Whether the panel draws visuals for this node on this page: Poly and FM
 /// on every page, any other engine with pressure on its Pressure page.
 fn has_visuals(info: &NodeInfo, page: &str) -> bool {
-    matches!(info.id, "mpfree.poly" | "mpfree.fm") || (page == "Pressure" && press_base(info).is_some())
+    matches!(info.id, "mpfree.poly" | "mpfree.fm")
+        || (page == "Pressure" && press_base(info).is_some())
 }
 
 /// The first pressure parameter of an engine that has them, and what its
@@ -184,9 +198,14 @@ fn param_text(st: &SynthState, i: usize) -> (String, String) {
     let v = st.values[i];
     if let Some(base) = press_base(st.info) {
         let off = p.id.wrapping_sub(base);
-        if (field::depth(0)..FIELDS as u16).contains(&off) && (off - field::depth(0)).is_multiple_of(2) {
+        if (field::depth(0)..FIELDS as u16).contains(&off)
+            && (off - field::depth(0)).is_multiple_of(2)
+        {
             let n = usize::from((off - field::depth(0)) / 2);
-            let target = press_targets(st.info).get(st.value(base + field::target(n)) as usize).copied().unwrap_or("Off");
+            let target = press_targets(st.info)
+                .get(st.value(base + field::target(n)) as usize)
+                .copied()
+                .unwrap_or("Off");
             if let Some((a, unit)) = sp::amount(target, v) {
                 let (t, u) = amount_text(target, a, unit);
                 return (t, u.to_string());
@@ -200,7 +219,11 @@ fn param_text(st: &SynthState, i: usize) -> (String, String) {
 
 fn param_line(st: &SynthState, i: usize) -> String {
     let (n, u) = param_text(st, i);
-    if u.is_empty() { n } else { format!("{n} {u}") }
+    if u.is_empty() {
+        n
+    } else {
+        format!("{n} {u}")
+    }
 }
 
 impl SynthPanel {
@@ -244,7 +267,10 @@ impl SynthPanel {
     }
 
     fn wants_visuals(&self) -> bool {
-        has_visuals(self.state.info, self.pages.get(self.page).map_or("", |p| p.name.as_str()))
+        has_visuals(
+            self.state.info,
+            self.pages.get(self.page).map_or("", |p| p.name.as_str()),
+        )
     }
 
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
@@ -259,7 +285,11 @@ impl SynthPanel {
     }
 
     pub fn layout(&self) -> &'static str {
-        if self.visuals { LAYOUT } else { PLAIN_LAYOUT }
+        if self.visuals {
+            LAYOUT
+        } else {
+            PLAIN_LAYOUT
+        }
     }
 
     pub fn pages(&self) -> &[Page] {
@@ -336,13 +366,17 @@ impl SynthPanel {
     fn set(&mut self, ui: &mut Ui, i: usize, v: f32) -> Option<SynthAction> {
         let set = self.state.set(i, v);
         self.refresh(ui);
-        set.map(|value| SynthAction::Set { id: self.state.params[i].id, value })
+        set.map(|value| SynthAction::Set {
+            id: self.state.params[i].id,
+            value,
+        })
     }
 
     /// A touch on one of the panel's widgets; None for events that only move
     /// the view (a page tab, a selection) or are not the panel's.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent) -> Option<SynthAction> {
-        let tile_param = |s: &SynthPanel, k: usize| s.pages.get(s.page).and_then(|p| p.params.get(k)).copied();
+        let tile_param =
+            |s: &SynthPanel, k: usize| s.pages.get(s.page).and_then(|p| p.params.get(k)).copied();
         match (ev.widget.as_str(), &ev.kind) {
             (TITLE, EventKind::Tab(i)) => {
                 self.show_page(ui, *i);
@@ -395,7 +429,11 @@ impl SynthPanel {
     /// Puts the state into the widgets.
     pub fn refresh(&mut self, ui: &mut Ui) {
         let st = &self.state;
-        let page = self.pages.get(self.page).cloned().unwrap_or(Page { name: String::new(), params: Vec::new(), qlinks: Vec::new() });
+        let page = self.pages.get(self.page).cloned().unwrap_or(Page {
+            name: String::new(),
+            params: Vec::new(),
+            qlinks: Vec::new(),
+        });
         let qtargets = qlink_targets(&page, st.params);
         let preset = st.preset.and_then(|i| st.presets.get(i)).cloned();
         if let Some(w) = ui.get_mut::<TitleBar>(TITLE) {
@@ -405,7 +443,17 @@ impl SynthPanel {
                 None => st.info.name.to_string(),
             };
             w.subtitle = subtitle(st);
-            w.tabs = self.pages.iter().map(|p| p.name.clone()).collect();
+            // Many pages (the drum synth's one per pad) show short tabs:
+            // "Pad 12" becomes "12".
+            let many = self.pages.len() > 8;
+            w.tabs = self
+                .pages
+                .iter()
+                .map(|p| match p.name.strip_prefix("Pad ") {
+                    Some(n) if many => n.to_string(),
+                    _ => p.name.clone(),
+                })
+                .collect();
             w.active = self.page;
         }
         if self.visuals {
@@ -422,9 +470,19 @@ impl SynthPanel {
         }
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
             w.title = page.name.clone();
-            w.caption = if qtargets.is_empty() { String::new() } else { "Q-Links turn the marked tiles · drag to turn".to_string() };
-            w.tiles = page.params.iter().map(|&i| tile(st, &page.name, i, qtargets.iter().position(|&q| q == i))).collect();
-            w.selected = self.focus.and_then(|f| page.params.iter().position(|&i| i == f));
+            w.caption = if qtargets.is_empty() {
+                String::new()
+            } else {
+                "Q-Links turn the marked tiles · drag to turn".to_string()
+            };
+            w.tiles = page
+                .params
+                .iter()
+                .map(|&i| tile(st, &page.name, i, qtargets.iter().position(|&q| q == i)))
+                .collect();
+            w.selected = self
+                .focus
+                .and_then(|f| page.params.iter().position(|&i| i == f));
         }
         if let Some(w) = ui.get_mut::<ListView>(PRESETS) {
             w.title = format!("Presets · {}", st.presets.len());
@@ -434,11 +492,18 @@ impl SynthPanel {
                 .enumerate()
                 .map(|(k, name)| ListItem {
                     text: name.clone(),
-                    detail: if st.preset == Some(k) && st.edited { "edited".to_string() } else { String::new() },
+                    detail: if st.preset == Some(k) && st.edited {
+                        "edited".to_string()
+                    } else {
+                        String::new()
+                    },
                     color: None,
                 })
                 .collect();
-            w.selected = st.preset.unwrap_or(0).min(st.presets.len().saturating_sub(1));
+            w.selected = st
+                .preset
+                .unwrap_or(0)
+                .min(st.presets.len().saturating_sub(1));
         }
         if let Some(w) = ui.get_mut::<QLinkStrip>(QLINKS) {
             w.cells = qtargets
@@ -469,13 +534,20 @@ impl SynthPanel {
 }
 
 fn subtitle(st: &SynthState) -> String {
-    let kind = if st.info.id.starts_with("mpfree.") { "Native" } else { "Plugin" };
+    let kind = if st.info.id.starts_with("mpfree.") {
+        "Native"
+    } else {
+        "Plugin"
+    };
     let mut parts = vec![kind.to_string()];
     if !st.track.is_empty() {
         parts.insert(0, format!("{} track", st.track));
     }
     if st.info.id == "mpfree.poly" {
-        let mode = pp::VOICE_MODES.get(st.value(pp::VOICE_MODE) as usize).copied().unwrap_or("");
+        let mode = pp::VOICE_MODES
+            .get(st.value(pp::VOICE_MODE) as usize)
+            .copied()
+            .unwrap_or("");
         parts.push(mode.to_lowercase());
         if st.value(pp::GLIDE) > 0.0 {
             parts.push("glide".to_string());
@@ -496,9 +568,15 @@ fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
         TileKind::Meter
     } else {
         match p.curve {
-            Curve::Choice(names) => TileKind::Choice { names: names.iter().map(|s| s.to_string()).collect(), index: v as usize },
+            Curve::Choice(names) => TileKind::Choice {
+                names: names.iter().map(|s| s.to_string()).collect(),
+                index: v as usize,
+            },
             Curve::Toggle => TileKind::Toggle(v >= 0.5),
-            _ => TileKind::Knob { pos: p.to_unit(v), bipolar: p.min < 0.0 && p.max > 0.0 },
+            _ => TileKind::Knob {
+                pos: p.to_unit(v),
+                bipolar: p.min < 0.0 && p.max > 0.0,
+            },
         }
     };
     let color = match (qlink, &kind) {
@@ -506,7 +584,14 @@ fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
         (None, TileKind::Knob { .. }) => Color::rgb(0x98A1B3),
         (None, _) => QLINK_COLORS[0],
     };
-    Tile { label: tile_label(page, p), value, unit, kind, qlink, color }
+    Tile {
+        label: tile_label(page, p),
+        value,
+        unit,
+        kind,
+        qlink,
+        color,
+    }
 }
 
 /// The Pressure page's two cards: the curve (shaped against raw, with the
@@ -533,14 +618,30 @@ fn pressure_cards(st: &SynthState, base: u16) -> Strip {
         Card {
             title: "Pressure".into(),
             caption: visual::pressure_caption(&v, base),
-            traces: vec![Trace { pts: visual::pressure_curve(&v, base), color: blue, width: 2.5, fill: true, dashed: false }],
+            traces: vec![Trace {
+                pts: visual::pressure_curve(&v, base),
+                color: blue,
+                width: 2.5,
+                fill: true,
+                dashed: false,
+            }],
             grid: vec![(thr, "thr".to_string()), (full, "full".to_string())],
             active: true,
             ..Card::default()
         },
         "Pressure",
     );
-    s.push(Card { title: "Voices".into(), caption: voices, bars, bar_color: Some(green), active: true, ..Card::default() }, "Pressure");
+    s.push(
+        Card {
+            title: "Voices".into(),
+            caption: voices,
+            bars,
+            bar_color: Some(green),
+            active: true,
+            ..Card::default()
+        },
+        "Pressure",
+    );
     s
 }
 
@@ -560,7 +661,10 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
     let [o1, o2] = visual::oscillators(&v);
     let [f, moved] = visual::filter(&v);
     let [amp, fenv] = visual::envelopes(&v);
-    let mode = pp::FILTER_MODES.get(v(pp::FILTER_MODE) as usize).copied().unwrap_or("");
+    let mode = pp::FILTER_MODES
+        .get(v(pp::FILTER_MODE) as usize)
+        .copied()
+        .unwrap_or("");
     let freq_grid = [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")]
         .iter()
         .map(|&(hz, s)| (visual::freq_x(hz), s.to_string()))
@@ -569,7 +673,11 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         Card {
             title: "Osc".into(),
             caption: visual::osc_caption(&v),
-            traces: [(o1, blue), (o2, green)].into_iter().filter(|(p, _)| !p.is_empty()).map(|(p, c)| trace(p, c, false, false)).collect(),
+            traces: [(o1, blue), (o2, green)]
+                .into_iter()
+                .filter(|(p, _)| !p.is_empty())
+                .map(|(p, c)| trace(p, c, false, false))
+                .collect(),
             midline: true,
             active: page == "Osc",
             ..Card::default()
@@ -577,7 +685,10 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         Card {
             title: "Filter".into(),
             caption: mode.to_string(),
-            traces: [trace(f, blue, true, false)].into_iter().chain((!moved.is_empty()).then(|| trace(moved, grey, false, true))).collect(),
+            traces: [trace(f, blue, true, false)]
+                .into_iter()
+                .chain((!moved.is_empty()).then(|| trace(moved, grey, false, true)))
+                .collect(),
             grid: freq_grid,
             dot: Some(visual::freq_x(v(pp::CUTOFF))),
             active: page == "Filter",
@@ -586,7 +697,10 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         Card {
             title: "Env".into(),
             caption: "amp, filter".into(),
-            traces: vec![trace(amp, white, true, false), trace(fenv, blue, false, false)],
+            traces: vec![
+                trace(amp, white, true, false),
+                trace(fenv, blue, false, false),
+            ],
             active: page == "Env",
             ..Card::default()
         },
@@ -615,7 +729,13 @@ const LINE: Color = Color::rgb(0x98A1B3);
 const WHITE: Color = Color::rgb(0xE9ECF2);
 
 fn line(pts: Vec<(f32, f32)>, color: Color) -> Trace {
-    Trace { pts, color, width: 2.5, fill: false, dashed: false }
+    Trace {
+        pts,
+        color,
+        width: 2.5,
+        fill: false,
+        dashed: false,
+    }
 }
 
 /// FM's cards for a page: the algorithm with the operators' levels (Algo),
@@ -624,7 +744,10 @@ fn line(pts: Vec<(f32, f32)>, color: Color) -> Trace {
 fn fm_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);
     let mut s = Strip::new();
-    let op_page = page.strip_prefix("Op ").and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=6).contains(n));
+    let op_page = page
+        .strip_prefix("Op ")
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| (1..=6).contains(n));
     let kbd = page.strip_prefix("Kbd ").and_then(|r| {
         let (a, b) = r.split_once('-')?;
         Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
@@ -659,7 +782,11 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
             let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
             let carrier = l.carriers & (1 << (n - 1)) != 0;
             let caption = if fv::op_sounds(&v, n) {
-                format!("{} · output {}", fv::op_role(&l, n), v(fp::op_id(n, fp::op::LEVEL)).round())
+                format!(
+                    "{} · output {}",
+                    fv::op_role(&l, n),
+                    v(fp::op_id(n, fp::op::LEVEL)).round()
+                )
             } else {
                 format!("{} · off", fv::op_role(&l, n))
             };
@@ -668,7 +795,13 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
                 Card {
                     title: format!("Op {n} env"),
                     caption,
-                    traces: vec![Trace { pts: fv::op_env(&v, n), color, width: 2.5, fill: true, dashed: false }],
+                    traces: vec![Trace {
+                        pts: fv::op_env(&v, n),
+                        color,
+                        width: 2.5,
+                        fill: true,
+                        dashed: false,
+                    }],
                     active: true,
                     ..Card::default()
                 },
@@ -679,7 +812,10 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
             // Each operator's ring is the colour of its curve.
             let (ca, cb) = (WHITE, QLINK_COLORS[2]);
             algorithm_card(&mut s, st, &[(a, ca), (b, cb)], false);
-            let grid = [36u8, 60, 84].iter().map(|&k| (fv::key_x(k), fv::note_name(k))).collect();
+            let grid = [36u8, 60, 84]
+                .iter()
+                .map(|&k| (fv::key_x(k), fv::note_name(k)))
+                .collect();
             let range = fv::kbd_range_db(&v, &[a, b]);
             let caption = format!(
                 "breaks {}, {} · ±{range} dB",
@@ -690,7 +826,10 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
                 Card {
                     title: "Scaling".into(),
                     caption,
-                    traces: vec![line(fv::kbd_curve(&v, a, range), ca), line(fv::kbd_curve(&v, b, range), cb)],
+                    traces: vec![
+                        line(fv::kbd_curve(&v, a, range), ca),
+                        line(fv::kbd_curve(&v, b, range), cb),
+                    ],
                     grid,
                     midline: true,
                     active: true,
@@ -713,9 +852,23 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
                     title: "Levels".into(),
                     caption,
                     bars: (1..=6)
-                        .map(|n| if fv::op_sounds(&v, n) { v(fp::op_id(n, fp::op::LEVEL)) / 99.0 } else { 0.0 })
+                        .map(|n| {
+                            if fv::op_sounds(&v, n) {
+                                v(fp::op_id(n, fp::op::LEVEL)) / 99.0
+                            } else {
+                                0.0
+                            }
+                        })
                         .collect(),
-                    bar_colors: (0..6).map(|j| if l.carriers & (1 << j) != 0 { CARRIER } else { MODULATOR }).collect(),
+                    bar_colors: (0..6)
+                        .map(|j| {
+                            if l.carriers & (1 << j) != 0 {
+                                CARRIER
+                            } else {
+                                MODULATOR
+                            }
+                        })
+                        .collect(),
                     bar_labels: (1..=6).map(|n| n.to_string()).collect(),
                     active: page == "Algo",
                     ..Card::default()
@@ -749,7 +902,16 @@ fn algorithm_card(s: &mut Strip, st: &SynthState, ring: &[(usize, Color)], activ
             }
         })
         .collect();
-    let traces = fv::algorithm_lines(&l).into_iter().map(|pts| Trace { pts, color: LINE, width: 1.5, fill: false, dashed: false }).collect();
+    let traces = fv::algorithm_lines(&l)
+        .into_iter()
+        .map(|pts| Trace {
+            pts,
+            color: LINE,
+            width: 1.5,
+            fill: false,
+            dashed: false,
+        })
+        .collect();
     s.node_pages.extend((1..=6).map(|n| format!("Op {n}")));
     s.push(
         Card {

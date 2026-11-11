@@ -22,9 +22,13 @@ thread_local! {
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn count() {
-    if WATCH.with(Cell::get) { CALLS.fetch_add(1, Ordering::Relaxed); }
+    if WATCH.with(Cell::get) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 }
-fn watch(on: bool) { WATCH.with(|w| w.set(on)); }
+fn watch(on: bool) {
+    WATCH.with(|w| w.set(on));
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
@@ -48,27 +52,46 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         self.0 >> 33
     }
-    fn unit(&mut self) -> f32 { (self.next() % 1_000_000) as f32 / 1_000_000.0 }
+    fn unit(&mut self) -> f32 {
+        (self.next() % 1_000_000) as f32 / 1_000_000.0
+    }
 }
 
 /// Puts out NaN every 50th block, so the chain's guard runs.
-struct Glitch { n: u64 }
+struct Glitch {
+    n: u64,
+}
 
-static GLITCH: NodeInfo = NodeInfo { id: "test.glitch", name: "Glitch", kind: Kind::Effect };
+static GLITCH: NodeInfo = NodeInfo {
+    id: "test.glitch",
+    name: "Glitch",
+    kind: Kind::Effect,
+};
 
 impl Node for Glitch {
-    fn info(&self) -> &'static NodeInfo { &GLITCH }
-    fn params(&self) -> &'static [ParamInfo] { &[] }
+    fn info(&self) -> &'static NodeInfo {
+        &GLITCH
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
     fn set_param(&mut self, _id: u16, _value: f32) {}
-    fn param(&self, _id: u16) -> f32 { f32::NAN }
+    fn param(&self, _id: u16) -> f32 {
+        f32::NAN
+    }
     fn prepare(&mut self, _rate: u32, _max_block: usize) {}
     fn reset(&mut self) {}
     fn process(&mut self, _ctx: &Ctx, _events: &[Timed], left: &mut [f32], _right: &mut [f32]) {
         self.n += 1;
-        if self.n.is_multiple_of(50) && !left.is_empty() { left[0] = f32::NAN; }
+        if self.n.is_multiple_of(50) && !left.is_empty() {
+            left[0] = f32::NAN;
+        }
     }
 }
 
@@ -107,8 +130,12 @@ fn effects_and_the_chain_never_allocate() {
         Box::new(Phaser::new()),
         Box::new(LoFi::new()),
     ];
-    for n in &mut solo { n.prepare(rate, MAX_BLOCK); }
-    let params: Vec<Vec<ParamInfo>> = (0..chain.len()).map(|s| chain.node(s).unwrap().params().to_vec()).collect();
+    for n in &mut solo {
+        n.prepare(rate, MAX_BLOCK);
+    }
+    let params: Vec<Vec<ParamInfo>> = (0..chain.len())
+        .map(|s| chain.node(s).unwrap().params().to_vec())
+        .collect();
     let solo_params: Vec<Vec<ParamInfo>> = solo.iter().map(|n| n.params().to_vec()).collect();
     let mut rng = Lcg(17);
     let mut l = vec![0.0f32; 512];
@@ -130,7 +157,16 @@ fn effects_and_the_chain_never_allocate() {
             for p in ps.iter().filter(|p| !p.readonly) {
                 if rng.next().is_multiple_of(40) {
                     let at = (rng.next() as usize % (len + 4)) as u32;
-                    chain.queue(s, Timed::new(at, NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * rng.unit() }));
+                    chain.queue(
+                        s,
+                        Timed::new(
+                            at,
+                            NodeEvent::Param {
+                                id: p.id,
+                                value: p.min + (p.max - p.min) * rng.unit(),
+                            },
+                        ),
+                    );
                 }
             }
         }
@@ -138,28 +174,48 @@ fn effects_and_the_chain_never_allocate() {
             let s = rng.next() as usize % chain.len();
             chain.set_on(s, !chain.is_on(s));
         }
-        if rng.next().is_multiple_of(300) { chain.set_param(4, ids::delay::FREEZE, (rng.next() % 2) as f32); }
-        if rng.next().is_multiple_of(300) { chain.set_param(7, ids::cloud::FREEZE, (rng.next() % 2) as f32); }
-        let ctx = Ctx { bpm: 80.0 + (block % 7) as f64 * 10.0, sidechain: Some((&key[..len], &key[..len])), ..Ctx::new(rate, frame) };
+        if rng.next().is_multiple_of(300) {
+            chain.set_param(4, ids::delay::FREEZE, (rng.next() % 2) as f32);
+        }
+        if rng.next().is_multiple_of(300) {
+            chain.set_param(7, ids::cloud::FREEZE, (rng.next() % 2) as f32);
+        }
+        let ctx = Ctx {
+            bpm: 80.0 + (block % 7) as f64 * 10.0,
+            sidechain: Some((&key[..len], &key[..len])),
+            ..Ctx::new(rate, frame)
+        };
         chain.process(&ctx, &mut l[..len], &mut r[..len]);
 
         for (node, ps) in solo.iter_mut().zip(&solo_params) {
             events.clear();
             for p in ps.iter().filter(|p| !p.readonly) {
                 if rng.next().is_multiple_of(30) && events.len() < events.capacity() {
-                    events.push(Timed::new((rng.next() as usize % len) as u32, NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * rng.unit() }));
+                    events.push(Timed::new(
+                        (rng.next() as usize % len) as u32,
+                        NodeEvent::Param {
+                            id: p.id,
+                            value: p.min + (p.max - p.min) * rng.unit(),
+                        },
+                    ));
                 }
             }
             events.sort_unstable_by_key(|e| e.offset);
             node.process(&ctx, &events, &mut l[..len], &mut r[..len]);
-            if block % 997 == 0 { node.reset(); }
+            if block % 997 == 0 {
+                node.reset();
+            }
             let _ = (node.tail_frames(), node.latency(), node.param(0));
         }
         frame += len as u64;
     }
     watch(false);
 
-    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "allocations or frees on the audio path");
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "allocations or frees on the audio path"
+    );
     assert!(chain.stats().nan_resets > 0, "the NaN guard ran");
     assert!(l.iter().chain(&r).all(|v| v.is_finite()));
 }
@@ -169,16 +225,36 @@ fn the_mixer_never_allocates() {
     let rate = 48_000;
     let max = 512;
     let mut m = Mixer::new(MixerConfig::default(), rate, max);
-    m.chain_mut(StripId::Track(0)).unwrap().push(Box::new(Compressor::new()));
-    m.chain_mut(StripId::Track(1)).unwrap().push(Box::new(Drive::new()));
-    m.chain_mut(StripId::Track(2)).unwrap().push(Box::new(Glitch { n: 0 }));
-    m.chain_mut(StripId::Pad(0)).unwrap().push(Box::new(Eq::new()));
-    m.chain_mut(StripId::Input(0)).unwrap().push(Box::new(Chorus::new()));
-    m.chain_mut(StripId::Bus(0)).unwrap().push(Box::new(Compressor::new()));
-    m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
-    m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
-    m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
-    m.chain_mut(StripId::Track(0)).unwrap().set_param(0, ids::compressor::SIDECHAIN, 1.0);
+    m.chain_mut(StripId::Track(0))
+        .unwrap()
+        .push(Box::new(Compressor::new()));
+    m.chain_mut(StripId::Track(1))
+        .unwrap()
+        .push(Box::new(Drive::new()));
+    m.chain_mut(StripId::Track(2))
+        .unwrap()
+        .push(Box::new(Glitch { n: 0 }));
+    m.chain_mut(StripId::Pad(0))
+        .unwrap()
+        .push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Input(0))
+        .unwrap()
+        .push(Box::new(Chorus::new()));
+    m.chain_mut(StripId::Bus(0))
+        .unwrap()
+        .push(Box::new(Compressor::new()));
+    m.chain_mut(StripId::Return(0))
+        .unwrap()
+        .push(Box::new(Cloud::new()));
+    m.chain_mut(StripId::Return(1))
+        .unwrap()
+        .push(Box::new(Delay::new()));
+    m.chain_mut(StripId::Master)
+        .unwrap()
+        .push(Box::new(Eq::new()));
+    m.chain_mut(StripId::Track(0))
+        .unwrap()
+        .set_param(0, ids::compressor::SIDECHAIN, 1.0);
     // Inserts to hand over while playing, built here, and room for what
     // comes back.
     let mut spare: Vec<Insert> = (0..40)
@@ -194,7 +270,13 @@ fn the_mixer_never_allocates() {
         .collect();
     let mut back: Vec<Insert> = Vec::with_capacity(64);
     let strips: Vec<StripId> = m.strips().collect();
-    let tracks = [StripId::Track(0), StripId::Track(3), StripId::Pad(1), StripId::Bus(2), StripId::Input(1)];
+    let tracks = [
+        StripId::Track(0),
+        StripId::Track(3),
+        StripId::Pad(1),
+        StripId::Bus(2),
+        StripId::Input(1),
+    ];
     let mut rng = Lcg(23);
     let mut l = vec![0.0f32; max];
     let mut r = vec![0.0f32; max];
@@ -204,7 +286,9 @@ fn the_mixer_never_allocates() {
     for block in 0..3000u64 {
         let len = 1 + (rng.next() as usize) % max;
         for t in 0..m.tracks() {
-            if (block / 50 + t as u64).is_multiple_of(3) { continue; }
+            if (block / 50 + t as u64).is_multiple_of(3) {
+                continue;
+            }
             let (il, ir) = m.track_input(t).unwrap();
             for i in 0..len {
                 il[i] = 0.4 * (rng.unit() * 2.0 - 1.0);
@@ -226,20 +310,46 @@ fn the_mixer_never_allocates() {
             let s = strips[rng.next() as usize % strips.len()];
             let p = &strip_params()[rng.next() as usize % strip_params().len()];
             let at = (rng.next() as usize % (len + 4)) as u32;
-            m.queue(s, Timed::new(at, NodeEvent::Param { id: p.id, value: p.min + (p.max - p.min) * rng.unit() }));
+            m.queue(
+                s,
+                Timed::new(
+                    at,
+                    NodeEvent::Param {
+                        id: p.id,
+                        value: p.min + (p.max - p.min) * rng.unit(),
+                    },
+                ),
+            );
         }
         if rng.next().is_multiple_of(40) {
             let s = tracks[rng.next() as usize % tracks.len()];
             let len_now = m.chain(s).unwrap().len();
             let e = match (rng.next() % 4, spare.pop()) {
-                (0, Some(ins)) | (1, Some(ins)) => Edit::Insert { strip: s, at: rng.next() as usize % (len_now + 1), insert: ins },
-                (2, Some(ins)) if len_now > 0 => Edit::Replace { strip: s, at: rng.next() as usize % len_now, insert: ins },
+                (0, Some(ins)) | (1, Some(ins)) => Edit::Insert {
+                    strip: s,
+                    at: rng.next() as usize % (len_now + 1),
+                    insert: ins,
+                },
+                (2, Some(ins)) if len_now > 0 => Edit::Replace {
+                    strip: s,
+                    at: rng.next() as usize % len_now,
+                    insert: ins,
+                },
                 (_, ins) => {
-                    if let Some(ins) = ins { spare.push(ins); }
+                    if let Some(ins) = ins {
+                        spare.push(ins);
+                    }
                     if len_now > 1 && rng.next().is_multiple_of(2) {
-                        Edit::Move { strip: s, from: 0, to: len_now - 1 }
+                        Edit::Move {
+                            strip: s,
+                            from: 0,
+                            to: len_now - 1,
+                        }
                     } else {
-                        Edit::Remove { strip: s, at: rng.next() as usize % (len_now + 1) }
+                        Edit::Remove {
+                            strip: s,
+                            at: rng.next() as usize % (len_now + 1),
+                        }
                     }
                 }
             };
@@ -248,37 +358,84 @@ fn the_mixer_never_allocates() {
             }
         }
         if rng.next().is_multiple_of(25) {
-            let key = if rng.next().is_multiple_of(3) { None } else { Some(strips[rng.next() as usize % strips.len()]) };
+            let key = if rng.next().is_multiple_of(3) {
+                None
+            } else {
+                Some(strips[rng.next() as usize % strips.len()])
+            };
             m.set_key(tracks[rng.next() as usize % tracks.len()], 0, key);
-            m.set_key(StripId::Track(0), 0, Some(StripId::Track((rng.next() % 16) as usize)));
+            m.set_key(
+                StripId::Track(0),
+                0,
+                Some(StripId::Track((rng.next() % 16) as usize)),
+            );
         }
         if rng.next().is_multiple_of(30) {
             let src = strips[rng.next() as usize % strips.len()];
-            let point = [CapturePoint::BeforeInserts, CapturePoint::BeforeFader, CapturePoint::AfterFader][rng.next() as usize % 3];
+            let point = [
+                CapturePoint::BeforeInserts,
+                CapturePoint::BeforeFader,
+                CapturePoint::AfterFader,
+            ][rng.next() as usize % 3];
             m.set_capture((rng.next() % CAPTURES as u64) as usize, Some((src, point)));
         }
         m.set_capture(7, Some((StripId::Master, CapturePoint::AfterSafety)));
-        let ctx = Ctx { bpm: 90.0, ..Ctx::new(rate, frame) };
+        let ctx = Ctx {
+            bpm: 90.0,
+            ..Ctx::new(rate, frame)
+        };
         m.process(&ctx, &mut l[..len], &mut r[..len]);
-        let heard = m.capture(7).map_or(0.0, |(a, _)| a.first().copied().unwrap_or(0.0));
-        let _ = (heard, m.capture_latency(3), m.latency(), m.take_peaks(StripId::Master), m.take_input_peaks(StripId::Input(0)));
-        let _ = (m.stats(), m.is_audible(StripId::Track(4)), m.destination(StripId::Pad(2)), m.param(StripId::Bus(1), 4));
+        let heard = m
+            .capture(7)
+            .map_or(0.0, |(a, _)| a.first().copied().unwrap_or(0.0));
+        let _ = (
+            heard,
+            m.capture_latency(3),
+            m.latency(),
+            m.take_peaks(StripId::Master),
+            m.take_input_peaks(StripId::Input(0)),
+        );
+        let _ = (
+            m.stats(),
+            m.is_audible(StripId::Track(4)),
+            m.destination(StripId::Pad(2)),
+            m.param(StripId::Bus(1), 4),
+        );
         while let Some(ins) = m.pop_retired() {
-            if back.len() < back.capacity() { back.push(ins) } else { spare.push(ins) }
+            if back.len() < back.capacity() {
+                back.push(ins)
+            } else {
+                spare.push(ins)
+            }
         }
-        if block % 1111 == 0 { m.reset(); }
+        if block % 1111 == 0 {
+            m.reset();
+        }
         // Profiling on and off while playing, with the screen taking its
         // windows.
-        if block % 500 == 0 { m.set_profiling(block % 1000 == 0); }
+        if block % 500 == 0 {
+            m.set_profiling(block % 1000 == 0);
+        }
         if block % 100 == 0 {
-            let _ = (m.probe_mut().take_window(), m.strip_probe_mut(StripId::Track(0)).map(|p| p.take_window()));
-            let _ = m.chain_mut(StripId::Track(0)).and_then(|c| c.probe_mut(0)).map(|p| p.take_window());
+            let _ = (
+                m.probe_mut().take_window(),
+                m.strip_probe_mut(StripId::Track(0))
+                    .map(|p| p.take_window()),
+            );
+            let _ = m
+                .chain_mut(StripId::Track(0))
+                .and_then(|c| c.probe_mut(0))
+                .map(|p| p.take_window());
         }
         frame += len as u64;
     }
     watch(false);
 
-    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "allocations or frees in the mixer");
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "allocations or frees in the mixer"
+    );
     assert!(m.stats().bad_input > 0, "the input guard ran");
     assert!(m.stats().nan_resets > 0, "the NaN guard ran");
     assert!(l.iter().chain(&r).all(|v| v.is_finite()));

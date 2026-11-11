@@ -64,7 +64,7 @@ const fn c(name: &'static str, job: Job) -> Control {
 
 /// The MPC One's buttons, transport first. Names are from the panel as
 /// MPFree expects it.
-pub const CONTROLS: [Control; 34] = [
+pub const CONTROLS: [Control; 35] = [
     c("REC", Job::Rec),
     c("OVERDUB", Job::Overdub),
     c("STOP", Job::Fixed(button::STOP)),
@@ -86,6 +86,10 @@ pub const CONTROLS: [Control; 34] = [
     c("MENU", Job::Menu),
     c("MAIN", Job::None),
     c("BROWSE", Job::None),
+    // For the FX thread's mixer proposal. Named after the MPC 3.6 guide's
+    // MPC One top panel (p. 348, item 17, as the FX thread cites it);
+    // not yet seen by the pad player.
+    c("TRACK MIX / PAD MIX", Job::None),
     c("-", Job::Minus),
     c("+", Job::Plus),
     c("Q-LINK", Job::None),
@@ -113,8 +117,14 @@ pub enum Mark {
 pub fn known(code: Code) -> Option<String> {
     match code {
         Code::Cc(DATA_WHEEL_CC) => Some("the data wheel".to_string()),
-        Code::Cc(cc) => QLINK_TURN_CC.iter().position(|&x| x == cc).map(|k| format!("Q-Link {} turned", k + 1)),
-        Code::Button(n) => QLINK_TOUCH_NOTES.iter().position(|&x| x == n).map(|k| format!("Q-Link {} touched", k + 1)),
+        Code::Cc(cc) => QLINK_TURN_CC
+            .iter()
+            .position(|&x| x == cc)
+            .map(|k| format!("Q-Link {} turned", k + 1)),
+        Code::Button(n) => QLINK_TOUCH_NOTES
+            .iter()
+            .position(|&x| x == n)
+            .map(|k| format!("Q-Link {} touched", k + 1)),
     }
 }
 
@@ -160,8 +170,14 @@ pub struct Mapper {
 
 impl Default for Mapper {
     fn default() -> Mapper {
-        Mapper { marks: vec![Mark::Left; CONTROLS.len()], selected: 0, listening: false, note: String::new(),
-                 last: "nothing yet".to_string(), changed: false }
+        Mapper {
+            marks: vec![Mark::Left; CONTROLS.len()],
+            selected: 0,
+            listening: false,
+            note: String::new(),
+            last: "nothing yet".to_string(),
+            changed: false,
+        }
     }
 }
 
@@ -181,7 +197,10 @@ impl Mapper {
     /// The next control still to find after `from`, or `from` if none.
     fn next_left(&self, from: usize) -> usize {
         let n = CONTROLS.len();
-        (1..=n).map(|k| (from + k) % n).find(|&i| self.marks[i] == Mark::Left).unwrap_or(from)
+        (1..=n)
+            .map(|k| (from + k) % n)
+            .find(|&i| self.marks[i] == Mark::Left)
+            .unwrap_or(from)
     }
 
     pub fn select(&mut self, i: usize, listen: bool) {
@@ -225,7 +244,13 @@ impl Mapper {
         self.marks[i] = Mark::Left;
         self.changed = true;
         self.note = format!("{} is to find again.", ctl.name);
-        Some((format!("map: {} cleared", ctl.name), Learned { job: ctl.job, code: None }))
+        Some((
+            format!("map: {} cleared", ctl.name),
+            Learned {
+                job: ctl.job,
+                code: None,
+            },
+        ))
     }
 
     /// A control pressed or turned while the page is open. Listening, a new
@@ -234,7 +259,10 @@ impl Mapper {
     pub fn input(&mut self, code: Code) -> Option<(String, Option<Learned>)> {
         let i = self.selected;
         let ctl = CONTROLS[i];
-        let named = self.owner(code).map(|o| CONTROLS[o].name.to_string()).or_else(|| known(code));
+        let named = self
+            .owner(code)
+            .map(|o| CONTROLS[o].name.to_string())
+            .or_else(|| known(code));
         self.last = match &named {
             Some(name) => format!("{} = {name}", code.describe()),
             None => format!("{} = not in the list yet", code.describe()),
@@ -259,9 +287,19 @@ impl Mapper {
         if let Job::Fixed(n) = ctl.job {
             // A measured button answering with another number: say so, keep the constant.
             self.listening = false;
-            self.note = format!("{} is measured as button {n}, but {} came. Nothing changed.", ctl.name,
-                                code.describe());
-            return Some((format!("map: {} sent {}, measured as button {n} (kept)", ctl.name, code.describe()), None));
+            self.note = format!(
+                "{} is measured as button {n}, but {} came. Nothing changed.",
+                ctl.name,
+                code.describe()
+            );
+            return Some((
+                format!(
+                    "map: {} sent {}, measured as button {n} (kept)",
+                    ctl.name,
+                    code.describe()
+                ),
+                None,
+            ));
         }
         self.marks[i] = Mark::Found(code);
         self.listening = false;
@@ -270,7 +308,10 @@ impl Mapper {
         self.last = format!("{} = {}", code.describe(), ctl.name);
         self.selected = self.next_left(i);
         let learned = match code {
-            Code::Button(n) if ctl.job != Job::None => Some(Learned { job: ctl.job, code: Some(n) }),
+            Code::Button(n) if ctl.job != Job::None => Some(Learned {
+                job: ctl.job,
+                code: Some(n),
+            }),
             _ => None,
         };
         Some((format!("map: {} = {}", ctl.name, code.describe()), learned))
@@ -278,53 +319,93 @@ impl Mapper {
 
     /// One line with every control found and skipped, for the log.
     pub fn summary(&self) -> String {
-        let found: Vec<String> = CONTROLS.iter().zip(&self.marks).filter_map(|(c, m)| match m {
-            Mark::Found(code) => Some(format!("{} {}", c.name, code.describe())),
-            _ => None,
-        }).collect();
-        let skipped: Vec<&str> = CONTROLS.iter().zip(&self.marks).filter(|(_, m)| **m == Mark::Skipped)
-            .map(|(c, _)| c.name).collect();
+        let found: Vec<String> = CONTROLS
+            .iter()
+            .zip(&self.marks)
+            .filter_map(|(c, m)| match m {
+                Mark::Found(code) => Some(format!("{} {}", c.name, code.describe())),
+                _ => None,
+            })
+            .collect();
+        let skipped: Vec<&str> = CONTROLS
+            .iter()
+            .zip(&self.marks)
+            .filter(|(_, m)| **m == Mark::Skipped)
+            .map(|(c, _)| c.name)
+            .collect();
         let left = self.marks.iter().filter(|m| **m == Mark::Left).count();
-        format!("map summary: {} found ({}); skipped: {}; {left} left",
-                found.len(), found.join(", "), if skipped.is_empty() { "none".to_string() } else { skipped.join(", ") })
+        format!(
+            "map summary: {} found ({}); skipped: {}; {left} left",
+            found.len(),
+            found.join(", "),
+            if skipped.is_empty() {
+                "none".to_string()
+            } else {
+                skipped.join(", ")
+            }
+        )
     }
 
     pub fn view(&self) -> MapView {
-        let rows: Vec<MapRow> = CONTROLS.iter().zip(&self.marks).enumerate().map(|(i, (c, &m))| {
-            let value = match m {
-                _ if self.listening && i == self.selected => "press it now".to_string(),
-                Mark::Found(code) => code.describe(),
-                Mark::Skipped => "skipped".to_string(),
-                Mark::Left => "-".to_string(),
-            };
-            MapRow { name: c.name.to_string(), value, mark: m }
-        }).collect();
+        let rows: Vec<MapRow> = CONTROLS
+            .iter()
+            .zip(&self.marks)
+            .enumerate()
+            .map(|(i, (c, &m))| {
+                let value = match m {
+                    _ if self.listening && i == self.selected => "press it now".to_string(),
+                    Mark::Found(code) => code.describe(),
+                    Mark::Skipped => "skipped".to_string(),
+                    Mark::Left => "-".to_string(),
+                };
+                MapRow {
+                    name: c.name.to_string(),
+                    value,
+                    mark: m,
+                }
+            })
+            .collect();
         let count = |k: fn(&Mark) -> bool| self.marks.iter().filter(|m| k(m)).count();
         let ctl = CONTROLS[self.selected];
         let (heading, mut lines) = if self.listening {
-            (format!("Press {}", ctl.name), vec![
-                "Press or turn it once: its number goes in the list and the log.".to_string(),
-                "Buttons do nothing else while MPFree listens.".to_string(),
-                "STOP or Stop listening: stop. The wheel picks another control.".to_string(),
-            ])
+            (
+                format!("Press {}", ctl.name),
+                vec![
+                    "Press or turn it once: its number goes in the list and the log.".to_string(),
+                    "Buttons do nothing else while MPFree listens.".to_string(),
+                    "STOP or Stop listening: stop. The wheel picks another control.".to_string(),
+                ],
+            )
         } else {
             let state = match self.marks[self.selected] {
                 Mark::Found(code) => format!("{} is {}.", ctl.name, code.describe()),
                 Mark::Skipped => format!("{} was skipped.", ctl.name),
                 Mark::Left => format!("{} is still to find.", ctl.name),
             };
-            (ctl.name.to_string(), vec![
-                state,
-                "Tap a control, or pick it with the wheel and press +, then press it.".to_string(),
-                "-: skip it (not on this MPC). Unlisted buttons: use an Other row.".to_string(),
-            ])
+            (
+                ctl.name.to_string(),
+                vec![
+                    state,
+                    "Tap a control, or pick it with the wheel and press +, then press it."
+                        .to_string(),
+                    "-: skip it (not on this MPC). Unlisted buttons: use an Other row.".to_string(),
+                ],
+            )
         };
         if !self.note.is_empty() {
             lines.insert(0, self.note.clone());
         }
-        MapView { rows, selected: self.selected, listening: self.listening, heading, lines, last: self.last.clone(),
-                  found: count(|m| matches!(m, Mark::Found(_))), skipped: count(|m| *m == Mark::Skipped),
-                  left: count(|m| *m == Mark::Left) }
+        MapView {
+            rows,
+            selected: self.selected,
+            listening: self.listening,
+            heading,
+            lines,
+            last: self.last.clone(),
+            found: count(|m| matches!(m, Mark::Found(_))),
+            skipped: count(|m| *m == Mark::Skipped),
+            left: count(|m| *m == Mark::Left),
+        }
     }
 }
 
@@ -339,12 +420,27 @@ mod tests {
     #[test]
     fn names_are_unique_and_measured_buttons_are_listed() {
         for (i, a) in CONTROLS.iter().enumerate() {
-            assert!(CONTROLS.iter().skip(i + 1).all(|b| b.name != a.name), "{}", a.name);
+            assert!(
+                CONTROLS.iter().skip(i + 1).all(|b| b.name != a.name),
+                "{}",
+                a.name
+            );
         }
-        for n in [button::STOP, button::PLAY, button::FULL_LEVEL, button::SHIFT] {
+        for n in [
+            button::STOP,
+            button::PLAY,
+            button::FULL_LEVEL,
+            button::SHIFT,
+        ] {
             assert!(CONTROLS.iter().any(|c| c.job == Job::Fixed(n)));
         }
-        assert_eq!(CONTROLS.iter().filter(|c| matches!(c.job, Job::Bank(_))).count(), 4);
+        assert_eq!(
+            CONTROLS
+                .iter()
+                .filter(|c| matches!(c.job, Job::Bank(_)))
+                .count(),
+            4
+        );
     }
 
     #[test]
@@ -355,7 +451,13 @@ mod tests {
         assert_eq!(m.view().rows[0].value, "press it now");
         let (line, learned) = m.input(Code::Button(73)).unwrap();
         assert_eq!(line, "map: REC = button 73");
-        assert_eq!(learned, Some(Learned { job: Job::Rec, code: Some(73) }));
+        assert_eq!(
+            learned,
+            Some(Learned {
+                job: Job::Rec,
+                code: Some(73)
+            })
+        );
         assert!(!m.listening);
         assert_eq!(m.selected, index("OVERDUB"));
         let v = m.view();
@@ -391,7 +493,10 @@ mod tests {
         let (line, learned) = m.input(Code::Cc(30)).unwrap();
         assert_eq!((line.as_str(), learned), ("map: Other 1 = CC 30", None));
         m.select(index("Other 2"), true);
-        assert_eq!(m.input(Code::Button(52)).unwrap().0, "map: Other 2 = button 52");
+        assert_eq!(
+            m.input(Code::Button(52)).unwrap().0,
+            "map: Other 2 = button 52"
+        );
         assert!(m.summary().contains("Other 1 CC 30, Other 2 button 52"));
     }
 
@@ -404,17 +509,38 @@ mod tests {
         assert_ne!(m.selected, index("TC"));
         m.select(index("PAD BANK A/E"), true);
         let (_, learned) = m.input(Code::Button(35)).unwrap();
-        assert_eq!(learned, Some(Learned { job: Job::Bank(0), code: Some(35) }));
+        assert_eq!(
+            learned,
+            Some(Learned {
+                job: Job::Bank(0),
+                code: Some(35)
+            })
+        );
         m.select(index("PAD BANK A/E"), false);
-        assert_eq!(m.clear(), Some(("map: PAD BANK A/E cleared".to_string(), Learned { job: Job::Bank(0), code: None })));
+        assert_eq!(
+            m.clear(),
+            Some((
+                "map: PAD BANK A/E cleared".to_string(),
+                Learned {
+                    job: Job::Bank(0),
+                    code: None
+                }
+            ))
+        );
         m.know(index("STOP"), Some(button::STOP));
         m.select(index("STOP"), false);
         assert_eq!(m.clear(), None);
         // A measured button sending something else keeps its constant.
         m.select(index("PLAY"), true);
         let (line, learned) = m.input(Code::Button(99)).unwrap();
-        assert!(line.contains("measured as button 82 (kept)") && learned.is_none(), "{line}");
+        assert!(
+            line.contains("measured as button 82 (kept)") && learned.is_none(),
+            "{line}"
+        );
         let s = m.summary();
-        assert!(s.starts_with("map summary: 1 found") && s.contains("skipped: TC"), "{s}");
+        assert!(
+            s.starts_with("map summary: 1 found") && s.contains("skipped: TC"),
+            "{s}"
+        );
     }
 }

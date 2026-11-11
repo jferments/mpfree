@@ -27,7 +27,10 @@
 //! every [`CTRL`] frames aligned to the absolute frame, with operator gains
 //! ramped across each step, so the output does not depend on the block size.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs, PressureMode, PressureShape, Smooth, Timed};
+use mpfree_node::{
+    Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
+    PressureMode, PressureShape, Smooth, Timed,
+};
 
 use crate::dsp::{note_hz, Rng};
 use crate::fm_params::*;
@@ -47,7 +50,11 @@ const VOICE_GAIN: f32 = 0.25;
 /// The DX7's envelope rates are defined at this sample rate.
 const EG_RATE: f32 = 44_100.0;
 
-static INFO: NodeInfo = NodeInfo { id: "mpfree.fm", name: "FM", kind: Kind::Instrument };
+static INFO: NodeInfo = NodeInfo {
+    id: "mpfree.fm",
+    name: "FM",
+    kind: Kind::Instrument,
+};
 
 // ---------------------------------------------------------------- algorithms
 
@@ -61,7 +68,10 @@ pub struct Algorithm {
 }
 
 const fn alg(edges: &'static [(u8, u8)], fb_from: u8, fb_to: u8) -> Algorithm {
-    Algorithm { edges, feedback: (fb_from, fb_to) }
+    Algorithm {
+        edges,
+        feedback: (fb_from, fb_to),
+    }
 }
 
 const A1: &[(u8, u8)] = &[(2, 1), (4, 3), (5, 4), (6, 5)];
@@ -129,8 +139,15 @@ impl Route {
         for &(from, to) in a.edges {
             targets[usize::from(from) - 1] |= 1 << (to - 1);
         }
-        let carriers = (0..6).filter(|&j| targets[j] == 0).fold(0u8, |m, j| m | 1 << j);
-        Route { targets, carriers, fb_from: usize::from(a.feedback.0) - 1, fb_to: usize::from(a.feedback.1) - 1 }
+        let carriers = (0..6)
+            .filter(|&j| targets[j] == 0)
+            .fold(0u8, |m, j| m | 1 << j);
+        Route {
+            targets,
+            carriers,
+            fb_from: usize::from(a.feedback.0) - 1,
+            fb_to: usize::from(a.feedback.1) - 1,
+        }
     }
 }
 
@@ -138,22 +155,34 @@ impl Route {
 
 /// Output level 0 to 99 on the DX7's internal 0 to 127 scale.
 pub fn scale_level(level: u8) -> i32 {
-    const LOW: [u8; 20] = [0, 5, 9, 13, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 42, 43, 45, 46];
+    const LOW: [u8; 20] = [
+        0, 5, 9, 13, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 42, 43, 45, 46,
+    ];
     let l = level.min(99);
-    if l >= 20 { i32::from(l) + 28 } else { i32::from(LOW[usize::from(l)]) }
+    if l >= 20 {
+        i32::from(l) + 28
+    } else {
+        i32::from(LOW[usize::from(l)])
+    }
 }
 
 /// Keyboard level scaling: how much a curve adds (or takes away) `group`
 /// thirds of an octave from the break point, at depth 0 to 99.
 fn scale_curve(group: i32, depth: i32, curve: u8) -> i32 {
-    const EXP: [i32; 33] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110,
-                            126, 142, 158, 174, 190, 206, 222, 238, 250];
+    const EXP: [i32; 33] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110, 126,
+        142, 158, 174, 190, 206, 222, 238, 250,
+    ];
     let s = if curve == 0 || curve == 3 {
         (group * depth * 329) >> 12
     } else {
         (EXP[group.clamp(0, 32) as usize] * depth * 329) >> 15
     };
-    if curve < 2 { -s } else { s }
+    if curve < 2 {
+        -s
+    } else {
+        s
+    }
 }
 
 /// Keyboard level scaling for a note, on the 0 to 127 scale.
@@ -171,9 +200,10 @@ pub fn scale_keyboard(note: u8, brk: u8, ld: u8, rd: u8, lc: u8, rc: u8) -> i32 
 /// sensitivity 0 to 7. Full velocity lifts a sensitive operator a little.
 pub fn scale_velocity(velocity: u8, sens: u8) -> i32 {
     const CURVE: [u8; 64] = [
-        0, 70, 86, 97, 106, 114, 121, 126, 132, 138, 142, 148, 152, 156, 160, 163, 166, 170, 173, 174, 178, 181,
-        184, 186, 189, 190, 194, 196, 198, 200, 202, 205, 206, 209, 211, 214, 216, 218, 220, 222, 224, 225, 227,
-        229, 230, 232, 233, 235, 237, 238, 240, 241, 242, 243, 244, 246, 246, 248, 249, 250, 251, 252, 253, 254,
+        0, 70, 86, 97, 106, 114, 121, 126, 132, 138, 142, 148, 152, 156, 160, 163, 166, 170, 173,
+        174, 178, 181, 184, 186, 189, 190, 194, 196, 198, 200, 202, 205, 206, 209, 211, 214, 216,
+        218, 220, 222, 224, 225, 227, 229, 230, 232, 233, 235, 237, 238, 240, 241, 242, 243, 244,
+        246, 246, 248, 249, 250, 251, 252, 253, 254,
     ];
     let v = i32::from(CURVE[usize::from(velocity.min(127) >> 1)]) - 239;
     ((i32::from(sens.min(7)) * v + 7) >> 3) << 4
@@ -190,7 +220,11 @@ pub fn op_freq(pitch: f32, fixed: bool, coarse: u8, fine: u8, detune: i8) -> f32
     if fixed {
         return 10f32.powf(f32::from(coarse & 3) + f32::from(fine.min(99)) / 100.0);
     }
-    let ratio = if coarse == 0 { 0.5 } else { f32::from(coarse.min(31)) };
+    let ratio = if coarse == 0 {
+        0.5
+    } else {
+        f32::from(coarse.min(31))
+    };
     let ratio = ratio * (1.0 + f32::from(fine.min(99)) / 100.0);
     // Detune: about a cent a step.
     note_hz(pitch + f32::from(detune.clamp(-7, 7)) / 100.0) * ratio
@@ -198,9 +232,23 @@ pub fn op_freq(pitch: f32, fixed: bool, coarse: u8, fine: u8, detune: i8) -> f32
 
 /// LFO speed 0 to 99 in Hz (about 0.06 to 49 Hz).
 pub fn lfo_hz(speed: u8) -> f32 {
-    const PTS: [(f32, f32); 15] = [(0.0, 0.062), (5.0, 0.27), (10.0, 0.58), (15.0, 1.0), (20.0, 1.6), (25.0, 2.6),
-        (30.0, 3.9), (35.0, 5.2), (40.0, 6.5), (50.0, 9.6), (60.0, 13.8), (70.0, 19.6), (80.0, 27.5), (90.0, 37.5),
-        (99.0, 49.3)];
+    const PTS: [(f32, f32); 15] = [
+        (0.0, 0.062),
+        (5.0, 0.27),
+        (10.0, 0.58),
+        (15.0, 1.0),
+        (20.0, 1.6),
+        (25.0, 2.6),
+        (30.0, 3.9),
+        (35.0, 5.2),
+        (40.0, 6.5),
+        (50.0, 9.6),
+        (60.0, 13.8),
+        (70.0, 19.6),
+        (80.0, 27.5),
+        (90.0, 37.5),
+        (99.0, 49.3),
+    ];
     interp(&PTS, f32::from(speed.min(99)))
 }
 
@@ -220,7 +268,14 @@ pub fn peg_octaves(level: u8) -> f32 {
 
 /// Pitch envelope rate 0 to 99 in octaves per second.
 pub fn peg_rate(rate: u8) -> f32 {
-    const PTS: [(f32, f32); 6] = [(0.0, 1.0), (25.0, 14.0), (50.0, 39.0), (75.0, 88.0), (90.0, 165.0), (99.0, 254.0)];
+    const PTS: [(f32, f32); 6] = [
+        (0.0, 1.0),
+        (25.0, 14.0),
+        (50.0, 39.0),
+        (75.0, 88.0),
+        (90.0, 165.0),
+        (99.0, 254.0),
+    ];
     interp(&PTS, f32::from(rate.min(99))) * 1.502 / 32.0
 }
 
@@ -325,7 +380,11 @@ impl DxEnv {
 
     /// The gain at a level, 1.0 at full.
     pub fn gain(level: f32) -> f32 {
-        if level <= FLOOR { 0.0 } else { ((level - FULL) / 256.0).exp2() }
+        if level <= FLOOR {
+            0.0
+        } else {
+            ((level - FULL) / 256.0).exp2()
+        }
     }
 
     /// Frames (at 44.1 kHz) the current stage takes from here, once
@@ -363,7 +422,13 @@ pub fn env_stages(rates: &[u8; 4], levels: &[u8; 4]) -> [Vec<(f32, f32)>; 4] {
     let rest = ((scale_level(levels[3]) >> 1) << 6) as f32 + out - 4256.0;
     e.level = rest.max(FLOOR);
     e.key_on();
-    let norm = |l: f32| if l <= FLOOR { 0.0 } else { (l / FULL).clamp(0.0, 1.0) };
+    let norm = |l: f32| {
+        if l <= FLOOR {
+            0.0
+        } else {
+            (l / FULL).clamp(0.0, 1.0)
+        }
+    };
     let mut stages: [Vec<(f32, f32)>; 4] = Default::default();
     for (k, pts) in stages.iter_mut().enumerate() {
         if k == 3 {
@@ -581,7 +646,9 @@ impl Fm {
         for p in PARAMS.iter() {
             values[p.id as usize] = p.default;
         }
-        let sine = (0..=SIN_N).map(|i| (i as f64 / SIN_N as f64 * std::f64::consts::TAU).sin() as f32).collect();
+        let sine = (0..=SIN_N)
+            .map(|i| (i as f64 / SIN_N as f64 * std::f64::consts::TAU).sin() as f32)
+            .collect();
         let mut s = Fm {
             rate,
             values,
@@ -638,7 +705,10 @@ impl Fm {
 
     /// Voices sounding or fading.
     pub fn active_voices(&self) -> usize {
-        self.voices.iter().filter(|v| v.state != State::Free).count()
+        self.voices
+            .iter()
+            .filter(|v| v.state != State::Free)
+            .count()
     }
 
     /// The pressure each sounding voice uses now (0 to 1), in voice order,
@@ -659,10 +729,17 @@ impl Fm {
     fn update_pressure(&mut self) {
         let shape = PressureShape::from_params(PRESS_BASE, |id| self.values[id as usize]);
         self.press_c = shape.coefs(self.rate as f32 / CTRL as f32);
-        let slots: [Slot; 4] = std::array::from_fn(|n| Slot { target: self.v(press_target(n)) as u8, depth: self.v(press_depth(n)) / 100.0 });
+        let slots: [Slot; 4] = std::array::from_fn(|n| Slot {
+            target: self.v(press_target(n)) as u8,
+            depth: self.v(press_depth(n)) / 100.0,
+        });
         // Off: pressure does nothing, and a level swell plays at the preset's
         // full level (not at its resting dip).
-        self.depths = if shape.mode == PressureMode::Off { Depths::default() } else { Depths::from_slots(&slots) };
+        self.depths = if shape.mode == PressureMode::Off {
+            Depths::default()
+        } else {
+            Depths::from_slots(&slots)
+        };
     }
 
     fn v(&self, id: u16) -> f32 {
@@ -696,7 +773,11 @@ impl Fm {
         let lvl = self.v(LEVEL);
         let route = Route::new(self.v(ALGORITHM) as usize);
         let trim = 1.0 / (route.carriers.count_ones().max(1) as f32).sqrt();
-        self.out.target = if lvl <= -60.0 { 0.0 } else { 10f32.powf(lvl / 20.0) * trim };
+        self.out.target = if lvl <= -60.0 {
+            0.0
+        } else {
+            10f32.powf(lvl / 20.0) * trim
+        };
         if self.voices.iter().all(|v| v.state == State::Free) {
             // Nothing sounds, so nothing can click: take the new level at once.
             self.out.snap(self.out.target);
@@ -757,7 +838,11 @@ impl Fm {
             }
             0
         } else {
-            match self.voices.iter().position(|v| v.sounding() && v.note == note) {
+            match self
+                .voices
+                .iter()
+                .position(|v| v.sounding() && v.note == note)
+            {
                 Some(i) => i,
                 None => {
                     let sounding = self.voices.iter().filter(|v| v.sounding()).count();
@@ -767,8 +852,11 @@ impl Fm {
                     match self.voices.iter().position(|v| v.state == State::Free) {
                         Some(i) => i,
                         None => {
-                            let Some(i) = (0..POOL).min_by(|&a, &b| self.voices[a].kill_gain.total_cmp(&self.voices[b].kill_gain))
-                            else {
+                            let Some(i) = (0..POOL).min_by(|&a, &b| {
+                                self.voices[a]
+                                    .kill_gain
+                                    .total_cmp(&self.voices[b].kill_gain)
+                            }) else {
                                 self.dropped += 1;
                                 return;
                             };
@@ -808,7 +896,11 @@ impl Fm {
         let rel = (0..POOL)
             .filter(|&i| self.voices[i].state == State::Release)
             .min_by(|&a, &b| self.voice_level(a).total_cmp(&self.voice_level(b)));
-        let victim = rel.or_else(|| (0..POOL).filter(|&i| self.voices[i].state == State::On).min_by_key(|&i| self.voices[i].age));
+        let victim = rel.or_else(|| {
+            (0..POOL)
+                .filter(|&i| self.voices[i].state == State::On)
+                .min_by_key(|&i| self.voices[i].age)
+        });
         if let Some(i) = victim {
             let n = (KILL_MS * 0.001 * self.rate as f32).max(1.0);
             let v = &mut self.voices[i];
@@ -821,7 +913,10 @@ impl Fm {
     /// A voice's loudest carrier gain.
     fn voice_level(&self, i: usize) -> f32 {
         let c = self.patch.route.carriers;
-        (0..6).filter(|j| c & (1 << j) != 0).map(|j| self.voices[i].ops[j].g).fold(0.0, f32::max)
+        (0..6)
+            .filter(|j| c & (1 << j) != 0)
+            .map(|j| self.voices[i].ops[j].g)
+            .fold(0.0, f32::max)
     }
 
     fn stack_remove(&mut self, note: u8) {
@@ -884,7 +979,13 @@ impl Fm {
                     }
                 }
             }
-            NodeEvent::Bend { value } => self.bend.target = if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 },
+            NodeEvent::Bend { value } => {
+                self.bend.target = if value.is_finite() {
+                    value.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                }
+            }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
         }
@@ -899,7 +1000,13 @@ impl Fm {
         // Pressure: the chord (Highest mode) aims before the voices step.
         let c = &self.press_c;
         let chord = if c.mode == PressureMode::Highest {
-            self.chord.step(c, self.voices.iter().filter(|v| v.sounding()).map(|v| (v.state == State::On, v.press.aim(c))))
+            self.chord.step(
+                c,
+                self.voices
+                    .iter()
+                    .filter(|v| v.sounding())
+                    .map(|v| (v.state == State::On, v.press.aim(c))),
+            )
         } else {
             0.0
         };
@@ -918,23 +1025,40 @@ impl Fm {
         // LFO: phase, wave, and the delay's fade-in. Pressure on LFO rate
         // follows the highest pressure (the LFO is shared).
         let prev = self.lfo_phase;
-        let speed = lfo_hz(self.patch.lfo_speed) * (self.depths.get(target::LFO_RATE) * 2.0 * top).exp2();
+        let speed =
+            lfo_hz(self.patch.lfo_speed) * (self.depths.get(target::LFO_RATE) * 2.0 * top).exp2();
         self.lfo_phase = (self.lfo_phase + speed * secs).fract();
         if self.lfo_phase < prev {
             self.lfo_held = self.rng.bipolar();
         }
         let t = self.lfo_phase;
         let wave = match self.patch.lfo_wave {
-            0 => if t < 0.5 { 4.0 * t - 1.0 } else { 3.0 - 4.0 * t },
+            0 => {
+                if t < 0.5 {
+                    4.0 * t - 1.0
+                } else {
+                    3.0 - 4.0 * t
+                }
+            }
             1 => 1.0 - 2.0 * t,
             2 => 2.0 * t - 1.0,
-            3 => if t < 0.5 { 1.0 } else { -1.0 },
+            3 => {
+                if t < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             4 => (std::f32::consts::TAU * t).sin(),
             _ => self.lfo_held,
         };
         self.lfo_time += secs;
         let d = 5.0 * (f32::from(self.patch.lfo_delay) / 99.0).powf(2.5);
-        let fade = if d <= 0.0 { 1.0 } else { ((self.lfo_time - 0.5 * d) / (0.5 * d)).clamp(0.0, 1.0) };
+        let fade = if d <= 0.0 {
+            1.0
+        } else {
+            ((self.lfo_time - 0.5 * d) / (0.5 * d)).clamp(0.0, 1.0)
+        };
         self.lfo_raw = wave;
         self.lfo_value = wave * fade;
         for i in 0..POOL {
@@ -957,9 +1081,18 @@ impl Fm {
         let d = self.depths;
         let v = &mut self.voices[i];
         let press = v.pv;
-        let peg = if advance { v.peg.run(secs, &p.peg_rates, &p.peg_levels) } else { v.peg.level };
-        let vib = lfo * f32::from(p.pmd) / 99.0 * PMS_SEMIS[usize::from(p.pms.min(7))] + raw * press * d.get(target::VIBRATO);
-        let pitch = f32::from(v.note) + p.transpose + peg * 12.0 + vib + press * d.get(target::PITCH) * 12.0;
+        let peg = if advance {
+            v.peg.run(secs, &p.peg_rates, &p.peg_levels)
+        } else {
+            v.peg.level
+        };
+        let vib = lfo * f32::from(p.pmd) / 99.0 * PMS_SEMIS[usize::from(p.pms.min(7))]
+            + raw * press * d.get(target::VIBRATO);
+        let pitch = f32::from(v.note)
+            + p.transpose
+            + peg * 12.0
+            + vib
+            + press * d.get(target::PITCH) * 12.0;
         let am = (1.0 - lfo) * 0.5 * f32::from(p.amd) / 99.0;
         // Carriers: the swell and tremolo. Modulators: brightness, in level
         // units (32 to an output level step, 0.75 dB).
@@ -978,10 +1111,15 @@ impl Fm {
             };
             o.dphase = ((hz / rate).clamp(0.0, 0.49) * 4_294_967_296.0) as u32;
             let kbd = scale_keyboard(v.note, q.brk, q.ld, q.rd, q.lc, q.rc);
-            let outlevel = (((scale_level(q.out) + kbd).clamp(0, 127)) << 5) + scale_velocity(v.velocity, q.vel);
+            let outlevel = (((scale_level(q.out) + kbd).clamp(0, 127)) << 5)
+                + scale_velocity(v.velocity, q.vel);
             let outlevel = outlevel as f32;
             let rs = scale_rate(v.note, q.rs);
-            let level = if advance { o.env.run(n, &q.rates, &q.levels, outlevel, rs) } else { o.env.level };
+            let level = if advance {
+                o.env.run(n, &q.rates, &q.levels, outlevel, rs)
+            } else {
+                o.env.level
+            };
             let level = level - AMS_UNITS[usize::from(q.ams.min(3))] * am;
             let carrier = p.route.carriers & (1 << j) != 0;
             let target = if !(q.on && q.out > 0) {

@@ -23,6 +23,11 @@
 //! goes on as overdub. Erased notes are not played; [`Player::erased`]
 //! names them for the control thread to remove (`Clip::remove_note`).
 //!
+//! **Chance.** A note with a chance below 100 % rolls each time it comes
+//! round. The roll is a hash of the note and the absolute frame it would
+//! play on, so it is the same for any period size, yet differs on every
+//! pass, transport loops included.
+//!
 //! **Cues** (see [`crate::view`]). A track's waiting cue starts on the
 //! first bar line the playhead plays: the clip so far plays the ticks
 //! before it, its notes still sounding end on it, and the cued clip plays
@@ -62,8 +67,13 @@ pub struct Erased {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    NoteOn { note: u8, velocity: u8 },
-    NoteOff { note: u8 },
+    NoteOn {
+        note: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        note: u8,
+    },
     /// Cut every sound (panic).
     AllOff,
 }
@@ -98,6 +108,8 @@ pub struct Stats {
     pub late_offs: u64,
     /// Notes replace recording erased.
     pub erased: u64,
+    /// Notes their chance left out.
+    pub skipped: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,10 +130,28 @@ struct Start {
     note: u8,
     velocity: u8,
     off: Tick,
+    /// Percent; below 100 the note rolls with `key`.
+    chance: u8,
+    key: u64,
 }
 
-const NO_SOUND: Sounding = Sounding { track: 0, dest: 0, note: 0, off: 0, seq: 0 };
-const NO_START: Start = Start { tick: 0, track: 0, dest: 0, note: 0, velocity: 0, off: 0 };
+const NO_SOUND: Sounding = Sounding {
+    track: 0,
+    dest: 0,
+    note: 0,
+    off: 0,
+    seq: 0,
+};
+const NO_START: Start = Start {
+    tick: 0,
+    track: 0,
+    dest: 0,
+    note: 0,
+    velocity: 0,
+    off: 0,
+    chance: 100,
+    key: 0,
+};
 
 pub struct Player {
     sounding: [Sounding; MAX_ACTIVE],
@@ -144,7 +174,18 @@ pub struct Player {
     n_started: usize,
 }
 
-const NO_ERASED: Erased = Erased { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
+const NO_ERASED: Erased = Erased {
+    track: 0,
+    slot: 0,
+    note: Note {
+        tick: 0,
+        len: 1,
+        note: 0,
+        velocity: 1,
+        chance: 100,
+    },
+    take: 0,
+};
 
 impl Default for Player {
     fn default() -> Self {
@@ -167,7 +208,12 @@ impl Player {
             replaced: false,
             take: 0,
             switches: Switches::new(),
-            started: [Started { track: 0, slot: None, at: 0, origin: 0 }; MAX_TRACKS],
+            started: [Started {
+                track: 0,
+                slot: None,
+                at: 0,
+                origin: 0,
+            }; MAX_TRACKS],
             n_started: 0,
         }
     }
@@ -226,14 +272,25 @@ impl Player {
             Mark::RecordOff { .. } => self.replacing = None,
             _ => {}
         }
-        if matches!(m.mark, Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. }) {
+        if matches!(
+            m.mark,
+            Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. }
+        ) {
             self.replacing = None;
         }
         match m.mark {
-            Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => self.end_all(m.offset, m.frame, out),
+            Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => {
+                self.end_all(m.offset, m.frame, out)
+            }
             Mark::Panic => {
                 self.end_all(m.offset, m.frame, out);
-                out.send(Out { offset: m.offset, frame: m.frame, track: ALL, dest: ALL, event: Event::AllOff });
+                out.send(Out {
+                    offset: m.offset,
+                    frame: m.frame,
+                    track: ALL,
+                    dest: ALL,
+                    event: Event::AllOff,
+                });
             }
             _ => {}
         }
@@ -242,7 +299,13 @@ impl Player {
     /// End every sounding note, in the order they started.
     fn end_all(&mut self, offset: u32, frame: u64, out: &mut impl Sink) {
         for s in &self.sounding[..self.n_sounding] {
-            out.send(Out { offset, frame, track: s.track, dest: s.dest, event: Event::NoteOff { note: s.note } });
+            out.send(Out {
+                offset,
+                frame,
+                track: s.track,
+                dest: s.dest,
+                event: Event::NoteOff { note: s.note },
+            });
         }
         self.n_sounding = 0;
     }
@@ -256,19 +319,36 @@ impl Player {
         self.n_starts = 0;
         let bar = span.meter.bar_ticks();
         for (i, track) in view.tracks.iter().enumerate() {
-            let replace = if view.armed == Some(i) { self.replacing } else { None };
+            let replace = if view.armed == Some(i) {
+                self.replacing
+            } else {
+                None
+            };
             // A cue starting in this span: the clip so far plays up to it.
             let switch = self.switches.due(view, i, &ticks, bar);
             let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
             if let Some((clip, origin)) = self.switches.playing(view, i) {
                 if !(track.mute && replace.is_none()) {
-                    self.collect(clip, origin, i as u16, track.dest, span.swing, &before, replace, !track.mute, switch);
+                    self.collect(
+                        clip,
+                        origin,
+                        i as u16,
+                        track.dest,
+                        span.swing,
+                        &before,
+                        replace,
+                        !track.mute,
+                        switch,
+                    );
                 }
             }
             let Some(at) = switch else { continue };
             // A track starts one cue a call at most, and there are at most
             // MAX_TRACKS tracks, so this always fits.
-            if let (Some(s), Some(slot)) = (self.switches.start(view, i, at), self.started.get_mut(self.n_started)) {
+            if let (Some(s), Some(slot)) = (
+                self.switches.start(view, i, at),
+                self.started.get_mut(self.n_started),
+            ) {
                 *slot = s;
                 self.n_started += 1;
             }
@@ -281,7 +361,17 @@ impl Player {
                 self.replacing = None;
             }
             if let (Some((clip, origin)), false) = (self.switches.playing(view, i), track.mute) {
-                self.collect(clip, origin, i as u16, track.dest, span.swing, &(at..ticks.end), None, true, None);
+                self.collect(
+                    clip,
+                    origin,
+                    i as u16,
+                    track.dest,
+                    span.swing,
+                    &(at..ticks.end),
+                    None,
+                    true,
+                    None,
+                );
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -302,8 +392,18 @@ impl Player {
             // Notes ending on or before this tick end first.
             self.end_until(s.tick, first, span, out);
             let (offset, frame) = place(span, s.tick);
+            if s.chance < 100 && mix(s.key ^ frame) % 100 >= u64::from(s.chance) {
+                self.stats.skipped += 1;
+                continue;
+            }
             if let Some(j) = self.find(s.track, s.dest, s.note) {
-                out.send(Out { offset, frame, track: s.track, dest: s.dest, event: Event::NoteOff { note: s.note } });
+                out.send(Out {
+                    offset,
+                    frame,
+                    track: s.track,
+                    dest: s.dest,
+                    event: Event::NoteOff { note: s.note },
+                });
                 self.remove(j);
             }
             if self.n_sounding == MAX_ACTIVE {
@@ -315,10 +415,18 @@ impl Player {
                 frame,
                 track: s.track,
                 dest: s.dest,
-                event: Event::NoteOn { note: s.note, velocity: s.velocity },
+                event: Event::NoteOn {
+                    note: s.note,
+                    velocity: s.velocity,
+                },
             });
-            self.sounding[self.n_sounding] =
-                Sounding { track: s.track, dest: s.dest, note: s.note, off: s.off, seq: self.seq };
+            self.sounding[self.n_sounding] = Sounding {
+                track: s.track,
+                dest: s.dest,
+                note: s.note,
+                off: s.off,
+                seq: self.seq,
+            };
             self.n_sounding += 1;
             self.seq += 1;
             self.stats.notes += 1;
@@ -394,7 +502,12 @@ impl Player {
                     if self.n_erased == MAX_ERASED {
                         self.stats.dropped += 1;
                     } else {
-                        self.erased[self.n_erased] = Erased { track: usize::from(track), slot: clip.slot, note: n.src, take: self.take };
+                        self.erased[self.n_erased] = Erased {
+                            track: usize::from(track),
+                            slot: clip.slot,
+                            note: n.src,
+                            take: self.take,
+                        };
                         self.n_erased += 1;
                         self.stats.erased += 1;
                     }
@@ -409,7 +522,18 @@ impl Player {
                     self.stats.dropped += 1;
                     continue;
                 }
-                self.starts[self.n_starts] = Start { tick, track, dest, note: n.note, velocity: n.velocity, off };
+                let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64)
+                    ^ u64::from(n.note);
+                self.starts[self.n_starts] = Start {
+                    tick,
+                    track,
+                    dest,
+                    note: n.note,
+                    velocity: n.velocity,
+                    off,
+                    chance: n.src.chance,
+                    key,
+                };
                 self.n_starts += 1;
             }
             pass += 1.0;
@@ -422,7 +546,11 @@ impl Player {
         loop {
             let mut best: Option<usize> = None;
             for (i, s) in self.sounding[..self.n_sounding].iter().enumerate() {
-                if s.off <= tick && best.is_none_or(|b| (s.off, s.seq) < (self.sounding[b].off, self.sounding[b].seq)) {
+                if s.off <= tick
+                    && best.is_none_or(|b| {
+                        (s.off, s.seq) < (self.sounding[b].off, self.sounding[b].seq)
+                    })
+                {
                     best = Some(i);
                 }
             }
@@ -435,13 +563,21 @@ impl Player {
                 s.off
             };
             let (offset, frame) = place(span, at);
-            out.send(Out { offset, frame, track: s.track, dest: s.dest, event: Event::NoteOff { note: s.note } });
+            out.send(Out {
+                offset,
+                frame,
+                track: s.track,
+                dest: s.dest,
+                event: Event::NoteOff { note: s.note },
+            });
             self.remove(i);
         }
     }
 
     fn find(&self, track: u16, dest: DestId, note: u8) -> Option<usize> {
-        self.sounding[..self.n_sounding].iter().position(|s| s.track == track && s.dest == dest && s.note == note)
+        self.sounding[..self.n_sounding]
+            .iter()
+            .position(|s| s.track == track && s.dest == dest && s.note == note)
     }
 
     /// Remove keeping the start order.
@@ -451,8 +587,18 @@ impl Player {
     }
 }
 
+/// A 64-bit mix (splitmix64's finaliser), for the chance rolls.
+fn mix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 /// Offset in the period and absolute frame of a tick in a span.
 fn place(span: &Span, tick: Tick) -> (u32, u64) {
-    let frame = span.frame_of(tick as f64).clamp(span.frame, span.frame + u64::from(span.len) - 1);
+    let frame = span
+        .frame_of(tick as f64)
+        .clamp(span.frame, span.frame + u64::from(span.len) - 1);
     (span.offset + (frame - span.frame) as u32, frame)
 }

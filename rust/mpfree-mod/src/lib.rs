@@ -62,10 +62,16 @@ pub mod lfo;
 pub mod text;
 
 pub use bind::{Bank, Binding, Bindings, QLinkCard, Scope, Write, KNOBS};
-pub use engine::{source_info, MacroMap, MapCurve, ModEngine, ModError, ModEvent, ModStats, ModTimed, Row, Source, DEFAULT_TICK, FOLLOWERS, HOST_SOURCES, LFOS, MACROS, MACRO_TARGETS, MAX_ROWS, MAX_TARGETS};
+pub use engine::{
+    source_info, MacroMap, MapCurve, ModEngine, ModError, ModEvent, ModStats, ModTimed, Row,
+    Source, DEFAULT_TICK, FOLLOWERS, HOST_SOURCES, LFOS, MACROS, MACRO_TARGETS, MAX_ROWS,
+    MAX_TARGETS,
+};
 pub use follow::Follower;
 pub use lfo::{Lfo, Shape};
 pub use text::value_text;
 
 /// A macro's description, for a knob card.
-pub fn macro_info(m: usize) -> mpfree_node::ParamInfo { engine::macro_info(m) }
+pub fn macro_info(m: usize) -> mpfree_node::ParamInfo {
+    engine::macro_info(m)
+}

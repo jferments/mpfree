@@ -12,7 +12,12 @@ pub struct Color {
 impl Color {
     /// An opaque colour from 0xRRGGBB.
     pub const fn rgb(hex: u32) -> Color {
-        Color { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8, a: 255 }
+        Color {
+            r: (hex >> 16) as u8,
+            g: (hex >> 8) as u8,
+            b: hex as u8,
+            a: 255,
+        }
     }
 
     pub const fn with_alpha(self, a: u8) -> Color {
@@ -26,14 +31,24 @@ impl Color {
             let v = if v > 63 { 63 } else { v };
             ((v as u32 * 255 + 31) / 63) as u8
         }
-        Color { r: up(rgb[0]), g: up(rgb[1]), b: up(rgb[2]), a: 255 }
+        Color {
+            r: up(rgb[0]),
+            g: up(rgb[1]),
+            b: up(rgb[2]),
+            a: 255,
+        }
     }
 
     /// `t` = 0 gives self, 1 gives `other` (alpha mixes too).
     pub fn mix(self, other: Color, t: f32) -> Color {
         let t = t.clamp(0.0, 1.0);
         let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
-        Color { r: m(self.r, other.r), g: m(self.g, other.g), b: m(self.b, other.b), a: m(self.a, other.a) }
+        Color {
+            r: m(self.r, other.r),
+            g: m(self.g, other.g),
+            b: m(self.b, other.b),
+            a: m(self.a, other.a),
+        }
     }
 
     /// 0x00RRGGBB, the framebuffer's XRGB8888 word (alpha dropped).
@@ -81,6 +96,9 @@ mod tests {
         let half = blend(0x000000, red, 128);
         assert!(((half >> 16) as i32 - 128).abs() <= 1, "{half:06X}");
         assert_eq!(blend(0x00FF00, red.with_alpha(0), 255), 0x00FF00);
-        assert_eq!(Color::rgb(0x000000).mix(Color::rgb(0xFFFFFF), 0.5), Color::rgb(0x808080));
+        assert_eq!(
+            Color::rgb(0x000000).mix(Color::rgb(0xFFFFFF), 0.5),
+            Color::rgb(0x808080)
+        );
     }
 }

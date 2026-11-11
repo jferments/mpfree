@@ -2,8 +2,10 @@
 //! (`mpfree-play`'s player and recorder), take undo and a metronome click,
 //! run in the audio loop.
 //!
-//! Each period the loop hands [`TimeHost::pad`] the pad notes it plays
-//! (after the arp, with their offsets), then calls [`TimeHost::period`]:
+//! Each period the loop first runs the transport ([`TimeHost::advance`]),
+//! so the arp can follow its clock ([`TimeHost::arp_clock`]), hands
+//! [`TimeHost::pad`] the pad notes it plays (after the arp, with their
+//! offsets), then calls [`TimeHost::period`]:
 //! the transport runs, the clips play their notes on the kit's pads through
 //! [`Pads`] (the sampler), the armed track records, and recorded and erased
 //! notes go into the clips and the take history. After the sampler renders,
@@ -23,7 +25,7 @@ use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::{Clip, Project, Track};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
-use mpfree_transport::{Block, Command, State, Transport};
+use mpfree_transport::{Block, Command, Mark, State, Transport};
 use std::f32::consts::TAU;
 
 /// Tracks in a new project.
@@ -89,7 +91,14 @@ const CLICK_MS: f32 = 15.0;
 
 impl Click {
     fn new(rate: u32) -> Click {
-        Click { rate: rate as f32, starts: [(0, false); 8], n: 0, phase: 0.0, freq: 0.0, env: 0.0 }
+        Click {
+            rate: rate as f32,
+            starts: [(0, false); 8],
+            n: 0,
+            phase: 0.0,
+            freq: 0.0,
+            env: 0.0,
+        }
     }
 
     fn schedule(&mut self, offset: u32, accent: bool) {
@@ -148,23 +157,57 @@ pub struct TimeHost {
     pub metronome: bool,
     /// The clips, launches or takes changed since [`TimeHost::take_changed`].
     changed: bool,
+    /// [`TimeHost::advance`] ran the transport for the coming period (and
+    /// whether it could).
+    advanced: Option<bool>,
+    /// A start or jump after the first span of the last period: the next
+    /// arp clock says it jumped.
+    jump_pending: bool,
 }
 
 impl TimeHost {
     /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
     /// armed.
     pub fn new(rate: u32, bpm: f64) -> Result<TimeHost, String> {
-        let transport = Box::new(Transport::new(rate, bpm).map_err(|e| format!("transport: {e:?}"))?);
+        let transport =
+            Box::new(Transport::new(rate, bpm).map_err(|e| format!("transport: {e:?}"))?);
         let mut project = Project::new();
         for i in 0..TRACKS {
-            project.tracks.push(Track::new(&format!("Track {}", i + 1), i as u16));
+            project
+                .tracks
+                .push(Track::new(&format!("Track {}", i + 1), i as u16));
         }
-        let blank = Out { offset: 0, frame: 0, track: 0, dest: 0, event: Event::AllOff };
-        let mut host = TimeHost { transport, player: Box::new(Player::new()), recorder: Box::new(Recorder::new()),
-                                  capture: Box::new(Capture::new()), pending: None, block: Box::new(Block::new()),
-                                  sink: Box::new(Collect { out: [blank; MAX_OUT], n: 0, dropped: 0 }),
-                                  view: PlayView::empty(), project, launches: Vec::new(), cues: Vec::new(), armed: Some(0),
-                                  takes: Takes::default(), click: Click::new(rate), metronome: true, changed: true };
+        let blank = Out {
+            offset: 0,
+            frame: 0,
+            track: 0,
+            dest: 0,
+            event: Event::AllOff,
+        };
+        let mut host = TimeHost {
+            transport,
+            player: Box::new(Player::new()),
+            recorder: Box::new(Recorder::new()),
+            capture: Box::new(Capture::new()),
+            pending: None,
+            block: Box::new(Block::new()),
+            sink: Box::new(Collect {
+                out: [blank; MAX_OUT],
+                n: 0,
+                dropped: 0,
+            }),
+            view: PlayView::empty(),
+            project,
+            launches: Vec::new(),
+            cues: Vec::new(),
+            armed: Some(0),
+            takes: Takes::default(),
+            click: Click::new(rate),
+            metronome: true,
+            changed: true,
+            advanced: None,
+            jump_pending: false,
+        };
         host.compile()?;
         Ok(host)
     }
@@ -172,8 +215,12 @@ impl TimeHost {
     fn compile(&mut self) -> Result<(), String> {
         // An undone capture takes its clip, and so its launch, away.
         let project = &self.project;
-        self.launches.retain(|l| project.clip(l.track, l.slot).is_some());
-        self.cues.retain(|c| c.slot.is_none_or(|slot| project.clip(c.track, slot).is_some()));
+        self.launches
+            .retain(|l| project.clip(l.track, l.slot).is_some());
+        self.cues.retain(|c| {
+            c.slot
+                .is_none_or(|slot| project.clip(c.track, slot).is_some())
+        });
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
@@ -237,7 +284,10 @@ impl TimeHost {
             TimeAction::Launch { .. } | TimeAction::StopClip(_) | TimeAction::Uncue(_) => {
                 // While the music plays, they wait for the next bar line.
                 let after = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
-                let before = (std::mem::replace(&mut self.launches, after.0), std::mem::replace(&mut self.cues, after.1));
+                let before = (
+                    std::mem::replace(&mut self.launches, after.0),
+                    std::mem::replace(&mut self.cues, after.1),
+                );
                 if let Err(e) = self.compile() {
                     (self.launches, self.cues) = before;
                     return Err(e);
@@ -254,13 +304,18 @@ impl TimeHost {
                 }
                 *s = Some(Clip::new(&format!("Clip {}", slot + 1), length));
                 self.armed = Some(track);
-                (self.launches, self.cues) = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
+                (self.launches, self.cues) =
+                    clips_after(&self.project, &self.launches, &self.cues, &a, &info);
                 self.compile()?;
                 // Record into it, unless already recording or counting in.
                 if !matches!(info.state, State::Recording | State::CountIn) {
                     self.command(Command::Record);
                 }
-                Ok(format!("new clip in slot {} of track {}, recording", slot + 1, track + 1))
+                Ok(format!(
+                    "new clip in slot {} of track {}, recording",
+                    slot + 1,
+                    track + 1
+                ))
             }
             TimeAction::Chip(_) => Ok(String::new()),
         }
@@ -276,12 +331,24 @@ impl TimeHost {
         }
         let phrase = self.capture.phrase().ok_or("capture: nothing played")?;
         let t = &self.transport;
-        let now = Now { position: t.position(), rolling: t.state().rolling(), meter: t.meter(),
-                        loop_range: t.loop_range() };
+        let now = Now {
+            position: t.position(),
+            rolling: t.state().rolling(),
+            meter: t.meter(),
+            loop_range: t.loop_range(),
+        };
         let track = self.armed.unwrap_or(0);
         let name = format!("Capture {}", self.takes.captures() + 1);
-        let k = keep(&phrase, &mut self.project, &self.launches, &mut self.takes, track, now, &name)
-            .map_err(|e| format!("capture: {e:?}"))?;
+        let k = keep(
+            &phrase,
+            &mut self.project,
+            &self.launches,
+            &mut self.takes,
+            track,
+            now,
+            &name,
+        )
+        .map_err(|e| format!("capture: {e:?}"))?;
         if let Some(l) = k.launch {
             self.launches.retain(|x| x.track != l.track);
             self.cues.retain(|x| x.track != l.track);
@@ -290,9 +357,19 @@ impl TimeHost {
         self.capture.mark_kept(phrase.id);
         self.pending = self.capture.pending();
         self.compile()?;
-        let into = if k.launch.is_some() { "new clip in" } else { "into the clip in" };
-        Ok(format!("capture {}: {} notes, {}, {into} slot {} of {}", k.take, k.notes, bars_label(k.bars),
-                   k.slot + 1, self.project.tracks[track].name))
+        let into = if k.launch.is_some() {
+            "new clip in"
+        } else {
+            "into the clip in"
+        };
+        Ok(format!(
+            "capture {}: {} notes, {}, {into} slot {} of {}",
+            k.take,
+            k.notes,
+            bars_label(k.bars),
+            k.slot + 1,
+            self.project.tracks[track].name
+        ))
     }
 
     /// A pad note played in the coming period, at `offset`: recorded into
@@ -303,9 +380,68 @@ impl TimeHost {
         self.capture.input(offset, event);
     }
 
+    /// Run the transport for the coming period, before the app's process,
+    /// so the arp can follow it ([`TimeHost::arp_clock`]).
+    /// [`TimeHost::period`] then plays and records on the same block.
+    pub fn advance(&mut self, frames: u32) -> bool {
+        let ok = self.transport.process(frames, &mut self.block);
+        self.advanced = Some(ok);
+        ok
+    }
+
+    /// The arp's clock for the coming period, from the first span of the
+    /// block [`TimeHost::advance`] made: None while stopped, so the arp
+    /// runs on its own tempo. The count-in counts as playing. `jumped` is
+    /// set by a start or jump before the first span, or by one later in the
+    /// last period (the arp follows the first span only, so it catches up
+    /// one period later).
+    // The arp thread's App::set_clock takes it: `app.set_clock(time.arp_clock())`
+    // after `time.advance` in the audio loop. Until that lands only tests call it.
+    pub fn arp_clock(&mut self) -> Option<mpfree_arp::Clock> {
+        let jump = |m: &Mark| {
+            matches!(
+                m,
+                Mark::Started { .. }
+                    | Mark::CountIn { .. }
+                    | Mark::Located { .. }
+                    | Mark::Looped { .. }
+            )
+        };
+        let first = self.block.spans().first().copied();
+        let first_offset = first.map_or(0, |s| s.offset);
+        let mut jumped = std::mem::take(&mut self.jump_pending);
+        for m in self.block.markers() {
+            if jump(&m.mark) {
+                if m.offset <= first_offset {
+                    jumped = true;
+                } else {
+                    self.jump_pending = true;
+                }
+            }
+        }
+        let span = first?;
+        if !span.state.rolling() {
+            return None;
+        }
+        Some(mpfree_arp::Clock {
+            anchor_tick: span.anchor_tick,
+            frames_since_anchor: span.frame.saturating_sub(span.anchor_frame),
+            bpm: span.bpm,
+            playing: true,
+            jumped,
+            swing: (span.swing.amount > 50).then_some((span.swing.grid, span.swing.amount)),
+            bar_ticks: u32::try_from(span.meter.bar_ticks()).unwrap_or(4 * mpfree_arp::PPQ),
+        })
+    }
+
     /// Run one period: the clips play into `pads`, the armed track records.
+    /// Runs the transport first unless [`TimeHost::advance`] already did.
     pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
-        if !self.transport.process(frames, &mut self.block) {
+        let ok = match self.advanced.take() {
+            Some(ok) => ok,
+            None => self.transport.process(frames, &mut self.block),
+        };
+        if !ok {
             return;
         }
         self.capture.process(&self.block);
@@ -317,7 +453,8 @@ impl TimeHost {
             self.changed = true;
         }
         self.sink.n = 0;
-        self.player.process(&self.view, &self.block, &mut *self.sink);
+        self.player
+            .process(&self.view, &self.block, &mut *self.sink);
         for o in &self.sink.out[..self.sink.n] {
             match o.event {
                 Event::NoteOn { note, velocity } => {
@@ -364,6 +501,17 @@ impl TimeHost {
         self.click.mix(left, right)
     }
 
+    /// The transport's description of the last period (for the looper).
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    /// The song position as bar.beat.tick, for log lines.
+    pub fn position_text(&self) -> String {
+        let t = &self.transport;
+        t.meter().position(t.position()).to_string()
+    }
+
     pub fn info(&self) -> TransportInfo {
         TransportInfo::of(&self.transport)
     }
@@ -375,7 +523,13 @@ impl TimeHost {
 
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
-        let mut st = TimeState::from_engine(self.info(), &self.project, &self.launches, self.armed, &self.takes);
+        let mut st = TimeState::from_engine(
+            self.info(),
+            &self.project,
+            &self.launches,
+            self.armed,
+            &self.takes,
+        );
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.cues = self.cues.clone();
         st
@@ -383,14 +537,23 @@ impl TimeHost {
 
     /// Notes lost because a table was full (should stay 0).
     pub fn dropped(&self) -> u64 {
-        self.sink.dropped + self.recorder.dropped() + self.player.stats().dropped + self.capture.dropped()
+        self.sink.dropped
+            + self.recorder.dropped()
+            + self.player.stats().dropped
+            + self.capture.dropped()
     }
 
     /// The time engine's part of the status line.
     pub fn describe(&self) -> String {
         let t = &self.transport;
-        format!("time: {:?} at {}, {:.1} BPM, {} takes, {} notes lost to full tables",
-                t.state(), t.meter().position(t.position()), t.bpm(), self.takes.done().len(), self.dropped())
+        format!(
+            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes lost to full tables",
+            t.state(),
+            t.meter().position(t.position()),
+            t.bpm(),
+            self.takes.done().len(),
+            self.dropped()
+        )
     }
 }
 
@@ -419,7 +582,8 @@ mod tests {
 
     impl Pads for Fake {
         fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
-            self.hits.push((self.frame + u64::from(offset), pad, velocity));
+            self.hits
+                .push((self.frame + u64::from(offset), pad, velocity));
             true
         }
         fn release_at(&mut self, _pad: usize, _offset: u32) {}
@@ -434,10 +598,19 @@ mod tests {
             let end = pads.frame + u64::from(PERIOD);
             for &(at, pad, v, held) in presses {
                 if (pads.frame..end).contains(&at) {
-                    h.pad((at - pads.frame) as u32, Event::NoteOn { note: pad, velocity: v });
+                    h.pad(
+                        (at - pads.frame) as u32,
+                        Event::NoteOn {
+                            note: pad,
+                            velocity: v,
+                        },
+                    );
                 }
                 if (pads.frame..end).contains(&(at + held)) {
-                    h.pad((at + held - pads.frame) as u32, Event::NoteOff { note: pad });
+                    h.pad(
+                        (at + held - pads.frame) as u32,
+                        Event::NoteOff { note: pad },
+                    );
                 }
             }
             h.period(PERIOD, pads);
@@ -448,23 +621,103 @@ mod tests {
     /// Frames per bar at 120 BPM.
     const BAR: u64 = 88_200;
 
+    /// The arp's clock follows the transport: None while stopped, the
+    /// transport's anchor while playing (a whole tick on an exact frame),
+    /// `jumped` once at the start and after a locate, and the swing.
+    #[test]
+    fn the_arp_clock_follows_the_transport() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert!(h.advance(PERIOD));
+        assert_eq!(h.arp_clock(), None, "stopped: the arp runs on its own");
+        h.period(PERIOD, &mut pads);
+        h.command(Command::Play);
+        let mut clocks = Vec::new();
+        for _ in 0..40 {
+            h.advance(PERIOD);
+            clocks.push(h.arp_clock().expect("playing"));
+            h.period(PERIOD, &mut pads);
+        }
+        assert!(
+            clocks[0].jumped && clocks[1..].iter().all(|c| !c.jumped),
+            "{clocks:?}"
+        );
+        for c in &clocks {
+            assert!(c.playing && c.bpm == 120.0 && c.bar_ticks == 3840 && c.swing.is_none());
+            // The anchor's tick and frame agree with the song position at the period's start.
+            let tick = c.anchor_tick as f64
+                + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE));
+            assert!(tick >= 0.0);
+        }
+        let k = clocks.len() - 1;
+        let at = |c: &mpfree_arp::Clock| {
+            c.anchor_tick as f64
+                + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE))
+        };
+        assert!(
+            (at(&clocks[k])
+                - at(&clocks[0])
+                - k as f64 * f64::from(PERIOD) * 960.0 * 2.0 / f64::from(RATE))
+            .abs()
+                < 1e-6
+        );
+        // A locate while playing: jumped once, from the new place.
+        h.command(Command::Locate(3840 * 4));
+        h.advance(PERIOD);
+        let c = h.arp_clock().unwrap();
+        assert!(c.jumped && (at(&c) - 15_360.0).abs() < 1e-6, "{c:?}");
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert!(!h.arp_clock().unwrap().jumped);
+        h.period(PERIOD, &mut pads);
+        // Swing on the transport goes to the arp.
+        h.command(Command::SetSwing(mpfree_transport::Swing {
+            grid: 240,
+            amount: 62,
+        }));
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock().unwrap().swing, Some((240, 62)));
+        h.period(PERIOD, &mut pads);
+        // Stopped again: None.
+        h.command(Command::Stop);
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock(), None);
+    }
+
     #[test]
     fn a_new_clip_records_the_pads_and_plays_them_back() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake::default();
         h.command(Command::SetLoop(Some((0, 2 * 3840))));
-        assert!(h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap().contains("recording"));
+        assert!(h
+            .act(TimeAction::NewClip { track: 2, slot: 0 })
+            .unwrap()
+            .contains("recording"));
         let st = h.state();
         assert_eq!(st.armed, Some(2));
-        assert_eq!(st.clip(2, 0).map(|c| c.length), Some(2 * 3840), "as long as the loop");
+        assert_eq!(
+            st.clip(2, 0).map(|c| c.length),
+            Some(2 * 3840),
+            "as long as the loop"
+        );
         // Record two hits in the first pass; the second pass plays them.
-        run(&mut h, &mut pads, 2 * BAR, &[(1000, 4, 100, 2000), (BAR + 500, 9, 80, 2000)]);
+        run(
+            &mut h,
+            &mut pads,
+            2 * BAR,
+            &[(1000, 4, 100, 2000), (BAR + 500, 9, 80, 2000)],
+        );
         assert_eq!(h.info().state, State::Recording);
         assert!(h.take_changed());
         let st = h.state();
         assert_eq!(st.done.len(), 1);
         assert_eq!(st.done[0].added, 2);
-        assert!(pads.hits.is_empty(), "nothing plays the notes back while they are being played");
+        assert!(
+            pads.hits.is_empty(),
+            "nothing plays the notes back while they are being played"
+        );
         run(&mut h, &mut pads, 4 * BAR, &[]);
         // Notes are kept in whole ticks (960 to a beat: 23 frames at 120 BPM).
         let back: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
@@ -492,7 +745,16 @@ mod tests {
         let mut pads = Fake::default();
         let one_bar = |name: &str, notes: &[(i64, u8)]| {
             let mut c = Clip::new(name, 3840);
-            c.notes = notes.iter().map(|&(tick, note)| mpfree_seq::Note { tick, len: 100, note, velocity: 100 }).collect();
+            c.notes = notes
+                .iter()
+                .map(|&(tick, note)| mpfree_seq::Note {
+                    tick,
+                    len: 100,
+                    note,
+                    velocity: 100,
+                    chance: 100,
+                })
+                .collect();
             c
         };
         h.project.tracks[0].slots[0] = Some(one_bar("A", &[(0, 4), (1920, 4)]));
@@ -504,12 +766,23 @@ mod tests {
         run(&mut h, &mut pads, BAR + BAR / 2, &[]);
         h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
         let st = h.state();
-        assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(0), 1), "B waits for bar 3");
+        assert_eq!(
+            (st.launch(0).map(|l| l.slot), st.cues.len()),
+            (Some(0), 1),
+            "B waits for bar 3"
+        );
         run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
         let st = h.state();
         assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(1), 0));
         let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
-        let want = [(0, 4), (BAR / 2, 4), (BAR, 4), (BAR + BAR / 2, 4), (2 * BAR, 9), (3 * BAR, 9)];
+        let want = [
+            (0, 4),
+            (BAR / 2, 4),
+            (BAR, 4),
+            (BAR + BAR / 2, 4),
+            (2 * BAR, 9),
+            (3 * BAR, 9),
+        ];
         assert_eq!(hits.len(), want.len(), "{hits:?}");
         for ((f, p), (at, pad)) in hits.iter().zip(want) {
             assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
@@ -524,20 +797,39 @@ mod tests {
     fn capture_keeps_what_was_played_without_recording() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake::default();
-        assert_eq!(h.act(TimeAction::Capture).unwrap(), "capture: nothing new to keep");
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture: nothing new to keep"
+        );
         h.command(Command::Play);
         run(&mut h, &mut pads, BAR / 2, &[]);
         h.take_changed();
-        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[(BAR + 1000, 4, 100, 2000), (2 * BAR + 500, 9, 80, 2000)]);
+        run(
+            &mut h,
+            &mut pads,
+            3 * BAR + BAR / 2,
+            &[(BAR + 1000, 4, 100, 2000), (2 * BAR + 500, 9, 80, 2000)],
+        );
         assert!(h.take_changed(), "the Capture button changed");
         assert_eq!(h.state().capture.as_deref(), Some("2 bars"));
-        assert!(pads.hits.is_empty() && h.state().done.is_empty(), "nothing was recorded or played back");
+        assert!(
+            pads.hits.is_empty() && h.state().done.is_empty(),
+            "nothing was recorded or played back"
+        );
         let line = h.act(TimeAction::Capture).unwrap();
-        assert_eq!(line, "capture 1: 2 notes, 2 bars, new clip in slot 1 of Track 1");
+        assert_eq!(
+            line,
+            "capture 1: 2 notes, 2 bars, new clip in slot 1 of Track 1"
+        );
         let st = h.state();
         assert_eq!(st.capture, None);
-        assert_eq!((st.clip(0, 0).map(|c| (c.name.as_str(), c.notes)), st.launch(0).is_some()),
-                   (Some(("Capture 1", 2)), true));
+        assert_eq!(
+            (
+                st.clip(0, 0).map(|c| (c.name.as_str(), c.notes)),
+                st.launch(0).is_some()
+            ),
+            (Some(("Capture 1", 2)), true)
+        );
         // It plays on in its place: it was played over bars 2 and 3, so bar
         // 4 is its first bar again. Kept halfway through bar 4, it plays
         // its second bar's note in bar 5 and its first bar's in bar 6.
@@ -550,7 +842,11 @@ mod tests {
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
         let st = h.state();
         assert!(st.clip(0, 0).is_none() && st.launch(0).is_none());
-        assert_eq!(st.capture.as_deref(), Some("2 bars"), "it can be kept again");
+        assert_eq!(
+            st.capture.as_deref(),
+            Some("2 bars"),
+            "it can be kept again"
+        );
         assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
         assert_eq!(h.dropped(), 0);
     }
@@ -571,21 +867,22 @@ mod tests {
         let mut onsets = Vec::new();
         let mut frame = 0u64;
         let mut prev = 0f32;
-        let mut step = |h: &mut TimeHost, pads: &mut Fake, frame: &mut u64, onsets: &mut Vec<u64>| {
-            h.period(PERIOD, pads);
-            l.fill(0.0);
-            r.fill(0.0);
-            h.mix_click(&mut l, &mut r);
-            // An onset: sound after silence (a blip dies away within 0.1 s).
-            for (f, &s) in l.iter().enumerate() {
-                if s != 0.0 && prev == 0.0 {
-                    onsets.push(*frame + f as u64);
+        let mut step =
+            |h: &mut TimeHost, pads: &mut Fake, frame: &mut u64, onsets: &mut Vec<u64>| {
+                h.period(PERIOD, pads);
+                l.fill(0.0);
+                r.fill(0.0);
+                h.mix_click(&mut l, &mut r);
+                // An onset: sound after silence (a blip dies away within 0.1 s).
+                for (f, &s) in l.iter().enumerate() {
+                    if s != 0.0 && prev == 0.0 {
+                        onsets.push(*frame + f as u64);
+                    }
+                    prev = s;
                 }
-                prev = s;
-            }
-            pads.frame += u64::from(PERIOD);
-            *frame += u64::from(PERIOD);
-        };
+                pads.frame += u64::from(PERIOD);
+                *frame += u64::from(PERIOD);
+            };
         // Playing: no click.
         h.command(Command::Play);
         while frame < BAR {

@@ -3,7 +3,9 @@
 use mpfree_fx::{Chain, Crush, Delay, Drive, Insert};
 use mpfree_node::MAX_BLOCK;
 
-fn ins(n: Box<dyn mpfree_node::Node>) -> Insert { Insert::new(n, 48_000, MAX_BLOCK) }
+fn ins(n: Box<dyn mpfree_node::Node>) -> Insert {
+    Insert::new(n, 48_000, MAX_BLOCK)
+}
 
 #[test]
 fn ids_follow_the_effect() {
@@ -34,7 +36,9 @@ fn ids_follow_the_effect() {
 #[test]
 fn loading_asks_for_ids_and_a_taken_one_is_refused() {
     let mut c = Chain::with_capacity(8);
-    c.insert(0, ins(Box::new(Drive::new())).with_uid(7)).ok().unwrap();
+    c.insert(0, ins(Box::new(Drive::new())).with_uid(7))
+        .ok()
+        .unwrap();
     assert_eq!(c.uid(0), Some(7));
     let refused = c.insert(1, ins(Box::new(Delay::new())).with_uid(7));
     assert_eq!(refused.err().and_then(|i| i.uid()), Some(7));
@@ -47,9 +51,15 @@ fn loading_asks_for_ids_and_a_taken_one_is_refused() {
     let new = c.uid(0).unwrap();
     assert!(new != 7 && new != 8);
     // ...unless the load asks for the id it replaces.
-    c.replace(0, ins(Box::new(Drive::new())).with_uid(new)).ok().unwrap();
+    c.replace(0, ins(Box::new(Drive::new())).with_uid(new))
+        .ok()
+        .unwrap();
     assert_eq!(c.uid(0), Some(new));
-    assert!(c.replace(0, ins(Box::new(Drive::new())).with_uid(8)).is_err(), "8 belongs to slot 1");
+    assert!(
+        c.replace(0, ins(Box::new(Drive::new())).with_uid(8))
+            .is_err(),
+        "8 belongs to slot 1"
+    );
     // Another chain can take an insert with its id cleared.
     let mut d = Chain::with_capacity(2);
     d.push(Box::new(Drive::new()));

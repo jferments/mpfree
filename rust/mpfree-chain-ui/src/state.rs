@@ -2,11 +2,11 @@
 //! chain and the mod engine (the `from_*` builders read them directly, for
 //! previews and tests).
 
+use mpfree_fx::mpfree_node::{Curve, Node, ParamInfo};
 use mpfree_fx::{Chain, StripId};
 use mpfree_mod::{value_text, Binding, ModEngine, Source, KNOBS, MACROS};
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_ui::{Color, Theme};
-use mpfree_fx::mpfree_node::{Curve, Node, ParamInfo};
 
 /// Knobs on one page of an effect.
 pub const KNOBS_PER_PAGE: usize = 8;
@@ -14,7 +14,16 @@ pub const KNOBS_PER_PAGE: usize = 8;
 /// A macro's colour, from the theme: macro `m` always wears the same one,
 /// on its card, its Q-Link and every knob it moves.
 pub fn macro_color(t: &Theme, m: usize) -> Color {
-    let palette = [t.accent.mix(t.bad, 0.55), t.warn.mix(t.bad, 0.35), t.good, t.warn, t.accent, t.bad, t.good.mix(t.accent, 0.5), t.text_dim];
+    let palette = [
+        t.accent.mix(t.bad, 0.55),
+        t.warn.mix(t.bad, 0.35),
+        t.good,
+        t.warn,
+        t.accent,
+        t.bad,
+        t.good.mix(t.accent, 0.5),
+        t.text_dim,
+    ];
     palette[m % palette.len()]
 }
 
@@ -46,7 +55,9 @@ pub fn strip_id(s: Strip) -> StripId {
 /// Text on an accent-coloured fill. The theme system (PR #72) adds
 /// `Theme::on_accent`; until it lands, the page's background reads on
 /// every accent of the dark theme.
-pub fn on_accent(t: &Theme) -> Color { t.bg }
+pub fn on_accent(t: &Theme) -> Color {
+    t.bg
+}
 
 /// One knob of the effect's page.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +76,9 @@ pub struct ParamView {
 }
 
 impl ParamView {
-    pub fn text(&self) -> String { value_text(&self.info, self.value) }
+    pub fn text(&self) -> String {
+        value_text(&self.info, self.value)
+    }
 }
 
 /// One insert in the chain list.
@@ -127,11 +140,30 @@ pub struct ChainState {
 
 impl Default for ChainState {
     fn default() -> Self {
-        ChainState { title: String::new(), strip: Strip::Master, slots: Vec::new(), room: 0, selected: None, groups: Vec::new(), group: 0, params: Vec::new(), focus: None, rows: Vec::new(), macro_names: default_macro_names(), learning: false, cost_pct: None, back: None, scopes: Vec::new(), scope: 0 }
+        ChainState {
+            title: String::new(),
+            strip: Strip::Master,
+            slots: Vec::new(),
+            room: 0,
+            selected: None,
+            groups: Vec::new(),
+            group: 0,
+            params: Vec::new(),
+            focus: None,
+            rows: Vec::new(),
+            macro_names: default_macro_names(),
+            learning: false,
+            cost_pct: None,
+            back: None,
+            scopes: Vec::new(),
+            scope: 0,
+        }
     }
 }
 
-pub fn default_macro_names() -> Vec<String> { (1..=MACROS).map(|m| format!("Macro {m}")).collect() }
+pub fn default_macro_names() -> Vec<String> {
+    (1..=MACROS).map(|m| format!("Macro {m}")).collect()
+}
 
 /// A source's name for a row.
 pub fn source_name(s: Source) -> String {
@@ -151,10 +183,17 @@ pub fn source_name(s: Source) -> String {
 fn summary(n: &dyn Node) -> String {
     let ps = n.params();
     let mut parts: Vec<String> = Vec::new();
-    if let Some(p) = ps.iter().find(|p| matches!(p.curve, Curve::Choice(_)) && !p.readonly) {
+    if let Some(p) = ps
+        .iter()
+        .find(|p| matches!(p.curve, Curve::Choice(_)) && !p.readonly)
+    {
         parts.push(value_text(p, n.param(p.id)));
     }
-    for p in ps.iter().filter(|p| !p.readonly && matches!(p.curve, Curve::Linear | Curve::Log)).take(2 - parts.len().min(1)) {
+    for p in ps
+        .iter()
+        .filter(|p| !p.readonly && matches!(p.curve, Curve::Linear | Curve::Log))
+        .take(2 - parts.len().min(1))
+    {
         parts.push(value_text(p, n.param(p.id)));
     }
     parts.join(" · ")
@@ -173,7 +212,17 @@ pub fn page(params: &'static [ParamInfo], g: usize) -> (Vec<&'static str>, Vec<P
     // Groups too big for one page split into "Name", "Name 2" ...; kept
     // simple: the page shows the first KNOBS_PER_PAGE of the group.
     let g = g.min(groups.len().saturating_sub(1));
-    let ps = groups.get(g).map(|name| params.iter().filter(|p| !p.readonly && p.group == *name).take(KNOBS_PER_PAGE).copied().collect()).unwrap_or_default();
+    let ps = groups
+        .get(g)
+        .map(|name| {
+            params
+                .iter()
+                .filter(|p| !p.readonly && p.group == *name)
+                .take(KNOBS_PER_PAGE)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
     (groups, ps)
 }
 
@@ -181,18 +230,42 @@ impl ChainState {
     /// Reads a chain (on `strip`) and the engine that modulates it.
     /// `selected`, `group` and `focus` are what the screen had.
     #[allow(clippy::too_many_arguments)]
-    pub fn from_chain(chain: &Chain, strip: Strip, title: &str, room: usize, engine: &ModEngine, selected: Option<usize>, group: usize, focus: Option<ParamAddr>) -> ChainState {
+    pub fn from_chain(
+        chain: &Chain,
+        strip: Strip,
+        title: &str,
+        room: usize,
+        engine: &ModEngine,
+        selected: Option<usize>,
+        group: usize,
+        focus: Option<ParamAddr>,
+    ) -> ChainState {
         let mut slots = Vec::new();
         for i in 0..chain.len() {
-            let (Some(n), Some(uid)) = (chain.node(i), chain.uid(i)) else { continue };
+            let (Some(n), Some(uid)) = (chain.node(i), chain.uid(i)) else {
+                continue;
+            };
             let owner = Owner::Insert(strip, uid);
-            let mut macros: Vec<usize> = n.params().iter().filter_map(|p| engine.macro_of(ParamAddr::new(owner, p.id))).collect();
+            let mut macros: Vec<usize> = n
+                .params()
+                .iter()
+                .filter_map(|p| engine.macro_of(ParamAddr::new(owner, p.id)))
+                .collect();
             macros.sort_unstable();
             macros.dedup();
             let modulated = engine.rows().any(|r| r.target.owner == owner);
-            slots.push(SlotView { uid, name: n.info().name.to_string(), summary: summary(n), on: chain.is_on(i), macros, modulated });
+            slots.push(SlotView {
+                uid,
+                name: n.info().name.to_string(),
+                summary: summary(n),
+                on: chain.is_on(i),
+                macros,
+                modulated,
+            });
         }
-        let selected = selected.filter(|s| *s < slots.len()).or(if slots.is_empty() { None } else { Some(0) });
+        let selected = selected
+            .filter(|s| *s < slots.len())
+            .or(if slots.is_empty() { None } else { Some(0) });
         let (mut groups, mut params, mut group_shown) = (Vec::new(), Vec::new(), 0);
         if let (Some(s), Some(n)) = (selected, selected.and_then(|s| chain.node(s))) {
             let owner = Owner::Insert(strip, slots[s].uid);
@@ -204,23 +277,75 @@ impl ChainState {
                 .map(|info| {
                     let addr = ParamAddr::new(owner, info.id);
                     let value = engine.value(addr).unwrap_or_else(|| n.param(info.id));
-                    ParamView { addr, info, value, pos: info.to_unit(value), mod_range: engine.mod_range(addr), macro_: engine.macro_of(addr), locked: engine.is_locked(addr) }
+                    ParamView {
+                        addr,
+                        info,
+                        value,
+                        pos: info.to_unit(value),
+                        mod_range: engine.mod_range(addr),
+                        macro_: engine.macro_of(addr),
+                        locked: engine.is_locked(addr),
+                    }
                 })
                 .collect();
         }
         let focus = focus.filter(|f| params.iter().any(|p| p.addr == *f));
-        let rows = focus.map(|f| engine.rows().enumerate().filter(|(_, r)| r.target == f).map(|(i, r)| RowView { index: i, source: source_name(r.source), depth: r.depth }).collect()).unwrap_or_default();
-        ChainState { title: title.to_string(), strip, slots, room, selected, groups, group: group_shown, params, focus, rows, macro_names: default_macro_names(), learning: false, cost_pct: None, back: None, scopes: Vec::new(), scope: 0 }
+        let rows = focus
+            .map(|f| {
+                engine
+                    .rows()
+                    .enumerate()
+                    .filter(|(_, r)| r.target == f)
+                    .map(|(i, r)| RowView {
+                        index: i,
+                        source: source_name(r.source),
+                        depth: r.depth,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ChainState {
+            title: title.to_string(),
+            strip,
+            slots,
+            room,
+            selected,
+            groups,
+            group: group_shown,
+            params,
+            focus,
+            rows,
+            macro_names: default_macro_names(),
+            learning: false,
+            cost_pct: None,
+            back: None,
+            scopes: Vec::new(),
+            scope: 0,
+        }
     }
 
-    pub fn focused(&self) -> Option<&ParamView> { self.focus.and_then(|f| self.params.iter().find(|p| p.addr == f)) }
+    pub fn focused(&self) -> Option<&ParamView> {
+        self.focus
+            .and_then(|f| self.params.iter().find(|p| p.addr == f))
+    }
 
     /// The page's own Q-Link knobs for [`mpfree_mod::Bindings::set_page`]:
     /// the first four knobs of the effect page shown (Drive: Mode, Drive,
     /// Tone, Bias), and the effect's name.
     pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
-        let name = self.selected.and_then(|s| self.slots.get(s)).map(|s| s.name.clone()).unwrap_or_default();
-        (name, std::array::from_fn(|k| self.params.get(k).map(|p| Binding::new(p.addr, p.info, p.info.name))))
+        let name = self
+            .selected
+            .and_then(|s| self.slots.get(s))
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        (
+            name,
+            std::array::from_fn(|k| {
+                self.params
+                    .get(k)
+                    .map(|p| Binding::new(p.addr, p.info, p.info.name))
+            }),
+        )
     }
 }
 
@@ -267,25 +392,51 @@ pub struct MacrosState {
 
 impl Default for MacrosState {
     fn default() -> Self {
-        MacrosState { macros: Vec::new(), bank: 0, morph: 0.0, scene_names: ["A".into(), "B".into()], changes: Vec::new() }
+        MacrosState {
+            macros: Vec::new(),
+            bank: 0,
+            morph: 0.0,
+            scene_names: ["A".into(), "B".into()],
+            changes: Vec::new(),
+        }
     }
 }
 
 impl MacrosState {
     /// Reads the engine. `label` names a parameter for the cards ("Reverb
     /// size"); `describe` gives its description.
-    pub fn from_engine(engine: &ModEngine, names: &[String], label: &dyn Fn(ParamAddr) -> String, bank: usize) -> MacrosState {
+    pub fn from_engine(
+        engine: &ModEngine,
+        names: &[String],
+        label: &dyn Fn(ParamAddr) -> String,
+        bank: usize,
+    ) -> MacrosState {
         let macros = (0..MACROS)
             .map(|m| MacroView {
-                name: names.get(m).cloned().unwrap_or_else(|| format!("Macro {}", m + 1)),
+                name: names
+                    .get(m)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Macro {}", m + 1)),
                 value: engine.macro_value(m),
                 targets: engine
                     .macro_maps(m)
                     .map(|map| {
                         let info = engine.info(map.target);
-                        let now = engine.value(map.target).zip(info).map_or(0.0, |(v, i)| i.to_unit(v));
-                        let range_text = info.map_or(String::new(), |i| range_text(&i, i.from_unit(map.from), i.from_unit(map.to)));
-                        TargetView { addr: map.target, label: label(map.target), from: map.from, to: map.to, range_text, now }
+                        let now = engine
+                            .value(map.target)
+                            .zip(info)
+                            .map_or(0.0, |(v, i)| i.to_unit(v));
+                        let range_text = info.map_or(String::new(), |i| {
+                            range_text(&i, i.from_unit(map.from), i.from_unit(map.to))
+                        });
+                        TargetView {
+                            addr: map.target,
+                            label: label(map.target),
+                            from: map.from,
+                            to: map.to,
+                            range_text,
+                            now,
+                        }
                     })
                     .collect(),
             })
@@ -295,10 +446,21 @@ impl MacrosState {
             .map(|(addr, a, b)| {
                 let info = engine.info(addr);
                 let t = |v: f32| info.map_or(format!("{v:.2}"), |i| value_text(&i, v));
-                ChangeView { label: label(addr), a: t(a), b: t(b), now: engine.value(addr).map(t).unwrap_or_default() }
+                ChangeView {
+                    label: label(addr),
+                    a: t(a),
+                    b: t(b),
+                    now: engine.value(addr).map(t).unwrap_or_default(),
+                }
             })
             .collect();
-        MacrosState { macros, bank: bank.min(1), morph: engine.morph(), scene_names: ["A".into(), "B".into()], changes }
+        MacrosState {
+            macros,
+            bank: bank.min(1),
+            morph: engine.morph(),
+            scene_names: ["A".into(), "B".into()],
+            changes,
+        }
     }
 }
 
@@ -306,7 +468,9 @@ impl MacrosState {
 pub fn range_text(info: &ParamInfo, a: f32, b: f32) -> String {
     let (ta, tb) = (value_text(info, a), value_text(info, b));
     match (ta.rsplit_once(' '), tb.rsplit_once(' ')) {
-        (Some((na, ua)), Some((nb, ub))) if ua == ub && !matches!(info.curve, Curve::Choice(_)) => format!("{na} → {nb} {ub}"),
+        (Some((na, ua)), Some((nb, ub))) if ua == ub && !matches!(info.curve, Curve::Choice(_)) => {
+            format!("{na} → {nb} {ub}")
+        }
         _ => format!("{ta} → {tb}"),
     }
 }

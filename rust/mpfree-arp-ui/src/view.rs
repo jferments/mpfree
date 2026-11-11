@@ -4,12 +4,15 @@
 //! - The **Arp panel** shows every setting of one track's arp beside the
 //!   pads: mode tabs, the list the wheel moves through, the Q-Link sliders or
 //!   the pattern buttons, and the step strip while the arp is generating.
-//! - The **quick band** comes up over the pads while NOTE REPEAT is held, or
-//!   while notes are latched: big rate buttons, Latch, and the next steps.
+//! - The **quick band** is a slim strip at the top of the right-hand column
+//!   while NOTE REPEAT is held, or while notes are latched: what the arp
+//!   plays, the rate with − and +, and Latch. The rest of the column stays
+//!   the app's.
 //!
 //! The arp is a way of playing the pads, not a place, so neither is a
-//! top-level tab: the app shows the panel in its Play page's right-hand
-//! column and the band over its pads, and puts [`chip`] in its header. The
+//! top-level tab: the app shows the panel and the band in its Play page's
+//! right-hand column, so the pads never move, and puts [`chip`] in its
+//! header. The
 //! design is in the arpeggiator design doc (`docs/project/arpeggiator.md`).
 //!
 //! The screens do not own the engine. The app copies what they need into an
@@ -18,7 +21,10 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
-use crate::widgets::{Button, ButtonRow, CellKind, RateBar, Segments, SliderStack, StepCell, StepStrip};
+use crate::widgets::{
+    Button, ButtonRow, CellKind, MiniBar, Segments, SliderStack, StepCell, StepStrip, MINI_FASTER,
+    MINI_LATCH, MINI_OPEN, MINI_SLOWER,
+};
 use mpfree_arp::{Engine, Held, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES};
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -29,30 +35,46 @@ pub const LIST: &str = "arp-list";
 pub const QLINKS: &str = "arp-qlinks";
 pub const ACTIONS: &str = "arp-actions";
 pub const STEPS: &str = "arp-steps";
-pub const RATES: &str = "arp-rates";
+pub const MINI: &str = "arp-mini";
 
-/// Direct: nothing is generated, so there is no step strip and the pads get
-/// the room back.
+/// Every layout keeps the pads where the Play page has them: the arp's
+/// widgets only ever take the right-hand column, [`SIDE`] pixels wide, so
+/// nothing under the player's fingers moves or resizes when the band or the
+/// panel comes up.
+///
+/// Direct: nothing is generated, so there is no step strip.
 pub const DIRECT_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, hint:26)";
 /// Repeat and Arp: the list (rates or orders) over the Q-Link sliders, and
 /// the step strip.
 pub const ARP_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236):460):*, arp-steps:64, hint:26)";
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-qlinks:236, arp-steps:112):460):*, hint:26)";
 /// Pattern: the pattern list over the pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
-    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128):460):*, arp-steps:64, hint:26)";
-/// The quick band over the pads: the rate buttons and Latch, then the next
-/// steps. The rate row is tall enough for 76 px buttons.
-pub const QUICK_LAYOUT: &str = "col(header:60, pads:*, arp-rates:92, arp-steps:64, hint:26)";
+    "col(header:60, row(pads:*, col(arp-modes:52, arp-list:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
+/// The quick band: a slim strip ([`MINI`], [`MINI_H`] pixels) at the top of
+/// the right-hand column. An app puts it over its own column with
+/// [`ArpPanel::set_quick_layout`] (the pad player keeps its kits, level and
+/// timing under it); this default puts the next steps under it.
+pub const QUICK_LAYOUT: &str =
+    "col(header:60, row(pads:*, col(arp-mini:56, arp-steps:112):460):*, hint:26)";
+/// The strip's height in the layouts.
+pub const MINI_H: i32 = 56;
+/// The width of the right-hand column every layout here shares with the
+/// app's Play page.
+pub const SIDE: i32 = 460;
 
 /// The mode tabs, in [`Mode`] order.
 pub const MODE_TABS: [&str; 4] = ["Direct", "Repeat", "Arp", "Pattern"];
 /// The Q-Links, top to bottom, as Jay's plan maps them.
 pub const QLINK_LABELS: [&str; 4] = ["Rate · Q1", "Gate · Q2", "Swing · Q3", "Octaves · Q4"];
 /// The pattern buttons, in [`PatternButton`] order.
-pub const PATTERN_BUTTONS: [(&str, Tone); 4] =
-    [("Edit pattern", Tone::Accent), ("Record on pads", Tone::Bad), ("Mutate", Tone::Normal), ("Original", Tone::Normal)];
+pub const PATTERN_BUTTONS: [(&str, Tone); 4] = [
+    ("Edit pattern", Tone::Accent),
+    ("Record on pads", Tone::Bad),
+    ("Mutate", Tone::Normal),
+    ("Original", Tone::Normal),
+];
 /// The most cells the step strip shows at once.
 pub const STRIP_CELLS: usize = 16;
 
@@ -80,8 +102,12 @@ pub struct ArpState {
 impl ArpState {
     /// What the engine shows now. The pattern list and its state are the
     /// app's, so they are passed in.
-    pub fn from_engine(e: &Engine, patterns: Vec<(String, Pattern)>, pattern_index: usize, pattern_changed: bool)
-        -> ArpState {
+    pub fn from_engine(
+        e: &Engine,
+        patterns: Vec<(String, Pattern)>,
+        pattern_index: usize,
+        pattern_changed: bool,
+    ) -> ArpState {
         ArpState {
             settings: e.settings(),
             pattern: *e.pattern(),
@@ -95,11 +121,24 @@ impl ArpState {
         }
     }
 
+    /// The notes the steps work from: the held notes (or, while they take
+    /// turns, the one whose turn it is), sorted, grown into chords and scale
+    /// runs as the engine grows them.
     fn sorted(&self) -> Vec<Held> {
-        let mut v = self.notes.clone();
+        let mut v = match mpfree_arp::turn_of(
+            &self.settings,
+            self.notes.len(),
+            self.step.saturating_sub(1),
+        ) {
+            Some(k) => vec![self.notes[k]],
+            None => self.notes.clone(),
+        };
         v.sort_by_key(|h| h.note);
         v.truncate(MAX_NOTES);
-        v
+        let mut list = [Held::default(); MAX_NOTES];
+        list[..v.len()].copy_from_slice(&v);
+        let n = mpfree_arp::step_notes(&self.settings, &mut list, v.len());
+        list[..n].to_vec()
     }
 }
 
@@ -118,6 +157,8 @@ pub enum ArpAction {
     Step(usize),
     /// The band's Latch button: latch on, or off (clearing the notes).
     Latch,
+    /// The strip's name was tapped: open the Arp panel.
+    OpenPanel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,8 +175,14 @@ pub fn note_label(note: u8) -> String {
     if note < 16 {
         format!("{}", note + 1)
     } else {
-        const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-        format!("{}{}", NAMES[usize::from(note % 12)], i32::from(note / 12) - 1)
+        const NAMES: [&str; 12] = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
+        format!(
+            "{}{}",
+            NAMES[usize::from(note % 12)],
+            i32::from(note / 12) - 1
+        )
     }
 }
 
@@ -151,9 +198,19 @@ fn octave_sub(oct: i32) -> String {
 pub fn qlink_values(s: &Settings) -> [(f32, String); 4] {
     let rate = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
     [
-        (rate as f32 / (Rate::ALL.len() - 1) as f32, s.rate.label().to_string()),
+        (
+            rate as f32 / (Rate::ALL.len() - 1) as f32,
+            s.rate.label().to_string(),
+        ),
         (f32::from(s.gate - 1) / 99.0, format!("{} %", s.gate)),
-        (f32::from(s.swing - 50) / 25.0, if s.swing == 50 { "off".to_string() } else { format!("{} %", s.swing) }),
+        (
+            f32::from(s.swing - 50) / 25.0,
+            if s.swing == 50 {
+                "off".to_string()
+            } else {
+                format!("{} %", s.swing)
+            },
+        ),
         (f32::from(s.octaves - 1) / 3.0, format!("{}", s.octaves)),
     ]
 }
@@ -178,7 +235,10 @@ pub fn order_preview(order: Order) -> String {
         Order::Chord => "1+2+3".to_string(),
         Order::Played => "as pressed".to_string(),
         _ => match order.cycle(3) {
-            Some(n) => (0..n.min(6)).map(|c| format!("{}", order.place(3, c).unwrap_or(0) + 1)).collect::<Vec<_>>().join(" "),
+            Some(n) => (0..n.min(6))
+                .map(|c| format!("{}", order.place(3, c).unwrap_or(0) + 1))
+                .collect::<Vec<_>>()
+                .join(" "),
             None => "?".to_string(),
         },
     }
@@ -193,29 +253,60 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
     if n == 0 || s.mode == Mode::Direct {
         return (Vec::new(), 0, None);
     }
-    let all = |label: &str| StepCell { kind: CellKind::Chord, label: label.to_string(), ..StepCell::default() };
+    let all = |label: &str| StepCell {
+        kind: CellKind::Chord,
+        label: label.to_string(),
+        ..StepCell::default()
+    };
     if s.mode == Mode::Repeat || s.order == Order::Chord {
-        let label = if n == 1 { note_label(sorted[0].note) } else { format!("all {n}") };
+        let label = if n == 1 {
+            note_label(sorted[0].note)
+        } else {
+            format!("all {n}")
+        };
         let playing = (st.step > 0).then_some(0);
         return (vec![all(&label)], 0, playing);
     }
-    let base: Vec<Held> = if s.order == Order::Played { st.notes.iter().take(MAX_NOTES).copied().collect() } else { sorted };
+    // Each turn of the held chords starts the order again.
+    let turns = mpfree_arp::turn_of(s, st.notes.len(), 0).is_some();
+    let since = |step: u64| {
+        (if turns {
+            step % mpfree_arp::turn_steps(s)
+        } else {
+            step
+        }) as usize
+    };
+    let grown = s.chord != mpfree_arp::Chord::Off || s.run || turns;
+    let base: Vec<Held> = if s.order == Order::Played && !grown {
+        st.notes.iter().take(MAX_NOTES).copied().collect()
+    } else {
+        sorted
+    };
     let total = n * usize::from(s.octaves);
     let Some(cycle) = s.order.cycle(total) else {
         // The random orders: as many cells as notes, none known ahead.
         let cells = (0..total.min(STRIP_CELLS))
-            .map(|_| StepCell { kind: CellKind::Random, label: "?".to_string(), ..StepCell::default() })
+            .map(|_| StepCell {
+                kind: CellKind::Random,
+                label: "?".to_string(),
+                ..StepCell::default()
+            })
             .collect();
-        let playing = (st.step > 0).then(|| ((st.step - 1) as usize) % total.min(STRIP_CELLS));
+        let playing = (st.step > 0).then(|| since(st.step - 1) % total.min(STRIP_CELLS));
         return (cells, 0, playing);
     };
-    let last = (st.step > 0).then(|| ((st.step - 1) as usize) % cycle);
+    let last = (st.step > 0).then(|| since(st.step - 1) % cycle);
     let first = last.map_or(0, |l| l / STRIP_CELLS * STRIP_CELLS);
     let cells = (first..cycle.min(first + STRIP_CELLS))
         .map(|c| {
             let i = s.order.place(total, c).unwrap_or(0);
             let h = base[i % n];
-            StepCell { kind: CellKind::Note, label: note_label(h.note), sub: octave_sub((i / n) as i32), accent: false }
+            StepCell {
+                kind: CellKind::Note,
+                label: note_label(h.note),
+                sub: octave_sub((i / n) as i32),
+                accent: false,
+            }
         })
         .collect();
     (cells, first, last.map(|l| l - first))
@@ -224,9 +315,24 @@ pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
 /// One pattern step as a cell.
 pub fn pattern_cell(step: Step) -> StepCell {
     match step {
-        Step::Rest => StepCell { kind: CellKind::Rest, label: "·".into(), ..StepCell::default() },
-        Step::Tie => StepCell { kind: CellKind::Tie, label: "—".into(), ..StepCell::default() },
-        Step::Play { pick, octave, accent, ratchet, chance, .. } => {
+        Step::Rest => StepCell {
+            kind: CellKind::Rest,
+            label: "·".into(),
+            ..StepCell::default()
+        },
+        Step::Tie => StepCell {
+            kind: CellKind::Tie,
+            label: "—".into(),
+            ..StepCell::default()
+        },
+        Step::Play {
+            pick,
+            octave,
+            accent,
+            ratchet,
+            chance,
+            ..
+        } => {
             let (kind, label) = match pick {
                 Pick::Next => (CellKind::Note, "x".to_string()),
                 Pick::All => (CellKind::Chord, "all".to_string()),
@@ -245,7 +351,12 @@ pub fn pattern_cell(step: Step) -> StepCell {
             if chance < 100 {
                 sub.push(format!("{chance}%"));
             }
-            StepCell { kind, label, sub: sub.join(" "), accent }
+            StepCell {
+                kind,
+                label,
+                sub: sub.join(" "),
+                accent,
+            }
         }
     }
 }
@@ -257,9 +368,13 @@ pub fn pattern_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
     if steps.is_empty() {
         return (Vec::new(), 0, None);
     }
-    let last = (st.step > 0 && !st.notes.is_empty()).then(|| ((st.step - 1) as usize) % steps.len());
+    let last =
+        (st.step > 0 && !st.notes.is_empty()).then(|| ((st.step - 1) as usize) % steps.len());
     let first = last.map_or(0, |l| l / STRIP_CELLS * STRIP_CELLS);
-    let cells = steps[first..steps.len().min(first + STRIP_CELLS)].iter().map(|s| pattern_cell(*s)).collect();
+    let cells = steps[first..steps.len().min(first + STRIP_CELLS)]
+        .iter()
+        .map(|s| pattern_cell(*s))
+        .collect();
     (cells, first, last.map(|l| l - first))
 }
 
@@ -270,13 +385,24 @@ pub fn chip(st: &ArpState) -> Chip {
     let s = &st.settings;
     let what = match s.mode {
         Mode::Direct => {
-            return if st.latched { Chip::new("Latch on", Tone::Warn) } else { Chip::new("Arp off", Tone::Dim) };
+            return if st.latched {
+                Chip::new("Latch on", Tone::Warn)
+            } else {
+                Chip::new("Arp off", Tone::Dim)
+            };
         }
         Mode::Repeat => format!("Repeat {}", s.rate.label()),
         Mode::Arp => format!("Arp: {} {}", s.order.label(), s.rate.label()),
         Mode::Pattern => {
-            let name = st.patterns.get(st.pattern_index).map_or("pattern", |(n, _)| n.as_str());
-            format!("Pattern: {name}{} {}", if st.pattern_changed { "*" } else { "" }, s.rate.label())
+            let name = st
+                .patterns
+                .get(st.pattern_index)
+                .map_or("pattern", |(n, _)| n.as_str());
+            format!(
+                "Pattern: {name}{} {}",
+                if st.pattern_changed { "*" } else { "" },
+                s.rate.label()
+            )
         }
     };
     if st.latched {
@@ -290,16 +416,23 @@ pub fn chip(st: &ArpState) -> Chip {
 /// at the right edge. (The header lays chips out from the right edge, so the
 /// last one here is the leftmost.)
 pub fn chips(st: &ArpState) -> Vec<Chip> {
-    vec![Chip::new(format!("{:.1} BPM", st.bpm), Tone::Good), chip(st)]
+    vec![
+        Chip::new(format!("{:.1} BPM", st.bpm), Tone::Good),
+        chip(st),
+    ]
 }
 
 /// The hint line under the panel, for each mode.
 pub fn hint(mode: Mode) -> &'static str {
     match mode {
-        Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · SHIFT+NOTE REPEAT: latch",
+        Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · press it twice: latch",
         Mode::Repeat => "Hold or latch pads · Wheel: rate · Q-Links: rate, gate, swing, octaves",
-        Mode::Arp => "Hold or latch pads · Wheel: order · Q-Links: rate, gate, swing, octaves · TAP TEMPO",
-        Mode::Pattern => "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern",
+        Mode::Arp => {
+            "Hold or latch pads · Wheel: order · Q-Links: rate, gate, swing, octaves · TAP TEMPO"
+        }
+        Mode::Pattern => {
+            "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern"
+        }
     }
 }
 
@@ -330,6 +463,8 @@ pub struct ArpPanel {
     /// The page name of the quick band.
     pub quick: String,
     layout: Option<&'static str>,
+    /// The quick band's layout ([`QUICK_LAYOUT`] unless the app gave one).
+    quick_layout: String,
     /// Changes every layout before it is added, for an app that puts a bar
     /// of its own on its pages (such as the time engine's transport bar).
     wrap: Option<fn(&str) -> String>,
@@ -345,10 +480,15 @@ impl ArpPanel {
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
         ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
         ui.add(STEPS, StepStrip::new(8));
-        let rates: Vec<&str> = Rate::ALL.iter().map(|r| r.label()).collect();
-        ui.add(RATES, RateBar::new(&rates));
+        ui.add(MINI, MiniBar::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
-        let mut panel = ArpPanel { name: name.to_string(), quick: quick.to_string(), layout: None, wrap: None };
+        let mut panel = ArpPanel {
+            name: name.to_string(),
+            quick: quick.to_string(),
+            layout: None,
+            quick_layout: QUICK_LAYOUT.to_string(),
+            wrap: None,
+        };
         panel.update(ui, st)?;
         Ok(panel)
     }
@@ -362,10 +502,19 @@ impl ArpPanel {
     /// be in `ui` already.
     pub fn set_layout_wrap(&mut self, ui: &mut Ui, wrap: fn(&str) -> String) -> Result<(), String> {
         self.wrap = Some(wrap);
-        ui.add_page(&self.quick, &self.spec(QUICK_LAYOUT))?;
+        ui.add_page(&self.quick, &self.spec(&self.quick_layout))?;
         if let Some(layout) = self.layout {
             ui.add_page(&self.name, &self.spec(layout))?;
         }
+        Ok(())
+    }
+
+    /// The quick band's own layout: an app puts [`MINI`] at the top of the
+    /// column its Play page already has, so only that column's first widget
+    /// gives up [`MINI_H`] pixels and nothing else moves.
+    pub fn set_quick_layout(&mut self, ui: &mut Ui, layout: &str) -> Result<(), String> {
+        ui.add_page(&self.quick, &self.spec(layout))?;
+        self.quick_layout = layout.to_string();
         Ok(())
     }
 
@@ -378,9 +527,28 @@ impl ArpPanel {
             ui.add_page(&self.name, &self.spec(layout))?;
             self.layout = Some(layout);
         }
-        if let Some(b) = ui.get_mut::<RateBar>(RATES) {
-            b.active = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
-            b.latched = st.latched;
+        if let Some(m) = ui.get_mut::<MiniBar>(MINI) {
+            let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
+            m.mode = match s.mode {
+                Mode::Direct => "Direct".to_string(),
+                Mode::Repeat => "Repeat".to_string(),
+                Mode::Arp => format!("Arp · {}", s.order.label()),
+                Mode::Pattern => {
+                    let name = st
+                        .patterns
+                        .get(st.pattern_index)
+                        .map_or("", |(n, _)| n.as_str());
+                    format!(
+                        "Pattern · {}{}",
+                        short(name, 14),
+                        if st.pattern_changed { "*" } else { "" }
+                    )
+                }
+            };
+            m.rate = s.rate.label().to_string();
+            m.latched = st.latched;
+            m.can_slower = at > 0;
+            m.can_faster = at + 1 < Rate::ALL.len();
         }
         if let Some(m) = ui.get_mut::<Segments>(MODES) {
             m.active = MODES_ALL.iter().position(|x| *x == s.mode).unwrap_or(0);
@@ -391,7 +559,11 @@ impl ArpPanel {
                     list.title = "Rate · Wheel".into();
                     list.items = Rate::ALL
                         .iter()
-                        .map(|r| ListItem { text: r.label().into(), detail: rate_detail(*r).into(), color: None })
+                        .map(|r| ListItem {
+                            text: r.label().into(),
+                            detail: rate_detail(*r).into(),
+                            color: None,
+                        })
                         .collect();
                     list.selected = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
                 }
@@ -399,7 +571,11 @@ impl ArpPanel {
                     list.title = "Order · Wheel".into();
                     list.items = Order::ALL
                         .iter()
-                        .map(|o| ListItem { text: o.label().into(), detail: order_preview(*o), color: None })
+                        .map(|o| ListItem {
+                            text: o.label().into(),
+                            detail: order_preview(*o),
+                            color: None,
+                        })
                         .collect();
                     list.selected = Order::ALL.iter().position(|o| *o == s.order).unwrap_or(0);
                 }
@@ -408,7 +584,11 @@ impl ArpPanel {
                     list.items = st
                         .patterns
                         .iter()
-                        .map(|(name, p)| ListItem { text: name.clone(), detail: short(&p.to_text(), 16), color: None })
+                        .map(|(name, p)| ListItem {
+                            text: name.clone(),
+                            detail: short(&p.to_text(), 16),
+                            color: None,
+                        })
                         .collect();
                     list.selected = st.pattern_index.min(st.patterns.len().saturating_sub(1));
                 }
@@ -421,21 +601,37 @@ impl ArpPanel {
             }
         }
         if let Some(b) = ui.get_mut::<ButtonRow>(ACTIONS) {
-            b.buttons[3] = Button { disabled: !st.pattern_changed, ..b.buttons[3].clone() };
+            b.buttons[3] = Button {
+                disabled: !st.pattern_changed,
+                ..b.buttons[3].clone()
+            };
         }
-        let (cells, first, playing) = if s.mode == Mode::Pattern { pattern_cells(st) } else { arp_cells(st) };
+        let (cells, first, playing) = if s.mode == Mode::Pattern {
+            pattern_cells(st)
+        } else {
+            arp_cells(st)
+        };
         if let Some(strip) = ui.get_mut::<StepStrip>(STEPS) {
             strip.cells = cells;
             strip.first = first;
             strip.playing = playing;
-            strip.min_cells = if s.mode == Mode::Pattern { 8 } else { STRIP_CELLS };
+            strip.min_cells = if s.mode == Mode::Pattern {
+                8
+            } else {
+                STRIP_CELLS
+            };
         }
         Ok(())
     }
 
     /// What a touch on one of the arp's widgets asks for; None for touches
     /// on other widgets or that change nothing. `st` is what they show.
-    pub fn action(&self, ev: &UiEvent, st: &ArpState, qlink: &mut Option<usize>) -> Option<ArpAction> {
+    pub fn action(
+        &self,
+        ev: &UiEvent,
+        st: &ArpState,
+        qlink: &mut Option<usize>,
+    ) -> Option<ArpAction> {
         let s = st.settings;
         match (ev.widget.as_str(), &ev.kind) {
             (MODES, EventKind::Tab(i)) => MODES_ALL.get(*i).map(|m| ArpAction::Mode(*m)),
@@ -448,14 +644,31 @@ impl ArpPanel {
                 *qlink = Some(*i);
                 None
             }
-            (QLINKS, EventKind::Value(v)) => qlink.map(|i| ArpAction::Settings(with_qlink(s, i, *v))),
-            (ACTIONS, EventKind::Tab(i)) => [PatternButton::Edit, PatternButton::Record, PatternButton::Mutate,
-                PatternButton::Original]
-                .get(*i)
-                .map(|b| ArpAction::Button(*b)),
+            (QLINKS, EventKind::Value(v)) => {
+                qlink.map(|i| ArpAction::Settings(with_qlink(s, i, *v)))
+            }
+            (ACTIONS, EventKind::Tab(i)) => [
+                PatternButton::Edit,
+                PatternButton::Record,
+                PatternButton::Mutate,
+                PatternButton::Original,
+            ]
+            .get(*i)
+            .map(|b| ArpAction::Button(*b)),
             (STEPS, EventKind::Select(i)) if s.mode == Mode::Pattern => Some(ArpAction::Step(*i)),
-            (RATES, EventKind::Tab(i)) if *i == Rate::ALL.len() => Some(ArpAction::Latch),
-            (RATES, EventKind::Tab(i)) => Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r)),
+            (MINI, EventKind::Tab(i)) => {
+                let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
+                match *i {
+                    MINI_SLOWER => at
+                        .checked_sub(1)
+                        .and_then(|j| Rate::ALL.get(j))
+                        .map(|r| ArpAction::Rate(*r)),
+                    MINI_FASTER => Rate::ALL.get(at + 1).map(|r| ArpAction::Rate(*r)),
+                    MINI_LATCH => Some(ArpAction::Latch),
+                    MINI_OPEN => Some(ArpAction::OpenPanel),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -497,7 +710,13 @@ mod tests {
             patterns: built_in_patterns(),
             pattern_index: 0,
             pattern_changed: false,
-            notes: held.iter().map(|&note| Held { note, velocity: 100 }).collect(),
+            notes: held
+                .iter()
+                .map(|&note| Held {
+                    note,
+                    velocity: 100,
+                })
+                .collect(),
             step,
             latched: true,
             bpm: 120.0,
@@ -505,7 +724,11 @@ mod tests {
     }
 
     fn sample(name: &str) -> crate::sample::Sample {
-        samples(Fonts::embedded).unwrap().into_iter().find(|s| s.name == name).unwrap()
+        samples(Fonts::embedded)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap()
     }
 
     #[test]
@@ -514,7 +737,10 @@ mod tests {
             layout.replacen("col(header:60, ", "col(header:60, bar:44, ", 1)
         }
         let mut s = sample("arp-up-2-oct");
-        s.ui.add("bar", mpfree_ui::widgets::Label::new("bar", Tone::Dim, mpfree_ui::Align::Left));
+        s.ui.add(
+            "bar",
+            mpfree_ui::widgets::Label::new("bar", Tone::Dim, mpfree_ui::Align::Left),
+        );
         let before = s.ui.rect_of(LIST).unwrap();
         s.page.set_layout_wrap(&mut s.ui, with_bar).unwrap();
         assert!(s.ui.rect_of("bar").is_some());
@@ -525,7 +751,7 @@ mod tests {
         s.page.update(&mut s.ui, &st).unwrap();
         assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(ACTIONS).is_some());
         s.ui.show(&s.page.quick.clone()).unwrap();
-        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(RATES).is_some());
+        assert!(s.ui.rect_of("bar").is_some() && s.ui.rect_of(MINI).is_some());
     }
 
     #[test]
@@ -537,66 +763,144 @@ mod tests {
             let mut want = vec!["header", "pads", "hint"];
             let mut gone = vec![];
             if s.quick {
-                want.extend([RATES, STEPS]);
+                want.extend([MINI, STEPS]);
                 gone.extend([MODES, LIST, QLINKS, ACTIONS]);
             } else {
                 want.extend([MODES, LIST]);
-                want.push(if mode == Mode::Pattern { ACTIONS } else { QLINKS });
+                want.push(if mode == Mode::Pattern {
+                    ACTIONS
+                } else {
+                    QLINKS
+                });
                 // The strip shows only while the arp is generating.
-                if mode == Mode::Direct { gone.push(STEPS) } else { want.push(STEPS) }
-                gone.push(RATES);
+                if mode == Mode::Direct {
+                    gone.push(STEPS)
+                } else {
+                    want.push(STEPS)
+                }
+                gone.push(MINI);
             }
             for name in want {
-                let r = s.ui.rect_of(name).unwrap_or_else(|| panic!("{}: no {name}", s.name));
-                assert!(r.w > 0 && r.h > 0 && r.right() <= 1280 && r.bottom() <= 800, "{}: {name} {r:?}", s.name);
+                let r =
+                    s.ui.rect_of(name)
+                        .unwrap_or_else(|| panic!("{}: no {name}", s.name));
+                assert!(
+                    r.w > 0 && r.h > 0 && r.right() <= 1280 && r.bottom() <= 800,
+                    "{}: {name} {r:?}",
+                    s.name
+                );
             }
             for name in gone {
-                assert!(s.ui.rect_of(name).is_none(), "{}: {name} should not show", s.name);
+                assert!(
+                    s.ui.rect_of(name).is_none(),
+                    "{}: {name} should not show",
+                    s.name
+                );
             }
             // The arp is not a tab: the header holds the app's tabs and the chip.
             let header = s.ui.get::<mpfree_ui::widgets::Header>("header").unwrap();
             assert!(!header.tabs.iter().any(|t| t == "Arp"), "{}", s.name);
-            assert_eq!(header.chips.last().map(|c| c.text.clone()), Some(chip(&s.state).text), "{}", s.name);
+            assert_eq!(
+                header.chips.last().map(|c| c.text.clone()),
+                Some(chip(&s.state).text),
+                "{}",
+                s.name
+            );
         }
     }
 
     #[test]
-    fn the_quick_band_has_big_rate_buttons_and_latch() {
+    fn the_quick_band_is_a_slim_strip_with_the_rate_and_latch() {
         let mut s = sample("quick-hat-roll");
-        let r = s.ui.rect_of(RATES).unwrap();
-        let bar = s.ui.get::<RateBar>(RATES).unwrap();
-        assert_eq!(bar.rates, ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]);
-        assert_eq!((bar.active, bar.latched), (3, false));
-        for i in 0..=bar.rates.len() {
-            let b = bar.button(r, i);
-            assert!(b.w >= crate::widgets::MIN_TOUCH && b.h >= crate::widgets::MIN_TOUCH, "button {i}: {b:?}");
-            assert!(b.right() <= r.right(), "button {i}: {b:?}");
+        let r = s.ui.rect_of(MINI).unwrap();
+        assert_eq!(r.h, MINI_H);
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap().clone();
+        assert_eq!(
+            (bar.mode.as_str(), bar.rate.as_str(), bar.latched),
+            ("Repeat", "1/16", false)
+        );
+        assert!(bar.can_slower && bar.can_faster);
+        let parts = bar.parts(r);
+        for (i, p) in parts.iter().enumerate() {
+            assert!(p.w >= 44 && p.h >= 44, "part {i}: {p:?}");
+            assert!(
+                p.x >= r.x && p.right() <= r.right() && p.y >= r.y && p.bottom() <= r.bottom(),
+                "part {i}: {p:?}"
+            );
+            for (j, o) in parts.iter().enumerate().skip(i + 1) {
+                assert!(
+                    p.intersect(*o).is_empty(),
+                    "parts {i} and {j} overlap: {p:?} {o:?}"
+                );
+            }
         }
-        let (rate32, latch) = (bar.button(r, 5), bar.button(r, 7));
-        let ev = s.ui.touch(1, Touch::Down, rate32.x + 10, rate32.y + 10).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Rate(Rate::ThirtySecond)));
-        s.ui.touch(1, Touch::Up, 0, 0);
-        let ev = s.ui.touch(1, Touch::Down, latch.x + 10, latch.y + 10).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut None), Some(ArpAction::Latch));
-        s.ui.touch(1, Touch::Up, 0, 0);
-        // A held hat repeats; the strip shows the pad.
+        let mut tap = |i: usize| {
+            let p = parts[i];
+            let ev = s.ui.touch(1, Touch::Down, p.x + 10, p.y + 10);
+            s.ui.touch(1, Touch::Up, 0, 0);
+            ev.and_then(|ev| s.page.action(&ev, &s.state, &mut None))
+        };
+        assert_eq!(tap(MINI_SLOWER), Some(ArpAction::Rate(Rate::EighthTriplet)));
+        assert_eq!(
+            tap(MINI_FASTER),
+            Some(ArpAction::Rate(Rate::SixteenthTriplet))
+        );
+        assert_eq!(tap(MINI_LATCH), Some(ArpAction::Latch));
+        assert_eq!(tap(MINI_OPEN), Some(ArpAction::OpenPanel));
+        // At the ends, the arrow that would go past does nothing.
+        let mut st = s.state.clone();
+        st.settings.rate = Rate::ThirtySecondTriplet;
+        st.latched = true;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap();
+        assert!(bar.can_slower && !bar.can_faster && bar.latched);
+        assert_eq!(
+            s.ui.touch(
+                2,
+                Touch::Down,
+                parts[MINI_FASTER].x + 10,
+                parts[MINI_FASTER].y + 10
+            ),
+            None
+        );
+        s.ui.touch(2, Touch::Up, 0, 0);
+        // A held hat repeats; the strip under it shows the pad.
         assert_eq!(s.ui.get::<StepStrip>(STEPS).unwrap().cells[0].label, "3");
     }
 
     #[test]
     fn the_chip_says_what_the_arp_does_and_whether_it_is_latched() {
-        let mut st = state(Settings { mode: Mode::Arp, ..Settings::default() }, &[0, 2], 1);
-        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp: Up 1/16, latched".to_string(), Tone::Warn));
+        let mut st = state(
+            Settings {
+                mode: Mode::Arp,
+                ..Settings::default()
+            },
+            &[0, 2],
+            1,
+        );
+        assert_eq!(
+            (chip(&st).text, chip(&st).tone),
+            ("Arp: Up 1/16, latched".to_string(), Tone::Warn)
+        );
         st.latched = false;
-        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp: Up 1/16".to_string(), Tone::Accent));
+        assert_eq!(
+            (chip(&st).text, chip(&st).tone),
+            ("Arp: Up 1/16".to_string(), Tone::Accent)
+        );
         st.settings.mode = Mode::Repeat;
         st.settings.rate = Rate::ThirtySecondTriplet;
         assert_eq!(chip(&st).text, "Repeat 1/32T");
         st.settings.mode = Mode::Pattern;
         st.pattern_changed = true;
-        assert_eq!(chip(&st).text, format!("Pattern: {}* 1/32T", st.patterns[0].0));
+        assert_eq!(
+            chip(&st).text,
+            format!("Pattern: {}* 1/32T", st.patterns[0].0)
+        );
         st.settings.mode = Mode::Direct;
-        assert_eq!((chip(&st).text, chip(&st).tone), ("Arp off".to_string(), Tone::Dim));
+        assert_eq!(
+            (chip(&st).text, chip(&st).tone),
+            ("Arp off".to_string(), Tone::Dim)
+        );
         st.latched = true;
         assert_eq!(chip(&st).text, "Latch on");
     }
@@ -604,32 +908,115 @@ mod tests {
     #[test]
     fn the_order_previews_match_the_engine_orders() {
         let got: Vec<String> = Order::ALL.iter().map(|o| order_preview(*o)).collect();
-        assert_eq!(got, ["1 2 3", "3 2 1", "1 2 3 2", "1 2 3 3 2 1", "3 1 2", "2 1 3", "as pressed", "?", "?", "?",
-                         "1+2+3"]);
+        assert_eq!(
+            got,
+            [
+                "1 2 3",
+                "3 2 1",
+                "1 2 3 2",
+                "1 2 3 3 2 1",
+                "3 1 2",
+                "2 1 3",
+                "as pressed",
+                "?",
+                "?",
+                "?",
+                "1+2+3"
+            ]
+        );
     }
 
     #[test]
     fn arp_cells_follow_the_order_and_mark_the_step_playing() {
-        let s = Settings { mode: Mode::Arp, octaves: 2, ..Settings::default() };
+        let s = Settings {
+            mode: Mode::Arp,
+            octaves: 2,
+            ..Settings::default()
+        };
         let (cells, first, playing) = arp_cells(&state(s, &[4, 0, 2], 5));
-        let labels: Vec<(&str, &str)> = cells.iter().map(|c| (c.label.as_str(), c.sub.as_str())).collect();
-        assert_eq!(labels, [("1", ""), ("3", ""), ("5", ""), ("1", "oct +1"), ("3", "oct +1"), ("5", "oct +1")]);
+        let labels: Vec<(&str, &str)> = cells
+            .iter()
+            .map(|c| (c.label.as_str(), c.sub.as_str()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("1", ""),
+                ("3", ""),
+                ("5", ""),
+                ("1", "oct +1"),
+                ("3", "oct +1"),
+                ("5", "oct +1")
+            ]
+        );
         assert_eq!((first, playing), (0, Some(4)));
         // As played keeps the press order.
-        let s = Settings { mode: Mode::Arp, order: Order::Played, ..Settings::default() };
+        let s = Settings {
+            mode: Mode::Arp,
+            order: Order::Played,
+            ..Settings::default()
+        };
         let (cells, _, playing) = arp_cells(&state(s, &[4, 0, 2], 0));
-        assert_eq!(cells.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["5", "1", "3"]);
+        assert_eq!(
+            cells.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["5", "1", "3"]
+        );
         assert_eq!(playing, None);
         // Nothing held, or Direct: an empty strip.
         assert!(arp_cells(&state(s, &[], 3)).0.is_empty());
         assert!(arp_cells(&state(Settings::default(), &[1], 3)).0.is_empty());
         // MIDI notes above the pads are named.
         assert_eq!(note_label(60), "C4");
+        // A chord from one note, and a scale run: the strip shows what plays.
+        let c_major = Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MAJOR));
+        let s = Settings {
+            mode: Mode::Arp,
+            scale: c_major,
+            chord: mpfree_arp::Chord::Triad,
+            ..Settings::default()
+        };
+        let labels = |st: ArpState| {
+            arp_cells(&st)
+                .0
+                .iter()
+                .map(|c| c.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(state(s, &[62], 0)), ["D4", "F4", "A4"]);
+        let s = Settings {
+            mode: Mode::Arp,
+            scale: c_major,
+            run: true,
+            order: Order::Played,
+            ..Settings::default()
+        };
+        assert_eq!(
+            labels(state(s, &[64, 60], 0)),
+            ["C4", "D4", "E4"],
+            "a run goes up, whatever the press order"
+        );
+        // Chords taking turns: the strip shows the chord whose turn it is,
+        // and the step within that turn (a beat = 4 sixteenths).
+        let s = Settings {
+            mode: Mode::Arp,
+            scale: c_major,
+            chord: mpfree_arp::Chord::Triad,
+            turns: mpfree_arp::Turns::Beat,
+            ..Settings::default()
+        };
+        assert_eq!(labels(state(s, &[62, 67], 4)), ["D4", "F4", "A4"]);
+        let (cells, _, playing) = arp_cells(&state(s, &[62, 67], 6));
+        assert_eq!((cells[0].label.as_str(), playing), ("G4", Some(1)));
     }
 
     #[test]
     fn long_orders_scroll_in_windows_of_sixteen() {
-        let s = Settings { mode: Mode::Arp, order: Order::UpDownInclusive, octaves: 4, ..Settings::default() };
+        let s = Settings {
+            mode: Mode::Arp,
+            order: Order::UpDownInclusive,
+            octaves: 4,
+            ..Settings::default()
+        };
         // 3 notes x 4 octaves up and down = 24 counts; count 19 is playing.
         let (cells, first, playing) = arp_cells(&state(s, &[0, 1, 2], 20));
         assert_eq!((cells.len(), first, playing), (8, 16, Some(3)));
@@ -639,10 +1026,31 @@ mod tests {
     fn pattern_cells_show_picks_and_marks() {
         let p = Pattern::parse("1 x+! . _ *:3 ?%40 l- h").unwrap();
         let cells: Vec<StepCell> = p.steps().iter().map(|s| pattern_cell(*s)).collect();
-        let text: Vec<(&str, &str, bool)> = cells.iter().map(|c| (c.label.as_str(), c.sub.as_str(), c.accent)).collect();
-        assert_eq!(text, [("1", "", false), ("x", "oct +1", true), ("·", "", false), ("—", "", false),
-                          ("all", "×3", false), ("?", "40%", false), ("low", "oct -1", false), ("high", "", false)]);
-        let mut st = state(Settings { mode: Mode::Pattern, ..Settings::default() }, &[0], 11);
+        let text: Vec<(&str, &str, bool)> = cells
+            .iter()
+            .map(|c| (c.label.as_str(), c.sub.as_str(), c.accent))
+            .collect();
+        assert_eq!(
+            text,
+            [
+                ("1", "", false),
+                ("x", "oct +1", true),
+                ("·", "", false),
+                ("—", "", false),
+                ("all", "×3", false),
+                ("?", "40%", false),
+                ("low", "oct -1", false),
+                ("high", "", false)
+            ]
+        );
+        let mut st = state(
+            Settings {
+                mode: Mode::Pattern,
+                ..Settings::default()
+            },
+            &[0],
+            11,
+        );
         st.pattern = p;
         assert_eq!(pattern_cells(&st).2, Some(2));
     }
@@ -677,37 +1085,60 @@ mod tests {
         let mut qlink = None;
         let tap = |ui: &mut Ui, name: &str, fx: f32, fy: f32| {
             let r = ui.rect_of(name).unwrap();
-            let (x, y) = (r.x + (r.w as f32 * fx) as i32, r.y + (r.h as f32 * fy) as i32);
+            let (x, y) = (
+                r.x + (r.w as f32 * fx) as i32,
+                r.y + (r.h as f32 * fy) as i32,
+            );
             let ev = ui.touch(1, Touch::Down, x, y);
             ui.touch(1, Touch::Up, x, y);
             ev
         };
         // The Pattern tab (the last of four).
         let ev = tap(&mut s.ui, MODES, 0.9, 0.5).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut qlink), Some(ArpAction::Mode(Mode::Pattern)));
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut qlink),
+            Some(ArpAction::Mode(Mode::Pattern))
+        );
         // The first row of the order list is Up.
         let ev = tap(&mut s.ui, LIST, 0.5, 0.25).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut qlink), Some(ArpAction::Order(Order::Up)));
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut qlink),
+            Some(ArpAction::Order(Order::Up))
+        );
         // A finger on the gate slider, then moved to its right end.
         let r = s.ui.rect_of(QLINKS).unwrap();
         let (_, track) = s.ui.get::<SliderStack>(QLINKS).unwrap().row_rects(r, 1);
         let ev = s.ui.touch(2, Touch::Down, track.x + 5, track.y).unwrap();
         assert_eq!(s.page.action(&ev, &s.state, &mut qlink), None);
         assert_eq!(qlink, Some(1));
-        let ev = s.ui.touch(2, Touch::Move, track.right() + 50, track.y).unwrap();
-        let Some(ArpAction::Settings(set)) = s.page.action(&ev, &s.state, &mut qlink) else { panic!("{ev:?}") };
+        let ev =
+            s.ui.touch(2, Touch::Move, track.right() + 50, track.y)
+                .unwrap();
+        let Some(ArpAction::Settings(set)) = s.page.action(&ev, &s.state, &mut qlink) else {
+            panic!("{ev:?}")
+        };
         assert_eq!(set.gate, 100);
         s.ui.touch(2, Touch::Up, 0, 0);
     }
 
     #[test]
     fn pattern_mode_lays_out_the_buttons_and_original_waits_for_a_change() {
-        let mut st = state(Settings { mode: Mode::Pattern, ..Settings::default() }, &[0, 1], 2);
+        let mut st = state(
+            Settings {
+                mode: Mode::Pattern,
+                ..Settings::default()
+            },
+            &[0, 1],
+            2,
+        );
         st.pattern = Pattern::parse("1 2").unwrap();
         let mut ui = Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", mpfree_ui::widgets::Header::new(&["Arp"]));
         ui.add("pads", mpfree_ui::widgets::PadGrid::new(16, 4));
-        ui.add("hint", mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center));
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center),
+        );
         let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
         ui.show("Arp").unwrap();
         assert!(ui.rect_of(ACTIONS).is_some() && ui.rect_of(QLINKS).is_none());
@@ -720,17 +1151,88 @@ mod tests {
         st.pattern_changed = true;
         page.update(&mut ui, &st).unwrap();
         let ev = ui.touch(1, Touch::Down, orig.x + 5, orig.y + 5).unwrap();
-        assert_eq!(page.action(&ev, &st, &mut None), Some(ArpAction::Button(PatternButton::Original)));
+        assert_eq!(
+            page.action(&ev, &st, &mut None),
+            Some(ArpAction::Button(PatternButton::Original))
+        );
         ui.touch(1, Touch::Up, 0, 0);
         // Back to Arp: the Q-Links come back.
         st.settings.mode = Mode::Arp;
         page.update(&mut ui, &st).unwrap();
         assert!(ui.rect_of(QLINKS).is_some() && ui.rect_of(ACTIONS).is_none());
-        // Direct: the strip goes, and the pads take its room.
+        // Direct: the strip goes, and the list takes its room.
         let pads = ui.rect_of("pads").unwrap();
         st.settings.mode = Mode::Direct;
         page.update(&mut ui, &st).unwrap();
         assert!(ui.rect_of(STEPS).is_none() && ui.rect_of(QLINKS).is_some());
-        assert!(ui.rect_of("pads").unwrap().h > pads.h);
+        assert_eq!(ui.rect_of("pads").unwrap(), pads);
+    }
+
+    #[test]
+    fn the_pads_never_move_between_play_the_band_and_the_panel() {
+        let st = state(
+            Settings {
+                mode: Mode::Arp,
+                ..Settings::default()
+            },
+            &[0, 4, 7],
+            3,
+        );
+        let mut ui = Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", mpfree_ui::widgets::Header::new(&["Play"]));
+        ui.add("pads", mpfree_ui::widgets::PadGrid::new(16, 4));
+        ui.add(
+            "kits",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center),
+        );
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, mpfree_ui::Align::Center),
+        );
+        // The pad player's Play page: pads, and a column of its own beside them.
+        ui.add_page(
+            "Play",
+            "col(header:60, row(pads:*, col(kits:*):460):*, hint:26)",
+        )
+        .unwrap();
+        let mut page = ArpPanel::add(&mut ui, "Arp", "Arp quick", &st).unwrap();
+        page.set_quick_layout(
+            &mut ui,
+            "col(header:60, row(pads:*, col(arp-mini:56, kits:*):460):*, hint:26)",
+        )
+        .unwrap();
+        ui.show("Play").unwrap();
+        let pads = ui.rect_of("pads").unwrap();
+        let kits = ui.rect_of("kits").unwrap();
+        assert_eq!(kits.w, SIDE);
+        ui.show("Arp quick").unwrap();
+        assert_eq!(ui.rect_of("pads").unwrap(), pads, "the quick band");
+        let (mini, under) = (ui.rect_of(MINI).unwrap(), ui.rect_of("kits").unwrap());
+        assert_eq!(
+            (mini.x, mini.w, mini.y),
+            (kits.x, kits.w, kits.y),
+            "the strip sits at the top of the column"
+        );
+        assert_eq!(
+            under.bottom(),
+            kits.bottom(),
+            "the app's column keeps all but the strip's height"
+        );
+        ui.show("Arp").unwrap();
+        for mode in MODES_ALL {
+            page.update(
+                &mut ui,
+                &state(
+                    Settings {
+                        mode,
+                        ..Settings::default()
+                    },
+                    &[0, 4, 7],
+                    3,
+                ),
+            )
+            .unwrap();
+            assert_eq!(ui.rect_of("pads").unwrap(), pads, "the panel in {mode:?}");
+        }
     }
 }
