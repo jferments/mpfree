@@ -119,8 +119,16 @@ pub enum ModEvent {
         addr: ParamAddr,
         value: f32,
     },
-    /// A parameter lock: replaces the value until [`ModEvent::Unlock`].
+    /// A step's parameter lock: replaces the value until
+    /// [`ModEvent::Unlock`].
     Lock {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// A move lane's value (a recorded knob, XY pad or Perform FX move):
+    /// takes the lock's place, as a lock would, but any hand beats it.
+    /// [`ModEvent::Unlock`] ends it too.
+    Lane {
         addr: ParamAddr,
         value: f32,
     },
@@ -128,13 +136,17 @@ pub enum ModEvent {
         addr: ParamAddr,
     },
     /// A hand on the control (a finger on the XY pad or the DJ knob, a
-    /// Q-Link turned over a lane or a lock): the target follows it, over
-    /// any lock, until [`ModEvent::Untouch`]. Locks and unlocks keep
-    /// landing underneath meanwhile, so the hand lets go to whatever
-    /// they hold by then. The last touch wins.
+    /// Q-Link turned on a parameter with a lane, any of them while
+    /// recording): the target follows it until [`ModEvent::Untouch`].
+    /// It beats a lane's value always, and a step's lock only when
+    /// `over_locks` (while recording); otherwise a locked step keeps its
+    /// lock under the hand. Locks and lanes keep landing underneath, so
+    /// the hand lets go to whatever they hold by then. The last touch
+    /// wins. [`ModEvent::hand`] picks the event for a move.
     Touch {
         addr: ParamAddr,
         value: f32,
+        over_locks: bool,
     },
     /// The hand let go.
     Untouch {
@@ -147,6 +159,28 @@ pub enum ModEvent {
     },
     /// A note started: LFOs with Retrigger on restart.
     Trigger,
+}
+
+impl ModEvent {
+    /// The event for a hand moving `addr`'s control to `value`, by the
+    /// rule Jay picked on 2026-11-11: a hand always beats a move lane, and
+    /// beats a step's lock only while recording; a parameter with no
+    /// lane, not recording, is simply set (a locked step keeps its lock,
+    /// as on Elektron machines, and the turn stays when the hand lets
+    /// go). `lane`: the playing clip has a move lane on `addr`.
+    /// `recording`: `addr`'s track is recording. After a `Touch`, send
+    /// [`ModEvent::Untouch`] when the hand lets go.
+    pub fn hand(addr: ParamAddr, value: f32, lane: bool, recording: bool) -> ModEvent {
+        if recording || lane {
+            ModEvent::Touch {
+                addr,
+                value,
+                over_locks: recording,
+            }
+        } else {
+            ModEvent::Set { addr, value }
+        }
+    }
 }
 
 /// A [`ModEvent`] at a frame offset inside the block.
@@ -198,10 +232,13 @@ struct Target {
     /// ln(min) and ln(max / min) for a log curve, so a position turns
     /// into a value with one `exp`.
     log: Option<(f32, f32)>,
-    /// A lock's value and knob position.
+    /// A lock's (or a lane's) value and knob position.
     lock: Option<(f32, f32)>,
-    /// A hand's value and knob position (over the lock).
-    touch: Option<(f32, f32)>,
+    /// The lock is a lane's value, which any hand beats.
+    lane: bool,
+    /// A hand's value and knob position, and whether it beats a step's
+    /// lock.
+    touch: Option<(f32, f32, bool)>,
     /// Scene A and B knob positions.
     scene: [Option<f32>; 2],
     /// The macro and map that move it.
@@ -227,6 +264,7 @@ impl Target {
             base_u: info.to_unit(base),
             log: log_consts(&info),
             lock: None,
+            lane: false,
             touch: None,
             scene: [None; 2],
             mac: None,
@@ -871,18 +909,21 @@ impl ModEngine {
                 }
                 t.dirty = true;
             }
-            ModEvent::Lock { addr, value } => match self.find(addr) {
-                Some(i) => {
-                    let t = &mut self.targets[i];
-                    let v = t.info.clamp(value);
-                    t.lock = Some((v, t.info.to_unit(v)));
-                    t.dirty = true;
+            ModEvent::Lock { addr, value } | ModEvent::Lane { addr, value } => {
+                match self.find(addr) {
+                    Some(i) => {
+                        let t = &mut self.targets[i];
+                        let v = t.info.clamp(value);
+                        t.lock = Some((v, t.info.to_unit(v)));
+                        t.lane = matches!(ev, ModEvent::Lane { .. });
+                        t.dirty = true;
+                    }
+                    None => {
+                        self.stats.unregistered += 1;
+                        self.pass = Some((addr, value));
+                    }
                 }
-                None => {
-                    self.stats.unregistered += 1;
-                    self.pass = Some((addr, value));
-                }
-            },
+            }
             ModEvent::Unlock { addr } => {
                 if let Some(i) = self.find(addr) {
                     let t = &mut self.targets[i];
@@ -891,11 +932,15 @@ impl ModEngine {
                     }
                 }
             }
-            ModEvent::Touch { addr, value } => match self.find(addr) {
+            ModEvent::Touch {
+                addr,
+                value,
+                over_locks,
+            } => match self.find(addr) {
                 Some(i) => {
                     let t = &mut self.targets[i];
                     let v = t.info.clamp(value);
-                    t.touch = Some((v, t.info.to_unit(v)));
+                    t.touch = Some((v, t.info.to_unit(v), over_locks));
                     t.dirty = true;
                 }
                 None => {
@@ -1026,9 +1071,12 @@ impl ModEngine {
             u = lu;
             exact = Some(l);
         }
-        if let Some((h, hu)) = t.touch {
-            u = hu;
-            exact = Some(h);
+        if let Some((h, hu, over_locks)) = t.touch {
+            // A step's lock keeps its value under a hand, unless recording.
+            if over_locks || t.lane || t.lock.is_none() {
+                u = hu;
+                exact = Some(h);
+            }
         }
         if t.rows > 0 {
             u += t.offset;
