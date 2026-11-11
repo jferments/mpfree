@@ -51,6 +51,9 @@ pub const TAB: usize = 6;
 pub const HINT: &str = "Record, or keep what just came in with Skip back · tap a row, then the wheel changes it · UNDO \
                         takes a take off its pad again";
 
+/// What the picture says while the line input is off.
+pub const OFF_NOTE: &str = "The line input is off: Looper tab, MENU, Line input";
+
 /// The input the strip shows, in seconds, and its columns a second.
 pub const STRIP_SECONDS: u32 = 30;
 const STRIP_COLUMNS_PER_SECOND: u32 = 30;
@@ -516,7 +519,7 @@ impl RecTab {
             })
         });
         v.note = if !line_on {
-            "The line input is off: Looper tab, MENU, Line input".to_string()
+            OFF_NOTE.to_string()
         } else {
             match rec.map(Recording::progress) {
                 Some(Progress::Waiting) => match settings.start {
@@ -553,6 +556,32 @@ impl RecTab {
                     b.enabled[1] = false;
                 }
             }
+        }
+    }
+
+    /// No input to show (the line input is off, or just turned on): the
+    /// picture says so and the strip starts again.
+    pub fn idle(&mut self, ui: &mut Ui, line_on: bool) {
+        self.recording = false;
+        if let Some(v) = ui.get_mut::<InputView>(VIEW) {
+            v.strip.reset();
+            v.skip = None;
+            v.take = None;
+            v.bars.clear();
+            v.threshold = None;
+            v.meter_db = [f32::NEG_INFINITY; 2];
+            v.note = if line_on {
+                "Starting the line input"
+            } else {
+                OFF_NOTE
+            }
+            .to_string();
+            v.caption.clear();
+            v.right.clear();
+        }
+        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
+            b.labels[0] = "Record".to_string();
+            b.enabled = vec![false, false];
         }
     }
 
