@@ -53,7 +53,7 @@ impl<'a> Clip<'a> {
     /// The whole sample. `None` unless `channels` is 1 or 2, the data is
     /// whole frames and the rate is non-zero.
     pub fn new(data: &'a [f32], channels: usize, rate: u32) -> Option<Self> {
-        if !(1..=2).contains(&channels) || data.len() % channels != 0 || rate == 0 {
+        if !(1..=2).contains(&channels) || !data.len().is_multiple_of(channels) || rate == 0 {
             return None;
         }
         let end = (data.len() / channels) as i64;

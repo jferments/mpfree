@@ -507,7 +507,20 @@ pub struct Phaser {
     taps: [Smooth; 5],
     state: [[f32; MAX_STAGES]; 2],
     last: [f32; 2],
+    /// The stages' coefficient for each side, worked out every [`CTL`]
+    /// frames (an exp2 and a tan each) and glided to between.
+    gg: [f32; 2],
+    gg_step: [f32; 2],
+    /// Frames until the next coefficient; whether it lands at once (after
+    /// a reset) instead of gliding.
+    ctl: u32,
+    land: bool,
 }
+
+/// Frames between the Phaser's coefficient updates: every 0.36 ms at 44.1
+/// kHz, far quicker than its sweep, with a straight glide between, so the
+/// sweep stays smooth for a sixteenth of the cost.
+const CTL: u32 = 16;
 
 impl Default for Phaser {
     fn default() -> Self { Self::new() }
@@ -528,6 +541,10 @@ impl Phaser {
             taps: [Smooth::new(0.0); 5],
             state: [[0.0; MAX_STAGES]; 2],
             last: [0.0; 2],
+            gg: [0.0; 2],
+            gg_step: [0.0; 2],
+            ctl: 0,
+            land: true,
         };
         p.stages();
         p.prepare(48_000, mpfree_node::MAX_BLOCK);
@@ -570,13 +587,29 @@ impl Phaser {
             // Stages past the last tap in use rest, cleared.
             let used = (0..5).rev().find(|&k| w[k] != 0.0).map_or(0, |k| STAGE_COUNTS[k]);
             let ph = self.lfo.next();
+            if self.ctl == 0 {
+                // The coefficient now; the stages glide to it over the next
+                // CTL frames (it lands at once after a reset). The counter
+                // runs on across blocks, so any block size sounds the same.
+                self.ctl = CTL;
+                for ch in 0..2 {
+                    let off = if ch == 0 { 0.0 } else { off_r };
+                    let hz = (center + depth * sine(wrap(ph + off))).exp2().min(top);
+                    let g = (PI * hz / fs).tan();
+                    let to = g / (1.0 + g);
+                    if self.land {
+                        self.gg[ch] = to;
+                    }
+                    self.gg_step[ch] = (to - self.gg[ch]) / CTL as f32;
+                }
+                self.land = false;
+            }
+            self.ctl -= 1;
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
-                let off = if ch == 0 { 0.0 } else { off_r };
-                let hz = (center + depth * sine(wrap(ph + off))).exp2().min(top);
-                let g = (PI * hz / fs).tan();
-                let gg = g / (1.0 + g);
+                let gg = self.gg[ch];
+                self.gg[ch] += self.gg_step[ch];
                 let mut u = x[ch] + fb * self.last[ch];
                 let mut out = 0.0;
                 let mut tap = 0;
@@ -618,6 +651,9 @@ impl Node for Phaser {
         for t in &mut self.taps { t.snap(t.target); }
         self.state = [[0.0; MAX_STAGES]; 2];
         self.last = [0.0; 2];
+        self.gg_step = [0.0; 2];
+        self.ctl = 0;
+        self.land = true;
         self.lfo.reset();
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {

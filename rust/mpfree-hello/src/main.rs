@@ -65,6 +65,7 @@
 mod akai;
 mod app;
 mod alsa;
+mod calibrate_page;
 mod debug_page;
 mod gui;
 mod kit;
@@ -269,7 +270,10 @@ impl Out {
     }
 
     /// Like `show`, but a message that finds no room comes back, so the
-    /// audio thread can keep it (and not free it) and try again.
+    /// audio thread can keep it (and not free it) and try again. The message
+    /// comes back by value on purpose: boxing it would allocate on the audio
+    /// thread.
+    #[allow(clippy::result_large_err)]
     fn try_show(&mut self, msg: gui::ToUi) -> Result<(), gui::ToUi> {
         match self.sink.as_ref() {
             Some(s) => s.try_send(msg).map_err(|e| match e {
@@ -1797,6 +1801,7 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+                app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
                 app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
                 app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),

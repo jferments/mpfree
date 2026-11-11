@@ -6,6 +6,7 @@
 //!              [--check-allocs]
 //! mpfree-bench --calibrate [--machine NAME]
 //! mpfree-bench --compare A.json B.json
+//! mpfree-bench --afford [--quick] [--calibration FILE]
 //! ```
 //!
 //! - On the desktop it prints each case's mean, p99 and worst block. With
@@ -19,6 +20,10 @@
 //! - `--compare A.json B.json` puts two `--json` reports side by side, case
 //!   by case: B's p99 and worst as a share of A's (the default and the
 //!   cortex-a17 build on the MPC, or a change against main).
+//! - `--afford` measures each synth preset and the sampler at several voice
+//!   counts, fits a fixed cost plus a cost per voice to the p99 blocks, and
+//!   says how many voices fit in the module's budget: on this machine, as an
+//!   MPC estimate with `--calibration`, or for real on the MPC.
 //! - The "mem MB" column is what each engine holds once it is built (its
 //!   buffers, delay lines, sample memory), from the counting allocator.
 //!
@@ -47,10 +52,11 @@ struct Options {
     calibrate: bool,
     machine: Option<String>,
     compare: Option<(String, String)>,
+    afford: bool,
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { quick: false, filter: None, calibration: None, json: None, check_allocs: false, calibrate: false, machine: None, compare: None };
+    let mut o = Options { quick: false, filter: None, calibration: None, json: None, check_allocs: false, calibrate: false, machine: None, compare: None, afford: false };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value"));
@@ -62,6 +68,7 @@ fn options() -> Result<Options, String> {
             "--check-allocs" => o.check_allocs = true,
             "--calibrate" => o.calibrate = true,
             "--machine" => o.machine = Some(value("--machine")?),
+            "--afford" => o.afford = true,
             "--compare" => {
                 let a = value("--compare")?;
                 o.compare = Some((a, value("--compare")?));
@@ -203,6 +210,64 @@ fn compare(a: &str, b: &str) -> Result<String, String> {
     Ok(t)
 }
 
+/// Runs a case for `blocks` blocks after a 50-block warm-up.
+fn time_case(c: &mut cases::Case, blocks: u64) -> Summary {
+    let (mut l, mut r) = (vec![0.0f32; MPC.frames as usize], vec![0.0f32; MPC.frames as usize]);
+    for b in 0..50 { (c.block)(b, &mut l, &mut r); }
+    let mut probe = Probe::new(MPC.ns());
+    for b in 50..50 + blocks {
+        let span = Span::start();
+        (c.block)(b, &mut l, &mut r);
+        probe.stop(span, MPC.frames);
+    }
+    std::hint::black_box(&l);
+    probe.lifetime()
+}
+
+/// Voices that fit in `budget_ns` at `fixed + n * per_voice`, or None if
+/// even the fixed cost does not fit.
+fn voices_in(budget_ns: f64, fixed: f64, per_voice: f64) -> Option<f64> {
+    if fixed.max(0.0) >= budget_ns { None } else if per_voice <= 0.0 { Some(f64::INFINITY) } else { Some((budget_ns - fixed.max(0.0)) / per_voice) }
+}
+
+/// The `--afford` table: cost per voice and voices per budget.
+fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
+    let blocks = (if quick { 2 } else { 6 } * MPC.rate / MPC.frames) as u64;
+    let (factor, lo, hi) = model.map_or((1.0, 1.0, 1.0), |m| m.factor());
+    let place = if on_device { "on this MPC" } else if model.is_some() { "on the MPC (estimate)" } else { "on this machine" };
+    println!("mpfree-bench --afford on {}, build {}", machine(), build());
+    println!("p99 block = fixed + voices x per voice, fitted over the voice counts shown. Times are {place}.");
+    if model.is_some() && !on_device {
+        println!("MPC estimate: this machine x {factor:.1} (kernels range {lo:.1} to {hi:.1}); \"voices\" uses x {factor:.1}, the range gives \"(x-y)\".");
+    }
+    println!();
+    println!("{:<30} {:>9} {:>11}  {:<34}  {:>8}  voices that fit", "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget");
+    for mut sc in cases::scaling(MPC.rate) {
+        let mut pts = Vec::new();
+        for (n, c) in sc.points.iter_mut() { pts.push((*n, time_case(c, blocks).p99_ns as f64)); }
+        let (a, b) = cases::fit(&pts);
+        let budget = budget::for_module(sc.module).expect("module budget");
+        let budget_ns = budget.worst_ns(MPC) as f64;
+        let fits = |f: f64| voices_in(budget_ns, a * f, b * f);
+        let most = pts.iter().map(|p| p.0).max().unwrap_or(1);
+        let show = |v: Option<f64>| match v {
+            None => "none".to_string(),
+            Some(_) if most == 1 => "fits (mono)".to_string(),
+            Some(x) if x >= most as f64 => if x.is_finite() { format!("{most}+ ({})", x.floor() as i64) } else { format!("{most}+") },
+            Some(x) => format!("{}", x.floor() as i64),
+        };
+        let range = if model.is_some() && !on_device { format!(" ({}-{})", show(fits(hi)), show(fits(lo))) } else { String::new() };
+        let counts = pts.iter().map(|(n, ns)| format!("{n}:{:.0}", ns * factor / 1e3)).collect::<Vec<_>>().join(" ");
+        let per_voice = if most == 1 { "-".to_string() } else { format!("{:.2}", b * factor / 1e3) };
+        println!("{:<30} {:>9.1} {:>11}  {:<34}  {:>4.0} us  {}{range}", sc.name, a * factor / 1e3, per_voice, counts,
+                 budget_ns / 1e3, show(fits(factor)));
+    }
+    println!();
+    println!("\"voices that fit\" is for that engine alone in its whole module budget (synth 20 %, sampler 25 % of a period, worst block);");
+    println!("several synth tracks share the synth budget. \"16+ (87)\": every count measured fits, and the line runs out at 87 (Poly plays");
+    println!("at most 16). A preset whose cost does not grow with voices shows a per-voice cost near 0: its p99 is set by something else.");
+}
+
 fn main() -> ExitCode {
     let o = match options() {
         Ok(o) => o,
@@ -210,7 +275,8 @@ fn main() -> ExitCode {
             if !e.is_empty() { eprintln!("mpfree-bench: {e}"); }
             eprintln!("usage: mpfree-bench [--quick] [--filter TEXT] [--calibration FILE] [--json FILE] [--check-allocs]\n       \
                        mpfree-bench --calibrate [--machine NAME]\n       \
-                       mpfree-bench --compare A.json B.json");
+                       mpfree-bench --compare A.json B.json\n       \
+                       mpfree-bench --afford [--quick] [--calibration FILE]");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
     };
@@ -250,6 +316,11 @@ fn main() -> ExitCode {
             }
         },
     };
+
+    if o.afford {
+        afford(o.quick, model.as_ref().map(|(m, _)| m), on_device);
+        return ExitCode::SUCCESS;
+    }
 
     // 20 s of audio per case (2 s with --quick), after a 50-block warm-up.
     let seconds = if o.quick { 2 } else { 20 };

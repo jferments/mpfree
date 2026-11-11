@@ -274,7 +274,7 @@ mod tests {
         for degrees in [0, 90, 180, 270] {
             let r = Rotation::from_degrees(degrees).unwrap();
             let (lw, lh) = g.logical_size(r);
-            let mut seen = vec![false; 24];
+            let mut seen = [false; 24];
             for ly in 0..lh {
                 for lx in 0..lw {
                     let (x, y) = g.native(r, lx, ly);
