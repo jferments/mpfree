@@ -222,6 +222,95 @@ fn place(node: &Node, r: Rect, gap: i32, out: &mut Vec<(String, Rect)>) {
     }
 }
 
+/// A layout file: one `Page name = spec` per line, `#` comments, and a
+/// spec may run over several lines while its brackets are open:
+///
+/// ```text
+/// # Play with the kit list on the left
+/// Play = col(header:60, row(side:480, pads:*):*, hint:28)
+/// ```
+///
+/// A name starting with `@` defines a piece of text that later specs use by
+/// that name, so pages that must line up share one value:
+///
+/// ```text
+/// @side = 460
+/// Play = col(header:60, row(pads:*, side:@side):*, hint:26)
+/// Arp  = col(header:60, row(pads:*, arp-list:@side):*, hint:26)
+/// ```
+///
+/// Returns (page, spec) pairs; the specs are checked here, the widget names
+/// when they are applied ([`crate::Ui::apply_layouts`]).
+pub fn parse_file(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    let mut defs: Vec<(String, String)> = Vec::new();
+    let mut open: Option<(usize, String, String, i32)> = None;
+    for (n, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let depth = |s: &str| s.matches('(').count() as i32 - s.matches(')').count() as i32;
+        let (start, page, mut spec, d) = match open.take() {
+            Some((start, page, spec, d)) => {
+                (start, page, format!("{spec} {line}"), d + depth(line))
+            }
+            None => {
+                let (page, spec) = line
+                    .split_once('=')
+                    .ok_or_else(|| format!("layout line {}: expected Page = spec", n + 1))?;
+                (
+                    n,
+                    page.trim().to_string(),
+                    spec.trim().to_string(),
+                    depth(spec),
+                )
+            }
+        };
+        if d > 0 {
+            open = Some((start, page, spec, d));
+            continue;
+        }
+        spec = spec.trim().to_string();
+        // Longest names first, so @side2 is not read as @side.
+        for (name, text) in &defs {
+            spec = spec.replace(name.as_str(), text);
+        }
+        if let Some(name) = page.strip_prefix('@') {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
+                return Err(format!("layout line {}: bad name {page:?}", start + 1));
+            }
+            defs.retain(|(n, _)| *n != page);
+            defs.push((page, spec));
+            defs.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
+            continue;
+        }
+        if let Some(i) = spec.find('@') {
+            return Err(format!(
+                "layout line {} ({page}): {} is not defined above",
+                start + 1,
+                spec[i..]
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || "@_-".contains(c)))
+                    .next()
+                    .unwrap_or("@")
+            ));
+        }
+        parse(&spec).map_err(|e| format!("layout line {} ({page}): {e}", start + 1))?;
+        out.push((page, spec));
+    }
+    if let Some((start, page, _, _)) = open {
+        return Err(format!(
+            "layout line {} ({page}): a bracket is never closed",
+            start + 1
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +360,39 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert_eq!(parse(" pads ").unwrap(), Node::Slot("pads".into()));
+    }
+
+    #[test]
+    fn layout_files() {
+        let f = "# mine\nPlay = col(header:60,\n  row(side:480, pads:*):*)\nDebug = a # just one\n";
+        let got = parse_file(f).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "Play".to_string(),
+                    "col(header:60, row(side:480, pads:*):*)".to_string()
+                ),
+                ("Debug".to_string(), "a".to_string())
+            ]
+        );
+        assert!(parse_file("Play = col(a, b")
+            .unwrap_err()
+            .contains("never closed"));
+        let shared = parse_file("@side = 460\n@sidebar = 99\nPlay = row(pads:*, side:@side)\nArp = row(pads:*, l:@sidebar)\n").unwrap();
+        assert_eq!(
+            shared,
+            vec![
+                ("Play".to_string(), "row(pads:*, side:460)".to_string()),
+                ("Arp".to_string(), "row(pads:*, l:99)".to_string())
+            ]
+        );
+        assert_eq!(
+            parse_file("Play = row(a:@w)").unwrap_err(),
+            "layout line 1 (Play): @w is not defined above"
+        );
+        assert!(parse_file("Play col(a)")
+            .unwrap_err()
+            .starts_with("layout line 1"));
     }
 }
