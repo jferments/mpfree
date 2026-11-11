@@ -6,6 +6,10 @@
 //!   slider, timing); Debug (every MIDI message in and out, events, timing);
 //!   Console (the system log, raw); Prefs and each page's options (MENU); and
 //!   the button guide. Tabs in the header switch between the main pages.
+//! - The arp (`mpfree-arp-ui`): the quick band over the pads while NOTE
+//!   REPEAT is held or pads are latched, the Arp panel beside the pads, the
+//!   pattern workspace, and the arp chip in the header (a tap opens the
+//!   panel). None is a tab: they belong to Play.
 //!
 //! The pad player's screen runs in its own thread at normal priority, so the
 //! audio thread never waits for drawing. The audio thread sends it `ToUi`
@@ -17,13 +21,16 @@
 //! the loading page shows the console, and a tab goes back. After that,
 //! `app.rs` decides, and touches only report what was touched.
 
-use crate::app::{GuideView, MenuView, PadLevel, Settings, Status, View, TABS};
+use crate::app::{ArpView, GuideView, MenuView, PadLevel, Settings, Status, View, WorkspaceView, TABS};
 use crate::touchlab_page::TouchLabView;
 use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
 use mpfree_touch::touchlab::reader_line;
 use mpfree_touch_evdev::{EvdevFile, TouchReader, TouchSource};
+use mpfree_arp::{Mode, Pattern};
+use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
+use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::widgets::{Card, Chip, Fader, Header, Label, ListItem, ListView, Loading, LogPanel, OptionList,
                          OptionRow, PadGrid, StatList};
@@ -50,6 +57,13 @@ const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
+
+/// The arp's pages: the panel beside the pads, the quick band over them,
+/// and the pattern workspace (editing, and recording on the pads).
+pub const ARP_PAGE: &str = "Arp";
+pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
+pub const PATTERN_PAGE: &str = "Pattern";
+pub const RECORD_PAGE: &str = "Pattern, recording";
 
 /// The screen's size as the player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
@@ -182,6 +196,16 @@ pub enum ToUi {
     ClearConsole,
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// What the arp screens show. (Patterns are large, so they travel
+    /// boxed: the channel keeps a slot of the largest message per place.)
+    Arp(Box<ArpView>),
+    /// The arp's pattern list.
+    Patterns(Vec<(String, Pattern)>),
+    Workspace(Box<WorkspaceView>),
+    /// A step recorded on the pads: the pattern so far and the next step.
+    Recorded(Box<Pattern>, usize),
+    /// The data wheel in the workspace.
+    WorkspaceWheel(i32),
     Quit,
 }
 
@@ -195,6 +219,12 @@ pub enum FromUi {
     MenuSelect(usize),
     MenuStep(usize, i32),
     GuideButton(usize),
+    /// A touch on the Arp panel or the quick band.
+    Arp(ArpAction),
+    /// A touch in the pattern workspace (its editor has changed already).
+    Workspace(Box<WsAction>),
+    /// The arp chip in the header: open or close the panel.
+    ArpChip,
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -222,6 +252,20 @@ pub struct Player {
     console_backlog: VecDeque<String>,
     /// The Touch lab page is on screen (over `view`, which it returns to).
     lab_open: bool,
+    arp_panel: ArpPanel,
+    pub workspace: PatternWorkspace,
+    /// What the arp screens show, from the app.
+    pub arp: ArpState,
+    /// The Q-Link slider a finger is on, on the panel.
+    qlink_focus: Option<usize>,
+    /// Where the arp chip is in the header's chips.
+    arp_chip: Option<usize>,
+    /// Fingers on the screen: a page change lets go of them first, so a pad
+    /// held on the screen never sticks.
+    fingers: Vec<u64>,
+    /// Actions that came from something other than a touch (a page change
+    /// letting go of a pad, the wheel in the workspace), for the audio thread.
+    outbox: Vec<FromUi>,
 }
 
 impl Player {
@@ -254,6 +298,14 @@ impl Player {
         ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT).expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        let patterns = crate::app::built_in_patterns();
+        let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
+        let name = patterns.first().map(|(n, _)| n.clone()).unwrap_or_default();
+        let arp = ArpState { settings: mpfree_arp::Settings::default(), pattern, patterns, pattern_index: 0,
+                             pattern_changed: false, notes: Vec::new(), step: 0, latched: false, bpm: 120.0 };
+        let arp_panel = ArpPanel::add(&mut ui, ARP_PAGE, QUICK_PAGE, &arp).expect("arp layouts");
+        let workspace = PatternWorkspace::add(&mut ui, PATTERN_PAGE, RECORD_PAGE, &name, pattern)
+            .expect("workspace layouts");
         ui.add("touchlab", TouchLabView::new());
         ui.add_full_page("Touch lab", "touchlab").expect("touch lab layout");
         let _ = ui.show("Loading");
@@ -263,7 +315,9 @@ impl Player {
                              timing: Timing { last_ms: f32::NAN, ..Timing::default() }, screen_row: "-".to_string(),
                              timed, ready: false, view: View::Play, status, settings: Settings::default(),
                              session: ("Starting".to_string(), Tone::Dim),
-                             console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false };
+                             console_from_lines: timed, console_backlog: VecDeque::new(), lab_open: false,
+                             arp_panel, workspace, arp, qlink_focus: None, arp_chip: None, fingers: Vec::new(),
+                             outbox: Vec::new() };
         p.show_timing();
         p.refresh_chips();
         p.refresh_hint();
@@ -289,21 +343,42 @@ impl Player {
     }
 
     fn set_kit(&mut self, k: usize) {
-        let Some(kit) = self.kits.get(k).cloned() else { return };
+        if k >= self.kits.len() {
+            return;
+        }
         self.kit = k;
         if let Some(g) = self.ui.get_mut::<PadGrid>("pads") {
-            for (i, pad) in g.pads.iter_mut().enumerate() {
-                let label = kit.pads.get(i).cloned().flatten();
-                pad.color = label.as_ref().map(|_| Color::from_pad(kit.colour));
-                pad.label = label.unwrap_or_default();
+            for pad in g.pads.iter_mut() {
                 pad.level = 0.0;
                 pad.held = false;
             }
         }
+        self.label_pads();
         if let Some(l) = self.ui.get_mut::<ListView>("kits") {
             l.selected = k;
         }
         self.refresh_chips();
+    }
+
+    /// The pads' names: the kit's sounds, or what each pad writes while a
+    /// pattern is recorded on the pads.
+    fn label_pads(&mut self) {
+        let recording = self.view == View::Pattern && self.workspace.recording;
+        let kit = self.kits.get(self.kit).cloned();
+        let Some(g) = self.ui.get_mut::<PadGrid>("pads") else { return };
+        if recording {
+            let (notes, marks) = (Color::from_pad([0x00, 0x22, 0x3F]), Color::from_pad([0x3F, 0x22, 0x00]));
+            for (i, (pad, label)) in g.pads.iter_mut().zip(workspace::record_pad_labels()).enumerate() {
+                pad.label = label.to_string();
+                pad.color = (!label.is_empty()).then_some(if i < 9 { notes } else { marks });
+            }
+        } else if let Some(kit) = kit {
+            for (i, pad) in g.pads.iter_mut().enumerate() {
+                let label = kit.pads.get(i).cloned().flatten();
+                pad.color = label.as_ref().map(|_| Color::from_pad(kit.colour));
+                pad.label = label.unwrap_or_default();
+            }
+        }
     }
 
     /// The header's chips, right to left: session, kit, level, tempo, then
@@ -314,14 +389,16 @@ impl Player {
             chips.push(Chip::new(format!("Kit {} of {}", self.kit + 1, self.kits.len()), Tone::Accent));
         }
         // The level in dB is on the slider and the tempo only matters while
-        // pads repeat, so the header keeps to the chips that change how the
-        // pads play: four tabs leave room for about five chips.
-        let s = &self.status;
-        if s.latched {
-            chips.push(Chip::new(format!("Latch {} · {:.0} BPM", s.rate, s.bpm), Tone::Warn));
-        } else if s.repeat {
-            chips.push(Chip::new(format!("Repeat {} · {:.0} BPM", s.rate, s.bpm), Tone::Warn));
+        // the arp plays, so the header keeps to the chips that change how the
+        // pads play: four tabs leave room for about five chips. The arp chip
+        // is always there, so a tap on it can open the panel.
+        let mut arp = arp_view::chip(&self.arp);
+        if self.arp.settings.mode != Mode::Direct {
+            arp.text = format!("{} · {:.0} BPM", arp.text, self.arp.bpm);
         }
+        self.arp_chip = Some(chips.len());
+        chips.push(arp);
+        let s = &self.status;
         match s.pad_level {
             PadLevel::Full => chips.push(Chip::new("Full level", Tone::Warn)),
             PadLevel::Half => chips.push(Chip::new("Half level", Tone::Warn)),
@@ -339,10 +416,22 @@ impl Player {
 
     fn refresh_hint(&mut self) {
         let stop = if self.timed { "STOP: end" } else { "STOP: silence" };
+        let mode = self.arp.settings.mode;
+        let wheel = match mode {
+            Mode::Arp => "order",
+            Mode::Pattern => "pattern",
+            Mode::Direct | Mode::Repeat => "rate",
+        };
         let text = if self.status.shift && self.ready && matches!(self.view, View::Prefs | View::Options) {
             SHIFT_MENU_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.view == View::Play && self.band_showing() && self.status.latched {
+            format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
+                     {stop}", crate::app::mode_label(mode))
+        } else if self.view == View::Play && self.band_showing() {
+            format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
+                     + MENU: Arp panel")
         } else {
             match self.view {
                 View::Play => format!("Wheel or tap: kit   ·   Q-Link 1 or slider: level   ·   NOTE REPEAT: repeat   ·   \
@@ -352,6 +441,9 @@ impl Player {
                     .to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
+                View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
+                                      MENU: options   ·   NOTE REPEAT + MENU: close"),
+                View::Pattern => workspace::hint(self.workspace.recording).to_string(),
             }
         };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
@@ -526,6 +618,10 @@ impl Player {
             }
             ToUi::Status(s) => {
                 self.status = s;
+                if self.ready && self.view == View::Play {
+                    // The quick band comes and goes with NOTE REPEAT.
+                    self.show_view(View::Play);
+                }
                 self.refresh_chips();
                 self.refresh_hint();
             }
@@ -546,8 +642,50 @@ impl Player {
                 if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
                     lab.reset();
                 }
-                let _ = self.ui.show("Touch lab");
+                self.switch_page("Touch lab");
                 self.lab_open = true;
+            }
+            ToUi::Arp(v) => {
+                let v = *v;
+                let a = &mut self.arp;
+                a.settings = v.settings;
+                a.pattern = v.pattern;
+                a.pattern_index = v.pattern_index;
+                a.pattern_changed = v.pattern_changed;
+                a.notes = v.notes;
+                a.step = v.step;
+                a.latched = v.latched;
+                a.bpm = v.bpm;
+                self.refresh_arp();
+            }
+            ToUi::Patterns(list) => {
+                self.arp.patterns = list;
+                self.refresh_arp();
+            }
+            ToUi::Workspace(w) => {
+                let w = *w;
+                if w.open {
+                    self.workspace.editor = Editor::new(w.pattern);
+                    self.workspace.name = w.name;
+                }
+                self.workspace.recording = w.recording;
+                if self.view == View::Pattern {
+                    let page = self.workspace.page().to_string();
+                    self.switch_page(&page);
+                }
+                self.label_pads();
+                self.refresh_arp();
+            }
+            ToUi::Recorded(p, next) => {
+                self.workspace.recorded(*p);
+                self.workspace.editor.select(Row::Step, next);
+                self.refresh_arp();
+            }
+            ToUi::WorkspaceWheel(d) => {
+                if let Some(a) = self.workspace.wheel(d) {
+                    self.outbox.push(FromUi::Workspace(Box::new(a)));
+                }
+                self.refresh_arp();
             }
             ToUi::Quit => {}
         }
@@ -602,18 +740,68 @@ impl Player {
         }
     }
 
+    /// The quick band shows over the Play page while NOTE REPEAT is held or
+    /// pads are latched.
+    fn band_showing(&self) -> bool {
+        self.status.repeat
+    }
+
+    /// The pattern step the engine is on, while a pattern plays.
+    fn playing_step(&self) -> Option<usize> {
+        let a = &self.arp;
+        (a.settings.mode == Mode::Pattern && !a.notes.is_empty() && a.step > 0 && !a.pattern.steps().is_empty())
+            .then(|| ((a.step - 1) as usize) % a.pattern.len())
+    }
+
+    /// Show the arp state on the panel, the band, the workspace and the chip.
+    fn refresh_arp(&mut self) {
+        let _ = self.arp_panel.update(&mut self.ui, &self.arp);
+        let playing = self.playing_step();
+        self.workspace.update(&mut self.ui, playing);
+        self.refresh_chips();
+        self.refresh_hint();
+    }
+
+    /// Change page, first letting go of every finger on the screen (the
+    /// page's widgets would never hear them lift).
+    fn switch_page(&mut self, page: &str) {
+        if self.ui.page() == page {
+            return;
+        }
+        for f in std::mem::take(&mut self.fingers) {
+            if let Some(ev) = self.ui.touch(f, Touch::Cancel, 0, 0) {
+                if let Some(a) = self.on_event(ev) {
+                    self.outbox.push(a);
+                }
+            }
+        }
+        let _ = self.ui.show(page);
+    }
+
+    /// Actions that did not come from a touch, for the audio thread.
+    pub fn take_actions(&mut self) -> Vec<FromUi> {
+        std::mem::take(&mut self.outbox)
+    }
+
     fn show_view(&mut self, v: View) {
         self.close_lab();
         let page = match v {
-            View::Play => "Play",
-            View::Debug => "Debug",
-            View::Console => "Console",
-            View::Prefs => "Prefs",
-            View::Options => "Options",
-            View::Guide => "Guide",
+            View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
+            View::Play => "Play".to_string(),
+            View::Debug => "Debug".to_string(),
+            View::Console => "Console".to_string(),
+            View::Prefs => "Prefs".to_string(),
+            View::Options => "Options".to_string(),
+            View::Guide => "Guide".to_string(),
+            View::Arp => ARP_PAGE.to_string(),
+            View::Pattern => self.workspace.page().to_string(),
         };
-        let _ = self.ui.show(page);
+        let relabel = (self.view == View::Pattern) != (v == View::Pattern);
+        self.switch_page(&page);
         self.view = v;
+        if relabel {
+            self.label_pads();
+        }
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             if let Some(t) = v.tab() {
                 h.active = t;
@@ -625,6 +813,11 @@ impl Player {
     /// A touch: what it means for the app, if anything. Before the app is
     /// ready, the pages are switched here (loading and console only).
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
+        match phase {
+            Touch::Down => self.fingers.push(finger),
+            Touch::Up | Touch::Cancel => self.fingers.retain(|f| *f != finger),
+            Touch::Move => {}
+        }
         if !self.ready {
             let on_loading = self.ui.page() == "Loading";
             let ev = self.ui.touch(finger, phase, x, y);
@@ -652,7 +845,7 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
-        match (ev.widget.as_str(), ev.kind) {
+        match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
                 if let (Some(h), Some(t)) = (self.ui.get_mut::<Header>("header"), self.view.tab()) {
@@ -666,6 +859,15 @@ impl Player {
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
+            ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
+            (w, _) if w.starts_with("arp-ws-") => {
+                // The editor changes at once; the app hears the new pattern.
+                let a = self.workspace.action(&ev);
+                let playing = self.playing_step();
+                self.workspace.update(&mut self.ui, playing);
+                a.map(|a| FromUi::Workspace(Box::new(a)))
+            }
+            (w, _) if w.starts_with("arp-") => self.arp_panel.action(&ev, &self.arp, &mut self.qlink_focus).map(FromUi::Arp),
             _ => None,
         }
     }
@@ -870,6 +1072,9 @@ pub fn spawn(mut player: Player, mut fb: Option<FbTarget>,
                     }
                 }
             }
+            for a in player.take_actions() {
+                let _ = tx.try_send(a);
+            }
             let since = last_frame.elapsed();
             if since < Duration::from_millis(33) && !quit {
                 continue;
@@ -944,7 +1149,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
     p.apply(ToUi::Session("Akai session".into(), Tone::Good));
     p.apply(ToUi::Kit(0));
     p.apply(ToUi::Level { db: -18.0, value: 0.79 });
-    p.apply(ToUi::Status(Status { shift: false, pad_level: PadLevel::Full, repeat: true, latched: false,
+    p.apply(ToUi::Status(Status { shift: false, pad_level: PadLevel::Full, repeat: false, latched: false,
                                   rate: "1/16", bpm: 120.0 }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -984,9 +1189,65 @@ pub fn sample_player(fonts: Fonts) -> Player {
     p
 }
 
+/// Hands the app's effects to the screen as the audio thread does (lights,
+/// sounds and kit changes are left out), for previews and tests.
+pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
+    use crate::app::Effect;
+    for e in fx {
+        match e {
+            Effect::Show(v) => p.apply(ToUi::Show(v)),
+            Effect::Menu(m) => p.apply(ToUi::Menu(m)),
+            Effect::Guide(g) => p.apply(ToUi::Guide(g)),
+            Effect::Status(s) => p.apply(ToUi::Status(s)),
+            Effect::Settings(s) => p.apply(ToUi::Settings(s)),
+            Effect::Arp(v) => p.apply(ToUi::Arp(Box::new(v))),
+            Effect::Patterns(l) => p.apply(ToUi::Patterns(l)),
+            Effect::Workspace(w) => p.apply(ToUi::Workspace(Box::new(w))),
+            Effect::Recorded(pat, next) => p.apply(ToUi::Recorded(Box::new(pat), next)),
+            Effect::WorkspaceWheel(d) => p.apply(ToUi::WorkspaceWheel(d)),
+            Effect::ClearLogs => p.apply(ToUi::ClearLogs),
+            Effect::ClearConsole => p.apply(ToUi::ClearConsole),
+            Effect::TouchLab => p.apply(ToUi::TouchLab),
+            Effect::Note(l) => p.apply(ToUi::Line(l)),
+            Effect::Light(..) | Effect::StopSounds | Effect::Kit(_) | Effect::Audio(_) | Effect::Quit => {}
+        }
+    }
+}
+
+/// The app's arp, run for `frames` frames, and its view on the screen.
+fn run_arp(p: &mut Player, app: &mut crate::app::App, frames: u32) {
+    let mut ev = mpfree_arp::Events::new();
+    for _ in 0..frames / 128 {
+        app.process(128, &mut ev);
+    }
+    let fx: Vec<_> = app.arp_poll().into_iter().collect();
+    apply_effects(p, fx);
+}
+
+/// The sample player with no pad held or fading, for the arp's screens.
+fn quiet_player(fonts: Fonts) -> Player {
+    let mut p = sample_player(fonts);
+    if let Some(g) = p.ui.get_mut::<PadGrid>("pads") {
+        for pad in g.pads.iter_mut() {
+            pad.held = false;
+            pad.level = 0.0;
+        }
+    }
+    p
+}
+
+/// A sample player with an app behind it (every button known, so no guide).
+fn sample_app() -> crate::app::App {
+    let mut app = crate::app::App::new(44_100, false);
+    (app.map.rec, app.map.overdub, app.map.undo, app.map.play_start) = (Some(90), Some(91), Some(92), Some(93));
+    app.start();
+    app
+}
+
 /// Every screen of the pad player with sample contents, as (name, player
-/// showing it), for previews: loading, play, debug, console, prefs, options
-/// and the guide.
+/// showing it), for previews: loading, play, debug, console, prefs, options,
+/// the guide, and the arp's quick band, panel and pattern workspace (each
+/// with the real app and engine behind it).
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -1004,12 +1265,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut console = sample_player(fonts());
     console.apply(ToUi::Show(View::Console));
     out.push(("syslog", console));
-    // The sample MENU and NOTE REPEAT notes are made up: the real ones are
-    // still unknown and the guide learns them on the device.
-    const MENU: u8 = 1;
-    let mut app = crate::app::App::new(44_100, false);
-    app.map.menu = Some(MENU);
-    app.map.note_repeat = Some(2);
+    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS};
+    let mut app = sample_app();
     for (name, shift) in [("prefs", true), ("options", false)] {
         let mut p = sample_player(fonts());
         if shift {
@@ -1029,24 +1286,72 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
+    // The guide at power-on: the time engine's buttons are not known yet.
     let mut guide = sample_player(fonts());
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
-    fx.extend(g.button(123, true, 0.0));
-    for e in fx {
-        match e {
-            crate::app::Effect::Guide(v) => guide.apply(ToUi::Guide(v)),
-            crate::app::Effect::Show(v) => guide.apply(ToUi::Show(v)),
-            _ => {}
-        }
-    }
+    fx.extend(g.button(button_play(), true, 0.0));
+    apply_effects(&mut guide, fx);
     out.push(("guide", guide));
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
     lab.set_touch_status("touch-reader: seeded=1 slot=0 fingers=0 resyncs=0 fallbacks=0 drained=0 contacts=4 events=212");
     out.push(("touchlab", lab));
+    // NOTE REPEAT held with the closed hat: the quick band.
+    let mut quick = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.button(NOTE_REPEAT, true, 0.0);
+    fx.extend(app.pad_down(2, 100));
+    apply_effects(&mut quick, fx);
+    quick.apply(ToUi::PadDown { pad: 2, velocity: 100 });
+    run_arp(&mut quick, &mut app, 5 * 5513 + 2000);
+    out.push(("arp-quick-band", quick));
+    // The Arp panel (NOTE REPEAT + MENU), Arp mode over pads 1 3 5, latched.
+    let mut panel = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.button(NOTE_REPEAT, true, 0.0);
+    fx.extend(app.button(MENU, true, 0.0));
+    fx.extend(app.button(MENU, false, 0.0));
+    fx.extend(app.button(NOTE_REPEAT, false, 0.0));
+    fx.extend(app.button(PLUS, true, 0.0));
+    fx.extend(app.arp_action(ArpAction::Latch));
+    fx.extend(app.qlink(3, 4, None).unwrap_or_default());
+    for pad in [0, 2, 4] {
+        fx.extend(app.pad_down(pad, 100));
+    }
+    for pad in [0, 2, 4] {
+        app.pad_up(pad);
+    }
+    apply_effects(&mut panel, fx);
+    // The pad the last step played is lit, the latched ones glow.
+    for pad in [0, 2, 4] {
+        panel.apply(ToUi::PadFlash { pad, velocity: 100 });
+    }
+    if let Some(g) = panel.ui.get_mut::<PadGrid>("pads") {
+        for pad in [0, 2, 4] {
+            g.pads[pad].level = 0.35;
+        }
+        g.pads[2].level = 1.0;
+    }
+    run_arp(&mut panel, &mut app, 3 * 5513 + 2000);
+    out.push(("arp-panel", panel));
+    // The pattern workspace, recording on the pads, 3 of 8 steps written.
+    let mut ws = quiet_player(fonts());
+    let mut app = sample_app();
+    let mut fx = app.toggle_panel();
+    fx.extend(app.arp_action(ArpAction::Button(mpfree_arp_ui::view::PatternButton::Record)));
+    for (pad, v) in [(0, 100), (2, 120), (15, 90)] {
+        fx.extend(app.pad_down(pad, v));
+        app.pad_up(pad);
+    }
+    apply_effects(&mut ws, fx);
+    out.push(("arp-workspace-record", ws));
     out
+}
+
+fn button_play() -> u8 {
+    mpfree_controller::mpc_one::button::PLAY
 }
 
 #[cfg(test)]
@@ -1135,17 +1440,9 @@ mod tests {
         p.apply(ToUi::Show(View::Debug));
         assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of("pads").is_none());
         // A menu row's arrow steps its value.
-        let mut app = crate::app::App::new(44_100, false);
-        app.map.menu = Some(1);
-        app.map.note_repeat = Some(2);
-        app.start();
-        for fx in app.button(1, true, 0.0) {
-            match fx {
-                crate::app::Effect::Menu(m) => p.apply(ToUi::Menu(m)),
-                crate::app::Effect::Show(v) => p.apply(ToUi::Show(v)),
-                _ => {}
-            }
-        }
+        let mut app = sample_app();
+        let fx = app.button(mpfree_controller::mpc_one::button::MENU, true, 0.0);
+        apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Options");
         let r = p.ui.rect_of("options").unwrap();
         let o = p.ui.get::<OptionList>("options").unwrap();
@@ -1186,8 +1483,16 @@ mod tests {
                              bpm: 96.0 };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);
+        let mut app = sample_app();
+        app.settings.rate = mpfree_arp::Rate::Eighth;
+        app.settings.bpm = 96.0;
+        let fx = app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        let mut fx2 = app.button(mpfree_controller::mpc_one::button::NOTE_REPEAT, true, 0.0);
+        fx2.extend(app.arp_poll());
+        apply_effects(&mut p, fx);
+        apply_effects(&mut p, fx2);
         let chips: Vec<String> = p.ui.get::<Header>("header").unwrap().chips.iter().map(|c| c.text.clone()).collect();
-        assert!(chips.contains(&"Latch 1/8 · 96 BPM".to_string()), "{chips:?}");
+        assert!(chips.contains(&"Repeat 1/8, latched · 96 BPM".to_string()), "{chips:?}");
         assert!(!chips.iter().any(|c| c.ends_with(" dB")), "the level is on the slider: {chips:?}");
         s.shift = false;
         p.apply(ToUi::Status(s));
@@ -1195,6 +1500,87 @@ mod tests {
         p.apply(ToUi::PadFlash { pad: 3, velocity: 90 });
         let g = p.ui.get::<PadGrid>("pads").unwrap();
         assert!(!g.pads[3].held && g.pads[3].level == 1.0);
+    }
+
+    #[test]
+    fn the_quick_band_comes_with_note_repeat_and_the_chip_opens_the_panel() {
+        use mpfree_controller::mpc_one::button::NOTE_REPEAT;
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        let fx = app.button(NOTE_REPEAT, true, 0.0);
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), QUICK_PAGE);
+        assert!(p.ui.rect_of(arp_view::RATES).is_some() && p.ui.rect_of("kits").is_none());
+        // A rate button.
+        let rates = p.ui.rect_of(arp_view::RATES).unwrap();
+        let a = p.touch(7, Touch::Down, rates.x + 20, rates.y + rates.h / 2);
+        assert_eq!(a, Some(FromUi::Arp(ArpAction::Rate(mpfree_arp::Rate::Quarter))));
+        p.touch(7, Touch::Up, rates.x + 20, rates.y + rates.h / 2);
+        let fx = app.button(NOTE_REPEAT, false, 0.0);
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), "Play");
+        // The arp chip, drawn once, opens the panel.
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let chip = p.ui.get::<Header>("header").unwrap().chip_rect(p.arp_chip.unwrap()).unwrap();
+        assert_eq!(p.touch(8, Touch::Down, chip.x + 10, chip.y + 10), Some(FromUi::ArpChip));
+        p.touch(8, Touch::Up, chip.x + 10, chip.y + 10);
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_poll());
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), ARP_PAGE);
+        assert_eq!(p.ui.get::<Header>("header").unwrap().active, 0, "the panel belongs to Play");
+        let modes = p.ui.rect_of(arp_view::MODES).unwrap();
+        let a = p.touch(9, Touch::Down, modes.right() - 10, modes.y + modes.h / 2);
+        assert_eq!(a, Some(FromUi::Arp(ArpAction::Mode(Mode::Pattern))));
+        p.touch(9, Touch::Up, modes.right() - 10, modes.y + modes.h / 2);
+        assert!(p.ui.get::<Label>("hint").unwrap().text.contains("NOTE REPEAT + MENU: close"));
+    }
+
+    #[test]
+    fn a_page_change_lets_go_of_pads_held_on_the_screen() {
+        let mut p = sample_player(Fonts::embedded());
+        let pads = p.ui.rect_of("pads").unwrap();
+        assert_eq!(p.touch(1, Touch::Down, pads.x + 10, pads.bottom() - 10), Some(FromUi::Pad { pad: 0, down: true }));
+        let mut app = sample_app();
+        let fx = app.button(mpfree_controller::mpc_one::button::NOTE_REPEAT, true, 0.0);
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), QUICK_PAGE);
+        assert_eq!(p.take_actions(), vec![FromUi::Pad { pad: 0, down: false }]);
+        assert!(p.take_actions().is_empty());
+    }
+
+    #[test]
+    fn the_workspace_edits_by_touch_and_shows_what_the_pads_write() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_action(ArpAction::Button(mpfree_arp_ui::view::PatternButton::Edit)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), PATTERN_PAGE);
+        assert!(p.ui.rect_of("pads").is_none(), "editing is full screen");
+        // A tap on the first step of the Step row: an accent on Straight's "x".
+        let grid = p.ui.rect_of(workspace::GRID).unwrap();
+        let a = p.touch(2, Touch::Down, grid.x + 112 + 10, grid.y + 28 + 10);
+        let Some(FromUi::Workspace(ws)) = a else { panic!("{a:?}") };
+        let WsAction::Changed(pat) = *ws else { panic!("{ws:?}") };
+        assert_eq!(pat.to_text(), "x!");
+        p.touch(2, Touch::Up, grid.x + 122, grid.y + 38);
+        apply_effects(&mut p, app.workspace_action(WsAction::Changed(pat)));
+        // The wheel turns the selected cell (here the note pick) through the app and back.
+        p.workspace.editor.select(Row::Note, 0);
+        apply_effects(&mut p, app.wheel(1));
+        let back = p.take_actions();
+        assert!(matches!(back.as_slice(), [FromUi::Workspace(a)] if matches!(**a, WsAction::Changed(_))), "{back:?}");
+        // Recording: the pads say what they write.
+        let fx = app.workspace_action(WsAction::Record(true));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), RECORD_PAGE);
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[12].label, "Next");
+        let fx = app.workspace_action(WsAction::Back);
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), ARP_PAGE);
+        assert_eq!(p.ui.get::<PadGrid>("pads").unwrap().pads[0].label, "Kick", "the kit's names again");
     }
 
     #[test]
