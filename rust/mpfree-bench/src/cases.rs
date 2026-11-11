@@ -276,11 +276,23 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
     }
 }
 
+/// Which of the sampler case's pads are set. The hits are the same in
+/// every case (a hit on an unset pad does nothing), so the two parts add
+/// up to the whole.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SamplerPads {
+    All,
+    /// Pads 1 to 16: sample voices (Hermite read, envelope, filter).
+    Samples,
+    /// Pads 17 to 20: granular voices.
+    Grains,
+}
+
 /// The sampler as the pad player uses it: 16 one-shot, gated and looping
 /// pads with filters and two layers, four granular pads, 24 voices, a hit
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
-fn sampler(name: &str, rate: u32, master: bool) -> Case {
+fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
     let s = Source::new(
         "noise",
         rate,
@@ -292,7 +304,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
     .expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
-    for i in 0..16usize {
+    for i in (0..16usize).filter(|_| which != SamplerPads::Grains) {
         let mut r = Region::whole(&s);
         r.mode = [
             PlayMode::OneShot,
@@ -319,7 +331,7 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
-    for i in 16..20usize {
+    for i in (16..20usize).filter(|_| which != SamplerPads::Samples) {
         let mut r = Region::whole(&s);
         r.mode = PlayMode::Granular;
         r.grain = GrainParams {
@@ -513,9 +525,32 @@ pub fn all(rate: u32) -> Vec<Case> {
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
-    v.push(measured(|| sampler("Sampler, 20 pads", rate, false)));
     v.push(measured(|| {
-        sampler("Sampler, 20 pads + master grains", rate, true)
+        sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, 20 pads + master grains",
+            rate,
+            true,
+            SamplerPads::All,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 16 sample pads alone",
+            rate,
+            false,
+            SamplerPads::Samples,
+        )
+    }));
+    v.push(measured(|| {
+        sampler(
+            "Sampler, the 4 granular pads alone",
+            rate,
+            false,
+            SamplerPads::Grains,
+        )
     }));
     v.push(measured(|| {
         effect(
@@ -889,7 +924,7 @@ fn song(rate: u32) -> Case {
             .values
     };
     let mut parts = [
-        sampler("sampler", rate, true),
+        sampler("sampler", rate, true, SamplerPads::All),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
         mixer("mixer", rate, 12, 8, Inserts::Song),
