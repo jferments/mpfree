@@ -171,7 +171,8 @@ impl Print {
         );
         if !ready
             || self.capacity() == 0
-            || !(job.beats > 0.0)
+            || job.beats.is_nan()
+            || job.beats <= 0.0
             || !job.start.is_finite()
             || !job.beats.is_finite()
         {
@@ -523,7 +524,8 @@ impl Frozen {
     pub fn render(&self, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
         let n = self.frames();
         let len = left.len().min(right.len());
-        if n == 0 || !(self.beats > 0.0) || !(self.bpm > 0.0) || ctx.rate == 0 {
+        let bad = |x: f64| x.is_nan() || x <= 0.0;
+        if n == 0 || bad(self.beats) || bad(self.bpm) || ctx.rate == 0 {
             left[..len].fill(0.0);
             right[..len].fill(0.0);
             return;

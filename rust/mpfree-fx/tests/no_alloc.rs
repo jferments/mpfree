@@ -568,8 +568,8 @@ fn freezing_and_printing_never_allocate() {
                 let _ = p.arm(PrintJob {
                     start: beats.floor() + 1.0,
                     beats: 0.5 + (rng.next() % 4) as f64 * 0.5,
-                    steady: rng.next() % 2 == 0,
-                    tail: if rng.next() % 2 == 0 {
+                    steady: rng.next().is_multiple_of(2),
+                    tail: if rng.next().is_multiple_of(2) {
                         Tail::Cut
                     } else {
                         Tail::UntilSilent { max_ms: 200.0 }
@@ -579,7 +579,7 @@ fn freezing_and_printing_never_allocate() {
             1 => prints[which % 4].cancel(),
             2 => {
                 if let Some(f) = spare.pop() {
-                    let s = if rng.next() % 2 == 0 {
+                    let s = if rng.next().is_multiple_of(2) {
                         StripId::Track(0)
                     } else {
                         StripId::Pad(1)

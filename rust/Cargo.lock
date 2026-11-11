@@ -558,6 +558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-moves"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-param",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
