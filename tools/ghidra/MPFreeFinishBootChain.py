@@ -88,6 +88,13 @@ TABLE = [
 ]
 
 def main():
+    try:
+        script_args = list(getScriptArgs())
+    except Exception:
+        script_args = []
+    phase = script_args[0] if script_args else 'gui'
+    if phase not in ('gui', 'pre', 'post'):
+        raise RuntimeError('Unknown script phase: %s' % phase)
     p = currentProgram
     if p is None:
         raise RuntimeError('Open the p3-uimage-payload.bin program first.')
@@ -224,13 +231,19 @@ def main():
             log('%-29s 0x%08X ERROR: %s' % (name, va, ex))
     log()
 
-    println('MPFree: Thumb seeds processed, running Auto Analysis')
-    try:
-        analyzeAll(p)
-        log('Auto Analysis: completed')
-    except Exception as ex:
-        log('Auto Analysis: ERROR %s' % ex)
-        log(traceback.format_exc())
+    if phase == 'pre':
+        println('MPFree: Thumb seeds prepared before Ghidra automatic analysis')
+        return
+    if phase == 'gui':
+        println('MPFree: Thumb seeds processed, running Auto Analysis')
+        try:
+            analyzeAll(p)
+            log('Auto Analysis: completed')
+        except Exception as ex:
+            log('Auto Analysis: ERROR %s' % ex)
+            log(traceback.format_exc())
+    else:
+        log('Auto Analysis: executed by Ghidra between pre and post scripts')
     log()
 
     log('=== COMMAND DISPATCH TABLE (firmware bytes) ===')
