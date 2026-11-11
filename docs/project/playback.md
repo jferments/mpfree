@@ -212,7 +212,7 @@ The player's `Lock` and `Unlock` events are ignored for now: they need the mod r
 
 It starts with 8 empty tracks, with track 1 armed. A clip made from an empty slot is as long as the loop, or 2 bars without one. The tempo belongs to the app, so TAP TEMPO, the menus and the Clips page all set it, and the transport follows. Only the position (about 30 times a second) and real changes go to the screen.
 
-Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes lost to full tables (should stay 0).
+Cues that start become launches right after the period they started in (`Started::apply`). Edits (launches, cues, arming, takes and recorded notes) compile a new `PlayView` in the audio loop. That allocates, but only on an edit, not every period. Moving the edits to a control thread is a later step. The status line every 30 s adds the transport state, the takes and any notes or parameter locks lost to full tables (should stay 0).
 
 ## Next
 
