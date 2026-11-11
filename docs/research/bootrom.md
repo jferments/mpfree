@@ -1218,3 +1218,25 @@ done
 ```
 
 On the **Fastboot / Ghidra track**, full program-level analysis is *not complete*: the user's imported p3 payload was still at base `0x00000000` rather than linked base `0x00100000`, and most xrefs/decompilation were therefore unavailable. Offline Thumb disassembly has established command dispatch, download/callback flow, bootm CRC call graph, but not end-to-end Linux handoff, default runtime unlock state, safe available DRAM or ROM entry. To finish, import a **separate** correctly based p3 program, analyze functions/xrefs and document the outstanding concrete call graph; do not substitute inferred function names for confirmed dynamic behavior.
+
+
+## 27. Correcting the Ghidra p3 image base, final-pass script and live USB virtual-mux evidence (2026-11-10)
+
+**Correction to repeated earlier advice:** the existing p3 raw binary was imported into Ghidra at **`0x00000000`**. Its verified 363,649-byte content is **linked at `0x00100000`**. This mismatch explains why earlier Ghidra callback audits found no recognized Thumb instructions/xrefs despite the correct raw disassembly. Ghidra's supported API is `Program.setImageBase(Address(0x00100000), true)`, used within a program transaction; this *rebases program addresses*, not the MPC or any raw firmware bytes. The Ghidra GUI equivalent is **Window -> Memory Map -> Set Image Base**, enter `00100000`, then Auto Analyze. Ghidra documentation: https://ghidradocs.com/12.2_PUBLIC/help/Base/help/topics/MemoryMapPlugin/Memory_Map/ and API https://ghidra.re/ghidra_docs/api/ghidra/program/model/listing/Program.html .
+
+**New repo script** `tools/ghidra/MPFreeFinishBootChain.py` explicitly validates the payload SHA256 `b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a`, verifies dispatch table anchor bytes, auto-rebases from 0 to `0x00100000` if necessary, seeds **Thumb mode** for bootm/Fastboot/image-check/recovery functions using Ghidra's official `DisassembleCommand`/TMode method, requests full Ghidra analysis, and exports targeted decompilation, direct call edges, table rows and state xrefs to `~/mpfree-work/mpfree-ghidra-p3-final-<timestamp>.txt`. OEM pseudocode is withheld from this shareable report to avoid leaking the embedded vendor marker. It modifies the **Ghidra project only** (function recognition and address mapping), not firmware or hardware. The script is self-validating and stops if image hash or anchors mismatch.
+
+**One-shot fresh project** `tools/ghidra/run_full_p3_analysis.sh`: validates the existing private eMMC backup's p3 payload before extracting it locally, locates `analyzeHeadless` (or accepts `GHIDRA_HOME`), creates a **new** per-run Ghidra project, imports using official `-loader BinaryLoader -loader-baseAddr 100000 -processor ARM:LE:32:v7` arguments, then runs `MPFreeFinishBootChain.py` as a post-analysis script. This approach avoids poisoning the new project with the previous base-zero analysis and leaves the original project intact. Source for CLI syntax: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/RuntimeScripts/support/analyzeHeadlessREADME.md . The scripts have **not been executed inside the owner's Ghidra installation**, so their output should be checked for runtime/API compatibility; static code-level reverse engineering is not the same as hardware validation.
+
+**Current technical results from previous verified reports (not a new Ghidra run):** Fastboot's eight-row dispatcher, download-to-`0x00800800` path, deferred `bootm` call, FDT and legacy-uImage classification, header/data CRC callees from the bootm orchestration chain, and in-memory permission gate at `0x0014D690`. Remaining static challenges are tracing default runtime gate initialization, complete Linux DTB/entry load, U-Boot relocation/usable RAM and all possible first-stage ROM-return paths. Static analysis alone **cannot** demonstrate successful MaskROM entry or safe USB RAM boot on the MPC.
+
+**Latest running-MPC USB survey** found `compatible="virtual-mux"` with `available_states="otg host peripheral"`, current `peripheral`; `ff580000.usb` explicitly configured `dr_mode="peripheral"`, and `ff540000.usb` configured `dr_mode="host"`. The owner attempted to dump `default-state`, but **BusyBox `od` rejected `-t`** and therefore its value is **not yet verified** from this run. `gpio-249 (USB_MUX_CTRL)` appears as an unclaimed label, not evidence of an active hardware route. The ACVA public decompiled FDT is consistent with a virtual Linux role selector, not a required discrete USB data mux. No physical reset-state test or silicon ROM enumeration has been performed.
+
+**Recommended workstation invocation:**
+```bash
+cd /home/jesse/code/mpfree-hardware-survey
+git pull --ff-only origin main
+bash tools/ghidra/run_full_p3_analysis.sh
+```
+
+If Ghidra is installed at an unusual location, use `GHIDRA_HOME=/absolute/ghidra/installation bash tools/ghidra/run_full_p3_analysis.sh`. The only program changes are made to a new *local* Ghidra project (and the generated local payload/report), never to the original Akai eMMC. No root access is needed.
