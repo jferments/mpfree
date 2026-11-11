@@ -405,7 +405,13 @@ impl SynthPanel {
                 None => st.info.name.to_string(),
             };
             w.subtitle = subtitle(st);
-            w.tabs = self.pages.iter().map(|p| p.name.clone()).collect();
+            // Many pages (the drum synth's one per pad) show short tabs:
+            // "Pad 12" becomes "12".
+            let many = self.pages.len() > 8;
+            w.tabs = self.pages.iter().map(|p| match p.name.strip_prefix("Pad ") {
+                Some(n) if many => n.to_string(),
+                _ => p.name.clone(),
+            }).collect();
             w.active = self.page;
         }
         if self.visuals {

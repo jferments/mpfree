@@ -65,7 +65,7 @@ struct Pending {
 }
 
 const NOT_HELD: Held = Held { on: false, tick: 0, velocity: 0 };
-const NO_TAKE: Taken = Taken { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1 }, take: 0 };
+const NO_TAKE: Taken = Taken { track: 0, slot: 0, note: Note { tick: 0, len: 1, note: 0, velocity: 1, chance: 100 }, take: 0 };
 
 pub struct Recorder {
     /// The armed track in the last view, to notice a change.
@@ -285,7 +285,7 @@ impl Recorder {
             self.dropped += 1;
             return;
         }
-        let note = Note { tick, len, note: n as u8, velocity: h.velocity.min(127) };
+        let note = Note { tick, len, note: n as u8, velocity: h.velocity.min(127), chance: 100 };
         // A tick of margin for rounding.
         self.pending[self.n_pending] = Pending { taken: Taken { track, slot: clip.slot, note, take: self.take }, release: plays + 2 };
         self.n_pending += 1;
