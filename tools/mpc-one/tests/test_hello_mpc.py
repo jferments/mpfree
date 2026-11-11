@@ -768,6 +768,14 @@ class StaticTests(unittest.TestCase):
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
 
+    def test_the_test_boot_never_saves_patterns(self):
+        """The stick's start line for the pad player never passes --save-patterns, so the test boot writes no
+        patterns file."""
+        with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
+            starts = [ln for ln in fh.read().splitlines() if "mpfree-hello app" in ln]
+        self.assertEqual(len(starts), 1, starts)
+        self.assertNotIn("--save-patterns", starts[0])
+
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""
         for name, code in self.program_sources():

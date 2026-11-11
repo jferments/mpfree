@@ -31,7 +31,7 @@
 mod arp;
 pub mod mapper;
 
-pub use arp::{built_in_patterns, mode_label, ArpView, WorkspaceView};
+pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 
 use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
@@ -431,6 +431,8 @@ pub enum Item {
     LoopBars,
     LoopLatency,
     LoopLevel,
+    /// The arp's own settings (the Options menu opened from the Arp panel).
+    Arp(ArpItem),
 }
 
 /// The menu on screen: its rows (name, value), the selected row and help.
@@ -551,6 +553,12 @@ pub struct App {
     /// The arp's other settings (order, octaves, gate, swing); the rate is
     /// `settings.rate` and the mode follows the buttons and pages.
     arp: mpfree_arp::Settings,
+    /// The scale's root (0 = C), kept while the scale is Off.
+    scale_root: u8,
+    /// The transport's clock for the next period ([`App::set_clock`]).
+    clock: Option<mpfree_arp::Clock>,
+    /// While the transport plays: its swing (true) or the arp's own.
+    swing_from_transport: bool,
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
@@ -595,7 +603,7 @@ impl App {
                             latched: false, pad_level: PadLevel::Off, view: View::Play, back: View::Play,
                             selected: 0, guide_steps: Vec::new(), guide: 0, guide_note: String::new(),
                             taps: Vec::new(), beat_zero: 0.0,
-                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), patterns,
+                            tap_light: false, arp_mode: Mode::Repeat, arp: mpfree_arp::Settings::default(), scale_root: 0, clock: None, swing_from_transport: true, patterns,
                             pattern_index: 0, pattern, mutations: 0, recorder: None,
                             record_mode: RecordMode::Step, pattern_file: false, qlink_turns: [0; 4],
                             sent_step: 0, sent_notes, arp_dirty: true, rolling: false,
@@ -663,8 +671,11 @@ impl App {
         self.engine.pressure(slot as u8, value);
     }
 
-    /// One audio period: the notes that start (or stop) in it.
+    /// One audio period: the notes that start (or stop) in it. The arp
+    /// follows the clock given by [`App::set_clock`] for this period, and
+    /// free-runs at the app's tempo without one.
     pub fn process(&mut self, frames: u32, out: &mut Events) {
+        self.sync_arp();
         self.engine.process(frames, out);
     }
 
@@ -1215,6 +1226,7 @@ impl App {
                                    Item::LoopLevel],
             (_, View::Debug | View::Perf | View::Map) => &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
+            (_, View::Arp) => &arp::ARP_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
     }
@@ -1255,6 +1267,7 @@ impl App {
                                                                      s.loop_latency as f64 / 44.1,
                                                                      if s.loop_latency_set { "" } else { " (estimated)" })),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
+            Item::Arp(a) => self.arp_item_text(a),
         }
     }
 
@@ -1337,6 +1350,7 @@ impl App {
                                       "from an output to the input."],
             Item::LoopLevel => vec!["The loop's playback level, -24 to +6 dB.",
                                     "0 dB plays it as it was recorded."],
+            Item::Arp(a) => Self::arp_item_help(a),
         }
     }
 
@@ -1345,6 +1359,7 @@ impl App {
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
             (View::Prefs, _) => "Prefs".to_string(),
+            (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
             (_, b @ (View::Perf | View::Map | View::Console)) => format!("{} options", b.name()),
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
@@ -1479,6 +1494,7 @@ impl App {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(10f32.powf(s.loop_level_db / 20.0)))));
             }
+            Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
         fx.push(self.menu_view());
@@ -2021,6 +2037,104 @@ mod tests {
         assert_eq!(app.view(), View::Play);
         assert!(!app.generating());
         assert_eq!(app.qlink(0, 1, None), None, "Q-Link 1 is the level again");
+    }
+
+    #[test]
+    fn menu_on_the_arp_panel_sets_accent_scale_strum_and_restart() {
+        use mpfree_arp::scale::{Scale, DORIAN, MINOR};
+        let mut app = ready();
+        app.toggle_panel();
+        let fx = press(&mut app, MENU);
+        let Some(Effect::Menu(m)) = fx.into_iter().find(|e| matches!(e, Effect::Menu(_))) else { panic!("no menu") };
+        assert_eq!(m.title, "Arp options");
+        assert_eq!(m.rows.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                   ["Tempo", "Accent level", "Scale", "Scale root", "Strum", "New notes restart", "Swing from"]);
+        assert_eq!(m.rows[6].1, "Transport");
+        assert_eq!(m.rows[2].1, "Off", "no scale until one is picked: drum kits stay as they are");
+        assert!(app.generating(), "the arp plays on under its options");
+        let row = |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
+        // Accent level steps by 8, down from 127.
+        let fx = app.step_item(row(&app, ArpItem::Accent), -1);
+        assert_eq!(app.engine.settings().accent, 119);
+        assert!(fx.contains(&Effect::Note("arp accent level: 119".to_string())));
+        // Scale: Off, then the named scales; the root moves it.
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, MINOR)));
+        app.step_item(row(&app, ArpItem::Root), 1);
+        let fx = app.step_item(row(&app, ArpItem::Root), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, MINOR)));
+        assert!(fx.contains(&Effect::Note("arp scale: D Minor".to_string())));
+        assert!(matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Minor"));
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
+        // Off keeps the root for next time.
+        for _ in 0..5 {
+            app.step_item(row(&app, ArpItem::Scale), -1);
+        }
+        assert_eq!(app.engine.settings().scale, None);
+        assert_eq!(app.step_item(row(&app, ArpItem::Scale), -1).iter().filter(|e| matches!(e, Effect::Note(_))).count(),
+                   0, "nothing below Off");
+        app.step_item(row(&app, ArpItem::Scale), 1);
+        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, mpfree_arp::scale::MAJOR)));
+        // Strum in tens of percent; New notes restart on and off.
+        app.step_item(row(&app, ArpItem::Strum), 1);
+        assert_eq!(app.engine.settings().strum, 10);
+        app.step_item(row(&app, ArpItem::Retrigger), 1);
+        assert!(app.engine.settings().retrigger);
+        // The panel's own settings leave them alone.
+        app.arp_action(ArpAction::Settings(mpfree_arp::Settings { gate: 80, ..app.arp }));
+        let s = app.engine.settings();
+        assert_eq!((s.accent, s.strum, s.retrigger, s.gate), (119, 10, true, 80));
+        // MENU goes back to the panel; the Play page's options are as before.
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Arp);
+        app.toggle_panel();
+        press(&mut app, MENU);
+        assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4));
+    }
+
+    #[test]
+    fn the_arp_follows_the_transport_clock_and_its_swing_if_asked() {
+        // NOTE REPEAT held on pad 1 at 1/16, 120 BPM: a 16th is 5512.5 frames.
+        let gaps = |from_transport: bool, swing: Option<(u32, u8)>, synced: bool| {
+            let mut app = ready();
+            if !from_transport {
+                app.toggle_panel();
+                press(&mut app, MENU);
+                let row = app.items().iter().position(|&i| i == Item::Arp(ArpItem::SwingFrom)).unwrap();
+                let fx = app.step_item(row, -1);
+                assert!(fx.contains(&Effect::Note("arp swing from: arp".to_string())));
+                press(&mut app, MENU);
+                app.toggle_panel();
+            }
+            app.button(REPEAT, true, 0.0);
+            app.pad_down(0, 100);
+            let mut ev = Events::new();
+            let mut ons = Vec::new();
+            for i in 0..400u64 {
+                if synced {
+                    let mut c = mpfree_arp::Clock::playing(0, i * 128, 120.0);
+                    c.swing = swing;
+                    app.set_clock(Some(c));
+                }
+                app.process(128, &mut ev);
+                ons.extend(ev.as_slice().iter().filter(|e| matches!(e.kind, EventKind::On { .. }))
+                    .map(|e| i * 128 + u64::from(e.offset)));
+            }
+            ons.windows(2).skip(1).take(4).map(|w| w[1] - w[0]).collect::<Vec<_>>()
+        };
+        let straight = gaps(true, None, true);
+        assert!(straight.iter().all(|&g| g.abs_diff(5512) <= 1), "{straight:?}");
+        // The transport swings 1/16s at 75 %: long, short, long, short.
+        let swung = gaps(true, Some((240, 75)), true);
+        assert!(swung.iter().all(|&g| g.abs_diff(8269) <= 1 || g.abs_diff(2756) <= 1), "{swung:?}");
+        assert_ne!(swung[0], swung[1]);
+        // Swing from: Arp ignores it; no clock at all free-runs.
+        assert_eq!(gaps(false, Some((240, 75)), true), straight);
+        let free = gaps(true, Some((240, 75)), false);
+        assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
     }
 
     #[test]

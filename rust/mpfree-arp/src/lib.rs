@@ -8,6 +8,7 @@
 
 pub mod engine;
 pub mod library;
+pub mod midi;
 pub mod notes;
 pub mod pattern;
 pub mod record;
@@ -15,6 +16,7 @@ pub mod scale;
 
 pub use engine::{Clock, Engine, Event, EventKind, Events, Mode, Order, Ramp, Rate, Settings, SyncStart, Velocity, PPQ};
 pub use library::{Library, LibraryError};
+pub use midi::{midi_file, Message, MidiOut, NoteMap};
 pub use notes::{Held, LatchMode, NoteSet, Notes, MAX_NOTES};
 pub use pattern::{Lane, Lanes, ParseError, Pattern, Pick, Step, BUILT_IN, MAX_STEPS};
 pub use record::{RecordMode, Recorder, Wrote};

@@ -457,6 +457,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-midi-clock"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
