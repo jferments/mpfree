@@ -30,6 +30,10 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-grain"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-groove"
 version = "0.1.0"
 dependencies = [
@@ -75,6 +79,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-core",
+ "mpfree-grain",
 ]
 
 [[package]]
