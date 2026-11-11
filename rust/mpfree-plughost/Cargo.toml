@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-plughost"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The plugin sandbox: each CLAP plugin in its own process, so a crash or a hang can't take the audio thread with it"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-clap = { path = "../mpfree-clap" }
+libc = "0.2"
+
+[dev-dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
+mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-track = { path = "../mpfree-track" }

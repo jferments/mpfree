@@ -38,6 +38,7 @@ pub mod wave_tab;
 pub mod widgets;
 
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
+pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
 pub use source::{PyramidPeaks, SourceView};

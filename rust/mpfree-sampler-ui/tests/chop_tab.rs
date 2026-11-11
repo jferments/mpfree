@@ -2,7 +2,7 @@
 //! do, and what Chop to pads does to a real project.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{ChopMode, PlayMode};
+use mpfree_sampler::model::{ChopMode, Keys, PadsPlay, PlayMode, SLICE_KEYS_FROM};
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
@@ -327,6 +327,54 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
     assert!(s.project.undo());
     assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
     assert!(s.project.pad(PAD).is_some());
+}
+
+#[test]
+fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    step(&mut s, Row::Put, 1);
+    let list = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert_eq!(list.rows[5].value, "Keys from C2");
+    assert_eq!(buttons(&s).0[2], "To keys C2–D#2");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads { keys_from, .. } = a else {
+        panic!("{a:?}")
+    };
+    assert_eq!(keys_from, Some(SLICE_KEYS_FROM));
+    assert_eq!(apply(&mut s, &a), 5..9);
+    for k in 0..4 {
+        let pad = s.project.pad(5 + k).unwrap();
+        assert_eq!(pad.keys, Some(Keys::one(36 + k as u8)), "C2 up");
+        let r = &pad.layers[0].region;
+        assert_eq!((r.start, r.end), (b[k], b[k + 1]));
+    }
+    assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 36 });
+    // Pad 1 is now the first slice's note; pad 5 (A5's own) holds no note.
+    let view = EngineView::build(&s.project, RATE);
+    assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(4));
+    let mut e = Engine::new(RATE, 32);
+    e.set_view(view);
+    e.apply(Event::Key {
+        note: 37,
+        velocity: 127,
+    });
+    let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    assert!(
+        l.iter().any(|x| x.abs() > 0.01),
+        "C#2 plays the second slice"
+    );
+    // One undo takes it all back, the pads playing their sounds again.
+    assert!(s.project.undo());
+    assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
 }
 
 #[test]
