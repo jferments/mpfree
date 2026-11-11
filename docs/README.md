@@ -19,6 +19,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Capture](project/capture.md): keep what was just played, even without recording: the always-on history, the last phrase cut to whole bars, a new clip in place or notes into the playing clip, undo, the Capture button, and a WAV demo (`rust/mpfree-capture`, 2026-11-11).
 - [Synths](project/synths.md): the node interface every instrument and effect uses, and the native synths: Poly (subtractive), FM (DX7-style, with DX7 banks), Drums (a model per pad: kick, snare, clap, hats, toms, percussion, with choke groups and kits) and Pluck (Karplus-Strong strings and modal mallets), pad pressure, the Synth tab, demos and costs (`rust/mpfree-node`, `rust/mpfree-synth`, `rust/mpfree-synth-ui`, 2026-11-11).
 - [Track host](project/track-host.md): each track's instrument fed by the sequencer, the pads and the arp and rendered into its mixer track: slots, routing, notes counted per source, sample-exact parameters, swaps that ring out, STOP, and no allocation on the audio thread (`rust/mpfree-track`, 2026-11-11).
+- [Plugins: the CLAP host](project/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`, 2026-11-11).
 
 ## Decisions
 

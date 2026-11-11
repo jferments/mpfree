@@ -1,0 +1,78 @@
+# Plugins: the CLAP host
+
+**Status:** 2026-11-11, step P1 of the plugin plan, host-only and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../rust/mpfree-clap). Nothing in the pad player uses it yet, and no third-party plugin has been tried. The plan for plugins is in the design doc "MPFree synths and plugins: design" and the synth skill tree (P1 to P6).
+
+MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
+
+## What P1 does
+
+A CLAP plugin becomes an `mpfree_node::Node`, so anything that holds a node can hold a plugin: a [track host](track-host.md) slot, a mixer insert chain, an offline render.
+
+- **Loading.** `Library::open(path)` loads a `.clap` file with `dlopen`, checks its CLAP version (any 1.x) and starts it. `Library::plugins()` lists what is inside: id, name, vendor, version and feature tags. Open each file once and share the handle. The file stays loaded while any plugin made from it lives.
+- **Making one.** `Library::create(id)` makes a `ClapNode`. A plugin with a note input is an instrument and adds into the buffers. One without is an effect and transforms them. `prepare(rate, max_block)` activates it. Its `NodeInfo` id is `clap:` followed by the plugin's id, such as `clap:org.surge-synth-team.surge-xt`.
+- **Parameters.** Each visible CLAP parameter becomes a `ParamInfo`, so the Synth tab's generic pages, Q-Links, automation and the mod matrix work on it unchanged.
+  - The id is the parameter's position. `clap_param_id(id)` gives the CLAP id to store in a project.
+  - Stepped parameters are whole numbers. An enum starting at 0 with up to 64 values gets its names from the plugin.
+  - The first part of CLAP's module path is the group.
+  - Hidden parameters are left out, and read-only ones are meters.
+- **Events, on their exact frame.**
+  - Note on and off.
+  - Pad pressure, as CLAP's pressure expression.
+  - Bend, as MIDI pitch bend when the plugin takes MIDI. Otherwise it is a tuning expression on each held note, 2 semitones at full bend.
+  - `AllOff`, as a note-off for every held note.
+  - Parameter changes.
+  - The transport (tempo, position in beats and seconds, playing) goes with every block.
+  - Parameter values the plugin sends back (its own meters, its own changes) show in `param()`.
+- **Blocks.** Blocks longer than the plugin was activated for are cut into pieces. Events and parameter changes still land on their frame, and the output is the same.
+- **When a plugin fails.** If `process` returns an error, the block is counted. An instrument outputs silence and an effect passes its input through. A plugin that won't activate is counted and stays silent.
+- **State and the main thread.** `ClapNode::control()` gives a `ClapControl` for the control thread:
+  - `save_state()` and `load_state()` give the plugin's state as bytes for the project file. After a load, the node's values follow.
+  - `param_text()` shows a value the way the plugin writes it.
+  - `idle()` runs the plugin's `on_main_thread` when it asked for a callback. It also reports what else the plugin asked for: a restart, a parameter rescan, a ports rescan, latency or tail changes, or unsaved state.
+- **What the host offers plugins:** log (counted, never printed, since printing could block the audio thread), thread-check, params, state, latency, tail, audio-ports and note-ports.
+
+## Threads and real time
+
+CLAP names two threads. The main thread is the control thread that opened the first library. The audio thread is whichever thread calls `process`; it may change, but never runs two at once.
+
+- `ClapNode::process` never allocates or locks. Its event list and audio buffers are made in `prepare`, and parameter values are atomics shared with `ClapControl`. `tests/no_alloc.rs` checks this with the counting allocator: 2000 blocks of notes, pressure, bend, parameters and an effect after the synth.
+- `prepare` and dropping the node stop processing and deactivate from the control thread. Nothing else can touch the node at that moment, and for that moment the host's thread-check calls this thread the audio thread, which CLAP allows.
+- A plugin's id, name and parameter list become `'static` data, because nodes describe themselves that way. Each distinct plugin is kept once, for the life of the program.
+- The host can only check its own side. A plugin that allocates or blocks in `process` would still hurt the audio thread. That is what the sandbox process (P2) is for: the plugin runs in its own process with a deadline each period, and gives silence and a count when it misses.
+
+## Our test plugins
+
+`mpfree_clap::testplug` holds two small CLAP plugins of our own, so the host is tested without anyone else's binary:
+
+- **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects; pressure and tuning expressions.
+- **MPFree Test Gain:** a stereo effect, with a Fail switch that makes `process` return an error.
+
+`rust/mpfree-clap-testplug` builds the same two as a real shared library, `libmpfree_clap_testplug.so`, which the tests load with `dlopen`.
+
+## Tests
+
+`cargo test --locked -p mpfree-clap` (from `rust/`):
+
+- the bindings' struct sizes and field offsets match what gcc gives the real CLAP 1.2.2 headers, on x86_64 and on ARMv7 hard-float;
+- a library lists its plugins and refuses an unknown id;
+- the synth is an instrument with its parameters mapped (names, groups, ranges, enum names, meters, hidden left out, CLAP ids both ways), and two instances share their descriptions;
+- a note adds into the buffers from its frame and dies away after its note-off;
+- the same notes, parameters, pressure, bend and `AllOff` give the same samples in blocks of 1, 7, 64, 100 and 1000 frames, and with blocks longer than the activation size;
+- a parameter change lands on its frame (exactly 2x from that frame for +6 dB), `set_param` clamps, a change queued before a `prepare` survives it, and meters can't be set;
+- the plugin's meters (voices, tempo) reach `param()`;
+- state saved from one instance loads into another, junk state is refused, and `param_text` gives the plugin's names;
+- the gain is an effect, ignores notes, and a failed block leaves the input dry;
+- the `.clap` file loads with `dlopen` and sounds exactly like the linked copy; a missing file and a library without `clap_entry` are refused;
+- a callback request reaches `idle()` once;
+- the entry's `init` and `deinit` balance, and the file stays started while a plugin or its control handle lives (`tests/lifecycle.rs`);
+- no allocation on the audio thread's path (`tests/no_alloc.rs`);
+- the test synth as a track host instrument: it plays on its track, takes a parameter from the host, rings out after a swap and comes back to be dropped; the test gain as an insert in a mixer strip's chain (`tests/track.rs`).
+
+The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including the `dlopen` test.
+
+## Next
+
+- **P2, the sandbox:** `mpfree-plughost`, a separate process per plugin with shared-memory blocks, a deadline each period, silence and a count on a miss, and a restart from saved state after a crash. The node interface stays the same.
+- **P3, ARM builds:** reproducible armv7 build recipes for free plugins (Surge XT, Dexed, Airwindows first), with their licenses and sources.
+- **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
+- In the app: a plugin as a track host instrument and as a mixer insert, and plugins in the instrument browser. The pad player's wiring goes through the Hello MPC work.
