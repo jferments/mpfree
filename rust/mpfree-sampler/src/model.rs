@@ -246,12 +246,34 @@ pub enum WarpMethod {
 /// The slowest and fastest tempo a warped region may say it is at.
 pub const WARP_BPM: std::ops::RangeInclusive<f32> = 20.0..=999.0;
 
-/// A region that plays at the project tempo.
+/// A hit pinned to a beat in a warped region: source frame `frame` plays
+/// on `beat`, counted in beats from the region's start. Between two pins
+/// the sound is stretched evenly; the region's start stays on beat 0 and
+/// its end on [`Warp::beats`], so pins move the hits inside a loop without
+/// changing how long it is. Pins only move hits when the region stretches
+/// ([`WarpMethod::Stretch`]); repitching, it plays straight through.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pin {
+    /// A source frame inside the region.
+    pub frame: u64,
+    pub beat: f64,
+}
+
+/// The most pins a region may hold.
+pub const MAX_PINS: usize = 128;
+/// Between two pins a region may play this much slower, or this much
+/// faster, than its own tempo.
+pub const PIN_SPEED: f64 = 4.0;
+
+/// A region that plays at the project tempo.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Warp {
     /// The tempo the region was played at (detected or typed).
     pub bpm: f32,
     pub method: WarpMethod,
+    /// Hits pinned to beats, in order of frame and of beat. Empty: the
+    /// region plays evenly at its tempo.
+    pub pins: Vec<Pin>,
 }
 
 impl Warp {
@@ -259,7 +281,314 @@ impl Warp {
         Warp {
             bpm,
             method: WarpMethod::Stretch,
+            pins: Vec::new(),
         }
+    }
+
+    /// Source frames per beat at the region's own tempo.
+    pub fn frames_per_beat(&self, rate: u32) -> f64 {
+        60.0 * f64::from(rate) / f64::from(self.bpm)
+    }
+
+    /// How many beats `frames` of the region last at its tempo: where the
+    /// region's end plays.
+    pub fn beats(&self, frames: u64, rate: u32) -> f64 {
+        frames as f64 / self.frames_per_beat(rate)
+    }
+
+    /// Whether the pins move anything when the region plays: it stretches
+    /// and has pins.
+    pub fn pinned(&self) -> bool {
+        self.method == WarpMethod::Stretch && !self.pins.is_empty()
+    }
+
+    /// The points the region plays through, as (frames from the region's
+    /// start, beat): its start on beat 0, each pin, its end.
+    pub fn points(&self, start: u64, end: u64, rate: u32) -> Vec<(f64, f64)> {
+        let len = end.saturating_sub(start);
+        let mut out = Vec::with_capacity(self.pins.len() + 2);
+        out.push((0.0, 0.0));
+        out.extend(
+            self.pins
+                .iter()
+                .map(|p| (p.frame.saturating_sub(start) as f64, p.beat)),
+        );
+        out.push((len as f64, self.beats(len, rate)));
+        out
+    }
+
+    /// The beat source frame `frame` plays on. Frames before the region's
+    /// start or after its end follow its tempo from there.
+    pub fn beat_at(&self, start: u64, end: u64, rate: u32, frame: f64) -> f64 {
+        self.line(start, end, rate).beat_at(frame)
+    }
+
+    /// The source frame that plays on `beat` (beats before 0 or after the
+    /// end follow the region's tempo from there).
+    pub fn frame_at(&self, start: u64, end: u64, rate: u32, beat: f64) -> f64 {
+        self.line(start, end, rate).frame_at(beat)
+    }
+
+    /// The line between the region `start..end`'s frames and beats, worked
+    /// out once, for looking up many places (a picture's columns).
+    pub fn line(&self, start: u64, end: u64, rate: u32) -> BeatLine {
+        BeatLine {
+            start: start as f64,
+            fpb: self.frames_per_beat(rate),
+            points: self.points(start, end, rate),
+        }
+    }
+
+    /// How fast the region plays between two points, against its own tempo
+    /// (1: as recorded; 2: twice as fast).
+    pub fn speed(&self, a: (f64, f64), b: (f64, f64), rate: u32) -> f64 {
+        (b.0 - a.0) / self.frames_per_beat(rate) / (b.1 - a.1)
+    }
+
+    /// Whether the pins fit the region `start..end`: inside it, in order of
+    /// frame and beat, no more than [`MAX_PINS`], and nowhere played more
+    /// than [`PIN_SPEED`] times faster or slower than the region's tempo.
+    pub fn pins_ok(&self, start: u64, end: u64, rate: u32) -> bool {
+        if self.pins.is_empty() {
+            return true;
+        }
+        if self.pins.len() > MAX_PINS
+            || self
+                .pins
+                .iter()
+                .any(|p| !p.beat.is_finite() || p.frame <= start || p.frame >= end)
+        {
+            return false;
+        }
+        let pts = self.points(start, end, rate);
+        pts.windows(2).all(|w| {
+            let s = self.speed(w[0], w[1], rate);
+            w[1].0 > w[0].0 && w[1].1 > w[0].1 && (1.0 / PIN_SPEED..=PIN_SPEED).contains(&s)
+        })
+    }
+
+    /// The warp for the region moved from `old` to `new` (start, end): each
+    /// pin stays on its hit, its beat counted from the new start. Pins
+    /// outside the new region, or that no longer fit, are dropped.
+    pub fn moved(&self, old: (u64, u64), new: (u64, u64), rate: u32) -> Warp {
+        let mut w = self.clone();
+        if !self.pins.is_empty() && old.0 != new.0 {
+            let zero = self.beat_at(old.0, old.1, rate, new.0 as f64);
+            for p in &mut w.pins {
+                p.beat -= zero;
+            }
+        }
+        w.fit(new.0, new.1, rate);
+        w
+    }
+
+    /// Where pin `i` may go, as (earliest, latest) beat, between its
+    /// neighbours and within [`PIN_SPEED`] of the region's tempo on either
+    /// side. None if there is no pin `i` or no room.
+    pub fn pin_room(&self, i: usize, start: u64, end: u64, rate: u32) -> Option<(f64, f64)> {
+        let p = self.pins.get(i)?;
+        let pts = self.points(start, end, rate);
+        let x = p.frame.saturating_sub(start) as f64;
+        self.room_between(pts[i], x, pts[i + 2], rate)
+    }
+
+    /// The beats a hit `x` frames from the region's start may go on
+    /// between points `a` and `b` (frames from the start, beat).
+    fn room_between(&self, a: (f64, f64), x: f64, b: (f64, f64), rate: u32) -> Option<(f64, f64)> {
+        if !(a.0 < x && x < b.0) {
+            return None;
+        }
+        let fpb = self.frames_per_beat(rate);
+        let (left, right) = ((x - a.0) / fpb, (b.0 - x) / fpb);
+        // A hair inside, so a pin put on an edge still passes the check.
+        let lo = (a.1 + left / PIN_SPEED).max(b.1 - right * PIN_SPEED) + 1e-9;
+        let hi = (a.1 + left * PIN_SPEED).min(b.1 - right / PIN_SPEED) - 1e-9;
+        (lo <= hi).then_some((lo, hi))
+    }
+
+    /// The warp with pin `i` moved to `beat`, or as near it as there is
+    /// room for.
+    pub fn pin_moved(&self, i: usize, beat: f64, start: u64, end: u64, rate: u32) -> Warp {
+        let mut w = self.clone();
+        if let Some((lo, hi)) = self.pin_room(i, start, end, rate) {
+            w.pins[i].beat = beat.clamp(lo, hi);
+        }
+        w
+    }
+
+    /// The warp with a new pin on source frame `frame`, on `beat` or as
+    /// near it as there is room for, and the pin's place among the pins.
+    /// None if the frame is outside the region, already pinned, there is no
+    /// room, or there are [`MAX_PINS`] already.
+    pub fn pin_added(
+        &self,
+        frame: u64,
+        beat: f64,
+        start: u64,
+        end: u64,
+        rate: u32,
+    ) -> Option<(Warp, usize)> {
+        if self.pins.len() >= MAX_PINS || self.pins.iter().any(|p| p.frame == frame) {
+            return None;
+        }
+        let i = self.pins.partition_point(|p| p.frame < frame);
+        let pts = self.points(start, end, rate);
+        let x = frame.checked_sub(start)? as f64;
+        let (lo, hi) = self.room_between(pts[i], x, pts[i + 1], rate)?;
+        let mut w = self.clone();
+        w.pins.insert(
+            i,
+            Pin {
+                frame,
+                beat: beat.clamp(lo, hi),
+            },
+        );
+        Some((w, i))
+    }
+
+    /// Pins each of `hits` (source frames) that the region plays within
+    /// `reach` of a grid line, every `grid` beats, onto that line (the
+    /// nearest hit, where two reach one line). The pins there were go.
+    /// `reach` is in beats.
+    pub fn pinned_to_grid(
+        &self,
+        hits: &[u64],
+        grid: f64,
+        reach: f64,
+        start: u64,
+        end: u64,
+        rate: u32,
+    ) -> Warp {
+        let mut w = Warp {
+            pins: Vec::new(),
+            ..self.clone()
+        };
+        if grid.is_nan() || grid <= 0.0 {
+            return w;
+        }
+        let total = w.beats(end.saturating_sub(start), rate);
+        let fpb = w.frames_per_beat(rate);
+        // (line, hit, how far off), the nearest hit for each line.
+        let mut best: Vec<(i64, u64, f64)> = Vec::new();
+        for &h in hits {
+            if h <= start || h >= end {
+                continue;
+            }
+            let b = (h - start) as f64 / fpb;
+            let line = (b / grid).round() as i64;
+            let g = line as f64 * grid;
+            let off = (b - g).abs();
+            if off > reach || g <= 0.0 || g >= total {
+                continue;
+            }
+            match best.iter_mut().find(|e| e.0 == line) {
+                Some(e) if off < e.2 => *e = (line, h, off),
+                Some(_) => {}
+                None => best.push((line, h, off)),
+            }
+        }
+        best.sort_by_key(|e| e.0);
+        w.pins = best
+            .iter()
+            .map(|&(line, frame, _)| Pin {
+                frame,
+                beat: line as f64 * grid,
+            })
+            .filter(|p| p.frame > start)
+            .collect();
+        // Hits out of order (two lines' hits crossed) go, then any that
+        // don't fit.
+        let mut last = 0;
+        w.pins.retain(|p| {
+            let ok = p.frame > last;
+            if ok {
+                last = p.frame;
+            }
+            ok
+        });
+        w.fit(start, end, rate);
+        w
+    }
+
+    /// Drops the pins that don't fit the region `start..end` (see
+    /// [`Warp::pins_ok`]), keeping as many as it can from the start.
+    pub fn fit(&mut self, start: u64, end: u64, rate: u32) {
+        if self.pins_ok(start, end, rate) {
+            return;
+        }
+        let total = self.beats(end.saturating_sub(start), rate);
+        let ok = |w: &Warp, a: (f64, f64), b: (f64, f64)| {
+            b.0 > a.0 && b.1 > a.1 && (1.0 / PIN_SPEED..=PIN_SPEED).contains(&w.speed(a, b, rate))
+        };
+        let mut kept: Vec<Pin> = Vec::new();
+        let mut last = (start as f64, 0.0);
+        for p in &self.pins {
+            let at = (p.frame as f64, p.beat);
+            if kept.len() < MAX_PINS
+                && p.beat.is_finite()
+                && p.frame > start
+                && p.frame < end
+                && p.beat < total
+                && ok(self, last, at)
+            {
+                kept.push(*p);
+                last = at;
+            }
+        }
+        let tail = (end as f64, total);
+        while let Some(p) = kept.last() {
+            if ok(self, (p.frame as f64, p.beat), tail) {
+                break;
+            }
+            kept.pop();
+        }
+        self.pins = kept;
+    }
+}
+
+/// A warped region's line between source frames and beats (see
+/// [`Warp::line`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeatLine {
+    start: f64,
+    fpb: f64,
+    points: Vec<(f64, f64)>,
+}
+
+impl BeatLine {
+    /// The beat source frame `frame` plays on.
+    pub fn beat_at(&self, frame: f64) -> f64 {
+        through(&self.points, frame - self.start, |p| p, 1.0 / self.fpb)
+    }
+
+    /// The source frame that plays on `beat`.
+    pub fn frame_at(&self, beat: f64) -> f64 {
+        self.start + through(&self.points, beat, |(f, b)| (b, f), self.fpb)
+    }
+}
+
+/// Follows the line through `pts` (each turned into (x, y) by `xy`, both
+/// rising) at `x`; past either end, on with slope `slope`.
+pub(crate) fn through(
+    pts: &[(f64, f64)],
+    x: f64,
+    xy: impl Fn((f64, f64)) -> (f64, f64),
+    slope: f64,
+) -> f64 {
+    let (first, last) = (xy(pts[0]), xy(pts[pts.len() - 1]));
+    if x <= first.0 {
+        return first.1 + (x - first.0) * slope;
+    }
+    if x >= last.0 {
+        return last.1 + (x - last.0) * slope;
+    }
+    // The first point at or past x: x lies between it and the one before.
+    let i = pts.partition_point(|p| xy(*p).0 < x).max(1);
+    let (a, b) = (xy(pts[i - 1]), xy(pts[i]));
+    if b.0 > a.0 {
+        a.1 + (x - a.0) / (b.0 - a.0) * (b.1 - a.1)
+    } else {
+        b.1
     }
 }
 
@@ -338,8 +667,13 @@ impl Region {
         if !grain_ok(&self.grain) {
             return Err(ModelError::BadRegion("grain settings"));
         }
-        if self.warp.is_some_and(|w| !WARP_BPM.contains(&w.bpm)) {
-            return Err(ModelError::BadRegion("warp tempo"));
+        if let Some(w) = &self.warp {
+            if !WARP_BPM.contains(&w.bpm) {
+                return Err(ModelError::BadRegion("warp tempo"));
+            }
+            if !w.pins_ok(self.start, self.end, source.rate()) {
+                return Err(ModelError::BadRegion("warp pins"));
+            }
         }
         Ok(())
     }
@@ -1064,7 +1398,8 @@ impl Project {
 
     /// Puts processed audio in place of layer `layer` of pad `pad`: `s` is
     /// that layer's region stretched (or pitch shifted) on a worker, with
-    /// `scale` output frames per input frame. The layer then plays all of
+    /// `scale` output frames per input frame (through its pins, if it
+    /// stretches with pins: the new region has none). The layer then plays all of
     /// `s`, with its loop points and fades moved to match and its warp
     /// tempo too. The old source stays, so one undo brings it all back.
     pub fn use_processed(
@@ -1085,7 +1420,16 @@ impl Project {
             .region
             .clone();
         let len = s.frames();
-        let at = |x: u64| ((x.saturating_sub(r.start)) as f64 * scale).round() as u64;
+        let rate = self.source(r.source).map_or(s.rate(), |o| o.rate());
+        let pinned = r.warp.as_ref().filter(|w| w.pinned());
+        let at = |x: u64| match pinned {
+            // Through the pins, as the new audio was made.
+            Some(w) => {
+                let beat = w.beat_at(r.start, r.end, rate, x as f64);
+                (beat / w.beats(r.frames(), rate) * len as f64).round() as u64
+            }
+            None => ((x.saturating_sub(r.start)) as f64 * scale).round() as u64,
+        };
         let sustain_loop = r.sustain_loop.and_then(|l| {
             let (a, b) = (at(l.start), at(l.end).min(len));
             (b > a).then(|| Loop {
@@ -1118,11 +1462,68 @@ impl Project {
             fade_in,
             fade_out,
             mode,
-            warp: r.warp.map(|w| Warp {
+            warp: r.warp.as_ref().map(|w| Warp {
                 bpm: (f64::from(w.bpm) / scale) as f32,
-                ..w
+                // A stretch's pins are in the new audio (see
+                // `warp::Process`); a repitch's stay on their hits.
+                pins: if w.pinned() {
+                    Vec::new()
+                } else {
+                    w.pins
+                        .iter()
+                        .map(|p| Pin {
+                            frame: at(p.frame),
+                            ..*p
+                        })
+                        .filter(|p| p.frame > 0 && p.frame < len)
+                        .collect()
+                },
+                ..w.clone()
             }),
             ..r
+        };
+        let id = s.id();
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&p) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.pads[pad].replace(p);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Pad {
+            index: pad,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(id)
+    }
+
+    /// Adds source `s` and puts it on pad `pad`, played whole and once, as
+    /// one undo step; the pad takes the source's name. A pad already there
+    /// keeps its other settings (level, envelopes, filter, keys) with this
+    /// one layer. Returns the source's id.
+    pub fn put_source(&mut self, pad: usize, s: Source) -> Result<SourceId, ModelError> {
+        if pad >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let layer = Layer::new(Region::whole(&s));
+        let p = match self.pad(pad) {
+            Some(old) => Pad {
+                name: s.name.clone(),
+                layers: vec![layer],
+                select: LayerSelect::All,
+                ..old.clone()
+            },
+            None => Pad::new(&s.name, layer),
         };
         let id = s.id();
         let added = self.source(id).is_none();
@@ -1228,6 +1629,44 @@ impl Project {
         let play = PadsPlay::Keys {
             from: (root - root % 12).min(127 - 15),
         };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
+    /// Adds `sources` and puts `pads` (keygroups that use them) on
+    /// consecutive pads from `to_pad`, and the pads then play notes from
+    /// `from`: an instrument made by [`crate::autosample`], as one undo
+    /// step. Nothing changes if any pad is refused.
+    pub fn put_instrument(
+        &mut self,
+        to_pad: usize,
+        sources: Vec<Source>,
+        pads: Vec<Pad>,
+        from: u8,
+    ) -> Result<(), ModelError> {
+        if pads.is_empty() || to_pad + pads.len() > PADS || from > 127 - 15 {
+            return Err(ModelError::BadPad);
+        }
+        let had = self.sources.len();
+        let mut steps = Vec::with_capacity(sources.len() + pads.len() + 1);
+        for s in sources {
+            let id = s.id();
+            if self.source(id).is_none() {
+                self.sources.push(s);
+                steps.push(Undo::AddSource { id });
+            }
+        }
+        if let Some(e) = pads.iter().find_map(|p| self.check_pad(p).err()) {
+            self.sources.truncate(had);
+            return Err(e);
+        }
+        steps.extend(self.place_pads(pads, to_pad));
+        let play = PadsPlay::Keys { from };
         if self.pads_play != play {
             steps.push(Undo::PadsPlay {
                 before: std::mem::replace(&mut self.pads_play, play),
