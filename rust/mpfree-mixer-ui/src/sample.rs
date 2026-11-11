@@ -7,11 +7,11 @@
 
 use mpfree_fx::ids::mixer::{self as mx, monitor, output, source};
 use mpfree_fx::mpfree_node::Ctx;
-use mpfree_fx::{ids, Cloud, Compressor, Delay, Drive, Eq, Mixer, MixerConfig, StripId};
+use mpfree_fx::{ids, Cloud, Compressor, Delay, Drive, Eq, Frozen, Mixer, MixerConfig, StripId};
 use mpfree_ui::widgets::{Chip, Header};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Touch, Ui};
 
-use crate::state::{default_name, MixState, MixView};
+use crate::state::{default_name, MixState, MixView, TakeView};
 use crate::view::{MixerIcon, MixerView};
 
 /// The music tabs, as the approved layout spec lists them.
@@ -216,7 +216,15 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
     ui.add("mixicon", MixerIcon { open: true });
     ui.add(
         "hint",
-        mpfree_ui::widgets::Label::new(crate::MIXER_HINT, Tone::Dim, Align::Left),
+        mpfree_ui::widgets::Label::new(
+            if st.takes {
+                crate::MIXER_HINT_TAKES
+            } else {
+                crate::MIXER_HINT
+            },
+            Tone::Dim,
+            Align::Left,
+        ),
     );
     ui.add(crate::MIXER, MixerView::new());
     ui.add_page(crate::MIXER_PAGE, PREVIEW_LAYOUT)?;
@@ -281,7 +289,70 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         about: "The output picker on a pad channel: the master, a submix, any track, or nowhere",
         ui,
     });
+    // Freeze and print: the bass frozen (a take of its compressor and EQ
+    // playing in their place), the drum kit's freeze waiting for the
+    // loop's start, the kick printing to a new sample.
+    let bass = StripId::Track(3);
+    m.freeze(bass, bass_take())
+        .map_err(|_| "the bass would not freeze".to_string())?;
+    play(&mut m, 8);
+    let _ = state(&mut m, MixView::Tracks);
+    play(&mut m, 4);
+    let mut frozen = state(&mut m, MixView::Tracks);
+    frozen.takes = true;
+    if let Some(s) = frozen.strip_mut(StripId::Track(2)) {
+        s.take = Some(TakeView {
+            print: false,
+            done: None,
+        });
+    }
+    if let Some(s) = frozen.strip_mut(StripId::Track(0)) {
+        s.take = Some(TakeView {
+            print: true,
+            done: Some(0.35),
+        });
+    }
+    out.push(Sample {
+        name: "mixer-freeze-print",
+        about: "Freeze and print: the bass frozen (its effects rest; fader, pan and sends still work), the drum kit's freeze waiting for the loop's start, the kick printing to a new sample",
+        ui: screen(fonts(), frozen.clone())?,
+    });
+    // The selected strip's menu: a second tap on its name.
+    let mut ui = screen(fonts(), frozen)?;
+    let (x, y) = name_button(&ui, 3);
+    tap(&mut ui, x, y);
+    let _ = crate::take_actions(&mut ui);
+    out.push(Sample {
+        name: "mixer-strip-menu",
+        about:
+            "The bass's menu (a tap on the selected strip's name): Thaw, or Print to a new sample",
+        ui,
+    });
     Ok(out)
+}
+
+/// Four beats of the bass as its frozen take: its tone, at 92 BPM.
+fn bass_take() -> Frozen {
+    let frames = (4.0 * 60.0 / 92.0 * RATE as f64) as usize;
+    let hz = 55.0 * 4.0;
+    let wave: Vec<f32> = (0..frames)
+        .map(|k| 0.4 * (std::f32::consts::TAU * k as f32 * hz / RATE as f32).sin())
+        .collect();
+    Frozen {
+        left: wave.clone(),
+        right: wave,
+        origin: 0.0,
+        beats: 4.0,
+        bpm: 92.0,
+        rate: RATE,
+    }
+}
+
+/// Where strip `col`'s name is (the top of the strip).
+pub fn name_button(ui: &Ui, col: usize) -> (i32, i32) {
+    let r = ui.rect_of(crate::MIXER).expect("the mixer page");
+    let x = r.x + col as i32 * (crate::view::STRIP_W + 6) + crate::view::STRIP_W / 2;
+    (x, r.y + crate::view::HEAD_H + 8 + 6 + 15)
 }
 
 /// Where the page's next arrow is, for the samples and tests.
@@ -306,7 +377,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 7);
+        assert_eq!(s.len(), 9);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);
@@ -324,6 +395,20 @@ mod tests {
                 assert_eq!(
                     sample.ui.get::<MixerView>(crate::MIXER).unwrap().picker(),
                     Some(StripId::Pad(2))
+                );
+            }
+            if sample.name == "mixer-freeze-print" {
+                let v = sample.ui.get::<MixerView>(crate::MIXER).unwrap().state();
+                assert!(
+                    v.strip(StripId::Track(3)).unwrap().frozen,
+                    "read from the mixer"
+                );
+                assert!(!v.strip(StripId::Track(4)).unwrap().frozen);
+            }
+            if sample.name == "mixer-strip-menu" {
+                assert_eq!(
+                    sample.ui.get::<MixerView>(crate::MIXER).unwrap().menu(),
+                    Some(StripId::Track(3))
                 );
             }
             if sample.name == "mixer-tracks-page-2" {
