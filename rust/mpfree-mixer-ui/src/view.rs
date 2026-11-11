@@ -315,6 +315,17 @@ impl MixerView {
         std::mem::take(&mut self.actions)
     }
 
+    /// Shows a change made away from the screen (a Q-Link turned) at once,
+    /// before the next state comes. It is not queued: the caller sends it.
+    pub fn show(&mut self, a: &MixAction) {
+        if let MixAction::Set { strip, id, value } = *a {
+            if let Some(s) = self.state.strip_mut(strip) {
+                apply(s, id, value);
+                self.mark(Dirty::All);
+            }
+        }
+    }
+
     /// The first strip shown (pages move it by a page of strips).
     pub fn first(&self) -> usize { self.first }
 

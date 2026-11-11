@@ -291,4 +291,31 @@ mod tests {
         play(&mut m, 1);
         assert_eq!(m.param(StripId::Pad(2), mx::OUTPUT), output::MASTER);
     }
+
+    #[test]
+    fn q_links_turn_the_selected_strip_on_the_screen_and_in_the_mixer() {
+        let mut m = song_mixer();
+        let mut st = MixState::from_mixer(&mut m, MixView::Tracks, &name);
+        st.selected = Some(StripId::Track(3));
+        let mut ui = screen(Fonts::embedded(), st).unwrap();
+        let q = crate::qlinks(&ui);
+        assert_eq!((q.strip, q.name.as_str()), (Some(StripId::Track(3)), "Bass"));
+        let before = q.knobs[0].value;
+        assert_eq!(before, m.param(StripId::Track(3), mx::VOLUME));
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let a = crate::qlink_turn(&mut ui, 0, -3, false).expect("the volume moves");
+        assert!(ui.paint(&mut c).iter().any(|r| r.w > 0), "the fader is drawn again");
+        let after = crate::qlinks(&ui).knobs[0].value;
+        assert!(after < before, "{before} -> {after}");
+        assert!(crate::take_actions(&mut ui).is_empty(), "the caller sends a Q-Link's action itself");
+        assert!(crate::apply(&mut m, &a));
+        play(&mut m, 1);
+        assert_eq!(m.param(StripId::Track(3), mx::VOLUME), after);
+        let a = crate::qlink_to(&mut ui, 1, 1.0).expect("pan moves");
+        assert!(crate::apply(&mut m, &a));
+        play(&mut m, 1);
+        assert_eq!(m.param(StripId::Track(3), mx::PAN), 100.0);
+        assert_eq!(crate::qlinks(&ui).knobs[1].text, "R100");
+    }
 }
