@@ -25,8 +25,10 @@
 //!                      G dB), timing of each hit, Note Repeat, Latch, Full and
 //!                      Half Level, MENU and Prefs, the button guide; the synth
 //!                      (Poly) as the kit list's last entry, its pages on the
-//!                      Synth tab with Q-Links 1-4 on the marked knobs; STOP
-//!                      ends it
+//!                      Synth tab with Q-Links 1-4 on the marked knobs; the
+//!                      Sample tab, the sampler's pad editor (Start, End, the
+//!                      loop and fades of the pad last hit, Q-Links 1-4 on the
+//!                      markers; edits stay in memory); STOP ends it
 //!   app [--gain-db G] [--kits FILE] [--keep-screen]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
@@ -66,6 +68,7 @@ mod debug_page;
 mod gui;
 mod kit;
 mod perf;
+mod sample_page;
 mod sampler;
 mod synth;
 mod sys;
@@ -261,6 +264,17 @@ impl Out {
             if s.try_send(msg).is_err() {
                 self.dropped += 1;
             }
+        }
+    }
+
+    /// Like `show`, but a message that finds no room comes back, so the
+    /// audio thread can keep it (and not free it) and try again.
+    fn try_show(&mut self, msg: gui::ToUi) -> Result<(), gui::ToUi> {
+        match self.sink.as_ref() {
+            Some(s) => s.try_send(msg).map_err(|e| match e {
+                std::sync::mpsc::TrySendError::Full(m) | std::sync::mpsc::TrySendError::Disconnected(m) => m,
+            }),
+            None => Ok(()),
         }
     }
 
@@ -1366,6 +1380,8 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+/// How often the Sample page's playheads are sent while it shows.
+const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
 
 /// The sequencer's notes on the pads: the sampler's kit, or Poly while the
 /// synth has the pads. Each hit is noted so the screen's pads can flash.
@@ -1458,6 +1474,8 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                      synth.preset_name(), kits.len() + 1, synth.range_text()));
     out.show(gui::ToUi::Kits(kit_views(&kits, &synth)));
     out.show(gui::ToUi::Synth(synth.state()));
+    // The Sample tab edits the kits' projects on the screen thread.
+    out.show(gui::ToUi::SampleKits { projects: player.take_projects(), rate: RATE });
     let drum_kits = kits.len();
     let synth_kit = drum_kits;
     let n = drum_kits + 1;
@@ -1468,6 +1486,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
     // page wants turns, so the last position of each is kept.
     let mut qlink_at: [Option<u8>; 4] = [None; 4];
     let mut synth_meters = synth.meters();
+    // The Sample tab: a kit view the screen had no room to take back yet
+    // (kept here, never freed on this thread), how many views were swapped
+    // in, and its playheads.
+    let mut view_back: Option<gui::ToUi> = None;
+    let mut views_swapped = 0u64;
+    let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(out, 2, "Finding the pads and buttons", "The controller is a USB device inside the MPC", 0.42);
@@ -1590,6 +1614,19 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                         out.note(&line);
                     }
                 }
+                gui::FromUi::SampleView(mut swap) => {
+                    if player.swap_view(&mut swap) {
+                        views_swapped += 1;
+                    }
+                    // Back to the screen thread, which frees the old view.
+                    if let Some(old) = view_back.take() {
+                        // Only one view travels at a time, so this is not
+                        // expected; the older one is freed here.
+                        drop(old);
+                        out.note("sample: two kit views waiting to go back; one freed on the audio thread");
+                    }
+                    view_back = Some(gui::ToUi::SampleViewBack(swap));
+                }
                 gui::FromUi::Synth(SynthAction::Preset(k)) => {
                     if let Some(line) = param_log.flush(&synth) {
                         out.note(&line);
@@ -1603,6 +1640,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         }
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
+        }
+        if let Some(m) = view_back.take() {
+            view_back = out.try_show(m).err();
         }
         ports.show_pressure = app.settings.show_pressure;
         for m in ports.poll(out, &mut buf)? {
@@ -1644,7 +1684,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                     // On the Synth page Q-Links 1-4 turn the marked knobs; while NOTE REPEAT is held
                     // or the Arp panel is open they set the arp; otherwise Q-Link 1 is the level.
                     let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
-                    if app.view() == app::View::Synth && knob < 4 {
+                    // On the Sample page they move Start, End and the loop.
+                    let page = app.view();
+                    if matches!(page, app::View::Synth | app::View::Sample) && knob < 4 {
                         let k = knob as usize;
                         let ticks = if public {
                             let was = qlink_at[k].replace(m.bytes[2]);
@@ -1652,8 +1694,10 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                         } else {
                             delta as i32
                         };
-                        if ticks != 0 {
+                        if ticks != 0 && page == app::View::Synth {
                             out.show(gui::ToUi::SynthQLink(k, ticks));
+                        } else if ticks != 0 {
+                            out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
                     } else if let Some(e) = app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2])) {
                         fx.extend(e);
@@ -1670,6 +1714,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 Some(ControlEvent::QLinkTouch { knob, touched: true }) if (knob as usize) < 4 => {
                     fx.extend(app.known_control(app::Code::Button(mpc_one::QLINK_TOUCH_NOTES[knob as usize])));
                 }
+                // Letting go of a Q-Link ends its turn on the Sample page (one undo step).
+                Some(ControlEvent::QLinkTouch { knob, touched: false }) if (knob as usize) < 4
+                    && app.view() == app::View::Sample => out.show(gui::ToUi::SampleLift),
                 None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => fx.extend(app.unknown_cc(m.bytes[1])),
                 _ => {}
             }
@@ -1714,6 +1761,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 }
                 app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
+                app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
+                app::Effect::SamplePad(d) => out.show(gui::ToUi::SamplePad(d)),
+                app::Effect::SampleUndo { redo } => out.show(gui::ToUi::SampleUndo(redo)),
                 app::Effect::StopSounds => {
                     player.stop_all();
                     synth.stop();
@@ -1722,9 +1772,12 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                 app::Effect::Note(s) => out.note(&s),
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
-                    // Opening the Synth tab hands the pads to the synth.
+                    // Opening the Synth tab hands the pads to the synth, and
+                    // opening the Sample tab gives them back to the drum kit.
                     if v == app::View::Synth && !synth_on {
                         kit_to = Some(synth_kit);
+                    } else if v == app::View::Sample && synth_on {
+                        kit_to = Some(player.kit());
                     }
                     out.show(gui::ToUi::Show(v));
                 }
@@ -1866,6 +1919,15 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
         hits += seq.hits;
         for (pad, &v) in seq.flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
             out.show(gui::ToUi::PadFlash { pad, velocity: v });
+        }
+        // The Sample page's playheads, about 25 times a second while it shows.
+        if app.view() == app::View::Sample && heads_at.elapsed() >= SAMPLE_HEADS_EVERY {
+            let heads = player.playheads();
+            if heads != shown_heads {
+                out.show(gui::ToUi::SamplePlayheads(heads));
+                shown_heads = heads;
+            }
+            heads_at = Instant::now();
         }
         if time.take_changed() {
             out.show(gui::ToUi::Time(Box::new(time.state())));
@@ -2012,6 +2074,9 @@ fn player_session(o: &Options, out: &mut Out, timed: bool, from_ui: &Receiver<gu
                       peak {:.1} dBFS, {clipped} periods clipped, {pings} pings; {}",
                      kits_used.join(" "), 20.0 * peak.max(1e-6).log10(), totals.summaries.join("; ")));
     out.say(&sampler_status(&player, &render_time));
+    if views_swapped > 0 {
+        out.say(&format!("sample tab: {views_swapped} edited kit views swapped in"));
+    }
     out.say(&time.describe());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
