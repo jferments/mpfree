@@ -17,6 +17,8 @@ def imported(path,name):
     return module
 AUDIT=imported("tools/mpc-one/offline-bootchain-v4-compare.py",
                "mpfree_bootchain_v4_compare")
+LEDGER=imported("tools/mpc-one/bootchain-evidence-ledger.py",
+                "mpfree_bootchain_evidence_ledger")
 class V4OfflineAuditTests(unittest.TestCase):
     def test_uimage_multi_component_script_is_normalized(self):
         script=b"\nsetenv bootargs test\nbootz 0x2000000 - 0x1f00000\n"
@@ -53,10 +55,28 @@ class V4OfflineAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d=AUDIT.get_elf_details(b"not-ELF",td)
             self.assertFalse(d["elf"])
+    def test_evidence_ledger_handles_partial_failing_passes(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td)/"bootchain-wide-synthetic"
+            folder.mkdir()
+            import json
+            (folder/"p1-evidence-graph-v3.json").write_text(json.dumps({
+                "all_known_function_graph":{"0xff704020":{}},
+                "detailed_functions":{}}))
+            (folder/"p1-coverage-v4.json").write_text(json.dumps({
+                "newly_detailed":1}))
+            (folder/"storage-env-boot-dtb.json").write_text(json.dumps({
+                "p2":{"crc_valid_for_standard_layout":True}}))
+            result=LEDGER.make(folder)
+            self.assertTrue(len(result["findings"])>=8)
+            self.assertIn("requires hardware",LEDGER.render(result))
+            self.assertFalse(result["passes"]["p3_coverage"]["available"])
+
     def test_all_v4_sources_parse(self):
         for relative in (
           "tools/ghidra/MPFreeBootChainCoverageV4.py",
           "tools/mpc-one/offline-bootchain-v4-compare.py",
+          "tools/mpc-one/bootchain-evidence-ledger.py",
         ):
             path=ROOT/relative
             with self.subTest(path=str(path)):
