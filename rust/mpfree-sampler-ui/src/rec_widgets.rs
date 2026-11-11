@@ -62,10 +62,21 @@ impl Strip {
         self.per * self.len as u64
     }
 
+    /// Forgets everything: the next update reads a new input from its start.
+    pub fn reset(&mut self) {
+        self.cols.clear();
+        self.read_to = 0;
+        self.peak = [0.0; 2];
+    }
+
     /// Reads what the input has had since the last update (at first, as
     /// much of the strip's span as the input holds), a column at a time.
     pub fn update(&mut self, input: &Input) {
         let now = input.now();
+        if now < self.read_to {
+            // Another input, started since.
+            self.reset();
+        }
         let from = self
             .read_to
             .max(now.saturating_sub(self.span()))
