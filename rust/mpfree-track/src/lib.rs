@@ -569,6 +569,10 @@ impl Sink for TrackHost {
             Event::NoteOn { note, velocity } => NodeEvent::NoteOn { note, velocity },
             Event::NoteOff { note } => NodeEvent::NoteOff { note },
             Event::AllOff => NodeEvent::AllOff,
+            // Parameter locks go to the mod resolver (`mpfree-mod`), which
+            // knows each parameter's own value to go back to on Unlock and
+            // sends the instruments their values; not straight to a node.
+            Event::Lock { .. } | Event::Unlock { .. } => return,
         };
         if out.dest == ALL {
             for slot in 0..self.slots.len() {

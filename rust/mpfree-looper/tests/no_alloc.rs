@@ -1,9 +1,9 @@
 //! The looper's real-time calls (`command`, `process`, `status`, `stats`,
 //! `layer`) must not allocate or free. A counting global allocator checks
 //! that across a busy session: the first pass, overdubs, undo and redo,
-//! clear, mute, level and latency changes, a full memory, locates, a
-//! transport loop, tempo changes, stop and count-in, at period sizes from 1
-//! to 4096 frames.
+//! edits, merges, bounces and a resample, clear, mute, level and latency
+//! changes, a full memory, locates, a transport loop, tempo changes, stop
+//! and count-in, at period sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -15,7 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
+use mpfree_looper::{After, Command as L, Edit as E, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -70,9 +70,11 @@ fn commands_and_periods_never_allocate() {
 
     let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
     let script = [
+        L::SetFadeOld(0.8),
         L::Overdub,
         L::Undo,
         L::Redo,
+        L::Merge,
         L::Overdub,
         L::Overdub,
         L::Mute(true),
@@ -85,16 +87,40 @@ fn commands_and_periods_never_allocate() {
         L::Record,
         L::Record,
         L::Clear,
-        L::Record,
+        // A first pass from the other loops (a Record that resamples).
+        L::Resample,
         L::SetBars(None),
         L::Record,
         L::SetBars(Some(1)),
+        L::SetAfter(After::Overdub),
+        L::Edit(E::Double),
+        L::Edit(E::Nudge(1)),
+        L::Edit(E::Reverse),
+        L::Edit(E::Half),
+        L::Edit(E::Trim {
+            from: 960,
+            to: 2_880,
+        }),
+        L::Edit(E::SeamFade(512)),
+        L::Undo,
+        L::Edit(E::Nudge(-3)),
+        L::Merge,
+        L::Undo,
+        L::Redo,
     ];
     let mut seen_playing = false;
     let mut layers = 0usize;
     let mut sum = 0.0f64;
     let mut phase = 0.0f32;
     let mut loops_used = 0u32;
+    let mut merged = false;
+    let mut spare = Some(Vec::with_capacity(2 * 12 * RATE as usize));
+    let mut bounced = 0;
+    let mut want = false;
+    // A calm second session for bounces and a resample, made up front.
+    let mut t2 = Transport::new(RATE, 120.0).unwrap();
+    let mut l2 = Looper::new(RATE, 12);
+    let mut bounced2 = 0;
     watch(true);
     t.command(0, T::Play);
     l.command(L::Record);
@@ -134,6 +160,7 @@ fn commands_and_periods_never_allocate() {
         // The last third moves between three loops (and one past the end).
         if i >= 4000 && i % 211 == 0 {
             let _ = l.select_loop([0, 3, 7, MAX_LOOPS][(i / 211) as usize % 4]);
+            let _ = l.command(L::Record);
         }
         // Each layer's controls; deletes only in the second half, so the
         // first half fills the memory and overdubs are refused.
@@ -167,10 +194,18 @@ fn commands_and_periods_never_allocate() {
         let s = l.status();
         seen_playing |= s.phase == Phase::Playing;
         layers = layers.max(s.layers);
+        merged |= s.merging.is_some();
         if let Some(w) = l.layer(0) {
             sum += w[0] as f64 * 0.0;
         }
         let _ = l.stats();
+        // The undo history, for the screen.
+        sum += l.history().done().len() as f64 * 0.0;
+        // A bounce now and then, its buffer going round. (Not too often:
+        // a loop's commands wait while it bounces. It is asked for until
+        // a loop is ready.)
+        want |= i >= 300 && i % 401 == 0;
+        bounce(&mut l, i, &mut want, &mut spare, &mut bounced);
         let m = l.memory();
         assert!(m.used <= m.capacity);
         for k in 0..MAX_LOOPS {
@@ -180,6 +215,26 @@ fn commands_and_periods_never_allocate() {
                 sum += w[w.len() - 1] as f64 * 0.0;
             }
         }
+    }
+
+    // The calm session: one bar on loop 0, then loop 1 resamples it, and
+    // both are bounced again and again at every period size.
+    t2.command(0, T::Play);
+    l2.command(L::SetBars(Some(1)));
+    l2.command(L::Record);
+    for i in 0..3000u64 {
+        if i == 400 {
+            let _ = l2.select_loop(1);
+            let _ = l2.command(L::SetBars(Some(1)));
+            let _ = l2.command(L::Resample);
+        }
+        want |= i % 151 == 0;
+        bounce(&mut l2, i, &mut want, &mut spare, &mut bounced2);
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        out[..2 * n].fill(0.0);
+        assert!(t2.process(n as u32, &mut b));
+        l2.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        let _ = l2.status();
     }
     watch(false);
     assert_eq!(
@@ -192,5 +247,28 @@ fn commands_and_periods_never_allocate() {
         "{seen_playing} {layers} {sum}"
     );
     assert!(l.stats().refused > 0, "{:?}", l.stats());
+    assert!(merged, "no merge rendered");
+    assert!(bounced >= 1, "{bounced} bounces in the busy session");
+    assert!(bounced2 > 10, "{bounced2} bounces in the calm session");
+    assert_eq!(l2.loop_status(1).unwrap().phase, Phase::Playing);
+    assert!(l2.loop_status(1).unwrap().layers == 1);
     assert!(loops_used.count_ones() >= 3, "loops used: {loops_used:b}");
+}
+
+/// Asks for a bounce from whichever loop is ready, and takes a finished
+/// one back, its buffer going round.
+fn bounce(l: &mut Looper, i: u64, want: &mut bool, spare: &mut Option<Vec<f32>>, n: &mut usize) {
+    if *want {
+        if let Some(buf) = spare.take() {
+            match l.bounce(i as usize % MAX_LOOPS, buf) {
+                Ok(()) => *want = false,
+                Err(buf) => *spare = Some(buf),
+            }
+        }
+    }
+    let _ = l.bounce_progress();
+    if let Some(b) = l.take_bounce() {
+        *n += 1;
+        *spare = Some(b.audio);
+    }
 }
