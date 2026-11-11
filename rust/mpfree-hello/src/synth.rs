@@ -426,6 +426,43 @@ impl Synth {
         }
     }
 
+    /// A note by number, `offset` frames into the next render: the arp on
+    /// a pad layout, which sends the layout's notes rather than pads. It is
+    /// counted with the pads' notes, so a note a pad and the arp both hold
+    /// ends with the last of them.
+    pub fn note_on_note(&mut self, note: u8, velocity: u8, offset: u32) {
+        if note > 127 || velocity == 0 {
+            return;
+        }
+        self.push(self.settings.engine, offset, NodeEvent::NoteOn { note, velocity: velocity.min(127) });
+        let h = &mut self.holders[usize::from(note)];
+        *h = h.saturating_add(1);
+        self.notes += 1;
+    }
+
+    /// Ends one [`Synth::note_on_note`]; the note-off goes out once nothing
+    /// else holds the note.
+    pub fn note_off_note(&mut self, note: u8, offset: u32) {
+        if note > 127 {
+            return;
+        }
+        let h = &mut self.holders[usize::from(note)];
+        if *h == 0 {
+            return;
+        }
+        *h -= 1;
+        if *h == 0 {
+            self.push(self.settings.engine, offset, NodeEvent::NoteOff { note });
+        }
+    }
+
+    /// Pressure, 0 to 127, on a note by number (while something holds it).
+    pub fn pressure_note(&mut self, note: u8, value: u8) {
+        if note <= 127 && self.holders[usize::from(note)] > 0 {
+            self.push(self.settings.engine, 0, NodeEvent::Pressure { note, value: value.min(127) });
+        }
+    }
+
     /// Every note ends with its release (the pads went back to drums).
     pub fn all_off(&mut self) {
         self.push(self.settings.engine, 0, NodeEvent::AllOff);
@@ -746,6 +783,38 @@ mod tests {
             with(&mut s, |p| p.bank = b);
             assert_eq!(s.notes(0), &[12], "bank {b}");
         }
+    }
+
+    #[test]
+    fn notes_by_number_share_the_count_with_the_pads() {
+        let mut s = Synth::new(44_100);
+        // Pad 0 plays C3 (48); the arp plays C3 and E3 by number.
+        s.note_on(0, 100, 0);
+        s.note_on_note(48, 90, 5);
+        s.note_on_note(52, 90, 5);
+        s.note_off(0, 10);
+        assert!(!queued(&s).contains(&NodeEvent::NoteOff { note: 48 }), "the arp still holds C3");
+        s.pressure_note(52, 70);
+        s.pressure_note(55, 70);
+        s.note_off_note(48, 20);
+        s.note_off_note(52, 20);
+        s.note_off_note(52, 21);
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::NoteOn { note: 48, velocity: 100 },
+                NodeEvent::NoteOn { note: 48, velocity: 90 },
+                NodeEvent::NoteOn { note: 52, velocity: 90 },
+                NodeEvent::Pressure { note: 52, value: 70 },
+                NodeEvent::NoteOff { note: 48 },
+                NodeEvent::NoteOff { note: 52 },
+            ]
+        );
+        let mut frame = 0;
+        assert!(peak(&run(&mut s, &mut frame, 2, 256)) > 0.0);
+        // A note-off with nothing holding the note sends nothing.
+        s.note_off_note(60, 0);
+        assert!(queued(&s).is_empty());
     }
 
     #[test]
