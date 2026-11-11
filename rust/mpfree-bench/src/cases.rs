@@ -10,7 +10,7 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_sampler::dsp::{Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
-use mpfree_synth::params::{POLYPHONY, UNISON};
+use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::{Poly, PRESETS};
 use mpfree_play::{ArpHost, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project as Song, Quantise, Speed, Track};
@@ -175,8 +175,18 @@ fn sampler(name: &str, rate: u32, master: bool) -> Case {
 /// submixes, 4 returns), fed `tracks` tracks and `pads` pad channels of
 /// program material, with a typical song's routing: pads into the drum
 /// track, drums and bass into submixes, sends to two returns. With
-/// `inserts`, the strips carry a song's worth of effects too.
-fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Case {
+/// [`Inserts::Song`], the strips carry a song's worth of effects too
+/// (with the reverb at its Light quality: [`Inserts::SongLight`]).
+/// The inserts a [`mixer`] case carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inserts {
+    None,
+    Song,
+    SongLight,
+}
+
+fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Case {
+    let inserts = with != Inserts::None;
     use ids::mixer::{self as mx, output};
     let mut m = Mixer::new(MixerConfig::default(), rate, MAX_BLOCK.min(1024));
     for p in 0..pads {
@@ -201,6 +211,9 @@ fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, inserts: bool) -> Ca
         m.chain_mut(StripId::Bus(1)).unwrap().push(Box::new(Drive::new()));
         m.chain_mut(StripId::Bus(3)).unwrap().push(Box::new(Compressor::new()));
         m.chain_mut(StripId::Return(0)).unwrap().push(Box::new(Cloud::new()));
+        if with == Inserts::SongLight {
+            m.chain_mut(StripId::Return(0)).unwrap().set_param(0, ids::cloud::QUALITY, 1.0);
+        }
         m.chain_mut(StripId::Return(1)).unwrap().push(Box::new(Delay::new()));
         m.chain_mut(StripId::Master).unwrap().push(Box::new(Eq::new()));
         m.chain_mut(StripId::Track(1)).unwrap().set_param(1, ids::compressor::SIDECHAIN, 1.0);
@@ -275,10 +288,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| effect("Grains FX (dense)", rate, Box::new(GrainNode::new(5)),
                   &[(mpfree_grain::node::param::MIX, 100.0), (mpfree_grain::node::param::DENSITY, 200.0),
                     (mpfree_grain::node::param::SPRAY, 50.0)])));
-    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, false)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, false)));
-    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, false)));
-    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, true)));
+    v.push(measured(|| mixer("Mixer, idle (63 strips, nothing playing)", rate, 0, 0, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, routing only", rate, 12, 8, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 16 tracks and 32 pads, routing only", rate, 16, 32, Inserts::None)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts", rate, 12, 8, Inserts::Song)));
+    v.push(measured(|| mixer("Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb", rate, 12, 8, Inserts::SongLight)));
     v.push(measured(|| chain(rate)));
     v.push(measured(|| time(rate, 8)));
     v.push(measured(|| looper(rate, 60)));
@@ -286,9 +300,89 @@ pub fn all(rate: u32) -> Vec<Case> {
     v
 }
 
+/// One engine measured at several voice counts, to find what a voice costs.
+pub struct Scaling {
+    pub name: String,
+    /// The budget it counts against.
+    pub module: &'static str,
+    /// (voices, the case playing that many).
+    pub points: Vec<(usize, Case)>,
+}
+
+/// Every Poly preset at 1 to 16 voices (chords changing every half second,
+/// as in the synth cases) and the sampler at 1 to 32 voices held.
+pub fn scaling(rate: u32) -> Vec<Scaling> {
+    let mut v: Vec<Scaling> = PRESETS.iter().map(|p| {
+        // Mono and legato presets play one voice whatever the polyphony.
+        let mono = p.values.iter().any(|&(id, x)| id == VOICE_MODE && x != 0.0);
+        let counts: &[usize] = if mono { &[1] } else { &[1, 2, 4, 8, 16] };
+        Scaling {
+            name: format!("Poly {}{}", p.name, if mono { " (mono)" } else { "" }),
+            module: "synth",
+            points: counts.iter().map(|&n| (n, synth(format!("Poly {} x{n}", p.name), rate, p.values, n))).collect(),
+        }
+    }).collect();
+    v.push(Scaling {
+        name: "Sampler, looping pads held".to_string(),
+        module: "sampler",
+        points: [1usize, 4, 8, 16, 32].iter().map(|&n| (n, held_pads(rate, n))).collect(),
+    });
+    v
+}
+
+/// The sampler with `n` looping, filtered, stereo pads held down, so exactly
+/// `n` voices sound in every block.
+fn held_pads(rate: u32, n: usize) -> Case {
+    let s = Source::new("noise", rate, 2, (0..rate as usize * 2).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect())
+        .expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..n {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Loop;
+        r.sustain_loop = Some(Loop { start: 5000, end: 30000, crossfade: 200, mode: LoopMode::Forward });
+        r.tune_cents = (i as i32 % 24 - 12) * 50;
+        let mut pad = Pad::new("p", Layer::new(r));
+        pad.polyphony = 1;
+        pad.filter = Filter { kind: FilterKind::LowPass, poles: 2, cutoff_hz: 2000.0, resonance: 0.3, env_octaves: 1.0 };
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, n.max(1));
+    e.set_view(EngineView::build(&p, rate));
+    Case {
+        name: format!("Sampler x{n} held"),
+        module: "sampler",
+        what: "looping pads held down",
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..n { e.apply(Event::NoteOn { pad: pad as u8, velocity: 100 }); }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// A straight line through (voices, ns) by least squares: (fixed ns, ns
+/// per voice).
+pub fn fit(points: &[(usize, f64)]) -> (f64, f64) {
+    if let [(1, ns)] = points {
+        return (*ns, 0.0);
+    }
+    let n = points.len() as f64;
+    let mx = points.iter().map(|p| p.0 as f64).sum::<f64>() / n;
+    let my = points.iter().map(|p| p.1).sum::<f64>() / n;
+    let sxy: f64 = points.iter().map(|p| (p.0 as f64 - mx) * (p.1 - my)).sum();
+    let sxx: f64 = points.iter().map(|p| (p.0 as f64 - mx).powi(2)).sum();
+    let b = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+    (my - b * mx, b)
+}
+
 /// A busy song on one audio thread, against the whole thread's budget: the
-/// sampler with the master grains, two synths (an 8-voice Supersaw and a
-/// 4-voice Sub Bass), the mixer with a song's inserts, the time engine and
+/// sampler with the master grains, two synths (an 8-voice Supersaw and the
+/// Sub Bass, a mono preset), the mixer with a song's inserts, the time engine and
 /// the looper, each run every block in that order. Running them together
 /// also shows what they cost each other in the caches.
 fn song(rate: u32) -> Case {
@@ -297,7 +391,7 @@ fn song(rate: u32) -> Case {
         sampler("sampler", rate, true),
         synth("synth 1".to_string(), rate, preset("Supersaw"), 8),
         synth("synth 2".to_string(), rate, preset("Sub Bass"), 4),
-        mixer("mixer", rate, 12, 8, true),
+        mixer("mixer", rate, 12, 8, Inserts::Song),
         time(rate, 8),
         looper(rate, 60),
     ];
@@ -509,6 +603,16 @@ mod tests {
             // 20 s of stereo f32.
             assert!(c.mem_bytes >= 20 * 44_100 * 2 * 4, "{}", c.mem_bytes);
         }
+    }
+
+    #[test]
+    fn a_line_fits_and_held_pads_sound() {
+        let (a, b) = fit(&[(1, 12.0), (2, 14.0), (4, 18.0), (8, 26.0)]);
+        assert!((a - 10.0).abs() < 1e-9 && (b - 2.0).abs() < 1e-9, "{a} {b}");
+        let mut c = held_pads(44_100, 4);
+        let (l, _) = run(&mut c, 100);
+        assert!(l.iter().any(|v| v.abs() > 1e-4));
+        assert!(scaling(44_100).iter().all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));
     }
 
     #[test]

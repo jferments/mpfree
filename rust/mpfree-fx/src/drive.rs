@@ -10,7 +10,7 @@ use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth
 
 use crate::oversample::{Down2, Up2, TAPS_2X, TAPS_4X};
 use crate::svf::{Segs, Svf, SvfMode};
-use crate::{db_to_gain, defaults, gain_to_db, DcBlock, FixedDelay};
+use crate::{db_to_gain, defaults, fast_tanh, gain_to_db, DcBlock, FixedDelay};
 
 /// [`Drive`] parameter ids.
 pub mod ids {
@@ -57,14 +57,14 @@ const REF: f32 = 0.25;
 fn shape(mode: usize, x: f32, b: f32) -> f32 {
     match mode {
         1 => x.clamp(-1.0, 1.0),
-        2 => (x + b).tanh() - b.tanh(),
+        2 => fast_tanh(x + b) - fast_tanh(b),
         3 => (FRAC_PI_2 * x).sin(),
         4 => {
             let s = |u: f32| u.signum() * (1.0 - (-2.0 * u.abs()).exp());
             s(x + b) - s(b)
         }
-        5 => x.abs().tanh(),
-        _ => x.tanh(),
+        5 => fast_tanh(x.abs()),
+        _ => fast_tanh(x),
     }
 }
 

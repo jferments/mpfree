@@ -5,13 +5,14 @@
 use std::sync::Arc;
 
 use mpfree_sampler::model::{
-    Ahdsr, Fade, FadeCurve, Filter, FilterKind, Layer, LayerSelect, Loop, LoopMode, Pad, PlayMode, PressureRoute,
-    PressureTarget, Project, Region, Source,
+    Ahdsr, ChopMode, ChopSet, Fade, FadeCurve, Filter, FilterKind, Layer, LayerSelect, Loop, LoopMode, Pad, PlayMode,
+    PressureRoute, PressureTarget, Project, Region, Source,
 };
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::chop_tab::{self, ChopState, ChopTab};
+use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::source::SourceView;
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
@@ -26,6 +27,7 @@ pub const EDITOR_TAB: usize = 4;
 pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
+pub const PADS_PAGE: &str = "Sample · Pads";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -120,6 +122,16 @@ pub struct PlaySample {
     pub tab: PlayTab,
     pub project: Project,
     pub state: PlayState,
+}
+
+/// One sample screen of the Pads tab.
+pub struct PadsSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: PadsTab,
+    pub project: Project,
+    pub state: PadsState,
 }
 
 /// The app's part of the screen: the header and the hint line.
@@ -220,6 +232,77 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
         let st = s.state.clone();
         s.tab.update(&mut s.ui, &st);
     }
+    out.push(s);
+    Ok(out)
+}
+
+/// A made-up drum hit, stereo, interleaved: a pitched thump (`tone` Hz)
+/// or noise, `len_s` long.
+fn hit_sound(len_s: f32, tone: Option<f32>) -> Vec<f32> {
+    let n = (len_s * RATE as f32) as usize;
+    let mut seed = 0x1234_5678u32;
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let t = i as f32 / RATE as f32;
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let x = match tone {
+            Some(hz) => (t * hz * std::f32::consts::TAU * (1.0 + 2.0 * (-t * 30.0).exp())).sin(),
+            None => seed as f32 / u32::MAX as f32 * 2.0 - 1.0,
+        };
+        let v = 0.8 * (-t / (len_s / 4.0)).exp() * x;
+        out.extend_from_slice(&[v, v * 0.95]);
+    }
+    out
+}
+
+/// A kit: the drum loop on A5 and chopped into four on A6-A9, a kick on
+/// A1, and a hat in the kit that no pad plays yet.
+pub fn kit_project() -> (Project, Arc<SourceView>) {
+    let (mut p, view) = project();
+    let source = p.source(view.id).expect("the loop").clone();
+    let region = p.pad(PAD).expect("the loop's pad").layers[0].region.clone();
+    let quarter = (region.end - region.start) / 4;
+    let marks = [region.start, region.start + quarter, region.start + 2 * quarter, region.start + 3 * quarter, region.end];
+    let c = ChopSet::from_markers("Break 92", &source, ChopMode::Grid, marks).expect("the chop");
+    let template = p.pad(PAD).cloned();
+    p.chop_to_pads(c, 1, 4, PAD + 1, template.as_ref()).expect("the slices");
+    let kick = Source::new("Kick 58", RATE, 2, hit_sound(0.4, Some(58.0))).expect("the kick");
+    let hat = Source::new("Hat closed", RATE, 2, hit_sound(0.08, None)).expect("the hat");
+    let kick_region = Region::whole(&kick);
+    p.add_source(kick);
+    p.add_source(hat);
+    p.set_pad(0, Some(Pad { mute_group: Some(1), ..Pad::new("Kick 58", Layer::new(kick_region)) }), None)
+        .expect("the kick pad");
+    (p, view)
+}
+
+/// The Pads tab on the kit, pad `pad` picked.
+pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
+    let (project, _) = kit_project();
+    let state = PadsState::from_project(&project, pad);
+    let mut ui = app_ui_with(fonts, &project, pads_tab::HINT);
+    let mut tab = PadsTab::add(&mut ui, PADS_PAGE, &state)?;
+    tab.kit = "Kit 1 · Breaks".into();
+    tab.update(&mut ui, &state);
+    ui.show(PADS_PAGE)?;
+    Ok(PadsSample { name: "pads", about: "The kit's pads: the loop on A5 picked, its four slices on A6-A9, a kick on A1",
+                    ui, tab, project, state })
+}
+
+/// The Pads tab's sample screens.
+pub fn pads_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PadsSample>, String> {
+    let mut out = vec![pads_sample(fonts(), PAD)?];
+    // An empty pad picked, the unused hat picked to put on it, A6 held.
+    let mut s = pads_sample(fonts(), 10)?;
+    (s.name, s.about) = ("pads-empty", "Pad A11 (no sound) picked, the hat picked to put on it, A6 held on the hardware");
+    let hat = s.state.sounds.iter().position(|x| x.name == "Hat closed").unwrap_or(0);
+    let ev = mpfree_ui::UiEvent { widget: pads_tab::SOUNDS.into(), kind: mpfree_ui::EventKind::Select(hat) };
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st);
+    s.tab.update(&mut s.ui, &st);
+    s.tab.set_lit(&mut s.ui, &st, PAD + 1, true);
     out.push(s);
     Ok(out)
 }
