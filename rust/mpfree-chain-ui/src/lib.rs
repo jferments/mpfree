@@ -28,7 +28,8 @@
 //! For the app: [`add`] puts both widgets and their pages in the [`Ui`];
 //! [`update_chain`] and [`update_macros`] show new states; after a touch,
 //! [`take_chain_actions`] and [`take_macro_actions`] give what to do.
-//! Parameter changes go to the mod engine as `ModEvent::Set` (it sends
+//! Parameter changes go to the mod engine as `ModEvent::hand` gives (a
+//! `Set`, or a `Touch` over a move lane or while recording; it sends
 //! them on to the chain); chain edits go to the mixer as `Edit`s.
 
 #![forbid(unsafe_code)]
