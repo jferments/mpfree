@@ -161,6 +161,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-synth-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-synth",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-touch"
 version = "0.1.0"
 
