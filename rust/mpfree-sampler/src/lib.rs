@@ -1,7 +1,21 @@
-//! MPFree's first user-WAV sampler. WAV parsing/loading is NON-real-time;
-//! note-on/off and render only touch prepared memory. This is a host-first
-//! prototype: not an ALSA backend, disk streamer or plugin host.
+//! MPFree's sampler.
+//!
+//! - [`model`]: the project (sources, regions, chop sets, layers, pads, undo),
+//!   owned by the control thread.
+//! - [`engine`]: the real-time voice pool that plays an [`engine::EngineView`]
+//!   built from the model.
+//! - [`dsp`]: interpolation, envelopes, the filter.
+//! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
+//!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
+//!   also feeds [`model::Source::from_prepared`].
+//!
+//! Loading is never real-time; `render` and the event calls only touch
+//! prepared memory. Design: `docs/project/sampler-design.md`.
 #![forbid(unsafe_code)]
+
+pub mod dsp;
+pub mod engine;
+pub mod model;
 
 use std::fs::File;
 use std::io::Read;
@@ -51,6 +65,8 @@ impl PreparedSample {
     pub fn frames(&self) -> usize { self.frames.len() }
     pub fn sample_rate(&self) -> u32 { self.sample_rate }
     pub fn prepared_bytes(&self) -> usize { self.frames.len() * 8 }
+    /// The decoded frames, as [left, right] pairs.
+    pub fn frame_slice(&self) -> &[[f32; 2]] { &self.frames }
 
     /// Accept only simple RIFF WAVE PCM16/24/32 and float32 mono/stereo.
     /// No WAVE_FORMAT_EXTENSIBLE, RF64 or automatic resampling yet.
