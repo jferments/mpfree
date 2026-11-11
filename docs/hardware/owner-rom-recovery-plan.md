@@ -137,3 +137,19 @@ Source: https://dl.radxa.com/rock2/docs/hw/radxa_rock2_som_140927.pdf , PDF page
 4. If the actual board has a controllable OTP programming supply, consider a professionally reviewed, electrically safe way of preserving owner control; any switch/design must be optional, revision-aware and must not compromise normal SoC power or EMC/signal-integrity properties.
 
 **Note**: "Recovery" button in the carrier reference may enter vendor U-Boot fastboot rather than immutable MaskROM. A schematic label alone does not establish true ROM entry. Likewise an accessible UART does not bypass silicon secure-boot constraints. The owner-built ROM SRAM loader is still a separate milestone.
+
+
+### Physical disk sector ranges implied by the verified header
+
+The first-stage partition and payload are **not** a single contiguous 544-KiB boot image:
+
+| Content | Whole-eMMC sector range | Capacity |
+| --- | --- | --- |
+| Rockchip header / prefix | 64–67 | 2 KiB |
+| RK32 SRAM loader (32 KiB) | **68–131** | **32 KiB** |
+| Remaining p1 space | 132–191 | 30 KiB |
+| U-Boot environment p2 | 192–207 | 8 KiB |
+| Gap before p3 | 208–255 | 24 KiB |
+| U-Boot proper p3 | **256–1023** | **384 KiB** |
+
+The header's 1088-sector **combined** size is not a directive to read 1088 sectors from p1: that would cross p2, p3, and even splash storage and would not represent an intact single boot image. Upstream U-Boot sets this size to the default maximum-next-stage allowance in image builds without an attached boot file. Exactly **how** Akai's actual SRAM loader obtains p3 must be determined from its instructions, not header arithmetic.
