@@ -1556,3 +1556,44 @@ PHYTEC's **phyCORE-RK3288 Hardware Manual L-826e_1**, pp. 33 and 129, documents 
 5. **Owner boot manager and stock fallback**, independent MPFree Linux on removable SD and/or tested A/B storage; upgrade compatibility profile as previously documented.
 
 No evidence yet that Akai is planning to block alternative OS software; engineering safeguards are being developed against that possible future state.
+
+
+## 33. MPC One secure eFuse regions are all blank; external MPC One MaskROM evidence (2026-11-11)
+
+### 33.1 Owner's measured secure eFuse map
+
+The owner ran the documented read-only eFuse follow-up on the *actual MPC One*, with kernel 6.6.95-az01-2025-06-27-rt55. The resulting /sys/bus/nvmem/devices/rockchip-efuse0 node references live DT path **/efuse@ffb10000**, with exact compatible **rockchip,rk3288-secure-efuse** and DT property **rockchip,efuse-size = <0x80> (128 bytes)**. The octal probe returned:
+
+| Segment | Offset/size | Nonzero bytes |
+| --- | --- | --- |
+| secure boot enable word | 0 / 4 | **0/4** |
+| trusted RSA public-key hash | 32 / 32 | **0/32** |
+| eFuse write-lock word | 124 / 4 | **0/4** |
+
+These offsets exactly match Table 2-1 of Rockchip Secure Boot Application Note v2.2 for RK3288, as does the 128-byte device-tree declaration. The nonsecure efuse1 bank was observed nonzero in the earlier survey, establishing that nonzero hardware eFuse bytes are readable through at least the other bank. **This is strong, independent evidence that this specific unit has NOT been provisioned for manufacturer RSA secure boot**, subject to validating the vendor-specific secure-bank driver's byte-to-silicon mapping and ruling out secure-world masking. Avoid claiming ROM unsigned-code acceptance until a live owner-SPL experiment.
+
+**STOP re-reading this bank as routine diagnostics.** The useful measured security-flag, hash-presence and lock-region evidence is already collected without leaking identifiers or raw keys. Next work is *electrical* and actual ROM loader qualification.
+
+### 33.2 Crucial new model-specific field report: first-generation MPC One in real MaskROM
+
+MPC-LiveXplore **issue #80**, dated January 29, 2026, records a firsthand report of an **MPC One Gen1** with failed eMMC. The owner states the MPC was stuck in **MaskROM**, recognized by a host as a generic Rockchip USB device; after eMMC chip replacement, their Rockchip tools again recognized and communicated with the chip. They report the official update image supplied only a rootfs and no bootloader, consistent with our 3.10.0 single-PART container. Link: https://github.com/TheKikGen/MPC-LiveXplore/issues/80 .
+
+**Inference strengthened:** at least one physical MPC One Gen1 appears to have a working Rockchip BootROM-to-external-USB path *when eMMC boot is unavailable*. This is the strongest MPC-One-specific evidence to date for the ROM recovery plan; prior Linux gadget observations only demonstrated Linux USB peripheral ability. This external report **does not demonstrate an owner-built unsigned first stage**, a completed bare-eMMC recovery to working OS, or a safe method for forcing ROM while keeping the owner's eMMC intact. It does **not** prove the owner's exact motherboard revision has identical wiring, though it strongly supports the design.
+
+**New contact opportunity:** ask the issue author (without disclosing our private backup or proprietary full image) for their photos, exact maskrom VID:PID, model/revision of eMMC/RAM, Rockchip loader filename, read-only USB logs, and whether a self-built U-Boot SPL ever executed. The report is still open at the time of this research and no independent full successful recovery is documented in the issue.
+
+### 33.3 Rockchip eFuse programming power: what to verify physically
+
+Rockchip's official application note states RK3288 uses **1.5 V on P19 VCC_EFUSE**, with either a switched board LDO or a factory-only test fixture. If no programming supply exists in the assembled unit, ordinary firmware cannot newly burn a trusted signing-key hash merely by writing registers. However **our MPC One's P19 supply wiring is still unknown**. Lack of regulator names in Linux is not enough: factory-only supplies may not appear in DT. Source and pin table: https://github.com/mfkiwl/rk-open-docs/blob/master/NVM/Rockchip_Developer_Guide_Secure_Boot_Application_Note_EN.md#hardware-conditions .
+
+Prioritize **unpowered** high-resolution MPC One PCB photos and identify exact PCB revision, RK3288 SOM layout, eMMC signals (CLK/CMD/DAT), exposed native SDMMC slot, USB-B D+/D-, and P19 programming rail. The owner has not authorized opening the case, electrical probing or hardware modification. Do not extrapolate MPC Live PCB photographs or PHYTEC switch signals to this board.
+
+Once PCB mapping is established, commission/design a normally-transparent and electrically reviewed owner boot-source selection/recovery control. This should allow ROM fallback even if any Akai bootloader and Linux components are replaced, without eMMC corruption. Prefer a model-specific documented service procedure over a chip-clock short, and first demonstrate true MaskROM enumeration and owner-built first-stage code execution before boot-critical writes. A stock firmware update cannot remove a working silicon-ROM/physical path, although external fuse programming, silicon restrictions or board damage could defeat it.
+
+### 33.4 Test priorities revised
+
+**Already demonstrated on this MPC**: read-only full eMMC backup, live DWC2 ff580000.usb peripheral controller and virtual mux, secure NVMEM flag/hash/lock regions reading zero. **Demonstrated on another MPC One Gen1**: BootROM USB discovery after eMMC failure, not owner-led ROM installation.
+
+**Still missing**: confirmed secure fuse driver mapping; physical board P19 power topology; safe nondestructive forced MaskROM entry; acceptance of unsigned independently compiled SPL; compatible DRAM initialization; complete eMMC readback via RAM-only loader; automatic stock fallback.
+
+Firmware upgrades can remove userspace entrypoints but **cannot erase immutable silicon ROM**. Nevertheless until the physical and fuse risks are resolved we must not promise unconditional independent booting. Do not modify p1/p2/p3, boot arguments or eMMC until the project's Tier 3 recovery gate is actually passed.
