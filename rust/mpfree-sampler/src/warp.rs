@@ -23,14 +23,17 @@ use std::time::{Duration, Instant};
 
 use mpfree_stretch::{Job, Settings, StretchError, TimeMap};
 
-use crate::model::{ModelError, Project, Region, Source, SourceId, Warp, WarpMethod, PADS};
+use crate::model::{
+    through, ModelError, Pin, Project, Region, Source, SourceId, Warp, WarpMethod, PADS,
+};
 
 /// Memory the stretched copies may use, all told: about ten minutes of
 /// stereo audio at 44.1 kHz.
 pub const DEFAULT_BUDGET: usize = 200 << 20;
 
 /// One stretched copy: a region's frames made `frames` long and moved by
-/// `cents`.
+/// `cents`, through its pins (`pins` tells pin sets apart; 0 when there are
+/// none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CopyKey {
     pub source: SourceId,
@@ -38,6 +41,7 @@ pub struct CopyKey {
     pub end: u64,
     pub frames: u64,
     pub cents: i32,
+    pub pins: u64,
 }
 
 impl CopyKey {
@@ -52,12 +56,87 @@ impl CopyKey {
             end: region.end,
             frames,
             cents,
+            pins: if warp.pinned() {
+                pins_id(&warp.pins)
+            } else {
+                0
+            },
         }
     }
 
-    /// Output frames per input frame.
+    /// Output frames per input frame, all told.
     pub fn scale(&self) -> f64 {
         self.frames as f64 / (self.end - self.start).max(1) as f64
+    }
+}
+
+/// Tells pin sets apart: 0 for none, else a hash of every pin.
+pub fn pins_id(pins: &[Pin]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if pins.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in pins {
+        p.frame.hash(&mut h);
+        p.beat.to_bits().hash(&mut h);
+    }
+    h.finish().max(1)
+}
+
+/// How a region's frames land in its stretched copy: points of (frames
+/// from the region's start, copy frame) with straight lines between, the
+/// start on 0 and the end on the copy's last frame. Without pins it is one
+/// straight line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopyMap {
+    /// The source frame the copy starts from.
+    pub start: u64,
+    points: Arc<[(f64, f64)]>,
+}
+
+impl CopyMap {
+    /// The map for the copy `key` of a region warped with `warp`, from a
+    /// source at `rate`. Pins count only when the warp stretches.
+    pub fn new(warp: &Warp, rate: u32, key: &CopyKey) -> CopyMap {
+        let pts = if warp.pinned() {
+            warp.points(key.start, key.end, rate)
+        } else {
+            let len = key.end.saturating_sub(key.start);
+            vec![(0.0, 0.0), (len as f64, warp.beats(len, rate))]
+        };
+        let total = pts[pts.len() - 1].1.max(f64::MIN_POSITIVE);
+        let k = key.frames as f64 / total;
+        CopyMap {
+            start: key.start,
+            points: pts.iter().map(|&(f, b)| (f, b * k)).collect(),
+        }
+    }
+
+    /// The (input, output) points, for a stretch's time map.
+    pub fn points(&self) -> &[(f64, f64)] {
+        &self.points
+    }
+
+    /// The copy frame source frame `x` turns into.
+    pub fn at(&self, x: f64) -> f64 {
+        through(&self.points, x - self.start as f64, |p| p, self.scale())
+    }
+
+    /// The source frame copy frame `y` was made from.
+    pub fn source(&self, y: f64) -> f64 {
+        let back = |(x, y): (f64, f64)| (y, x);
+        self.start as f64 + through(&self.points, y, back, 1.0 / self.scale())
+    }
+
+    /// Copy frames per source frame, all told.
+    fn scale(&self) -> f64 {
+        let (x, y) = self.points[self.points.len() - 1];
+        if x > 0.0 {
+            y / x
+        } else {
+            1.0
+        }
     }
 }
 
@@ -143,13 +222,13 @@ impl Warps {
     /// The copy `region` needs at the tempo (`extra_cents` is the layer's
     /// and pad's tune), if it is warped to stretch.
     pub fn key_for(&self, region: &Region, extra_cents: i32) -> Option<CopyKey> {
-        let w = region.warp?;
+        let w = region.warp.as_ref()?;
         if w.method != WarpMethod::Stretch || region.mode == crate::model::PlayMode::Granular {
             return None;
         }
         // A copy moves the pitch two octaves at most.
         let cents = (region.tune_cents + extra_cents).clamp(-2400, 2400);
-        Some(CopyKey::of(region, &w, cents, self.tempo))
+        Some(CopyKey::of(region, w, cents, self.tempo))
     }
 
     /// The copy for `key`, if it has been made. Marks it used.
@@ -221,16 +300,38 @@ impl Warps {
         let ch = usize::from(s.channels());
         let (a, b) = (key.start as usize * ch, key.end as usize * ch);
         let data = s.data().get(a..b).ok_or(StretchError::Empty)?;
+        let map = match Warps::pinned_warp(project, key) {
+            Some(w) => TimeMap::new(CopyMap::new(&w, s.rate(), key).points().to_vec())?,
+            None => TimeMap::to_length(key.end - key.start, key.frames)?,
+        };
         Ok(JobSpec {
             data: data.into(),
             channels: s.channels(),
             rate: s.rate(),
-            map: TimeMap::to_length(key.end - key.start, key.frames)?,
+            map,
             settings: Settings {
                 semitones: (key.cents as f32 / 100.0).clamp(-24.0, 24.0),
                 ..Settings::default()
             },
         })
+    }
+}
+
+impl Warps {
+    /// The warp, pins and all, of a region in `project` that wants the
+    /// copy `key`, when the copy goes through pins.
+    fn pinned_warp(project: &Project, key: &CopyKey) -> Option<Warp> {
+        if key.pins == 0 {
+            return None;
+        }
+        (0..PADS)
+            .filter_map(|i| project.pad(i))
+            .flat_map(|p| &p.layers)
+            .map(|l| &l.region)
+            .filter(|r| (r.source, r.start, r.end) == (key.source, key.start, key.end))
+            .filter_map(|r| r.warp.as_ref())
+            .find(|w| w.pinned() && pins_id(&w.pins) == key.pins)
+            .cloned()
     }
 }
 
@@ -354,7 +455,9 @@ impl Drop for Worker {
 /// A stretch or pitch shift of one layer's region that makes a new source
 /// (the Process menu): `ratio` times as long and `semitones` higher. Make
 /// the [`Process::job`], run it on a worker, then [`Process::finish`] puts
-/// the result in the layer's place as one undo step.
+/// the result in the layer's place as one undo step. A stretched region's
+/// pins are made part of the new audio: its hits land on their beats, and
+/// the new region has no pins.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Process {
     pub pad: usize,
@@ -391,7 +494,15 @@ impl Process {
             .data()
             .get(r.start as usize * ch..r.end as usize * ch)
             .ok_or(StretchError::Empty)?;
-        let map = TimeMap::ratio(r.frames(), self.ratio)?;
+        // Pins a stretch would follow are made part of the new audio.
+        let map = match r.warp.as_ref().filter(|w| w.pinned()) {
+            Some(w) => {
+                let pts = w.points(r.start, r.end, s.rate());
+                let k = r.frames() as f64 * self.ratio / pts[pts.len() - 1].1;
+                TimeMap::new(pts.iter().map(|&(f, b)| (f, b * k)).collect())?
+            }
+            None => TimeMap::ratio(r.frames(), self.ratio)?,
+        };
         let settings = Settings {
             semitones: self.semitones,
             ..Settings::default()

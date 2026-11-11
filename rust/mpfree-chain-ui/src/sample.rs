@@ -4,12 +4,12 @@
 //! lo-fi, delay) and a kick pad (drive, compressor), four macros across
 //! them, three matrix rows, and the morph between two scenes.
 //!
-//! The screens are drawn where the Hello MPC thread proposes they open
-//! (layout spec, "The FX chain editor and macros"): the chain editor in the
-//! mixer's place with a Back to it, or in the Sample tab's FX sub-tab
-//! under the pad bar; the macros panel over the page under the top bar,
-//! no tab lit. The top bar is the app's (`Header::app`); the Q-Link column
-//! is a stand-in for the app's own (see [`QLinkColumn`]).
+//! The screens are drawn where they open in the app (layout spec section
+//! 4b, approved by Jay 2026-11-11 22:34Z): the chain editor in the mixer's
+//! place with a Back to it, or in the Sample tab's FX sub-tab under the pad
+//! bar; the macros panel over the page under the top bar, no tab lit. The
+//! top bar is the app's (`Header::app`); the Q-Link column is a stand-in
+//! for the app's own (see [`QLinkColumn`]).
 
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, ParamInfo};
@@ -23,7 +23,7 @@ use mpfree_ui::widgets::{Chip, Header, Label, APP_TABS};
 use mpfree_ui::Fonts;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
 
-use crate::state::{macro_color, ChainState, MacrosState};
+use crate::state::{macro_color, picture, ChainState, MacrosState};
 use crate::{ChainView, MacrosView};
 
 pub const DRUMS: Strip = Strip::Bus(0);
@@ -366,7 +366,7 @@ impl QLinkColumn {
             .iter()
             .map(|c| c.target.map(|a| song.place(a)).unwrap_or_default())
             .collect();
-        let title = match song.bindings.title() {
+        let title = match song.bindings.title().as_str() {
             "" => "Q-Links".to_string(),
             t => format!("Q-Links · {t}"),
         };
@@ -546,7 +546,14 @@ pub fn screen(
     ui.add_page("preview", layout)?;
     ui.show("preview")?;
     if let Some(c) = chain {
+        let cards = match (c.selected, c.groups.get(c.group)) {
+            (Some(slot), Some(page)) => {
+                picture(song.chain(c.strip), slot, page, &Theme::dark(), RATE, 92.0)
+            }
+            _ => Vec::new(),
+        };
         crate::update_chain(&mut ui, c);
+        crate::set_chain_picture(&mut ui, cards);
     }
     if let Some(m) = macros {
         crate::update_macros(&mut ui, m);
@@ -616,16 +623,23 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         None,
     );
     empty.back = Some("Mixer".into());
+    let mut adding = song.chain_state(KEYS, 1, 0, None);
+    adding.back = Some("Mixer".into());
+    adding.picking = true;
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
+    let mut editing = song.macros_state(0);
+    editing.editing = Some((0, 3));
     Ok(vec![
         Sample { name: "chain-mixer-drums-drive", about: "From the mixer (no tab lit, Back to the mixer): the drum bus chain, Drive selected; Q-Links on its first four knobs (Mode, Drive, Tone, Bias); Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
         Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, cutoff swept by LFO 2 scaled by the mod wheel; resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
         Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain, Delay's Mix page (Q-Links on that page's knobs): Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
+        Sample { name: "chain-mixer-add-effect", about: "The effect picker over the effect column (+ Add effect, or the mixer's + on a strip): every effect the strip can take with a line about it; a tap adds it at the end", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
+        Sample { name: "macros-edit-target", about: "A tap on a target opens its editor over the cards: Wash's hold on the delay tone, a falling range (80 → 35 %); drag From and To, pick a curve, Flip, Remove", ui: screen(fonts(), &mut song, Place::Over, None, Some(editing))? },
     ])
 }
 
@@ -643,7 +657,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 7);
+        assert_eq!(s.len(), 9);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -683,7 +697,8 @@ mod tests {
             ("Q-Links · Drive", "Drums")
         );
         let r = ui.rect_of(crate::CHAIN).unwrap();
-        let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert!(l.picture.is_some(), "the drive's curve above its knobs");
         // Select the compressor, then bypass it.
         let row = l.rows[2];
         tap(&mut ui, row.x + 80, row.y + 20);
@@ -701,9 +716,9 @@ mod tests {
             panic!("{acts:?}")
         };
         assert!(matches!(acts[3], ChainAction::Set { addr: a, .. } if a == addr));
+        assert_eq!(acts.last(), Some(&ChainAction::Release(addr)));
         // Put the knob on macro 3, and move the selected insert up.
-        let st = ui.get::<ChainView>(crate::CHAIN).unwrap().state().clone();
-        let l = crate::view::layout(r, &st);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         tap(&mut ui, l.macros[2].x + 5, l.macros[2].y + 5);
         tap(&mut ui, l.learn.x + 5, l.learn.y + 5);
         tap(&mut ui, l.buttons[0].x + 5, l.buttons[0].y + 5);
@@ -723,9 +738,63 @@ mod tests {
             matches!(acts[3], ChainAction::AddRow { target, .. } if target == addr),
             "{acts:?}"
         );
+        // The effect's name opens its full page.
+        tap(&mut ui, l.title.x + 10, l.title.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::OpenPage(1)]
+        );
         let b = l.back.unwrap();
         tap(&mut ui, b.x + 5, b.y + 5);
         assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Back]);
+    }
+
+    #[test]
+    fn the_picker_adds_an_effect_or_cancels() {
+        let mut song = Song::new();
+        let st = song.chain_state(KEYS, 0, 0, None);
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let add = l.add.unwrap();
+        tap(&mut ui, add.x + 10, add.y + 10);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        let picks = crate::state::picks(KEYS);
+        assert_eq!(l.picks.len(), picks.len());
+        assert!(!picks.iter().any(|p| p.id == "mpfree.fx.master_safety"));
+        assert!(l.knobs.is_empty(), "the picker takes the knobs' place");
+        // The state the app sends while the picker is open keeps it open.
+        crate::update_chain(&mut ui, song.chain_state(KEYS, 0, 0, None));
+        assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        let cloud = picks
+            .iter()
+            .position(|p| p.id == "mpfree.fx.cloud")
+            .unwrap();
+        let t = l.picks[cloud];
+        tap(&mut ui, t.x + 10, t.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Add("mpfree.fx.cloud")]
+        );
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        assert!(mpfree_fx_ui::make("mpfree.fx.cloud").is_some());
+        // Open again and cancel: no action.
+        tap(&mut ui, add.x + 10, add.y + 10);
+        let c = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .cancel
+            .unwrap();
+        tap(&mut ui, c.x + 5, c.y + 5);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        // Every pick is an effect the catalogue makes, with a line about it.
+        for p in crate::state::picks(Strip::Master) {
+            assert!(mpfree_fx_ui::make(p.id).is_some(), "{}", p.id);
+            assert!(!p.about.is_empty(), "{}", p.id);
+        }
     }
 
     #[test]
@@ -742,7 +811,7 @@ mod tests {
         )
         .unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
-        let l = crate::view::layout(r, ui.get::<ChainView>(crate::CHAIN).unwrap().state());
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         assert!(l.back.is_none());
         tap(&mut ui, l.scopes[1].x + 5, l.scopes[1].y + 5);
         assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Scope(1)]);
@@ -786,20 +855,58 @@ mod tests {
         assert!(matches!(acts[1], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
         assert_eq!(acts[2], MacroAction::Capture(1));
         assert_eq!(acts[3], MacroAction::Bank(1));
-        // Back closes the panel; a target row asks for its range editor.
+        // Back closes the panel; a target row opens its editor.
         tap(&mut ui, l.back.x + 5, l.back.y + 5);
         tap(&mut ui, l.banks[0].x + 4, l.banks[0].y + 4);
+        assert_eq!(
+            crate::take_macro_actions(&mut ui),
+            [MacroAction::Back, MacroAction::Bank(0)]
+        );
         let c = l.cards[0];
         tap(&mut ui, c.x + 40, c.y + 80 + 30 + 10);
+        fn view(ui: &Ui) -> &MacrosView {
+            ui.get::<MacrosView>(crate::MACROS_W).unwrap()
+        }
+        assert_eq!(view(&ui).state().editing, Some((0, 1)));
+        let map = song.engine.macro_maps(0).nth(1).unwrap();
+        // Drag the To handle to the end, pick Exp, flip, then remove.
+        let e = &l.editor;
+        let tx = e.track.x + (map.to * e.track.w as f32) as i32;
+        let ty = e.track.y + e.track.h / 2;
+        ui.touch(1, Touch::Down, tx, ty);
+        ui.touch(1, Touch::Move, e.track.right(), ty);
+        ui.touch(1, Touch::Up, e.track.right(), ty);
+        tap(&mut ui, e.curves[1].x + 5, e.curves[1].y + 5);
+        tap(&mut ui, e.flip.x + 5, e.flip.y + 5);
         let acts = crate::take_macro_actions(&mut ui);
-        let target = song.engine.macro_maps(0).nth(1).unwrap().target;
+        let MacroAction::Map { m: 0, map: last } = *acts.last().unwrap() else {
+            panic!("{acts:?}")
+        };
+        assert_eq!(last.target, map.target);
+        assert_eq!((last.from, last.to), (1.0, map.from), "{acts:?}");
+        assert_eq!(last.curve, MapCurve::Exp);
+        let tv = &view(&ui).state().macros[0].targets[1];
+        assert_eq!((tv.from, tv.to, tv.curve), (1.0, map.from, MapCurve::Exp));
+        assert!(tv.range_text.contains('→'));
+        tap(&mut ui, e.remove.x + 5, e.remove.y + 5);
         assert_eq!(
-            acts,
-            [
-                MacroAction::Back,
-                MacroAction::Bank(0),
-                MacroAction::EditTarget { m: 0, target }
-            ]
+            crate::take_macro_actions(&mut ui),
+            [MacroAction::Unmap(map.target)]
+        );
+        assert_eq!(view(&ui).state().editing, None);
+        assert_eq!(view(&ui).state().macros[0].targets.len(), 3);
+        // The app's actions do to an engine what the panel shows.
+        let mut engine = Song::new().engine;
+        engine
+            .change(mpfree_mod::Change::Map { m: 0, map: last })
+            .unwrap();
+        let back = engine
+            .macro_maps(0)
+            .find(|x| x.target == map.target)
+            .unwrap();
+        assert_eq!(
+            (back.from, back.to, back.curve),
+            (1.0, map.from, MapCurve::Exp)
         );
     }
 }
