@@ -430,3 +430,59 @@ fn fades_shape_the_ends() {
     assert!((l[500] - 0.5 * C).abs() < 1e-6);
     assert!((l[949] - 0.5 * C * 0.25).abs() < 1e-6, "exp fade out at its midpoint: {}", l[949] / (0.5 * C));
 }
+
+#[test]
+fn an_audition_plays_a_slice_once_from_its_first_frame() {
+    // A looped, reversed pad with fades: the audition plays frames 300 to
+    // 500 forward and once, without the loop or the fades.
+    let s = ramp(1000);
+    let mut r = Region::whole(&s);
+    (r.start, r.end, r.reverse, r.mode) = (100, 900, true, PlayMode::Loop);
+    r.sustain_loop = Some(Loop { start: 200, end: 800, crossfade: 0, mode: LoopMode::Forward });
+    r.fade_in = Fade { frames: 50, ..Fade::NONE };
+    r.fade_out = Fade { frames: 50, ..Fade::NONE };
+    let mut pad = Pad::new("a", Layer::new(r));
+    pad.vel_to_start = 1.0; // ignored: an audition starts on the slice's first frame
+    let p = project_with(&[(0, pad)], vec![s]);
+    let mut e = engine(&p, 8);
+    e.apply(Event::Audition { pad: 0, layer: 0, start: 300, end: 500, velocity: 127 });
+    let (l, rr) = run(&mut e, 512);
+    for k in 0..200 {
+        let want = (301 + k) as f32 * 0.001 * C;
+        assert!((l[k] - want).abs() < 1e-5, "frame {k}: {} vs {want}", l[k]);
+        assert_eq!(l[k], rr[k]);
+    }
+    assert_eq!(last_nonzero(&l), Some(199));
+    assert_eq!(e.active_voices(), 0);
+    assert_eq!(e.stats().hits, 1);
+
+    // Clipped to the source; nothing for an empty slice or a missing layer.
+    e.apply(Event::Audition { pad: 0, layer: 0, start: 950, end: 5000, velocity: 127 });
+    let (l, _) = run(&mut e, 128);
+    assert_eq!(last_nonzero(&l), Some(49));
+    for ev in [Event::Audition { pad: 0, layer: 0, start: 400, end: 400, velocity: 127 },
+               Event::Audition { pad: 0, layer: 1, start: 0, end: 100, velocity: 127 },
+               Event::Audition { pad: 1, layer: 0, start: 0, end: 100, velocity: 127 },
+               Event::Audition { pad: 0, layer: 0, start: 0, end: 100, velocity: 0 },
+               Event::Audition { pad: 0, layer: 0, start: 2000, end: 3000, velocity: 127 }] {
+        e.apply(ev);
+        assert_eq!(e.active_voices(), 0, "{ev:?}");
+    }
+    let (l, _) = run(&mut e, 128);
+    assert_eq!(last_nonzero(&l), None);
+}
+
+#[test]
+fn an_audition_fades_out_what_the_pad_was_playing() {
+    let s = dc(20_000, RATE);
+    let p = project_with(&[(0, Pad::new("a", Layer::new(Region::whole(&s)))), (1, Pad::new("b", Layer::new(Region::whole(&s))))],
+                         vec![s]);
+    let mut e = engine(&p, 8);
+    e.apply(Event::NoteOn { pad: 0, velocity: 127 });
+    e.apply(Event::NoteOn { pad: 1, velocity: 127 });
+    run(&mut e, 256);
+    e.apply(Event::Audition { pad: 0, layer: 0, start: 0, end: 10_000, velocity: 127 });
+    run(&mut e, usize::from(KILL_FRAMES) + 1);
+    // Pad 0 plays only the audition; pad 1 carries on.
+    assert_eq!((e.pad_voices(0), e.pad_voices(1), e.active_voices()), (1, 1, 2));
+}
