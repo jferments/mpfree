@@ -2,8 +2,8 @@
 //! allocate or free. A counting global allocator watches a busy session
 //! (five tracks, one of them through the arp, one recording, with loops,
 //! tempo changes, locates, punch in and out, stop and panic, parameter
-//! locks on every track, trig conditions, ratchets and FILL) at period
-//! sizes from 1 to 4096 frames.
+//! locks on every track, trig conditions, ratchets and FILL, and FX
+//! moves on every track) at period sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
-use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::mpfree_moves::{Kind, Map, Target};
+use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
 use mpfree_seq::{Clip, Cond, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -61,6 +62,7 @@ struct Counter {
     last: u64,
     arp: ArpHost,
     locks: u64,
+    lanes: u64,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
@@ -68,6 +70,7 @@ impl Sink for Counter {
         self.last = o.frame;
         self.events += 1;
         self.locks += u64::from(matches!(o.event, Event::Lock { .. }));
+        self.lanes += u64::from(matches!(o.event, Event::Lane { .. }));
         if o.dest == 0 || o.dest == ALL {
             self.arp.input(o.offset, o.event);
         }
@@ -113,6 +116,34 @@ fn playing_never_allocates() {
                 )
             })
             .collect();
+        // FX moves: a lane on a locked parameter, ramps and holds with
+        // gaps, and a fixed one.
+        let len = c.length as u32;
+        let ramps: Vec<(f64, f32, Kind)> = (0..len / 200)
+            .map(|k| {
+                let kind = [Kind::Ramp, Kind::Ramp, Kind::Step, Kind::End][k as usize % 4];
+                (f64::from(k * 200 + 13), (k % 7) as f32 / 7.0, kind)
+            })
+            .collect();
+        c.moves
+            .put(
+                Target::Track(RelAddr::new(OnTrack::Inst, 1)),
+                Map::linear(0.0, 9.0),
+                &ramps,
+                len,
+            )
+            .unwrap();
+        c.moves
+            .put(
+                Target::Fixed(ParamAddr::new(Owner::Macro(i as u8), 0)),
+                Map::linear(0.0, 1.0),
+                &[
+                    (5.0, 0.2, Kind::Ramp),
+                    (f64::from(len - 50), 0.9, Kind::Ramp),
+                ],
+                len,
+            )
+            .unwrap();
         if i == 1 {
             c.speed = Speed::new(3, 2).unwrap();
         }
@@ -161,6 +192,7 @@ fn playing_never_allocates() {
         last: 0,
         arp: ArpHost::new(engine),
         locks: 0,
+        lanes: 0,
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
@@ -256,4 +288,5 @@ fn playing_never_allocates() {
     assert_eq!(rec.dropped(), 0);
     assert_eq!(started, 2, "both cues started, once");
     assert!(sink.locks > 500, "{} locks", sink.locks);
+    assert!(sink.lanes > 2000, "{} lane values", sink.lanes);
 }

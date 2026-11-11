@@ -269,7 +269,7 @@ impl Capture {
         };
         match event {
             // CAPTURE keeps what was played, not parameter locks.
-            Event::Lock { .. } | Event::Unlock { .. } => return,
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
                 let n = usize::from(note & 127);

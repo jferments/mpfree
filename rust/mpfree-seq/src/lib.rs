@@ -32,6 +32,8 @@
 
 pub mod steps;
 
+pub use mpfree_moves;
+use mpfree_moves::Moves;
 pub use mpfree_param;
 use mpfree_param::{OnTrack, RelAddr};
 use mpfree_transport::time::{Swing, Tick, PPQ};
@@ -303,6 +305,9 @@ pub struct Clip {
     pub notes: Vec<Note>,
     /// Parameter locks, in the order they were written.
     pub locks: Vec<Lock>,
+    /// Recorded parameter moves (automation): Perform FX gestures, as
+    /// lanes of points on the clip's ticks (`mpfree-moves`).
+    pub moves: Moves,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,6 +329,9 @@ pub enum ModelError {
     BadLock(usize),
     /// A lock to take out is not in the clip.
     MissingLock,
+    /// The clip's moves are not sound for its length, or not the ones an
+    /// edit expected to change (see [`steps::Edit`]).
+    BadMoves,
 }
 
 impl Clip {
@@ -337,6 +345,7 @@ impl Clip {
             quantise: None,
             notes: Vec::new(),
             locks: Vec::new(),
+            moves: Moves::new(),
         }
     }
 
@@ -442,7 +451,8 @@ impl Clip {
                 return Err(ModelError::BadLock(i));
             }
         }
-        Ok(())
+        let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
+        self.moves.check(len).map_err(|_| ModelError::BadMoves)
     }
 }
 

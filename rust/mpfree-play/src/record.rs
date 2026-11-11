@@ -345,7 +345,8 @@ impl Recorder {
                     }
                     Event::AllOff => self.finish_all(view, span.swing, tick),
                     Event::Lock { addr, value } => self.lock(view, span.swing, addr, value, tick),
-                    Event::Unlock { .. } => {}
+                    // Moves are recorded as gestures, not as locks.
+                    Event::Lane { .. } | Event::Unlock { .. } => {}
                 }
             }
             if let Some(at) = switch {
