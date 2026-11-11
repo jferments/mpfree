@@ -296,3 +296,46 @@ fn grain_settings_are_checked_and_kept_across_modes() {
     r.mode = PlayMode::OneShot;
     assert_eq!(r.grain.density, 40.0);
 }
+
+#[test]
+fn the_screen_sees_the_grains_of_the_pad_and_layer_it_shows() {
+    let s = ramp(RATE as usize);
+    let g = GrainParams {
+        size_ms: 40.0,
+        density: 200.0,
+        spray: 0.3,
+        ..GrainParams::default()
+    };
+    let mut e = engine_for(&[(2, granular_pad(&s, g)), (5, granular_pad(&s, g))], &s, 8);
+    let mut views = [mpfree_sampler::engine::GrainView::default(); 64];
+    assert_eq!(e.grains_of(2, 0, &mut views), 0, "nothing plays yet");
+    e.apply(Event::NoteOn {
+        pad: 2,
+        velocity: 100,
+    });
+    run(&mut e, 4410, 128);
+    let n = e.grains_of(2, 0, &mut views);
+    assert!((5..=10).contains(&n), "about 200/s of 40 ms grains: {n}");
+    assert!(views[..n]
+        .iter()
+        .all(|v| (0.0..=1.0).contains(&v.position) && (0.0..=1.0).contains(&v.level)));
+    assert_eq!(e.grains_of(5, 0, &mut views), 0, "another pad");
+    assert_eq!(e.grains_of(2, 1, &mut views), 0, "another layer");
+    assert_eq!(
+        e.grains_of(2, 0, &mut views[..3]),
+        3,
+        "a short list holds what fits"
+    );
+    // A second voice on another pad adds its own, not to pad 2's.
+    e.apply(Event::NoteOn {
+        pad: 5,
+        velocity: 100,
+    });
+    run(&mut e, 2205, 128);
+    let (a, b) = (
+        e.grains_of(2, 0, &mut views),
+        e.grains_of(5, 0, &mut [Default::default(); 64]),
+    );
+    assert!(a > 0 && b > 0, "{a} and {b}");
+    assert!(a + b <= e.live_grains());
+}

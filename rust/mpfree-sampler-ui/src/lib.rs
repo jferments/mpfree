@@ -21,6 +21,10 @@
 //!   amp envelope drawn over the sound, the filter's curve and the pad's
 //!   other settings, each change a [`PlayAction`]. Its pictures are in
 //!   [`play_widgets`].
+//! - [`grain_tab`]: the pad editor's Grain tab: the layer's region with the
+//!   grain cloud the engine plays over it, a touch pad for position and
+//!   size, and every grain setting, each change a [`GrainAction`]. Its
+//!   pictures are in [`grain_widgets`].
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -29,6 +33,8 @@
 #![forbid(unsafe_code)]
 
 pub mod chop_tab;
+pub mod grain_tab;
+pub mod grain_widgets;
 pub mod pads_tab;
 pub mod play_tab;
 pub mod play_widgets;
@@ -38,6 +44,7 @@ pub mod wave_tab;
 pub mod widgets;
 
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
+pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
