@@ -68,6 +68,7 @@ class SingleZipArchiveTests(unittest.TestCase):
         for rel in (
             "tools/ghidra/MPFreeBootChainForensicsPass2.py",
             "tools/mpc-one/offline-boot-version-compare.py",
+            "tools/mpc-one/offline-spl-fdt.py",
             "tools/mpc-one/package-private-boot-audit.py",
             "tools/ghidra/MPFreeBootChainWideAudit.py",
         ):
