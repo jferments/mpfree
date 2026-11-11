@@ -1,6 +1,7 @@
-//! mpfree-arp-preview: WORKSTATION ONLY. Draws the Arp page's sample screens
-//! as PNG files, with a real arp engine behind each one, so the screens can be
-//! looked at before they go on the MPC. Opens no device.
+//! mpfree-arp-preview: WORKSTATION ONLY. Draws the arp's sample screens (the
+//! Arp panel and the quick band) as PNG files, with a real arp engine behind
+//! each one, so the screens can be looked at before they go on the MPC.
+//! Opens no device.
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/arp-preview-<UTC>; must be a
 //! new or empty folder), `--font FILE`, `--bold-font FILE`, `--mono-font FILE`.
