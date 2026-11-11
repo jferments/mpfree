@@ -144,6 +144,11 @@ pub struct LoopStrip {
     pub wave: Option<Arc<LoopWave>>,
     /// The heading's right-hand text: "4 bars · 3 layers".
     pub right: String,
+    /// The same with the input, for the Loop view's wider heading:
+    /// "4 bars · input: pads and synth · 3 layers".
+    pub right_wide: String,
+    /// The layers' names, layer 1 first ("Drums", "Bass").
+    pub names: Vec<String>,
     /// The pill: "PLAYING", "OVERDUB"; None while empty.
     pub state: Option<(String, Tone)>,
     /// Shown in the loop's place while it is empty.
@@ -164,6 +169,8 @@ pub struct LoopStrip {
 #[derive(Clone, Debug, PartialEq)]
 struct StripLook {
     right: String,
+    right_wide: String,
+    names: Vec<String>,
     state: Option<(String, Tone)>,
     note: String,
     bars: usize,
@@ -206,6 +213,8 @@ impl Default for LoopStrip {
         LoopStrip {
             wave: None,
             right: String::new(),
+            right_wide: String::new(),
+            names: Vec::new(),
             state: None,
             note: String::new(),
             position: None,
@@ -249,6 +258,8 @@ impl LoopStrip {
     fn look(&self) -> StripLook {
         StripLook {
             right: self.right.clone(),
+            right_wide: self.right_wide.clone(),
+            names: self.names.clone(),
             state: self.state.clone(),
             note: self.note.clone(),
             bars: self.bars,
@@ -269,8 +280,13 @@ impl Widget for LoopStrip {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        draw::card(cx, r, "Looper", &self.right);
         let (panel, btns) = LoopStrip::parts(r);
+        let right = if btns.is_some() {
+            &self.right_wide
+        } else {
+            &self.right
+        };
+        draw::card(cx, r, "Looper", right);
         cx.canvas
             .fill_round_rect(panel, 10, t.bg.mix(t.surface, 0.4));
         let w = LoopStrip::wave_area(r);
@@ -349,7 +365,11 @@ impl Widget for LoopStrip {
         let mut lx = r.x + 12 + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
         let shown = self.layers.min(4);
         for li in 0..shown {
-            let name = format!("Layer {}", li + 1);
+            let name = self
+                .names
+                .get(li)
+                .cloned()
+                .unwrap_or_else(|| format!("Layer {}", li + 1));
             let tw = cx.measure(FontId::Sans, draw::HEAD_PX, &name);
             draw::dot(cx, lx + 4, r.y + 19, 4, LAYER_COLOURS[li]);
             cx.text(
@@ -438,6 +458,12 @@ pub struct LooperPage {
     frames: u64,
     hold: [f32; 2],
     hold_age: u32,
+    /// The layers' names, by what was played into each ("Drums", "Bass");
+    /// kept past an undo, so a redo finds its name again.
+    names: Vec<String>,
+    /// The take recording now: its layer, and how many hits of each group
+    /// of sounds went into it.
+    take: Option<(usize, Vec<(&'static str, u32)>)>,
 }
 
 impl LooperPage {
@@ -461,9 +487,85 @@ impl LooperPage {
             frames: 0,
             hold: [f32::NEG_INFINITY; 2],
             hold_age: 0,
+            names: Vec::new(),
+            take: None,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
+    }
+
+    /// A pad played a sound of `group` ("Drums", "Bass", "Synth"): it
+    /// names the layer recording now, if one is.
+    pub fn hit(&mut self, group: &'static str) {
+        if let Some((_, counts)) = &mut self.take {
+            match counts.iter_mut().find(|(g, _)| *g == group) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((group, 1)),
+            }
+        }
+    }
+
+    /// The layers' names as they are (the previews name theirs).
+    pub fn set_names(&mut self, names: &[&str]) {
+        self.names = names.iter().map(|n| n.to_string()).collect();
+    }
+
+    /// The name of layer `k`, as the strip shows it.
+    pub fn layer_name(&self, k: usize) -> String {
+        self.names
+            .get(k)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("Layer {}", k + 1))
+    }
+
+    /// Follows the looper's takes: a new one starts counting, one that
+    /// ends is named by what was played most into it ("Drums", "Bass 2"),
+    /// or "Line in" when the line was the source.
+    fn follow_takes(&mut self, v: &LooperView) {
+        let s = &v.status;
+        let now = match s.phase {
+            Phase::Recording => Some(0),
+            Phase::Overdubbing => Some(s.layers.saturating_sub(1)),
+            _ => None,
+        };
+        if s.phase == Phase::Empty {
+            self.names.clear();
+        }
+        if self.take.as_ref().map(|t| t.0) != now {
+            self.take = now.map(|k| (k, Vec::new()));
+        }
+        let Some((k, counts)) = &self.take else {
+            return;
+        };
+        let base = match v.source {
+            LoopSource::Line => "Line in",
+            LoopSource::Pads => match counts.iter().max_by_key(|(_, n)| *n) {
+                Some((g, _)) => g,
+                None => "",
+            },
+        };
+        let k = *k;
+        let name = if base.is_empty() {
+            String::new()
+        } else {
+            let same = (0..k)
+                .filter(|&i| {
+                    self.names
+                        .get(i)
+                        .is_some_and(|n| n == base || n.starts_with(&format!("{base} ")))
+                })
+                .count();
+            if same == 0 {
+                base.to_string()
+            } else {
+                format!("{base} {}", same + 1)
+            }
+        };
+        if self.names.len() <= k {
+            self.names.resize(k + 1, String::new());
+        }
+        self.names[k] = name;
     }
 
     /// The new loop waveform (empty when the loop was cleared), on the
@@ -490,6 +592,7 @@ impl LooperPage {
     }
 
     pub fn update(&mut self, ui: &mut Ui, v: &LooperView, settings: &Settings) {
+        self.follow_takes(v);
         let s = &v.status;
         // The meter, with a peak held for about 2 s of updates.
         self.hold_age += 1;
@@ -737,6 +840,19 @@ impl LooperPage {
                 if s.layers == 1 { "" } else { "s" }
             )
         };
+        let right_wide = if empty {
+            String::new()
+        } else {
+            let input = match v.source {
+                LoopSource::Pads => "pads and synth",
+                LoopSource::Line => "line in",
+            };
+            match right.split_once(" · ") {
+                Some((len, layers)) => format!("{len} · input: {input} · {layers}"),
+                None => format!("input: {input} · {right}"),
+            }
+        };
+        let names: Vec<String> = (0..s.layers).map(|k| self.layer_name(k)).collect();
         let state = match s.phase {
             Phase::Empty => None,
             Phase::Armed => Some(("ARMED", Tone::Warn)),
@@ -757,9 +873,15 @@ impl LooperPage {
         } else {
             String::new()
         };
+        // While the loop plays, REC overdubs (as on the Looper tab), but
+        // the strip has its own Overdub button, so this one stays "Record".
+        let strip_record = match s.phase {
+            Phase::Playing | Phase::Overdubbing => "Record",
+            _ => record_label(s),
+        };
         let buttons: Vec<(String, bool)> = vec![
             (
-                record_label(s).to_string(),
+                strip_record.to_string(),
                 matches!(s.phase, Phase::Armed | Phase::Recording),
             ),
             ("Overdub".to_string(), s.phase == Phase::Overdubbing),
@@ -772,6 +894,8 @@ impl LooperPage {
         let position = (!empty && s.frames > 0).then_some(s.position);
         if let Some(st) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
             if st.right != right
+                || st.right_wide != right_wide
+                || st.names != names
                 || st.state != state
                 || st.note != note
                 || st.position != position
@@ -780,6 +904,8 @@ impl LooperPage {
                 || st.buttons != buttons
             {
                 st.right = right;
+                st.right_wide = right_wide;
+                st.names = names;
                 st.state = state;
                 st.note = note;
                 st.position = position;
@@ -807,6 +933,83 @@ fn record_label(s: &mpfree_looper::Status) -> &'static str {
 mod tests {
     use super::*;
     use mpfree_ui::{Fonts, SoftCanvas, Theme};
+
+    #[test]
+    fn layers_are_named_by_what_was_played_into_them() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add(
+            "header",
+            mpfree_ui::widgets::Header::new(&["Play", "Looper"]),
+        );
+        ui.add(
+            "hint",
+            mpfree_ui::widgets::Label::new("", Tone::Dim, Align::Left),
+        );
+        let mut page = LooperPage::add(&mut ui).unwrap();
+        let mut v = LooperView::default();
+        fn step(
+            ui: &mut Ui,
+            v: &mut LooperView,
+            page: &mut LooperPage,
+            phase: Phase,
+            layers: usize,
+            hits: &[&'static str],
+        ) {
+            v.status.phase = phase;
+            v.status.layers = layers;
+            v.status.frames = 1000;
+            page.update(ui, v, &Settings::default());
+            for h in hits {
+                page.hit(h);
+            }
+            page.update(ui, v, &Settings::default());
+        }
+        step(
+            &mut ui,
+            &mut v,
+            &mut page,
+            Phase::Recording,
+            1,
+            &["Drums", "Drums", "Bass"],
+        );
+        step(&mut ui, &mut v, &mut page, Phase::Playing, 1, &["Bass"]);
+        step(
+            &mut ui,
+            &mut v,
+            &mut page,
+            Phase::Overdubbing,
+            2,
+            &["Bass", "Drums", "Bass"],
+        );
+        step(&mut ui, &mut v, &mut page, Phase::Playing, 2, &[]);
+        step(
+            &mut ui,
+            &mut v,
+            &mut page,
+            Phase::Overdubbing,
+            3,
+            &["Drums"],
+        );
+        step(&mut ui, &mut v, &mut page, Phase::Playing, 3, &[]);
+        step(&mut ui, &mut v, &mut page, Phase::Overdubbing, 4, &[]);
+        step(&mut ui, &mut v, &mut page, Phase::Playing, 4, &[]);
+        let names: Vec<String> = (0..4).map(|k| page.layer_name(k)).collect();
+        assert_eq!(names, ["Drums", "Bass", "Drums 2", "Layer 4"]);
+        let strip = ui.get::<LoopStrip>(LOOP_STRIP).unwrap();
+        assert_eq!(strip.names, names);
+        assert_eq!(
+            strip.buttons[0].0, "Record",
+            "the strip has its own Overdub"
+        );
+        assert!(
+            strip.right_wide.contains("input: pads and synth"),
+            "{}",
+            strip.right_wide
+        );
+        // A clear forgets them.
+        step(&mut ui, &mut v, &mut page, Phase::Empty, 0, &[]);
+        assert_eq!(page.layer_name(0), "Layer 1");
+    }
 
     #[test]
     fn the_page_draws_and_its_buttons_follow_the_state() {

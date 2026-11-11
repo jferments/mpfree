@@ -159,6 +159,10 @@ impl Widget for PlayTransport {
         if *at != r {
             return None;
         }
+        if self.look.pos.len() != old.pos.len() {
+            // The tempo moves over for the bar's new digit.
+            return None;
+        }
         let mut now = self.look.clone();
         now.pos.clone_from(&old.pos);
         now.step = old.step;
@@ -201,8 +205,15 @@ impl Widget for PlayTransport {
             pill(cx, inner.x, py, ph, &self.look.state, tone, true)
         };
         let mut x = inner.x + pw + 18;
-        // A fixed box, so the tempo does not move when the bar gets a digit.
-        let posw = cx.measure(FontId::Mono, 34.0, "88.8.88");
+        // A box as wide as the position's digits (all the same width), so
+        // the tempo moves only when the bar gets a digit.
+        let digits: String = self
+            .look
+            .pos
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '8' } else { c })
+            .collect();
+        let posw = cx.measure(FontId::Mono, 34.0, &digits);
         let pos = Rect::new(x, inner.y, posw + 4, inner.h);
         self.paint_pos(cx, pos);
         x += posw + 26;
@@ -947,6 +958,11 @@ impl XyPad {
         let (_, body) = card_head(r);
         body.take_bottom(18).1
     }
+
+    /// Where the finger has been, oldest first (the previews draw one).
+    pub fn set_trail(&mut self, points: &[(f32, f32)]) {
+        self.trail = points.iter().rev().take(TRAIL).rev().copied().collect();
+    }
 }
 
 impl Widget for XyPad {
@@ -1013,7 +1029,9 @@ impl Widget for XyPad {
         );
         if !self.label.is_empty() {
             let lw = cx.measure(FontId::Bold, 12.0, &self.label) + 4;
-            let lx = if px + 24 + lw < pad.right() - 6 {
+            // Beside the knob on the side with more room (the mockups: on
+            // its left once past the middle).
+            let lx = if px < pad.x + pad.w / 2 || px - 24 - lw < pad.x + 6 {
                 px + 24
             } else {
                 px - 24 - lw
@@ -1092,6 +1110,9 @@ pub struct TimedHit {
     pub off: f32,
     pub off_ms: f32,
     pub velocity: u8,
+    /// From the window's last time round (ahead of the playhead): drawn
+    /// faint, until this time round plays over it.
+    pub old: bool,
 }
 
 /// Your timing: the last two bars of your hits against the 1/16 grid, a
@@ -1184,7 +1205,8 @@ impl Widget for YourTiming {
                 cx.canvas
                     .fill_rect(Rect::new(a, cy - 1, (b - a).max(1), 2), c.with_alpha(110));
                 let vel = h.velocity as f32 / 127.0;
-                dot(cx, hx, cy, (4.0 + 4.0 * vel) as i32, *c);
+                let c = if h.old { c.mix(t.surface, 0.7) } else { *c };
+                dot(cx, hx, cy, (4.0 + 4.0 * vel) as i32, c);
             }
         }
         if let Some(now) = self.now {

@@ -706,6 +706,8 @@ pub struct Label {
     pub text: String,
     pub tone: Tone,
     pub align: Align,
+    /// Room left and right of the text, px.
+    pub inset: i32,
 }
 
 impl Label {
@@ -714,7 +716,14 @@ impl Label {
             text: text.to_string(),
             tone,
             align,
+            inset: 6,
         }
+    }
+
+    /// The same with `inset` px of room either side.
+    pub fn inset(mut self, inset: i32) -> Label {
+        self.inset = inset;
+        self
     }
 }
 
@@ -724,7 +733,7 @@ impl Widget for Label {
         cx.text(
             FontId::Sans,
             px,
-            r.inset_xy(6, 0),
+            r.inset_xy(self.inset, 0),
             self.align,
             c,
             &self.text,

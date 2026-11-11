@@ -31,32 +31,48 @@ pub const CHOP: Color = Color::rgb(0xD46CFF);
 pub const VOX: Color = Color::rgb(0xFF8FD8);
 pub const FX: Color = Color::rgb(0xA0A8B8);
 
+/// The kinds of sound: the words a name of each has, its colour and the
+/// group it belongs to (what a loop layer of them is called).
+const KINDS: [(&[&str], Color, &str); 8] = [
+    (&["kick", "bd", "808", "boom"], KICK, "Drums"),
+    (&["snare", "sd", "rim", "clap", "snap"], SNARE, "Drums"),
+    (&["hat", "hh", "shaker", "cabasa", "tamb"], HAT, "Drums"),
+    (
+        &[
+            "tom", "conga", "bongo", "perc", "crash", "ride", "cymbal", "cow", "clave", "wood",
+            "block",
+        ],
+        PERC,
+        "Drums",
+    ),
+    (&["bass", "sub"], BASS, "Bass"),
+    (
+        &["chop", "stab", "chord", "keys", "piano", "synth", "lead"],
+        CHOP,
+        "Chop",
+    ),
+    (&["vox", "vocal", "voice", "choir"], VOX, "Vox"),
+    (&["fx", "noise", "riser", "sweep", "hit"], FX, "FX"),
+];
+
+fn kind(name: &str) -> Option<&'static (&'static [&'static str], Color, &'static str)> {
+    let n = name.to_ascii_lowercase();
+    KINDS
+        .iter()
+        .find(|(words, _, _)| words.iter().any(|w| n.contains(w)))
+}
+
 /// The colour of a sound named `name` ("Kick 2", "Hat op", "Chop 1"), by
 /// its kind, or None when the name says nothing about it ("C3", "Pad 7").
 pub fn sound_color(name: &str) -> Option<Color> {
-    let n = name.to_ascii_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-    if has(&["kick", "bd", "808", "boom"]) {
-        Some(KICK)
-    } else if has(&["snare", "sd", "rim", "clap", "snap"]) {
-        Some(SNARE)
-    } else if has(&["hat", "hh", "shaker", "cabasa", "tamb"]) {
-        Some(HAT)
-    } else if has(&[
-        "tom", "conga", "bongo", "perc", "crash", "ride", "cymbal", "cow", "clave", "wood", "block",
-    ]) {
-        Some(PERC)
-    } else if has(&["bass", "sub"]) {
-        Some(BASS)
-    } else if has(&["chop", "stab", "chord", "keys", "piano", "synth", "lead"]) {
-        Some(CHOP)
-    } else if has(&["vox", "vocal", "voice", "choir"]) {
-        Some(VOX)
-    } else if has(&["fx", "noise", "riser", "sweep", "hit"]) {
-        Some(FX)
-    } else {
-        None
-    }
+    kind(name).map(|k| k.1)
+}
+
+/// The group a sound named `name` belongs to: "Drums" for kicks, snares,
+/// hats and percussion, else "Bass", "Chop", "Vox" or "FX"; None when the
+/// name says nothing about it.
+pub fn sound_group(name: &str) -> Option<&'static str> {
+    kind(name).map(|k| k.2)
 }
 
 /// Text sizes the panels use (the mockups' own).
@@ -265,6 +281,9 @@ mod tests {
         assert_eq!(sound_color("Chop 1"), Some(CHOP));
         assert_eq!(sound_color("Tom Lo"), Some(PERC));
         assert_eq!(sound_color("C3"), None);
+        assert_eq!(sound_group("Hat op"), Some("Drums"));
+        assert_eq!(sound_group("Chop 2"), Some("Chop"));
+        assert_eq!(sound_group("Pad 7"), None);
     }
 
     #[test]
