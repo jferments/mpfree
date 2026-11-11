@@ -1,4 +1,5 @@
-//! The engine's real-time calls (render, apply, schedule) must not allocate
+//! The engine's real-time calls (render, apply, schedule) and the rolling
+//! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
 //! loops, layers, chokes, stealing, filters and sample-accurate events.
 //!
@@ -17,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
+use mpfree_sampler::record::rolling;
 
 struct Counting;
 thread_local! {
@@ -77,6 +79,8 @@ fn render_and_events_never_allocate() {
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     e.render(&mut l, &mut r); // warm up outside the watch
+    // The rolling "skip back" buffer the audio thread fills every period.
+    let (mut rec, reader) = rolling(2, 44_100 * 2);
 
     // The counter itself works: one Vec is one allocation and one free.
     watch(true);
@@ -92,11 +96,13 @@ fn render_and_events_never_allocate() {
         e.schedule(block * 31 % 200, Event::NoteOff { pad: (pad + 5) % 16 });
         if block % 300 == 299 { e.apply(Event::AllOff); }
         e.render(&mut l, &mut r);
+        rec.push_planar(&l, &r);
     }
     watch(false);
     // Voices that end drop their handle to the audio; the project still holds
     // it, so that is a counter decrement, not a free.
     assert_eq!(CALLS.load(Ordering::SeqCst), 0, "allocations or frees while rendering");
     assert!(e.stats().hits > 2000);
+    assert_eq!(reader.written(), 2000 * 128);
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
 }
