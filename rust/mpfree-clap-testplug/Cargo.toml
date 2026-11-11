@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-clap-testplug"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MPFree's two CLAP test plugins (a test synth and a test gain) built as a real .clap shared library"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mpfree-clap = { path = "../mpfree-clap" }
