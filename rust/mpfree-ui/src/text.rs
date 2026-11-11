@@ -154,6 +154,9 @@ pub struct Fonts {
     pub sans: Face,
     pub bold: Face,
     pub mono: Face,
+    /// The face drawn for each role: a theme can swap them (a console theme
+    /// draws everything in mono) without any widget changing.
+    roles: [FontId; 3],
 }
 
 impl Fonts {
@@ -163,6 +166,7 @@ impl Fonts {
             sans: Face::from_bytes(INTER_REGULAR).expect("built-in Inter Regular"),
             bold: Face::from_bytes(INTER_SEMIBOLD).expect("built-in Inter SemiBold"),
             mono: Face::from_bytes(JETBRAINS_MONO).expect("built-in JetBrains Mono"),
+            roles: [FontId::Sans, FontId::Bold, FontId::Mono],
         }
     }
 
@@ -185,7 +189,20 @@ impl Fonts {
         Ok(f)
     }
 
+    /// Draw `body` wherever a widget asks for [`FontId::Sans`] and `title`
+    /// wherever it asks for [`FontId::Bold`] (the theme's `face_body` and
+    /// `face_title`). Mono stays mono.
+    pub fn set_roles(&mut self, body: FontId, title: FontId) {
+        self.roles = [body, title, FontId::Mono];
+    }
+
+    /// The face drawn for `id`, after the theme's swaps.
     pub fn face(&mut self, id: FontId) -> &mut Face {
+        let id = match id {
+            FontId::Sans => self.roles[0],
+            FontId::Bold => self.roles[1],
+            FontId::Mono => self.roles[2],
+        };
         match id {
             FontId::Sans => &mut self.sans,
             FontId::Bold => &mut self.bold,

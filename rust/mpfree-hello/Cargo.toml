@@ -29,5 +29,8 @@ mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
 mpfree-store = { path = "../mpfree-store" }
+# The mixer (every sound is summed in it) and its screen.
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-mixer-ui = { path = "../mpfree-mixer-ui" }
 # Profiling (block timing, /proc process table). Not its counting-alloc feature.
 mpfree-prof = { path = "../mpfree-prof" }
