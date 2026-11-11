@@ -145,10 +145,17 @@ def get_elf_details(binary,td):
                                         "az01_usb_update_mode","kexec"))]
         details["selected_symbols"]=named[:140]
         details["symbols_truncated"]=len(named)>140
-    if shutil.which("objdump"):
+    # ARM ELF files require ARM-aware binutils. Native x86 objdump may
+    # print no disassembly; prefer the known ARMv7 cross-objdump.
+    disassembler=(shutil.which("arm-linux-gnueabihf-objdump")
+                  or shutil.which("arm-none-eabi-objdump")
+                  or shutil.which("llvm-objdump")
+                  or shutil.which("objdump"))
+    if disassembler:
+        details["disassembler"]=disassembler
         details["function_disassembly"]={}
         for name in FUNCTIONS:
-            p=cmd(["objdump","-d","--no-show-raw-insn",
+            p=cmd([disassembler,"-d","--no-show-raw-insn",
                    "--disassemble="+name,str(path)])
             t=p.stdout.decode("utf-8","replace")
             # Empty objdump output often prints only section headings.
@@ -159,7 +166,7 @@ def get_elf_details(binary,td):
                                                   "truncated":len(lines)>190}
         # For stripped standalone ELF, imports and GOT calls can locate the
         # relevant hash/partition paths; a full Ghidra import is later possible.
-        reloc=cmd(["objdump","-R",str(path)]).stdout.decode("utf-8","replace")
+        reloc=cmd([disassembler,"-R",str(path)]).stdout.decode("utf-8","replace")
         details["selected_dynamic_relocations"]=[
             row[:180] for row in reloc.splitlines()
             if any(term in row for term in ("SHA","EVP_","az01_","PEM_",
