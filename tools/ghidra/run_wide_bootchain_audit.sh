@@ -228,6 +228,48 @@ else
         ROOTFS_310="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("selected") or "")' "$LOCATOR_REPORT")"
     fi
 fi
+# To maximize information per run, perform one guarded OFFLINE extraction
+# when 3.10 was not previously unpacked. This never touches the MPC.
+# Uses the existing Akai format parser/extractor, verifies the exact owner
+# update hash and per-partition hash, and writes only under ~/mpfree-work.
+if [[ -z "$ROOTFS_310" && "${MPFREE_AUTO_EXTRACT_310:-1}" == "1" && \
+      -f "$UPDATE_IMAGE" && ! -b "$UPDATE_IMAGE" ]]; then
+    echo
+    echo "No prior verified 3.10 rootfs found: checking safe OFFLINE extraction..."
+    AVAIL_KB="$(df -Pk "$WORK" | awk 'NR==2 {print $4}')"
+    if [[ "$AVAIL_KB" =~ ^[0-9]+$ && "$AVAIL_KB" -ge 1300000 ]] &&
+       python3 - "$UPDATE_IMAGE" <<'PYVERIFY'
+import hashlib, pathlib, stat, sys
+path=pathlib.Path(sys.argv[1])
+expected="d09b1e4c1c765d6bea0f0b93bb7ba661200fc14bd893422dcbf0e86e406a2a20"
+if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+    raise SystemExit("Not a trusted regular-file update image")
+h=hashlib.sha256()
+with path.open("rb") as f:
+    for block in iter(lambda:f.read(1024*1024),b""):h.update(block)
+if h.hexdigest()!=expected:
+    raise SystemExit("Update SHA256 differs: no auto-unpacking.")
+print("Verified exact MPC 3.10.0 Gen1 update-image SHA256")
+PYVERIFY
+    then
+        echo "Unpacking only rootfs from verified update into new local work folder..."
+        if python3 "$ROOT/tools/mpc-one/offline-update-extract.py" \
+            "$UPDATE_IMAGE" --node rootfs \
+            >"$REPORT_DIR/firmware-3.10-offline-extraction-console.txt" 2>&1; then
+            python3 "$ROOT/tools/mpc-one/find-extracted-310-rootfs.py" \
+                --report "$LOCATOR_REPORT" \
+                >"$REPORT_DIR/firmware-3.10-rootfs-relocator-console.txt" 2>&1 ||
+                echo "WARNING: post-extraction 3.10 locator failed." >&2
+            ROOTFS_310="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("selected") or "")' "$LOCATOR_REPORT")"
+        else
+            echo "WARNING: offline 3.10 extraction failed; archived log has details." >&2
+        fi
+    else
+        echo "WARNING: 3.10 offline extraction skipped (hash check or <1.3GiB free)." \
+            | tee "$REPORT_DIR/firmware-3.10-extraction-skipped.txt"
+    fi
+fi
+
 if [[ -f "$ROOTFS_310" && ! -b "$ROOTFS_310" ]]; then
     echo
     echo "Comparing 3.10 rootfs boot, updater and reboot-mode metadata..."
