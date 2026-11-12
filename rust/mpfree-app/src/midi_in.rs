@@ -23,12 +23,29 @@
 //! sending clock the whole time otherwise filled the log with 83,000 lines
 //! in 29 minutes on the owner's unit (2026-11-12). The log says when clock
 //! starts and stops arriving instead. No port is the clock source yet, so
-//! nothing follows that clock.
+//! nothing follows that clock; its tempo is measured for the I/O view.
+//!
+//! **The mixer's I/O view** (`mpfree-midi-ui`) shows and edits the project's
+//! MIDI settings. [`MusicIn::sync`] hands it the live facts (ports plugged
+//! in, when each last received something, the clock arriving) and takes a
+//! port's input setting when it changes: a port set to "Learn only" plays
+//! no notes (a note-off still ends a note it started). `sync` runs in the
+//! sound loop, so it never waits for the screen: when the screen holds the
+//! model, that period's update is skipped and counted.
+
+use std::sync::TryLockError;
+use std::time::Duration;
 
 use mpfree_midi::input::{In, InputRouter};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
+use mpfree_midi::setup::PortInput;
+use mpfree_midi_clock::ClockIn;
+use mpfree_midi_ui::{PortLive, Shared};
+
+/// The clock's frames are microseconds of the app's clock.
+const CLOCK_RATE: u32 = 1_000_000;
 
 /// What a keyboard did, for the armed track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +84,21 @@ pub struct MusicIn {
     router: InputRouter,
     ports: Ports,
     seen: [Seen; MAX_PORTS],
+    /// Per port: what its input does (the project's setting).
+    input: [PortInput; MAX_PORTS],
+    /// Per port: when a message last arrived (lights the I/O view).
+    last_in: [Option<f64>; MAX_PORTS],
+    /// Per port: the clock arriving, for its tempo.
+    clock: [ClockIn; MAX_PORTS],
+    /// The I/O view's setup generation taken last.
+    applied: Option<u64>,
+    /// The port table changed since the I/O view was last told.
+    ports_changed: bool,
+    /// The clock tempo the I/O view shows: port and tenths of a BPM.
+    shown_clock: Option<(usize, i64)>,
+    /// Periods whose I/O view update was skipped because the screen held
+    /// the model.
+    busy: u64,
 }
 
 impl Default for MusicIn {
@@ -88,6 +120,76 @@ impl MusicIn {
             router,
             ports,
             seen: [Seen::default(); MAX_PORTS],
+            input: [PortInput::default(); MAX_PORTS],
+            last_in: [None; MAX_PORTS],
+            clock: std::array::from_fn(|_| ClockIn::new(CLOCK_RATE)),
+            applied: None,
+            ports_changed: true,
+            shown_clock: None,
+            busy: 0,
+        }
+    }
+
+    /// Once a period: tells the I/O view the ports plugged in, when each
+    /// last received something and the clock arriving, and takes the
+    /// project's port settings when they changed. Never waits for the
+    /// screen; a period it can't update is counted ([`MusicIn::summary`]).
+    pub fn sync(&mut self, model: &Shared, t: f64) {
+        let mut m = match model.try_lock() {
+            Ok(m) => m,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                self.busy += 1;
+                return;
+            }
+        };
+        if self.applied != Some(m.gen) {
+            for p in self.ports.all() {
+                if let Some(i) = self.input.get_mut(usize::from(p.id.0)) {
+                    *i = m.setup.port(&p.name).input;
+                }
+            }
+            self.applied = Some(m.gen);
+        }
+        if self.ports_changed {
+            m.live.ports = self
+                .ports
+                .all()
+                .iter()
+                .filter(|p| p.connected)
+                .map(|p| PortLive {
+                    name: p.name.clone(),
+                    kind: if p.id == DIN { "5-pin jacks" } else { "USB" }.to_string(),
+                    has_in: p.has_in,
+                    has_out: p.has_out,
+                    last_in: None,
+                })
+                .collect();
+            self.ports_changed = false;
+        }
+        for lp in m.live.ports.iter_mut() {
+            if let Some(p) = self.ports.all().iter().find(|p| p.name == lp.name) {
+                lp.last_in = self.last_in[usize::from(p.id.0)].map(Duration::from_secs_f64);
+            }
+        }
+        let now = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
+        let arriving = self
+            .ports
+            .all()
+            .iter()
+            .filter(|p| p.connected)
+            .find_map(|p| {
+                let i = usize::from(p.id.0);
+                self.clock[i].state(now).bpm.map(|bpm| (i, bpm))
+            });
+        let key = arriving.map(|(i, bpm)| (i, (bpm * 10.0).round() as i64));
+        if key != self.shown_clock {
+            m.live.clock_in = arriving.and_then(|(i, bpm)| {
+                self.ports
+                    .get(PortId(i as u8))
+                    .map(|p| (p.name.clone(), bpm as f32))
+            });
+            self.shown_clock = key;
         }
     }
 
@@ -104,6 +206,9 @@ impl MusicIn {
     /// A USB keyboard was opened for reading: its port number, or None when
     /// every port number is taken.
     pub fn plugged(&mut self, name: &str) -> Option<PortId> {
+        self.ports_changed = true;
+        // Its input setting is the project's, by name.
+        self.applied = None;
         self.ports.plugged(name, true, false)
     }
 
@@ -111,6 +216,10 @@ impl MusicIn {
     pub fn unplugged(&mut self, port: PortId, keys: &mut Vec<Key>) {
         self.router.port_gone(port, 0, |e| key_of(e, keys));
         self.ports.unplugged(port);
+        self.ports_changed = true;
+        if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
+            *c = ClockIn::new(CLOCK_RATE);
+        }
         if let Some(s) = self.seen.get_mut(usize::from(port.0)) {
             s.clock_running = false;
             s.sysex = None;
@@ -133,7 +242,10 @@ impl MusicIn {
             return;
         }
         let label = self.label(port);
+        let learn_only = self.input[p] == PortInput::LearnOnly;
+        let frame = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
         for &b in data {
+            self.clock[p].byte(frame, b);
             let s = &mut self.seen[p];
             match b {
                 0xF8 => {
@@ -184,12 +296,22 @@ impl MusicIn {
                     }
                 }
             }
-            let frame = 0;
             let mut seen = None;
-            self.router.feed(port, b, frame, |e| match e {
+            let mut got = false;
+            self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
-                other => key_of(other, keys),
+                other => {
+                    got = true;
+                    // "Learn only" plays nothing, but a note-off still
+                    // ends a note this port started before.
+                    if !(learn_only && starts_or_presses(&other)) {
+                        key_of(other, keys)
+                    }
+                }
             });
+            if got || seen.is_some() {
+                self.last_in[p] = Some(t);
+            }
             if let Some(msg) = seen {
                 self.seen[p].messages += 1;
                 let (bytes, n) = msg.encode();
@@ -234,6 +356,12 @@ impl MusicIn {
                 s.sensing
             ));
         }
+        if self.busy > 0 {
+            lines.push(format!(
+                "I/O view: {} periods skipped its update because the screen held it",
+                self.busy
+            ));
+        }
         let st = self.router.stats;
         if st.unrouted + st.bad_port > 0 {
             lines.push(format!(
@@ -243,6 +371,27 @@ impl MusicIn {
         }
         lines
     }
+}
+
+/// The model the mixer's I/O view and [`MusicIn::sync`] share, with the
+/// project's 16 tracks named as the time engine names them.
+pub fn io_model() -> Shared {
+    let mut m = mpfree_midi_ui::IoModel::default();
+    m.live.tracks = (1..=mpfree_midi::output::MAX_TRACKS)
+        .map(|i| format!("Track {i}"))
+        .collect();
+    std::sync::Arc::new(std::sync::Mutex::new(m))
+}
+
+/// A note-on or pressure: what a "Learn only" port doesn't play.
+fn starts_or_presses(e: &In) -> bool {
+    matches!(
+        e,
+        In::Track {
+            msg: Msg::NoteOn { .. } | Msg::PolyPressure { .. },
+            ..
+        }
+    )
 }
 
 /// The router's notes as keys; CCs, bends and program changes wait for
@@ -320,6 +469,78 @@ mod tests {
         let mut lines = Vec::new();
         m.bytes(port, data, 1.0, &mut keys, &mut |l| lines.push(l));
         (keys, lines)
+    }
+
+    fn model() -> Shared {
+        std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()))
+    }
+
+    #[test]
+    fn the_io_view_sees_ports_lights_and_clock() {
+        let mut m = MusicIn::new();
+        let io = model();
+        m.sync(&io, 0.5);
+        {
+            let v = io.lock().unwrap();
+            let names: Vec<&str> = v.live.ports.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, [mpfree_midi::setup::DIN_NAME]);
+            assert_eq!(v.live.ports[0].kind, "5-pin jacks");
+            assert_eq!(v.live.ports[0].last_in, None);
+            assert_eq!(v.live.clock_in, None);
+        }
+        let usb = m.plugged("Keystep 37").unwrap();
+        // A note on the 5-pin jacks at 1 s lights it.
+        run(&mut m, DIN, &[0x90, 60, 100]);
+        // Clock at 120 BPM on the USB keyboard: a pulse every 1/48 s.
+        let mut keys = Vec::new();
+        for i in 0..30 {
+            let t = 1.0 + i as f64 / 48.0;
+            m.bytes(usb, &[0xF8], t, &mut keys, &mut |_| {});
+        }
+        m.sync(&io, 1.62);
+        let v = io.lock().unwrap();
+        assert_eq!(v.live.ports.len(), 2);
+        assert_eq!(v.live.ports[1].kind, "USB");
+        assert!(!v.live.ports[1].has_out, "USB ports are only read for now");
+        assert_eq!(v.live.ports[0].last_in, Some(Duration::from_secs(1)));
+        assert_eq!(v.live.ports[1].last_in, None, "clock lights nothing");
+        let (port, bpm) = v.live.clock_in.clone().unwrap();
+        assert_eq!(port, "Keystep 37");
+        assert!((bpm - 120.0).abs() < 0.1, "{bpm}");
+    }
+
+    #[test]
+    fn a_learn_only_port_plays_nothing_but_lets_go() {
+        let mut m = MusicIn::new();
+        let io = model();
+        // A key held before the setting changes.
+        let (keys, _) = run(&mut m, DIN, &[0x90, 60, 100]);
+        assert_eq!(keys.len(), 1);
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.set_port(mpfree_midi::setup::DIN_NAME, |p| {
+                p.input = PortInput::LearnOnly
+            });
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        let (keys, lines) = run(&mut m, DIN, &[0x90, 62, 100, 0xA0, 62, 30, 0x80, 60, 0]);
+        assert_eq!(keys, vec![Key::Up { note: 60 }]);
+        // Still logged.
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn a_busy_screen_skips_the_update_and_counts_it() {
+        let mut m = MusicIn::new();
+        let io = model();
+        let held = io.lock().unwrap();
+        m.sync(&io, 1.0);
+        drop(held);
+        assert!(m
+            .summary()
+            .iter()
+            .any(|l| l == "I/O view: 1 periods skipped its update because the screen held it"));
     }
 
     #[test]
