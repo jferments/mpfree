@@ -5020,6 +5020,55 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mapped.take_actions();
         out.push(("sample-keys-mapped", mapped));
     }
+    // The same instrument with Key fade at 4 notes: the zones that met now
+    // overlap by 4 and crossfade, the Key fade row picked.
+    {
+        let mut faded = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        if let Some(sound) = project.pad(pad).cloned() {
+            for (k, name) in ["Pluck C2", "Pluck G2", "Pluck C3", "Pluck G3", "Pluck C4"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut q = sound.clone();
+                q.name = name.to_string();
+                let _ = project.set_pad(k, Some(q), None);
+            }
+        }
+        faded.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        ev(
+            &mut faded,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        ev(&mut faded, pads_tab::BUTTONS, EventKind::Tab(3));
+        ev(&mut faded, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        let index = Row::ALL
+            .iter()
+            .position(|r| *r == Row::KeyFade)
+            .unwrap_or(0);
+        if let Some(list) = faded.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index;
+        }
+        ev(&mut faded, LIST, EventKind::Select(index));
+        ev(&mut faded, LIST, EventKind::Step { index, delta: 4 });
+        faded.apply(ToUi::SampleLift);
+        faded.take_actions();
+        out.push(("sample-keys-crossfade", faded));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
@@ -7000,6 +7049,72 @@ mod tests {
         p.apply(ToUi::PadUp(0));
         assert_eq!(p.sample.play().unwrap().1.pad, pad);
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    #[test]
+    fn key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step() {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                LIST,
+                EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(play_tab::TAB),
+        );
+        let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
+        // No keygroup yet: Key fade has nothing to fade.
+        step(&mut p, Row::KeyFade, 1);
+        assert_eq!(settings(&p).key_fade, 0);
+        // Keys on, then Key fade: the kit's keygroups fade over 2 notes.
+        step(&mut p, Row::Keys, 1);
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        step(&mut p, Row::KeyFade, 2);
+        assert_eq!(settings(&p).key_fade, 2);
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks): key fade 2 notes, the zones that meet crossfade over them"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1, "the kit sounds with the fade");
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Vel fade is the pad's own, with a line of its own.
+        step(&mut p, Row::VelFade, 4);
+        assert_eq!(settings(&p).vel_fade, 8);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: vel fade Off -> 8"),
+            "{:?}",
+            events_log(&p)
+        );
+        // UNDO: the velocity fade, then the key fade.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).vel_fade, 0);
+        assert_eq!(settings(&p).key_fade, 2);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).key_fade, 0);
+        assert!(settings(&p).keys.is_some());
     }
 
     #[test]
