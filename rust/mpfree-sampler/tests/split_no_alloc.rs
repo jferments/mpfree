@@ -268,6 +268,9 @@ fn a_split_engine_allocates_nothing_on_either_core() {
     }
     // Then the granular pads held, two voices each, to fill the grain
     // budget, and every pad hit twice over, more voices than the pool has.
+    // Here the lane gets all the time it needs (a second a block), so what
+    // is checked below does not depend on how busy the machine is: late
+    // parts are covered above and in tests/split.rs.
     for pad in 16..20u8 {
         e.apply(Event::NoteOn { pad, velocity: 100 });
         e.apply(Event::NoteOn { pad, velocity: 100 });
@@ -279,10 +282,11 @@ fn a_split_engine_allocates_nothing_on_either_core() {
                 e.schedule(u32::from(pad) + 40, Event::NoteOn { pad, velocity: 80 });
             }
         }
+        let ample = Instant::now() + Duration::from_secs(1);
         if block % 2 == 1 {
-            e.render_routed(128, &mut ch);
+            e.render_routed_until(128, &mut ch, ample);
         } else {
-            e.render(&mut l, &mut r);
+            e.render_until(&mut l, &mut r, ample);
         }
     }
     e.apply(Event::AllOff);

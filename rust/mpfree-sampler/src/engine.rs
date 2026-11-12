@@ -1082,6 +1082,9 @@ struct Voices {
     b: Option<Box<Pool>>,
     /// The lane share's grain limit when it left.
     b_limit: usize,
+    /// The lane share's skipped grains when it left, so the count does not
+    /// go back while it is away ([`Engine::stats`]).
+    b_skipped: u64,
     split: bool,
 }
 
@@ -1276,6 +1279,7 @@ impl Engine {
                 a: Pool::new(rate, 0, voices.max(1), false),
                 b: None,
                 b_limit: 0,
+                b_skipped: 0,
                 split: false,
             },
             lane: None,
@@ -1392,10 +1396,16 @@ impl Engine {
         self.fixed_velocity = v.map(|v| v.clamp(1, 127));
     }
 
+    /// The counters. While the lane renders its share of the voices (or
+    /// was late for it), that share's skipped grains are counted as they
+    /// were when it left, so they never go back.
     pub fn stats(&self) -> Stats {
+        let b = match self.pool.b.as_ref() {
+            Some(b) => b.budget.skipped,
+            None => self.pool.b_skipped,
+        };
         Stats {
-            skipped_grains: self.pool.a.budget.skipped
-                + self.pool.b.as_ref().map_or(0, |b| b.budget.skipped),
+            skipped_grains: self.pool.a.budget.skipped + b,
             ..self.stats
         }
     }
@@ -2454,6 +2464,7 @@ impl Engine {
                 (Some(lane), Some(deadline)) if lane_busy && b - a >= LANE_MIN_FRAMES => {
                     let pool = self.pool.b.take();
                     self.pool.b_limit = pool.as_ref().map_or(0, |p| p.budget.limit);
+                    self.pool.b_skipped = pool.as_ref().map_or(0, |p| p.budget.skipped);
                     if let Some(c) = lane.job() {
                         (c.pool, c.frames, c.frame, c.rate) = (pool, b - a, frame, rate);
                     }

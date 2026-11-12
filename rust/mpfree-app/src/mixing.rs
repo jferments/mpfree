@@ -72,6 +72,10 @@ pub const STATE_EVERY: Duration = Duration::from_millis(40);
 /// The Play page's inserts: the DJ filters' slot on the Drums and Loop
 /// tracks, the delay's return, and the throws' slot on the master.
 const FILTER_SLOT: usize = 0;
+/// [`MixHost::poll_built`]'s line when the builder's queue was full and an
+/// effect taken out of a chain was freed on the audio thread.
+const DROPPED_HERE: &str =
+    "mixer: an effect taken out was freed on the audio thread (the builder's queue was full)";
 pub const DELAY_RETURN: usize = 0;
 const PERFORM_SLOT: usize = 0;
 /// A send this low is off.
@@ -183,6 +187,12 @@ pub struct MixHost {
     /// Pads muted by their speakers or the panel, and by Drop drums.
     pad_mutes: u16,
     dropped: u16,
+    /// Builds the chain editor's effects, and drops the ones edits take
+    /// out, off the audio thread (control.rs). None: here (the tests).
+    builder: Option<crate::control::Builder>,
+    /// A built effect the mixer had no room for yet (its edits were full),
+    /// put in on a later period.
+    landing: Option<crate::control::Built>,
 }
 
 impl MixHost {
@@ -238,6 +248,105 @@ impl MixHost {
             state_at: None,
             pad_mutes: 0,
             dropped: 0,
+            builder: None,
+            landing: None,
+        }
+    }
+
+    /// From now on effects added in the chain editor are built on the
+    /// `mpfree-build` thread, and the effects edits take out are dropped
+    /// there (control.rs). Allocates and starts the thread: call it before
+    /// the loop.
+    pub fn build_off_thread(&mut self) -> std::io::Result<()> {
+        self.builder = Some(crate::control::Builder::start()?);
+        Ok(())
+    }
+
+    /// Adds effect `id` at the end of `strip`'s chain. With a builder it
+    /// is built there and goes in a few periods later
+    /// ([`MixHost::poll_built`]); without one, here. Err: the mixer is busy
+    /// (too many edits or builds under way), or no effect has that id.
+    pub fn add_insert(&mut self, strip: StripId, id: &'static str) -> Result<(), &'static str> {
+        let rate = self.mixer.rate();
+        if let Some(b) = self.builder.as_mut() {
+            return if b.build(strip, id, rate, PERIOD) {
+                Ok(())
+            } else {
+                Err("The mixer is busy")
+            };
+        }
+        let node = mpfree_fx_ui::make(id).ok_or("No such effect")?;
+        let at = self.mixer.chain(strip).map_or(0, |c| c.len());
+        self.mixer
+            .edit(Edit::Insert {
+                strip,
+                at,
+                insert: Insert::new(node, rate, PERIOD),
+            })
+            .map_err(|_| "The mixer is busy")
+    }
+
+    /// Effects asked for and not in the mixer's edits yet.
+    pub fn inserts_building(&self) -> usize {
+        self.builder.as_ref().map_or(0, |b| b.pending()) + usize::from(self.landing.is_some())
+    }
+
+    /// Once a period: puts the effects the builder made into their chains
+    /// (at the end), and hands the ones edits took out back to be dropped
+    /// off the audio thread. Returns a line for the log when an effect
+    /// could not be made. No allocation; never waits.
+    pub fn poll_built(&mut self) -> Option<&'static str> {
+        let mut said = None;
+        loop {
+            let built = match self.landing.take() {
+                Some(b) => b,
+                None => match self.builder.as_mut().and_then(|b| b.take()) {
+                    Some(b) => b,
+                    None => break,
+                },
+            };
+            let Some(insert) = built.insert else {
+                said = Some("mixer: the chain editor asked for an effect that has no maker");
+                continue;
+            };
+            let Some(at) = self.mixer.chain(built.strip).map(|c| c.len()) else {
+                said = Some("mixer: an effect was built for a strip the mixer does not have");
+                if !self.drop_off_thread(insert) {
+                    said = Some(DROPPED_HERE);
+                }
+                continue;
+            };
+            if let Err(Edit::Insert { insert, .. }) = self.mixer.edit(Edit::Insert {
+                strip: built.strip,
+                at,
+                insert,
+            }) {
+                // The mixer's edits are full: it goes in on a later period.
+                self.landing = Some(crate::control::Built {
+                    strip: built.strip,
+                    id: built.id,
+                    insert: Some(insert),
+                });
+                break;
+            }
+        }
+        while let Some(old) = self.mixer.pop_retired() {
+            if !self.drop_off_thread(old) {
+                said = Some(DROPPED_HERE);
+            }
+        }
+        said
+    }
+
+    /// Drops `insert` on the builder's thread, or here without one (the
+    /// tests). False if a builder's queue was full and it was dropped here.
+    fn drop_off_thread(&mut self, insert: Insert) -> bool {
+        match self.builder.as_mut() {
+            Some(b) => b.drop_later(insert),
+            None => {
+                drop(insert);
+                true
+            }
         }
     }
 
@@ -914,6 +1023,64 @@ mod tests {
         pads.sort_unstable();
         pads.dedup();
         assert_eq!(pads.len(), all.len());
+    }
+
+    /// Runs periods (polling as the app does) until track 2's chain has
+    /// `len` inserts, for at most 5 s.
+    fn until_chain(h: &mut MixHost, len: usize) -> usize {
+        let strip = StripId::Track(SYNTH);
+        let give_up = Instant::now() + Duration::from_secs(5);
+        while h.mixer.chain(strip).unwrap().len() != len && Instant::now() < give_up {
+            assert_eq!(h.poll_built(), None);
+            run(h, 1, 0.0, 0.0);
+            // Built on the builder thread when there is one.
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(h.poll_built(), None);
+        h.mixer.chain(strip).unwrap().len()
+    }
+
+    /// Adds then removes a Drive on track 2 `times` times, checking the
+    /// chain each time. Removes glide out over a few periods.
+    fn add_and_remove(h: &mut MixHost, times: usize) {
+        let strip = StripId::Track(SYNTH);
+        let base = h.mixer.chain(strip).unwrap().len();
+        for round in 0..times {
+            h.add_insert(strip, "mpfree.fx.drive").unwrap();
+            assert_eq!(until_chain(h, base + 1), base + 1, "add {round}");
+            assert_eq!(h.inserts_building(), 0);
+            h.mixer.edit(Edit::Remove { strip, at: base }).ok().unwrap();
+            assert_eq!(until_chain(h, base), base, "remove {round}");
+        }
+    }
+
+    #[test]
+    fn chain_edits_keep_landing_after_many_removes() {
+        // The app never took retired inserts back from the mixer, which
+        // stops applying edits once 32 are waiting: the chain editor froze
+        // after 32 removes. poll_built takes them back every period.
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        add_and_remove(&mut h, 40);
+    }
+
+    #[test]
+    fn effects_built_off_the_audio_thread_land_in_their_chain() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        h.build_off_thread().unwrap();
+        add_and_remove(&mut h, 40);
+        // An effect with no maker is said, and nothing lands.
+        let strip = StripId::Track(SYNTH);
+        let before = h.mixer.chain(strip).unwrap().len();
+        h.add_insert(strip, "no.such.effect").unwrap();
+        let give_up = Instant::now() + Duration::from_secs(5);
+        let mut said = None;
+        while said.is_none() && Instant::now() < give_up {
+            said = h.poll_built();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(said.unwrap().contains("no maker"), "{said:?}");
+        assert_eq!(h.mixer.chain(strip).unwrap().len(), before);
+        assert_eq!(h.inserts_building(), 0);
     }
 
     #[test]
