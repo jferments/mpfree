@@ -56,6 +56,22 @@ def check_previous(path):
         return {'filename':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
                 'indexed_members_verified':len(rows)}
 
+def invoke_v11(run,tmp,out,role,blob,candidate_file):
+    # V10.invoke is a tested subprocess wrapper that still names outputs
+    # v10-ghidra-*. Rename its actual reports and logs to v11 before
+    # packaging, leaving validation based on V11 schema untouched.
+    result=V10.invoke(run,tmp,out,role,blob,candidate_file)
+    oldprefix='v10-ghidra-'+role
+    newprefix='v11-ghidra-'+role
+    for suffix in ('.json','.log','-console.txt'):
+        old=out/(oldprefix+suffix)
+        new=out/(newprefix+suffix)
+        if old.exists():
+            if new.exists():raise RuntimeError('Refusing to overwrite V11 report')
+            old.rename(new)
+    result['report']=newprefix+'.json'
+    return result
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--prior-v10',type=Path,required=True,
@@ -99,11 +115,11 @@ def main():
             else:
                 for role,blob in blobs.items():
                     candidate_file=out/('v11-raw-backend-tables-'+role+'.json')
-                    manifest['stages'][role]=V10.invoke(run,tmp,out,role,blob,candidate_file)
+                    manifest['stages'][role]=invoke_v11(run,tmp,out,role,blob,candidate_file)
                     manifest['stages'][role]['raw_table_candidates']=len(evidence[role]['tables'])
                 if not a.skip_boot_ghidra:
                     for role in ('spl','uboot'):
-                        manifest['stages'][role]=V10.invoke(run,tmp,out,role,None,'none')
+                        manifest['stages'][role]=invoke_v11(run,tmp,out,role,None,'none')
             (out/'v11-questions.json').write_text(json.dumps({
                 'backend':[
                     'Where is the selected table address installed into device->backend?',
