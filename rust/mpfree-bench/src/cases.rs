@@ -651,6 +651,11 @@ fn mixer_with(
             m.set_lane(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
         }
         Second::Returns(cfg) => {
+            // A send reverb as it goes late: all wet, with a pre-delay to
+            // take the block back from (otherwise it stays on time).
+            let c = m.chain_mut(StripId::Return(0)).unwrap();
+            c.set_param(0, ids::cloud::MIX, 100.0);
+            c.set_param(0, ids::cloud::PRE_DELAY, 20.0);
             m.set_pipelined_returns(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
         }
     }
