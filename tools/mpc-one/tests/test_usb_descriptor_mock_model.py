@@ -47,5 +47,41 @@ class SyntheticUsbDescriptorModelTests(unittest.TestCase):
             self.assertIn("MPFREE_USB_DESCRIPTOR_MODEL_PASS", run.stdout)
 
 
+class SyntheticUsbEndpointModelTests(unittest.TestCase):
+    """Host regression for owner-derived USB IN/OUT endpoint selection model."""
+
+    def test_endpoint_model_source_is_offline_and_bounded(self):
+        source = (ROOT / "tools/mpc-one/usb_endpoint_mock_model.c").read_text()
+        for expected in ("buf[off + 2]", "address & 0x80",
+                         "return found == 3;", "declared - off"):
+            self.assertIn(expected, source)
+        for prohibited in ("libusb_open", "ioctl(", "open(", "/dev/mmcblk",
+                           "/dev/bus/usb", "system("):
+            self.assertNotIn(prohibited, source)
+
+    def test_native_endpoint_model_synthetic_cases(self):
+        compiler = shutil.which("cc") or shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("No host C compiler")
+        source = ROOT / "tools/mpc-one/usb_endpoint_mock_model.c"
+        with tempfile.TemporaryDirectory(prefix="mpfree-usb-endpoint-test-") as tmp:
+            binary = Path(tmp) / "endpoint_model"
+            build = subprocess.run(
+                [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-o", str(binary), str(source)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True,
+                                 timeout=20)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            rows = [json.loads(line) for line in run.stdout.splitlines()
+                    if line.startswith('{"test":')]
+            self.assertEqual(len(rows), 21)
+            self.assertTrue(all(item["pass"] for item in rows))
+            self.assertIn("MPFREE_USB_ENDPOINT_MODEL_TESTS 21/21", run.stdout)
+            self.assertIn("MPFREE_USB_ENDPOINT_MODEL_PASS", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
