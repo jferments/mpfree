@@ -17,7 +17,7 @@ SOURCE = ROOT / "tools/mpc-one/usb_descriptor_mock_model.c"
 class SyntheticUsbDescriptorModelTests(unittest.TestCase):
     def test_static_source_guard(self):
         source = SOURCE.read_text()
-        self.assertIn("b[off + 5] == 0xff", source)
+        self.assertIn("buf[off + 5] == 0xff", source)
         for code in ("0x42", "0x03", "0x61", "0x7a", "0x06", "0x05"):
             self.assertIn(code, source)
         for prohibited in ("libusb_open", "ioctl(", "open(", "/dev/mmcblk",
