@@ -24,7 +24,7 @@ The time this takes is unbounded, because it grows with the project. On the MPC 
 | Half | Owns | Runs |
 |---|---|---|
 | **Control** (`TimeControl`, `control.rs`) | The project, the takes, the launches and cues, scenes and follow actions (`Perform`), live to song, the note editor, the morph's settings, the selection, the armed track, CAPTURE's history and the move log, the steps for the Play page, every compile, and the `TimeState` for the screens | At its own pace: on each screen or MIDI event, and on a timer of a few ms (the app thread's control thread, step 3). Never needed once per period. |
-| **Audio** (`TimeAudio`, `audio.rs`) | The transport and its block, the player, the recorder, the view it plays, the last recorded changes (`Recent`), the click, the pad hits and the locks and lanes going out | Once per period, on the audio thread, with no allocation and no free |
+| **Audio** (`TimeAudio`, `audio.rs`) | The transport and its block, the follower of another device's clock (`follow.rs`, see [midi-clock.md](midi-clock.md#following-the-time-engine)), the player, the recorder, the view it plays, the last recorded changes (`Recent`), the click, the pad hits and the locks and lanes going out | Once per period, on the audio thread, with no allocation and no free |
 
 They talk through two bounded queues (`link.rs`), one each way.
 
@@ -40,9 +40,9 @@ CAPTURE's history and the move log moved to the control half, not the audio half
 
 **To audio** (`ToAudio`, 256 slots): a new view, which says what it includes; a transport command; the tracks' settings when they change (the armed track, and each track's "Clips through the arp", destination and "Record pad pressure", as a fixed array).
 
-**To control** (`ToControl`, 8192 slots, a busy second of periods), in the order things happened: each pad note played and each gesture taken, with its offset; each cue that started (`Started`); each recorded change (`Rec`) with its number, after its pressure or gesture points in fixed chunks; a request to compile again; each of the period's spans; the period's end, with the transport as it left it and the audio half's counts; and each view to free.
+**To control** (`ToControl`, 8192 slots, a busy second of periods), in the order things happened: each pad note played and each gesture taken, with its offset; each cue that started (`Started`); each recorded change (`Rec`) with its number, after its pressure or gesture points in fixed chunks; a request to compile again; each of the period's spans; the clock follower's counts when they change; the period's end, with the transport as it left it and the audio half's counts; and each view to free.
 
-The pad player's audio loop calls the audio half directly for what it hands the time engine each period: the pads, their pressure, the knobs, the gestures, FILL, the tempo it follows, and the metronome.
+The pad player's audio loop calls the audio half directly for what it hands the time engine each period: the pads, their pressure, the knobs, the gestures, FILL, the tempo it follows, the followed port's clock bytes, and the metronome.
 
 ### Where time matters
 

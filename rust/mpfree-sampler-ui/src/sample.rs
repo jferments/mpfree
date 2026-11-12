@@ -498,7 +498,11 @@ pub struct AutoSample {
 /// The synth patch the Auto-sample screens sample, as the app names it.
 pub const AUTO_SYNTH: &str = "Poly Pluck";
 
-/// What the Auto-sample mode shows for `project` with `settings`.
+/// The MIDI out the samples play external gear through.
+pub const GEAR_OUT: &str = "MIDI Out (DIN)";
+
+/// What the Auto-sample mode shows for `project` with `settings`. There is
+/// a MIDI out for gear ([`GEAR_OUT`]) when the settings pick gear.
 pub fn auto_state(
     project: &Project,
     settings: &AutoSettings,
@@ -511,6 +515,7 @@ pub fn auto_state(
         pads: 16,
         target: auto_tab::target(settings.onto, settings.notes(), 16, has),
         running,
+        gear: settings.gear.map(|_| GEAR_OUT.to_string()),
         last: String::new(),
         rate: RATE,
     }
@@ -568,6 +573,17 @@ pub fn auto_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<AutoSample>, String
                 total: 42,
                 note: Some(54),
             }),
+        )?,
+        make(
+            "rec-auto-gear",
+            "Auto-sampling external gear: its notes go out on MIDI channel 3 and its sound comes back on the \
+             line input, C2 to C5 every 6 semitones onto the kit's empty pads",
+            kit_project().0,
+            AutoSettings {
+                gear: Some(2),
+                ..seven
+            },
+            None,
         )?,
         make(
             "rec-auto-full",
