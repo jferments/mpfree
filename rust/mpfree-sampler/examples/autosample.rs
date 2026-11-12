@@ -46,7 +46,7 @@ Options:
   --loops             look for a forward loop in each note (--pingpong for ping-pong)
   --mono              record mono
   --calibration FILE  add an MPC time estimate from this calibration file
-                      (docs/perf/mpc-one-calibration.txt)
+                      (docs/dev/perf/mpc-one-calibration.txt)
 
 Workstation only; writes only inside OUTPUT_DIR.";
 

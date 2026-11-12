@@ -22,7 +22,7 @@
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //!
-//! The design and roadmap are in `docs/project/synths.md`. Every synth keeps
+//! The design and roadmap are in `docs/dev/design/synths.md`. Every synth keeps
 //! the node rules: no allocation, lock or panic in `process`, and the same
 //! output for any block size (`tests/` checks both).
 #![forbid(unsafe_code)]

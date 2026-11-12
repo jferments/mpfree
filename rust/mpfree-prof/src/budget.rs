@@ -28,7 +28,7 @@ pub struct Period {
     pub rate: u32,
 }
 
-/// The MPC One's ALSA period as MPFree runs it (mpfree-hello: 128 frames at
+/// The MPC One's ALSA period as MPFree runs it (mpfree-app: 128 frames at
 /// 44.1 kHz, three periods in the buffer).
 pub const MPC: Period = Period {
     frames: 128,

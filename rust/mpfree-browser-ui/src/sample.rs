@@ -7,7 +7,7 @@
 use crate::state::{Browser, Button, Filter, Input, Key, Pick, SOURCES};
 use crate::view::BrowserView;
 use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE, PICKER_HINT};
-use mpfree_library::audio::{tone_wav, wav_bytes};
+use mpfree_library::audio::{tone_aiff, tone_wav, wav_bytes};
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::widgets::{Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
@@ -40,7 +40,9 @@ pub fn fill(data: &Path) -> Result<Library, String> {
     let s = Loc::top(Place::Samples);
     let drums = lib.new_folder(&s, "Drums").map_err(e)?;
     let loops = lib.new_folder(&s, "Loops").map_err(e)?;
-    lib.new_folder(&s, "Vox").map_err(e)?;
+    let vox = lib.new_folder(&s, "Vox").map_err(e)?;
+    lib.write_new(&vox, "Vocal chop.aif", &tone_aiff(RATE, 30_000, 330.0, 3.0))
+        .map_err(e)?;
     lib.new_folder(&s, "Field recordings").map_err(e)?;
     let tones: [(&str, f32, f32, u32); 8] = [
         ("Kick 01.wav", 55.0, 9.0, 18_000),
@@ -101,6 +103,8 @@ pub fn fill(data: &Path) -> Result<Library, String> {
     ] {
         let loc = p.join(name).map_err(e)?;
         for i in 0..saves {
+            // Each earlier save one BPM slower, so they can be told apart.
+            let tempo = tempo - (saves - 1 - i) as f64;
             let snap = Snapshot {
                 meta: Meta {
                     name: name.into(),
@@ -310,6 +314,41 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             b.open_picker(Pick::Project);
             b.set_unsaved(true);
             open(b, "Sunday chops");
+        },
+    )?;
+    shot(
+        "15-earlier-saves",
+        "Earlier saves of Night drive: each save keeps the last 10 before it; Open puts one in place (saving it then makes it the newest)",
+        Theme::dark(),
+        &|b| {
+            b.go_source(source("Projects"));
+            select(b, "Night drive");
+            b.input(Input::Button(Button::Versions));
+            b.dial(1);
+        },
+    )?;
+    shot(
+        "16-search",
+        "Search: \u{201c}kick\u{201d} typed on the keyboard finds names anywhere in the library (not the Trash); each row says where it is",
+        Theme::dark(),
+        &|b| {
+            b.input(Input::Search);
+            for c in "kick".chars() {
+                b.input(Input::Key(Key::Char(c)));
+            }
+            b.input(Input::Key(Key::Done));
+            b.dial(1);
+        },
+    )?;
+    shot(
+        "17-aiff-newest",
+        "An AIFF with its quick waveform (AIFF and AIFF-C read like WAV), and the list sorted newest first",
+        Theme::dark(),
+        &|b| {
+            b.go_source(source("Samples"));
+            open(b, "Vox");
+            b.input(Input::Sort);
+            select(b, "Vocal chop.aif");
         },
     )?;
     Ok(out)
