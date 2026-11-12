@@ -22,7 +22,8 @@
 //!
 //! The MPC's own pads and knobs never come here (the app gives only
 //! external ports). This is control-thread code: it may allocate.
-//! Mappings save as lines for `mpfree-store` ([`LearnMap::save`]).
+//! Mappings save as lines for `mpfree-store` ([`LearnMap::save`]); a
+//! project keeps each as a [`Saved`], its device by name.
 
 use std::collections::HashMap;
 
@@ -152,6 +153,147 @@ pub enum Input {
     Write(Write),
 }
 
+/// A mapping as a project keeps it: its device by name, so it finds the
+/// device again whatever port number it gets next time. Its text is the
+/// part of [`LearnMap::save`]'s line after `learn = `.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Saved {
+    /// The device's name; `None` listens to every port.
+    pub port: Option<String>,
+    pub channel: Channel,
+    pub source: Source,
+    pub target: ParamAddr,
+    pub lo: f32,
+    pub hi: f32,
+    pub mode: Mode,
+    pub takeover: Takeover,
+}
+
+impl Saved {
+    /// `m` with its port named `port` (`None`: any port).
+    pub fn of(m: &Mapping, port: Option<String>) -> Saved {
+        Saved {
+            port,
+            channel: m.control.channel,
+            source: m.control.source,
+            target: m.target,
+            lo: m.lo,
+            hi: m.hi,
+            mode: m.mode,
+            takeover: m.takeover,
+        }
+    }
+
+    /// The mapping, listening on `port`.
+    pub fn mapping(&self, port: PortFilter) -> Mapping {
+        Mapping {
+            control: Control {
+                port,
+                channel: self.channel,
+                source: self.source,
+            },
+            target: self.target,
+            lo: self.lo,
+            hi: self.hi,
+            mode: self.mode,
+            takeover: self.takeover,
+        }
+    }
+
+    /// The same control: port, channel and what on the device.
+    pub fn same_control(&self, o: &Saved) -> bool {
+        self.port == o.port && self.channel == o.channel && self.source == o.source
+    }
+
+    /// "port Keystep 37 | ch 3 | cc 74 | t3.inst.12 | 0.0000 1.0000 |
+    /// absolute | jump" (a `|` in a port's name is written `/`).
+    pub fn text(&self) -> String {
+        let port = match &self.port {
+            None => "any".to_string(),
+            Some(n) => format!("port {}", n.replace('|', "/")),
+        };
+        let src = match self.source {
+            Source::Cc(n) => format!("cc {n}"),
+            Source::Note(n) => format!("note {n}"),
+            Source::PitchBend => "bend".to_string(),
+            Source::ChanPressure => "pressure".to_string(),
+        };
+        let mode = match self.mode {
+            Mode::Absolute => "absolute",
+            Mode::Relative(Encoding::TwosComplement) => "relative-2c",
+            Mode::Relative(Encoding::Offset64) => "relative-64",
+            Mode::Relative(Encoding::SignBit) => "relative-sign",
+            Mode::Toggle => "toggle",
+            Mode::Momentary => "momentary",
+        };
+        let take = match self.takeover {
+            Takeover::Jump => "jump",
+            Takeover::Pickup => "pickup",
+        };
+        format!(
+            "{port} | ch {} | {src} | {} | {:.4} {:.4} | {mode} | {take}",
+            self.channel + 1,
+            self.target,
+            self.lo,
+            self.hi
+        )
+    }
+
+    /// Reads [`Saved::text`]; `None` if any field can't be read.
+    pub fn parse(v: &str) -> Option<Saved> {
+        let f: Vec<&str> = v.split('|').map(str::trim).collect();
+        let [port, ch, src, target, range, mode, take] = f[..] else {
+            return None;
+        };
+        let port = if port == "any" {
+            None
+        } else {
+            Some(port.strip_prefix("port ")?.to_string())
+        };
+        let ch: u8 = ch.strip_prefix("ch ")?.parse().ok()?;
+        if !(1..=16).contains(&ch) {
+            return None;
+        }
+        let source = match src.split_once(' ') {
+            Some(("cc", n)) => Source::Cc(n.parse().ok().filter(|&n: &u8| n < 128)?),
+            Some(("note", n)) => Source::Note(n.parse().ok().filter(|&n: &u8| n < 128)?),
+            None if src == "bend" => Source::PitchBend,
+            None if src == "pressure" => Source::ChanPressure,
+            _ => return None,
+        };
+        let target: ParamAddr = target.parse().ok()?;
+        let (lo, hi) = range.split_once(' ')?;
+        let (lo, hi): (f32, f32) = (lo.parse().ok()?, hi.parse().ok()?);
+        if !(0.0..=1.0).contains(&lo) || !(0.0..=1.0).contains(&hi) {
+            return None;
+        }
+        let mode = match mode {
+            "absolute" => Mode::Absolute,
+            "relative-2c" => Mode::Relative(Encoding::TwosComplement),
+            "relative-64" => Mode::Relative(Encoding::Offset64),
+            "relative-sign" => Mode::Relative(Encoding::SignBit),
+            "toggle" => Mode::Toggle,
+            "momentary" => Mode::Momentary,
+            _ => return None,
+        };
+        let takeover = match take {
+            "jump" => Takeover::Jump,
+            "pickup" => Takeover::Pickup,
+            _ => return None,
+        };
+        Some(Saved {
+            port,
+            channel: ch - 1,
+            source,
+            target,
+            lo,
+            hi,
+            mode,
+            takeover,
+        })
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// Pickup: the control has reached the value.
@@ -196,6 +338,16 @@ impl LearnMap {
 
     pub fn armed(&self) -> Option<ParamAddr> {
         self.armed
+    }
+
+    /// Whether [`LearnMap::input`] takes this message, so it should not
+    /// also play: a learnable press or move while armed, or a mapped
+    /// control (a learned key's release too). A key's release while armed
+    /// is not taken, so a note held before arming still ends.
+    pub fn takes(&self, port: PortId, msg: &Msg) -> bool {
+        let learnable = Control::of(port, msg).is_some() && !matches!(msg, Msg::NoteOff { .. });
+        (self.armed.is_some() && learnable)
+            || self.maps.iter().any(|(m, _)| m.control.matches(port, msg))
     }
 
     pub fn mappings(&self) -> impl Iterator<Item = &Mapping> {
@@ -250,8 +402,9 @@ impl LearnMap {
     }
 
     /// The parameter's value now (0 to 1), when something other than a
-    /// learned control set it: a picked-up control lets go until it
-    /// reaches the new value.
+    /// learned control set it: an endless encoder steps from there, a
+    /// button's next press flips it from there, and a picked-up control
+    /// lets go until it reaches the new value.
     pub fn observe(&mut self, target: ParamAddr, value: f32) {
         let old = self.values.insert(target, value);
         if old.is_some_and(|o| (o - value).abs() <= f32::EPSILON) {
@@ -260,6 +413,7 @@ impl LearnMap {
         for (m, s) in &mut self.maps {
             if m.target == target {
                 s.picked = false;
+                s.on = (value - m.hi).abs() < (value - m.lo).abs();
             }
         }
     }
@@ -372,37 +526,15 @@ impl LearnMap {
         let mut s = String::new();
         for (m, _) in &self.maps {
             let port = match m.control.port {
-                PortFilter::Any => "any".to_string(),
+                PortFilter::Any => None,
                 PortFilter::One(p) => match name_of(p) {
-                    Some(n) => format!("port {}", n.replace('|', "/")),
+                    Some(n) => Some(n),
                     None => continue,
                 },
             };
-            let src = match m.control.source {
-                Source::Cc(n) => format!("cc {n}"),
-                Source::Note(n) => format!("note {n}"),
-                Source::PitchBend => "bend".to_string(),
-                Source::ChanPressure => "pressure".to_string(),
-            };
-            let mode = match m.mode {
-                Mode::Absolute => "absolute",
-                Mode::Relative(Encoding::TwosComplement) => "relative-2c",
-                Mode::Relative(Encoding::Offset64) => "relative-64",
-                Mode::Relative(Encoding::SignBit) => "relative-sign",
-                Mode::Toggle => "toggle",
-                Mode::Momentary => "momentary",
-            };
-            let take = match m.takeover {
-                Takeover::Jump => "jump",
-                Takeover::Pickup => "pickup",
-            };
-            s.push_str(&format!(
-                "learn = {port} | ch {} | {src} | {} | {:.4} {:.4} | {mode} | {take}\n",
-                m.control.channel + 1,
-                m.target,
-                m.lo,
-                m.hi
-            ));
+            s.push_str("learn = ");
+            s.push_str(&Saved::of(m, port).text());
+            s.push('\n');
         }
         s
     }
@@ -424,58 +556,12 @@ impl LearnMap {
                     .trim_start()
                     .strip_prefix('=')?
                     .trim();
-                let f: Vec<&str> = rest.split('|').map(str::trim).collect();
-                let [port, ch, src, target, range, mode, take] = f[..] else {
-                    return None;
+                let saved = Saved::parse(rest)?;
+                let port = match &saved.port {
+                    None => PortFilter::Any,
+                    Some(n) => PortFilter::One(id_of(n)?),
                 };
-                let port = if port == "any" {
-                    PortFilter::Any
-                } else {
-                    PortFilter::One(id_of(port.strip_prefix("port ")?)?)
-                };
-                let ch: u8 = ch.strip_prefix("ch ")?.parse().ok()?;
-                if !(1..=16).contains(&ch) {
-                    return None;
-                }
-                let source = match src.split_once(' ') {
-                    Some(("cc", n)) => Source::Cc(n.parse().ok().filter(|&n: &u8| n < 128)?),
-                    Some(("note", n)) => Source::Note(n.parse().ok().filter(|&n: &u8| n < 128)?),
-                    None if src == "bend" => Source::PitchBend,
-                    None if src == "pressure" => Source::ChanPressure,
-                    _ => return None,
-                };
-                let target: ParamAddr = target.parse().ok()?;
-                let (lo, hi) = range.split_once(' ')?;
-                let (lo, hi): (f32, f32) = (lo.parse().ok()?, hi.parse().ok()?);
-                if !(0.0..=1.0).contains(&lo) || !(0.0..=1.0).contains(&hi) {
-                    return None;
-                }
-                let mode = match mode {
-                    "absolute" => Mode::Absolute,
-                    "relative-2c" => Mode::Relative(Encoding::TwosComplement),
-                    "relative-64" => Mode::Relative(Encoding::Offset64),
-                    "relative-sign" => Mode::Relative(Encoding::SignBit),
-                    "toggle" => Mode::Toggle,
-                    "momentary" => Mode::Momentary,
-                    _ => return None,
-                };
-                let takeover = match take {
-                    "jump" => Takeover::Jump,
-                    "pickup" => Takeover::Pickup,
-                    _ => return None,
-                };
-                map.add(Mapping {
-                    control: Control {
-                        port,
-                        channel: ch - 1,
-                        source,
-                    },
-                    target,
-                    lo,
-                    hi,
-                    mode,
-                    takeover,
-                });
+                map.add(saved.mapping(port));
                 Some(())
             })();
             if ok.is_none() {

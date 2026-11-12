@@ -34,6 +34,9 @@ pub(crate) struct Field {
     pub at: Option<(usize, usize)>,
     /// A tap opens its picker instead of stepping it.
     pub picker: bool,
+    /// Only a tap on it works: no Q-Link or - and + (Forget, so a knob
+    /// turned on the wrong row can't take a control away).
+    pub tap_only: bool,
     /// The name its Q-Link card shows.
     pub knob: &'static str,
 }
@@ -46,8 +49,14 @@ impl Field {
             warn: false,
             at: Some((at, of)),
             picker: false,
+            tap_only: false,
             knob,
         }
+    }
+
+    pub fn tap_only(mut self) -> Field {
+        self.tap_only = true;
+        self
     }
 
     pub fn off(mut self, enabled: bool) -> Field {
@@ -289,7 +298,7 @@ impl<F: Form> FormSection<F> {
             return IoReply::Ignored;
         };
         match rows[i].fields.get(col) {
-            Some(f) if f.enabled => {
+            Some(f) if f.enabled && !f.tap_only => {
                 let key = rows[i].key.clone();
                 self.step(&key, col, delta)
             }
@@ -732,7 +741,7 @@ impl<F: Form> IoSection for FormSection<F> {
                         0.0
                     }
                 }),
-                enabled: f.enabled,
+                enabled: f.enabled && !f.tap_only,
             },
             None => IoKnob {
                 label: String::new(),
@@ -753,7 +762,7 @@ impl<F: Form> IoSection for FormSection<F> {
         };
         let row = &rows[i];
         match row.fields.get(knob) {
-            Some(f) if f.enabled => {
+            Some(f) if f.enabled && !f.tap_only => {
                 let key = row.key.clone();
                 let d = if fine { detents.signum() } else { detents };
                 self.step(&key, knob, d)

@@ -91,6 +91,8 @@ The Q-Links turn the selected effect's first four knobs, and the data wheel work
 
 The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
+To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
+
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
 ## Macros
