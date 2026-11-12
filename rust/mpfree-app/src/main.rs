@@ -424,6 +424,74 @@ fn load_theme(o: &Options) -> Result<Theme, String> {
     Theme::parse(&text).map_err(|e| format!("{name}: {e}"))
 }
 
+/// The tunings folder's `NAME.scl` scales that parse, in name order (at
+/// most [`synth::MAX_TUNING_FILES`]), each with the keyboard map `NAME.kbm`
+/// when there is one beside it. A scale that doesn't parse, or whose map
+/// doesn't, is left out with a line saying why (the second list, lines for
+/// the log), and so is a map with no scale. Text that isn't UTF-8 (many
+/// published files are Latin-1) is read with its odd characters replaced:
+/// only a description has them. Only reads.
+fn load_tuning_files(store: &mpfree_store::Store) -> (Vec<synth::TuningFile>, Vec<String>) {
+    let (mut found, mut notes) = (Vec::new(), Vec::new());
+    let names = store.list(app::TUNINGS_FOLDER);
+    let read = |file: &str| {
+        store
+            .read(app::TUNINGS_FOLDER, file)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    };
+    for file in &names {
+        if let Some(stem) = file.strip_suffix(".kbm") {
+            if !names.iter().any(|n| n.strip_suffix(".scl") == Some(stem)) {
+                notes.push(format!("tunings: {file} left out: no {stem}.scl beside it"));
+            }
+            continue;
+        }
+        let Some(stem) = file.strip_suffix(".scl").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if found.len() == synth::MAX_TUNING_FILES {
+            notes.push(format!(
+                "tunings: only the first {} tuning files are offered",
+                synth::MAX_TUNING_FILES
+            ));
+            break;
+        }
+        let kbm_name = format!("{stem}.kbm");
+        let kbm = if names.contains(&kbm_name) {
+            match read(&kbm_name) {
+                Some(text) => Some(text),
+                None => {
+                    notes.push(format!(
+                        "tunings: {file} left out: {kbm_name} can't be read"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let Some(scl) = read(file) else {
+            notes.push(format!("tunings: {file} left out: it can't be read"));
+            continue;
+        };
+        match synth::TuningFile::parse(stem, &scl, kbm.as_deref()) {
+            Ok(t) => found.push(t),
+            Err(e) => notes.push(format!("tunings: {file} left out: {e}")),
+        }
+    }
+    if !found.is_empty() {
+        let names: Vec<String> = found
+            .iter()
+            .map(|t| {
+                let kbm = if t.mapped() { ", with its .kbm" } else { "" };
+                format!("{} ({} notes{kbm})", t.name, t.notes())
+            })
+            .collect();
+        notes.push(format!("tunings: found {}", names.join(", ")));
+    }
+    (found, notes)
+}
+
 /// The most theme files the themes folder offers.
 const MAX_THEME_FILES: usize = 32;
 
@@ -2335,11 +2403,10 @@ fn synth_pads_note(synth: &synth::Synth) -> String {
     let pad1 = synth
         .root(0)
         .map_or("no note".to_string(), synth::note_name);
-    let tuning = synth.settings().tuning;
-    let tuning = if tuning == synth::TuningPick::default() {
+    let tuning = if synth.settings().tuning == synth::TuningPick::default() {
         String::new()
     } else {
-        format!(", tuned {}", tuning.label())
+        format!(", tuned {}", synth.tuning_label())
     };
     format!(
         "pads: {} synth, {layout}{}{tuning} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)",
@@ -2518,6 +2585,21 @@ fn player_session(
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
     out.show(gui::ToUi::ThemeFiles(theme_files));
+    // The tunings folder: Scala files the user put in files/tunings/ (read
+    // only), offered on the Synth tab after the built-in tunings. The scales
+    // are read and the keyboard maps worked out here, before the sound
+    // starts.
+    let (tuning_files, notes) = load_tuning_files(&store);
+    for line in notes {
+        out.say(&line);
+    }
+    synth.set_tuning_files(tuning_files);
+    // The menu's list is the synth's, so a pick always names its file.
+    app.tuning_files = synth
+        .tuning_files()
+        .iter()
+        .map(|t| (t.name.clone(), t.mapped()))
+        .collect();
     for line in app.restore(
         &store.settings(app::saved::APP),
         &store.settings(app::saved::MAP),
@@ -4350,6 +4432,69 @@ mod tests {
         );
         let c = mute_colours(MuteKeys::Pads, kit, track, 1 << 4);
         assert_eq!((c[0], c[4], c[12]), (akai::hit_colour(kit[0]), red, [0; 3]));
+    }
+
+    #[test]
+    fn the_tunings_folder_offers_scala_files_that_parse() {
+        let d = std::env::temp_dir().join(format!("mpfree-tunings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let t = d.join("files/tunings");
+        fs::create_dir_all(&t).unwrap();
+        fs::write(d.join("FORMAT"), "mpfree-data 1\n").unwrap();
+        // A Latin-1 description (0xe9 is e acute) still reads.
+        let mut just = b"! just.scl\nJust intonation, by Zarlino \xe9\n12\n".to_vec();
+        just.extend_from_slice(
+            b"16/15\n9/8\n6/5\n5/4\n4/3\n45/32\n3/2\n8/5\n5/3\n9/5\n15/8\n2/1\n",
+        );
+        fs::write(t.join("just.scl"), just).unwrap();
+        fs::write(
+            t.join("dorian.scl"),
+            "Dorian\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n",
+        )
+        .unwrap();
+        fs::write(
+            t.join("dorian.kbm"),
+            "12\n0\n127\n62\n69\n432.0\n7\n0\nx\n1\n2\nx\n3\nx\n4\nx\n5\n6\nx\n",
+        )
+        .unwrap();
+        fs::write(t.join("broken.scl"), "desc\n2\n3/2\n").unwrap();
+        fs::write(
+            t.join("badmap.scl"),
+            "Dorian\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n",
+        )
+        .unwrap();
+        fs::write(t.join("badmap.kbm"), "12\n0\n127\n60\n").unwrap();
+        fs::write(t.join("lonely.kbm"), "0\n0\n127\n60\n69\n440.0\n0\n").unwrap();
+        fs::write(t.join("readme.txt"), "not a tuning\n").unwrap();
+        let store = mpfree_store::Store::at(&d, |_| {});
+        let (found, notes) = load_tuning_files(&store);
+        let names: Vec<(&str, bool)> = found
+            .iter()
+            .map(|t| (t.name.as_str(), t.mapped()))
+            .collect();
+        assert_eq!(names, vec![("dorian", true), ("just", false)]);
+        for want in [
+            "tunings: badmap.scl left out: its .kbm: ",
+            "tunings: broken.scl left out: ",
+            "tunings: lonely.kbm left out: no lonely.scl beside it",
+            "tunings: found dorian (7 notes, with its .kbm), just (12 notes)",
+        ] {
+            assert!(
+                notes.iter().any(|n| n.starts_with(want)),
+                "{want}: {notes:?}"
+            );
+        }
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        // The synth plays them: the map's A4 is 432 Hz.
+        let mut s = synth::Synth::new(44_100);
+        s.set_tuning_files(found);
+        let mut set = s.settings();
+        set.tuning.file = Some(0);
+        s.set_settings(set);
+        assert_eq!(s.tuning_label(), "dorian");
+        // No store, no files.
+        assert!(load_tuning_files(&mpfree_store::Store::none()).0.is_empty());
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
