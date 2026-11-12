@@ -46,6 +46,10 @@
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
 //!                      does) and logs every underrun and late period
 //!   --preview DIR      host only: draws sample screens to new PNG files in DIR
+//!   --display-lists DIR
+//!                      host only: records each sample page's first two frames
+//!                      as display lists, new NAME.mpdl files in DIR (for
+//!                      mpfree-gpu-bench, which times them on the MPC's GPU)
 //!
 //! `--sound-cores shared|core3|two|three` (play and app) picks where the
 //! sound runs for this run, in place of Prefs' saved "Sound cores" (shared
@@ -68,7 +72,8 @@
 //! /run/mpfree-app/report.txt (its own report, in RAM; the workstation tool
 //! copies it into its report). It reads the screen back once with
 //! --keep-screen, and `app` runs `journalctl -f` (read-only) for its console
-//! page. With --preview on the workstation it writes only new PNG files. It
+//! page. With --preview or --display-lists on the workstation it writes only
+//! new PNG or .mpdl files. It
 //! never touches the MPC's storage (the eMMC is hidden from this kernel
 //! anyway). Only with `app --data DIR` does anything survive a power-cycle:
 //! settings and found buttons, saved through mpfree-store under DIR alone.
@@ -147,6 +152,7 @@ struct Options {
     fb: PathBuf,
     sysfs: PathBuf,
     preview: Option<PathBuf>,
+    display_lists: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -172,6 +178,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         fb: PathBuf::from("/dev/fb0"),
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
+        display_lists: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -213,6 +220,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--fb" => o.fb = PathBuf::from(value()?),
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
+            "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -230,7 +238,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
-    if o.preview.is_none() && o.command.is_empty() {
+    if o.preview.is_none() && o.display_lists.is_none() && o.command.is_empty() {
         return Err(
             "usage: mpfree inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
                 .to_string(),
@@ -4366,11 +4374,57 @@ fn preview(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Each sample page's first two frames as display lists (mpfree_ui::record's
+/// wire format), one new NAME.mpdl file per page: the page as first drawn,
+/// then what it redraws a tick (33 ms) later. mpfree-gpu-bench plays them on
+/// the MPC's GPU and in software. No devices are opened; it writes only new
+/// files.
+fn display_lists(o: &Options) -> Result<(), String> {
+    let dir = o.display_lists.as_ref().unwrap();
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    let theme = load_theme(o)?;
+    fonts()?;
+    let mut pages = 0;
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        p.ui.set_theme(theme.clone());
+        let (w, h) = p.ui.size();
+        let mut rec = mpfree_ui::record::Recorder::new(w, h);
+        let mut bytes = Vec::new();
+        rec.begin_frame();
+        p.ui.paint(&mut rec);
+        rec.encode_frame(&mut bytes);
+        p.tick(0.033);
+        rec.begin_frame();
+        p.ui.paint(&mut rec);
+        rec.encode_frame(&mut bytes);
+        let path = dir.join(format!("{name}.mpdl"));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(&bytes))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        pages += 1;
+    }
+    println!("display lists written: {pages} pages in {}", dir.display());
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
         if o.preview.is_some() {
             return preview(&o);
+        }
+        if o.display_lists.is_some() {
+            return display_lists(&o);
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
