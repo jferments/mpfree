@@ -49,7 +49,6 @@ static int v19_read_vendor_string(char *dst,size_t n,uintptr_t literal) {
 static int v19_pointer_return(unsigned slot,uintptr_t fake_ptr){
     if(slot>=slots)return 0;
     uintptr_t at=TRAMP+(uintptr_t)64*slot;
-    if(fake_ptr>0xffffffffu)return 0;
     write16(at+8,0x4803);
     write32(at+24,(uint32_t)fake_ptr);
     return 1;
@@ -69,12 +68,11 @@ static int v19_getvar(const char *name){
     snprintf((char*)text,128,"getvar:%s",key);
     memset((void*)desc,0,80);write32(desc,(uint32_t)text);
 
-    unsigned response=0,env=0,persist=0,command=0,log=0;
+    unsigned response=0,env=0,persist=0,command=0;
     if(!intercept(RESPONSE,0,&response) ||
        !intercept(V19_ENV_GETTER,0,&env) ||
        !intercept(0x0010b74cu,0,&persist) ||
-       !intercept(0x00110484u,0,&command) ||
-       !intercept(0x00100ef0u,0,&log))
+       !intercept(0x00110484u,0,&command))
         return 4;
 
     /* The fifth getvar key calls the real U-Boot environment lookup. In V18
