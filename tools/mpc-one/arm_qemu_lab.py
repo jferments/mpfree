@@ -95,6 +95,8 @@ def main():
     group=p.add_mutually_exclusive_group()
     group.add_argument('--prepare',action='store_true')
     group.add_argument('--launch',action='store_true',help='Explicitly start QEMU ARM system with disposable disk')
+    group.add_argument('--launch-ephemeral',action='store_true',
+                       help='Boot with a further temporary QEMU snapshot; discard ALL guest writes on exit')
     p.add_argument('--rootfs',type=Path,default=DEFAULT_ROOT)
     p.add_argument('--kernel',type=Path,default=KERNEL)
     args=p.parse_args()
@@ -102,10 +104,14 @@ def main():
         print(json.dumps(prepare(args.rootfs),indent=2))
         print('No QEMU boot performed; cloned disk only.')
         return
-    if args.launch:
+    if args.launch or args.launch_ephemeral:
         if not shutil.which('qemu-system-arm'):p.error('Missing qemu-system-arm; install qemu-system-arm')
         cmd=qemu_args(args.kernel)
+        if args.launch_ephemeral:
+            cmd.insert(1,'-snapshot')
         print('Launching QEMU ARM virt: no network or host physical device. Ctrl-C exits.',flush=True)
+        if args.launch_ephemeral:
+            print('Ephemeral snapshot: guest changes discarded at QEMU exit, even the lab qcow2 stays untouched.',flush=True)
         print('First boot uses init=/bin/sh; no Akai services started.',flush=True)
         os.execvp(cmd[0],cmd)
     report={'qemu-system-arm':shutil.which('qemu-system-arm'),
@@ -114,5 +120,5 @@ def main():
             'existing_preflight_overlay':(WORK/'mpc-310.qcow2').is_file(),
             'no_changes_made':True}
     print(json.dumps(report,indent=2))
-    print('Use --prepare once, then build the ARM kernel, then --launch.')
+    print('Use --prepare once, build the ARM kernel, then --launch-ephemeral (recommended) or --launch.')
 if __name__=='__main__':main()
