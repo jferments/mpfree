@@ -23,7 +23,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Plugins: the CLAP host](project/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
 - [Wavetable synth](project/wavetable.md): the third native synth: table oscillators scanned by Position, warps, band-limited tables, factory tables, WAV and sample import, memory and device cost estimates (`rust/mpfree-synth`, 2026-11-11).
 - [Concurrency](project/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
-- [Offload](project/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, and `mpfree-offload measure` (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
+- [Offload](project/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, `mpfree-offload measure`, and the offloaded node that falls back to a local Eco stand-in when the link drops (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
 
 ## Decisions
 
