@@ -1060,10 +1060,8 @@ impl TimeHost {
 
     /// FILL on or off from `offset` in the coming period: notes with the
     /// FILL and !FILL trig conditions follow it from that frame on. For
-    /// the FILL button (hold for a fill, double-press to latch).
-    // No button is mapped to FILL yet: the pad player picks one under the
-    // layout rules.
-    #[allow(dead_code)]
+    /// the FILL button (hold for a fill, double-press to latch): PLAY
+    /// while the transport plays (control map decision 9).
     pub fn set_fill(&mut self, on: bool, offset: u32) {
         self.player.set_fill(on, offset);
     }

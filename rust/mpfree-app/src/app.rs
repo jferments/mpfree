@@ -239,6 +239,17 @@ impl Curve {
     }
 }
 
+/// FILL (control map decision 9, Jay 20:54Z): PLAY held while the
+/// transport plays, or pressed twice to latch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fill {
+    Off,
+    /// While PLAY is held.
+    Held,
+    /// Until PLAY is pressed again, or STOP.
+    Latched,
+}
+
 /// FULL LEVEL (every hit 127) and Half Level (every hit 64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadLevel {
@@ -750,6 +761,9 @@ pub enum Effect {
     ProgEdit,
     /// SHIFT + PLAY START: the metronome on or off.
     Metronome,
+    /// FILL on or off from the coming period: notes with the FILL and
+    /// !FILL trig conditions follow it.
+    Fill(bool),
 }
 
 pub struct App {
@@ -778,6 +792,10 @@ pub struct App {
     repeat_pressed_at: Option<f64>,
     latched: bool,
     pad_level: PadLevel,
+    fill: Fill,
+    /// When PLAY was last pressed while the transport played, for the
+    /// double press that latches FILL.
+    play_pressed_at: Option<f64>,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -914,6 +932,8 @@ impl App {
             repeat_pressed_at: None,
             latched: false,
             pad_level: PadLevel::Off,
+            fill: Fill::Off,
+            play_pressed_at: None,
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
@@ -971,10 +991,19 @@ impl App {
         self.view
     }
 
-    /// Whether the transport is rolling, for STOP (the audio loop tells it
-    /// each period).
+    /// Whether the transport is rolling, for STOP and FILL (the audio loop
+    /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// FILL let go, if it was on.
+    fn fill_off(&mut self) -> Option<Effect> {
+        if self.fill == Fill::Off {
+            return None;
+        }
+        self.fill = Fill::Off;
+        Some(Effect::Fill(false))
     }
 
     /// The first page once everything is ready, and the lights to start with.
@@ -1207,6 +1236,10 @@ impl App {
                 self.repeat_held = false;
                 fx.extend(self.arp_changed());
             }
+            if note == button::PLAY && self.fill == Fill::Held {
+                self.fill = Fill::Off;
+                fx.push(Effect::Fill(false));
+            }
             return fx;
         }
         if self.view == View::Guide {
@@ -1236,6 +1269,7 @@ impl App {
                 PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
             }));
         } else if note == button::STOP {
+            fx.extend(self.fill_off());
             if self.timed {
                 fx.push(Effect::Quit);
             } else if shift {
@@ -1257,7 +1291,22 @@ impl App {
                 // Stopped already: the transport goes back to bar 1.
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY && self.rolling {
+            // FILL while held; pressed twice, latched; pressed again, off.
+            let double = self
+                .play_pressed_at
+                .is_some_and(|at| t - at <= DOUBLE_PRESS_SECONDS);
+            self.play_pressed_at = (!double).then_some(t);
+            let (fill, line) = match self.fill {
+                Fill::Latched => (Fill::Off, "FILL off"),
+                _ if double => (Fill::Latched, "FILL latched (PLAY again: off)"),
+                _ => (Fill::Held, "FILL while PLAY is held (twice: latch)"),
+            };
+            self.fill = fill;
+            fx.push(Effect::Fill(fill != Fill::Off));
+            fx.push(Effect::Note(line.to_string()));
         } else if note == button::PLAY {
+            fx.extend(self.fill_off());
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start && shift {
@@ -4234,6 +4283,44 @@ mod tests {
             app.tick(20.9),
             Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF))
         );
+    }
+
+    #[test]
+    fn play_held_while_rolling_is_a_fill_and_twice_latches_it() {
+        let mut app = ready();
+        // Stopped, PLAY plays.
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            vec![Effect::Time(TimeAction::Transport(Command::Play))]
+        );
+        app.set_rolling(true);
+        let fills = |fx: &[Effect]| {
+            fx.iter()
+                .filter_map(|e| match e {
+                    Effect::Fill(on) => Some(*on),
+                    _ => None,
+                })
+                .collect::<Vec<bool>>()
+        };
+        // Held: a fill until PLAY lifts.
+        let fx = app.button(button::PLAY, true, 10.0);
+        assert_eq!(fills(&fx), [true]);
+        assert!(!fx.contains(&Effect::Time(TimeAction::Transport(Command::Play))));
+        assert_eq!(app.button(button::PLAY, false, 10.1), [Effect::Fill(false)]);
+        // Pressed again at once: latched, and the lift leaves it on.
+        assert_eq!(fills(&app.button(button::PLAY, true, 10.3)), [true]);
+        assert!(app.button(button::PLAY, false, 10.4).is_empty());
+        // Once more: off.
+        assert_eq!(fills(&app.button(button::PLAY, true, 12.0)), [false]);
+        assert!(app.button(button::PLAY, false, 12.1).is_empty());
+        // Latched, STOP lets it go with the transport.
+        app.button(button::PLAY, true, 20.0);
+        app.button(button::PLAY, false, 20.1);
+        app.button(button::PLAY, true, 20.2);
+        app.button(button::PLAY, false, 20.3);
+        let fx = app.button(button::STOP, true, 21.0);
+        assert_eq!(fills(&fx), [false]);
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
     }
 
     #[test]

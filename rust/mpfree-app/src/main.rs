@@ -84,7 +84,6 @@ mod mixing;
 mod modmix;
 mod modpanels;
 mod perf;
-mod perform;
 mod play_page;
 mod play_widgets;
 #[cfg(test)]
@@ -3076,6 +3075,7 @@ fn player_session(
                         later.extend(app.open_tab(app::View::Sample));
                     }
                 }
+                app::Effect::Fill(on) => time.set_fill(on, 0),
                 app::Effect::Metronome => {
                     time.metronome = !time.metronome;
                     out.note(&format!(

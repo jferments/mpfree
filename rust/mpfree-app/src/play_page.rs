@@ -360,7 +360,7 @@ pub const THROW_LIST: [ThrowDef; 8] = [
     },
     ThrowDef {
         name: "Reverb wash",
-        sub: "hall, 4 s",
+        sub: "long, dark",
         color: draw::KNOB[3],
         fx: Some(ThrowFx::Reverb),
     },
@@ -449,7 +449,9 @@ pub struct PlayPage {
     pub transport: TransportInfo,
     hits: VecDeque<HitInfo>,
     pub throws: [bool; 8],
-    pub xy: (f32, f32, bool),
+    /// The XY pad's logic: the Perform FX pad (the DJ filter across, the
+    /// echo up), gliding home when the finger lifts.
+    pub xy: mpfree_fx::XyPad,
 }
 
 impl Default for PlayPage {
@@ -468,14 +470,14 @@ impl Default for PlayPage {
                 line_db: 0.0,
                 drums_filter: 0.0,
                 loop_filter: 0.0,
-                fx_mix: 0.35,
+                fx_mix: 1.0,
                 pad_mutes: 0,
             },
             turned_at: None,
             transport: TransportInfo::default(),
             hits: VecDeque::new(),
             throws: [false; 8],
-            xy: (0.5, 0.3, false),
+            xy: mpfree_fx::XyPad::perform(),
         }
     }
 }
@@ -687,7 +689,7 @@ impl PlayPage {
                 &db_text(l.line_db),
                 ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
             ),
-            Knob::FxMix => QLinkCard::new("FX mix", "XY", &pct(l.fx_mix), l.fx_mix),
+            Knob::FxMix => QLinkCard::new("FX mix", "Throws + XY", &pct(l.fx_mix), l.fx_mix),
             Knob::Velocity | Knob::Length | Knob::Nudge | Knob::Chance => {
                 let Some((pad, i, s)) = self.selected_step() else {
                     return QLinkCard::default();
@@ -1075,18 +1077,35 @@ impl PlayPage {
         })
     }
 
-    /// The XY pad moved, or let go.
+    /// The XY pad moved, or let go (it then glides home: [`PlayPage::tick_xy`]).
     pub fn xy(&mut self, x: f32, y: f32, down: bool) -> PlayFx {
-        self.xy = (x, y, down);
+        if down {
+            self.xy.touch(x, y);
+        } else {
+            self.xy.release();
+        }
+        let (x, y) = self.xy.position();
         PlayFx::Xy { x, y, down }
     }
 
+    /// The XY pad's glide home, `ms` on: where it is now, while it moves.
+    pub fn tick_xy(&mut self, ms: f32) -> Option<PlayFx> {
+        self.xy.tick(ms).then(|| {
+            let (x, y) = self.xy.position();
+            PlayFx::Xy { x, y, down: false }
+        })
+    }
+
+    /// The XY pad's label ("LP 1.2 kHz · echo 40 %") and, with no finger
+    /// on it, where its dot is.
     pub fn fill_xy(&self, p: &mut XyPad) {
-        let (x, y, _) = self.xy;
-        let (hz, feedback) = mixing::xy_meaning(x, y);
-        let label = format!("{} · {:.0} %", hz_text(hz), feedback * 100.0);
+        let [(_, dj), (_, echo)] = self.xy.values();
+        let label = format!("{} · echo {echo:.0} %", filter_text(dj));
         if p.label != label {
             p.label = label;
+        }
+        if !self.xy.touched() {
+            (p.x, p.y) = self.xy.position();
         }
     }
 
@@ -1214,6 +1233,36 @@ fn decay_text(ms: f32) -> String {
 mod tests {
     use super::*;
     use mpfree_ui::layout;
+
+    #[test]
+    fn the_xy_pad_plays_the_dj_filter_and_echo_and_glides_home() {
+        let mut p = PlayPage::default();
+        let mut w = XyPad::default();
+        p.fill_xy(&mut w);
+        assert_eq!((w.label.as_str(), w.x, w.y), ("Off · echo 0 %", 0.5, 0.0));
+        assert_eq!(
+            p.xy(0.0, 1.0, true),
+            PlayFx::Xy {
+                x: 0.0,
+                y: 1.0,
+                down: true
+            }
+        );
+        p.fill_xy(&mut w);
+        assert_eq!(w.label, "LP 80 Hz · echo 100 %");
+        assert_eq!(p.tick_xy(16.0), None, "a finger holds it");
+        p.xy(0.0, 1.0, false);
+        let mut moves = 0;
+        while let Some(fx) = p.tick_xy(16.0) {
+            assert!(matches!(fx, PlayFx::Xy { down: false, .. }), "{fx:?}");
+            moves += 1;
+            assert!(moves < 100, "it lands");
+        }
+        assert!(moves > 3, "it glides");
+        assert_eq!(p.xy.position(), (0.5, 0.0));
+        p.fill_xy(&mut w);
+        assert_eq!((w.label.as_str(), w.x, w.y), ("Off · echo 0 %", 0.5, 0.0));
+    }
 
     fn slots(spec: &str) -> Vec<(String, Rect)> {
         layout::solve(

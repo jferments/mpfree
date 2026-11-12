@@ -23,9 +23,10 @@
 //!
 //! The Play page's effects are inserts from the start ([`PlayFx`]): a DJ
 //! filter on the Drums and Loop tracks (the Filter Q-Links), a 1/8 dotted
-//! delay on Return A (the Delay send Q-Links send to it), and the throws
-//! and XY pad (`perform.rs`) on the master, before Master safety. Each
-//! rests (costs next to nothing) until it is used.
+//! delay on Return A (the Delay send Q-Links send to it), and Perform FX
+//! (`mpfree_fx::Perform`) on the master, before Master safety: the throws
+//! hold its pads, the XY pad plays its DJ filter and echo, and the FX mix
+//! Q-Link is its Mix. Each rests (costs next to nothing) until it is used.
 //!
 //! Parameter locks: the clips' locks on strip controls and inserts go
 //! through the mod engine ([`MixHost::lock`], `modmix.rs`), and once a
@@ -52,8 +53,8 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
-use crate::perform::ids as perf;
 use crate::PERIOD;
+use mpfree_fx::ids::perform as perf;
 
 /// The tracks: what each engine plays into.
 pub const DRUMS: usize = 0;
@@ -122,12 +123,6 @@ pub enum PlayFx {
     FxMix(f32),
 }
 
-/// What the XY pad at (x, y) does, for its label: the sweep filter's
-/// cutoff, Hz, and the delay's feedback, 0 to 1.
-pub fn xy_meaning(x: f32, y: f32) -> (f32, f32) {
-    (crate::perform::xy_cutoff(x), crate::perform::xy_feedback(y))
-}
-
 /// The performance effects a throw holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThrowFx {
@@ -138,6 +133,23 @@ pub enum ThrowFx {
     FilterDip,
     BeatRepeat,
     VinylBrake,
+}
+
+impl ThrowFx {
+    /// The Perform FX pad (0 to 15) that plays it, in the default bank:
+    /// Stutter 1/16, Tape stop 1/4, Vinyl brake 1/2, Echo throw 1/8 dotted,
+    /// LP sweep 1 bar, Beat repeat 1/4 and Wash throw.
+    pub fn pad(self) -> usize {
+        match self {
+            ThrowFx::Stutter => 0,
+            ThrowFx::TapeStop => 2,
+            ThrowFx::VinylBrake => 3,
+            ThrowFx::Delay => 9,
+            ThrowFx::FilterDip => 10,
+            ThrowFx::BeatRepeat => 14,
+            ThrowFx::Reverb => 15,
+        }
+    }
 }
 
 /// A period of stereo sound.
@@ -200,7 +212,7 @@ impl MixHost {
             (StripId::Track(DRUMS), Box::new(DjFilter::new())),
             (StripId::Track(LOOP), Box::new(DjFilter::new())),
             (ret, Box::new(echo)),
-            (StripId::Master, Box::new(crate::perform::PerformFx::new())),
+            (StripId::Master, Box::new(mpfree_fx::Perform::new())),
         ];
         for (strip, node) in inserts {
             let insert = Insert::new(node, rate, PERIOD);
@@ -239,34 +251,28 @@ impl MixHost {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
             }
             PlayFx::Throw { fx, down } => {
-                let id = match fx {
-                    ThrowFx::Delay => perf::DELAY_THROW,
-                    ThrowFx::Reverb => perf::REVERB_WASH,
-                    ThrowFx::Stutter => perf::STUTTER,
-                    ThrowFx::TapeStop => perf::TAPE_STOP,
-                    ThrowFx::FilterDip => perf::FILTER_DIP,
-                    ThrowFx::BeatRepeat => perf::BEAT_REPEAT,
-                    ThrowFx::VinylBrake => perf::VINYL_BRAKE,
-                };
+                // The throw holds its Perform FX pad (the default bank's,
+                // as the FX thread laid it out for the throws).
                 self.insert(
                     StripId::Master,
                     PERFORM_SLOT,
-                    id,
+                    perf::hold(fx.pad()),
                     if down { 1.0 } else { 0.0 },
                 );
             }
-            PlayFx::Xy { x, y, down } => {
-                self.insert(StripId::Master, PERFORM_SLOT, perf::XY_X, x);
-                self.insert(StripId::Master, PERFORM_SLOT, perf::XY_Y, y);
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::XY_ON,
-                    if down { 1.0 } else { 0.0 },
-                );
+            PlayFx::Xy { x, y, .. } => {
+                let pad = mpfree_fx::XyPad::perform();
+                for (axis, pos) in [(pad.x, x), (pad.y, y)] {
+                    self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+                }
             }
             PlayFx::FxMix(mix) => {
-                self.insert(StripId::Master, PERFORM_SLOT, perf::FX_MIX, mix);
+                self.insert(
+                    StripId::Master,
+                    PERFORM_SLOT,
+                    perf::MIX,
+                    100.0 * mix.clamp(0.0, 1.0),
+                );
             }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
                 if mute {
@@ -354,7 +360,7 @@ impl MixHost {
             line_db: m.param(LINE, mx::VOLUME),
             drums_filter: insert(StripId::Track(DRUMS), FILTER_SLOT, dj_filter::POSITION),
             loop_filter: insert(StripId::Track(LOOP), FILTER_SLOT, dj_filter::POSITION),
-            fx_mix: insert(StripId::Master, PERFORM_SLOT, perf::FX_MIX),
+            fx_mix: insert(StripId::Master, PERFORM_SLOT, perf::MIX) / 100.0,
             pad_mutes: self.pad_mutes,
         }
     }
@@ -841,6 +847,67 @@ mod tests {
         });
         let (peak, _) = run(&mut h, 200, 0.5, 0.0);
         assert!((0.49..0.51).contains(&peak), "{peak}");
+    }
+
+    #[test]
+    fn the_throws_and_the_xy_pad_play_perform_fx() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let perform = |h: &MixHost, id: u16| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(id))
+        };
+        // The inserts go in once each strip has ducked out (about 10 ms).
+        run(&mut h, 10, 0.0, 0.0);
+        assert_eq!(h.mixer.edits_pending(), 0);
+        assert_eq!(perform(&h, perf::MIX), Some(100.0));
+        assert_eq!(h.play_levels().fx_mix, 1.0);
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: true,
+        });
+        h.play(PlayFx::Xy {
+            x: 0.0,
+            y: 1.0,
+            down: true,
+        });
+        h.play(PlayFx::FxMix(0.5));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(
+            perform(&h, perf::hold(9)),
+            Some(1.0),
+            "the echo throw's pad"
+        );
+        assert_eq!(perform(&h, perf::DJ_FILTER), Some(-100.0), "low-pass");
+        assert_eq!(perform(&h, perf::ECHO), Some(100.0));
+        assert_eq!(h.play_levels().fx_mix, 0.5);
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: false,
+        });
+        h.play(PlayFx::Xy {
+            x: 0.5,
+            y: 0.0,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(perform(&h, perf::hold(9)), Some(0.0));
+        assert_eq!(perform(&h, perf::DJ_FILTER), Some(0.0), "off in the middle");
+        // Each throw holds a pad of its own.
+        let all = [
+            ThrowFx::Delay,
+            ThrowFx::Reverb,
+            ThrowFx::Stutter,
+            ThrowFx::TapeStop,
+            ThrowFx::FilterDip,
+            ThrowFx::BeatRepeat,
+            ThrowFx::VinylBrake,
+        ];
+        let mut pads: Vec<usize> = all.iter().map(|t| t.pad()).collect();
+        pads.sort_unstable();
+        pads.dedup();
+        assert_eq!(pads.len(), all.len());
     }
 
     #[test]

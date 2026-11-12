@@ -63,7 +63,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
   - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
 - **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
 - **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). A speaker beside each name mutes that layer.
-- **Throws and the XY pad** play performance effects on the master while held; Drop drums mutes the kick, snare and hat pads while held.
+- **Throws and the XY pad** play Perform FX (`mpfree_fx::Perform`) on the master while held: each throw holds a pad of its default bank (Delay throw the 1/8 dotted echo throw, Reverb wash the wash throw, Filter dip the 1-bar low-pass sweep), entering on the next 1/16 while the transport plays; the XY pad plays its DJ filter across (low-pass left, off in the middle, high-pass right) and its echo up, and glides home when the finger lifts; the FX mix Q-Link is its Mix (round 10); Drop drums mutes the kick, snare and hat pads while held.
 - **The mini pads** have a heading: "Pads · Bank A" and the kit (the Drum view: how hits play, "velocity on"). While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
 - **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
 - **The header** keeps to the CPU and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
@@ -71,7 +71,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
 - **Macro banks:** Q-LINK steps the Q-Link column to Macros 1-4, then Macros 5-8, then back to the view's own knobs; Play keeps its bank while other pages show. A finger held on a macro card opens the macros panel (section 4b).
-- **Still to come:** half length and double on the loop strip (looper edit tools, #122); the FX thread's Perform engine in place of the stand-in (#116 merged; the swap is in round 9's queue).
+- **Still to come:** half length and double on the loop strip (the looper's edit tools, which the Looper tab has since round 10).
 
 ## 4a. The Looper tab
 
@@ -135,6 +135,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
 - **SHIFT + REC:** Capture, on every page.
 - **SHIFT + PLAY START:** the metronome on or off.
+- **PLAY while the transport plays:** FILL while it is held (notes with the FILL and !FILL trig conditions follow it); pressed twice, FILL stays latched until PLAY is pressed again or STOP (Jay, 20:54Z, control map decision 9). Stopped, PLAY plays.
 - **The mode buttons** go to the page with the same job (Jay, 20:40Z; the control map doc, https://claude.ai/artifact/CzSwDDjX1Ngc7LkhXP4KqD):
   - MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
   - STEP SEQ: Play's Beats view.
@@ -145,7 +146,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
   - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
 - **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
-- **Still to come from the control map:** FILL (hold PLAY while the transport plays; double-press latches) when the trig conditions land; TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
+- **Still to come from the control map:** TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
 
 ## 7. How changes happen
 
@@ -165,7 +166,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - an effect's page (title, drawings, tiles, presets, its own Q-Link strip) opens over the current page under the top bar, with Back, as the mixer does: from a tap on the selected insert's name in the chain editor, and from a mixer return or master strip's insert row;
   - the Perform FX page (16 pads with lights, the XY pad with Hold, the selected pad's settings) opens the same way from the Perform FX insert on the master; its pads and XY view can also sit in a Play view;
   - the DJ knob is Q-Link 1 on that page (it stops at the middle on the way through), and can be a Play Q-Link too.
-  - **The app thread proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad move onto the Perform engine when #116 merges, with no layout change.
+  - **The app thread proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad are on the Perform engine since round 10, with no layout change.
 
 ## Where things stand (2026-11-11 08:10Z)
 
