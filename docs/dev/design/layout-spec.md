@@ -133,6 +133,16 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 
   They go before System info when built, and Touch screen stays last.
 
+## 4d. MIDI
+
+**Agreed by Jay on 12 Nov 2026** (08:23Z "go for it" on the MIDI thread's mockups, https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ, and the design doc's decisions, https://claude.ai/artifact/RxdZ76ve5hE5VptdkU3JMo; 08:26Z "I agree with all of your other recommendations"). The MIDI thread builds it.
+
+- **The tempo chip** reads "120.0 from MIDI In", with a green dot, while the tempo follows an outside clock.
+- **A track's settings on Arrange:** Instrument gains "External MIDI", with one "Plays on" field that holds the port and the channel together. Under the track name it says "MIDI Out · ch 1", or "Sends nothing: no port" in the warn colour. There is one MIDI output setting per track, never two look-alike settings (Jay, 12 Nov 07:00Z).
+- **Dev's MIDI log page** gains port and kind filters, and Clock, Timing and Counts panels.
+- **MIDI Learn:** SHIFT + a touch on a value. It takes values only: SHIFT + drag on an audio region and SHIFT + swipe on a take lane keep their jobs (section 4c).
+- **Where the MIDI, sync and CV settings live** is still open (below): Jay wants them saved per project, not in Prefs.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**
@@ -193,6 +203,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 
 ## Proposed, waiting for Jay (not part of the spec yet)
 
+- **Where the MIDI, sync and CV settings go** (MIDI thread, 12 Nov 08:26Z). Jay: they are project settings, so not on the Prefs page, perhaps in one routing view for audio, MIDI and CV. The MIDI thread recommends an I/O view in the mixer (audio ins and outs, MIDI ports, clock, CV, saved with the project), opened at Sync by a tap on the tempo chip; the other choices are a MIDI panel from the tempo chip, or a Routing tab. Facts about the rig (CV tuning, port names, delays) stay in Prefs. Waiting for Jay's pick.
 - **Pressure ring on the screen's pad tiles** (synth thread, 08:53Z, poly aftertouch design part 7): a thin ring showing each pad's shaped pressure.
 - **Scales on the synth pads** (arp thread; design https://claude.ai/artifact/DceFbX4jtupvJUT4759ZBZ). **Approved by Jay 09:55Z:** the pads are chromatic by default (the scale's notes lit once one is picked), and one simple, direct action switches them to In key and back (Jay likes how the Hydrasynth does it). In key fills the rows in sequence by default, with "a fourth apart" as the other choice. While the synth is on the pads, PAD BANK A to H hold a pad layout per bank (approved for now, to discuss later). Chord pads: triads on the bottom two rows, sevenths on the top two. **Jay 12:22Z (card):** the switch is a Chromatic | In key chip in the pads panel header, on the Play page and on the Synth tab; one tap switches the bank playing, and the status chip reads "Poly · A minor · in key". SHIFT + PAD BANK stays banks E to H.
 - **SHIFT + REC = Capture on every page** (time thread, 09:35Z, as the sequencer plan had it; patch shift-rec-capture-17e5961.patch). Without it, Capture works from the Takes panel's button on Arrange (#80).
