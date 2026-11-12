@@ -51,8 +51,10 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 - MPFree keeps only the movement that matters: a change of two steps or more right away, a small change once it has lasted a moment (10 ms). A finger's tiny wobble isn't kept, so clips stay light.
 - The clip keeps the raw pressure, and each sound decides what pressure does. Change a sound's pressure curve and the clip plays back through the new one.
 - Splitting a note in the note editor keeps its pressure on the first part only.
-- Turn **Pressure** to **Off** for a track that shouldn't record it, for example drums you want to stay steady.
-- Coming: seeing and editing pressure in the note editor, and Capture keeping it.
+- The note editor shows it: a note you leaned into has a lighter shape along its bottom, as high as you pressed (see [Editing notes](#editing-notes)).
+- Capture keeps it too, and the song plays it wherever a clip is placed.
+- Turn **Pressure** to **Off** for a track that shouldn't record it, for example drums you want to stay steady. Capture leaves it out on that track too.
+- Coming: editing pressure in the note editor.
 
 ## Takes
 
@@ -66,6 +68,7 @@ MPFree is always listening to the pads. Capture keeps your **last phrase**: ever
 
 - If you played it in time over a clip that was playing, the notes go into that clip.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
+- It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
 
 UNDO takes a capture back like any other take.
 
@@ -80,9 +83,9 @@ The pattern on the Play page's **Beats** view is a clip shown as a grid of steps
 
 The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. Tap **Edit ›** above the clip grid. It opens the clip the Play page's steps show, which is the armed track's playing clip, or its first clip.
 
-{{shot: arrange-notes | The note editor's piano roll, with the melody picked and the Edit options beside it.}}
+{{shot: arrange-notes | The note editor's piano roll, with the melody picked and the Edit options beside it. Two long melody notes show the pressure they were played with.}}
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, the velocity lane shows how hard each note plays.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, the velocity lane shows how hard each note plays. A note played with [pad pressure](#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 - **Pick notes.** Tap a note to pick it. **All** picks every note, and **None** lets them go.
 - **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. Moves land on the snap's lines (**Snap**, 1/16 to begin with).

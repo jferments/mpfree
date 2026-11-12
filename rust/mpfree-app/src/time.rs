@@ -43,10 +43,11 @@
 //! move log keeps them always, so CAPTURE keeps the moves made over its
 //! phrase too.
 //!
-//! Every pad note also goes into the capture history, so CAPTURE
-//! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
-//! last phrase in the armed track even when nothing was recording, as an
-//! undoable take (`mpfree-capture`).
+//! Every pad note, and its pressure, also goes into the capture history,
+//! so CAPTURE ([`TimeAction::Capture`]: the Arrange page's Capture button)
+//! keeps the last phrase in the armed track even when nothing was
+//! recording, as an undoable take (`mpfree-capture`). A track that leaves
+//! pressure out (`Track::record_touch` off) keeps the notes without it.
 //!
 //! Edits (launches, takes, arming, a capture) compile a new play view on
 //! the control half, which sends it boxed; the audio half swaps it in and
@@ -566,9 +567,10 @@ impl TimeHost {
 
     /// Pad `pad`'s pressure (0 to 127, raw) in the coming period, at
     /// `offset`: recorded onto the pad's held note while the armed track
-    /// records and records pressure (`Track::record_touch`). The pads'
-    /// notes go in through [`TimeHost::pad`] or [`TimeHost::pad_pressed`]
-    /// first, so a value on their offset comes after them.
+    /// records and records pressure (`Track::record_touch`), and kept on
+    /// it in the capture history always. The pads' notes go in through
+    /// [`TimeHost::pad`] or [`TimeHost::pad_pressed`] first, so a value on
+    /// their offset comes after them.
     pub fn pad_pressure(&mut self, offset: u32, pad: u8, value: u8) {
         self.audio.pad_pressure(offset, pad, value);
     }
@@ -2027,6 +2029,85 @@ mod tests {
         );
         assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Pad pressure played without recording goes on its note when
+    /// CAPTURE keeps it, and plays back with it; a track that leaves
+    /// pressure out keeps the note without it.
+    #[test]
+    fn capture_keeps_the_pressure_played_on_its_notes() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        // Pad 5 held over bar 2, squeezed harder then let up. The same
+        // value twice is one; a value after letting go is no one's.
+        let (on, off) = (BAR + 1_000, BAR + 30_000);
+        let squeeze = [
+            (BAR + 2_000, 40u8),
+            (BAR + 2_100, 40),
+            (BAR + 10_000, 90),
+            (BAR + 20_000, 20),
+            (BAR + 40_000, 60),
+        ];
+        while pads.frame < 2 * BAR + BAR / 2 {
+            let end = pads.frame + u64::from(PERIOD);
+            let here = |at: u64| {
+                (pads.frame..end)
+                    .contains(&at)
+                    .then(|| (at - pads.frame) as u32)
+            };
+            if let Some(o) = here(on) {
+                let event = Event::NoteOn {
+                    note: 5,
+                    velocity: 100,
+                };
+                h.pad(o, event);
+            }
+            for &(at, value) in &squeeze {
+                if let Some(o) = here(at) {
+                    h.pad_pressure(o, 5, value);
+                }
+            }
+            if let Some(o) = here(off) {
+                h.pad(o, Event::NoteOff { note: 5 });
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert!(pads.pressure.is_empty(), "nothing played back yet");
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes with 3 pressure values, 1 bar, new clip in slot 1 of Track 1"
+        );
+        let clip = h.control.project.clip(0, 0).unwrap();
+        let kept: Vec<(u32, u8)> = clip
+            .touch_of(&clip.notes[0])
+            .iter()
+            .map(|p| (p.at, p.value))
+            .collect();
+        // Timed from the note's start, in ticks (23 frames a tick).
+        let tick = |frames: u64| (frames as f64 * 1920.0 / f64::from(RATE)).round() as u32;
+        assert_eq!(
+            kept,
+            [(tick(1_000), 40), (tick(9_000), 90), (tick(19_000), 20)]
+        );
+        // It plays on in its place, with its pressure, every bar.
+        run(&mut h, &mut pads, 4 * BAR, &[]);
+        let back: Vec<(usize, u8)> = pads.pressure.iter().map(|p| (p.1, p.2)).collect();
+        assert_eq!(back, [(5, 40), (5, 90), (5, 20)]);
+        assert!(pads.pressure[0].0.abs_diff(3 * BAR + 2_000) <= 23);
+        // Undone, then kept by a track that leaves pressure out.
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        h.act(TimeAction::RecordPressure {
+            track: 0,
+            on: false,
+        })
+        .unwrap();
+        let line = h.act(TimeAction::Capture).unwrap();
+        assert!(line.contains(": 1 notes, 1 bar"), "{line}");
+        let clip = h.control.project.clip(0, 0).unwrap();
+        assert!(clip.touch.is_empty() && clip.notes[0].touch.is_none());
+        assert_eq!((h.dropped(), h.touch_dropped()), (0, 0));
     }
 
     /// Recording puts each note into the clip and the play view in place:

@@ -1223,11 +1223,24 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         Lens::Tracker => format!("tracker · {} steps", step_name(step)),
     };
     g.legend = format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel);
+    // Each note with its pressure: only the runs the notes name (the
+    // clip keeps the runs of notes taken out too, for undo).
     g.notes = c
         .notes
         .iter()
         .enumerate()
-        .map(|(i, n)| NoteBox::of(n, selected(i)))
+        .map(|(i, n)| {
+            let mut b = NoteBox::of(n, selected(i));
+            let run = c.touch_of(n);
+            if !run.is_empty() {
+                b.touch = mpfree_seq::Touch {
+                    first: g.touch.len() as u32,
+                    len: run.len() as u32,
+                };
+                g.touch.extend_from_slice(run);
+            }
+            b
+        })
         .collect();
     g.step = step;
     g.locks = c.locks.iter().map(LockMark::of).collect();
@@ -1640,6 +1653,33 @@ mod tests {
             let w = fonts.measure(FontId::Bold, px, v);
             assert!(w <= value_w, "{v}: {w} > {value_w}");
         }
+    }
+
+    /// The note editor gets each note's pressure, and only the runs its
+    /// notes name (an erased note's run stays in the clip for undo).
+    #[test]
+    fn the_note_editor_gets_each_notes_pressure() {
+        let point = |at, value| mpfree_seq::TouchPoint { at, value };
+        let mut c = Clip::new("pressed", BAR);
+        let gone = c.add_touch(&[point(0, 1), point(5, 2)]).unwrap();
+        let kept = c.add_touch(&[point(0, 90), point(40, 30)]).unwrap();
+        assert!(gone.len == 2);
+        c.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        c.add_note(Note {
+            touch: kept,
+            ..Note::new(480, 240, 2, 100)
+        })
+        .unwrap();
+        let e = EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c,
+            track_name: "Drums".into(),
+            bar: BAR,
+        };
+        let g = note_grid(&e, &state());
+        assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
+        assert!(g.touch_of(0).is_empty());
+        assert_eq!(g.touch_of(1), &g.touch[..]);
     }
 
     #[test]

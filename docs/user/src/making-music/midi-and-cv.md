@@ -8,6 +8,8 @@ checked: 2026-11-12 34d34b4
 
 The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too, once the I/O view is on the MPC's screen. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
 
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set.
+
 ## Playing MPFree from a keyboard
 
 Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do. Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs.
@@ -21,7 +23,7 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 
 ## Playing a synth from a track
 
-A track can play a synth or drum machine through **MIDI OUT** instead of a sound inside MPFree. It has one setting for where it plays: the port and the MIDI channel together. A track can also send a program change, so the synth switches to the right sound when the song starts.
+A track can play a synth or drum machine through **MIDI OUT** instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts.
 
 If a track would send nothing, because no port is picked or the device is unplugged, it says so under the track's name.
 
