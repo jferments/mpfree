@@ -63,6 +63,8 @@ struct Ring {
     /// The first frame of what the buffer holds now: frames before it came
     /// from somewhere else ([`RollingWriter::restart`]) and are not read.
     start: AtomicU64,
+    /// How many times the writer has restarted.
+    restarts: AtomicU64,
 }
 
 /// A rolling buffer of `frames` frames of `channels` (1 or 2) interleaved
@@ -80,6 +82,7 @@ pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
         claimed: AtomicU64::new(0),
         written: AtomicU64::new(0),
         start: AtomicU64::new(0),
+        restarts: AtomicU64::new(0),
     });
     (
         RollingWriter {
@@ -153,6 +156,7 @@ impl RollingWriter {
     /// or waits.
     pub fn restart(&mut self) {
         self.ring.start.store(self.pos, Ordering::Release);
+        self.ring.restarts.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -172,6 +176,12 @@ impl RollingReader {
     /// The absolute frame number the writer will write next.
     pub fn written(&self) -> u64 {
         self.ring.written.load(Ordering::Acquire)
+    }
+    /// How many times the writer has restarted ([`RollingWriter::restart`]):
+    /// a reader that asked for a new source sees it has come when this
+    /// moves.
+    pub fn restarts(&self) -> u64 {
+        self.ring.restarts.load(Ordering::Acquire)
     }
     /// The oldest frame still in the buffer (and from the source it has
     /// now).
