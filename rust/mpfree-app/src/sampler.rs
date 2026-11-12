@@ -33,7 +33,8 @@ use std::time::Instant;
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{
-    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadOut, MAX_GRAINS,
+    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField, PadOut,
+    MAX_GRAINS,
 };
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
@@ -450,6 +451,18 @@ impl Player {
         if pad < 16 {
             self.engine
                 .schedule(offset, Event::NoteOff { pad: pad as u8 });
+        }
+    }
+
+    /// Live values on kit `kit`'s pads (the scene crossfader's), applied
+    /// before the next render, while that kit is the one playing: each
+    /// replaces the pad's own until it is NaN or the kit's next view comes.
+    pub fn pad_live(&mut self, kit: usize, values: &[(u8, PadField, f32)]) {
+        if kit != self.kit {
+            return;
+        }
+        for &(pad, field, value) in values {
+            self.engine.apply(Event::PadLive { pad, field, value });
         }
     }
 

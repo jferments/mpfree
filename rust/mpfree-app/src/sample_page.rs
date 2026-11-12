@@ -75,6 +75,7 @@ use mpfree_sampler::model::{
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
 use mpfree_sampler::save::{self, Opened};
+use mpfree_sampler::scene;
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler::{sound_file, wav};
 use mpfree_sampler_ui::auto_tab::{
@@ -83,7 +84,7 @@ use mpfree_sampler_ui::auto_tab::{
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
-use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
+use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
@@ -346,6 +347,10 @@ pub struct SamplePage {
     dirty: Vec<bool>,
     /// A view is on its way to the audio thread (or back).
     in_flight: bool,
+    /// The scene crossfader, once moved: the kit and where it is (0 is
+    /// A). A new view of that kit clears the engine's live values, so they
+    /// go again after it.
+    morph: Option<(usize, f32)>,
     /// The pad a tap on the waveform holds down (Gate, Loop, Granular).
     auditioning: Option<usize>,
     last_turn: Option<Instant>,
@@ -445,6 +450,7 @@ impl SamplePage {
             stale: true,
             dirty: Vec::new(),
             in_flight: false,
+            morph: None,
             auditioning: None,
             last_turn: None,
             gesture: None,
@@ -1382,6 +1388,7 @@ impl SamplePage {
                 self.lines.push(format!("sample: {kit}: {what}"));
                 self.refresh(ui);
             }
+            PlayAction::Scene(s) => self.scene(ui, *s, out),
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
@@ -3085,6 +3092,74 @@ impl SamplePage {
     /// The next kit view for the audio thread, if a kit was edited (or a
     /// stretched copy came in) and no view is on its way already. Built
     /// here, off the audio thread, with warped pads at the project tempo.
+    /// The scene strip ([`scene`]): store A or B, move the crossfader,
+    /// or go back to A.
+    fn scene(&mut self, ui: &mut Ui, a: SceneAction, out: &mut Vec<FromUi>) {
+        self.lift();
+        let kit = self.kit;
+        let name = self.kit_text_of(kit);
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        match a {
+            SceneAction::Store(k) if k < 2 => {
+                let stored = scene::Scene::of(project);
+                let n = stored.sounds();
+                project.scenes[k] = Some(stored);
+                // Saved with the kit; the new view puts the crossfader's
+                // values back (take_view).
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                self.lines.push(format!(
+                    "sample: {name}: scene {} stored ({n} pad{})",
+                    ["A", "B"][k],
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            SceneAction::Store(_) => {}
+            SceneAction::Fade(x) => {
+                if let [Some(sa), Some(sb)] = &project.scenes {
+                    out.push(FromUi::SamplePadLive {
+                        kit,
+                        values: scene::morph(sa, sb, x),
+                    });
+                    self.morph = Some((kit, x));
+                }
+            }
+            SceneAction::Return => {
+                let Some(sa) = project.scenes[0].clone() else {
+                    return;
+                };
+                if let Some(sb) = &project.scenes[1] {
+                    out.push(FromUi::SamplePadLive {
+                        kit,
+                        values: scene::clear(&sa, sb),
+                    });
+                }
+                self.morph = None;
+                let (n, left) = project.return_to(&sa);
+                if n > 0 {
+                    self.edits += 1;
+                    if let Some(d) = self.dirty.get_mut(kit) {
+                        *d = true;
+                    }
+                    self.mark_renamed(kit);
+                }
+                let left = match left {
+                    0 => String::new(),
+                    n => format!("; {n} left as they are (their sounds are gone)"),
+                };
+                self.lines.push(match n {
+                    0 => format!("sample: {name}: back to scene A (nothing had changed){left}"),
+                    1 => format!("sample: {name}: back to scene A (1 pad put back){left}"),
+                    n => format!("sample: {name}: back to scene A ({n} pads put back){left}"),
+                });
+            }
+        }
+        self.refresh(ui);
+    }
+
     pub fn take_view(&mut self) -> Option<FromUi> {
         self.take_copies();
         if self.in_flight {
@@ -3096,6 +3171,15 @@ impl SamplePage {
         self.views_sent += 1;
         let view = EngineView::build_warped(&self.projects[kit], self.rate, &mut self.warps);
         self.ask_for_copies(kit);
+        // The new view clears the crossfader's values: they follow it.
+        if let Some((k, x)) = self.morph.filter(|m| m.0 == kit) {
+            if let [Some(sa), Some(sb)] = &self.projects[k].scenes {
+                self.hits.push(FromUi::SamplePadLive {
+                    kit,
+                    values: scene::morph(sa, sb, x),
+                });
+            }
+        }
         Some(FromUi::SampleView(Box::new(ViewSwap {
             kit,
             view: Some(view),
