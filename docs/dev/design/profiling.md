@@ -249,6 +249,12 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   far the GPU's picture is from the software one. A summary line gives the
   draw calls per page and how often the glyph atlas was cleared or a mask
   was too big for it (both fallbacks, so both are counted).
+- `panel`: the GPU's pictures on the panel. Each page is drawn on the GPU,
+  read back and written to `/dev/fb0` (as the app's screen writes, through
+  `FbTarget`; no display setting changes) and held 1.5 s; then the busiest
+  page is drawn and copied to the panel 60 times each way, GPU and software,
+  timed. It answers what a whole frame costs to reach the panel from the
+  GPU today, before page flips (G5) remove the read back.
 - `compute`: an FIR filter over a stereo block as an OpenGL ES 3.1 compute
   shader, uploaded, run and read back, against the same job on one CPU core:
   one period with 64 and with 1024 taps, and 32 periods with 1024 taps. It
@@ -264,10 +270,13 @@ of the app, checks on the MPC (read-only) that the GPU's render node and
 `libEGL.so.1` and `libGLESv2.so.2` are there and who holds `/dev/dri`, copies
 the program and the pages to `/run/mpfree-gpu`, stops our pad player and log
 display for a clean run (started again at the end, whatever happens), and
-runs `describe`, `compute --iterations 500` and `screens pages --frames 30`.
-The program draws through Mesa's surfaceless EGL on the render node, as the
-9 Nov offscreen tests did: no display, no DRM master, no display setting
-changed. It stops after `describe` if Mesa answers with its software renderer
+runs `describe`, `compute --iterations 500`, `screens pages --frames 30` and
+`panel pages --hold-ms 1500 --frames 60`. The program draws through Mesa's
+surfaceless EGL on the render node, as the 9 Nov offscreen tests did: no
+display, no DRM master, no display setting changed. Only the last step
+writes anything: the screen's picture, as the app does (the log display,
+stopped for the run, redraws when it starts again; if it was not running,
+the last page stays until something draws over it). It stops after `describe` if Mesa answers with its software renderer
 instead of the Mali, since the numbers would not be the GPU's. It needs
 `MPFREE_ACCEPT_GPU_BENCH=YES` and a terminal; each step waits for Enter. Its
 tests (`tests/test_host_gpu_mpc.py`) run it against a fake test build under
