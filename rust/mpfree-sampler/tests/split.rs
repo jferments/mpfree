@@ -349,3 +349,53 @@ fn a_late_lane_leaves_its_part_out_and_loses_no_event() {
     }
     assert_eq!(e.active_voices(), 0, "both let go and ended");
 }
+
+#[test]
+fn skipped_grains_never_go_back_while_the_lanes_half_is_away() {
+    // A dense granular pad: eight voices of it ask for more grains than
+    // the budget holds, in both halves.
+    let s = noise(60_000, 3);
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut grains = Region::whole(&s);
+    grains.mode = PlayMode::Granular;
+    grains.grain = GrainParams {
+        density: 400.0,
+        size_ms: 200.0,
+        ..GrainParams::default()
+    };
+    p.set_pad(0, Some(Pad::new("dense", Layer::new(grains))), None)
+        .unwrap();
+    let mut e = split(engine(&p, 8), true);
+    let mut ch = Channels::new(128);
+    for _ in 0..8 {
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        });
+    }
+    for _ in 0..100 {
+        ch.clear();
+        e.render_routed_until(128, &mut ch, far());
+    }
+    let mut last = e.stats().skipped_grains;
+    assert!(last > 0, "the budget filled");
+    // Parts the lane is late for: its half stays away until the next part,
+    // and its skipped grains still count as they were when it left.
+    let late = Instant::now() - Duration::from_millis(1);
+    let mut seen_late = false;
+    for _ in 0..50 {
+        ch.clear();
+        let was = e.stats().lane_late;
+        e.render_routed_until(128, &mut ch, late);
+        let st = e.stats();
+        assert!(
+            st.skipped_grains >= last,
+            "skipped grains went back from {last} to {}",
+            st.skipped_grains
+        );
+        last = st.skipped_grains;
+        seen_late |= st.lane_late > was;
+    }
+    assert!(seen_late, "the lane missed a deadline");
+}
