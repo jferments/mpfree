@@ -29,8 +29,12 @@
 //!   transport's bar lines in it. When the source goes, the box goes back
 //!   to the screen thread, which frees it.
 
+use std::time::Instant;
+
 use mpfree_sampler::dsp::Ahdsr;
-use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView, PadOut, MAX_GRAINS};
+use mpfree_sampler::engine::{
+    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadOut, MAX_GRAINS,
+};
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
 };
@@ -63,6 +67,11 @@ pub struct Counters {
     pub dropped_events: u64,
     pub peak_grains: usize,
     pub skipped_grains: u64,
+    /// Split ([`Player::split`]): parts of periods the lane rendered half
+    /// the voices for, and the ones it was late for (that half unheard for
+    /// the part). Both 0 unsplit.
+    pub lane_parts: u64,
+    pub lane_late: u64,
 }
 
 pub struct Player {
@@ -483,6 +492,8 @@ impl Player {
             dropped_events: s.dropped_events,
             peak_grains: self.peak_grains,
             skipped_grains: s.skipped_grains,
+            lane_parts: s.lane_parts,
+            lane_late: s.lane_late,
         }
     }
 
@@ -510,6 +521,41 @@ impl Player {
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// [`Player::render_routed`], waiting for the lane's voices (once
+    /// split) until `deadline` at most: past it their sound is left out of
+    /// that part of the period, and no event is lost (see
+    /// [`Engine::render_routed_until`]).
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
+        self.engine.render_routed_until(frames, out, deadline);
+        self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// Splits the engine's voices over two cores: half render on a lane
+    /// (a worker thread, pinned and real-time as `config` asks) while the
+    /// audio thread renders the rest (see [`Engine::split`]). Allocates
+    /// and starts a thread: call it before the sound starts. Returns what
+    /// the lane got (threaded, pinned, FIFO), or None with fewer than 2
+    /// voices.
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn split(&mut self, config: LaneConfig) -> Option<LaneSetup> {
+        self.engine.split(config).cloned()
+    }
+
+    /// The lane's counters once split (posted, joined, late, busy, worker
+    /// allocations); [`Player::counters`] has the engine's lane parts and
+    /// late parts.
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn lane_stats(&self) -> Option<LaneStats> {
+        self.engine.lane_stats()
     }
 }
 
@@ -714,6 +760,51 @@ mod tests {
             assert_eq!(*peak > 0.05, pad == 0 || pad == 5, "pad {pad}: peak {peak}");
         }
         assert_eq!((dry.playing(), routed.playing()), (0, 0));
+    }
+
+    #[test]
+    fn a_split_player_plays_as_one_core_does_and_counts_its_lane() {
+        let (mut ka, mut kb) = (kits(), kits());
+        let mut one = Player::new(&mut ka, &NOTES, 44_100).unwrap();
+        let mut two = Player::new(&mut kb, &NOTES, 44_100).unwrap();
+        assert_eq!(one.lane_stats(), None);
+        let setup = two
+            .split(LaneConfig {
+                name: "test-pads".into(),
+                ..LaneConfig::default()
+            })
+            .unwrap();
+        assert!(setup.threaded.is_ok(), "{setup:?}");
+        let (mut ca, mut cb) = (
+            Channels([[[0.0; 128]; 2]; 16]),
+            Channels([[[0.0; 128]; 2]; 16]),
+        );
+        let far = || Instant::now() + std::time::Duration::from_secs(5);
+        for period in 0..40 {
+            if period % 3 == 1 {
+                for p in [&mut one, &mut two] {
+                    assert!(p.hit_at(0, 110, 7));
+                    assert!(p.hit_at(5, 90, 64));
+                }
+            }
+            one.render_routed(128, &mut ca);
+            two.render_routed_until(128, &mut cb, far());
+            for (a, b) in ca.0.iter_mut().zip(cb.0.iter_mut()) {
+                for k in 0..128 {
+                    assert!((a[0][k] - b[0][k]).abs() < 1e-5, "period {period}");
+                    assert!((a[1][k] - b[1][k]).abs() < 1e-5, "period {period}");
+                }
+                *a = [[0.0; 128]; 2];
+                *b = [[0.0; 128]; 2];
+            }
+        }
+        let c = two.counters();
+        assert!(c.lane_parts > 0 && c.lane_late == 0, "{c:?}");
+        assert_eq!(two.lane_stats().unwrap().posted, c.lane_parts);
+        assert_eq!(
+            (one.counters().lane_parts, one.playing()),
+            (0, two.playing())
+        );
     }
 
     #[test]
