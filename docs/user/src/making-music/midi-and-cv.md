@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-app/src/midi_in.rs
-checked: 2026-11-12 b4f1d46
+checked: 2026-11-12 ae9c39c
 -->
 
 # Playing other gear: MIDI, sync and CV

@@ -2975,6 +2975,9 @@ fn player_session(
     // open with the controller's other cables) and USB keyboards, read only,
     // as keys for the armed track.
     let mut music = midi_in::MusicIn::new();
+    // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
+    // loop only ever try_locks it (MusicIn::sync).
+    let io_model = midi_in::io_model();
     let mut usb = UsbKeys::start(
         [Some(audio), midi_card().ok()]
             .into_iter()
@@ -3243,6 +3246,7 @@ fn player_session(
         });
         usb.poll(&mut music, &mut buf, mt, &mut keys, out);
         music.tick(mt, &mut |l| out.midi(&l));
+        music.sync(&io_model, mt);
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();

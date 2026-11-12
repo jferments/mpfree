@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-arp rust/mpfree-arp-ui rust/mpfree-scale rust/mpfree-app/src/app/arp.rs
-checked: 2026-11-12 1a6eb01
+checked: 2026-11-12 ae9c39c
 -->
 
 # Note Repeat, Latch and the arpeggiator
