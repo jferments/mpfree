@@ -2,7 +2,7 @@
 """mpfree-bench on the kexec test build: what every MPFree engine costs on the MPC One. RAM ONLY on the MPC.
 
 Run it after `collect-over-ssh.sh --kexec-boot` has started the test build
-from the USB stick. Like host_hello_mpc.py, it talks only to the test build:
+from the USB stick. Like host_app_mpc.py, it talks only to the test build:
 it uses the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so stock
 3.6 (a different host key) is refused before anything runs. Each step after
 the first waits for you to press Enter:
@@ -13,7 +13,7 @@ the first waits for you to press Enter:
        default: rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-bench
        a17:     rust/target/a17/armv7-unknown-linux-gnueabihf/release/mpfree-bench
                 (built with -C target-cpu=cortex-a17)
-  2. Test build, read-only: host_hello_mpc.py's checks (the test build's
+  2. Test build, read-only: host_app_mpc.py's checks (the test build's
      release, no MMC device, kexec off, / read-only, /run has room and allows
      programs, Akai's app is not running, who holds the sound, MIDI, touch
      and screen devices).
@@ -53,10 +53,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
-_spec = importlib.util.spec_from_file_location("host_hello_mpc", os.path.join(HERE, "host_hello_mpc.py"))
-hello = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(hello)
-kexec = hello.kexec
+_spec = importlib.util.spec_from_file_location("host_app_mpc", os.path.join(HERE, "host_app_mpc.py"))
+app = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(app)
+kexec = app.kexec
 Stop = kexec.Stop
 
 TARGET = os.path.join("armv7-unknown-linux-gnueabihf", "release", "mpfree-bench")
@@ -106,12 +106,12 @@ def check_program(out, name, path):
     """Step 1 for one build: its size, hash and ELF kind. Returns its sha256."""
     path = os.path.realpath(path)
     if not os.path.isfile(path):
-        raise Stop(f"missing {path}: build it first (see docs/project/profiling.md)")
+        raise Stop(f"missing {path}: build it first (see docs/dev/design/profiling.md)")
     with open(path, "rb") as fh:
-        data = fh.read(hello.PROGRAM_MAX + 1)
-    problem = hello.arm_static_problem(data)
+        data = fh.read(app.PROGRAM_MAX + 1)
+    problem = app.arm_static_problem(data)
     if problem:
-        raise Stop(f"{path} is {problem}; rebuild it as docs/project/profiling.md shows")
+        raise Stop(f"{path} is {problem}; rebuild it as docs/dev/design/profiling.md shows")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  {name}: {path}")
     out.say(f"    {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")
@@ -132,7 +132,7 @@ def main(argv):
     if os.environ.get("MPFREE_ACCEPT_BENCH") != "YES":
         raise Stop("opt-in required (copies the benchmark into the test build's RAM and runs it): "
                    "MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py")
-    if not hello.TESTING and not sys.stdin.isatty():
+    if not app.TESTING and not sys.stdin.isatty():
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
     out.say("MPFree benchmark on the test build (changes RAM on the MPC only)")
@@ -150,7 +150,7 @@ def main(argv):
     mpc = kexec.Mpc(args, os.path.join(folder, "known_hosts"))
 
     out.say(f"\n[2/{total}] Checks on the test build (read-only; only its own host key is accepted)")
-    rc, text = mpc.run(kexec.fill(hello.CHECK, NEW=found.group(1)), test=True)
+    rc, text = mpc.run(kexec.fill(app.CHECK, NEW=found.group(1)), test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
@@ -162,7 +162,7 @@ def main(argv):
     signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         out.say(f"\n[3/{total}] Copy both builds into the test build's RAM ({REMOTE_DIR})")
-        if hello.ready(out, "Copies two programs of about 1.3 MB each.") != "go":
+        if app.ready(out, "Copies two programs of about 1.3 MB each.") != "go":
             raise Stop("stopped by you")
         rc, text = mpc.run(PREPARE, test=True)
         if rc != 0:
@@ -178,13 +178,13 @@ def main(argv):
 
         for n, (name, _, _) in enumerate(programs, start=4):
             out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, every engine, then one core vs two (only computes)")
-            answer = hello.ready(out, "Takes about 10 to 15 minutes; the MPC can stay as it is.")
+            answer = app.ready(out, "Takes about 10 to 15 minutes; the MPC can stay as it is.")
             if answer == "quit":
                 raise Stop("stopped by you")
             if answer == "skip":
                 continue
             for run_args, timeout in RUNS:
-                rc, _ = hello.stream(mpc, kexec.fill(RUN, BUILD=name, ARGS=kexec.fill(run_args, BUILD=name)),
+                rc, _ = app.stream(mpc, kexec.fill(RUN, BUILD=name, ARGS=kexec.fill(run_args, BUILD=name)),
                                      timeout, out)
                 if rc != 0:
                     raise Stop(f"{name} {run_args.split()[0]} ended with exit code {rc}")

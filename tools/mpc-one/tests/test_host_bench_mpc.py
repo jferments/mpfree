@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for host_bench_mpc.py against a fake test build. No device.
 
-As in test_hello_mpc.py, a fake ssh runs the tool's real remote scripts under
+As in test_app_mpc.py, a fake ssh runs the tool's real remote scripts under
 BusyBox applets against a fake root folder (setting the scripts' R='' root
 prefix to it), accepts only the test build's host key alias, and only while
 the fake MPC is "on the test build". Running the benchmark is the one other
@@ -22,18 +22,18 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 HELPER = os.path.join(TOOLS, "host_bench_mpc.py")
-_spec = importlib.util.spec_from_file_location("test_hello_mpc", os.path.join(HERE, "test_hello_mpc.py"))
+_spec = importlib.util.spec_from_file_location("test_app_mpc", os.path.join(HERE, "test_app_mpc.py"))
 th = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(th)
 
 FAKE_SSH = th.FAKE_SSH.replace(
-    "program = 'exec \"$R/run/mpfree-hello/mpfree-hello\"'\n"
+    "program = 'exec \"$R/run/mpfree-app/mpfree\"'\n"
     "if program in script:\n"
     "    script = script.replace(program, 'exec \"$FAKE_PROGRAM\"')",
     "program = 'exec \"$R/run/mpfree-bench/$p\"'\n"
     "if program in script:\n"
     "    script = script.replace(program, 'exec \"$FAKE_PROGRAM\" \"$p\"')")
-assert FAKE_SSH != th.FAKE_SSH, "the fake ssh's program line moved in test_hello_mpc.py"
+assert FAKE_SSH != th.FAKE_SSH, "the fake ssh's program line moved in test_app_mpc.py"
 
 FAKE_BENCH = r'''#!/bin/sh
 build=$1; shift
@@ -78,7 +78,7 @@ class BenchTests(unittest.TestCase):
         standin = os.path.join(t, "bench-standin")
         th.write(standin, FAKE_BENCH, 0o755)
         self.env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"), "HOME": t,
-                    "MPFREE_HELLO_TEST": "1", "MPFREE_ACCEPT_BENCH": "YES", "FAKE_STAGE": self.stage,
+                    "MPFREE_APP_TEST": "1", "MPFREE_ACCEPT_BENCH": "YES", "FAKE_STAGE": self.stage,
                     "FAKE_LOG": self.log, "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": screen,
                     "FAKE_APP": app, "FAKE_ACVS": "inactive", "FAKE_PROGRAM": standin, "FAKE_BENCH_RC": "0"}
         self.key = os.path.join(t, "key")

@@ -3,7 +3,7 @@
 //! Host-first: notes go in (from pads, the screen or MIDI), sample-timed
 //! note-ons and note-offs come out. No device I/O, and no allocation, locks
 //! or I/O once running, so it can sit in the audio thread. Design:
-//! `docs/project/arpeggiator.md`.
+//! `docs/dev/design/arpeggiator.md`.
 #![forbid(unsafe_code)]
 
 pub mod engine;
