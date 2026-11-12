@@ -67,6 +67,7 @@ use std::time::{Duration, Instant};
 use mpfree_node::Node;
 use mpfree_sampler::autosample::{Finished, Job, Plan};
 use mpfree_sampler::engine::EngineView;
+use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
     WARP_BPM,
@@ -545,6 +546,12 @@ impl SamplePage {
             self.auditioning = None;
         }
         let pad = self.played(pad);
+        self.pick(pad);
+    }
+
+    /// Picks pad `pad` itself (a tap on its cell or its zone), whatever
+    /// the pads play.
+    fn pick(&mut self, pad: usize) {
         if pad == self.pad || pad >= 16 {
             return;
         }
@@ -552,6 +559,11 @@ impl SamplePage {
         self.pad = pad;
         self.velocity = None;
         self.stale = true;
+    }
+
+    /// Whether the Play tab shows its keyboard.
+    pub fn play_keys_shown(&self) -> bool {
+        self.play.as_ref().is_some_and(PlayTab::keys_shown)
     }
 
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
@@ -914,6 +926,86 @@ impl SamplePage {
         WaveState::from_project(p, self.pad, 0, view)
     }
 
+    /// Map to keys: `pads` of the kit become one keygroup instrument, each
+    /// at its sound's note (its keygroup's root, a note in its sound's or
+    /// its own name, or the pitch heard), as one undo step; pads with no
+    /// note found stay as they are. The log says where each note came from.
+    fn map_to_keys(&mut self, pads: &[usize]) {
+        self.lift();
+        let kit = self.kit;
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let mut roots = Vec::new();
+        let mut from: Vec<(RootFrom, usize)> = Vec::new();
+        let mut left = Vec::new();
+        for &pad in pads {
+            let Some(p) = project.pad(pad).filter(|p| !p.layers.is_empty()) else {
+                continue;
+            };
+            let source = project.source(p.layers[0].region.source);
+            let heard = source.and_then(|s| {
+                self.sources
+                    .entry(s.id())
+                    .or_insert_with(|| Arc::new(SourceView::analyse(s)))
+                    .root_note
+            });
+            let name = match source {
+                Some(s) if keymap::note_in_name(&s.name).is_some() => s.name.as_str(),
+                _ => p.name.as_str(),
+            };
+            match keymap::sound_root(p.keys.map(|k| k.root), name, heard) {
+                Some((root, by)) => {
+                    roots.push((pad, root));
+                    match from.iter_mut().find(|(b, _)| *b == by) {
+                        Some((_, n)) => *n += 1,
+                        None => from.push((by, 1)),
+                    }
+                }
+                None => left.push(self.pad_text(kit, pad)),
+            }
+        }
+        let what = if roots.is_empty() {
+            "no pad has a note to map to keys (none in its name, no clear pitch)".to_string()
+        } else {
+            let Some(project) = self.projects.get_mut(kit) else {
+                return;
+            };
+            match project.map_to_keys(&roots) {
+                Ok(_) => {
+                    self.edits += 1;
+                    if let Some(d) = self.dirty.get_mut(kit) {
+                        *d = true;
+                    }
+                    let lo = roots.iter().map(|r| r.1).min().unwrap_or(0);
+                    let hi = roots.iter().map(|r| r.1).max().unwrap_or(0);
+                    let by = from
+                        .iter()
+                        .map(|(b, n)| format!("{n} by {}", b.label()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mut what = format!(
+                        "mapped to keys: {} pad{} from {} to {} ({by}), the pads play notes",
+                        roots.len(),
+                        if roots.len() == 1 { "" } else { "s" },
+                        mpfree_sampler_ui::note_name(lo),
+                        mpfree_sampler_ui::note_name(hi)
+                    );
+                    if !left.is_empty() {
+                        what.push_str(&format!(
+                            "; left as they were (no note found): {}",
+                            left.join(", ")
+                        ));
+                    }
+                    what
+                }
+                Err(e) => format!("not mapped to keys ({e:?})"),
+            }
+        };
+        let kit = self.kit_text_of(kit);
+        self.lines.push(format!("sample: {kit}: {what}"));
+    }
+
     fn kit_text(&self) -> String {
         self.kit_text_of(self.kit)
     }
@@ -981,7 +1073,7 @@ impl SamplePage {
                 return;
             };
             if let Some(a) = tab.action(ui, ev, st) {
-                self.act_play(ui, a);
+                self.act_play(ui, a, out);
             }
             return;
         }
@@ -1162,7 +1254,11 @@ impl SamplePage {
         match &a {
             PadsAction::Tab(i) => self.open(ui, *i),
             PadsAction::Pick(pad) => {
-                self.hit(*pad);
+                self.pick(*pad);
+                self.refresh(ui);
+            }
+            PadsAction::MapToKeys { pads } => {
+                self.map_to_keys(pads);
                 self.refresh(ui);
             }
             PadsAction::Audition { pad, down } => out.push(FromUi::Pad {
@@ -1214,9 +1310,19 @@ impl SamplePage {
         }
     }
 
-    fn act_play(&mut self, ui: &mut Ui, a: PlayAction) {
+    fn act_play(&mut self, ui: &mut Ui, a: PlayAction, out: &mut Vec<FromUi>) {
         match &a {
             PlayAction::Tab(i) => self.open(ui, *i),
+            PlayAction::Pick(pad) => {
+                self.pick(*pad);
+                self.refresh(ui);
+            }
+            PlayAction::Note { note, down } => out.push(FromUi::SampleKey {
+                kit: self.kit,
+                note: *note,
+                velocity: play_tab::KEY_VELOCITY,
+                down: *down,
+            }),
             PlayAction::PadsPlay(play) => {
                 self.lift();
                 let kit = self.kit;
@@ -1379,7 +1485,7 @@ impl SamplePage {
                 return;
             };
             if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
-                self.act_play(ui, a);
+                self.act_play(ui, a, &mut Vec::new());
             }
             return;
         }
@@ -1523,7 +1629,7 @@ impl SamplePage {
                     return;
                 };
                 if let Some(a) = tab.wheel(ui, st, delta) {
-                    self.act_play(ui, a);
+                    self.act_play(ui, a, &mut Vec::new());
                 }
             }
             Editor::Grain => {

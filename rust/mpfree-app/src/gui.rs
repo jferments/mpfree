@@ -472,6 +472,14 @@ pub enum FromUi {
         velocity: u8,
         down: bool,
     },
+    /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
+    /// `kit`'s keygroups play `note`, while that kit is the one playing.
+    SampleKey {
+        kit: usize,
+        note: u8,
+        velocity: u8,
+        down: bool,
+    },
     /// The Debug tab's strip: MIDI, Performance or Map controls.
     DebugPage(usize),
     /// A control tapped in the mapper's list (listen for it).
@@ -550,6 +558,9 @@ pub struct Player {
     screen_row: String,
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
+    /// The Sample page's Play tab showed its keyboard (its hint says how
+    /// to play it).
+    sample_keys: bool,
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -730,6 +741,7 @@ impl Player {
             },
             screen_row: "-".to_string(),
             timed,
+            sample_keys: false,
             ready: false,
             view: View::Play,
             status,
@@ -1387,6 +1399,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
                     "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
                      Wheel: the row picked   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
+                    "Press keys to hear the kit   ·   drag the pad's zone edges and root   ·   tap a zone: its pad   ·   \
+                     Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   Wheel: the row picked   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
@@ -2179,6 +2195,14 @@ impl Player {
         }
         if self.sample.page() != before {
             self.sample_changed();
+        }
+        // The keyboard came or went on the Play tab: its hint with it.
+        let keys = self.sample.play_keys_shown();
+        if keys != self.sample_keys {
+            self.sample_keys = keys;
+            if self.view == View::Sample {
+                self.refresh_hint();
+            }
         }
     }
 
@@ -4916,6 +4940,53 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         keys.take_actions();
         out.push(("sample-play-keys", keys));
+    }
+    // A bank mapped to keys on the Pads tab: five pads named by their
+    // notes, one keygroup instrument; the Play tab's keyboard with A5's
+    // zone picked and E3 held.
+    {
+        let mut mapped = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        if let Some(sound) = project.pad(pad).cloned() {
+            for (k, name) in ["Pluck C2", "Pluck G2", "Pluck C3", "Pluck G3", "Pluck C4"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut q = sound.clone();
+                q.name = name.to_string();
+                let _ = project.set_pad(k, Some(q), None);
+            }
+        }
+        mapped.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        ev(
+            &mut mapped,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        ev(&mut mapped, pads_tab::BUTTONS, EventKind::Tab(3));
+        ev(&mut mapped, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        let held = mapped.ui.rect_of(play_tab::KEYS).and_then(|r| {
+            mapped
+                .ui
+                .get::<mpfree_sampler_ui::keys_widgets::KeyZones>(play_tab::KEYS)?
+                .key_point(r, 52)
+        });
+        if let Some((x, y)) = held {
+            mapped.touch(3, Touch::Down, x, y);
+        }
+        mapped.take_actions();
+        out.push(("sample-keys-mapped", mapped));
     }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
@@ -7840,6 +7911,147 @@ mod tests {
             EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         );
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    #[test]
+    fn map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys() {
+        use mpfree_sampler::model::PadsPlay;
+        use mpfree_sampler_ui::keys_widgets::KeyZones;
+        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        // A1-A3 play the loop under names with notes; A5 keeps "Break 92",
+        // whose pitch is heard as G#1.
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let sound = project.pad(pad).unwrap().clone();
+        for (k, name) in ["Keys C2", "Keys G2", "Keys C3"].into_iter().enumerate() {
+            let mut q = sound.clone();
+            q.name = name.to_string();
+            project.set_pad(k, Some(q), None).unwrap();
+        }
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let keys = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).unwrap().keys;
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        p.take_actions();
+        // Map to keys: each pad at its sound's note, spread halfway to the
+        // next; the pads play notes; the log says where the notes came from.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(3));
+        let roots: Vec<Option<u8>> = [0, 1, 2, pad]
+            .into_iter()
+            .map(|k| keys(&p, k).map(|z| z.root))
+            .collect();
+        assert_eq!(roots, vec![Some(36), Some(43), Some(48), Some(32)]);
+        assert_eq!(
+            [keys(&p, pad).unwrap().lo, keys(&p, 0).unwrap().lo],
+            [0, 34]
+        );
+        assert_eq!(keys(&p, 2).unwrap().hi, 127);
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Keys { .. }
+        ));
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks): mapped to keys: 4 pads from G#1 to C3 \
+                    (3 by its name, 1 by its pitch), the pads play notes"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The Play tab shows the kit's keyboard, with its own hint.
+        ev(&mut p, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        assert!(p.sample.play_keys_shown());
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Press keys to hear the kit"));
+        assert_eq!(p.ui.get::<KeyZones>(play_tab::KEYS).unwrap().zones.len(), 4);
+        // A key plays the kit's keygroups while held.
+        let r = p.ui.rect_of(play_tab::KEYS).unwrap();
+        let (x, y) =
+            p.ui.get::<KeyZones>(play_tab::KEYS)
+                .unwrap()
+                .key_point(r, 45)
+                .unwrap();
+        p.touch(3, Touch::Down, x, y);
+        p.touch(3, Touch::Up, x, y);
+        let keys_sent: Vec<(usize, u8, u8, bool)> = p
+            .take_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::SampleKey {
+                    kit,
+                    note,
+                    velocity,
+                    down,
+                } => Some((kit, note, velocity, down)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys_sent,
+            vec![
+                (0, 45, play_tab::KEY_VELOCITY, true),
+                (0, 45, play_tab::KEY_VELOCITY, false)
+            ]
+        );
+        // A tap on A1's zone picks A1.
+        let z = p.ui.get::<KeyZones>(play_tab::KEYS).unwrap();
+        let i = z.zones.iter().position(|z| z.pad == 0).unwrap();
+        let zr = z.zone_rect(r, i).unwrap();
+        p.touch(3, Touch::Down, zr.x + zr.w / 2, zr.y + zr.h / 2);
+        p.touch(3, Touch::Up, zr.x + zr.w / 2, zr.y + zr.h / 2);
+        assert_eq!(
+            p.ui.get::<PadBar>(play_tab::BAR).unwrap().title,
+            "Pad A1 · Keys C2"
+        );
+        // Dragging its right edge to G#2 is one undo step.
+        let z = p.ui.get::<KeyZones>(play_tab::KEYS).unwrap();
+        let zr = z.zone_rect(r, i).unwrap();
+        let (to, _) = z.key_point(r, 44).unwrap();
+        let edge = zr.x + zr.w;
+        p.touch(3, Touch::Down, edge, zr.y + zr.h / 2);
+        p.touch(3, Touch::Move, (edge + to) / 2, zr.y + zr.h / 2);
+        p.touch(3, Touch::Move, to, zr.y + zr.h / 2);
+        p.touch(3, Touch::Up, to, zr.y + zr.h / 2);
+        p.apply(ToUi::SampleLift);
+        assert_eq!(keys(&p, 0).unwrap().hi, 44);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(keys(&p, 0).unwrap().hi, 39);
+        // One more UNDO takes the whole mapping back.
+        p.apply(ToUi::SampleUndo(false));
+        assert!([0, 1, 2, pad].iter().all(|&k| keys(&p, k).is_none()));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Pads
+        ));
+        assert!(!p.sample.play_keys_shown());
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Hit a pad: its velocity shows"));
     }
 
     #[test]
