@@ -123,7 +123,7 @@ What is automatic, for any crate that draws through `PaintCx`: colours that come
 
 What each crate should change (small, mechanical):
 
-1. **No hex colours in drawing code.** Use tokens; for a set of distinct colours (synth layers, tracks, graph series) use `t.track(i)`. Found today: `mpfree-synth-ui` `view.rs` (two greys, one white) and `widgets.rs` (a four-colour palette).
+1. **No hex colours in drawing code.** Use tokens; for a set of distinct colours (synth layers, tracks, graph series) use `t.track(i)`. `mpfree-synth-ui` is done: its panels build tiles and cards before they know the theme, so they name a colour by meaning (`QLINK_COLORS`, `TEXT`, `TEXT_DIM`, `TEXT_FAINT`, `ON_FILL`, the default theme's values) and `widgets::themed` swaps in the shown theme's token when painting (see [synths.md](synths.md)). That also covers `mpfree-fx-ui`, which uses the same widgets.
 2. **Content colours through `t.content(c)`** (kit colours, pad colours, user-chosen track colours), so tinting themes can pull them in.
 3. **Panels with `cx.panel(r)` / `cx.titled_panel(..)`**, buttons and pads with `fill_round_rect` at `t.radius` (or a little less): the corner style follows.
 4. **`t.bg` means "background".** A fill in exactly `t.bg` becomes the theme's backdrop. To paint a solid colour that happens to look like the background, use `t.surface` or a token, not `t.bg`.

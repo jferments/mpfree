@@ -38,10 +38,12 @@ Each synth also has an **Init** preset (Init Kit on Drums): a plain starting poi
 - **The title** shows the synth and the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or press **–** and **+**, to change page.
 - **The pictures** across the top draw the sound as you change it: the oscillator waves, the filter's curve, the envelopes and the LFO. Tap one to jump to its page.
 - **The tiles** are the controls on this page. Drag a tile up or down to change it, or tap it and turn the data wheel.
-- **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound.
+- **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound. Each Q-Link has its own colour, the same on its tile's mark and knob and in the Q-Link row along the bottom.
 - **The presets** are listed on the right. Tap one to load it. Once you change anything, the preset is marked **edited**.
 
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
+
+The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.
 
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 
