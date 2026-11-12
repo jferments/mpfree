@@ -1,0 +1,37 @@
+name: MPFree V17 host preflight
+on:
+  push:
+    branches:
+      - research/bootchain-deep-runtime-v17-20261112
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  v17-host-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Parse V17 and dependency scripts
+        run: |
+          python3 -m py_compile \
+            tools/mpc-one/run_v17.py \
+            tools/mpc-one/offline_boot_assets_v17.py \
+            tools/mpc-one/test_v17.py \
+            tools/ghidra/MPFreeV17FixedPointDive.py \
+            tools/ghidra/MPFreeV17UpdaterDive.py \
+            tools/mpc-one/run_v16.py \
+            tools/mpc-one/run_boot_updater_v10.py
+      - name: Test V17 host-side code (does not require private firmware)
+        run: python3 tools/mpc-one/test_v17.py -v
+      - name: Cross-compiler availability and native syntax check
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf >/dev/null
+          arm-linux-gnueabihf-gcc -std=c11 -O2 -Wall -Wextra -Werror \
+            -fsyntax-only tools/mpc-one/vendor_probe_v17.c
