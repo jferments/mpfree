@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn status_meminfo_and_proc_stat() {
-        let status = "Name:\tmpfree-hello\nVmHWM:\t   45120 kB\nVmRSS:\t   41000 kB\nThreads:\t4\n";
+        let status = "Name:\tmpfree\nVmHWM:\t   45120 kB\nVmRSS:\t   41000 kB\nThreads:\t4\n";
         assert_eq!(kb_field(status, "VmRSS"), Some(41000));
         assert_eq!(kb_field(status, "VmHWM"), Some(45120));
         assert_eq!(kb_field(status, "VmSwap"), None);
@@ -363,11 +363,10 @@ mod tests {
         fs::create_dir_all(&task).unwrap();
         fs::create_dir_all(root.join("sys/class/thermal/thermal_zone0")).unwrap();
         fs::create_dir_all(root.join("sys/devices/system/cpu/cpu0/cpufreq")).unwrap();
-        let stat = |ticks: u64| {
-            format!("77 (mpfree-hello) R 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 1 0 1 1 1")
-        };
+        let stat =
+            |ticks: u64| format!("77 (mpfree) R 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 1 0 1 1 1");
         fs::write(task.join("stat"), stat(100)).unwrap();
-        fs::write(task.join("comm"), "mpfree-hello\n").unwrap();
+        fs::write(task.join("comm"), "mpfree\n").unwrap();
         fs::write(
             root.join("self/status"),
             "VmHWM:\t2048 kB\nVmRSS:\t1024 kB\n",
@@ -414,7 +413,7 @@ mod tests {
         let second = s.sample();
         assert!(second.over_s > 0.0);
         assert!(second.process_cpu > 0.0, "10 ticks over a short time");
-        assert_eq!(second.threads[0].0, "mpfree-hello (77)");
+        assert_eq!(second.threads[0].0, "mpfree (77)");
         assert_eq!(second.system_cpu.map(|c| c.round()), Some(10.0));
         let line = second.line();
         assert!(

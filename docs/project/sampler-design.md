@@ -4,7 +4,7 @@
 
 Companions: the [feature map](sampler-features.md) (every MPC sampler feature rebuilt with a better UI, features from other samplers, and what makes a sampler great for production and performance) and the [architecture](sampler-architecture.md) (crates, threads, data flow, real-time rules, files). Mockups of the screens and the sampler skill tree are in the [mpfree-claude repo](https://github.com/jferments/mpfree-claude/tree/main/sampler).
 
-The sampler is the core of the MPC. This document proposes how MPFree records sound, chops and edits it, puts it on pads and plays it back, including granular tools. It builds on what exists: the pad player in `rust/mpfree-hello` (kits on pads, a `SCHED_FIFO` audio thread, direct ALSA playback), the `mpfree-ui` toolkit ([UI architecture](ui-architecture.md)), the host-only `mpfree-sampler` crate, and the decisions already made: direct ALSA ([ADR-0002](../decisions/adr-0002-direct-alsa-audio.md)), MIT licence, a GUI-first, modular UI, one design for beatmakers and performers.
+The sampler is the core of the MPC. This document proposes how MPFree records sound, chops and edits it, puts it on pads and plays it back, including granular tools. It builds on what exists: the pad player in `rust/mpfree-app` (kits on pads, a `SCHED_FIFO` audio thread, direct ALSA playback), the `mpfree-ui` toolkit ([UI architecture](ui-architecture.md)), the host-only `mpfree-sampler` crate, and the decisions already made: direct ALSA ([ADR-0002](../decisions/adr-0002-direct-alsa-audio.md)), MIT licence, a GUI-first, modular UI, one design for beatmakers and performers.
 
 ## Goals
 
@@ -43,7 +43,7 @@ Source  ──►  Region (a recipe on part of a source)  ──►  Layer  ─�
 
 | Source | What it is | Status |
 |---|---|---|
-| Line input | The MPC One's stereo input, through the ACVA capture PCM (stereo, S32_LE, 44.1 kHz, 128-frame periods, observed) | New: `mpfree-hello` opens playback only. Capture is the first piece of new on-device work |
+| Line input | The MPC One's stereo input, through the ACVA capture PCM (stereo, S32_LE, 44.1 kHz, 128-frame periods, observed) | New: `mpfree-app` opens playback only. Capture is the first piece of new on-device work |
 | Resample | MPFree's own master output, or one pad, program or track before or after its effects | Engine-internal, no hardware risk |
 | Import | WAV, AIFF, FLAC (and MP3, AAC, Ogg as an optional feature) from a USB stick, SD card or over Ethernet | File I/O only |
 | USB audio | A class-compliant interface on the USB-A port | Unverified; later |
@@ -248,7 +248,7 @@ See the [library table](../research/sampler-landscape.md#libraries) for licences
 | `mpfree-sampler` (grows from today's prototype) | Source, region, layer, pad, program; the voice pool; playback modes; no I/O in the real-time path |
 | `mpfree-grain` (new) | The grain engine, used by sampler voices and by the granular effect |
 | `mpfree-analysis` (new) | Peak pyramid, onsets, tempo, pitch; workstation-testable, no real-time use |
-| `mpfree-audio` (new, split out of `mpfree-hello`'s `alsa.rs`) | ALSA playback and capture behind the `AudioDevice` trait from ADR-0002 |
+| `mpfree-audio` (new, split out of `mpfree-app`'s `alsa.rs`) | ALSA playback and capture behind the `AudioDevice` trait from ADR-0002 |
 | `mpfree-ui` | New widgets: `Waveform`, `WaveOverview`, `MarkerRuler`, `XYPad`, `Meter` |
 
 ## Steps
