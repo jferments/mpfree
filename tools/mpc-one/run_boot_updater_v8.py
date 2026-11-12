@@ -107,23 +107,42 @@ def inspect_squashfs(rootfs,temporary,report):
     if p.returncode:
         result['warnings'].append('Unable to list ramfs-update.squashfs')
         return result,[]
-    items=[]
+    # Full RAMFS path inventory, *not* only updater-named files.
+    all_paths=[]
     for row in p.stdout.decode('utf8','replace').splitlines():
         line=row.strip()
         if not line.startswith('squashfs-root/'):continue
         relative=line.removeprefix('squashfs-root/')
         if not relative or '..' in Path(relative).parts or relative.startswith('/') or '\x00' in relative:
             continue
-        if any(k in relative.lower() for k in KEYWORDS):items.append(relative)
+        all_paths.append(relative)
+    result['total_listed_paths']=len(all_paths)
+    result['all_paths']=all_paths[:2400]
+    result['all_paths_truncated']=len(all_paths)>2400
+    items=[path for path in all_paths if any(k in path.lower() for k in KEYWORDS)]
     result['file_count_with_update_names']=len(items)
     result['files']=items[:350]
+    # Minimal startup/config candidates, including /init and rcS where
+    # names lack any explicit update-related keyword.
+    def priority(path):
+        low=path.lower()
+        if low in ('init','linuxrc','etc/inittab','etc/init.d/rcs'):return 0
+        if any(k in low for k in ('update','reboot','init.d','boot','program','flash','config')):return 1
+        if Path(low).suffix in ('.sh','.service','.conf','.json','.py','.txt'):return 2
+        return 3
+    inspect_paths=sorted(set(items+[
+        path for path in all_paths
+        if path.lower() in ('init','linuxrc','etc/inittab','etc/init.d/rcs')
+        or path.lower().startswith(('etc/init.d/','etc/systemd/'))
+        or Path(path).suffix.lower() in ('.sh','.service','.conf','.json','.py','.txt')
+    ]),key=lambda path:(priority(path),path))
     selected=[]
     # Extract bytes only through unsquashfs -cat to temporary memory/files.
     # Never extract or follow links in the squashfs image.
-    for name in items[:90]:
+    for name in inspect_paths[:120]:
         ext=Path(name).suffix.lower()
         if not (ext in ('.sh','.service','.conf','.json','.py','.txt','.elf','.so') or
-                any(k in name.lower() for k in ('update','flash','bootloader','init','fastboot'))):
+                any(k in name.lower() for k in ('update','flash','bootloader','init','fastboot','reboot','linuxrc','inittab'))):
             continue
         p=subprocess.run(['unsquashfs','-cat',str(path),name],capture_output=True,timeout=35)
         if p.returncode or not p.stdout or len(p.stdout)>8*1024*1024:continue
