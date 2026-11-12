@@ -362,6 +362,39 @@ name = "mpfree-analysis"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-app"
+version = "0.1.0"
+dependencies = [
+ "mpfree-arp",
+ "mpfree-arp-ui",
+ "mpfree-capture",
+ "mpfree-chain-ui",
+ "mpfree-controller",
+ "mpfree-core",
+ "mpfree-fx",
+ "mpfree-fx-ui",
+ "mpfree-instruments",
+ "mpfree-looper",
+ "mpfree-mixer-ui",
+ "mpfree-mod",
+ "mpfree-node",
+ "mpfree-play",
+ "mpfree-prof",
+ "mpfree-sampler",
+ "mpfree-sampler-ui",
+ "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-store",
+ "mpfree-synth",
+ "mpfree-synth-ui",
+ "mpfree-time-ui",
+ "mpfree-touch",
+ "mpfree-touch-evdev",
+ "mpfree-transport",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-arp"
 version = "0.1.0"
 dependencies = [
@@ -511,39 +544,6 @@ dependencies = [
  "mpfree-core",
  "mpfree-groove",
  "mpfree-sampler",
-]
-
-[[package]]
-name = "mpfree-hello"
-version = "0.1.0"
-dependencies = [
- "mpfree-arp",
- "mpfree-arp-ui",
- "mpfree-capture",
- "mpfree-chain-ui",
- "mpfree-controller",
- "mpfree-core",
- "mpfree-fx",
- "mpfree-fx-ui",
- "mpfree-instruments",
- "mpfree-looper",
- "mpfree-mixer-ui",
- "mpfree-mod",
- "mpfree-node",
- "mpfree-play",
- "mpfree-prof",
- "mpfree-sampler",
- "mpfree-sampler-ui",
- "mpfree-screen-log",
- "mpfree-seq",
- "mpfree-store",
- "mpfree-synth",
- "mpfree-synth-ui",
- "mpfree-time-ui",
- "mpfree-touch",
- "mpfree-touch-evdev",
- "mpfree-transport",
- "mpfree-ui",
 ]
 
 [[package]]
