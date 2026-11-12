@@ -109,19 +109,27 @@
 //! point where the card would run dry.
 //!
 //! **Returns a block late** ([`Mixer::set_pipelined_returns`], off by
-//! default): the returns' inserts can run on another core one block
-//! behind, so the reverb leaves the audio core. At the start of each block
-//! the mixer hands a lane the returns' inserts with the input they had the
-//! block before, and runs the pad channels, tracks and submixes itself
-//! while the lane works; at the returns it takes back that output and keeps
-//! this block's input for the next. Every return is then heard one block
-//! later than the dry signal, which latency compensation does not hide.
-//! Insert controls and edits act when the processed audio is heard, since
-//! the inserts are home between blocks. A return goes only if its inserts
-//! have no sidechain key and it keys nothing; otherwise it runs here, on
-//! time. The block length must stay the same; when it changes, the returns
-//! lose that block. If the lane is later than the wait, the returns are
-//! silent for that block and the next, and the late output is dropped.
+//! default): a reverb return's inserts can run on another core one block
+//! behind, so the reverb leaves the audio core, and still sound on time.
+//! At the start of each block the mixer hands a lane those inserts with the
+//! input they had the block before, and runs the pad channels, tracks and
+//! submixes itself while the lane works; at the return it takes back that
+//! output and keeps this block's input for the next. The reverb takes the
+//! block back from its pre-delay ([`Chain::lead_slot`], [`Node::lead_in`]),
+//! so the output is the on-time output, bit for bit. A return goes late
+//! only when that holds: an insert in it fully on, all wet, with at least a
+//! block of pre-delay (a Cloud), no sidechain key in its inserts and keying
+//! nothing. Every other return (a delay, parallel compression or drive, a
+//! reverb with no pre-delay or a dry mix) runs here, on time, because a
+//! copy of the dry signal a block late would comb-filter against it. A
+//! return moves between the two at a block's start whenever that changes
+//! (a knob, bypass, a change of block length), seamlessly: starting puts
+//! out a block from the pre-delay, stopping hands the inserts the input
+//! they kept. Insert controls and edits act when the processed audio is
+//! heard, since the inserts are home between blocks. If the lane is later
+//! than the wait, the returns are silent for that block and the next, the
+//! late output is dropped, and a block of the return's input is lost when
+//! it goes back on time (`MixerStats::pipe_lost_input`).
 //!
 //! **Real-time safe:** building the mixer, [`Mixer::chain_mut`] and
 //! [`Insert::new`] allocate and belong on the control thread; everything
@@ -574,6 +582,15 @@ pub struct MixerStats {
     pub pipe_posts: u64,
     /// Of those, the ones that came back later than the lane's wait.
     pub pipe_late: u64,
+    /// Times a return started running a block late, and stopped
+    /// ([`Mixer::set_pipelined_returns`]): each seamless, the reverb taking
+    /// the block back from its pre-delay.
+    pub pipe_starts: u64,
+    pub pipe_stops: u64,
+    /// Stops that had no late input left to hand the reverb (after a late
+    /// lane, or with the lane taken away): one block of the return's input
+    /// was lost. A fallback; it should stay 0.
+    pub pipe_lost_input: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1880,9 +1897,9 @@ impl Mixer {
                 .is_some_and(|pp| pp.away && pp.out.get(k))
     }
 
-    /// Runs the returns' inserts one block late on another core with a
-    /// lane (see the module docs), or stops that with `None` (the block of
-    /// return audio the lane held is dropped). `wait` is how long the mixer
+    /// Runs reverb returns' inserts one block late on another core with a
+    /// lane, still sounding on time (see the module docs), or stops that
+    /// with `None` (late returns go back on time with the input they held). `wait` is how long the mixer
     /// waits for the lane at the returns, unless
     /// [`Mixer::set_lane_deadline`] gave the block one deadline; about a
     /// period. Says how the lane
@@ -1897,8 +1914,16 @@ impl Mixer {
             if old.posted || old.away {
                 if let Ok(job) = old.lane.join(Instant::now() + Duration::from_secs(1)) {
                     pipe_give_back(job, &old.out, &mut self.strips);
+                    old.away = false;
+                    old.out = Bits::default();
                 }
             }
+            // Returns running late go back on time, taking the input they
+            // still hold.
+            let ctx = Ctx::new(self.rate, 0);
+            let (held, len) = (old.held, old.len);
+            let job = if old.away { None } else { old.lane.job() };
+            pipe_stop_all(job, &held, len, &ctx, &mut self.strips, &mut self.stats);
         }
         let cfg = lane?;
         let slots = self.strips.first().map_or(8, |st| st.chain.capacity());
@@ -2295,8 +2320,12 @@ impl Mixer {
             // Away: those returns are silent until their inserts are back.
             Some(pp) if pp.away => late = pp.out,
             Some(pp) => {
-                late = pipe_pick(strips, &topo, &keyed);
-                pipe_post(pp, strips, &late, len, stats);
+                late = pipe_pick(strips, &topo, &keyed, len);
+                let base = Ctx {
+                    sidechain: None,
+                    ..*ctx
+                };
+                pipe_post(pp, strips, &mut late, len, &base, stats);
             }
             None => {}
         }
@@ -2342,7 +2371,7 @@ impl Mixer {
             };
             if pipe_on && late.get(k) {
                 if let Some(pp) = pipe.as_deref_mut() {
-                    pipe_turn(pp, strips, k, caps, len, stats);
+                    pipe_turn(pp, strips, k, caps, len, &base, stats);
                     lane_did = true;
                 }
             }
@@ -2811,34 +2840,117 @@ struct Pipe {
     ctx: CtxCopy,
 }
 
-/// The returns that go a block late this block: inserts to run, no
-/// sidechain key in them, and keying nothing.
-fn pipe_pick(strips: &[Strip], topo: &Topo, keyed: &Bits) -> Bits {
+/// The returns that may go a block late this block: no sidechain key in
+/// their inserts, keying nothing, and an insert that can take the block
+/// back ([`Chain::lead_slot`]: a reverb all wet with at least a block of
+/// pre-delay), so they still sound on time. The rest stay on time.
+fn pipe_pick(strips: &[Strip], topo: &Topo, keyed: &Bits, len: usize) -> Bits {
     let mut out = Bits::default();
     for r in 0..RETURNS {
         let k = topo.ret(r);
         let st = &strips[k];
         let n = st.chain.len();
-        if n > 0 && !keyed.get(k) && (0..n).all(|slot| st.chain.key(slot).is_none()) {
+        if n > 0
+            && !keyed.get(k)
+            && (0..n).all(|slot| st.chain.key(slot).is_none())
+            && st.chain.lead_slot(len as u32).is_some()
+        {
             out.set(k, true);
         }
     }
     out
 }
 
+/// Puts a late return back on time ([`Chain::lead_out`]): its inserts take
+/// `held`, the late input they have not had (or silence, counted, when
+/// there is none).
+fn pipe_stop(
+    st: &mut Strip,
+    held: Option<&mut [Vec<f32>; 2]>,
+    len: usize,
+    ctx: &Ctx,
+    stats: &mut MixerStats,
+) {
+    let lead = st.chain.lead() as usize;
+    let Some(slot) = st.chain.lead_slot(lead as u32).or_else(|| {
+        // It can no longer hold the lead (a knob moved): still the slot
+        // that holds it.
+        (0..st.chain.len()).find(|&i| st.chain.node(i).is_some_and(|n| n.lead() > 0))
+    }) else {
+        return;
+    };
+    stats.pipe_stops += 1;
+    match held {
+        Some([l, r]) if len == lead && l.len() >= lead => {
+            st.chain.lead_out(slot, ctx, &mut l[..lead], &mut r[..lead]);
+        }
+        _ => {
+            stats.pipe_lost_input += 1;
+            let [l, r] = &mut st.buf;
+            l[..lead].fill(0.0);
+            r[..lead].fill(0.0);
+            st.chain.lead_out(slot, ctx, &mut l[..lead], &mut r[..lead]);
+        }
+    }
+}
+
+/// Puts every late return whose inserts are home back on time, with the
+/// input `job` holds for those in `held`.
+fn pipe_stop_all(
+    mut job: Option<&mut Returns>,
+    held: &Bits,
+    len: usize,
+    ctx: &Ctx,
+    strips: &mut [Strip],
+    stats: &mut MixerStats,
+) {
+    let ks: Vec<usize> = match job.as_deref() {
+        Some(j) => j.parts.iter().map(|p| p.k as usize).collect(),
+        None => Vec::new(),
+    };
+    for (i, st) in strips.iter_mut().enumerate() {
+        if st.chain.lead() == 0 {
+            continue;
+        }
+        let buf = match (job.as_deref_mut(), ks.iter().position(|&k| k == i)) {
+            (Some(j), Some(r)) if held.get(i) => Some(&mut j.parts[r].buf),
+            _ => None,
+        };
+        pipe_stop(st, buf, len, ctx, stats);
+    }
+}
+
 /// Hands the lane the inserts of the returns in `late` that kept an input
 /// last block, with that input, and posts them. Returns that kept none
 /// (just picked) start keeping one at their turn this block.
-fn pipe_post(pp: &mut Pipe, strips: &mut [Strip], late: &Bits, len: usize, stats: &mut MixerStats) {
+///
+/// A return already late that may not stay late (a knob moved, a key, a
+/// change of block length) goes back on time here, first: its inserts
+/// take the input it kept. `late` comes back as the returns that are late
+/// this block: those posted and those starting.
+fn pipe_post(
+    pp: &mut Pipe,
+    strips: &mut [Strip],
+    late: &mut Bits,
+    len: usize,
+    ctx: &Ctx,
+    stats: &mut MixerStats,
+) {
     let Some(job) = pp.lane.job() else {
         return;
     };
     let mut any = false;
     for (r, p) in job.parts.iter_mut().enumerate() {
         let k = p.k as usize;
-        // Only a return whose kept input is as long as this block runs; a
-        // change of length drops it.
-        let go = late.get(k) && pp.held.get(k) && pp.len == len;
+        let lead = strips[k].chain.lead() as usize;
+        // Only a return whose kept input is as long as this block, and as
+        // its lead, runs late; any other one with a lead goes back on time.
+        let go = late.get(k) && pp.held.get(k) && pp.len == len && lead == len;
+        if lead > 0 && !go {
+            let held = (pp.held.get(k) && pp.len == lead).then_some(&mut p.buf);
+            pipe_stop(&mut strips[k], held, lead, ctx, stats);
+            late.set(k, false);
+        }
         job.go[r] = go;
         pp.ran.set(k, go);
         if go {
@@ -2902,12 +3014,13 @@ fn pipe_turn(
     k: usize,
     caps: &mut [Capture],
     len: usize,
+    ctx: &Ctx,
     stats: &mut MixerStats,
 ) {
     if pp.posted {
         pipe_join(pp, strips, stats);
     }
-    pipe_swap(pp, &mut strips[k], k, caps, len, stats);
+    pipe_swap(pp, &mut strips[k], k, caps, len, ctx, stats);
 }
 
 /// At return `k`'s turn: checks and captures this block's input, then
@@ -2920,6 +3033,7 @@ fn pipe_swap(
     k: usize,
     caps: &mut [Capture],
     len: usize,
+    ctx: &Ctx,
     stats: &mut MixerStats,
 ) {
     guard(st, len, stats);
@@ -2936,11 +3050,27 @@ fn pipe_swap(
     };
     let p = &mut job.parts[r];
     if !pp.ran.get(k) {
-        // Nothing ran for it (just picked, or the length changed): silent
-        // this block.
-        for b in &mut p.buf {
-            b[..len].fill(0.0);
+        // Starting: the inserts keep this block's input for the next and
+        // put out this block from what the reverb's pre-delay already has
+        // ([`Chain::lead_in`]), so nothing is missed.
+        let slot = st.chain.lead_slot(len as u32);
+        for (h, b) in p.buf.iter_mut().zip(&st.buf) {
+            h[..len].copy_from_slice(&b[..len]);
         }
+        let [l, r] = &mut st.buf;
+        match slot {
+            Some(slot) => {
+                st.chain.lead_in(slot, ctx, &mut l[..len], &mut r[..len]);
+                stats.pipe_starts += 1;
+            }
+            // Never reached: the pick asked the same.
+            None => {
+                l[..len].fill(0.0);
+                r[..len].fill(0.0);
+            }
+        }
+        pp.held.set(k, true);
+        return;
     }
     std::mem::swap(&mut st.buf, &mut p.buf);
     pp.held.set(k, true);

@@ -1,6 +1,6 @@
 # Transport: the time engine's clock
 
-**Status:** first crate (roadmap step T1), 2026-11-11. The code is [`rust/mpfree-transport`](../../../rust/mpfree-transport): host-only and tested, not yet wired to the audio thread or the pads. Nothing here has run on the MPC.
+**Status:** first crate (roadmap step T1), 2026-11-11; on main and in use, 2026-11-12. The code is [`rust/mpfree-transport`](../../../rust/mpfree-transport). The pad player runs it on its audio thread through the time engine's audio half (`TimeHost`, [time-threads.md](time-threads.md)), with the transport bar, PLAY, STOP, REC, OVERDUB and TAP TEMPO. Round 7 ran it on the MPC One. It follows another device's MIDI clock ([midi-clock.md](midi-clock.md#following-the-time-engine), #239), which has not run on the MPC yet.
 
 The transport is the one clock that the sequencer, looper, arpeggiator, sampler and metronome follow. The full time engine plan (research, the clip model, the UI and the roadmap T1 to T16) is the design document "MPFree time engine: transport, sequencer and looper"; mockups and the skill tree are in the mpfree-claude notes (`sequencer/`). This page covers only what T1 builds.
 
@@ -58,4 +58,8 @@ On the build host, one 128-frame period (process plus reading every tick and 1/1
 
 ## Next
 
-T2, the playback engine, is [playback.md](playback.md). Device work waits until the pad player's round 5 (PR #31) is merged.
+- Tempo ramps, as another kind of tempo-map segment. The transport already cuts each period at every segment boundary.
+- Following a clock: the MIDI thread wires the followed port's bytes to `TimeHost::clock_in`, then a device test with a real leader. A quicker answer to a leader whose tempo jumps, and stamping the bytes half a period earlier, are in [midi-clock.md](midi-clock.md#following-the-time-engine).
+- Measuring the transport's cost on the MPC.
+
+The playback engine (T2) is [playback.md](playback.md).

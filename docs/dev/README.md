@@ -26,7 +26,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 ### Time: transport, sequencer, looper
 
-- [Transport](design/transport.md): the time engine's clock that the sequencer, looper, arp and sampler follow: ticks, tempo map, loop, count-in, punch, and the same output for any period size (engine in `rust/mpfree-transport`, 2026-11-11).
+- [Transport](design/transport.md): the time engine's clock that the sequencer, looper, arp and sampler follow: ticks, tempo map, loop, count-in, punch, the same output for any period size, and following another device's MIDI clock (engine in `rust/mpfree-transport`, 2026-11-11; clock follow 2026-11-12).
 - [Playback](design/playback.md): clips of any length on the transport: the model, compiling, sample-exact playback, note-offs, a track through the arp, the clip recorder with replace, overdub and take undo, pad pressure recorded onto notes and played back, and a WAV renderer (engine in `rust/mpfree-seq` and `rust/mpfree-play`, 2026-11-12).
 - [Scenes and follow actions](design/scenes.md): a row of the launch grid launched together on the bar line, with its mutes switching there, and follow actions that chain clips and scenes (`rust/mpfree-perform`, 2026-11-11).
 - [The arrangement, the Song view and live to song](design/arrange.md): clips on a timeline, linked to their slots until made unique, song mode (a launched clip takes a track over until it stops), scenes into a song and back, the Song view on the Arrange page, and Rec song, which records what the grid plays (and the morph) into the song (`rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-perform`, `rust/mpfree-time-ui`, 2026-11-12).

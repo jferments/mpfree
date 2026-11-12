@@ -352,6 +352,37 @@ pub trait Node: Send {
     fn set_tuning(&mut self, tuning: &Tuning) {
         let _ = tuning;
     }
+    /// Whether the node can run with its input `frames` late and its output
+    /// still on time ("lead"): true when every part of its output comes at
+    /// least that long after the input that made it (a reverb's pre-delay)
+    /// and none of the input passes through sooner (no dry mix). A host that
+    /// feeds the node late uses [`Node::lead_in`] and [`Node::lead_out`] to
+    /// start and stop. The default: never.
+    fn can_lead(&self, frames: u32) -> bool {
+        let _ = frames;
+        false
+    }
+    /// Frames of lead the node holds now (0 when fed on time).
+    fn lead(&self) -> u32 {
+        0
+    }
+    /// Starts or adds lead: puts out the next `left.len()` frames from the
+    /// input it already has, without taking any (what `left` and `right`
+    /// hold coming in is ignored), so from now on its input arrives that
+    /// many frames late and its output stays where it was. `events` as in
+    /// [`Node::process`]. Only called when [`Node::can_lead`] says yes to
+    /// the lead it will then hold. Real-time safe.
+    fn lead_in(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
+        let _ = (ctx, events);
+        left.fill(0.0);
+        right.fill(0.0);
+    }
+    /// Gives back `left.len()` frames of lead: takes them as input and puts
+    /// out nothing, so the input after them is on time again. Real-time
+    /// safe.
+    fn lead_out(&mut self, ctx: &Ctx, left: &[f32], right: &[f32]) {
+        let _ = (ctx, left, right);
+    }
 }
 
 /// A one-pole smoother for a continuous parameter, stepped once per frame.
