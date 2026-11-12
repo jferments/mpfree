@@ -2,7 +2,9 @@
 //! period, under the counting allocator: pads and pressure into the arp app,
 //! the transport and clips, the sampler (each pad into its mixer channel) or
 //! the synth, the looper, the mixer and the click, out to the period's
-//! samples. None of it may allocate or free while nothing is edited.
+//! samples. None of it may allocate or free while nothing is edited,
+//! with the sound on one core or on two (`--sound-cores two`: the
+//! sampler's and the mixer's lanes, cores.rs).
 //!
 //! Left out, because they are the device's or the screen's: reading MIDI
 //! and the screen's queue, the log lines and the screen updates (`out.note`,
@@ -11,7 +13,7 @@
 //! ALSA.
 
 use crate::{
-    app, kit, looping, mixing, sampler, synth, time, SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
+    app, cores, kit, looping, mixing, sampler, synth, time, SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
 };
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
@@ -241,8 +243,12 @@ impl Rig {
 /// A bar of pads recorded into a clip and the looper's 1-bar loop, then
 /// half a minute of steady play (the clip, the arp on held pads, the loop) with
 /// no allocation or free on the sound path.
-fn steady_play_never_allocates(synth_on: bool) {
+fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     let mut rig = Rig::new(synth_on);
+    // Before the sound starts, as player_session does (it allocates and
+    // starts the lanes' threads).
+    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player);
+    c.start_mixer(&mut rig.mix.mixer);
     // Setup, which may allocate: a new clip on track 1, which starts
     // recording the pads, and the looper recording its first bar.
     // Recording is an edit: each finished note goes into the clip, and the
@@ -294,14 +300,28 @@ fn steady_play_never_allocates(synth_on: bool) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     assert!(rig.peak.is_finite());
+    // On two cores the lane took its half of the voices. (Late parts are
+    // allowed here: under qemu or a busy machine the lane can be slow, and
+    // a late part allocates nothing either.)
+    let n = cores::Counts::read(&rig.player, &rig.mix.mixer);
+    match sound_cores {
+        cores::SoundCores::Two if !synth_on => assert!(n.voice_parts > 100, "{n:?}"),
+        cores::SoundCores::Two => {}
+        _ => assert_eq!(n, cores::Counts::default()),
+    }
 }
 
 #[test]
 fn the_sound_path_never_allocates_with_the_sampler() {
-    steady_play_never_allocates(false);
+    steady_play_never_allocates(false, cores::SoundCores::Shared);
 }
 
 #[test]
 fn the_sound_path_never_allocates_with_the_synth() {
-    steady_play_never_allocates(true);
+    steady_play_never_allocates(true, cores::SoundCores::Shared);
+}
+
+#[test]
+fn the_sound_path_never_allocates_on_two_cores() {
+    steady_play_never_allocates(false, cores::SoundCores::Two);
 }
