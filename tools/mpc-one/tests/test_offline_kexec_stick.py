@@ -580,7 +580,8 @@ class StaticTests(unittest.TestCase):
         if busybox:
             for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000"),
                            tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000",
-                                                  data_uuid="00000000-0000-0000-0000-000000000001", keep="")):
+                                                  data_uuid="00000000-0000-0000-0000-000000000001", keep="",
+                                                  grow=tool.GROW_PROGRAM)):
                 res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(res.returncode, 0, res.stderr)
         lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
