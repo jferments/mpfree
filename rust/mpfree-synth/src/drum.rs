@@ -663,7 +663,10 @@ impl Drums {
             }
             NodeEvent::AllOff => self.kill_where(ALL_OFF_MS, |_| true),
             NodeEvent::Param { id, value } => self.set_param(id, value),
-            NodeEvent::NoteOff { .. } | NodeEvent::Pressure { .. } | NodeEvent::Bend { .. } => {}
+            NodeEvent::NoteOff { .. }
+            | NodeEvent::Pressure { .. }
+            | NodeEvent::Bend { .. }
+            | NodeEvent::Expression { .. } => {}
         }
     }
 
