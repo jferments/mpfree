@@ -374,6 +374,42 @@ def mpfree_v11_entrypoint():
                     'callback_containing_function':callback_fn,
                     'callback_is_thumb':bool(callback_ptr & 1) if callback_ptr is not None else None,
                 })
+        # Look at original ELF mapping, NOT runtime RAM contents.
+        # An uninitialized/BSS byte is not an inferred live unlock state.
+        def original_word_metadata(pos):
+            try:
+                block=mem.getBlock(A(pos))
+                if block is None:return {'mapped':False}
+                initialized=bool(block.isInitialized())
+                data={
+                    'mapped':True,
+                    'memory_block':str(block.getName()),
+                    'initialized_in_original_image':initialized,
+                    'writeable_at_runtime':bool(block.isWrite()),
+                    'original_image_word':(
+                        addr_hex(read_word(pos)) if initialized
+                        else None),
+                    'runtime_word_unknown':True,
+                }
+                return data
+            except Exception as exc:
+                return {'mapped':None,'error':str(exc),
+                        'runtime_word_unknown':True}
+        original_state={
+            'fastboot_permission_global_0x14d690':
+                original_word_metadata(0x0014d690),
+            'boot_download_word_at_0x143e34':
+                original_word_metadata(0x00143e34),
+        }
+        # The callbacks below are the ordinary Fastboot registered
+        # completion functions; their presence does not establish that
+        # download/boot is authorized in a locked session.
+        completion_callbacks={
+            'boot_registration_literal':original_word_metadata(0x00122978),
+            'boot_registration_target':read_word(0x00122978),
+            'continue_registration_literal':original_word_metadata(0x0012295c),
+            'continue_registration_target':read_word(0x0012295c),
+        }
         direct_boot={
             'schema':'mpfree-p3-directboot-literal-evidence-v1',
             'permission_read_slot':ptrs['permission_read_literal'],
@@ -385,6 +421,8 @@ def mpfree_v11_entrypoint():
             'permission_read_write_pointer_is_prior_global':bool(
                 rptr=='0x0014d690' and wptr=='0x0014d690'),
             'permission_global_xrefs':global_refs,
+            'original_image_word_metadata_not_runtime':original_state,
+            'registered_callback_pointer_metadata':completion_callbacks,
             'fastboot_command_table_pointer':(
                 addr_hex(command_table_pointer) if command_table_pointer is not None else None),
             'fastboot_command_table':command_dispatch,
