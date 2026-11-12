@@ -85,6 +85,7 @@ fn on_track(c: Clip, track: usize) -> PlayView {
             track,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap()
@@ -293,6 +294,7 @@ fn a_switch_ends_the_old_clips_locks_before_the_new_ones() {
         track: 0,
         slot: 0,
         origin: 0,
+        start: 0,
     }];
     let playing = PlayView::compile(&p, &launch).unwrap();
     // Cued while bar 1 plays: it starts on bar 2.
@@ -342,6 +344,7 @@ fn a_muted_track_lets_its_locks_go_and_sends_none() {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap();

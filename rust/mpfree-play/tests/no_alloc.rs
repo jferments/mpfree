@@ -1,8 +1,9 @@
 //! `Player::process`, `ArpHost::process` and `Recorder::process` must not
 //! allocate or free. A counting global allocator watches a busy session
 //! (five tracks, one of them through the arp, one recording, with loops,
-//! tempo changes, locates, punch in and out, stop and panic, and parameter
-//! locks on every track) at period sizes from 1 to 4096 frames.
+//! tempo changes, locates, punch in and out, stop and panic, parameter
+//! locks on every track, trig conditions, ratchets and FILL) at period
+//! sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
-use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
+use mpfree_seq::{Clip, Cond, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -87,6 +88,16 @@ fn playing_never_allocates() {
                 note: (k % 16) as u8,
                 velocity: 100,
                 chance: if k % 5 == 0 { 50 } else { 100 },
+                // Trig conditions and ratchets on some notes.
+                cond: [
+                    Cond::Always,
+                    Cond::Every { a: 1, b: 2 },
+                    Cond::Fill,
+                    Cond::Pre,
+                    Cond::NotNei,
+                    Cond::First,
+                ][k as usize % 6],
+                ratchet: 1 + (k % 3) as u8,
             })
             .collect();
         // Locks on notes, trigless ones, and pad locks.
@@ -118,6 +129,7 @@ fn playing_never_allocates() {
             track: i,
             slot: i,
             origin: (i as i64 - 2) * 480,
+            start: (i as i64 - 2) * 480,
         });
     }
     // Cues start on the first bar line, and the player carries them on its
@@ -189,6 +201,9 @@ fn playing_never_allocates() {
             _ => {}
         }
         let n = sizes[(i % sizes.len() as u64) as usize];
+        if i % 37 == 0 {
+            player.set_fill(i % 74 == 0, (i as u32 * 13) % n);
+        }
         t.process(n, &mut block);
         sink.last = block.start_frame;
         player.process(&view, &block, &mut sink);
@@ -232,6 +247,7 @@ fn playing_never_allocates() {
     assert!(sink.events > 2000, "{}", sink.events);
     assert_eq!(player.stats().dropped, 0);
     assert!(player.stats().erased > 20, "{:?}", player.stats());
+    assert!(player.stats().unmet > 20, "{:?}", player.stats());
     assert!(arp_notes > 500, "{arp_notes}");
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");

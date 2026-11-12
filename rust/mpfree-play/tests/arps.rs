@@ -49,30 +49,19 @@ fn view() -> PlayView {
     let mut c = Clip::new("chord", 3840);
     c.notes = [60u8, 64, 67]
         .iter()
-        .map(|&n| Note {
-            tick: 0,
-            len: 3840,
-            note: n,
-            velocity: 100,
-            chance: 100,
-        })
+        .map(|&n| Note::new(0, 3840, n, 100))
         .collect();
     keys.slots[0] = Some(c);
     let mut drums = Track::new("drums", 1);
     let mut k = Clip::new("kick", 3840);
-    k.notes = vec![Note {
-        tick: 0,
-        len: 100,
-        note: 36,
-        velocity: 120,
-        chance: 100,
-    }];
+    k.notes = vec![Note::new(0, 100, 36, 120)];
     drums.slots[0] = Some(k);
     p.tracks = vec![keys, drums];
     let launch = |track| Launch {
         track,
         slot: 0,
         origin: 0,
+        start: 0,
     };
     PlayView::compile(&p, &[launch(0), launch(1)]).unwrap()
 }
@@ -295,6 +284,58 @@ fn a_panic_clears_every_arp_and_passes_through() {
     );
 }
 
+/// A through track's parameter locks skip its arp (which has no use for
+/// them) and reach the sink as the player sent them, ahead of the arp's
+/// notes on the same frame; its notes still go into the arp.
+#[test]
+fn a_through_tracks_locks_go_around_its_arp() {
+    use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let mut block = Block::new();
+    t.process(256, &mut block);
+    let addr = RelAddr::new(OnTrack::Inst, 1).on(KEYS as u8);
+    let out = |offset, event| Out {
+        offset,
+        frame: u64::from(offset),
+        track: KEYS as u16,
+        dest: 0,
+        event,
+    };
+    let mut sink = arps.through_sink();
+    sink.send(out(0, Event::Lock { addr, value: 0.25 }));
+    sink.send(out(
+        0,
+        Event::NoteOn {
+            note: 60,
+            velocity: 100,
+        },
+    ));
+    sink.send(out(200, Event::Unlock { addr }));
+    let mut log = Log::default();
+    arps.finish(&block, &mut log);
+    let events: Vec<_> = log.0.iter().map(|o| (o.offset, o.event)).collect();
+    assert_eq!(
+        events,
+        [
+            (0, Event::Lock { addr, value: 0.25 }),
+            (
+                0,
+                Event::NoteOn {
+                    note: 60,
+                    velocity: 100
+                }
+            ),
+            (200, Event::Unlock { addr }),
+        ],
+        "the lock first, then the arp's first step, then the unlock"
+    );
+    assert_eq!(arps.dropped(), 0);
+}
+
 /// An idle arp skips its periods; the notes it plays once a pad wakes it are
 /// the same as from an arp run every period, with the transport rolling or
 /// stopped.
@@ -362,4 +403,45 @@ fn an_idle_arp_that_skips_its_periods_plays_the_same_when_woken() {
         assert!(want.len() >= 6, "rolling {rolling}: {want:?}");
         assert_eq!(got, want, "rolling {rolling}");
     }
+}
+
+/// `finish_with` says which notes an arp played (the pads through it, or a
+/// through track's clip) and which the player passed on as recorded.
+#[test]
+fn finish_with_marks_what_the_arps_played() {
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let view = view();
+    let mut player = Player::new();
+    let mut block = Block::new();
+    let mut seen: Vec<(u16, u8, bool)> = Vec::new();
+    while t.frame() < 11_025 {
+        t.process(128, &mut block);
+        if block.start_frame == 0 {
+            // A live hit on track 3, through its (Direct) arp.
+            arps.pad(
+                3,
+                5,
+                Event::NoteOn {
+                    note: 7,
+                    velocity: 80,
+                },
+            );
+        }
+        player.process(&view, &block, &mut arps.through_sink());
+        arps.finish_with(&block, |o, arp| {
+            if let Event::NoteOn { note, .. } = o.event {
+                seen.push((o.track, note, arp));
+            }
+        });
+    }
+    // The keys' clip through its arp, the kick as recorded, the pad live.
+    assert!(seen.contains(&(KEYS as u16, 60, true)));
+    assert!(seen.contains(&(KEYS as u16, 64, true)));
+    assert!(seen.contains(&(DRUMS as u16, 36, false)));
+    assert!(seen.contains(&(3, 7, true)));
+    assert_eq!(seen.iter().filter(|s| !s.2).count(), 1, "{seen:?}");
 }

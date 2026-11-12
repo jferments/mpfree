@@ -10,7 +10,9 @@
 //! `time.steps()`, `mix.poll_state`, the meter), and writing the period to
 //! ALSA.
 
-use crate::{app, kit, looping, mixing, sampler, synth, time, SeqPads, PERIOD, RATE};
+use crate::{
+    app, kit, looping, mixing, sampler, synth, time, SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
+};
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
 use mpfree_controller::mpc_one::PAD_NOTES;
@@ -193,6 +195,10 @@ impl Rig {
             synth: synth_on.then_some(&mut *synth),
             flashes: [0; 16],
             hits: 0,
+            live: app.live_map(),
+            live_hits: [(0, 0); MAX_LIVE_HITS],
+            n_live: 0,
+            silent: 0,
         };
         time.period(PERIOD as u32, &mut seq);
         *clip_hits += seq.hits;

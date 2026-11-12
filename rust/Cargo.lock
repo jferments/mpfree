@@ -386,6 +386,7 @@ dependencies = [
  "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
+ "mpfree-moves",
  "mpfree-node",
  "mpfree-param",
  "mpfree-play",
@@ -470,6 +471,7 @@ version = "0.1.0"
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
 ]
@@ -588,6 +590,15 @@ version = "0.1.0"
 dependencies = [
  "mpfree-node",
  "mpfree-param",
+]
+
+[[package]]
+name = "mpfree-moves"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-param",
+ "mpfree-transport",
 ]
 
 [[package]]
