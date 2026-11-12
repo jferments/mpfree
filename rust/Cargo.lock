@@ -525,6 +525,7 @@ dependencies = [
  "mpfree-core",
  "mpfree-fx",
  "mpfree-fx-ui",
+ "mpfree-instruments",
  "mpfree-looper",
  "mpfree-mixer-ui",
  "mpfree-mod",
@@ -716,6 +717,7 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "mpfree-screen-log",
+ "mpfree-store",
  "mpfree-ui",
 ]
 

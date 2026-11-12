@@ -28,6 +28,7 @@
 - `Store::at(dir)` on the MPC; `Store::none()` in tests and previews (nothing is written).
 - `store.settings(owner) -> Settings`: ordered `key = value`, with `get_*` / `set_*` helpers. `store.save_settings(owner, &settings)`.
 - `store.read(owner, name) -> Option<Vec<u8>>`, `store.write(owner, name, bytes)`.
+- `store.list(owner) -> Vec<String>`: the names of the owner's plain files, sorted (read only; at most `MAX_LIST`).
 - **Rules:**
   - Owner and file names are `[a-z0-9._-]` only, so there are no paths and no `..`.
   - 1 MiB per file, and the partition's size caps the total.
@@ -37,7 +38,8 @@
 
 ## What is saved (first version)
 
-- **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools. Line input is never saved and is Off at every start.
+- **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools, theme (Appearance). Line input is never saved and is Off at every start.
 - **The buttons found with Map controls and the guide,** so the MPC is mapped once.
 - **Touch tuning** (the touch thread, #145): `settings/touch.conf`, written by Save on Dev > Touch. Keys are `mpfree_touch::tuning::Param::key` (offset-x, offset-y, scale-x, scale-y, hold-filter-px, tap-slop-px, tap-max-ms, long-press-ms, swipe-min-px, swipe-min-speed). Each value is clamped to its bounds when read, so a damaged file can't make touch unusable ([M17](../milestones/m17-touch-tuning.md)).
 - **Arp patterns** (the arp thread): `files/arp/patterns.txt`, the patterns and custom scales Save keeps. `--save-patterns` is gone; `--patterns FILE` only reads a library for one start.
+- **Themes folder** (the themes thread): `files/themes/NAME.theme`, theme files the user adds; the app only reads them and offers them in Prefs > Appearance. The picked theme is `theme` in the app settings.

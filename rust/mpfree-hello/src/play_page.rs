@@ -740,6 +740,12 @@ impl PlayPage {
     /// screen's values move at once; the engines hear the returned turn.
     pub fn turn(&mut self, k: usize, ticks: i32, fine: bool) -> Option<Turn> {
         let knob = *self.knobs().get(k)?;
+        self.turn_knob(knob, ticks, fine)
+    }
+
+    /// Turn `knob` by `ticks` detents, whichever view shows (the Looper
+    /// tab turns the line level with it).
+    pub fn turn_knob(&mut self, knob: Knob, ticks: i32, fine: bool) -> Option<Turn> {
         if ticks == 0 {
             return None;
         }
