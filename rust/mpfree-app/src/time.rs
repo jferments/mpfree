@@ -797,24 +797,11 @@ impl TimeHost {
                 self.morph.a = a.min(SLOTS - 1);
                 self.morph.b = b.min(SLOTS - 1);
                 self.changed = true;
-                let rows = (self.morph.a, self.morph.b);
-                self.song_rec.morph(info.position, self.morph.pos, rows);
+                self.song_morph();
                 Ok(format!(
                     "morph: rows {} and {}",
                     self.morph.a + 1,
                     self.morph.b + 1
-                ))
-            }
-            TimeAction::Morph(pos) if self.song_rec.recording() => {
-                // The sound waits for the mod engine; the song keeps the
-                // move already.
-                self.morph.pos = pos.clamp(0.0, 1.0);
-                self.changed = true;
-                let rows = (self.morph.a, self.morph.b);
-                self.song_rec.morph(info.position, self.morph.pos, rows);
-                Ok(format!(
-                    "morph {:.2} into the song (the mod engine is not in the pad player yet)",
-                    self.morph.pos
                 ))
             }
             TimeAction::RecSong(on) => {
@@ -986,6 +973,7 @@ impl TimeHost {
                     .map_err(|e| format!("morph: {e:?}"))?;
                 modu.morph_to(self.morph.pos);
                 (self.morph.a, self.morph.b, self.morph.params) = (a, b, l.morphing);
+                self.song_morph();
                 format!(
                     "morph: rows {} and {}, {} parameters",
                     a + 1,
@@ -1020,6 +1008,7 @@ impl TimeHost {
                 }
                 modu.morph_to(x);
                 self.morph.pos = x;
+                self.song_morph();
                 line
             }
             TimeAction::SnapBack | TimeAction::KeepMorph if !self.morph.on => {
@@ -1045,6 +1034,14 @@ impl TimeHost {
         };
         self.changed = true;
         Ok(line)
+    }
+
+    /// Live to song: the crossfader's position and the rows it morphs
+    /// between, which go into the song's morph lane while Rec song records.
+    fn song_morph(&mut self) {
+        let at = self.info().position;
+        let rows = (self.morph.a, self.morph.b);
+        self.song_rec.morph(at, self.morph.pos, rows);
     }
 
     /// CAPTURE: keep the last phrase in the armed track (track 1 if none
@@ -2466,6 +2463,48 @@ mod tests {
             );
         }
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Rec song keeps the morph bar's moves made on the mixer's mod engine:
+    /// the crossfader's positions, and the rows they morph between, go into
+    /// the song's morph lane when the transport stops.
+    #[test]
+    fn rec_song_keeps_the_morph_bar_moves_made_on_the_mixer() {
+        use mpfree_seq::arrange::MORPH_LANE;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = crate::mixing::MixHost::new(RATE, 0.0, 6.0);
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.morph(TimeAction::Morph(0.5), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.morph(
+            TimeAction::MorphRows { a: 0, b: 2 },
+            &mut mix.modu,
+            &mix.mixer,
+        )
+        .unwrap();
+        h.morph(TimeAction::Morph(1.0), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let note = h.take_song_note().unwrap();
+        assert!(note.starts_with("rec song: 1 placements and "), "{note}");
+        let song = &h.project.arrangement;
+        let rows: Vec<(usize, usize)> = song.morphs.iter().map(|m| (m.a, m.b)).collect();
+        assert_eq!(rows, [(0, 1), (0, 2)]);
+        // Held half way from the first move, all the way after the second.
+        let lane = song.lanes.lane(MORPH_LANE).unwrap();
+        let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
+        assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
+        assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
     }
 
     /// Pads played over bars 2 and 3 without recording; Capture keeps them

@@ -55,7 +55,7 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
 
 - **Launches and stops.** A clip that starts on a track becomes a placement linked to its slot, from that tick and at the right place in the clip. That covers a launch, a scene and a follow action. The placement ends where the track switches clip or stops.
 - **Mutes.** A muted stretch is left out of the song. The placement ends where the track is muted, and a new one starts where it is heard again, in phase with the clip. A scene's mutes come with its cue. A mute made by hand comes through `SongRecorder::mute`.
-- **The morph.** Crossfader moves go into the song's morph lane, with the rows they morph between. A pass with no move leaves the lane as it was.
+- **The morph.** Crossfader moves go into the song's morph lane, with the rows they morph between. A pause of a 16th note or more (`MORPH_HOLD`) is held, so a move after it starts from where the crossfader sat instead of ramping across the pause. A drag's moves come closer together, so a drag stays one ramp. A pass with no move leaves the lane as it was.
 - **Tracks playing the song are not recorded.** On a track with no clip launched, the song stays as it is. Where a launched clip played a track, what the song had there is replaced, like recording over tape.
 - **Passes.** A pass ends where the transport stops or jumps (a locate or a loop jump), and a new one starts where it lands. Each loop pass records over the last.
 - **When it goes in.** Nothing goes into the project until the transport stops or Rec song is turned off (`SongRecorder::finish`). That way the song does not change under the player while it plays.
@@ -85,7 +85,7 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
 - `act(ScenesToSong)`, `SongToScenes`, `MakeUnique` and `DeletePlacement` edit the project, and compile. If the edit or the compile fails, the project goes back to what it was, and the log says why.
 - Every compile calls `PlayView::set_song`.
 - `act(RecSong)` arms or disarms live to song. After every period the recorder sees the transport's block and the cues that started. When the transport stops, the recording goes into the song and compiles, and the log says how many placements and morph points went in (`TimeHost::take_song_note`).
-- While recording, a crossfader move goes into the song (`act(Morph)`), though the sound waits for the mod engine in the pad player (see [scenes.md](scenes.md#the-scene-morph-t10-mpfree_performmorph)).
+- While recording, the morph bar's moves go into the song as they reach the mixer's mod engine (`TimeHost::morph`, see [scenes.md](scenes.md#the-scene-morph-t10-mpfree_performmorph)): each crossfader position, and new rows chosen while morphing.
 
 ## Tests
 
@@ -104,11 +104,12 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
   - launches, scenes with mutes, stops and a launch over the song: placed as played, and played back with the same notes on the same frames at periods of 1, 7, 128, 1000 and 4096;
   - a loop pass recording over the last;
   - a mute in the middle of a two-bar clip leaving a gap, and the clip coming back in phase;
-  - morph moves going into the song's lane with their rows, and playing back.
+  - morph moves going into the song's lane with their rows, held across a pause, and playing back.
 - `mpfree-perform/tests/song_no_alloc.rs` records 200 periods where nothing starts, at periods of 1 to 4096 frames, under a counting allocator: none of them allocates.
 - `mpfree-time-ui` tests cover the Song view's blocks, buttons and empty space, and swapping between the grid and the Song view.
-- `mpfree-hello`'s `rows_become_a_song_that_plays_and_goes_back_into_rows` runs it through `TimeHost` with the pads: Scenes → song, song mode, a launched clip taking a track over and the song playing on after its stop, Song → scenes, make unique and delete.
-- `mpfree-hello`'s `rec_song_records_the_grid_into_the_song` arms Rec song, launches two rows and stops. The song holds what was played and plays it back the same.
+- `mpfree-app`'s `rows_become_a_song_that_plays_and_goes_back_into_rows` runs it through `TimeHost` with the pads: Scenes → song, song mode, a launched clip taking a track over and the song playing on after its stop, Song → scenes, make unique and delete.
+- `mpfree-app`'s `rec_song_records_the_grid_into_the_song` arms Rec song, launches two rows and stops. The song holds what was played and plays it back the same.
+- `mpfree-app`'s `rec_song_keeps_the_morph_bar_moves_made_on_the_mixer` moves the morph bar on the real mixer's mod engine while Rec song records, changes rows, and checks the song's morph lane and rows.
 
 ## Not yet
 
@@ -116,5 +117,5 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
 - Undo for song edits.
 - Recording notes straight into the song. REC records into the session's clips, and live to song records which clips played.
 - Hand mutes in live to song. The pad player has no mute button for the time engine yet, so only a scene's mutes are recorded there.
-- The morph's rows in song mode. The song lane plays the crossfader, but loading the rows at their ticks waits for the mod engine in the pad player.
+- The morph's rows in song mode. The song lane plays the crossfader on the mixer's mod engine, but the rows the song keeps are not loaded at their ticks yet, so it morphs between the rows loaded at the time.
 - Song mode is not saved with the project yet: the project has no file format so far.
