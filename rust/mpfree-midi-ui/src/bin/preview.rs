@@ -30,6 +30,8 @@ struct Shot {
     about: &'static str,
     section: usize,
     model: IoModel,
+    /// Data wheel detents after the section is picked (scrolls the list).
+    wheel: i32,
     /// Taps after the section is picked.
     taps: Vec<(i32, i32)>,
 }
@@ -45,12 +47,37 @@ fn shots() -> Vec<Shot> {
         cv_outs: 4,
     };
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
+    // Four learned controls: a knob, an endless encoder, a key, and one on
+    // the drum machine that isn't plugged in.
+    for (text, name) in [
+        (
+            "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump",
+            "Cutoff (Filter, Drums)",
+        ),
+        (
+            "port Keystep 37 | ch 1 | cc 16 | t2.mix.0 | 0 1 | relative-64 | jump",
+            "Volume (Bass)",
+        ),
+        (
+            "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
+            "Mute (Perc)",
+        ),
+        (
+            "port Digitakt | ch 1 | cc 1 | t4.mix.6 | 0 1 | absolute | jump",
+            "Send A (Lead)",
+        ),
+    ] {
+        let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
+        built.setup.learned(l);
+        built.live.learn_names.push(name.into());
+    }
     vec![
         Shot {
             name: "io-midi",
             about: "MIDI: each port's input and thru, and where each track plays (one setting, port and channel together); MIDI out off, so the rows say so",
             section: 1,
             model: rig.clone(),
+            wheel: 0,
             taps: vec![],
         },
         Shot {
@@ -59,6 +86,7 @@ fn shots() -> Vec<Shot> {
             section: 1,
             model: rig.clone(),
             // The Lead track's Plays on field (the rows' layout is fixed).
+            wheel: 0,
             taps: vec![(186 + 330 + 135, 0)],
         },
         Shot {
@@ -66,6 +94,7 @@ fn shots() -> Vec<Shot> {
             about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
             section: 2,
             model: rig.clone(),
+            wheel: 0,
             taps: vec![],
         },
         Shot {
@@ -73,6 +102,7 @@ fn shots() -> Vec<Shot> {
             about: "CV: the eight outputs with job, track and main setting; CV out not built yet",
             section: 3,
             model: rig,
+            wheel: 0,
             taps: vec![],
         },
         Shot {
@@ -80,6 +110,15 @@ fn shots() -> Vec<Shot> {
             about: "MIDI once MIDI out is on: rows say where each track plays",
             section: 1,
             model: built.clone(),
+            wheel: 0,
+            taps: vec![],
+        },
+        Shot {
+            name: "io-midi-learn",
+            about: "MIDI, scrolled to MIDI Learn: each learned control, how it works and what it moves, with Forget; one on a device that isn't plugged in",
+            section: 1,
+            model: built.clone(),
+            wheel: 40,
             taps: vec![],
         },
         Shot {
@@ -87,6 +126,7 @@ fn shots() -> Vec<Shot> {
             about: "CV once CV out is built: each output's volts now",
             section: 3,
             model: built,
+            wheel: 0,
             taps: vec![],
         },
     ]
@@ -115,6 +155,9 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
         return Err(format!("{}: no section {}", shot.name, shot.section));
     }
     mpfree_mixer_ui::io_tick(&mut ui, Duration::from_secs(1));
+    if shot.wheel != 0 {
+        mpfree_mixer_ui::io_input(&mut ui, mpfree_mixer_ui::IoInput::Wheel(shot.wheel));
+    }
     set_hint(&mut ui);
     ui.paint(&mut canvas);
     for &(x, y) in &shot.taps {

@@ -22,6 +22,7 @@
 //!   over its MIDI part, and nothing is dropped silently.
 
 use crate::cv::{CvAssign, Priority, Scale, CV_OUTS};
+use crate::learn::Saved;
 use crate::msg::Channel;
 use crate::output::MAX_TRACKS;
 
@@ -187,6 +188,9 @@ pub struct MidiSetup {
     pub tracks: [Option<TrackOut>; MAX_TRACKS],
     /// What each CV/gate output does.
     pub cv: [CvAssign; CV_OUTS],
+    /// Controls learned with MIDI Learn, each with its device by name, in
+    /// the order learned.
+    pub learn: Vec<Saved>,
 }
 
 impl Default for MidiSetup {
@@ -198,9 +202,13 @@ impl Default for MidiSetup {
             ports: Vec::new(),
             tracks: std::array::from_fn(|_| None),
             cv: [CvAssign::Off; CV_OUTS],
+            learn: Vec::new(),
         }
     }
 }
+
+/// The most learned controls a project keeps.
+pub const MAX_LEARNED: usize = 256;
 
 /// The most ports a project names.
 pub const MAX_PORT_LINES: usize = 64;
@@ -233,6 +241,20 @@ impl MidiSetup {
         if self.ports[i].is_default() {
             self.ports.remove(i);
         }
+    }
+
+    /// A control was learned: it replaces one learned before on the same
+    /// control (a control moves one thing). False when the project has
+    /// [`MAX_LEARNED`] already.
+    pub fn learned(&mut self, s: Saved) -> bool {
+        if let Some(old) = self.learn.iter_mut().find(|o| o.same_control(&s)) {
+            *old = s;
+        } else if self.learn.len() < MAX_LEARNED {
+            self.learn.push(s);
+        } else {
+            return false;
+        }
+        true
     }
 
     /// The part's text. Only what differs from the defaults is written,
@@ -279,6 +301,9 @@ impl MidiSetup {
             if *a != CvAssign::Off {
                 line(&mut s, &format!("cv.{}", i + 1), &cv_text(a));
             }
+        }
+        for l in &self.learn {
+            line(&mut s, "learn", &l.text());
         }
         s
     }
@@ -389,6 +414,12 @@ impl MidiSetup {
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
                 self.cv[i] = parse_cv(v)?;
+            }
+            ["learn"] => {
+                let l = Saved::parse(v).ok_or("not a learned control")?;
+                if !self.learned(l) {
+                    return Err(format!("more than {MAX_LEARNED} learned controls"));
+                }
             }
             _ => return Err("unknown key".into()),
         }
@@ -719,7 +750,40 @@ mod tests {
             priority: Priority::High,
         };
         m.cv[7] = CvAssign::Fixed { volts: 2.5 };
+        m.learned(learned(Some("Keystep 37"), 74));
+        m.learned(learned(None, 1));
         m
+    }
+
+    fn learned(port: Option<&str>, cc: u8) -> Saved {
+        use crate::learn::{Mode, Source, Takeover};
+        use mpfree_param::{OnTrack, ParamAddr};
+        Saved {
+            port: port.map(String::from),
+            channel: 0,
+            source: Source::Cc(cc),
+            target: ParamAddr::new(OnTrack::Inst.on(2), 7),
+            lo: 0.0,
+            hi: 1.0,
+            mode: Mode::Absolute,
+            takeover: Takeover::Jump,
+        }
+    }
+
+    /// Learning a control again replaces what it moved; a line that isn't
+    /// a learned control is named in a warning.
+    #[test]
+    fn a_control_learned_again_replaces_the_old_one() {
+        let mut m = MidiSetup::default();
+        m.learned(learned(Some("Keystep 37"), 74));
+        let mut again = learned(Some("Keystep 37"), 74);
+        again.lo = 0.5;
+        m.learned(again.clone());
+        m.learned(learned(Some("Other"), 74));
+        assert_eq!(m.learn.len(), 2);
+        assert_eq!(m.learn[0], again);
+        let (_, w) = MidiSetup::parse("mpfree-midi 1\nlearn = nonsense\n");
+        assert_eq!(w, ["line 2: learn: not a learned control"]);
     }
 
     #[test]

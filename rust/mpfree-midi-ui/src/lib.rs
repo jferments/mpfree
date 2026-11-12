@@ -31,11 +31,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub use learn::control_text;
 use mpfree_midi::cv::CV_OUTS;
 pub use mpfree_midi::setup::MidiSetup;
 
 mod cv;
 mod form;
+mod learn;
 mod midi;
 mod sync;
 
@@ -82,6 +84,10 @@ pub struct Live {
     pub clock_in: Option<(String, f32)>,
     /// The volts each CV output gives now.
     pub cv_volts: [f32; CV_OUTS],
+    /// What each learned control moves, in words, in the order of
+    /// `MidiSetup::learn` ("Cutoff (Drums)"). One without a name shows
+    /// its address.
+    pub learn_names: Vec<String>,
     pub built: Built,
 }
 
@@ -98,6 +104,7 @@ impl Default for Live {
             tracks: Vec::new(),
             clock_in: None,
             cv_volts: [0.0; CV_OUTS],
+            learn_names: Vec::new(),
             built: Built::default(),
         }
     }
