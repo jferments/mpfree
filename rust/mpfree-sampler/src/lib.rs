@@ -17,7 +17,7 @@
 //!   also feeds [`model::Source::from_prepared`].
 //!
 //! Loading is never real-time; `render` and the event calls only touch
-//! prepared memory. Design: `docs/project/sampler-design.md`.
+//! prepared memory. Design: `docs/dev/design/sampler-design.md`.
 #![forbid(unsafe_code)]
 
 pub mod autosample;

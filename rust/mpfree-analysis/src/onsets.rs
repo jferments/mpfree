@@ -1,6 +1,6 @@
 //! Transient (onset) detection for transient chop.
 //!
-//! The method from `docs/project/sampler-architecture.md`:
+//! The method from `docs/dev/design/sampler-architecture.md`:
 //!
 //! 1. Mix to mono and take a 1024-point FFT every 256 frames (5.8 ms at
 //!    44.1 kHz), Hann windowed and centred on the hop.

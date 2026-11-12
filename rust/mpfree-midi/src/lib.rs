@@ -15,7 +15,7 @@
 //! another device's clock is the time engine's. Which ALSA device each
 //! port is, and opening it, is the app's, after the owner's go: the DIN
 //! jacks' USB-MIDI cable and the way the CV jacks are driven are still to
-//! be confirmed by a read-only capture (docs/project/midi-io.md).
+//! be confirmed by a read-only capture (docs/dev/design/midi-io.md).
 #![forbid(unsafe_code)]
 
 pub mod cv;

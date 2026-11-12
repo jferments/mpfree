@@ -3,7 +3,7 @@
 //! when one is open. It draws a [`Screen`] and turns touches into
 //! [`Input`]s; it never touches the library itself.
 
-use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Source, SOURCES};
+use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Sort, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
@@ -32,8 +32,10 @@ struct Geo {
     path: Rect,
     list_buttons: Vec<(Button, Rect)>,
     rows: Rect,
-    foot: Rect,
     filters: Vec<(Filter, Rect)>,
+    /// The Search and order chips, at the foot's right.
+    search: Rect,
+    sort: Rect,
     status: Rect,
     place_rows: Vec<Rect>,
     detail_buttons: Vec<(Button, Rect)>,
@@ -79,13 +81,21 @@ impl Geo {
         }
         list_buttons.reverse();
         let path = right.inset_xy(if s.can_go_back { 10 } else { 4 }, 0);
+        // Chips sized to their words, so the filters and the Search and
+        // order chips fit the list's foot on the MPC's screen.
+        let chip_w = |label: &str| 26 + 10 * label.len() as i32;
         let mut filters = Vec::new();
         let mut x = foot.x;
         for &f in &s.filters {
-            let w = 34 + 11 * f.label().len() as i32;
+            let w = chip_w(f.label());
             filters.push((f, Rect::new(x, foot.y + 8, w, foot.h - 12)));
             x += w + 8;
         }
+        let (sort, rest) = foot.take_right(chip_w(s.sort.label()));
+        let sort = Rect::new(sort.x, foot.y + 8, sort.w, foot.h - 12);
+        let (_, rest) = rest.take_right(8);
+        let (search, _) = rest.take_right(chip_w("Search"));
+        let search = Rect::new(search.x, foot.y + 8, search.w, foot.h - 12);
         // Detail.
         let db = card_body(detail);
         let n = s.detail.buttons.len() as i32;
@@ -120,8 +130,9 @@ impl Geo {
             path,
             list_buttons,
             rows,
-            foot,
             filters,
+            search,
+            sort,
             status,
             place_rows,
             detail_buttons,
@@ -311,6 +322,12 @@ impl BrowserView {
         if let Some((f, _)) = g.filters.iter().find(|(_, fr)| fr.contains(x, y)) {
             return Some(Input::Filter(*f));
         }
+        if g.search.contains(x, y) {
+            return Some(Input::Search);
+        }
+        if g.sort.contains(x, y) {
+            return Some(Input::Sort);
+        }
         if let Some((b, _)) = g.detail_buttons.iter().find(|(_, br)| br.contains(x, y)) {
             return Some(Input::Button(*b));
         }
@@ -412,12 +429,14 @@ impl Widget for BrowserView {
         for (f, fr) in &g.filters {
             chip(cx, *fr, f.label(), *f == s.filter);
         }
+        chip(cx, g.search, "Search", s.path.starts_with("Search: "));
+        chip(cx, g.sort, s.sort.label(), s.sort == Sort::Newest);
         let clip = s.clipboard.as_deref().unwrap_or("");
         if !clip.is_empty() {
             cx.text(
                 FontId::Sans,
                 t.size_small,
-                g.foot.inset_xy(4, 0),
+                g.status.inset_xy(4, 0),
                 Align::Right,
                 t.text_dim,
                 clip,
@@ -559,7 +578,9 @@ impl Widget for BrowserView {
                 let yes = match what {
                     crate::state::Confirm::Delete(_) => "Move to Trash",
                     crate::state::Confirm::EmptyTrash => "Delete for good",
-                    crate::state::Confirm::Open(_) => "Open",
+                    crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => {
+                        "Open"
+                    }
                 };
                 button(cx, a.yes, yes, false, true);
             }

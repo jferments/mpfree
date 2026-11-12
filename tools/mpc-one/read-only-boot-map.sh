@@ -158,7 +158,7 @@ for u in /sys/class/udc/*; do
   readlink -f "$u/device" 2>/dev/null || :
 done
 
-section 'Recorded MPFree device modifications (see docs/hardware/DEVICE_MODIFICATIONS.md)'
+section 'Recorded MPFree device modifications (see docs/dev/hardware/DEVICE_MODIFICATIONS.md)'
 for f in /usr/lib/systemd/system/mpfree-sshd.service \
          /usr/lib/systemd/system/multi-user.target.wants/mpfree-sshd.service; do
   if [ -e "$f" ] || [ -L "$f" ]; then

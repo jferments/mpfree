@@ -29,7 +29,7 @@ impl Chip {
     }
 }
 
-/// The pad player's tabs, in the order Jay approved (docs/project/layout-spec.md).
+/// The pad player's tabs, in the order Jay approved (docs/dev/design/layout-spec.md).
 /// Every crate's preview draws this bar ([`Header::app`]), never a list of its
 /// own; adding, removing, renaming or reordering a tab needs Jay's approval.
 pub const APP_TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];

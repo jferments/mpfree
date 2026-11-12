@@ -5,7 +5,7 @@
 //! second thread, pinned to its own core, that renders another part of the
 //! same period at the same time (the other half of the sampler's voices,
 //! the synth, a mixer stage, a return). See the "Concurrency audit" tab of
-//! the performance plan and `docs/project/concurrency.md`.
+//! the performance plan and `docs/dev/design/concurrency.md`.
 //!
 //! Each period, the audio thread:
 //!
