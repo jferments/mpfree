@@ -59,14 +59,23 @@ The runner writes a **single** private `~/mpfree-work/bootchain-wide-*-v8-<pid>.
 
 Owner preflight output verified the extracted 3.10 raw ext4 filesystem (451,468,288 bytes) and created `~/mpfree-work/mpfree-arm-qemu-lab/mpc-310.qcow2`. This original overlay should be left alone. The new VM helper makes an additional **separately cloned base image** and separate `mpc-310-lab.qcow2` to avoid referencing the owner's source image.
 
-### VM0 — install packages (Kubuntu/Ubuntu 24.04)
+### VM0 — install packages (actual owner APT sources: Ubuntu 26.04 resolute)
+
+The owner's APT output explicitly uses the `resolute` suite.
+`qemu-user-static` is now a virtual package; use `qemu-user`.
+The `linux-source` metapackage installs the available 7.0 source.
 
 ```bash
 sudo apt update && sudo apt install -y \
-  qemu-system-arm qemu-user-static qemu-utils squashfs-tools \
+  qemu-system-arm qemu-user qemu-utils squashfs-tools \
   gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
-  make bc flex bison libssl-dev libelf-dev linux-source-6.8.0
+  make bc flex bison libssl-dev libelf-dev linux-source
 ```
+
+Verify with `command -v qemu-system-arm`, `command -v qemu-arm`,
+and `ls -lh /usr/src/linux-source-*/linux-source-*.tar.*`.
+The kernel builder discovers installed version 6.8/7.0 rather than
+hard-coding a version. This does not change the host's running kernel.
 
 Apt installs host tools and kernel-source packages; no MPC is accessed.
 
@@ -84,7 +93,7 @@ This copies and SHA256-verifies the already extracted ext4 file to `mpc-310-lab-
 bash "$HOME/mpfree-work/mpfree-wide-audit-src/tools/mpc-one/build_qemu_arm_kernel.sh"
 ```
 
-This unpacks locally installed Linux 6.8 source in `~/mpfree-work/mpfree-arm-qemu-lab/linux-arm-src`, configures `multi_v7_defconfig` plus built-in ARM virt, PL011, virtio-mmio/block, ext4, devtmpfs, procfs, and compiles `linux-arm-build/arch/arm/boot/zImage` with the ARMhf cross compiler. The stock Akai kernel/DTB and SPL/U-Boot binary will **not** boot unmodified under `-M virt`.
+This unpacks the locally installed Ubuntu kernel source in `~/mpfree-work/mpfree-arm-qemu-lab/linux-arm-src`, configures `multi_v7_defconfig` plus built-in ARM virt, PL011, virtio-mmio/block, ext4, devtmpfs, procfs, and compiles `linux-arm-build/arch/arm/boot/zImage` with the ARMhf cross compiler. The stock Akai kernel/DTB and SPL/U-Boot binary will **not** boot unmodified under `-M virt`.
 
 ### VM3 — boot to a minimal shell, NO automatic Akai startup services
 
