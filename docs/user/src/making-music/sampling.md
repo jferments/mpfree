@@ -77,6 +77,19 @@ The **Wave** page shows the sample. Set where it **starts** and **ends**, and wh
 > [!TIP]
 > Live chop is quickest with a sound you know well: hit the pads where you would clap along, then fix any stray cut with **Split** and **Merge**.
 
+### Exporting a pad as files
+
+With **Put on** at **Files**, the button reads **Export** (**Export 15 slices**, or **Export the pad** when there are no cuts) and, instead of filling pads, it saves the pad as files in a folder of its own under **Samples › Exports** in the browser:
+
+- **Break 92.wav**: the pad's whole sound. Its loop and slice points are inside it too, where most samplers and audio editors find them.
+- **Break 92.mpfree**: the pad's settings, a small text file beside the sound: its trim, loop, warp, envelope, filter, layers and slices.
+- **Break 92 01.wav**, **Break 92 02.wav** and so on: each slice as a file of its own, to use anywhere.
+
+Load **Break 92.wav** back, on this MPC or another, and the pad comes back exactly as you exported it, slices and all, as long as **Break 92.mpfree** is beside it. Without it, the sound loads on its own.
+
+> [!NOTE]
+> **Files** appears on the Put on row once MPFree can save to its stick, which comes with the browser (see [Saving your work](saving.md)).
+
 ## Play: how a pad sounds
 
 {{shot: sample-play | The Play page: velocity layers, the volume envelope drawn over the sound, and the filter.}}

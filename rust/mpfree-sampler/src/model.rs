@@ -1676,6 +1676,54 @@ impl Project {
         Ok(id)
     }
 
+    /// Puts `pad` on pad `index` with the sounds it plays and chop sets on
+    /// them (a pad read back from its files: [`crate::export`]), as one
+    /// undo step. Sounds already here are used as they are; a chop set on
+    /// a sound that isn't among them is refused, and nothing changes.
+    pub fn put_pad_with(
+        &mut self,
+        index: usize,
+        sources: Vec<Source>,
+        pad: Pad,
+        chops: Vec<ChopSet>,
+    ) -> Result<(), ModelError> {
+        if index >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let mut added = Vec::new();
+        for s in sources {
+            let id = s.id();
+            if self.source(id).is_none() {
+                self.sources.push(s);
+                added.push(id);
+            }
+        }
+        let checked = self.check_pad(&pad).and_then(|()| {
+            chops
+                .iter()
+                .all(|c| self.source(c.source).is_some())
+                .then_some(())
+                .ok_or(ModelError::UnknownSource)
+        });
+        if let Err(e) = checked {
+            self.sources.retain(|s| !added.contains(&s.id()));
+            return Err(e);
+        }
+        let mut steps: Vec<Undo> = added.into_iter().map(|id| Undo::AddSource { id }).collect();
+        for c in chops {
+            self.chop_sets.push(c);
+            steps.push(Undo::AddChop { set: None });
+        }
+        let before = self.pads[index].replace(pad);
+        steps.push(Undo::Pad {
+            index,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
     pub fn pads_play(&self) -> PadsPlay {
         self.pads_play
     }

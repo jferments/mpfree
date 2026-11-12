@@ -49,7 +49,7 @@ A **project** is everything in one song: its tempo, patterns and clips, loops, k
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself.
 
-**Load** puts a sound on the pad you are editing, and **Load to pad** on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise.
+**Load** puts a sound on the pad you are editing, and **Load to pad** on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
 
 The data wheel moves through the list, **SHIFT** and the wheel through the places, and pushing the wheel opens or loads. **–** and **+** go up a folder and into one.
 
