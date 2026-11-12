@@ -141,6 +141,13 @@ elif [[ "${1:-}" == "--midi-activity" ]]; then
   [[ -r "$SCRIPT_DIR/read-only-midi-counters.sh" ]] || die 'Missing read-only-midi-counters.sh'
   [[ -t 0 ]] || die '--midi-activity is interactive: run it from a terminal'
 elif [[ "${1:-}" == "--midi-capture" ]]; then
+  # Which guided phases: controller (default), midi-cv (the DIN MIDI jacks and the CV/Gate jacks)
+  # cv-scale (known keyboard notes into the CV track, and MIDI Out again) or midi-out (MIDI Out only).
+  MIDI_CAPTURE_PHASES="${MPFREE_CAPTURE_PHASES:-controller}"
+  case "$MIDI_CAPTURE_PHASES" in
+    controller|midi-cv|cv-scale|midi-out) ;;
+    *) die "MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale or midi-out, not: $MIDI_CAPTURE_PHASES" ;;
+  esac
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-capture on workstation'
   [[ -r "$SCRIPT_DIR/host_midi_capture.py" ]] || die 'Missing host_midi_capture.py'
   [[ -r "$SCRIPT_DIR/passive-usbmon-capture.sh" ]] || die 'Missing passive-usbmon-capture.sh'
@@ -380,7 +387,8 @@ elif [[ "${1:-}" == "--app-start-capture" ]]; then
 elif [[ "${1:-}" == "--midi-capture" ]]; then
   if ! timeout --foreground 600 python3 "$SCRIPT_DIR/host_midi_capture.py" \
       --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
-      --script "$SCRIPT_DIR/passive-usbmon-capture.sh" --report "$REPORT"; then
+      --script "$SCRIPT_DIR/passive-usbmon-capture.sh" --report "$REPORT" \
+      --phases "$MIDI_CAPTURE_PHASES"; then
     echo "MIDI capture stopped or failed; partial report kept: $REPORT" >&2
     exit 1
   fi
