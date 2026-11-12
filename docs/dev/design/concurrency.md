@@ -19,7 +19,12 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 
 | Thread | What it does |
 | --- | --- |
-| `mpfree-app` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
+| `mpfree-app` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI in, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
+| `mpfree-lights` | The controller's lights and the session ping, queued by the audio loop ([below](#the-control-side-and-helper-threads)) |
+| `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
+| `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
+| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC |
+| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load`, `mpfree-print` | Helper threads: USB keyboards, loading sounds, the looper's buffers |
 | `mpfree-screen` | Touch, the raster, the framebuffer |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
@@ -30,9 +35,13 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 1. **Pin the audio thread to core 3.** No parallel code needed. Built:
    `--sound-cores core3` (below), off by default until a device round has
    measured it.
-2. **A control thread on core 1** (Hello thread): MIDI in, the screen's
-   actions, lights and the session ping leave the timed period; the audio
-   thread gets a ready list of timed events through a lock-free queue.
+2. **A control thread on core 1**: MIDI in, the screen's actions, lights
+   and the session ping leave the timed period; the audio thread gets a
+   ready list of timed events through a lock-free queue. The first part is
+   built (below): the lights, the report's lines and effect building are on
+   threads of their own, and helper threads keep off the sound's cores.
+   Next: MIDI in, the screen's actions and the app logic, through
+   `TimeHost::split`.
 3. **A second audio core** with lanes (`rust/mpfree-lanes`, below): half the
    sampler's voices, the synth, mixer stages, then pipelined returns. Built
    for the sampler and the mixer: `--sound-cores two` (below), off by default
@@ -46,6 +55,63 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | 1 | The control thread, background jobs, offload sockets later |
 | 2 | Audio lane B, SCHED_FIFO 69 |
 | 3 | The audio thread (lane A), SCHED_FIFO 70 |
+
+## The control side and helper threads
+
+The outside review of 12 Nov (performance plan, "Outside review" tab) found
+work on the audio thread that can take longer than a period by itself,
+outside every engine. [`control.rs`](../../../rust/mpfree-app/src/control.rs)
+moves it to threads of its own, each fed by a bounded queue made before the
+sound starts:
+
+- **Lights** (`control::Lights`, thread `mpfree-lights`). The audio loop
+  queues each controller message (pad colours, button lights, the session
+  ping) and never waits. The thread writes it, waiting up to half a second
+  for room in the MIDI port's buffer; before, the audio thread slept there
+  1 ms at a time. A full queue drops the message and counts it (a log line
+  at most once a second); a message the port refuses is logged and the
+  sound plays on (a lost controller is still found by the port's poll). The
+  end of the session says how many were written, refused and dropped.
+- **The report's lines** (`control::Report`, thread `mpfree-report`). Each
+  log line was a write to `/run/mpfree-app/report.txt` by the audio thread;
+  now it is queued, and a buffered writer writes it. Lines a full queue
+  drops are counted in the report when the session ends.
+- **Effects** (`control::Builder`, thread `mpfree-build`). Building an
+  effect allocates all it will use (the Cloud reverb about 9 MB, every page
+  locked under `mlockall`). The chain editor's Add now asks the builder,
+  and `MixHost::poll_built` puts the effect at the end of its chain a few
+  periods later (`inserts_building` counts it against the chain's room).
+  The effects edits take out go back there to be freed. This also fixes a
+  stall: the app never took retired effects back from the mixer, which
+  stops applying edits once 32 are waiting, so the chain editor froze after
+  32 removes. `poll_built` takes them back every period.
+
+**Priority and cores of helper threads.** A Linux thread starts with the
+policy and the cores of the thread that started it, so a thread started by
+the audio thread after it went real-time used to run at SCHED_FIFO 70 on
+the audio core (the USB MIDI scan, MIDI Out's writer, the loaders), where
+it could hold the core in the middle of a period. Two fixes:
+
+- `sys::realtime` asks for SCHED_FIFO with `SCHED_RESET_ON_FORK`, so every
+  thread started from the audio thread starts at the normal policy. A lane
+  asks for its own priority (`Config::fifo`, 69), so lanes are unchanged.
+- Every helper thread calls `cores::background()` first
+  (`mpfree_lanes::os::background`, which the sampler's `mpfree-stretch`
+  worker calls too): the normal policy, and once the audio thread is pinned
+  (`core3`, `two`, `three`), cores 0 and 1 only. The start lines say
+  `sound cores: helper threads on cores 0 and 1, normal priority`, and the
+  Dev tab's Sound cores page has a "Helper threads" row. In `shared` they
+  stay where the kernel puts them. MIDI Out's and CV out's writers
+  (`port_writer.rs`) then ask for SCHED_FIFO 60 on the MPC (below the lanes
+  and the audio thread), so each message still leaves on its moment; if
+  that is refused the log says so and they run at the normal priority.
+
+Tests: control.rs (lights written in order without waiting; a port that
+stays full is counted and logged; a full queue drops and counts; report
+lines written and the file handed back; effects built and dropped on the
+builder), mixing.rs (effects built off the audio thread land in their
+chain; 40 adds and removes, past the old stall at 32), mpfree-lanes (a
+helper thread goes to the background cores at the normal priority).
 
 ## Lanes (`rust/mpfree-lanes`)
 

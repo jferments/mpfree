@@ -85,6 +85,20 @@ pub const LANE_CORE: usize = 2;
 pub const SYNTH_CORE: usize = 1;
 pub const LANE_FIFO: i32 = 69;
 
+/// The cores the program's helper threads run on while the sound has
+/// cores of its own: 0 and 1 (the screen, the writers, the loaders).
+pub const BACKGROUND_CORES: [usize; 2] = [0, 1];
+
+/// Puts the calling helper thread at the normal policy and, while the sound
+/// has cores of its own, on [`BACKGROUND_CORES`]
+/// ([`mpfree_lanes::os::background`]). Every thread the program starts for
+/// other work (a writer, a loader, a scanner) calls it first: a thread
+/// started by the audio thread begins on the audio thread's core, and would
+/// run there between its periods and keep it from idling.
+pub fn background() -> Result<(), String> {
+    mpfree_lanes::os::background()
+}
+
 /// A period: 128 frames at 44.1 kHz. The mixer's lane waits this long at
 /// a stage when the period has no deadline of its own ([`lane_deadline`]).
 pub const PERIOD_TIME: Duration = Duration::from_nanos(PERIOD as u64 * 1_000_000_000 / 44_100);
@@ -515,6 +529,20 @@ impl Cores {
         };
         c.lines.push(format!("sound cores: audio thread {text}"));
         c.rows.push(("Audio thread".to_string(), text, tone));
+        if pinned && pins.audio.is_some() {
+            // The helper threads started from now on keep off the sound's
+            // cores.
+            mpfree_lanes::os::set_background(&BACKGROUND_CORES);
+            let cores = BACKGROUND_CORES.map(|c| c.to_string()).join(" and ");
+            c.lines.push(format!(
+                "sound cores: helper threads on cores {cores}, normal priority"
+            ));
+            c.rows.push((
+                "Helper threads".to_string(),
+                format!("cores {cores}, normal priority"),
+                Tone::Normal,
+            ));
+        }
         if mode.lanes() && !pinned {
             // A lane's worker starts with this thread's cores: without the
             // pin it could land anywhere, beside this thread included.

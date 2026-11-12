@@ -19,6 +19,10 @@ pub const O_NONBLOCK: i32 = 0o4000;
 const F_GETFL: c_int = 3;
 const F_SETFL: c_int = 4;
 const SCHED_FIFO: c_int = 1;
+/// OR'd into the policy: threads this thread starts later begin at the
+/// normal policy and priority instead of inheriting SCHED_FIFO
+/// (`sched_setscheduler(2)`, Linux 2.6.32 and later).
+const SCHED_RESET_ON_FORK: c_int = 0x4000_0000;
 const MCL_CURRENT: c_int = 1;
 const MCL_FUTURE: c_int = 2;
 
@@ -106,14 +110,19 @@ pub fn clear_nonblock(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// SCHED_FIFO for the calling thread (pid 0 = this thread).
+/// SCHED_FIFO for the calling thread (pid 0 = this thread), with
+/// SCHED_RESET_ON_FORK: a thread it starts afterwards (a writer, a loader, a
+/// scanner) runs at the normal policy rather than at this priority, where
+/// it would hold the audio thread's core for as long as it runs (two
+/// SCHED_FIFO threads at one priority take turns only when one blocks). A
+/// thread that wants real time asks for it itself, as the lanes do.
 pub fn realtime(priority: i32) -> io::Result<()> {
     device_abi()?;
     let p = SchedParam {
         sched_priority: priority,
     };
     // SAFETY: p lives across the call.
-    if unsafe { sched_setscheduler(0, SCHED_FIFO, &p) } < 0 {
+    if unsafe { sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &p) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

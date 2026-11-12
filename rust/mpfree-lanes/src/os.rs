@@ -3,8 +3,12 @@
 //! sched_setscheduler); on other systems a waiter polls with short sleeps,
 //! and pinning and real-time priority report that they are not supported
 //! yet, so a lane still works everywhere.
+//!
+//! [`background`] is for a program's helper threads: the normal policy,
+//! and the cores [`set_background`] named once the sound has cores of its
+//! own.
 
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -79,6 +83,39 @@ mod imp {
         Ok(())
     }
 
+    /// Lets the calling thread run only on `cores` (at least one).
+    pub fn pin_set(cores: &[usize]) -> Result<(), String> {
+        if cores.is_empty() {
+            return Err("no core given".into());
+        }
+        if let Some(c) = cores.iter().find(|&&c| c >= libc::CPU_SETSIZE as usize) {
+            return Err(format!("core {c} is past the CPU set's size"));
+        }
+        // SAFETY: as in `pin`; every core is checked above.
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            for &c in cores {
+                libc::CPU_SET(c, &mut set);
+            }
+            if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) != 0 {
+                return Err(io::Error::last_os_error().to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// The normal policy (SCHED_OTHER) for the calling thread: what a
+    /// helper thread asks for if it may have inherited SCHED_FIFO. Lowering
+    /// the policy needs no privilege.
+    pub fn normal() -> Result<(), String> {
+        let p = libc::sched_param { sched_priority: 0 };
+        // SAFETY: p lives across the call; pid 0 is the calling thread.
+        if unsafe { libc::sched_setscheduler(0, libc::SCHED_OTHER, &p) } != 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+
     /// SCHED_FIFO at `priority` for the calling thread.
     pub fn fifo(priority: i32) -> Result<(), String> {
         let p = libc::sched_param {
@@ -130,6 +167,14 @@ mod imp {
     /// Nothing to do: waiters poll.
     pub fn wake(_word: &AtomicU32) {}
 
+    pub fn pin_set(_cores: &[usize]) -> Result<(), String> {
+        Err("pinning is not supported on this system yet".into())
+    }
+
+    pub fn normal() -> Result<(), String> {
+        Ok(())
+    }
+
     pub fn pin(_core: usize) -> Result<(), String> {
         Err("pinning to a core is not supported on this system yet".into())
     }
@@ -148,3 +193,45 @@ mod imp {
 }
 
 pub use imp::*;
+
+/// [`set_background`]'s cores as a bit mask; 0: none named.
+static BACKGROUND: AtomicU32 = AtomicU32::new(0);
+
+/// Names the cores [`background`] puts helper threads on (cores 0 to 31;
+/// others are left out). Empty: none, helper threads stay where they start.
+pub fn set_background(cores: &[usize]) {
+    let mask = cores
+        .iter()
+        .filter(|&&c| c < 32)
+        .fold(0u32, |m, &c| m | 1 << c);
+    BACKGROUND.store(mask, Ordering::Relaxed);
+}
+
+/// The cores [`set_background`] named (empty if none).
+pub fn background_cores() -> Vec<usize> {
+    let mask = BACKGROUND.load(Ordering::Relaxed);
+    (0..32).filter(|c| mask & (1 << c) != 0).collect()
+}
+
+/// Puts the calling helper thread at the normal policy (SCHED_OTHER) and,
+/// if [`set_background`] named cores, on those. A thread a program starts
+/// for other work (a writer, a loader, a scanner) calls it first: a thread
+/// begins with the cores of the thread that started it, so one started by
+/// the audio thread would run on the audio thread's core and keep it from
+/// idling. Changes only the calling thread, in RAM. Allocates nothing.
+pub fn background() -> Result<(), String> {
+    normal()?;
+    let mask = BACKGROUND.load(Ordering::Relaxed);
+    if mask == 0 {
+        return Ok(());
+    }
+    let mut cores = [0usize; 32];
+    let mut n = 0;
+    for c in 0..32 {
+        if mask & (1 << c) != 0 {
+            cores[n] = c;
+            n += 1;
+        }
+    }
+    pin_set(&cores[..n])
+}
