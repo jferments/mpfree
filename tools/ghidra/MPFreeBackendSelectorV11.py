@@ -40,7 +40,9 @@ PINNED={
           0x10b74c,0x10cc64,0x10d14c,0x10d588,0x10e000,0x10e02a,
           0x10f188,0x10f388,0x10f45c,0x10f728,
           0x110084,0x1100c8,0x110270,0x110484,0x112228,0x11622a,
-          0x10fde8,0x12247c,0x1226b4,0x122734,0x122780,
+          0x10fde8,0x100edc,0x100ef0,0x1147f0,0x115f30,
+          0x115ef4,0x115ed8,0x1147d4,0x11a9f8,0x11aa10,
+          0x12247c,0x1226b4,0x122734,0x122780,
           0x122834,0x122854,0x122980,0x122948,0x122cf8,0x122d38,0x122bd0,0x122bf8,0x122c5c]
 }
 OFFSETS={'open':0x08,'write_bootloader':0x18,'write_partition':0x1c,
@@ -201,7 +203,7 @@ def mpfree_v11_entrypoint():
             if fm.getFunctionContaining(A(near)):selected.add(near)
     priority=sorted(selected,key=lambda va:(va not in original, va))
     # Expanded direction: ROM entry, loader handoff, fastboot auth and update flow.
-    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':140}[role]
+    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':160}[role]
     if not priority:raise RuntimeError('No functions selected for analysis')
     decoder=DecompInterface();decoder.toggleCCode(True)
     if not decoder.openProgram(prog):raise RuntimeError('Decompiler unavailable')
@@ -221,7 +223,7 @@ def mpfree_v11_entrypoint():
             capture_by_role={
                 'libaz01-prog':('0x0001a314','0x0001a674','0x0001a8d0','0x0001aabc','0x0001d644','0x0001a178','0x0001b35c','0x0001afd4'),
                 'spl':('0xff704004','0xff7041a8','0xff705310','0xff705316','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
-                'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4'),
+                'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4','0x00100edc','0x00100ef0','0x001147f0','0x00115f30','0x00115ef4','0x001147d4'),
                 'az01-update':('0x0001091c','0x00010be4')
             }
             if key in capture_by_role.get(role,()):
@@ -395,6 +397,21 @@ def mpfree_v11_entrypoint():
             except Exception as exc:
                 return {'mapped':None,'error':str(exc),
                         'runtime_word_unknown':True}
+        reboot_mode_literal_map={}
+        for label,slot in (
+            ('mode_register_pointer',0x0010114c),
+            ('mode_prefix_constant',0x00101150),
+            ('recovery_flag_pointer',0x00101154),
+            ('reboot_log_string_pointer',0x00101164),
+        ):
+            value=read_word(slot)
+            reboot_mode_literal_map[label]={
+                'slot':addr_hex(slot),
+                'value':addr_hex(value) if value is not None else None,
+                'deref_original_word':(
+                    original_word_metadata(value) if value is not None
+                    else None),
+            }
         original_state={
             'fastboot_permission_global_0x14d690':
                 original_word_metadata(0x0014d690),
@@ -422,6 +439,14 @@ def mpfree_v11_entrypoint():
                 rptr=='0x0014d690' and wptr=='0x0014d690'),
             'permission_global_xrefs':global_refs,
             'original_image_word_metadata_not_runtime':original_state,
+            'reboot_mode_original_literal_slots':reboot_mode_literal_map,
+            'recovery_threshold_predicate':(
+                'if (local_1c[0] < 100)' in
+                details.get('0x00100fe4',{}).get('pseudocode','')),
+            'recovery_threshold_source_function_candidates':[
+                '0x001147f0','0x00115ef4','0x00115f30',
+                '0x00115ed8','0x001147d4'
+            ],
             'registered_callback_pointer_metadata':completion_callbacks,
             'fastboot_command_table_pointer':(
                 addr_hex(command_table_pointer) if command_table_pointer is not None else None),
