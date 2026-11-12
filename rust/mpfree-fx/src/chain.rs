@@ -524,6 +524,88 @@ impl Chain {
     ) where
         F: Fn(u16) -> Option<(&'k [f32], &'k [f32])>,
     {
+        let n = self.slots.len();
+        self.run_slots(0..n, false, ctx, key, left, right);
+    }
+
+    /// The slot that lets the chain run with its input `frames` late and
+    /// its output on time ([`Node::can_lead`]): fully on, with no latency
+    /// and able to hold that lead. The slot that holds a lead already, if
+    /// any, or else the first that can. The slots before it then work on
+    /// the late input and the slots after it on time.
+    pub fn lead_slot(&self, frames: u32) -> Option<usize> {
+        let ok =
+            |s: &Slot| s.on && s.fade == 1.0 && s.node.latency() == 0 && s.node.can_lead(frames);
+        if let Some(i) = self.slots.iter().position(|s| s.node.lead() > 0) {
+            return ok(&self.slots[i]).then_some(i);
+        }
+        self.slots.iter().position(ok)
+    }
+
+    /// The lead some slot holds, in frames (0: the chain runs on time).
+    pub fn lead(&self) -> u32 {
+        self.slots.iter().map(|s| s.node.lead()).max().unwrap_or(0)
+    }
+
+    /// Starts running the chain late ([`Node::lead_in`]): this block's
+    /// output comes from what slot `slot` already has, and from the next
+    /// block on the chain takes its input one block late. The slots before
+    /// `slot` skip the block (their queued parameter changes apply now);
+    /// `slot` and the slots after it run on time. `left` and `right` come
+    /// in as anything and go out as the block's output. Real-time safe.
+    pub fn lead_in(&mut self, slot: usize, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
+        let len = left.len().min(right.len()).min(self.max_block);
+        let Some(s) = self.slots.get_mut(slot) else {
+            left[..len].fill(0.0);
+            right[..len].fill(0.0);
+            return;
+        };
+        let (left, right) = (&mut left[..len], &mut right[..len]);
+        s.node.lead_in(ctx, &s.events, left, right);
+        s.events.clear();
+        if !finite(left) || !finite(right) {
+            s.node.reset();
+            self.stats.nan_resets += 1;
+            left.fill(0.0);
+            right.fill(0.0);
+        }
+        for s in &mut self.slots[..slot] {
+            apply_params(s.node.as_mut(), &s.events);
+            s.events.clear();
+        }
+        let n = self.slots.len();
+        self.run_slots(slot + 1..n, false, ctx, |_| None, left, right);
+    }
+
+    /// Stops running the chain late ([`Node::lead_out`]): `left` and
+    /// `right` hold the late input the chain has not had yet (last block's);
+    /// the slots before `slot` run on it and `slot` takes it without
+    /// putting anything out, so the next block's input is on time. Queued
+    /// events wait for that block. Real-time safe; `left` and `right` are
+    /// used as scratch.
+    pub fn lead_out(&mut self, slot: usize, ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
+        let len = left.len().min(right.len()).min(self.max_block);
+        if slot >= self.slots.len() {
+            return;
+        }
+        let (left, right) = (&mut left[..len], &mut right[..len]);
+        self.run_slots(0..slot, true, ctx, |_| None, left, right);
+        self.slots[slot].node.lead_out(ctx, left, right);
+    }
+
+    /// Runs slots `range` in place on one block. With `no_events` they run
+    /// without their queued events, which stay queued.
+    fn run_slots<'k, F>(
+        &mut self,
+        range: std::ops::Range<usize>,
+        no_events: bool,
+        ctx: &Ctx<'k>,
+        key: F,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) where
+        F: Fn(u16) -> Option<(&'k [f32], &'k [f32])>,
+    {
         let len = left.len().min(right.len()).min(self.max_block);
         if len == 0 {
             return;
@@ -539,7 +621,9 @@ impl Chain {
         );
         let part = &mut self.part;
         let profiling = self.profiling;
-        for s in &mut self.slots {
+        let none: Vec<Timed> = Vec::new();
+        for s in &mut self.slots[range] {
+            let events = if no_events { &none } else { &s.events };
             let span = profiling.then(Span::start);
             let keyed = Ctx {
                 sidechain: s.key.and_then(&key).or(ctx.sidechain),
@@ -582,7 +666,7 @@ impl Chain {
                 left.fill(0.0);
                 right.fill(0.0);
                 if n > 0 {
-                    run_part(s.node.as_mut(), ctx, &s.events, 0, n, left, right, part);
+                    run_part(s.node.as_mut(), ctx, events, 0, n, left, right, part);
                     if s.tail_left != FOREVER {
                         s.tail_left -= n as u64;
                     }
@@ -604,8 +688,10 @@ impl Chain {
                 }
                 // Events after the tail apply after its end and its reset,
                 // the same whichever block the end falls in.
-                let k = s.events.partition_point(|e| (e.offset as usize) < n);
-                apply_params(s.node.as_mut(), &s.events[k..]);
+                let k = events.partition_point(|e| (e.offset as usize) < n);
+                if !no_events {
+                    apply_params(s.node.as_mut(), &events[k..]);
+                }
                 for i in 0..len {
                     left[i] += da[i] * (1.0 - fb[i]);
                     right[i] += db[i] * (1.0 - fb[i]);
@@ -619,7 +705,7 @@ impl Chain {
                 }
                 let end = match hit_zero_at {
                     None => {
-                        run_part(s.node.as_mut(), ctx, &s.events, 0, len, left, right, part);
+                        run_part(s.node.as_mut(), ctx, events, 0, len, left, right, part);
                         len
                     }
                     Some(i) => {
@@ -627,7 +713,7 @@ impl Chain {
                         // silent, as the node stands at that frame, and ends
                         // on its exact frame, so the block size cannot move
                         // either.
-                        run_part(s.node.as_mut(), ctx, &s.events, 0, i + 1, left, right, part);
+                        run_part(s.node.as_mut(), ctx, events, 0, i + 1, left, right, part);
                         let tail = s.node.tail_frames();
                         s.tail_left = if tail == u32::MAX {
                             FOREVER
@@ -635,16 +721,7 @@ impl Chain {
                             tail as u64 + s.node.latency() as u64
                         };
                         let end = i + 1 + s.tail_left.min((len - i - 1) as u64) as usize;
-                        run_part(
-                            s.node.as_mut(),
-                            ctx,
-                            &s.events,
-                            i + 1,
-                            end,
-                            left,
-                            right,
-                            part,
-                        );
+                        run_part(s.node.as_mut(), ctx, events, i + 1, end, left, right, part);
                         if s.tail_left != FOREVER {
                             s.tail_left -= (end - i - 1) as u64;
                         }
@@ -657,8 +734,10 @@ impl Chain {
                         end
                     }
                 };
-                let k = s.events.partition_point(|e| (e.offset as usize) < end);
-                apply_params(s.node.as_mut(), &s.events[k..]);
+                let k = events.partition_point(|e| (e.offset as usize) < end);
+                if !no_events {
+                    apply_params(s.node.as_mut(), &events[k..]);
+                }
                 if !finite(left) || !finite(right) {
                     s.node.reset();
                     self.stats.nan_resets += 1;
@@ -671,7 +750,9 @@ impl Chain {
                     }
                 }
             }
-            s.events.clear();
+            if !no_events {
+                s.events.clear();
+            }
             if let Some(span) = span {
                 s.probe.stop(span, len as u32);
             }
