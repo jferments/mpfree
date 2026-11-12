@@ -31,6 +31,7 @@ filters, so the check always reports.
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
+| `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../project/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
 The coverage table appears in the run's summary page, and the lcov file is
@@ -191,10 +192,10 @@ In order. Each step is its own PR.
    looper. Half a minute of that may not allocate or free once. Recording
    into a clip is left out: each finished note is an edit, and the clips are
    compiled again on that thread. Bench timings are not a gate, because
-   wall-clock speed on a shared VM varies from run to run. The stable way to
-   gate on CPU cost is to count instructions per engine and fail on a
-   regression past a set margin; valgrind is on the runners for that
-   (the profiling thread's `instructions` job).
+   wall-clock speed on a shared VM varies from run to run. CPU cost is gated
+   by instruction counts instead: the `instructions` job counts every bench
+   case's instructions per block under callgrind and fails when one rises
+   more than 5 % above its committed baseline.
 5. **Damaged input** (done): every reader of files and device input has a
    `tests/robust_*.rs` that feeds it thousands of damaged copies of good
    input (bits flipped, fields set to edge values, cut short, grown,

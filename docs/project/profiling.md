@@ -172,7 +172,10 @@ Runs only the lane cases: the same work on one core and split over two
 threads: a worker per lane case, at normal priority, closed before the next
 case. `--lane-cores A,B` pins the bench's thread to core A and the workers to
 core B (3,2 on the MPC); without it nothing is pinned. The default run is
-unchanged.
+unchanged. The sampler appears three ways: one engine of 24 voices, two
+engines of 12 voices splitting the pads, and one engine of 24 voices split
+natively (`Engine::split`, see the sampler architecture), each on one core
+and on two.
 
 ### The cost model
 
@@ -258,7 +261,32 @@ data side is here:
 - `cargo run --release -p mpfree-bench -- --quick --check-allocs` is a gate
   in the rust job (the CI thread's gates PR): allocation on the audio path
   fails the build. It is deterministic, so it is safe on shared runners.
-- Timing gates on shared CI runners are noisy. A stable regression gate is
-  an instruction count: run the armv7 bench under `qemu-arm` with an
-  instruction-counting plugin and compare per case against a stored
-  baseline. Wall-clock numbers stay a report, not a gate.
+- Timing gates on shared CI runners are noisy, so the regression gate is an
+  instruction count (below). Wall-clock numbers stay a report, not a gate.
+
+### Instruction counts (the `instructions` CI job)
+
+```text
+cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench
+python3 tools/ci/instr_gate.py [--filter TEXT] [--bless]
+```
+
+`mpfree-bench --count` runs each case for 200 blocks (after the same 50-block
+warm-up) between two callgrind client requests (`rust/mpfree-bench/src/vg.rs`;
+outside Valgrind they do nothing). `instr_gate.py` runs it under
+`valgrind --tool=callgrind`, reads one dump per case, and compares the
+instructions per block with `rust/mpfree-bench/instructions.txt`:
+
+- **RISE** (more than 5 % above the baseline) fails the job.
+- **DROP** (more than 5 % cheaper) is reported: bless to keep the gain.
+- **NEW** and **GONE** cases are named and don't fail; bless to add or drop them.
+
+The counts are exact: two runs give the same numbers, whatever else the
+runner is doing. They are x86-64 counts, a stand-in for the MPC's cost, so
+they catch a change in what an engine does, not the device's real time; the
+device rounds still measure that. A count depends on the compiler, so the job
+and the baseline use the toolchain clippy pins (1.97.0), and the script warns
+when the baseline came from another one. The whole run takes about a minute
+under callgrind. After an intended change in cost, bless with
+`python3 tools/ci/instr_gate.py --bless` and say why in the PR. The runner needs
+`valgrind`; without it the job warns and skips.
