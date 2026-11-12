@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use std::net::{SocketAddr, UdpSocket};
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -49,9 +50,9 @@ pub fn server(nodes: &[&str]) -> Running {
     }
 }
 
-/// A relay between one client and `to` that loses the client's request
-/// number `lose` (counting from 0).
-pub fn relay(to: SocketAddr, lose: usize) -> Running {
+/// A relay between one client and `to` that loses the client's requests
+/// numbered `lose` (counting from 0).
+pub fn relay(to: SocketAddr, lose: Range<usize>) -> Running {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
         .set_read_timeout(Some(Duration::from_millis(20)))
@@ -73,7 +74,7 @@ pub fn relay(to: SocketAddr, lose: usize) -> Running {
                 }
             } else {
                 client = Some(from);
-                if requests != lose {
+                if !lose.contains(&requests) {
                     let _ = socket.send_to(&buf[..n], to);
                 }
                 requests += 1;
@@ -98,6 +99,18 @@ pub fn wait_for(remote: &Remote, seq: u64) {
             "no answer for block {seq} in 10 s"
         );
         std::thread::sleep(Duration::from_micros(200));
+    }
+}
+
+/// Waits (up to 10 s) until the sender thread has taken every request, as
+/// it would have between two periods. A test that plays blocks without
+/// waiting for answers calls this, so the ring never overflows and drops
+/// a request the test didn't mean to lose.
+pub fn wait_sent(remote: &Remote) {
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while remote.queued() > 0 {
+        assert!(Instant::now() < give_up, "requests not sent in 10 s");
+        std::thread::sleep(Duration::from_micros(100));
     }
 }
 

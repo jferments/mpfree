@@ -48,6 +48,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod save;
+pub mod stretch;
+
+use save::{Saved, TakeFile, TrackFile};
+
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State};
@@ -64,6 +69,9 @@ pub const MAX_EXTENTS: usize = 32;
 /// Frames of the crossfade at each region's start and past its end (about
 /// 1.5 ms at 44.1 kHz).
 pub const FADE: usize = 64;
+/// A loaded take's audio copies in at this many frames for each frame
+/// that plays (a minute of audio in about a second).
+pub const LOAD_SPEED: usize = 64;
 /// Edits and recordings Undo can take back.
 pub const HISTORY: usize = 32;
 /// Commands waiting for the next period.
@@ -72,6 +80,20 @@ const QUEUE: usize = 64;
 const RUN: usize = 128;
 /// The smallest room worth recording into, in samples (even).
 const MIN_ROOM: usize = 4096;
+/// Samples in one block of the peak table: the waveform overview keeps the
+/// lowest and highest sample of every block of the pool. Every stretch of
+/// the pool starts and ends on a block's edge, so a block never holds two
+/// takes.
+pub const PEAK_BLOCK: usize = 256;
+
+fn round_up(n: usize) -> usize {
+    n.div_ceil(PEAK_BLOCK) * PEAK_BLOCK
+}
+
+fn min_max(xs: &[f32]) -> (f32, f32) {
+    xs.iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
+}
 
 /// What a track records from the line input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +196,15 @@ pub enum Command {
     Forget(u16),
     /// Forget the undo history (so takes only it used can be forgotten).
     ClearHistory,
+    /// Play take `new` wherever take `old` plays, its frames `ratio` times
+    /// as many (a stretched copy: see [`stretch`]); the regions keep their
+    /// place on the song. One undo step. Refused unless both takes are of
+    /// one track and `new` has copied in.
+    Swap {
+        old: u16,
+        new: u16,
+        ratio: f64,
+    },
 }
 
 /// A stretch of song ticks playing a stretch of a take: tick `start`
@@ -217,6 +248,8 @@ pub struct TakeInfo {
     /// loop recording is a take of its own, numbered from 0.
     pub group: u16,
     pub pass: u16,
+    /// The tempo it was recorded at (0: not known).
+    pub bpm: f64,
     /// The song tick (with its fraction) its frame 0 belongs to.
     pub anchor: f64,
     pub frames: usize,
@@ -245,7 +278,8 @@ pub struct Memory {
     pub capacity: usize,
 }
 
-/// A stretch of the pool, in samples; start and length are even.
+/// A stretch of the pool, in samples; start and length are whole
+/// [`PEAK_BLOCK`]s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ext {
     start: usize,
@@ -255,16 +289,19 @@ struct Ext {
 const NO_EXT: Ext = Ext { start: 0, len: 0 };
 
 /// One memory for every take: free stretches sorted by start, merged when
-/// they meet. The list is made big enough once that it never grows.
+/// they meet, all on [`PEAK_BLOCK`] edges. The list is made big enough once
+/// that it never grows. `peaks` holds each block's lowest and highest
+/// sample, kept as the audio is written.
 struct Pool {
     data: Vec<f32>,
     free: Vec<Ext>,
     used: usize,
+    peaks: Vec<(f32, f32)>,
 }
 
 impl Pool {
     fn new(samples: usize) -> Pool {
-        let samples = samples & !1;
+        let samples = samples / PEAK_BLOCK * PEAK_BLOCK;
         let mut free = Vec::with_capacity(MAX_TAKES * MAX_EXTENTS + MAX_TRACKS + 2);
         if samples > 0 {
             free.push(Ext {
@@ -283,7 +320,50 @@ impl Pool {
             data,
             free,
             used: 0,
+            peaks: vec![(0.0, 0.0); samples / PEAK_BLOCK],
         }
+    }
+
+    /// Samples `start..start + len` were just written: their blocks' peaks
+    /// take them in. A take writes each stretch in order from its start,
+    /// so a write that begins on a block's edge is that block's first and
+    /// replaces what an earlier take left there.
+    fn note(&mut self, start: usize, len: usize) {
+        let mut p = start;
+        let end = start + len;
+        while p < end {
+            let b = p / PEAK_BLOCK;
+            let to = end.min((b + 1) * PEAK_BLOCK);
+            let (lo, hi) = min_max(&self.data[p..to]);
+            let pk = &mut self.peaks[b];
+            *pk = if p.is_multiple_of(PEAK_BLOCK) {
+                (lo, hi)
+            } else {
+                (pk.0.min(lo), pk.1.max(hi))
+            };
+            p = to;
+        }
+    }
+
+    /// The lowest and highest sample of `start..start + len`, from the
+    /// table for whole blocks.
+    fn range_peaks(&self, start: usize, len: usize) -> (f32, f32) {
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let mut p = start;
+        let end = start + len;
+        while p < end {
+            let b = p / PEAK_BLOCK;
+            let to = end.min((b + 1) * PEAK_BLOCK);
+            let (l, h) = if p.is_multiple_of(PEAK_BLOCK) && to == (b + 1) * PEAK_BLOCK {
+                self.peaks[b]
+            } else {
+                min_max(&self.data[p..to])
+            };
+            lo = lo.min(l);
+            hi = hi.max(h);
+            p = to;
+        }
+        (lo, hi)
     }
 
     fn largest(&self) -> Option<usize> {
@@ -345,6 +425,7 @@ struct Take {
     channels: u8,
     group: u16,
     pass: u16,
+    bpm: f64,
     anchor: f64,
     /// Frames written.
     frames: usize,
@@ -354,6 +435,8 @@ struct Take {
     wpos: usize,
     recording: bool,
     cut_short: bool,
+    /// Its saved audio is still copying in: it plays nothing yet.
+    loading: bool,
 }
 
 const NO_TAKE: Take = Take {
@@ -361,6 +444,7 @@ const NO_TAKE: Take = Take {
     track: 0,
     channels: 1,
     group: 0,
+    bpm: 0.0,
     pass: 0,
     anchor: 0.0,
     frames: 0,
@@ -369,6 +453,7 @@ const NO_TAKE: Take = Take {
     wpos: 0,
     recording: false,
     cut_short: false,
+    loading: false,
 };
 
 impl Take {
@@ -657,6 +742,11 @@ pub struct AudioTracks {
     h_done: usize,
     h_redo: usize,
     stats: Stats,
+    /// Takes whose saved audio is copying in (room for all, made once).
+    loads: Vec<(u16, Vec<f32>)>,
+    /// Loaded takes' audio, done with, for the host to drop off the audio
+    /// thread.
+    returned: Vec<Vec<f32>>,
     fade: [f32; FADE + 1],
 }
 
@@ -694,6 +784,8 @@ impl AudioTracks {
             h_done: 0,
             h_redo: 0,
             stats: Stats::default(),
+            loads: Vec::with_capacity(MAX_TAKES),
+            returned: Vec::with_capacity(MAX_TAKES),
             fade: fade_table(),
         }
     }
@@ -753,12 +845,19 @@ impl AudioTracks {
             track: t.track as usize,
             group: t.group,
             pass: t.pass,
+            bpm: t.bpm,
             anchor: t.anchor,
             frames: t.frames,
             channels: t.channels as usize,
             recording: t.recording,
             cut_short: t.cut_short,
         })
+    }
+
+    /// An id no take has, for a take made off the audio thread (a stretch)
+    /// to load under.
+    pub fn free_take_id(&self) -> Option<u16> {
+        self.takes.iter().position(|t| !t.live).map(|i| i as u16)
     }
 
     /// Every take, oldest id first.
@@ -773,19 +872,34 @@ impl AudioTracks {
     }
 
     /// The lowest and highest sample of frames `from..to` of a take, over
-    /// its channels: for a waveform on the screen.
+    /// its channels: for a waveform on the screen. It reads the peak table
+    /// for whole blocks of [`PEAK_BLOCK`] samples, so a long stretch costs
+    /// little; it works while the take records (up to what is written) and
+    /// does not allocate. A host shares the result with the screen thread
+    /// as it shares the rest of the state.
     pub fn peaks(&self, id: u16, from: usize, to: usize) -> Option<(f32, f32)> {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
         let to = to.min(t.frames);
         if from >= to {
             return None;
         }
+        let ch = t.channels as usize;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        for k in from..to {
-            for c in 0..t.channels as usize {
-                let s = t.sample(&self.pool.data, k, c).unwrap_or(0.0);
-                lo = lo.min(s);
-                hi = hi.max(s);
+        let mut base = 0;
+        for e in &t.ext[..t.n_ext] {
+            let frames_in = e.len / ch;
+            let a = from.max(base);
+            let b = to.min(base + frames_in);
+            if a < b {
+                let (l, h) = self
+                    .pool
+                    .range_peaks(e.start + (a - base) * ch, (b - a) * ch);
+                lo = lo.min(l);
+                hi = hi.max(h);
+            }
+            base += frames_in;
+            if base >= to {
+                break;
             }
         }
         Some((lo, hi))
@@ -1074,7 +1188,7 @@ impl AudioTracks {
                 let ok = self
                     .takes
                     .get(id as usize)
-                    .is_some_and(|t| t.live && !t.recording);
+                    .is_some_and(|t| t.live && !t.recording && !t.loading);
                 if !ok || self.in_use(id) {
                     return self.refuse();
                 }
@@ -1083,6 +1197,35 @@ impl AudioTracks {
                     self.pool.give(*e);
                 }
                 self.takes[id as usize] = NO_TAKE;
+            }
+            Command::Swap { old, new, ratio } => {
+                let ok = |id: u16| {
+                    self.takes
+                        .get(id as usize)
+                        .filter(|t| t.live && !t.recording && !t.loading)
+                        .map(|t| t.track as usize)
+                };
+                let (Some(a), Some(b)) = (ok(old), ok(new)) else {
+                    return self.refuse();
+                };
+                if a != b || old == new || !ratio.is_finite() || ratio <= 0.0 {
+                    return self.refuse();
+                }
+                self.edit(
+                    a,
+                    |t, _, _| {
+                        let mut any = false;
+                        for r in &mut t.regions[..t.n] {
+                            if r.take == old {
+                                r.take = new;
+                                r.src = (r.src as f64 * ratio).round() as i64;
+                                any = true;
+                            }
+                        }
+                        any
+                    },
+                    map,
+                );
             }
             Command::ClearHistory => {
                 self.h_done = 0;
@@ -1094,6 +1237,257 @@ impl AudioTracks {
 
     fn any_recording(&self) -> bool {
         self.tracks.iter().any(|t| t.rec.is_some())
+    }
+
+    // ---- saving and loading --------------------------------------------
+
+    /// The tracks' settings and regions and every take's place, for a
+    /// save (see [`save`]): None while any track records or a take is
+    /// still loading. Tracks with nothing to keep (no regions, no takes,
+    /// settings as new) are left out. The takes' audio is not in it: read
+    /// each with [`AudioTracks::read_take`]. Allocates: not on the audio
+    /// thread.
+    pub fn save_file(&self) -> Option<Saved> {
+        if self
+            .tracks
+            .iter()
+            .any(|t| t.rec.is_some() || t.tail.is_some())
+            || self.takes.iter().any(|t| t.loading)
+        {
+            return None;
+        }
+        let takes: Vec<TakeFile> = self
+            .takes()
+            .map(|k| TakeFile {
+                id: k.id,
+                track: k.track,
+                group: k.group,
+                pass: k.pass,
+                bpm: k.bpm,
+                anchor: k.anchor,
+                frames: k.frames,
+                channels: k.channels,
+                file: String::new(),
+                audio: Vec::new(),
+            })
+            .collect();
+        let tracks = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| {
+                t.n > 0
+                    || takes.iter().any(|k| k.track == *i)
+                    || t.input != Input::Left
+                    || t.monitor != Monitor::Auto
+                    || t.level != 1.0
+                    || t.pan != 0.0
+                    || t.mute
+                    || t.solo
+            })
+            .map(|(i, t)| TrackFile {
+                index: i,
+                input: t.input,
+                monitor: t.monitor,
+                level: t.level,
+                pan: t.pan,
+                muted: t.mute,
+                solo: t.solo,
+                regions: t.regions().to_vec(),
+            })
+            .collect();
+        Some(Saved {
+            rate: self.rate,
+            tracks,
+            takes,
+        })
+    }
+
+    /// Copy frames `from..` of a take into `out` (interleaved, the take's
+    /// channels), as many as fit: the number of frames copied, or None if
+    /// the take is not there, records or is loading. Does not allocate.
+    pub fn read_take(&self, id: u16, from: usize, out: &mut [f32]) -> Option<usize> {
+        let t = self
+            .takes
+            .get(id as usize)
+            .filter(|t| t.live && !t.recording && !t.loading)?;
+        let ch = t.channels as usize;
+        let want = (out.len() / ch).min(t.frames.saturating_sub(from));
+        let mut done = 0;
+        let mut base = 0;
+        for e in &t.ext[..t.n_ext] {
+            if done == want {
+                break;
+            }
+            let frames_in = e.len / ch;
+            let at = from + done;
+            if at >= base + frames_in {
+                base += frames_in;
+                continue;
+            }
+            let k = at - base;
+            let count = (frames_in - k).min(want - done);
+            out[done * ch..(done + count) * ch]
+                .copy_from_slice(&self.pool.data[e.start + k * ch..e.start + (k + count) * ch]);
+            done += count;
+            base += frames_in;
+        }
+        Some(done)
+    }
+
+    /// Put a saved take back, under its own id: its memory is taken now,
+    /// and its audio (moved in, never grown or freed here) copies in at
+    /// [`LOAD_SPEED`] over the next periods; it plays once copied. Then
+    /// the audio waits in [`AudioTracks::take_returned`] for the host to
+    /// drop. Does not allocate. Gives `f` back if the id is past the last
+    /// or in use, the track past the last, the audio not `frames *
+    /// channels` long, the memory short, or [`MAX_TAKES`] loads waiting
+    /// to copy or to be collected.
+    pub fn load_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
+        let id = f.id as usize;
+        let need = f.frames * f.channels;
+        if id >= MAX_TAKES
+            || self.takes[id].live
+            || f.track >= MAX_TRACKS
+            || !(1..=2).contains(&f.channels)
+            || f.frames == 0
+            || f.audio.len() != need
+            || !f.anchor.is_finite()
+            || self.loads.len() + self.returned.len() >= MAX_TAKES
+        {
+            return Err(f);
+        }
+        self.takes[id] = Take {
+            live: true,
+            track: f.track as u8,
+            channels: f.channels as u8,
+            group: f.group,
+            pass: f.pass,
+            bpm: if f.bpm.is_finite() && f.bpm > 0.0 {
+                f.bpm
+            } else {
+                0.0
+            },
+            anchor: f.anchor,
+            loading: true,
+            ..NO_TAKE
+        };
+        let need = round_up(need);
+        loop {
+            let have: usize = self.takes[id].ext[..self.takes[id].n_ext]
+                .iter()
+                .map(|e| e.len)
+                .sum();
+            if have >= need {
+                let tk = &mut self.takes[id];
+                let last = &mut tk.ext[tk.n_ext - 1];
+                let rest = Ext {
+                    start: last.start + last.len - (have - need),
+                    len: have - need,
+                };
+                last.len -= rest.len;
+                self.pool.give(rest);
+                break;
+            }
+            if !self.grow(id) {
+                let t = self.takes[id];
+                for e in &t.ext[..t.n_ext] {
+                    self.pool.give(*e);
+                }
+                self.takes[id] = NO_TAKE;
+                return Err(f);
+            }
+        }
+        self.groups = self.groups.max(f.group);
+        self.loads.push((f.id, f.audio));
+        Ok(())
+    }
+
+    /// Put a saved track's settings and regions back (its takes loaded
+    /// with [`AudioTracks::load_take`], before or after). The undo history
+    /// is forgotten. Does not allocate. False (nothing changed) if the
+    /// track is past the last or recording, or the regions are too many or
+    /// out of order.
+    pub fn load_track(&mut self, f: &TrackFile) -> bool {
+        let ok = f.index < MAX_TRACKS
+            && f.regions.len() <= MAX_REGIONS
+            && f.regions.iter().all(|r| r.end > r.start)
+            && f.regions.windows(2).all(|w| w[0].end <= w[1].start)
+            && self.tracks[f.index].rec.is_none();
+        if !ok {
+            return false;
+        }
+        let t = &mut self.tracks[f.index];
+        t.input = f.input;
+        t.monitor = f.monitor;
+        t.level = if f.level.is_finite() {
+            f.level.clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+        t.pan = if f.pan.is_finite() {
+            f.pan.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        t.mute = f.muted;
+        t.solo = f.solo;
+        t.n = f.regions.len();
+        t.regions[..t.n].copy_from_slice(&f.regions);
+        self.h_done = 0;
+        self.h_redo = 0;
+        true
+    }
+
+    /// Takes still copying in.
+    pub fn loading(&self) -> usize {
+        self.loads.len()
+    }
+
+    /// A loaded take's audio, done with: drop it off the audio thread.
+    pub fn take_returned(&mut self) -> Option<Vec<f32>> {
+        self.returned.pop()
+    }
+
+    /// Copy the loads in, `LOAD_SPEED * n` frames' worth of samples a
+    /// period, oldest first.
+    fn copy_loads(&mut self, n: usize) {
+        let mut budget = LOAD_SPEED * n.max(1) * 2;
+        while budget > 0 && !self.loads.is_empty() {
+            let (id, ref audio) = self.loads[0];
+            let tk = &mut self.takes[id as usize];
+            let ch = tk.channels as usize;
+            let done = tk.frames * ch;
+            let count = (audio.len() - done).min(budget);
+            // Write samples done..done + count across the stretches.
+            let mut base = 0;
+            let mut w = 0;
+            for e in &tk.ext[..tk.n_ext] {
+                if w == count {
+                    break;
+                }
+                let at = done + w;
+                if at >= base + e.len {
+                    base += e.len;
+                    continue;
+                }
+                let k = at - base;
+                let c = (e.len - k).min(count - w);
+                self.pool.data[e.start + k..e.start + k + c].copy_from_slice(&audio[at..at + c]);
+                self.pool.note(e.start + k, c);
+                w += c;
+                base += e.len;
+            }
+            tk.frames = (done + count) / ch;
+            budget -= count.max(1);
+            if done + count == audio.len() {
+                tk.loading = false;
+                let (_, audio) = self.loads.remove(0);
+                if self.returned.len() < self.returned.capacity() {
+                    self.returned.push(audio);
+                }
+            }
+        }
     }
 
     // ---- recording -----------------------------------------------------
@@ -1114,6 +1508,7 @@ impl AudioTracks {
             channels: ch as u8,
             group,
             pass,
+            bpm,
             anchor: tick - lat_ticks,
             recording: true,
             ..NO_TAKE
@@ -1186,7 +1581,7 @@ impl AudioTracks {
         tk.recording = false;
         if tk.n_ext > 0 {
             let last = &mut tk.ext[tk.n_ext - 1];
-            let used = (tk.wpos + 1) & !1;
+            let used = round_up(tk.wpos).min(last.len);
             let rest = Ext {
                 start: last.start + used,
                 len: last.len - used,
@@ -1211,7 +1606,8 @@ impl AudioTracks {
         let mut steal: Option<(usize, usize)> = None;
         for (k, o) in self.takes.iter().enumerate() {
             if k != id && o.live && o.recording && o.n_ext > 0 {
-                let rest = ((o.ext[o.n_ext - 1].len - o.wpos) / 2) & !1;
+                let rest =
+                    (o.ext[o.n_ext - 1].len - round_up(o.wpos)) / 2 / PEAK_BLOCK * PEAK_BLOCK;
                 if rest > steal.map_or(0, |s| s.1) {
                     steal = Some((k, rest));
                 }
@@ -1288,6 +1684,7 @@ impl AudioTracks {
                     }
                 }
             }
+            self.pool.note(e.start + tk.wpos, count * ch);
             tk.wpos += count * ch;
             tk.frames += count;
             j += count;
@@ -1313,6 +1710,7 @@ impl AudioTracks {
             }
         }
         self.q_len = 0;
+        self.copy_loads(n);
         for t in &mut self.tracks {
             t.buf[..2 * n].fill(0.0);
         }
@@ -1503,7 +1901,7 @@ impl AudioTracks {
             if r.start as f64 >= tick1 {
                 break;
             }
-            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live) else {
+            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live && !k.loading) else {
                 continue;
             };
             // Frames since the region's start at the run's first frame,
