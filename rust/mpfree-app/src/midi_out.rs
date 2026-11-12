@@ -277,9 +277,7 @@ impl MidiOut {
     /// Starts the writer thread on the MIDI Out port (`w`). `started` is
     /// the app's start, for the log's times.
     pub fn open<W: Write + Send + 'static>(&mut self, w: W, started: Instant) -> io::Result<()> {
-        self.writer = Some(Writer::start(
-            w, "midi-out", "MIDI Out", describe, started,
-        )?);
+        self.writer = Some(Writer::start(w, "midi-out", "MIDI Out", describe, started)?);
         self.lost = false;
         Ok(())
     }
@@ -404,7 +402,8 @@ impl MidiOut {
 
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
-        self.chords.end_track(t, |m| router.send(t as u8, m, offset, queue));
+        self.chords
+            .end_track(t, |m| router.send(t as u8, m, offset, queue));
     }
 
     /// Ends every note on MIDI Out (a panic, a stop), at `offset`: only the

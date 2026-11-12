@@ -42,7 +42,7 @@ fn shots() -> Vec<Shot> {
         thru: true,
         clock_in: true,
         clock_out: true,
-        cv: true,
+        cv_outs: 4,
     };
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
     vec![

@@ -289,7 +289,11 @@ mod tests {
         let mut lines = Vec::new();
         w.log_lines(&mut |l| lines.push(l));
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].ends_with(" s CV out: BF 02 7F = 3 bytes"), "{}", lines[0]);
+        assert!(
+            lines[0].ends_with(" s CV out: BF 02 7F = 3 bytes"),
+            "{}",
+            lines[0]
+        );
         assert!(w.finish());
     }
 }

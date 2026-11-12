@@ -14,7 +14,7 @@
 //! ALSA.
 
 use crate::{
-    app, cores, kit, looping, midi_in, midi_out, mixing, sampler, synth, time, SeqPads,
+    app, cores, cv_out, kit, looping, midi_in, midi_out, mixing, sampler, synth, time, SeqPads,
     MAX_LIVE_HITS, PERIOD, RATE,
 };
 use mpfree_arp::{EventKind, Events, Mode};
@@ -49,6 +49,8 @@ struct Rig {
     /// model it reads each period.
     midi: midi_out::MidiOut,
     io: mpfree_midi_ui::Shared,
+    /// CV out (closed: the jacks are not driven).
+    cv: cv_out::CvOut,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -92,6 +94,7 @@ impl Rig {
             clip_hits: 0,
             midi: midi_out::MidiOut::new(RATE, std::time::Duration::ZERO),
             io: midi_in::io_model(),
+            cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
         }
     }
 
@@ -138,6 +141,7 @@ impl Rig {
             clip_hits,
             midi,
             io,
+            cv,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -146,6 +150,8 @@ impl Rig {
         time.advance(PERIOD as u32);
         midi.sync(io, time.info().state.rolling());
         midi.clock(time.block());
+        cv.sync(io);
+        cv.clock(time.block());
         app.set_clock(time.arp_clock());
         app.process(PERIOD as u32, events);
         // With the synth on the pads the arp may play notes (its pad layout).
@@ -214,10 +220,12 @@ impl Rig {
             n_live: 0,
             silent: 0,
             midi,
+            cv,
         };
         time.period(PERIOD as u32, &mut seq);
         seq.midi
             .period_end(PERIOD as u32, std::time::Instant::now());
+        seq.cv.period_end(PERIOD as u32, std::time::Instant::now());
         *clip_hits += seq.hits;
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
@@ -475,6 +483,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         n_live: 0,
         silent: 0,
         midi: &mut rig.midi,
+        cv: &mut rig.cv,
     };
     let at = |event| Out {
         offset: 0,
@@ -509,4 +518,119 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         *sink.0.lock().unwrap(),
         [0x90, PAD_NOTES[2], v, 0x80, PAD_NOTES[2], 64]
     );
+}
+
+/// CV out with the clip's track on CV 1 (pitch) and CV 2 (gate), a
+/// sixteenth-note clock on CV 3 and run on CV 4: the clip's notes move
+/// them while it still plays on the pads, every gate that rises falls,
+/// the clock pulses, and the sound path never allocates or frees.
+#[test]
+fn cv_follows_a_track_and_never_allocates() {
+    use mpfree_midi::cv::{CvAssign, Priority, Scale};
+    use mpfree_midi::cv_wire::{counts, decode, CV_STATUS, FULL_SCALE};
+    use mpfree_midi::setup::MAX_VOLTS;
+    let mut rig = Rig::new(false);
+    let mut c =
+        cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    rig.time
+        .act(TimeAction::NewClip { track: 0, slot: 0 })
+        .unwrap();
+    let mut i = 0u64;
+    while i < 1_500 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    rig.time.command(Command::Record);
+    // Setup, which may allocate: CV out opens and takes its outputs.
+    let sink = MidiSink::default();
+    rig.cv
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    {
+        let mut m = rig.io.lock().unwrap();
+        m.setup.cv[0] = CvAssign::Pitch {
+            track: 0,
+            scale: Scale::VoltsPerOctave(1.0),
+            zero_note: 36,
+            bend_semis: 2,
+            priority: Priority::Last,
+        };
+        m.setup.cv[1] = CvAssign::Gate {
+            track: 0,
+            volts: 5.0,
+            retrigger_ms: 0.0,
+        };
+        m.setup.cv[2] = CvAssign::Clock {
+            ppqn: 4,
+            volts: 5.0,
+            ms: 5.0,
+        };
+        m.setup.cv[3] = CvAssign::Run { volts: 5.0 };
+        m.gen += 1;
+    }
+    for _ in 0..200 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    assert_eq!(rig.io.lock().unwrap().live.built.cv_outs, 4);
+    let clip_before = rig.clip_hits;
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for _ in 0..4_000 {
+            rig.pads(i);
+            rig.period(i);
+            i += 1;
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    assert!(
+        rig.clip_hits > clip_before,
+        "the clip stopped playing on the pads"
+    );
+    assert!(rig.cv.close());
+    let bytes = sink.0.lock().unwrap().clone();
+    assert_eq!(bytes.len() % 6, 0);
+    let pairs: Vec<(u8, u16)> = bytes
+        .chunks(6)
+        .map(|p| {
+            assert_eq!(
+                (p[0], p[3], p[4]),
+                (CV_STATUS, CV_STATUS, p[1] + 1),
+                "{p:02X?}"
+            );
+            (p[1] / 2, decode(p[2], p[5]))
+        })
+        .collect();
+    let of = |o: u8| -> Vec<u16> { pairs.iter().filter(|p| p.0 == o).map(|p| p.1).collect() };
+    let pitch = of(0);
+    assert!(pitch.len() > 20, "pitch changes: {}", pitch.len());
+    // The clip's pads 1 to 4 as the MPC's pad notes, 1 V an octave from
+    // C2 (36) at 0 V; 0 V at open and close.
+    let notes: Vec<u16> = PAD_NOTES[..4]
+        .iter()
+        .map(|&n| counts((f32::from(n) - 36.0) / 12.0, MAX_VOLTS))
+        .collect();
+    for n in &notes {
+        assert!(pitch.contains(n), "pad note {n} never sent: {pitch:?}");
+    }
+    assert!(
+        pitch.iter().all(|c| *c == 0 || notes.contains(c)),
+        "{pitch:?}"
+    );
+    let gate = of(1);
+    let ups = gate.iter().filter(|&&c| c == FULL_SCALE).count();
+    assert!(ups > 20, "gates: {ups}");
+    assert_eq!(
+        gate.iter().filter(|&&c| c == 0).count(),
+        ups + 1,
+        "every gate falls"
+    );
+    // 4,200 periods at 120 BPM is about 12.2 s: eight sixteenths a second.
+    let pulses = of(2).iter().filter(|&&c| c == FULL_SCALE).count();
+    assert!((90..=100).contains(&pulses), "clock pulses: {pulses}");
+    // Run joined the playing song on the frame CV out opened (so its 0 V
+    // at open was never sent), and fell at close.
+    assert_eq!(of(3), [FULL_SCALE, 0]);
 }

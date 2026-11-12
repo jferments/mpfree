@@ -15,9 +15,11 @@
 //! Each output has a [`CvAssign`]: a track's pitch (1 V/oct or Hz/V, with
 //! last, lowest or highest note priority), its gate, a trigger, velocity,
 //! a CC, a clock, run or reset, or a fixed voltage. Pitch keeps its
-//! voltage after the gate falls, so release tails stay in tune. Every
-//! output has its own calibration ([`Calibration`]) for tuning against a
-//! tuner.
+//! voltage after the gate falls, so release tails stay in tune. A gate
+//! that falls and rises on the same frame (a sequence's note ending as
+//! the next starts) stays low for [`GATE_GAP_MS`], so the module's
+//! envelope starts again. Every output has its own calibration
+//! ([`Calibration`]) for tuning against a tuner.
 //!
 //! Changes come out as [`CvChange`] (frame offset, output, volts), only
 //! when an output's voltage changes. Nothing allocates after `new`.
@@ -28,6 +30,10 @@ use crate::msg::Msg;
 pub const CV_OUTS: usize = 8;
 /// Keys a mono voice remembers for note priority.
 pub const STACK: usize = 16;
+/// How long a gate stays low when one note ends on the frame the next
+/// starts. Long enough for an envelope to see it after USB's 1 ms frames
+/// (a choice, not measured on a module yet).
+pub const GATE_GAP_MS: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scale {
@@ -166,6 +172,8 @@ pub struct CvEngine {
     /// The frame (from the period start) when a pulse or a retrigger gap
     /// ends, per output; and the level it ends at.
     until: [Option<(u64, f32)>; CV_OUTS],
+    /// The frame (from the engine's start) each gate last fell on.
+    fell: [Option<u64>; CV_OUTS],
     /// Frames from the engine's start to this period's start.
     base: u64,
     playing: bool,
@@ -181,6 +189,7 @@ impl CvEngine {
             level: [0.0; CV_OUTS],
             sent: [None; CV_OUTS],
             until: [None; CV_OUTS],
+            fell: [None; CV_OUTS],
             base: 0,
             playing: false,
         }
@@ -204,6 +213,7 @@ impl CvEngine {
         }
         self.assign[out] = a;
         self.until[out] = None;
+        self.fell[out] = None;
         let v = match a {
             CvAssign::Fixed { volts } => volts,
             CvAssign::Run { volts } if self.playing => volts,
@@ -263,8 +273,26 @@ impl CvEngine {
         emit: &mut impl FnMut(CvChange),
     ) {
         self.set(out, volts, offset, emit);
-        let len = (ms.max(0.0) * self.rate / 1000.0).round().max(1.0) as u64;
-        self.until[out] = Some((self.base + u64::from(offset) + len, 0.0));
+        self.until[out] = Some((self.base + u64::from(offset) + self.frames(ms), 0.0));
+    }
+
+    /// Pulses and gaps that end at or before `offset` end first, so a
+    /// message later in the period finds them over.
+    fn catch_up(&mut self, offset: u32, emit: &mut impl FnMut(CvChange)) {
+        let now = self.base + u64::from(offset);
+        for o in 0..CV_OUTS {
+            if let Some((at, v)) = self.until[o] {
+                if at <= now {
+                    self.until[o] = None;
+                    self.set(o, v, at.saturating_sub(self.base) as u32, emit);
+                }
+            }
+        }
+    }
+
+    /// `ms` as frames, at least one.
+    fn frames(&self, ms: f32) -> u64 {
+        (ms.max(0.0) * self.rate / 1000.0).round().max(1.0) as u64
     }
 
     fn pitch_volts(scale: Scale, zero: u8, note: u8, bend: f32) -> f32 {
@@ -311,14 +339,23 @@ impl CvEngine {
                     volts,
                     retrigger_ms,
                 } if t == track => {
+                    let now = self.base + u64::from(offset);
                     if voice.len == 0 {
                         self.until[o] = None;
+                        if self.level[o] > 0.0 {
+                            self.fell[o] = Some(now);
+                        }
                         self.set(o, 0.0, offset, emit);
                     } else if new_note && retrigger_ms > 0.0 && self.level[o] > 0.0 {
                         self.set(o, 0.0, offset, emit);
-                        let len = (retrigger_ms * self.rate / 1000.0).round().max(1.0) as u64;
-                        self.until[o] = Some((self.base + u64::from(offset) + len, volts));
-                    } else if self.until[o].is_none() {
+                        self.until[o] = Some((now + self.frames(retrigger_ms), volts));
+                    } else if self.until[o].is_some() {
+                        // Low for a retrigger: it rises when that ends.
+                    } else if self.fell[o] == Some(now) {
+                        // Ended and started again on this frame.
+                        let gap = self.frames(retrigger_ms.max(GATE_GAP_MS));
+                        self.until[o] = Some((now + gap, volts));
+                    } else {
                         self.set(o, volts, offset, emit);
                     }
                 }
@@ -334,6 +371,7 @@ impl CvEngine {
         if t >= TRACKS {
             return;
         }
+        self.catch_up(offset, emit);
         match msg {
             Msg::NoteOn { note, vel, .. } => {
                 let held = self.voices[t].len > 0;
@@ -389,6 +427,7 @@ impl CvEngine {
 
     /// Every key of every track up (stop, panic): gates fall, pitch stays.
     pub fn release_all(&mut self, offset: u32, emit: &mut impl FnMut(CvChange)) {
+        self.catch_up(offset, emit);
         for t in 0..TRACKS {
             if self.voices[t].len > 0 {
                 self.voices[t].len = 0;
@@ -399,6 +438,7 @@ impl CvEngine {
 
     /// A clock line for outputs whose `ppqn` is `ppqn`.
     pub fn clock(&mut self, ppqn: u16, offset: u32, emit: &mut impl FnMut(CvChange)) {
+        self.catch_up(offset, emit);
         for o in 0..CV_OUTS {
             if let CvAssign::Clock { ppqn: p, volts, ms } = self.assign[o] {
                 if p == ppqn {
@@ -410,6 +450,7 @@ impl CvEngine {
 
     /// The transport started; `from_top`: from tick 0 (Reset pulses).
     pub fn started(&mut self, from_top: bool, offset: u32, emit: &mut impl FnMut(CvChange)) {
+        self.catch_up(offset, emit);
         self.playing = true;
         for o in 0..CV_OUTS {
             match self.assign[o] {
@@ -421,6 +462,7 @@ impl CvEngine {
     }
 
     pub fn stopped(&mut self, offset: u32, emit: &mut impl FnMut(CvChange)) {
+        self.catch_up(offset, emit);
         self.playing = false;
         for o in 0..CV_OUTS {
             if let CvAssign::Run { .. } = self.assign[o] {
@@ -430,8 +472,9 @@ impl CvEngine {
     }
 
     /// Ends the period of `frames`: pulses and retrigger gaps that end in
-    /// it come out (after the period's other changes, with their own
-    /// offsets; sort by offset if order matters).
+    /// it and were not caught up by a later message come out (after the
+    /// period's other changes, with their own offsets; sort by offset if
+    /// order matters).
     pub fn end_period(&mut self, frames: u32, emit: &mut impl FnMut(CvChange)) {
         let end = self.base + u64::from(frames);
         for o in 0..CV_OUTS {
