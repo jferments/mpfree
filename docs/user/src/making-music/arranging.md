@@ -72,7 +72,7 @@ Also coming: tapping a track's name for its settings (input, monitoring, level, 
 2. Press play and jam: launch clips and rows, stop tracks, move the morph crossfader.
 3. Press stop, or tap **Rec song** again. What you played goes into the song.
 
-- Each clip goes into the song where it started and stopped, linked to its slot.
+- Each clip goes into the song where it started and stopped, linked to its slot. It plays from the song just as it does from the grid, pad pressure included.
 - Tracks that were muted are left out of the song for as long as they were muted.
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.

@@ -37,10 +37,15 @@
 //! **Pressure** ([`crate::Touch`]) rides on its note: moving, Timing
 //! Correct, transposing and duplicating keep it (a shortened note just
 //! stops sending what falls past its end). A split leaves it on the first
-//! part only.
+//! part only. Half and double speed stretch it with its note: each note's
+//! run comes again with its times doubled or halved, added to the clip's
+//! pressure (`Edit::touch`); they are refused for a clip with no room
+//! left for that.
 
 use crate::steps::{moves_edit, Edit};
-use crate::{Clip, Lock, Note, Touch, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
+use crate::{
+    touch_room, Clip, Lock, Note, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS,
+};
 use mpfree_transport::time::{Tick, PPQ};
 
 /// The Timing Correct divisions, in ticks (960 to a beat), with their
@@ -577,7 +582,14 @@ pub fn half_speed(clip: &Clip) -> Edit {
     if to > MAX_CLIP_TICKS || !clip.moves.is_empty() {
         return Edit::default();
     }
-    let mut e = respace(clip, |t| t * 2, |l| fit_len(l * 2));
+    let Some(mut e) = respace(
+        clip,
+        |t| t * 2,
+        |l| fit_len(l * 2),
+        |at| at.saturating_mul(2),
+    ) else {
+        return Edit::default();
+    };
     e.length = Some((clip.length, to));
     e
 }
@@ -589,23 +601,52 @@ pub fn double_speed(clip: &Clip) -> Edit {
     if to < MIN_CLIP_TICKS || !clip.moves.is_empty() {
         return Edit::default();
     }
-    let mut e = respace(clip, |t| t / 2, |l| (l / 2).max(1));
+    let Some(mut e) = respace(clip, |t| t / 2, |l| (l / 2).max(1), |at| at / 2) else {
+        return Edit::default();
+    };
     e.length = Some((clip.length, to));
     e
 }
 
-fn respace(clip: &Clip, at: impl Fn(Tick) -> Tick, len: impl Fn(Tick) -> Tick) -> Edit {
-    Edit {
+/// Every note and lock moved by `at` and `len`, and each note's pressure
+/// run again with its times moved by `touch` (None, refused, when the
+/// clip has no room for the new runs).
+fn respace(
+    clip: &Clip,
+    at: impl Fn(Tick) -> Tick,
+    len: impl Fn(Tick) -> Tick,
+    touch: impl Fn(u32) -> u32,
+) -> Option<Edit> {
+    let touch_at = clip.touch.len() as u32;
+    let mut runs: Vec<TouchPoint> = Vec::new();
+    let mut add = Vec::with_capacity(clip.notes.len());
+    for n in &clip.notes {
+        let mut new = Note {
+            tick: at(n.tick),
+            len: len(n.len),
+            ..*n
+        };
+        let points = clip.touch_of(n);
+        if !points.is_empty() {
+            new.touch = Touch {
+                first: touch_at + runs.len() as u32,
+                len: points.len() as u32,
+            };
+            runs.extend(points.iter().map(|p| TouchPoint {
+                at: touch(p.at),
+                ..*p
+            }));
+        }
+        add.push(new);
+    }
+    if !touch_room(clip.touch.len(), &runs) {
+        return None;
+    }
+    Some(Edit {
         erase: clip.notes.clone(),
-        add: clip
-            .notes
-            .iter()
-            .map(|n| Note {
-                tick: at(n.tick),
-                len: len(n.len),
-                ..*n
-            })
-            .collect(),
+        add,
+        touch: runs,
+        touch_at,
         erase_locks: clip.locks.clone(),
         add_locks: clip
             .locks
@@ -616,7 +657,7 @@ fn respace(clip: &Clip, at: impl Fn(Tick) -> Tick, len: impl Fn(Tick) -> Tick) -
             })
             .collect(),
         ..Edit::default()
-    }
+    })
 }
 
 /// Split each `sel` note into `parts` equal notes (Split Note Events);
@@ -1031,6 +1072,70 @@ mod tests {
         let mut parts: Vec<_> = d.notes.iter().map(|n| (n.tick, n.touch)).collect();
         parts.sort_by_key(|p| p.0);
         assert_eq!(parts, vec![(0, t), (240, Touch::NONE)]);
+    }
+
+    /// Half and double speed stretch each note's pressure with it: its
+    /// run comes again with its times doubled or halved, added to the
+    /// clip's pressure, and the old run stays for undo. Two notes keep
+    /// their own runs; a clip with no room for the new runs refuses.
+    #[test]
+    fn half_and_double_speed_stretch_the_pressure_with_its_note() {
+        use crate::TouchPoint;
+        let p = |at, value| TouchPoint { at, value };
+        let mut c = clip(&[(0, 480, 36), (960, 240, 38)]);
+        let a = c.add_touch(&[p(0, 10), p(100, 60), p(479, 90)]).unwrap();
+        let b = c.add_touch(&[p(0, 30), p(239, 5)]).unwrap();
+        c.notes[0].touch = a;
+        c.notes[1].touch = b;
+        let runs = |d: &Clip| -> Vec<(Tick, Vec<(u32, u8)>)> {
+            let mut r: Vec<_> = d
+                .notes
+                .iter()
+                .map(|n| {
+                    (
+                        n.tick,
+                        d.touch_of(n).iter().map(|q| (q.at, q.value)).collect(),
+                    )
+                })
+                .collect();
+            r.sort_by_key(|x| x.0);
+            r
+        };
+        let d = applied(&c, &half_speed(&c));
+        assert_eq!(
+            runs(&d),
+            vec![
+                (0, vec![(0, 10), (200, 60), (958, 90)]),
+                (1920, vec![(0, 30), (478, 5)])
+            ]
+        );
+        assert_eq!(d.touch.len(), 10, "the old runs stay, for undo");
+        let d = applied(&c, &double_speed(&c));
+        assert_eq!(
+            runs(&d),
+            vec![
+                (0, vec![(0, 10), (50, 60), (239, 90)]),
+                (480, vec![(0, 30), (119, 5)])
+            ]
+        );
+        // Undone (the inverse), the notes name their old runs again.
+        let mut e = c.clone();
+        let edit = half_speed(&c);
+        e.apply(&edit).unwrap();
+        e.apply(&edit.inverse()).unwrap();
+        assert_eq!(runs(&e), runs(&c));
+        // No room for the new runs: refused, as with FX moves.
+        let mut full = c.clone();
+        full.touch
+            .resize(crate::MAX_TOUCH_POINTS - 4, TouchPoint::default());
+        assert!(half_speed(&full).is_empty());
+        // An edit made for a clip whose pressure has grown since is
+        // refused and leaves the clip as it was.
+        let mut grown = c.clone();
+        grown.add_touch(&[p(0, 1)]).unwrap();
+        let before = grown.clone();
+        assert!(grown.apply(&edit).is_err());
+        assert_eq!(grown, before);
     }
 
     #[test]
