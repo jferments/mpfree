@@ -111,7 +111,11 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The header (the 96 px name area):**
   - It shows the name, an arm dot (tap to arm), an input chip (L, R, L+R, ST) and a 3 px level bar along its bottom edge.
   - Tapping the name opens a panel over the lanes with Arm, Input (Left by default), Monitor (Auto, In, Off), level, pan, mute, solo and Takes.
-- **Q-Links while the panel is open:** Q1 Level, Q2 Pan, Q3 the selected region's gain, Q4 its fade. Arrange has no Q-Link column, so the panel lists them at its foot.
+- **Q-Links: Play's Q-Link column, always on Arrange** (Jay's pick on 12 Nov 2026 at 06:01Z, mockup E in /mnt/project-files/audiotracks/mockup/qlinks-right/).
+  - It's the same 168 px column with four vertical cards as on Play, at the right edge from under the top bar to the bottom. The Record and Takes panels narrow to about 250 px to make room, and the arp chip leaves the transport bar on Arrange.
+  - The cards follow the selection. With an audio region selected, or the track panel open, they are Q1 Level, Q2 Pan (both the track's), Q3 the region's gain and Q4 its fade.
+  - With nothing selected, they are the armed track's level, pan, send A and send B. That's the default shown on the mockup and can change.
+  - Q-LINK steps to Macros 1-4 and 5-8 as on Play. The track panel no longer lists the Q-Links at its foot.
 - **The bottom row with an audio region selected:** Split · Erase · Fades · Gain · Takes · Undo, instead of the placement buttons. SHIFT + Undo redoes.
   - Dragging a region moves it, snapped to the grid (1/16 by default). SHIFT + drag moves it freely.
   - With nothing selected, the row is the Song view's own.
