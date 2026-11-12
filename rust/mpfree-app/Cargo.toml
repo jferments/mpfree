@@ -49,3 +49,7 @@ mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-midi = { path = "../mpfree-midi" }
 mpfree-midi-clock = { path = "../mpfree-midi-clock" }
 mpfree-midi-ui = { path = "../mpfree-midi-ui" }
+# The library in the data folder and its browser (the Pads tab's Browse
+# view): places, folders, Load, Load to pad and the preview.
+mpfree-library = { path = "../mpfree-library" }
+mpfree-browser-ui = { path = "../mpfree-browser-ui" }

@@ -66,12 +66,12 @@ pub const WHEEL: &str = "smp-rec-wheel";
 
 /// The tab's page: the input beside the Record list, the buttons under
 /// them.
-pub const LAYOUT: &str = "col(header:60, smp-rec-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
                           row(smp-rec-view:*, smp-rec-list:340):*, \
                           row(smp-rec-buttons:*, smp-rec-wheel:340):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 7;
+pub const TAB: usize = 6;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =
@@ -534,6 +534,7 @@ impl RecTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`. The strip shows input at `rate`.
     pub fn add(ui: &mut Ui, name: &str, st: &RecState, rate: u32) -> Result<RecTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
@@ -577,10 +578,7 @@ impl RecTab {
             // A pad without a sound has nothing for the other tabs to edit.
             bar.enabled = TABS
                 .iter()
-                .map(|t| {
-                    wave_tab::BUILT.contains(t)
-                        && (st.pad_name.is_some() || *t == TABS[TAB] || *t == TABS[0])
-                })
+                .map(|t| wave_tab::BUILT.contains(t) && (st.pad_name.is_some() || *t == TABS[TAB]))
                 .collect();
             bar.title = match (&st.flattening, &target) {
                 (Some(f), _) => f.clone(),

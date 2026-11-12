@@ -44,12 +44,12 @@ pub const WHEEL: &str = "smp-warp-wheel";
 
 /// The tab's page: the picture beside the Warp list and its buttons,
 /// between the pad bar and the Q-Link cards.
-pub const LAYOUT: &str = "col(header:60, smp-warp-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-warp-bar:*, smp-send:330):60, \
                           row(smp-warp-view:*, col(smp-warp-list:*, smp-warp-buttons:64):360):*, \
                           row(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4, smp-warp-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 2;
+pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a hit to pin it to the grid · drag a pin's handle along the beats · Pin hits pins them all · \
@@ -205,6 +205,7 @@ impl WarpTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &WaveState) -> Result<WarpTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;

@@ -20,6 +20,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 | Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, developer tools, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
 | Arpeggiator patterns you save | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
+| The Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4. The pads still start on bank A, in their usual octave. | MENU on the Synth tab (see [Synths](synths.md)) |
 
 The line input is never kept on: it is off every time MPFree starts, so a noisy input you forgot about is never suddenly loud.
 
@@ -54,7 +55,9 @@ The data wheel moves through the list, **SHIFT** and the wheel through the place
 
 ### Pickers
 
-Where you need one kind of file, a narrower **picker** opens in the same place: a preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it), a sample picker on the Sample tab, and a project picker for Open. A picker only loads; renaming and deleting are in the full browser.
+Where you need one kind of file, a narrower **picker** opens in the same place: a preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it), the sound picker beside the pads on the Pads tab, and a project picker for Open. A picker only loads; renaming and deleting are in the full browser.
+
+In the next build, the Pads tab's picker is the first part of the browser you can use: it stays open beside the pads, with Load, Load to pad, Audition and Favourite. See [Sampling](sampling.md#the-pads-tab-sounds-onto-pads).
 
 ### Your own synth presets
 
