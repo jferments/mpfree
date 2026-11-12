@@ -44,7 +44,7 @@ col(header:60, row(pads:*, col(kits:*, level:96, timing:206):460):*, hint:26)
 - **Label:** one line of text (the hint at the bottom).
 - **Loading:** a whole-screen start page: a backdrop (a captured picture, or its own stars and title), a card with what is happening, a detail line and a progress bar, or what failed. Only the card is redrawn as it changes.
 - **Card:** a heading, lines of text and buttons (the button guide).
-- **OptionList:** rows of a name and a value with ‹ and › arrows (Prefs and each page's options). A tap on a row selects it; an arrow steps its value.
+- **OptionList:** rows of a name and a value with ‹ and › arrows (Prefs and each page's options). A tap on a row selects it; an arrow steps its value. While the data wheel's push has a row open (`editing`), its value box is outlined and its arrows lit in the accent colour, and the wheel steps the value instead of moving between rows.
 
 Feature crates add their own widgets on the same toolkit: [`mpfree-arp-ui`](arpeggiator.md) (the Arp panel, quick band and pattern workspace) and [`mpfree-time-ui`](playback.md#screens-mpfree-time-ui) (the transport bar, the Clips launch grid and the takes list).
 

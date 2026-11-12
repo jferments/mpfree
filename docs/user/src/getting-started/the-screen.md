@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 280f4cf
 -->
 
 # The screen
@@ -49,7 +49,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}
 
-In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. The panel on the right explains the row you picked.
+In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked.
 
 ## Touch
 
