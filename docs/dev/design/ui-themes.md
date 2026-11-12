@@ -132,6 +132,6 @@ What each crate should change (small, mechanical):
 
 ## Later
 
-- Startup screens in the boot path: `--framebuffer` and `--data` are ready; the test stick runs `mpfree-splash` before the data partition is mounted, so the app thread decides when to switch it to `mpfree-startup --data /run/mpfree-data`.
+- Startup screens in the boot path: the test stick runs `mpfree-startup --framebuffer` (from 12 Nov, in place of `mpfree-splash`), so it shows the default theme's startup screen, Synthwave's. It starts before the data partition is mounted, so it can't read the theme picked in Prefs yet; `--data /run/mpfree-data` is ready for when it can.
 - With the GLES canvas, the same effects become shaders (bloom, scanlines, real blur) with no theme or widget changes.
 - Optional per-theme sounds (UI clicks) and pad-light palettes.
