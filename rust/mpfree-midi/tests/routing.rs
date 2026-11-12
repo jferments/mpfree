@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use mpfree_midi::cv::{Calibration, CvAssign, CvChange, CvEngine, Priority, Scale};
 use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter};
-use mpfree_midi::learn::{Encoding, Input, LearnMap, Mode, Takeover};
+use mpfree_midi::learn::{Encoding, Input, LearnMap, Mode, Saved, Source, Takeover};
 use mpfree_midi::output::{OutQueue, OutRoute, OutputRouter};
 use mpfree_midi::{Msg, PortId, DIN, MAX_PORTS};
 use mpfree_param::{OnTrack, ParamAddr};
@@ -317,6 +317,75 @@ fn writes(map: &mut LearnMap, port: PortId, m: Msg) -> Vec<Input> {
     v
 }
 
+/// What Learn takes from the keys, so it doesn't also play: a press or a
+/// move while armed (not a release, so a held note still ends), and
+/// mapped controls, a learned key's release too.
+#[test]
+fn learn_takes_only_what_it_uses() {
+    let mut map = LearnMap::new();
+    let on = |note| Msg::NoteOn {
+        ch: 0,
+        note,
+        vel: 90,
+    };
+    let off = |note| Msg::NoteOff {
+        ch: 0,
+        note,
+        vel: 0,
+    };
+    let cc = Msg::Cc {
+        ch: 0,
+        cc: 1,
+        value: 5,
+    };
+    assert!(!map.takes(KEYS, &on(60)));
+    assert!(!map.takes(KEYS, &cc));
+    map.arm(addr(3));
+    assert!(map.takes(KEYS, &on(60)));
+    assert!(map.takes(KEYS, &cc));
+    assert!(!map.takes(KEYS, &off(48)), "a held note's release");
+    writes(&mut map, KEYS, on(60));
+    assert!(map.takes(KEYS, &off(60)));
+    assert!(map.takes(KEYS, &on(60)));
+    assert!(!map.takes(KEYS, &on(61)));
+    assert!(!map.takes(DIN, &on(60)), "another port");
+}
+
+/// A project keeps a mapping with its device by name; its text reads back.
+#[test]
+fn a_saved_mapping_reads_back() {
+    let s = Saved {
+        port: Some("Keystep | 37".into()),
+        channel: 2,
+        source: Source::Cc(74),
+        target: addr(12),
+        lo: 0.25,
+        hi: 0.75,
+        mode: Mode::Relative(Encoding::Offset64),
+        takeover: Takeover::Pickup,
+    };
+    let text = s.text();
+    assert_eq!(
+        text,
+        "port Keystep / 37 | ch 3 | cc 74 | t3.inst.12 | 0.2500 0.7500 | relative-64 | pickup"
+    );
+    let back = Saved::parse(&text).unwrap();
+    assert_eq!(back.port.as_deref(), Some("Keystep / 37"));
+    assert_eq!(
+        Saved {
+            port: s.port.clone(),
+            ..back.clone()
+        },
+        s
+    );
+    let any = Saved { port: None, ..s };
+    assert_eq!(Saved::parse(&any.text()), Some(any));
+    assert_eq!(
+        Saved::parse("port X | ch 17 | cc 1 | t1.inst.1 | 0 1 | absolute | jump"),
+        None
+    );
+}
+
 #[test]
 fn learn_a_knob_then_turn_it() {
     let mut map = LearnMap::new();
@@ -522,6 +591,18 @@ fn encoders_buttons_and_keys() {
         },
     );
     assert!(matches!(on[..], [Input::Write(x)] if x.value == 1.0));
+    assert!(matches!(off[..], [Input::Write(x)] if x.value == 0.0));
+    // Turned on from the screen, the button's next press turns it off.
+    map.observe(b, 1.0);
+    let off = writes(
+        &mut map,
+        KEYS,
+        Msg::Cc {
+            ch: 0,
+            cc: 64,
+            value: 127,
+        },
+    );
     assert!(matches!(off[..], [Input::Write(x)] if x.value == 0.0));
 
     // A key learns as momentary; its release does not learn anything.

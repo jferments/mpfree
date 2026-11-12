@@ -2500,6 +2500,28 @@ struct SeqPads<'a> {
     cv: &'a mut cv_out::CvOut,
 }
 
+/// A learned MIDI control's value (0 to 1 over the parameter's range) set
+/// as a chain editor knob sets it (M5): the value set, in the parameter's
+/// own units. None when MPFree has no way to set that parameter from a
+/// control yet (a synth's, for now).
+fn learned_set(
+    panels: &mut modpanels::Panels,
+    mix: &mut mixing::MixHost,
+    w: mpfree_midi::learn::Write,
+    recording: bool,
+) -> Option<f32> {
+    use mpfree_play::mpfree_param::Owner;
+    let value = match w.target.owner {
+        Owner::Macro(_) => w.value,
+        _ => {
+            let (info, _) = modmix::describe(&mix.mixer, w.target)?;
+            info.from_unit(w.value)
+        }
+    };
+    panels.set_param(mix, w.target, value, recording);
+    Some(value)
+}
+
 /// The notes pad `pad` plays on MIDI Out: the synth's pad layout while the
 /// synth has the pads, else the MPC's own pad note.
 fn pad_notes(synth: Option<&synth::Synth>, pad: usize) -> &[u8] {
@@ -3152,6 +3174,10 @@ fn player_session(
     // insert row opens the editor; a long press on a macro card the panel.
     // The macros' values go out once for the Q-Link column's macro banks.
     let mut panels = modpanels::Panels::new();
+    // MIDI Learn: values for parameters a control can't set yet, and the
+    // I/O view's names taken at this generation of the model.
+    let mut learn_misses = 0u64;
+    let mut learn_names_gen: Option<u64> = None;
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
@@ -3402,9 +3428,19 @@ fn player_session(
                 }
                 gui::FromUi::Chain(a) => {
                     let recording = time.info().state == mpfree_transport::State::Recording;
-                    fx.extend(panels.chain(&mut app, &mut mix, &a, recording, &mut |m| out.show(m)))
+                    fx.extend(panels.chain(&mut app, &mut mix, &a, recording, &mut |m| {
+                        // MIDI Learn arms with the Q-Link learn: a control
+                        // moved on a keyboard can take the knob too (M5).
+                        if let gui::ToUi::ChainLearn(addr) = &m {
+                            music.arm(*addr);
+                        }
+                        out.show(m)
+                    }))
                 }
-                gui::FromUi::ChainLearned => panels.learned(),
+                gui::FromUi::ChainLearned => {
+                    panels.learned();
+                    music.disarm();
+                }
                 gui::FromUi::Macros(a) => {
                     let recording = time.info().state == mpfree_transport::State::Recording;
                     fx.extend(panels.macros(&mut app, &mut mix, &a, recording))
@@ -3616,6 +3652,11 @@ fn player_session(
                 }
             }
         }
+        // MIDI Learn listens only while the chain editor's learn is armed:
+        // Back or closing the editor stops it too.
+        if music.armed().is_some() && !panels.learning() {
+            music.disarm();
+        }
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
         }
@@ -3641,6 +3682,47 @@ fn player_session(
         midi_out.tick(&mut |l| out.midi(&l));
         cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
+        // MIDI Learn (M5): a control that took the armed knob ends the
+        // chain editor's learn; a learned control sets its parameter as a
+        // chain editor knob does.
+        let recording = time.info().state == mpfree_transport::State::Recording;
+        for l in music.learning() {
+            match l {
+                midi_in::Learning::Took { .. } => {
+                    panels.learned();
+                    out.show(gui::ToUi::ChainLearnDone);
+                }
+                midi_in::Learning::Set(w) => {
+                    if learned_set(&mut panels, &mut mix, w, recording).is_none() {
+                        learn_misses += 1;
+                        if learn_misses == 1 {
+                            out.midi(&format!(
+                                "MIDI Learn: {} isn't a parameter MPFree can set from a \
+                                 control yet (counted from here)",
+                                w.target
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // Where each learned control's parameter stands, when something
+        // else moved it: an endless encoder steps on from there.
+        music.observe_learned(mt, |addr| modmix::describe(&mix.mixer, addr));
+        // The I/O view names what each learned control moves, whenever
+        // the project's learned controls change.
+        if let Ok(mut m) = io_model.try_lock() {
+            if learn_names_gen != Some(m.gen) {
+                learn_names_gen = Some(m.gen);
+                let names = m
+                    .setup
+                    .learn
+                    .iter()
+                    .map(|l| modpanels::label(&mix, l.target))
+                    .collect();
+                m.live.learn_names = names;
+            }
+        }
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();
@@ -5657,5 +5739,47 @@ mod tests {
         let (avg, max) = gap_stats(&[Duration::from_millis(2), Duration::from_millis(4)]);
         assert!((avg - 0.003).abs() < 1e-9 && (max - 0.004).abs() < 1e-9);
         assert_eq!(gap_stats(&[]), (0.0, 0.0));
+    }
+
+    /// A learned control's 0 to 1 sets a mixer value over its own range,
+    /// as a chain editor knob does; one that reaches nothing says so (M5).
+    #[test]
+    fn a_learned_control_sets_its_value_over_the_range() {
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        use mpfree_midi::learn::Write;
+        use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+        const RATE: u32 = 44_100;
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        let mut panels = modpanels::Panels::new();
+        let mut at = 0u64;
+        let mut run = |mix: &mut mixing::MixHost, periods: u64| {
+            let z = [0f32; PERIOD];
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            for _ in 0..periods {
+                let ctx = mpfree_node::Ctx::new(RATE, at * PERIOD as u64);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                at += 1;
+            }
+        };
+        run(&mut mix, 20);
+        let track = mixing::LOOP;
+        let vol = ParamAddr::new(Owner::Strip(Strip::Track(track as u8)), mx::VOLUME);
+        let (info, _) = modmix::describe(&mix.mixer, vol).unwrap();
+        for (unit, want) in [(0.0, info.min), (1.0, info.max), (0.5, info.from_unit(0.5))] {
+            let w = Write {
+                target: vol,
+                value: unit,
+            };
+            assert_eq!(learned_set(&mut panels, &mut mix, w, false), Some(want));
+            run(&mut mix, 20);
+            let got = mix.mixer.param(StripId::Track(track), mx::VOLUME);
+            assert!((got - want).abs() < 0.01, "{unit}: {got} != {want}");
+        }
+        let nothing = Write {
+            target: ParamAddr::new(Owner::Strip(Strip::Track(track as u8)), 9999),
+            value: 1.0,
+        };
+        assert_eq!(learned_set(&mut panels, &mut mix, nothing, false), None);
     }
 }
