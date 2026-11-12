@@ -1511,7 +1511,10 @@ impl App {
         } else if is(m.q_link) {
             // Q-LINK: the column's next bank (Macros 1-4, 5-8, the page's
             // own knobs), where the column has macro banks (layout spec 4b).
-            if matches!(self.view, View::Play | View::Chain | View::Macros) {
+            if matches!(
+                self.view,
+                View::Play | View::Arrange | View::Chain | View::Macros
+            ) {
                 vec![Effect::QLinkBank]
             } else {
                 Vec::new()

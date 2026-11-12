@@ -1,10 +1,10 @@
 # The arrangement, the Song view and live to song (T13, T11)
 
-**Status:** built and tested on the workstation, 2026-11-12: the arrangement and the Song view (T13), then live to song (T11). Nothing here has run on the MPC.
+**Status:** built and tested on the workstation, 2026-11-12: the arrangement and the Song view (T13), then live to song (T11), then the audio tracks' lanes in the Song view (layout spec 4c). Nothing here has run on the MPC.
 
 The launch grid plays clips as you trigger them. The arrangement puts them on a timeline, so the same project can also play as a fixed song. A placement in the song is linked to its slot, so an edit to the slot's clip shows wherever the song uses it, until the placement is made unique. Scenes and the song convert both ways, and live to song records what the grid plays into the song.
 
-The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mpfree-play`, live to song in `rust/mpfree-perform/src/song.rs`, and the Song view in `rust/mpfree-time-ui/src/song.rs`.
+The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mpfree-play`, live to song in `rust/mpfree-perform/src/song.rs`, and the Song view (with the audio tracks' lanes) in `rust/mpfree-time-ui/src/song.rs`.
 
 ## The model (`mpfree-seq`)
 
@@ -79,6 +79,23 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
   - **Make unique** and **Delete** act on the selected placement, and are dim when nothing is selected.
 - **Rec song** sits at the right of the title line on the Song view, and beside the Song › button on the grid. It is red while armed.
 
+### Audio lanes (layout spec 4c)
+
+The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: see [audio-tracks.md](audio-tracks.md)) get lanes under the MIDI lanes, as Jay approved on 12 Nov (mockups A to C in `/mnt/project-files/audiotracks/mockup/`). The Song view draws them; the app wires the engine (`AudioHost`), the track panel, the region tools and the Q-Links.
+
+- **What the app gives.** `TimeState::audio` is a list of `AudioLane`s, one for each audio track that has a region or is armed, in order: the track, its name and colour (`view::audio_color`), armed, the input chip ("L", "R", "L+R" or "ST"), the level for the header's bar (0 to 1), its blocks and, while it records, the punch in. `song::audio_blocks(track, regions, takes, map, rate)` makes the blocks from the engine's `regions(track)` and `takes()`: each keeps its ticks, take, source frame and fades, the frames it spans along the tempo map (`frames_from`), and a "take N" tag when it plays an older take than the track's newest (N counts the track's takes from 1, oldest first by group and pass). `TimeState::waves` holds the `TakeWave`s read so far (`AudioHost::wave`). `TimeState::audio_free` (seconds free and in all) goes on the legend as "Audio 0:34 of 1:00 free", and `TimeState::audio_counts` (the engine's refused, dropped and full, and the streaming misses and errors) are added to the legend while not zero, in the warning colour: a loss is never hidden.
+- **The lanes.** Under the MIDI lanes, after a thin line, with the same ruler, playhead, bar scrolling and lane height (56 px at most, 32 px at least). The last lane is "+ Audio" while there are fewer than 8. A region is a block in the track's colour with the take's waveform across it (each pixel column shows the lowest and highest sample of the frames under it), its name (with the tag) over its top, and each fade as a slope with the part above it dimmed. While a track records, a red block runs from its punch in to the playhead.
+- **The header** (the 96 px name column): an arm dot (filled red while armed), the name in the track's colour, the input chip, and a 3 px level bar along the bottom edge (red from 95 %).
+- **Scrolling the lanes.** When the lanes don't fit at 32 px each, a drag up or down the name column scrolls them, and a thin bar at the left edge shows where you are. The scroll is the widget's own (`SongLanes::first_lane`), kept across updates.
+- **Touches** (`view::action`), as `TimeAction::Audio(AudioAction)`:
+  - a region: `Pick(Some(RegionId { track, index }))` (an index into `regions(track)`);
+  - the arm dot: `Arm { track, on }`; the name or the chip: `Panel(track)` (on the lift, unless the finger scrolled);
+  - "+ Audio": `Add`;
+  - with a region picked, the bottom row is Split · Erase · Fades · Gain · Takes · Undo: `Split(r)`, `Erase(r)`, `Fades(r)`, `Gain(r)`, `Takes(track)` and `Undo`. Rec song still works, and empty space picks nothing.
+- **The selection has a kind.** `TimeState::pick()` gives `Pick::Placement(i)` or `Pick::Region(r)`; `TimeHost` keeps them apart (picking a region drops the placement, and `SelectPlacement` drops the region). The app's Q-Links follow it.
+- **Waveforms are copied only when they change.** `song_lanes` leaves them out, and `TimePage::update` copies `st.waves` only when a take, its length or its detail differs (`song::same_waves`), as they can be large.
+- **Sample screen:** `arrange-song-audio` (`sample::song_audio_state`) records real takes into a real `AudioTracks`: a guitar over bars 1 to 4, a vocal over bars 1 to 8 and again over 5 to 8 (that region picked, with fades), the guitar armed.
+
 ## In the pad player (`TimeHost`)
 
 - `act(SongView)` swaps the view, and `act(SongMode)` turns song mode on and compiles.
@@ -112,6 +129,8 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
 - `mpfree-app`'s `rec_song_keeps_the_morph_bar_moves_made_on_the_mixer` moves the morph bar on the real mixer's mod engine while Rec song records, changes rows, and checks the song's morph lane and rows.
 
 ## Not yet
+
+- Audio lanes: the take lanes for comping (swiping a take), dragging a region to move it, and the SHIFT + wheel lane scroll (the wheel scrolls bars today; the layout spec gives SHIFT + wheel to the lanes). The app thread wires the engine: until it does, `TimeHost` answers the audio actions other than the pick with an error the log shows.
 
 - Moving, resizing and copying placements by touch, and adding or naming markers on screen. The model has them; the Song view only selects, makes unique and deletes for now.
 - Undo for song edits.

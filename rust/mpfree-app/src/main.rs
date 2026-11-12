@@ -2197,6 +2197,12 @@ impl time::Pads for SeqPads<'_> {
             None => self.player.stop_all(),
         }
     }
+    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        match self.synth.as_mut() {
+            Some(s) => s.pressure_at(pad, value, offset),
+            None => self.player.pressure_at(pad, value, offset),
+        }
+    }
 
     /// An arp's note: the pads played live (through the armed track's arp,
     /// a latched arp, or a clip through its arp). It gets the velocity
@@ -2259,6 +2265,10 @@ impl time::Pads for SeqPads<'_> {
             }
             Event::AllOff => {
                 self.stop_all();
+                None
+            }
+            Event::Pressure { note, value } => {
+                self.pressure_at(usize::from(note), value, o.offset);
                 None
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
@@ -3053,6 +3063,9 @@ fn player_session(
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
+                    // Recorded onto the pad's note while the armed track
+                    // records pressure.
+                    time.pad_pressure(0, pad, pressure);
                     app.pressure(pad as usize, pressure);
                     if synth_on && app.arp_plays_notes() {
                         // The notes this pad pressed (by number), even if the
@@ -3108,8 +3121,9 @@ fn player_session(
                         app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2]))
                     {
                         fx.extend(e);
-                    } else if page == app::View::Play && knob < 4 {
-                        // The Play page decides what each knob turns there (its view, the step picked).
+                    } else if matches!(page, app::View::Play | app::View::Arrange) && knob < 4 {
+                        // The Play page decides what each knob turns there (its view, the step picked);
+                        // Arrange has the same column and knobs (layout spec section 4c).
                         let k = knob as usize;
                         let ticks = if public {
                             let was = qlink_at[k].replace(m.bytes[2]);

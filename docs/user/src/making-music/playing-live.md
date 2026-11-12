@@ -60,6 +60,8 @@ The four knobs change with the view:
 | Loop | Loop level | Loop's delay send | Line input level | Loop filter |
 | Drum | Tune | Decay | Swing | FX mix |
 
+Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.
+
 While you hold **NOTE REPEAT**, or the Arp panel is open, the knobs control the repeat instead: rate, gate, swing and octaves. See [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]

@@ -79,6 +79,18 @@
 //! or one with nothing playing, unlocks at once and sends no locks. The
 //! player keeps what it has locked, so every Unlock follows a Lock.
 //!
+//! **Pressure** (`mpfree_seq::Touch`). A note that carries recorded pad
+//! pressure sends its values as [`Event::Pressure`] while it plays: each
+//! value on the song tick its time from the note's start lands on (the
+//! note's start as played, after quantise and swing, plus the value's
+//! clip ticks at the clip's speed, rounded to a tick), so the pressure
+//! moves with the note. Values stop at the note's end (the whole note, a
+//! ratchet's too) or wherever it is cut; a new note on the same sound and
+//! pitch ends the old one's. A stop, a locate or a loop jump ends them all
+//! with the notes; a switch ends the track's on its bar line. On a tick,
+//! a value comes before the note-offs there. The raw value goes out:
+//! each instrument shapes it with its own pressure curve.
+//!
 //! **No allocation, locks or panics** in `process`: fixed tables only. Full
 //! tables are counted in [`Stats`], never silently dropped.
 
@@ -86,7 +98,7 @@ use std::ops::Range;
 
 use mpfree_param::ParamAddr;
 use mpfree_seq::mpfree_moves::Out as MoveOut;
-use mpfree_seq::{Cond, DestId, Lock, Note, MAX_TRACKS};
+use mpfree_seq::{Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -104,6 +116,8 @@ pub const MAX_LOCK_STARTS: usize = 1024;
 pub const MAX_LOCKED: usize = 256;
 /// Ratchet hits waiting for their tick, all tracks.
 pub const MAX_HITS: usize = 256;
+/// Notes sending their recorded pressure at once, all tracks.
+pub const MAX_TOUCHING: usize = 64;
 /// FILL changes in one period.
 const MAX_FILL_CHANGES: usize = 8;
 /// `dest` and `track` of an event meant for every destination.
@@ -140,6 +154,14 @@ pub enum Event {
     },
     NoteOff {
         note: u8,
+    },
+    /// Pad pressure (polyphonic aftertouch) on a sounding note: the pad's
+    /// raw value, 0 to 127, which each instrument's pressure curve shapes.
+    /// Played from a note's recorded pressure ([`mpfree_seq::Touch`]), and
+    /// what the recorder takes in from the pads.
+    Pressure {
+        note: u8,
+        value: u8,
     },
     /// Cut every sound (panic).
     AllOff,
@@ -192,7 +214,8 @@ pub trait Sink {
 pub struct Stats {
     /// Notes started.
     pub notes: u64,
-    /// Notes not started because a table was full. Should stay 0.
+    /// Notes (or a note's pressure) not started because a table was full.
+    /// Should stay 0.
     pub dropped: u64,
     /// Note-offs that came after their tick (should stay 0).
     pub late_offs: u64,
@@ -207,6 +230,8 @@ pub struct Stats {
     pub locks: u64,
     /// Move values sent (`Event::Lane`).
     pub lanes: u64,
+    /// Pressure values sent (`Event::Pressure`).
+    pub pressure: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -241,7 +266,43 @@ struct Start {
     reset: bool,
     /// Decided before the span plays: the note plays.
     plays: bool,
+    /// Its recorded pressure in the clip in `slot` (at `speed`), sent
+    /// until song tick `until` (the whole note's end).
+    touch: Touch,
+    slot: usize,
+    speed: Speed,
+    until: Tick,
 }
+
+/// A playing note's pressure: values `next..end` of the pressure of clip
+/// `slot` of `track`, the next one on song tick `at`, until `until`.
+#[derive(Clone, Copy, Debug)]
+struct Touching {
+    track: u16,
+    dest: DestId,
+    note: u8,
+    slot: usize,
+    /// The note's start as played, and its clip's speed.
+    base: Tick,
+    speed: Speed,
+    next: u32,
+    end: u32,
+    at: Tick,
+    until: Tick,
+}
+
+const NO_TOUCHING: Touching = Touching {
+    track: 0,
+    dest: 0,
+    note: 0,
+    slot: 0,
+    base: 0,
+    speed: Speed::NORMAL,
+    next: 0,
+    end: 0,
+    at: 0,
+    until: 0,
+};
 
 /// A ratchet's later hit, waiting for its tick.
 #[derive(Clone, Copy, Debug)]
@@ -366,6 +427,10 @@ const NO_START: Start = Start {
     len: 0.0,
     reset: false,
     plays: true,
+    touch: Touch::NONE,
+    slot: 0,
+    speed: Speed::NORMAL,
+    until: 0,
 };
 
 pub struct Player {
@@ -414,6 +479,9 @@ pub struct Player {
     /// The song's own lanes played last span: when they stop (song mode
     /// off), their parameters are let go.
     song_lanes: bool,
+    /// Notes sending their pressure.
+    touching: [Touching; MAX_TOUCHING],
+    n_touching: usize,
 }
 
 const NO_ERASED_LOCK: ErasedLock = ErasedLock {
@@ -439,6 +507,7 @@ const NO_ERASED: Erased = Erased {
         chance: 100,
         cond: mpfree_seq::Cond::Always,
         ratchet: 1,
+        touch: mpfree_seq::Touch::NONE,
     },
     take: 0,
 };
@@ -488,6 +557,8 @@ impl Player {
             left_out: false,
             moves_pos: [None; MAX_TRACKS + 1],
             song_lanes: false,
+            touching: [NO_TOUCHING; MAX_TOUCHING],
+            n_touching: 0,
         }
     }
 
@@ -632,6 +703,7 @@ impl Player {
     /// ratchet hits to come.
     fn end_all(&mut self, offset: u32, frame: u64, out: &mut impl Sink) {
         self.n_hits = 0;
+        self.n_touching = 0;
         for s in &self.sounding[..self.n_sounding] {
             out.send(Out {
                 offset,
@@ -693,6 +765,7 @@ impl Player {
                     self.end_locks(ticks.start, i as u16, track.dest);
                 }
                 self.cut_hits(i as u16, ticks.start);
+                self.cut_touch(i as u16, ticks.start);
                 self.forget_moves(i);
             }
             if let Some((clip, origin, start)) = playing {
@@ -729,6 +802,7 @@ impl Player {
                 }
             }
             self.cut_hits(i as u16, at);
+            self.cut_touch(i as u16, at);
             // The old clip's locks end on the switch, before the new one's.
             self.end_locks(at, i as u16, track.dest);
             // The new clip's last result starts at "not played", on the
@@ -819,7 +893,7 @@ impl Player {
             // left out leaves out its own locks.
             while k < self.n_lock_starts && self.lock_starts[k].tick <= s.tick {
                 let l = self.lock_starts[k];
-                self.advance(l.tick, false, first, span, out);
+                self.advance(view, l.tick, false, first, span, out);
                 if self.lock_plays(&l, i) {
                     self.lock(l, span, out);
                 }
@@ -827,7 +901,7 @@ impl Player {
             }
             // Notes ending on or before this tick end first, and ratchet
             // hits on or before it play.
-            self.advance(s.tick, true, first, span, out);
+            self.advance(view, s.tick, true, first, span, out);
             if s.reset || !s.plays {
                 continue;
             }
@@ -845,9 +919,14 @@ impl Player {
                 });
                 self.remove(j);
             }
+            // The old note's pressure ends with it.
+            self.stop_touch(s.track, s.dest, s.note);
             if self.n_sounding == MAX_ACTIVE {
                 self.stats.dropped += 1;
                 continue;
+            }
+            if !s.touch.is_none() {
+                self.start_touch(view, &s);
             }
             // The track's locks without a lock on this note's tick end (a
             // move under one takes its parameter back). Moves go on.
@@ -878,11 +957,11 @@ impl Player {
         }
         while k < self.n_lock_starts {
             let l = self.lock_starts[k];
-            self.advance(l.tick, false, first, span, out);
+            self.advance(view, l.tick, false, first, span, out);
             self.lock(l, span, out);
             k += 1;
         }
-        self.advance(ticks.end - 1, true, first, span, out);
+        self.advance(view, ticks.end - 1, true, first, span, out);
     }
 
     /// Decide this span's notes, in the order they play: each note's trig
@@ -1021,8 +1100,10 @@ impl Player {
     /// Play what is due by `tick`: the note-offs on or before it and the
     /// ratchet hits before it (on it too, with `on_tick`), in time order,
     /// note-offs first on a tick.
+    #[allow(clippy::too_many_arguments)]
     fn advance(
         &mut self,
+        view: &PlayView,
         tick: Tick,
         on_tick: bool,
         first: Tick,
@@ -1035,7 +1116,7 @@ impl Player {
             let h = self.hits[0];
             self.hits.copy_within(1..self.n_hits, 0);
             self.n_hits -= 1;
-            self.end_until(h.tick, first, span, out);
+            self.end_until(view, h.tick, first, span, out);
             let (offset, frame) = place(span, h.tick);
             if let Some(j) = self.find(h.track, h.dest, h.note) {
                 out.send(Out {
@@ -1072,7 +1153,7 @@ impl Player {
             self.seq += 1;
             self.stats.notes += 1;
         }
-        self.end_until(tick, first, span, out);
+        self.end_until(view, tick, first, span, out);
     }
 
     /// Queue the end of every lock `track` holds, on `tick`.
@@ -1526,6 +1607,10 @@ impl Player {
                 let off = cut.map_or(off, |c| off.min(c));
                 let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64)
                     ^ u64::from(n.note);
+                // The whole note's end (a ratchet's last hit's too), for its
+                // pressure.
+                let whole = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
+                let until = cut.map_or(whole, |c| whole.min(c));
                 self.push_start(Start {
                     tick,
                     track,
@@ -1541,6 +1626,10 @@ impl Player {
                     len: n.len as f32,
                     reset: false,
                     plays: true,
+                    touch: n.src.touch,
+                    slot: clip.slot,
+                    speed: clip.speed,
+                    until,
                 });
             }
             // The pass's locks, placed as its notes are. A pass being
@@ -1589,7 +1678,14 @@ impl Player {
 
     /// End the sounding notes whose end tick is at or before `tick`, in
     /// tick order (ties in start order).
-    fn end_until(&mut self, tick: Tick, first: Tick, span: &Span, out: &mut impl Sink) {
+    fn end_until(
+        &mut self,
+        view: &PlayView,
+        tick: Tick,
+        first: Tick,
+        span: &Span,
+        out: &mut impl Sink,
+    ) {
         loop {
             let mut best: Option<usize> = None;
             for (i, s) in self.sounding[..self.n_sounding].iter().enumerate() {
@@ -1600,6 +1696,21 @@ impl Player {
                 {
                     best = Some(i);
                 }
+            }
+            // A pressure value due first (on a tick, before the note-offs
+            // there) goes first.
+            let mut touch: Option<usize> = None;
+            for (i, t) in self.touching[..self.n_touching].iter().enumerate() {
+                if t.at <= tick
+                    && best.is_none_or(|b| t.at <= self.sounding[b].off)
+                    && touch.is_none_or(|k| t.at < self.touching[k].at)
+                {
+                    touch = Some(i);
+                }
+            }
+            if let Some(k) = touch {
+                self.send_touch(view, k, first, span, out);
+                continue;
             }
             let Some(i) = best else { return };
             let s = self.sounding[i];
@@ -1619,6 +1730,117 @@ impl Player {
             });
             self.remove(i);
         }
+    }
+
+    /// Start sending note `s`'s pressure (its note-on just went out).
+    fn start_touch(&mut self, view: &PlayView, s: &Start) {
+        let points = view.touch_of(usize::from(s.track), s.slot);
+        let Some(p) = points.get(s.touch.range()).and_then(|r| r.first()) else {
+            return;
+        };
+        if self.n_touching == MAX_TOUCHING {
+            self.stats.dropped += 1;
+            return;
+        }
+        let t = Touching {
+            track: s.track,
+            dest: s.dest,
+            note: s.note,
+            slot: s.slot,
+            base: s.tick,
+            speed: s.speed,
+            next: s.touch.first,
+            end: s.touch.first + s.touch.len,
+            at: s.tick + s.speed.to_song(f64::from(p.at)).round() as Tick,
+            until: s.until,
+        };
+        if t.at < t.until {
+            self.touching[self.n_touching] = t;
+            self.n_touching += 1;
+        }
+    }
+
+    /// Send pressure value `touching[k]` is due to send, and step it on (or
+    /// drop it when it has no more before its note's end).
+    fn send_touch(
+        &mut self,
+        view: &PlayView,
+        k: usize,
+        first: Tick,
+        span: &Span,
+        out: &mut impl Sink,
+    ) {
+        let t = self.touching[k];
+        let points = view.touch_of(usize::from(t.track), t.slot);
+        let Some(p) = points.get(t.next as usize) else {
+            self.drop_touch(k);
+            return;
+        };
+        let (offset, frame) = place(span, t.at.max(first));
+        out.send(Out {
+            offset,
+            frame,
+            track: t.track,
+            dest: t.dest,
+            event: Event::Pressure {
+                note: t.note,
+                value: p.value.min(127),
+            },
+        });
+        self.stats.pressure += 1;
+        let next = t.next + 1;
+        let at = points
+            .get(next as usize)
+            .filter(|_| next < t.end)
+            .map(|q| t.base + t.speed.to_song(f64::from(q.at)).round() as Tick);
+        match at {
+            // Values on one tick: the last of them is what counts, but each
+            // goes out so the order is kept.
+            Some(at) if at < t.until => {
+                self.touching[k].next = next;
+                self.touching[k].at = at.max(t.at);
+            }
+            _ => self.drop_touch(k),
+        }
+    }
+
+    fn drop_touch(&mut self, k: usize) {
+        self.touching.copy_within(k + 1..self.n_touching, k);
+        self.n_touching -= 1;
+    }
+
+    /// A note on `track`, `dest` and `note` starts: the pressure of the one
+    /// before it ends.
+    fn stop_touch(&mut self, track: u16, dest: DestId, note: u8) {
+        if let Some(k) = self.touching[..self.n_touching]
+            .iter()
+            .position(|t| (t.track, t.dest, t.note) == (track, dest, note))
+        {
+            self.drop_touch(k);
+        }
+    }
+
+    /// `track`'s notes send no pressure from `at` on.
+    fn cut_touch(&mut self, track: u16, at: Tick) {
+        for t in &mut self.touching[..self.n_touching] {
+            if t.track == track {
+                t.until = t.until.min(at);
+            }
+        }
+        let mut kept = 0;
+        for k in 0..self.n_touching {
+            let t = self.touching[k];
+            if t.at < t.until {
+                self.touching[kept] = t;
+                kept += 1;
+            }
+        }
+        self.n_touching = kept;
+    }
+
+    /// Notes sending their recorded pressure now.
+    pub fn touching(&self) -> usize {
+        self.n_touching
     }
 
     fn find(&self, track: u16, dest: DestId, note: u8) -> Option<usize> {

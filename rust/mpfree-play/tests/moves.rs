@@ -45,6 +45,7 @@ fn what(log: &[Out]) -> Vec<(u64, u16, What)> {
                 Event::Unlock { addr } => What::Unlock(addr),
                 Event::Lane { addr, value } => What::Lane(addr, value),
                 Event::AllOff => What::AllOff,
+                Event::Pressure { .. } => unreachable!("no pressure here"),
             };
             (o.frame, o.track, w)
         })
