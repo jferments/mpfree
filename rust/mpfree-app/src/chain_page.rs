@@ -258,6 +258,12 @@ impl ChainPage {
         self.bind.learn(addr, p.info, p.info.name);
     }
 
+    /// Learn taken by something else (a MIDI control, M5): no Q-Link takes
+    /// the knob now.
+    pub fn cancel_learn(&mut self) {
+        self.bind.cancel_learn();
+    }
+
     /// The column's title and cards: what each knob moves, in the theme's
     /// colours (a macro's knob wears its macro's colour).
     pub fn cards(&self, t: &Theme) -> (String, [QLinkCard; KNOBS]) {

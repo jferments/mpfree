@@ -283,11 +283,16 @@ mod tests {
         let t0 = Instant::now();
         let w = Writer::start(Sink::default(), "test-writer", "CV out", what, t0).unwrap();
         w.send(Wire::new(t0, &[0xBF, 2, 127]));
-        while w.written() == 0 {
+        // Wait for the line itself: the count goes up before the line is
+        // sent, so a writer thread put off between the two would leave
+        // nothing to read yet.
+        let mut lines = Vec::new();
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while lines.is_empty() && Instant::now() < give_up {
+            w.log_lines(&mut |l| lines.push(l));
             thread::sleep(Duration::from_millis(1));
         }
-        let mut lines = Vec::new();
-        w.log_lines(&mut |l| lines.push(l));
+        assert_eq!(w.written(), 1);
         assert_eq!(lines.len(), 1);
         assert!(
             lines[0].ends_with(" s CV out: BF 02 7F = 3 bytes"),
