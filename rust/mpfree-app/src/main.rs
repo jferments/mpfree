@@ -2991,8 +2991,9 @@ fn player_session(
                         app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2]))
                     {
                         fx.extend(e);
-                    } else if page == app::View::Play && knob < 4 {
-                        // The Play page decides what each knob turns there (its view, the step picked).
+                    } else if matches!(page, app::View::Play | app::View::Arrange) && knob < 4 {
+                        // The Play page decides what each knob turns there (its view, the step picked);
+                        // Arrange has the same column and knobs (layout spec section 4c).
                         let k = knob as usize;
                         let ticks = if public {
                             let was = qlink_at[k].replace(m.bytes[2]);

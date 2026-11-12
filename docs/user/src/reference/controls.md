@@ -53,7 +53,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 |---|---|---|
 | **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
 | **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll or list. | Works |
-| **Q-Link knobs 1-4** | With nothing picked, the armed track's level, pan, send A and send B, as the cards on the right show. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Next build |
+| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Next build |
 
 ## Mode buttons
 
