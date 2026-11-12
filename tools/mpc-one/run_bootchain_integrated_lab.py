@@ -87,8 +87,9 @@ class Lab:
     def say(self, value):
         line = str(value)
         print(line, flush=True)
-        self.full_file.write(line + "\n")
-        self.full_file.flush()
+        if not self.full_file.closed:
+            self.full_file.write(line + "\n")
+            self.full_file.flush()
 
     def run(self, name, argv, env=None, cwd=None):
         dest = self.out / ("stage-" + name + "-console.log")
@@ -296,26 +297,26 @@ class Lab:
                 "echo " + begin,
                 "echo MPFREE_VM_SECTION_kernel",
                 "uname -a",
+                "mount -t proc proc /proc 2>&1 || true",
+                "mount -t sysfs sysfs /sys 2>&1 || true",
                 "cat /proc/version",
                 "cat /proc/cmdline",
                 "echo MPFREE_VM_SECTION_mounts",
-                "mount -t proc proc /proc 2>&1 || true",
-                "mount -t sysfs sysfs /sys 2>&1 || true",
                 "cat /proc/mounts",
                 "echo MPFREE_VM_SECTION_cpu_memory",
                 "cat /proc/cpuinfo",
                 "cat /proc/meminfo",
                 "echo MPFREE_VM_SECTION_vendor_paths",
-                "for p in /usr/sbin/az01-update /usr/lib/libaz01-prog.so.1.3 /usr/sbin/init /opt/ramfs-update.squashfs /usr/bin/az01-bootloader-sig /usr/sbin/az01config; do ls -ld \"\$p\" 2>&1; done",
+                "for p in /usr/sbin/az01-update /usr/lib/libaz01-prog.so.1.3 /usr/sbin/init /opt/ramfs-update.squashfs /usr/bin/az01-bootloader-sig /usr/sbin/az01config; do ls -ld \"$p\" 2>&1; done",
                 "echo MPFREE_VM_SECTION_vendor_hashes",
-                "for p in /usr/sbin/az01-update /usr/lib/libaz01-prog.so.1.3 /opt/ramfs-update.squashfs; do if test -f \"\$p\"; then sha256sum \"\$p\"; fi; done",
+                "for p in /usr/sbin/az01-update /usr/lib/libaz01-prog.so.1.3 /opt/ramfs-update.squashfs; do if test -f \"$p\"; then sha256sum \"$p\"; fi; done",
                 "echo MPFREE_VM_SECTION_init_and_libraries",
                 "cat /etc/os-release 2>&1 || true",
                 "ls -l /lib/ld-linux-armhf.so.3 /lib/libc.so.6 /usr/lib/libaz01-prog.so.1.3 2>&1",
                 "echo MPFREE_VM_SECTION_virtual_devices",
                 "ls -l /dev/vda /dev/mmcblk0 /dev/bus/usb /sys/bus/usb/devices 2>&1",
                 "echo MPFREE_VM_SECTION_available_tools",
-                "for p in sha256sum readelf strace base64 awk sed grep; do command -v \"\$p\" || true; done",
+                "for p in sha256sum readelf strace base64 awk sed grep; do command -v \"$p\" || true; done",
                 "echo MPFREE_VM_SECTION_completed",
                 "echo " + end,
             ]
