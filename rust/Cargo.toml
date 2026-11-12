@@ -3,6 +3,26 @@ members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "m
 resolver = "2"
 exclude = ["mpfree-splash-gl"]
 
+# A few crates are built optimised in debug and test builds too: the screen
+# drawing and its font rasteriser, and the looper, analysis and audio track
+# engines the sample screens record and analyse sound with. The tests that
+# draw every screen took over a minute each unoptimised (live test, 12 Nov
+# 2026). Everything else stays a plain debug build.
+[profile.dev.package.mpfree-ui]
+opt-level = 2
+
+[profile.dev.package.fontdue]
+opt-level = 2
+
+[profile.dev.package.mpfree-looper]
+opt-level = 2
+
+[profile.dev.package.mpfree-analysis]
+opt-level = 2
+
+[profile.dev.package.mpfree-audiotracks]
+opt-level = 2
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -100,6 +100,7 @@ mod modpanels;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod qlink_touch;
 #[cfg(test)]
 mod rt_safety;
 mod sample_page;
@@ -2336,6 +2337,12 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+
+/// Whether `view` shows the loop's playhead: the Looper tab, or the Play
+/// page with its loop strip.
+fn strip_shown(view: app::View) -> bool {
+    matches!(view, app::View::Looper | app::View::Play)
+}
 /// How often the Play page's master meter and Q-Link values are sent.
 const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
@@ -2937,6 +2944,8 @@ fn player_session(
         (0u64, Instant::now(), Instant::now(), false);
     let mut last_timing = Instant::now();
     let mut last_status = Instant::now();
+    // The Q-Links' touch sensors chatter: a release counts after 150 ms off.
+    let mut touch_hold = qlink_touch::TouchHold::default();
     let started = Instant::now();
     let mut stopped_by = "time";
     // Pads held (on the controller or the screen), pressed but not yet sounded
@@ -3423,15 +3432,14 @@ fn player_session(
                     fx.extend(app.button(note, pressed, t))
                 }
                 // A finger on a Q-Link lights its card. The control mapper names the
-                // Q-Links; letting go ends a turn on the Sample page (one undo step).
+                // Q-Links. The release waits until the finger has been off for 150 ms
+                // (the sensor chatters; qlink_touch.rs), below.
                 Some(ControlEvent::QLinkTouch { knob, touched }) if (knob as usize) < 4 => {
-                    out.show(gui::ToUi::QLinkTouch(knob as usize, touched));
-                    if touched {
+                    if touch_hold.event(knob as usize, touched, t) {
+                        out.show(gui::ToUi::QLinkTouch(knob as usize, true));
                         fx.extend(app.known_control(app::Code::Button(
                             mpc_one::QLINK_TOUCH_NOTES[knob as usize],
                         )));
-                    } else if app.view() == app::View::Sample {
-                        out.show(gui::ToUi::SampleLift);
                     }
                 }
                 None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => {
@@ -3443,6 +3451,14 @@ fn player_session(
                 if let Some(&cc) = mpc_one::QLINK_TURN_CC.get(knob as usize) {
                     fx.extend(app.known_control(app::Code::Cc(cc)));
                 }
+            }
+        }
+        // Letting go of a Q-Link unlights its card, and ends a turn on the
+        // Sample page (one undo step).
+        for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
+            out.show(gui::ToUi::QLinkTouch(k, false));
+            if app.view() == app::View::Sample {
+                out.show(gui::ToUi::SampleLift);
             }
         }
         fx.extend(app.tick(t));
@@ -3949,6 +3965,9 @@ fn player_session(
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // The strip's waveform, built a slice at a time: its cost counts in
+        // the looper's stage, so the stage numbers show it.
+        let loop_wave = looper.wave_step(i, LOOP_WAVE_PERIODS);
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
@@ -4031,10 +4050,13 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        if let Some(wave) = looper.wave_step(i, LOOP_WAVE_PERIODS) {
+        if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        if app.view() == app::View::Looper && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
+        // The Looper tab and the Play page's strip follow the loop as often
+        // as the transport card, so the playhead moves smoothly; elsewhere
+        // four times a second is enough.
+        if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
             loop_shown_at = Instant::now();
             out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
         }
@@ -4118,6 +4140,7 @@ fn player_session(
                 "status: {}",
                 cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
+            out.note(&format!("status: {}", touch_hold.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -4167,7 +4190,7 @@ fn player_session(
                     }
                 }
             }
-            if app.view() != app::View::Looper {
+            if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
             let meters = synth.meters();

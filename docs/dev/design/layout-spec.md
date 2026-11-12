@@ -30,11 +30,12 @@ The music tabs, in this order:
 
 | Tab | What it is | Owner thread |
 |---|---|---|
-| Play | Pads, kits, level, timing; Note Repeat / arp | App (arp inside it) |
+| Play | Kits, level, timing, the pattern, the loop, throws; Note Repeat / arp | App (arp inside it) |
+| Pads | The pad bank beside the browser or the pad's settings (section 4e; Jay, 12 Nov 15:46Z) | App (the browser and the sampler's pad screens inside it) |
 | Arrange | The time engine's launch grid, record settings, takes (the Clips tab until Jay renamed it, 12:55Z) | Transport / time |
 | Synth | The synth's pages (Poly, later FM) | Synth |
 | Looper | The loops' editor and setup (mockup J): the loops, each layer's mix, recording and input, using a loop | App (the looper engine: transport / time) |
-| Sample | The pad editor: Wave, Chop, Play, Grain, FX (Jay, 07:12Z) | Sampler |
+| Sample | The sound editor: Wave, Warp, Chop, Play, Grain, FX, Rec, with Send to pad and Chop to pads (Jay, 07:12Z; its Pads sub-tab moves to the Pads tab, 12 Nov 15:46Z) | Sampler |
 | Dev | Only when Prefs > "Show developer tools" is On | App |
 
 - **Dev's pages,** on a strip under the top bar: MIDI log | Performance | CPU by engine | Processes | Map controls | Touch | Console. CPU by engine and Processes were asked for by Jay at 08:19Z (the profiling thread builds them). Touch is the graphical touch calibration and testing tool with its tuning (Jay, 22:23Z; the touchscreen thread builds it, with a "Touch targets" page): the wheel and + / - step the tuning, SHIFT + wheel still changes Dev page, and MENU there offers Calibrate touch and Touch lab.
@@ -51,26 +52,26 @@ The music tabs, in this order:
 
 ## 4. The Play page
 
-Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real data and working controls (13:56Z on; side-by-side sheets in /mnt/project-files/hello-mpc/round8-play/compare/). The old big pads are gone.
+Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real data and working controls (13:56Z on; side-by-side sheets in /mnt/project-files/hello-mpc/round8-play/compare/). The old big pads are gone, and since 12 Nov the mini pads too: Jay saw no benefit in them on the home screen (08:11Z) and picked "the pattern fills the room" (15:45Z, mockups in /mnt/project-files/hello-mpc/pads-mockups/). The pads live on the Pads tab (section 4e).
 
 - **The frame, in every view:**
   - the transport bar: the state, the position, the tempo, the bar and step dots, and the view switch (All, Beats, Loop, Drum) on its right. One tap changes the view, and the screen keeps it while other tabs show;
   - the view under it;
   - at the right edge, from under the top bar to the hint line: the master bar (66 px: meter with peak hold, level handle, level, LIM when the limiter works) and the Q-Link column (168 px: four cards, knob 1 at the top, each with its scope, name, ring and value). A drag on a card turns that knob, and a finger on a knob lights its card.
 - **The views:**
-  - All (home): the loop strip (150 px), the pattern beside the mini pads (270 px), then the throws beside the XY pad (280 px).
-  - Beats: the whole pattern (every lane), then the mini pads (300 px) beside all eight throws. A tap on a lit step picks it for the Q-Links (velocity, length, nudge, chance).
-  - Loop: the loop big with its buttons (Record, Overdub, Play, Stop, Undo, Redo, Mute, Clear; Record has a red dot, Overdub a red ring, Play a triangle and Stop a square, and Play was added, Jay 12 Nov 08:11Z) and the input in its heading, then the mini pads, four throws and the XY pad.
-  - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
+  - All (home): the loop strip (150 px), the pattern across the whole width, then the throws beside the XY pad (280 px).
+  - Beats: the whole pattern (every lane), then all eight throws across the width. A tap on a lit step picks it for the Q-Links (velocity, length, nudge, chance).
+  - Loop: the loop big with its buttons (Record, Overdub, Play, Stop, Undo, Redo, Mute, Clear; Record has a red dot, Overdub a red ring, Play a triangle and Stop a square, and Play was added, Jay 12 Nov 08:11Z) and the input in its heading, then the throws beside the XY pad (300 px).
+  - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then all eight throws across the width.
 - **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
 - **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). A speaker beside each name mutes that layer.
 - **Throws and the XY pad** play Perform FX (`mpfree_fx::Perform`) on the master while held: each throw holds a pad of its default bank (Delay throw the 1/8 dotted echo throw, Reverb wash the wash throw, Filter dip the 1-bar low-pass sweep), entering on the next 1/16 while the transport plays; the XY pad plays its DJ filter across (low-pass left, off in the middle, high-pass right) and its echo up, and glides home when the finger lifts; the FX mix Q-Link is its Mix (round 10); Drop drums mutes the kick, snare and hat pads while held.
-- **The mini pads** have a heading: "Pads · Bank A" and the kit (the Drum view: how hits play, "velocity on"). While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
+- **No pads panel** (Jay, 12 Nov 15:45Z). The Chromatic | In key switch for the synth pads (Jay, 12:22Z) is in the heading over the Synth tab's presets, and SHIFT + 16 LEVEL works everywhere.
 - **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
 - **The header** keeps to the CPU and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
 - **The hint line** starts where the panels do (left-aligned, as the mockups).
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
-- **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
+- **The Arp panel** takes the view under the transport bar.
 - **Macro banks:** Q-LINK steps the Q-Link column to Macros 1-4, then Macros 5-8, then back to the view's own knobs; Play keeps its bank while other pages show. A finger held on a macro card opens the macros panel (section 4b).
 - **Still to come:** half length and double on the loop strip (the looper's edit tools, which the Looper tab has since round 10).
 
@@ -144,6 +145,18 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **MIDI Learn:** SHIFT + a touch on a value. It takes values only: SHIFT + drag on an audio region and SHIFT + swipe on a take lane keep their jobs (section 4c).
 - **The MIDI, sync and CV settings** are the project's, in the mixer's I/O view (section 2, the I/O icon). Facts about the rig (CV tuning, port names, delays) stay in Prefs.
 
+## 4e. The Pads tab
+
+**Picked by Jay on 12 Nov 2026** (15:46Z, "Pads + Browse / Pad switch"; his ask at 08:11Z: "the pads are the centerpiece of the MPC, and deserve their own top menu"). Mockups pads-1-browse and pads-2-pad in /mnt/project-files/hello-mpc/pads-mockups/. Not built yet.
+
+- **Its place:** a top-level tab between Play and Arrange (Play, Pads, Arrange, Synth, Looper, Sample).
+- **The pad bank on the left** (400 to 440 px), as the Sample tab's Pads sub-page had it: the bank's 16 pads as on the MPC (pad 1 bottom left), each with its name, layers and play mode; a tap picks a pad, a tap on the pad picked plays it; pads held on the hardware light up. Under it: Copy, Paste, Clear and Map to keys.
+- **A bar over everything:** the picked pad's colour, name and a line about its sound, and a **Browse | Pad** switch on the right.
+- **Browse** (the default): the browser in a narrow form beside the pads (places, the list, the selected item with its waveform and buttons). **Load to pad** puts the sound picked on the pad picked; PLAY hears it first.
+- **Pad:** the picked pad's settings (sound, play mode, voices, mute group, level, pan, tune) and the kit's sounds with Put on, as the Sample tab's Pads sub-page had them. Q-Links 1 to 4 turn level, pan, tune and voices.
+- **The Sample tab** loses its Pads sub-tab and gains two small buttons in its bar, **Send to pad** and **Chop to pads**.
+- While the synth has the pads, the bar's heading carries the Chromatic | In key switch, as the Synth tab does.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**
@@ -189,7 +202,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - NEXT SEQ: Arrange.
   - SAMPLER: Sample. SHIFT + SAMPLER: Looper.
   - SAMPLE EDIT: Sample, on its Wave editor.
-  - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise Sample > Pads.
+  - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise the Pads tab on Pad.
   - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
   - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
 - **TRACK MUTE** (control map decision 5): the pads become mute keys over whatever page shows, and the page stays. Pads 1-8 mute and unmute tracks 1-8 at once (their clips keep their place); a pad is lit green while its track plays a clip, dim green with nothing launched, red while muted, and pads 9-16 are dark. **SHIFT + TRACK MUTE** does the same for the playing kit's pads (the speakers on Play): lit in the kit's colour while a pad plays, red while muted, dark without a sound. The same press again leaves, and the other one switches. The hint line says what the pads are, and the button is lit while they are mute keys. A pad held when TRACK MUTE is pressed still lets go as a note.
