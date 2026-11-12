@@ -12,14 +12,14 @@ use mpfree_ui::widgets::{Chip, Header};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Touch, Ui};
 
 use crate::state::{default_name, MixState, MixView, TakeView};
-use crate::view::{MixerIcon, MixerView};
+use crate::view::{IoIcon, MixerIcon, MixerView};
 
 /// The music tabs, as the approved layout spec lists them.
 pub const TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
 
-/// A preview page: the header with the mixer icon beside it, the mixer,
+/// A preview page: the header with the I/O and mixer icons beside it, the mixer,
 /// the hint line.
-const PREVIEW_LAYOUT: &str = "col(row(header:*, mixicon:64):60, mixer:*, hint:26)";
+const PREVIEW_LAYOUT: &str = "col(row(header:*, ioicon:56, mixicon:64):60, mixer:*, hint:26)";
 
 pub struct Sample {
     pub name: &'static str,
@@ -213,11 +213,15 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
         Chip::new("Night drive", Tone::Normal),
     ];
     ui.add("header", header);
-    ui.add("mixicon", MixerIcon { open: true });
+    let io = st.view == MixView::Io;
+    ui.add("ioicon", IoIcon { open: io });
+    ui.add("mixicon", MixerIcon { open: !io });
     ui.add(
         "hint",
         mpfree_ui::widgets::Label::new(
-            if st.takes {
+            if io {
+                crate::MIXER_HINT_IO
+            } else if st.takes {
                 crate::MIXER_HINT_TAKES
             } else {
                 crate::MIXER_HINT
@@ -254,11 +258,14 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let inputs = state(&mut m, MixView::Inputs);
     play(&mut m, 4);
     let buses = state(&mut m, MixView::Buses);
+    play(&mut m, 4);
+    let io = state(&mut m, MixView::Io);
     let mut out = vec![
         Sample { name: "mixer-tracks", about: "Track Mix while the song plays: the bass selected, its compressor keyed by the kick (SC), the vocal track muted, a pre-fader send on the chords, the mixer's own CPU share (Dev tools on)", ui: screen(fonts(), tracks.clone())? },
         Sample { name: "mixer-pads", about: "Pad Mix (SHIFT + TRACK MIX): eight pad channels into the kit track, the crash straight to the drum bus", ui: screen(fonts(), pads.clone())? },
         Sample { name: "mixer-inputs", about: "Inputs: the line input armed and heard through a compressor (Auto monitoring); the mic on input 2 into the vocal track, not monitored", ui: screen(fonts(), inputs)? },
         Sample { name: "mixer-submixes", about: "Submixes and returns: the drum bus with glue and drive, the music bus, the reverb and delay returns", ui: screen(fonts(), buses)? },
+        Sample { name: "mixer-io", about: "The I/O view, Audio: every strip with an output and where it goes, the inputs with their Source and Monitor (MIDI, Sync and CV join the list from their own crates)", ui: screen(fonts(), io)? },
     ];
     // Solo in place: the bass soloed; what does not reach the master with
     // it is dimmed.
@@ -377,7 +384,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 9);
+        assert_eq!(s.len(), 10);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);
