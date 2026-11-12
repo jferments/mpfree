@@ -58,7 +58,7 @@ def build(read):
         "five_device_order_entries_captured":len(
             stage_ext.get("opaque_media_table_words",{}).get(
                 "device_order",{}).get("entries",[]))==5,
-        "ten_media_mapping_entries_captured":len(
+        "eight_media_mapping_entries_captured":len(
             stage_ext.get("opaque_media_table_words",{}).get(
                 "device_mapping",{}).get("entries",[]))==10,
     }
