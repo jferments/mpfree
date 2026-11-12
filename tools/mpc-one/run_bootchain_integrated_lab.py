@@ -790,17 +790,27 @@ class Lab:
                     json.dumps(arm_report, indent=2) + "\n")
                 (self.out / "arm-return-contracts.md").write_text(
                     arm_module.to_markdown(arm_report))
-                r0_checked = sum(
-                    len(entry["callers_immediately_comparing_r0"])
-                    for entry in arm_report["functions"])
+                arm_sites = [
+                    call for fn in arm_report["functions"]
+                    for call in fn["observed_callsites"]
+                ]
+                r0_checked = sum(bool(call["immediate_r0_test"]) for call in arm_sites)
+                r0_copied = sum(bool(call["r0_copies"]) for call in arm_sites)
+                cmp_only = sum(bool(call["immediate_r0_compare"]) for call in arm_sites)
                 self.stages["arm-return-contract-evidence"] = {
-                    "success": r0_checked >= 2,
-                    "captured_checked_callsites": r0_checked,
+                    "success": r0_checked >= 6 and r0_copied >= 2,
+                    "captured_status_test_callsites": r0_checked,
+                    "explicit_cmp_callsites": cmp_only,
+                    "subs_zero_test_callsites": r0_checked - cmp_only,
+                    "r0_captured_for_later_use": r0_copied,
                     "functions": len(arm_report["functions"]),
                 }
                 record["arm_return_contract_evidence"] = {
                     "report": "arm-return-contracts.json",
-                    "checked_callsites": r0_checked,
+                    "status_test_callsites": r0_checked,
+                    "explicit_cmp_callsites": cmp_only,
+                    "subs_zero_test_callsites": r0_checked - cmp_only,
+                    "r0_copy_callsites": r0_copied,
                     "safety": "Read-only static-derived facts, no vendor execution",
                 }
             except Exception as exc:
@@ -843,8 +853,12 @@ class Lab:
         summary += ["", "## ARM return-register evidence"]
         arm = record.get("arm_return_contract_evidence")
         if arm:
-            summary.append("- Direct BL callsites with immediate r0 comparisons: " +
-                           str(arm["checked_callsites"]))
+            summary.append("- Direct BL callsites immediately testing r0: " +
+                           str(arm["status_test_callsites"]))
+            summary.append("- CMP/other explicit comparisons: " + str(arm["explicit_cmp_callsites"]) +
+                           "; SUBS-zero flag tests: " + str(arm["subs_zero_test_callsites"]))
+            summary.append("- Additional BL callsites preserving r0 for deferred handling: " +
+                           str(arm["r0_copy_callsites"]))
             summary.append("- See arm-return-contracts.json and .md for addresses and caveats.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
