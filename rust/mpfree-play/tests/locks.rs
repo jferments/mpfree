@@ -28,6 +28,7 @@ enum What {
     Off(u8),
     Lock(ParamAddr, f32),
     Unlock(ParamAddr),
+    Lane(ParamAddr, f32),
     AllOff,
 }
 
@@ -39,7 +40,9 @@ fn what(log: &[Out]) -> Vec<(u64, u16, What)> {
                 Event::NoteOff { note } => What::Off(note),
                 Event::Lock { addr, value } => What::Lock(addr, value),
                 Event::Unlock { addr } => What::Unlock(addr),
+                Event::Lane { addr, value } => What::Lane(addr, value),
                 Event::AllOff => What::AllOff,
+                Event::Pressure { .. } => unreachable!("no pressure here"),
             };
             (o.frame, o.track, w)
         })
@@ -85,6 +88,7 @@ fn on_track(c: Clip, track: usize) -> PlayView {
             track,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap()
@@ -293,6 +297,7 @@ fn a_switch_ends_the_old_clips_locks_before_the_new_ones() {
         track: 0,
         slot: 0,
         origin: 0,
+        start: 0,
     }];
     let playing = PlayView::compile(&p, &launch).unwrap();
     // Cued while bar 1 plays: it starts on bar 2.
@@ -342,6 +347,7 @@ fn a_muted_track_lets_its_locks_go_and_sends_none() {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap();

@@ -9,6 +9,10 @@
 //!   [`view::TimeState`] taken from the engine; [`view::action`] turns
 //!   touches into [`view::TimeAction`]s for the app to apply. The bar goes
 //!   under the header of any page with [`view::with_transport`].
+//! - [`song`]: the Song view of the Arrange page: the arrangement's
+//!   placements on a timeline ([`song::SongLanes`]).
+//! - [`editor`]: the note editor of the Arrange page (a piano roll or a
+//!   list, with Timing Correct): [`editor::Editor`], [`editor::NoteGrid`].
 //! - [`sample`]: sample screens with a real transport, player, recorder and
 //!   take undo behind them, for the workstation preview and the tests.
 //!
@@ -18,7 +22,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod editor;
 pub mod sample;
+pub mod song;
 pub mod view;
 pub mod widgets;
 

@@ -132,8 +132,10 @@ impl ArpHost {
                 self.presses = [0; 128];
                 self.engine.panic();
             }
-            // A parameter lock is for the host's resolver, not the arp.
-            Event::Lock { .. } | Event::Unlock { .. } => {}
+            // A clip's pressure on a held note: the arp's repeats follow it.
+            Event::Pressure { note, value } => self.engine.pressure(note, value),
+            // A parameter lock or move is for the host's resolver, not the arp.
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => {}
         }
     }
 }

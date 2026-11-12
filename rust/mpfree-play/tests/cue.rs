@@ -172,6 +172,7 @@ fn session(frames: u64) -> Session {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
         armed: None,
         commands: vec![(0, Command::Play)],
@@ -223,7 +224,8 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             track: 0,
             slot: Some(1),
             at: BAR,
-            origin
+            origin,
+            mute: None,
         }]
     );
     assert_eq!(
@@ -232,7 +234,8 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin
+                origin,
+                start: BAR,
             }],
             vec![]
         )
@@ -313,7 +316,8 @@ fn a_stop_waits_for_the_bar_line_too() {
             track: 0,
             slot: None,
             at: BAR,
-            origin: BAR
+            origin: BAR,
+            mute: None,
         }]
     );
     assert_eq!((r.launches, r.cues), (vec![], vec![]));
@@ -330,6 +334,7 @@ fn cues_on_two_tracks_start_on_the_same_bar_line() {
         track: 1,
         slot: 1,
         origin: 0,
+        start: 0,
     });
     s.cues = vec![
         (
@@ -543,4 +548,65 @@ fn a_switch_on_the_armed_track_ends_the_replace_pass() {
         vec![(0, 0), (0, 960), (0, 1920), (0, 2880)]
     );
     assert_eq!(ons(&r), vec![(BAR, 20), (2 * BAR + 480, 21)]);
+}
+
+/// A host that compiles on another thread can send a view that both
+/// applies a started cue and cues the same clip again (the clip tapped
+/// once more before the view arrived). Said how many switches it shows
+/// (`PlayView::set_includes`), the player knows the cue in it is a new
+/// one, and starts it from the top on the next bar line. Without that it
+/// would take the cue for the switch it made and never start it.
+#[test]
+fn a_view_that_says_its_switches_starts_the_same_clip_cued_again() {
+    let s = session(at(6 * BAR));
+    let run = |includes: bool| {
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        assert!(t.command(0, Command::Play));
+        let compile = |l: &[Launch], c: &[Cue], switches: u32| {
+            let mut v = PlayView::compile_cued(&s.project, l, c).unwrap();
+            if includes {
+                let mut inc = mpfree_play::Includes::default();
+                inc.switches[0] = switches;
+                v.set_includes(inc);
+            }
+            v
+        };
+        let mut launches = s.launches.clone();
+        let cue = Cue {
+            track: 0,
+            slot: Some(1),
+        };
+        let mut view = compile(&launches, &[], 0);
+        let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
+        let mut started = vec![];
+        let mut switches = 0;
+        while t.frame() < at(6 * BAR) {
+            let f = t.frame();
+            if f == at(BAR / 2) {
+                // B cued in bar 1: it starts on bar 2.
+                view = compile(&launches, &[cue], switches);
+            }
+            assert!(t.process(1000, &mut block));
+            player.process(&view, &block, &mut log);
+            for st in player.started() {
+                started.push(*st);
+                // A view arrives late: the switch applied, and B cued again.
+                let mut cues = vec![cue];
+                st.apply(&mut launches, &mut cues);
+                switches += 1;
+                if started.len() == 1 {
+                    view = compile(&launches, &[cue], switches);
+                } else {
+                    view = compile(&launches, &[], switches);
+                }
+            }
+        }
+        started.iter().map(|s| (s.at, s.slot)).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run(true),
+        vec![(BAR, Some(1)), (2 * BAR, Some(1))],
+        "B starts again from its top on the next bar line"
+    );
+    assert_eq!(run(false), vec![(BAR, Some(1))], "the old rule never does");
 }

@@ -6,25 +6,38 @@
 //!   built from the model.
 //! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
+//! - [`node`]: the sampler as an instrument node any track can hold.
 //! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`autosample`]: plays an instrument note by note, records each note
 //!   and builds a keygroup instrument from the takes.
+//! - [`keymap`]: Map to keys, a kit's pads made into one keygroup
+//!   instrument at their sounds' notes.
+//! - [`save`]: the kits as a saved project's text; [`wav`]: their sounds as
+//!   WAV files, kept losslessly, and WAV files read from the library.
+//! - [`sound_file`]: any sound file from the library, WAV, AIFF
+//!   ([`aiff`]) or FLAC, known by what it holds.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
 //!   also feeds [`model::Source::from_prepared`].
 //!
 //! Loading is never real-time; `render` and the event calls only touch
-//! prepared memory. Design: `docs/project/sampler-design.md`.
+//! prepared memory. Design: `docs/dev/design/sampler-design.md`.
 #![forbid(unsafe_code)]
 
+pub mod aiff;
 pub mod autosample;
 pub mod chop;
 pub mod dsp;
 pub mod engine;
+pub mod keymap;
 pub mod model;
+pub mod node;
 pub mod phrase;
 pub mod record;
+pub mod save;
+pub mod sound_file;
 pub mod warp;
+pub mod wav;
 
 use std::fs::File;
 use std::io::Read;

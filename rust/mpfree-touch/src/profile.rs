@@ -1,6 +1,6 @@
 //! The measured MPC One touch profile, as Rust constants.
 //!
-//! The source of truth is `docs/hardware/data/mpc-one-touch-profile.json`
+//! The source of truth is `docs/dev/hardware/data/mpc-one-touch-profile.json`
 //! (M12, one unit, firmware 3.6.0). The test below parses that file and fails
 //! if these constants drift from it, so the GUI never carries its own copy.
 
@@ -41,7 +41,7 @@ impl TouchProfile {
 mod tests {
     use super::*;
 
-    const JSON: &str = include_str!("../../../docs/hardware/data/mpc-one-touch-profile.json");
+    const JSON: &str = include_str!("../../../docs/dev/hardware/data/mpc-one-touch-profile.json");
 
     /// The text right after `"key":` (first occurrence), trimmed.
     fn after(key: &str) -> &'static str {

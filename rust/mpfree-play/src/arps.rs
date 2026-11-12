@@ -1,5 +1,5 @@
 //! One arpeggiator per track (owner decisions 2 and 3, 2026-11-11, in
-//! docs/project/arpeggiator.md).
+//! docs/dev/design/arpeggiator.md).
 //!
 //! - **One arp per track.** Each track slot has its own [`ArpHost`] (and
 //!   so its own engine, settings, latch and pattern). A latched arp keeps
@@ -21,7 +21,9 @@
 //! then [`TrackArps::finish`] with the same block and sink. Notes that skip
 //! the arps and every arp's notes reach the sink together, in frame order
 //! (notes on the same frame keep the order they came in, the player's
-//! first). `AllOff` (a panic) passes through and clears every arp.
+//! first). `AllOff` (a panic) passes through and clears every arp. A
+//! through track's parameter locks skip its arp and reach the sink as the
+//! player sent them, before the arp's notes on the same frame.
 //!
 //! [`TrackArps::new`] allocates (16 engines) and belongs on the control
 //! thread at start; nothing else allocates. An arp given nothing in a
@@ -49,6 +51,8 @@ pub struct TrackArps {
     fed: [bool; MAX_TRACKS],
     /// This period's notes for the sink, until [`TrackArps::finish`].
     out: [Out; MAX_OUT],
+    /// Which of `out` an arp played (rather than the player passing it on).
+    from_arp: [bool; MAX_OUT],
     n_out: usize,
     dropped: u64,
 }
@@ -73,6 +77,7 @@ impl TrackArps {
             dest: core::array::from_fn(|t| t as DestId),
             fed: [false; MAX_TRACKS],
             out: [blank; MAX_OUT],
+            from_arp: [false; MAX_OUT],
             n_out: 0,
             dropped: 0,
         }
@@ -87,6 +92,21 @@ impl TrackArps {
     /// The engine of track `track`'s arp.
     pub fn engine(&mut self, track: usize) -> Option<&mut Engine> {
         self.arps.get_mut(track).map(|a| &mut a.engine)
+    }
+
+    /// Track `track`'s engine to read (the last track's past the end).
+    pub fn engine_at(&self, track: usize) -> &Engine {
+        &self.arps[track.min(MAX_TRACKS - 1)].engine
+    }
+
+    /// Track `track`'s engine to change (the last track's past the end).
+    pub fn engine_at_mut(&mut self, track: usize) -> &mut Engine {
+        &mut self.arps[track.min(MAX_TRACKS - 1)].engine
+    }
+
+    /// Notes no engine could queue, over every track, since the start.
+    pub fn overflow(&self) -> u64 {
+        self.arps.iter().map(|a| a.engine.overflow).sum()
     }
 
     /// "Clips through the arp" for `track`. A change clears that track's
@@ -148,7 +168,15 @@ impl TrackArps {
     /// the player's that skipped the arps and the arps' own, to `sink` in
     /// frame order.
     pub fn finish(&mut self, block: &Block, sink: &mut impl Sink) {
+        self.finish_with(block, |o, _| sink.send(*o));
+    }
+
+    /// [`TrackArps::finish`], telling `f` for each note whether an arp
+    /// played it (true) or the player passed it on (false), so a host can
+    /// treat what the arps play from the pads as live playing.
+    pub fn finish_with(&mut self, block: &Block, mut f: impl FnMut(&Out, bool)) {
         let player_notes = self.n_out;
+        self.from_arp[..player_notes].fill(false);
         for t in 0..self.arps.len() {
             if !std::mem::take(&mut self.fed[t]) && self.arps[t].engine.idle() {
                 self.arps[t].engine.skip(block.frames);
@@ -156,9 +184,10 @@ impl TrackArps {
             }
             let (track, dest) = (t as u16, self.dest[t]);
             let start = block.start_frame;
-            let (arps, out, n_out, dropped) = (
+            let (arps, out, from_arp, n_out, dropped) = (
                 &mut self.arps,
                 &mut self.out,
+                &mut self.from_arp,
                 &mut self.n_out,
                 &mut self.dropped,
             );
@@ -167,6 +196,9 @@ impl TrackArps {
                     EventKind::On { note, velocity } => Event::NoteOn { note, velocity },
                     EventKind::Off { note } => Event::NoteOff { note },
                 };
+                if *n_out < MAX_OUT {
+                    from_arp[*n_out] = true;
+                }
                 push(
                     out,
                     n_out,
@@ -183,16 +215,18 @@ impl TrackArps {
         }
         // Each source is in order already; a stable insertion sort merges
         // them without allocating (a period holds few notes).
-        let out = &mut self.out[..self.n_out];
-        for i in player_notes.max(1)..out.len() {
+        let n = self.n_out;
+        let (out, from_arp) = (&mut self.out[..n], &mut self.from_arp[..n]);
+        for i in player_notes.max(1)..n {
             let mut j = i;
             while j > 0 && out[j - 1].offset > out[j].offset {
                 out.swap(j - 1, j);
+                from_arp.swap(j - 1, j);
                 j -= 1;
             }
         }
-        for o in out.iter() {
-            sink.send(*o);
+        for (o, &a) in out.iter().zip(from_arp.iter()) {
+            f(o, a);
         }
         self.n_out = 0;
     }
@@ -208,7 +242,9 @@ fn push(out: &mut [Out; MAX_OUT], n: &mut usize, dropped: &mut u64, o: Out) {
 }
 
 /// The player's [`Sink`] for one period: a through track's notes go into
-/// its arp, everything else waits for [`TrackArps::finish`].
+/// its arp (its pressure too, which also goes on), everything else (other tracks' notes, and every parameter
+/// lock and unlock, which an arp has no use for) waits for
+/// [`TrackArps::finish`].
 pub struct Through<'a> {
     arps: &'a mut TrackArps,
 }
@@ -222,10 +258,15 @@ impl Sink for Through<'_> {
                 arp.input(o.offset, Event::AllOff);
             }
             a.fed = [true; MAX_TRACKS];
-        } else if a.through(t) {
+        } else if a.through(t) && matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. }) {
             a.arps[t].input(o.offset, o.event);
             a.fed[t] = true;
             return;
+        } else if a.through(t) && matches!(o.event, Event::Pressure { .. }) {
+            // The arp's repeats follow a clip's pressure, and the sound
+            // hears it too, as with the live pads.
+            a.arps[t].input(o.offset, o.event);
+            a.fed[t] = true;
         }
         push(&mut a.out, &mut a.n_out, &mut a.dropped, o);
     }

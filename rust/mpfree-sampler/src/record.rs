@@ -26,6 +26,11 @@
 //! start now, on a threshold or on the next bar line, and end on a press,
 //! on silence, after a length or on a bar line. [`Input::last_bars`] cuts
 //! the last bars exactly on the bar lines.
+//!
+//! A recording that ends on a length or a bar line can let what is still
+//! sounding ring out after it ([`Tail::Ring`], a one-shot with its reverb)
+//! or be made a loop without a seam ([`Tail::Loop`]): printing N bars to a
+//! pad.
 
 use std::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -63,6 +68,8 @@ struct Ring {
     /// The first frame of what the buffer holds now: frames before it came
     /// from somewhere else ([`RollingWriter::restart`]) and are not read.
     start: AtomicU64,
+    /// How many times the writer has restarted.
+    restarts: AtomicU64,
 }
 
 /// A rolling buffer of `frames` frames of `channels` (1 or 2) interleaved
@@ -80,6 +87,7 @@ pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
         claimed: AtomicU64::new(0),
         written: AtomicU64::new(0),
         start: AtomicU64::new(0),
+        restarts: AtomicU64::new(0),
     });
     (
         RollingWriter {
@@ -153,6 +161,7 @@ impl RollingWriter {
     /// or waits.
     pub fn restart(&mut self) {
         self.ring.start.store(self.pos, Ordering::Release);
+        self.ring.restarts.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -172,6 +181,12 @@ impl RollingReader {
     /// The absolute frame number the writer will write next.
     pub fn written(&self) -> u64 {
         self.ring.written.load(Ordering::Acquire)
+    }
+    /// How many times the writer has restarted ([`RollingWriter::restart`]):
+    /// a reader that asked for a new source sees it has come when this
+    /// moves.
+    pub fn restarts(&self) -> u64 {
+        self.ring.restarts.load(Ordering::Acquire)
     }
     /// The oldest frame still in the buffer (and from the source it has
     /// now).
@@ -250,6 +265,16 @@ pub enum Stop {
     Silence { level: f32, frames: u64 },
 }
 
+/// Ringing out after a take's cut ([`Take::ring_out`]): it goes on until it
+/// has been at or under `level` (linear peak) for `quiet` frames, and
+/// ends after the last frame over it; at most `max` frames past the cut.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingOut {
+    pub level: f32,
+    pub quiet: u64,
+    pub max: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TakeState {
     /// Armed, not started (threshold not crossed, or the start frame not reached).
@@ -274,10 +299,19 @@ pub struct Take {
     max_frames: u64,
     channels: usize,
     start: Option<u64>,
+    /// Where its own length ends (its length, its bar line or a press);
+    /// with a ring it goes on past it.
+    cut: Option<u64>,
     end: Option<u64>,
+    ring: Option<RingOut>,
+    /// The ringing stops after one more of the take's own length too.
+    once_round: bool,
     /// Absolute frame up to which the take (or the threshold scan) has read.
     read_to: u64,
     last_loud: Option<u64>,
+    /// The ring's scan: read up to here, and its last frame over the level.
+    rung_to: u64,
+    ring_loud: Option<u64>,
     data: Vec<f32>,
     scratch: Vec<f32>,
 }
@@ -294,23 +328,91 @@ impl Take {
             max_frames: max_frames.max(1),
             channels: reader.channels(),
             start: None,
+            cut: None,
             end: None,
+            ring: None,
+            once_round: false,
             read_to,
             last_loud: None,
+            rung_to: 0,
+            ring_loud: None,
             data: Vec::new(),
             scratch: Vec::new(),
         }
     }
 
-    /// Stops a manual take at `frame` (for example the frame of the button press).
-    pub fn stop_at(&mut self, frame: u64) {
+    /// The take rings out after its cut (its length, or [`Take::cut_at`])
+    /// as `ring` says, instead of ending there. A [`Stop::Silence`] take
+    /// already ends after its sound, and [`Take::stop_at`] ends any take
+    /// at once.
+    pub fn ring_out(mut self, ring: RingOut) -> Take {
+        if !matches!(self.stop, Stop::Silence { .. }) {
+            self.ring = Some(ring);
+        }
+        self
+    }
+
+    /// [`Take::ring_out`], ending after one more of the take's own length
+    /// (its start to its cut) at most, however long that is.
+    pub fn ring_out_once_round(mut self, level: f32, quiet: u64) -> Take {
+        self.once_round = true;
+        self.ring_out(RingOut {
+            level,
+            quiet,
+            max: u64::MAX,
+        })
+    }
+
+    /// No ringing after all: a take past its cut ends on it (the next
+    /// poll drops what came after).
+    pub fn ring_off(&mut self) {
+        self.ring = None;
         if self.end.is_none() {
-            let start = self.start.unwrap_or(frame);
-            self.end = Some(frame.max(start));
-            if self.start.is_none() {
-                self.start = Some(start);
+            self.end = self.cut;
+        }
+    }
+
+    /// Stops the take at `frame` (for example the frame of the button
+    /// press), ringing out or not, and before a length it had not reached.
+    pub fn stop_at(&mut self, frame: u64) {
+        let start = *self.start.get_or_insert(self.start_by(frame));
+        let end = frame.max(start);
+        if self.end.is_none_or(|e| end < e) {
+            self.end = Some(end);
+            if self.cut.is_none_or(|c| end < c) {
+                self.cut = Some(end);
             }
         }
+    }
+
+    /// Where a take not yet polled since its start began, as of `frame`:
+    /// its start frame once that has passed, else `frame` (nothing).
+    fn start_by(&self, frame: u64) -> u64 {
+        match (self.start, self.arm) {
+            (Some(s), _) => s,
+            (None, Arm::At(f)) if f <= frame => f,
+            _ => frame,
+        }
+    }
+
+    /// The take's own length ends at `frame` (a bar line): it ends there,
+    /// or rings out after it. Only the first cut counts.
+    pub fn cut_at(&mut self, frame: u64) {
+        if self.end.is_some() || self.cut.is_some() {
+            return;
+        }
+        if self.ring.is_none() {
+            self.stop_at(frame);
+            return;
+        }
+        let start = *self.start.get_or_insert(self.start_by(frame));
+        self.cut = Some(frame.max(start));
+    }
+
+    /// Where its own length ended, once known: the frames after it (up to
+    /// the end) are the ringing.
+    pub fn cut(&self) -> Option<u64> {
+        self.cut
     }
 
     pub fn state(&self) -> TakeState {
@@ -364,11 +466,8 @@ impl Take {
         let Some(start) = self.start else {
             return Ok(TakeState::Waiting);
         };
-        if self.end.is_none() {
-            match self.stop {
-                Stop::Length(n) => self.end = Some(start + n),
-                Stop::Manual | Stop::Silence { .. } => {}
-            }
+        if let Stop::Length(n) = self.stop {
+            self.cut_at(start + n);
         }
         let limit = start + self.max_frames;
         let until = written.min(self.end.unwrap_or(u64::MAX)).min(limit);
@@ -391,6 +490,7 @@ impl Take {
             }
             self.read_to = until;
         }
+        self.scan_ring(start);
         if self.end.is_none() && self.read_to >= limit {
             self.end = Some(limit);
         }
@@ -400,6 +500,35 @@ impl Take {
             self.data.truncate(keep);
         }
         Ok(self.state())
+    }
+
+    /// After the cut, scans what came in for the ringing's end.
+    fn scan_ring(&mut self, start: u64) {
+        let (Some(ring), Some(cut), None) = (self.ring, self.cut, self.end) else {
+            return;
+        };
+        let from = self.rung_to.max(cut);
+        if self.read_to > from {
+            let ch = self.channels;
+            let span = (from - start) as usize * ch..(self.read_to - start) as usize * ch;
+            for (i, f) in self.data[span].chunks_exact(ch).enumerate() {
+                if f.iter().any(|x| x.abs() > ring.level) {
+                    self.ring_loud = Some(from + i as u64);
+                }
+            }
+            self.rung_to = self.read_to;
+        }
+        let most = if self.once_round {
+            ring.max.min(cut - start)
+        } else {
+            ring.max
+        };
+        let quiet_from = self.ring_loud.map_or(cut, |l| l + 1);
+        if self.read_to >= quiet_from + ring.quiet {
+            self.end = Some(quiet_from);
+        } else if self.read_to >= cut.saturating_add(most) {
+            self.end = Some(quiet_from.min(cut + most));
+        }
     }
 
     /// The finished take as a source. None until it is done.
@@ -702,6 +831,39 @@ pub enum End {
     Bars(u32),
 }
 
+/// What a [`Recording`] that ends on a length or a bar line ([`End::Frames`],
+/// [`End::Bars`]) does after it. A press ([`Recording::stop`]) ends any
+/// recording at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Tail {
+    /// It ends there.
+    #[default]
+    Cut,
+    /// It rings out ([`RingOut`]): a one-shot with its reverb or echo.
+    Ring(RingOut),
+    /// It is made a loop of exactly its length, without a seam ([`Looped`]
+    /// says how). "Sounding" is over `level` (linear peak); "silent" is
+    /// at or under it for `quiet` frames.
+    Loop { level: f32, quiet: u64 },
+}
+
+/// How a [`Tail::Loop`] recording was made a loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Looped {
+    /// Its source was sounding in the quiet time before it started: the
+    /// music was going round, so its start already holds the ringing of
+    /// the time before and it is cut on its length.
+    GoingRound,
+    /// It started from silence and was silent within one more length:
+    /// the ringing after its length (`frames` of it) is added onto its
+    /// start, where it sounds as the loop comes round.
+    Folded { frames: u64 },
+    /// It started from silence, but still sounded a whole length on: the
+    /// music went on round, so the take is that second time round, which
+    /// starts with the first's ringing.
+    SecondTime,
+}
+
 /// Where a [`Recording`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Progress {
@@ -722,6 +884,10 @@ pub enum Progress {
 pub struct Recording {
     start: Start,
     end: End,
+    tail: Tail,
+    /// Whether its source was sounding just before it started (for
+    /// [`Tail::Loop`]), once it has.
+    rang_in: Option<bool>,
     /// The frame it was asked for at.
     armed_at: u64,
     max_frames: u64,
@@ -735,10 +901,24 @@ pub struct Recording {
 impl Recording {
     /// A recording asked for now, at most `max_frames` long.
     pub fn new(input: &Input, start: Start, end: End, max_frames: u64) -> Recording {
+        Recording::with_tail(input, start, end, Tail::Cut, max_frames)
+    }
+
+    /// [`Recording::new`], doing `tail` after its length or bar line. Its
+    /// ringing counts in `max_frames`.
+    pub fn with_tail(
+        input: &Input,
+        start: Start,
+        end: End,
+        tail: Tail,
+        max_frames: u64,
+    ) -> Recording {
         let armed_at = input.now();
         let mut r = Recording {
             start,
             end,
+            tail,
+            rang_in: None,
             armed_at,
             max_frames: max_frames.max(1),
             rate: input.rate,
@@ -777,7 +957,12 @@ impl Recording {
                 }
             }
         };
-        self.take = Some(Take::new(&input.audio, arm, stop, self.max_frames));
+        let take = Take::new(&input.audio, arm, stop, self.max_frames);
+        self.take = Some(match (self.end, self.tail) {
+            (End::Press | End::Silence { .. }, _) | (_, Tail::Cut) => take,
+            (_, Tail::Ring(ring)) => take.ring_out(ring),
+            (_, Tail::Loop { level, quiet }) => take.ring_out_once_round(level, quiet),
+        });
     }
 
     pub fn start(&self) -> Start {
@@ -786,6 +971,40 @@ impl Recording {
 
     pub fn end(&self) -> End {
         self.end
+    }
+
+    pub fn tail(&self) -> Tail {
+        self.tail
+    }
+
+    /// The input's sample rate.
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Frames up to the end of its length or bars, once known; the rest
+    /// of what it records is the ringing.
+    pub fn cut_frames(&self) -> Option<u64> {
+        let t = self.take.as_ref()?;
+        Some(t.cut()?.saturating_sub(self.started_at()?))
+    }
+
+    /// How a [`Tail::Loop`] recording is made a loop, once it is done.
+    pub fn looped(&self) -> Option<Looped> {
+        let Tail::Loop { .. } = self.tail else {
+            return None;
+        };
+        let Progress::Done { frames } = self.progress() else {
+            return None;
+        };
+        let cut = self.cut_frames()?;
+        Some(match self.rang_in {
+            Some(true) => Looped::GoingRound,
+            _ if cut > 0 && frames >= 2 * cut => Looped::SecondTime,
+            _ => Looped::Folded {
+                frames: frames.saturating_sub(cut),
+            },
+        })
     }
 
     /// The frame it was asked for at.
@@ -833,12 +1052,23 @@ impl Recording {
         if let (End::Bars(n), Some(bar0)) = (self.end, self.bar0) {
             if let Some(last) = input.bars.nth_after(bar0, n.max(1) as usize) {
                 if let Some(t) = self.take.as_mut() {
-                    t.stop_at(last);
+                    t.cut_at(last);
                 }
             }
         }
         if let Some(t) = self.take.as_mut() {
             t.poll(&input.audio)?;
+        }
+        if let (Tail::Loop { level, quiet }, None, Some(start)) =
+            (self.tail, self.rang_in, self.started_at())
+        {
+            let going_round = sounding_before(input, start, level, quiet);
+            self.rang_in = Some(going_round);
+            if let (true, Some(t)) = (going_round, self.take.as_mut()) {
+                // Cut on its length: nothing to wait for after it.
+                t.ring_off();
+                t.poll(&input.audio)?;
+            }
         }
         Ok(self.progress())
     }
@@ -868,7 +1098,43 @@ impl Recording {
         if !matches!(self.progress(), Progress::Done { .. }) {
             return None;
         }
+        let looped = self.looped();
+        let cut = self.cut_frames().unwrap_or(0) as usize;
         let take = self.take?;
-        Some(pick.source(name, self.rate, take.data))
+        let n = cut * take.channels;
+        let mut data = take.data;
+        match looped {
+            None | Some(Looped::GoingRound) => {}
+            Some(Looped::SecondTime) => {
+                data.drain(..n);
+            }
+            Some(Looped::Folded { .. }) => fold(&mut data, n),
+        }
+        if looped.is_some() {
+            data.truncate(n);
+        }
+        Some(pick.source(name, self.rate, data))
+    }
+}
+
+/// Whether `input` went over `level` in the `quiet` frames before frame
+/// `start` (what the buffer still holds of them).
+fn sounding_before(input: &Input, start: u64, level: f32, quiet: u64) -> bool {
+    let from = start.saturating_sub(quiet).max(input.audio.oldest());
+    let mut before = Vec::new();
+    from < start
+        && input.audio.copy(from, start, &mut before).is_ok()
+        && before.iter().any(|x| x.abs() > level)
+}
+
+/// Adds everything in `data` after its first `n` samples onto them, round
+/// and round (a tail longer than the loop goes round again).
+fn fold(data: &mut [f32], n: usize) {
+    if n == 0 {
+        return;
+    }
+    for i in n..data.len() {
+        let x = data[i];
+        data[(i - n) % n] += x;
     }
 }

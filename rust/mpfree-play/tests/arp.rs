@@ -53,6 +53,9 @@ fn view() -> PlayView {
             note: n,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect();
     arp.slots[0] = Some(c);
@@ -64,6 +67,9 @@ fn view() -> PlayView {
         note: 0,
         velocity: 120,
         chance: 100,
+        cond: mpfree_seq::Cond::Always,
+        ratchet: 1,
+        touch: mpfree_seq::Touch::NONE,
     }];
     drums.slots[0] = Some(k);
     p.tracks = vec![arp, drums];
@@ -74,11 +80,13 @@ fn view() -> PlayView {
                 track: 0,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
             Launch {
                 track: 1,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
         ],
     )

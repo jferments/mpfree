@@ -11,6 +11,11 @@
 //! an input), and the output (a tap opens the picker). An input strip
 //! trades its last two insert rows for its Source and Monitor.
 //!
+//! Once the app offers takes ([`MixState::takes`]), a tap on the selected
+//! strip's name opens its menu: Freeze or Thaw (a track or a pad), Print
+//! to a new sample, or Cancel while a take is under way. A frozen strip shows "Frozen" over its inserts, and a take
+//! under way shows there with its progress.
+//!
 //! The widget keeps a copy of what it shows and moves it under the finger
 //! at once; what the touches mean goes into a queue of [`MixAction`]s
 //! (see [`crate::take_actions`]) for the app to send to the mixer.
@@ -21,7 +26,8 @@ use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::{StripId, BUSES, SILENT_DB};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Theme, Tone, Touch, Widget};
 
-use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView};
+use crate::io::{self, IoFrame, IoInput, IoKnob, IoReply, IoSection};
+use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView, TakeView};
 
 /// What a touch on the mixer meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +44,76 @@ pub enum MixAction {
     AddInsert { strip: StripId },
     /// A view was picked: show its strips.
     View(MixView),
+    /// Freeze the strip: take one pass of the loop through its inserts
+    /// (`mpfree_fx::Print` with `PrintJob::freeze`), then
+    /// `Mixer::freeze` it with the take.
+    Freeze(StripId),
+    /// Back to the strip's live inserts (`Mixer::thaw`).
+    Thaw(StripId),
+    /// Print the strip, with its inserts and their tail, to a new sample.
+    Print(StripId),
+    /// Stop the strip's freeze or print under way; nothing changes.
+    CancelTake(StripId),
+}
+
+/// What a strip's menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripMenu {
+    Freeze,
+    Thaw,
+    Print,
+    Cancel,
+}
+
+impl StripMenu {
+    /// What the strip `s`'s menu offers, in order.
+    pub fn items(s: &StripView) -> Vec<StripMenu> {
+        if s.take.is_some() {
+            return vec![StripMenu::Cancel];
+        }
+        let mut v = Vec::new();
+        if s.can_freeze() {
+            v.push(if s.frozen {
+                StripMenu::Thaw
+            } else {
+                StripMenu::Freeze
+            });
+        }
+        v.push(StripMenu::Print);
+        v
+    }
+
+    /// The button's label and the line under it.
+    pub fn text(self, s: &StripView) -> (&'static str, &'static str) {
+        match self {
+            StripMenu::Freeze => (
+                "Freeze",
+                "Takes the next pass through its effects and plays that instead, to free CPU",
+            ),
+            StripMenu::Thaw => ("Thaw", "Back to its live effects"),
+            StripMenu::Print => (
+                "Print to a new sample",
+                "Records the next pass with its effects and their tail",
+            ),
+            StripMenu::Cancel => (
+                if s.take.is_some_and(|t| t.print) {
+                    "Cancel the print"
+                } else {
+                    "Cancel the freeze"
+                },
+                "Stops the take; nothing changes",
+            ),
+        }
+    }
+
+    fn action(self, id: StripId) -> MixAction {
+        match self {
+            StripMenu::Freeze => MixAction::Freeze(id),
+            StripMenu::Thaw => MixAction::Thaw(id),
+            StripMenu::Print => MixAction::Print(id),
+            StripMenu::Cancel => MixAction::CancelTake(id),
+        }
+    }
 }
 
 /// The panel's own top row.
@@ -47,6 +123,10 @@ pub const STRIP_W: i32 = 104;
 pub const MASTER_W: i32 = 150;
 const GAP: i32 = 6;
 const CHIP_W: i32 = 150;
+/// The narrowest a strip view's chip gets ("Submixes" and its count).
+const MIN_CHIP_W: i32 = 124;
+/// The I/O view's chip, after the four strip views.
+const IO_CHIP_W: i32 = 76;
 const ARROW_W: i32 = 52;
 const PAGE_W: i32 = 120;
 
@@ -151,7 +231,7 @@ fn strip_color(t: &Theme, s: StripId) -> Color {
 
 /// Where everything in the panel goes, from its rectangle.
 struct Layout {
-    chips: [Rect; 4],
+    chips: [Rect; 5],
     prev: Rect,
     next: Rect,
     page: Rect,
@@ -169,12 +249,22 @@ fn layout(r: Rect) -> Layout {
     let per_page = ((strips.w + GAP) / (STRIP_W + GAP)).max(1) as usize;
     let ch = 36.min(head.h);
     let cy = head.y + (head.h - ch) / 2;
-    let chips =
-        std::array::from_fn(|i| Rect::new(head.x + i as i32 * (CHIP_W + 8), cy, CHIP_W, ch));
     let next = Rect::new(head.right() - ARROW_W, cy, ARROW_W, ch);
     let page = Rect::new(next.x - PAGE_W, cy, PAGE_W, ch);
     let prev = Rect::new(page.x - ARROW_W, cy, ARROW_W, ch);
     let cost = Rect::new(prev.x - 12 - 170, cy, 170, ch);
+    // The view chips share what is left of the cost chip: narrower when
+    // the panel is (the Q-Link column beside it), never under MIN_CHIP_W.
+    let room = cost.x - 12 - head.x - 4 * 8 - IO_CHIP_W;
+    let chip_w = (room / 4).clamp(MIN_CHIP_W, CHIP_W);
+    let chips = std::array::from_fn(|i| {
+        let w = if MixView::ALL[i] == MixView::Io {
+            IO_CHIP_W
+        } else {
+            chip_w
+        };
+        Rect::new(head.x + i as i32 * (chip_w + 8), cy, w, ch)
+    });
     Layout {
         chips,
         prev,
@@ -229,6 +319,14 @@ fn parts(s: Rect) -> Parts {
         buttons,
         output,
     }
+}
+
+/// A strip's insert rows as one area (an input's first two: the last two
+/// are its Source and Monitor).
+fn insert_area(p: &Parts, s: &StripView) -> Rect {
+    let n = if s.input.is_some() { 2 } else { 4 };
+    let (a, b) = (p.inserts[0], p.inserts[n - 1]);
+    Rect::new(a.x, a.y, a.w, b.bottom() - a.y)
 }
 
 /// The fader's travel inside its area: (top, bottom) of the cap's centre.
@@ -302,6 +400,8 @@ pub fn output_choices(s: StripId, tracks: usize) -> Vec<(u8, u8)> {
 enum Dirty {
     Clean,
     Meters,
+    /// The meters and the I/O view's panel (a section's live values).
+    Panel,
     All,
 }
 
@@ -312,11 +412,21 @@ pub struct MixerView {
     first: usize,
     /// The strip whose output picker is open.
     picker: Option<StripId>,
+    /// The strip whose menu is open.
+    menu: Option<StripId>,
     grabs: Vec<(u64, Grab)>,
     actions: Vec<MixAction>,
     dirty: Cell<Dirty>,
     /// Strips per page at the last paint, to keep the selection in view.
     per_page: Cell<usize>,
+    /// The I/O view's sections, the one showing and its fingers.
+    io: IoFrame,
+    /// Audio rows per page at the last paint.
+    io_per_page: Cell<usize>,
+    /// The outside section last told it shows.
+    io_live: Option<usize>,
+    /// Outside sections that changed a setting on a touch, in order.
+    io_changed: Vec<usize>,
 }
 
 impl Default for MixerView {
@@ -331,10 +441,15 @@ impl MixerView {
             state: MixState::default(),
             first: 0,
             picker: None,
+            menu: None,
             grabs: Vec::new(),
             actions: Vec::new(),
             dirty: Cell::new(Dirty::All),
             per_page: Cell::new(10),
+            io: IoFrame::new(),
+            io_per_page: Cell::new(12),
+            io_live: None,
+            io_changed: Vec::new(),
         }
     }
 
@@ -372,24 +487,45 @@ impl MixerView {
         } else {
             Dirty::All
         };
+        if st.view != self.state.view || !st.takes {
+            self.menu = None;
+        }
         if st.view != self.state.view {
             self.first = 0;
+            self.io.top = 0;
             self.picker = None;
         }
-        if st.selected != self.state.selected {
-            if let Some(i) = st
-                .selected
-                .and_then(|s| st.strips.iter().position(|v| v.id == s))
-            {
-                let n = self.per_page.get().max(1);
-                if i < self.first || i >= self.first + n {
-                    self.first = i / n * n;
-                }
+        let follow = st.selected != self.state.selected;
+        self.state = st;
+        if follow {
+            self.follow_selection();
+        }
+        self.first = self.first.min(self.state.strips.len().saturating_sub(1));
+        self.io.top = self.io.top.min(self.state.strips.len().saturating_sub(1));
+        self.sync_shown();
+        self.mark(kind);
+    }
+
+    /// Pages to the selected strip if it is off the page.
+    fn follow_selection(&mut self) {
+        let Some(i) = self
+            .state
+            .selected
+            .and_then(|s| self.state.strips.iter().position(|v| v.id == s))
+        else {
+            return;
+        };
+        if self.state.view == MixView::Io {
+            let n = self.io_per_page.get().max(1);
+            if i < self.io.top || i >= self.io.top + n {
+                self.io.top = i / n * n;
+            }
+        } else {
+            let n = self.per_page.get().max(1);
+            if i < self.first || i >= self.first + n {
+                self.first = i / n * n;
             }
         }
-        self.state = st;
-        self.first = self.first.min(self.state.strips.len().saturating_sub(1));
-        self.mark(kind);
     }
 
     /// The actions the touches made since the last call.
@@ -417,6 +553,11 @@ impl MixerView {
         self.picker
     }
 
+    /// The strip whose menu is open.
+    pub fn menu(&self) -> Option<StripId> {
+        self.menu
+    }
+
     fn mark(&self, d: Dirty) {
         self.dirty.set(self.dirty.get().max(d));
     }
@@ -434,8 +575,12 @@ impl MixerView {
         self.push(MixAction::Set { strip, id, value });
     }
 
-    /// The strips shown and their rectangles.
+    /// The strips shown and their rectangles (none in the I/O view, which
+    /// shows rows).
     fn shown(&self, l: &Layout) -> Vec<(usize, Rect)> {
+        if self.state.view == MixView::Io {
+            return Vec::new();
+        }
         let n = self.state.strips.len();
         (self.first..n.min(self.first + l.per_page))
             .enumerate()
@@ -483,8 +628,54 @@ impl MixerView {
             .map(|(_, b)| b)
     }
 
+    fn menu_rect(&self, l: &Layout, s: StripId) -> Rect {
+        let n = self.state.strip(s).map_or(1, |v| StripMenu::items(v).len()) as i32;
+        let (w, h) = (620.min(l.strips.w), 18 + 30 + 10 + n * 64 + 8);
+        Rect::new(
+            l.strips.x + (l.strips.w - w) / 2,
+            l.strips.y + (l.strips.h - h) / 3,
+            w,
+            h,
+        )
+    }
+
+    fn menu_buttons(&self, l: &Layout, s: StripId) -> Vec<(StripMenu, Rect)> {
+        let Some(v) = self.state.strip(s) else {
+            return Vec::new();
+        };
+        let area = self.menu_rect(l, s).inset(18).take_top(40).1;
+        StripMenu::items(v)
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (m, Rect::new(area.x, area.y + i as i32 * 64, area.w, 56)))
+            .collect()
+    }
+
+    /// Where the open menu shows `item`.
+    pub fn menu_button(&self, r: Rect, item: StripMenu) -> Option<Rect> {
+        let s = self.menu?;
+        self.menu_buttons(&layout(r), s)
+            .into_iter()
+            .find(|(m, _)| *m == item)
+            .map(|(_, b)| b)
+    }
+
     fn down(&mut self, finger: u64, x: i32, y: i32, r: Rect) {
         let l = layout(r);
+        if let Some(s) = self.menu {
+            let pick = self
+                .menu_buttons(&l, s)
+                .into_iter()
+                .find(|(_, b)| b.contains(x, y))
+                .map(|(m, _)| m);
+            if let Some(m) = pick {
+                self.push(m.action(s));
+                self.menu = None;
+            } else if !self.menu_rect(&l, s).contains(x, y) {
+                self.menu = None;
+            }
+            return;
+        }
         if let Some(s) = self.picker {
             let pick = self
                 .picker_buttons(&l, s)
@@ -507,19 +698,25 @@ impl MixerView {
             if v != self.state.view {
                 self.state.view = v;
                 self.first = 0;
+                self.io.top = 0;
                 self.push(MixAction::View(v));
             }
             return;
         }
         let n = self.state.strips.len();
-        if l.prev.contains(x, y) {
-            self.first = self.first.saturating_sub(l.per_page);
-            return;
-        }
-        if l.next.contains(x, y) {
-            if self.first + l.per_page < n {
+        if l.prev.contains(x, y) || l.next.contains(x, y) {
+            let d = if l.prev.contains(x, y) { -1 } else { 1 };
+            if self.state.view == MixView::Io {
+                self.io_page(d);
+            } else if d < 0 {
+                self.first = self.first.saturating_sub(l.per_page);
+            } else if self.first + l.per_page < n {
                 self.first += l.per_page;
             }
+            return;
+        }
+        if self.state.view == MixView::Io && l.strips.contains(x, y) {
+            self.io_down(finger, x, y, &l);
             return;
         }
         let mut hits: Vec<(StripId, Rect)> = self
@@ -536,8 +733,14 @@ impl MixerView {
             return;
         };
         if p.name.contains(x, y) {
-            self.state.selected = Some(id);
-            self.push(MixAction::Select(id));
+            if self.state.selected == Some(id) {
+                if self.state.takes {
+                    self.menu = Some(id);
+                }
+            } else {
+                self.state.selected = Some(id);
+                self.push(MixAction::Select(id));
+            }
             return;
         }
         for (i, row) in p.inserts.iter().enumerate() {
@@ -632,7 +835,10 @@ impl MixerView {
         }
     }
 
-    fn drag(&mut self, finger: u64, x: i32, y: i32) {
+    fn drag(&mut self, finger: u64, x: i32, y: i32, r: Rect) {
+        if self.io_finger(finger, Touch::Move, x, y, r) {
+            return;
+        }
         let Some(gi) = self.grabs.iter().position(|(f, _)| *f == finger) else {
             return;
         };
@@ -686,7 +892,11 @@ impl MixerView {
         }
     }
 
-    fn lift(&mut self, finger: u64, cancel: bool) {
+    fn lift(&mut self, finger: u64, cancel: bool, x: i32, y: i32, r: Rect) {
+        let phase = if cancel { Touch::Cancel } else { Touch::Up };
+        if self.io_finger(finger, phase, x, y, r) {
+            return;
+        }
         let Some(gi) = self.grabs.iter().position(|(f, _)| *f == finger) else {
             return;
         };
@@ -717,7 +927,18 @@ impl MixerView {
                     t.accent,
                 );
             }
-            let count = c.inset_xy(14, 0).take_right(34).0;
+            let Some(&count) = self.state.counts.get(i) else {
+                // The I/O view: no count.
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_body,
+                    c,
+                    Align::Center,
+                    if on { t.text } else { t.text_dim },
+                    v.label(),
+                );
+                continue;
+            };
             cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
                 t.size_body,
@@ -729,17 +950,16 @@ impl MixerView {
             cx.text(
                 FontId::Sans,
                 t.size_small,
-                count,
+                c.inset_xy(14, 0).take_right(34).0,
                 Align::Right,
                 t.text_faint,
-                &self.state.counts[i].to_string(),
+                &count.to_string(),
             );
         }
-        let n = self.state.strips.len();
-        let shown = self.shown(l).len();
+        let (first, shown, n, outside) = self.span(l);
         for (b, s, live) in [
-            (l.prev, "<", self.first > 0),
-            (l.next, ">", self.first + shown < n),
+            (l.prev, "<", outside || first > 0),
+            (l.next, ">", outside || first + shown < n),
         ] {
             cx.canvas
                 .fill_round_rect(b, 10, if live { t.raised } else { t.surface });
@@ -752,10 +972,12 @@ impl MixerView {
                 s,
             );
         }
-        let page = if n == 0 {
+        let page = if outside {
+            String::new()
+        } else if n == 0 {
             "none".to_string()
         } else {
-            format!("{}-{} of {n}", self.first + 1, self.first + shown)
+            format!("{}-{} of {n}", first + 1, first + shown)
         };
         cx.text(
             FontId::Sans,
@@ -911,6 +1133,7 @@ impl MixerView {
                 );
             }
         }
+        self.paint_freeze(cx, s, insert_area(&p, s));
         // Sends, or Master safety on the master.
         if master {
             self.paint_safety(cx, p.send_area);
@@ -1276,14 +1499,125 @@ impl MixerView {
         }
     }
 
+    fn paint_menu(&self, cx: &mut PaintCx, l: &Layout, s: StripId) {
+        let t = cx.theme.clone();
+        let Some(v) = self.state.strip(s) else {
+            return;
+        };
+        let mr = self.menu_rect(l, s);
+        cx.canvas.fill_round_rect(mr.inset(-2), 16, t.outline);
+        cx.canvas.fill_round_rect(mr, 14, t.surface);
+        let head = mr.inset(18).take_top(30).0;
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            head,
+            Align::Left,
+            t.text,
+            &v.name,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            head,
+            Align::Right,
+            t.text_dim,
+            "Tap outside to close",
+        );
+        for (m, b) in self.menu_buttons(l, s) {
+            let (label, line) = m.text(v);
+            cx.canvas.fill_round_rect(b, 10, t.raised);
+            let inner = b.inset_xy(16, 7);
+            let (top, bottom) = inner.take_top(24);
+            cx.text(FontId::Bold, t.size_body, top, Align::Left, t.text, label);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                bottom,
+                Align::Left,
+                t.text_dim,
+                line,
+            );
+        }
+    }
+
+    /// Over a strip's insert rows: "Frozen", or a take under way.
+    fn paint_freeze(&self, cx: &mut PaintCx, s: &StripView, area: Rect) {
+        let t = cx.theme.clone();
+        if s.take.is_none() && !s.frozen {
+            return;
+        }
+        cx.canvas
+            .fill_round_rect(area, 8, t.surface.mix(t.accent, 0.12));
+        cx.canvas.stroke_round_rect(area, 8, 1, t.accent);
+        let inner = area.inset_xy(8, 8);
+        let (title, rest) = inner.take_top(24);
+        match s.take {
+            Some(TakeView { print, done }) => {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    title,
+                    Align::Left,
+                    t.accent,
+                    if print { "Printing" } else { "Freezing" },
+                );
+                let line = match done {
+                    None => "Next loop".to_string(),
+                    Some(d) => format!("{:.0} %", (d * 100.0).clamp(0.0, 100.0)),
+                };
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    rest.take_top(22).0,
+                    Align::Left,
+                    t.text_dim,
+                    &line,
+                );
+                let bar = Rect::new(inner.x, inner.bottom() - 6, inner.w, 6);
+                cx.canvas.fill_round_rect(bar, 3, t.raised);
+                if let Some(d) = done {
+                    let w = ((bar.w as f32) * d.clamp(0.0, 1.0)) as i32;
+                    if w > 0 {
+                        cx.canvas
+                            .fill_round_rect(Rect::new(bar.x, bar.y, w, bar.h), 3, t.accent);
+                    }
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    title,
+                    Align::Left,
+                    t.accent,
+                    "Frozen",
+                );
+                let n = s.inserts.len();
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    rest.take_top(22).0,
+                    Align::Left,
+                    t.text_dim,
+                    &format!("{n} effect{}", if n == 1 { "" } else { "s" }),
+                );
+            }
+        }
+    }
+
     /// The rectangles the meters (and, while profiling, the costs) fill.
     fn meter_parts(&self, r: Rect) -> Vec<Rect> {
         let l = layout(r);
         let profiling = self.state.cost_pct.is_some();
         let mut v: Vec<Rect> = Vec::new();
-        let mut add = |sr: Rect, master: bool| {
+        let mut add = |sr: Rect, master: bool, s: &StripView| {
             let p = parts(sr);
             v.push(fader_columns(p.fader, master).2);
+            if s.take.is_some() {
+                // A take's progress.
+                v.push(insert_area(&p, s));
+            }
             if master {
                 v.push(p.send_area);
                 v.push(p.buttons);
@@ -1292,10 +1626,10 @@ impl MixerView {
                 v.extend(p.inserts);
             }
         };
-        for (_, sr) in self.shown(&l) {
-            add(sr, false);
+        for (i, sr) in self.shown(&l) {
+            add(sr, false, &self.state.strips[i]);
         }
-        add(l.master, true);
+        add(l.master, true, &self.state.master);
         if profiling {
             v.push(l.cost);
         }
@@ -1303,7 +1637,513 @@ impl MixerView {
             // The picker covers the strips: draw it again over them.
             v.push(MixerView::picker_rect(&l).inset(-2));
         }
+        if let Some(s) = self.menu {
+            v.push(self.menu_rect(&l, s).inset(-2));
+        }
         v
+    }
+}
+
+impl MixerView {
+    // ------------------------------------------------------------ I/O view
+
+    /// Adds a section to the I/O view's list, after Audio and the sections
+    /// added before it.
+    pub fn add_io_section(&mut self, s: Box<dyn IoSection>) {
+        self.io.sections.push(s);
+        self.mark(Dirty::All);
+    }
+
+    /// The I/O view's section showing: 0 is Audio, then the added sections
+    /// in order.
+    pub fn io_section(&self) -> usize {
+        self.io.sel
+    }
+
+    /// Shows section `i` of the I/O view (0 is Audio); false if there is
+    /// none.
+    pub fn show_io_section(&mut self, i: usize) -> bool {
+        if i > self.io.sections.len() {
+            return false;
+        }
+        if i != self.io.sel {
+            if let Some(s) = self.io.section_mut() {
+                s.back();
+            }
+            self.io.sel = i;
+            self.io.fingers.clear();
+        }
+        self.sync_shown();
+        self.mark(Dirty::All);
+        true
+    }
+
+    /// Outside sections (by index in add order) that replied
+    /// [`IoReply::Redraw`] to a touch, a key ([`MixerView::io_input`]) or a
+    /// Q-Link ([`MixerView::io_qlink_turn`]) since the last call: read
+    /// their state. One place, whatever moved the setting.
+    pub fn take_io_changes(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.io_changed)
+    }
+
+    /// The data wheel, - and + or the page arrows while the I/O view shows.
+    /// On Audio the wheel moves the selected row and - and + step its
+    /// output (both queue actions); an outside section gets them itself.
+    pub fn io_input(&mut self, ev: IoInput) -> IoReply {
+        if self.state.view != MixView::Io {
+            return IoReply::Ignored;
+        }
+        let outside = self.io.sel.checked_sub(1);
+        let r = if let Some(s) = self.io.section_mut() {
+            let r = s.input(ev);
+            if r == IoReply::Redraw {
+                self.io_changed.extend(outside);
+            }
+            r
+        } else {
+            match ev {
+                IoInput::Wheel(d) => self.io_wheel(d),
+                IoInput::Step(d) => self.io_step(d),
+                IoInput::Page(d) => {
+                    self.io_page(d);
+                    IoReply::Redraw
+                }
+            }
+        };
+        if r == IoReply::Redraw {
+            self.mark(Dirty::All);
+        }
+        r
+    }
+
+    /// Each frame: the outside section showing updates its live values.
+    pub fn io_tick(&mut self, now: std::time::Duration) -> IoReply {
+        if self.state.view != MixView::Io {
+            return IoReply::Ignored;
+        }
+        let r = self
+            .io
+            .section_mut()
+            .map_or(IoReply::Ignored, |s| s.tick(now));
+        if r == IoReply::Redraw {
+            self.mark(Dirty::Panel);
+        }
+        r
+    }
+
+    /// The app's Back while the I/O view shows: closes the output picker,
+    /// the strip menu, or the showing section's detail. True if it closed
+    /// something.
+    pub fn io_back(&mut self) -> bool {
+        if self.state.view != MixView::Io {
+            return false;
+        }
+        let closed = if self.picker.take().is_some() || self.menu.take().is_some() {
+            true
+        } else {
+            self.io.section_mut().is_some_and(|s| s.back())
+        };
+        if closed {
+            self.mark(Dirty::All);
+        }
+        closed
+    }
+
+    /// The hint line for the I/O view as it shows now: the section's own,
+    /// or [`crate::MIXER_HINT_IO`]; `None` away from the I/O view.
+    pub fn io_hint(&self) -> Option<String> {
+        if self.state.view != MixView::Io {
+            return None;
+        }
+        Some(
+            self.io
+                .section()
+                .and_then(|s| s.hint())
+                .unwrap_or(crate::MIXER_HINT_IO)
+                .to_string(),
+        )
+    }
+
+    /// The Q-Link cards of the outside section showing, if it has its own.
+    pub fn io_qlinks(&self) -> Option<[IoKnob; 4]> {
+        if self.state.view != MixView::Io {
+            return None;
+        }
+        self.io.section().and_then(|s| s.qlinks())
+    }
+
+    /// A Q-Link turned while an outside section with its own cards shows.
+    pub fn io_qlink_turn(&mut self, knob: usize, detents: i32, fine: bool) -> IoReply {
+        if self.io_qlinks().is_none() {
+            return IoReply::Ignored;
+        }
+        let r = self
+            .io
+            .section_mut()
+            .map_or(IoReply::Ignored, |s| s.qlink_turn(knob, detents, fine));
+        if r == IoReply::Redraw {
+            self.io_changed.extend(self.io.sel.checked_sub(1));
+            self.mark(Dirty::Panel);
+        }
+        r
+    }
+
+    /// Tells the sections which one shows, when that changes.
+    fn sync_shown(&mut self) {
+        let now = (self.state.view == MixView::Io)
+            .then(|| self.io.sel.checked_sub(1))
+            .flatten()
+            .filter(|&i| i < self.io.sections.len());
+        if now == self.io_live {
+            return;
+        }
+        if let Some(s) = self.io_live.and_then(|i| self.io.sections.get_mut(i)) {
+            s.shown(false);
+        }
+        if let Some(s) = now.and_then(|i| self.io.sections.get_mut(i)) {
+            s.shown(true);
+        }
+        self.io_live = now;
+    }
+
+    /// What the head's page arrows and count show: the first item, how many
+    /// show, how many there are, and whether an outside section has the
+    /// arrows (then they are always lit and there is no count).
+    fn span(&self, l: &Layout) -> (usize, usize, usize, bool) {
+        let n = self.state.strips.len();
+        if self.state.view != MixView::Io {
+            return (self.first, self.shown(l).len(), n, false);
+        }
+        if self.io.section().is_some() {
+            return (0, 0, 0, true);
+        }
+        let rows = io::rows_per_page(self.io_panel(l));
+        let top = self.io.top.min(n);
+        (top, rows.min(n - top), n, false)
+    }
+
+    fn io_panel(&self, l: &Layout) -> Rect {
+        io::io_layout(l.strips, 0).panel
+    }
+
+    /// The Audio rows shown and their rectangles, under the column heads.
+    fn io_rows(&self, panel: Rect) -> Vec<(usize, Rect)> {
+        let n = self.state.strips.len();
+        let per = io::rows_per_page(panel);
+        let top = self.io.top.min(n);
+        (top..n.min(top + per))
+            .enumerate()
+            .map(|(k, i)| {
+                let y = panel.y + io::HEAD_ROW_H + k as i32 * io::ROW_H;
+                (i, Rect::new(panel.x, y, panel.w, io::ROW_H - 4))
+            })
+            .collect()
+    }
+
+    fn io_page(&mut self, d: i32) {
+        let outside = self.io.sel.checked_sub(1);
+        if let Some(s) = self.io.section_mut() {
+            if s.input(IoInput::Page(d)) == IoReply::Redraw {
+                self.io_changed.extend(outside);
+            }
+            return;
+        }
+        let per = self.io_per_page.get().max(1);
+        let n = self.state.strips.len();
+        if d < 0 {
+            self.io.top = self.io.top.saturating_sub(per);
+        } else if self.io.top + per < n {
+            self.io.top += per;
+        }
+    }
+
+    fn io_select(&mut self, id: StripId) {
+        if self.state.selected != Some(id) {
+            self.state.selected = Some(id);
+            self.push(MixAction::Select(id));
+        }
+    }
+
+    fn io_wheel(&mut self, d: i32) -> IoReply {
+        let n = self.state.strips.len();
+        if n == 0 || d == 0 {
+            return IoReply::Handled;
+        }
+        let cur = self
+            .state
+            .selected
+            .and_then(|s| self.state.strips.iter().position(|v| v.id == s));
+        let i = match cur {
+            Some(c) => (c as i64 + i64::from(d)).clamp(0, n as i64 - 1) as usize,
+            None if d > 0 => 0,
+            None => n - 1,
+        };
+        if Some(i) == cur {
+            return IoReply::Handled;
+        }
+        self.io_select(self.state.strips[i].id);
+        self.follow_selection();
+        IoReply::Redraw
+    }
+
+    fn io_step(&mut self, d: i32) -> IoReply {
+        let Some(s) = self
+            .state
+            .selected
+            .and_then(|id| self.state.strips.iter().find(|v| v.id == id))
+            .filter(|s| s.has_output())
+            .cloned()
+        else {
+            return IoReply::Handled;
+        };
+        let choices = output_choices(s.id, self.state.tracks);
+        let cur = (
+            s.output,
+            if s.output == output::TRACK as u8 {
+                s.output_track
+            } else {
+                0
+            },
+        );
+        let at = choices.iter().position(|c| *c == cur).unwrap_or(0);
+        let to = (at as i64 + i64::from(d.signum())).clamp(0, choices.len() as i64 - 1) as usize;
+        if to == at && choices.get(at) == Some(&cur) {
+            return IoReply::Handled;
+        }
+        let (out, track) = choices[to];
+        if out == output::TRACK as u8 {
+            self.set(s.id, mx::OUTPUT_TRACK, f32::from(track));
+        }
+        self.set(s.id, mx::OUTPUT, f32::from(out));
+        IoReply::Redraw
+    }
+
+    /// A finger down in the I/O view's area (left of the master).
+    fn io_down(&mut self, finger: u64, x: i32, y: i32, l: &Layout) {
+        let il = io::io_layout(l.strips, self.io.sections.len() + 1);
+        if let Some(i) = il.list.iter().position(|b| b.contains(x, y)) {
+            // The list: back out of the section's detail, or show another.
+            if let Some(s) = self.io.section_mut() {
+                s.back();
+            }
+            if i != self.io.sel {
+                self.io.sel = i;
+                self.io.fingers.clear();
+            }
+            return;
+        }
+        if !il.panel.contains(x, y) {
+            return;
+        }
+        if let Some(k) = self.io.sel.checked_sub(1) {
+            if k < self.io.sections.len() {
+                self.io.fingers.retain(|(f, _)| *f != finger);
+                self.io.fingers.push((finger, k));
+                let r = self.io.sections[k].touch(finger, Touch::Down, x, y, il.panel);
+                if r == IoReply::Redraw {
+                    self.io_changed.push(k);
+                }
+            }
+            return;
+        }
+        let Some((i, row)) = self
+            .io_rows(il.panel)
+            .into_iter()
+            .find(|(_, r)| r.contains(x, y))
+        else {
+            return;
+        };
+        let s = self.state.strips[i].clone();
+        let p = io::row_parts(row);
+        if p.output.contains(x, y) && s.has_output() {
+            self.picker = Some(s.id);
+        } else if let Some(inp) = s.input.filter(|_| p.source.contains(x, y)) {
+            self.set(s.id, mx::SOURCE, f32::from((inp.source + 1) % 4));
+        } else if let Some(inp) = s.input.filter(|_| p.monitor.contains(x, y)) {
+            self.set(s.id, mx::MONITOR, f32::from((inp.monitor + 1) % 3));
+        } else if p.name.contains(x, y) && self.state.selected == Some(s.id) {
+            if self.state.takes {
+                self.menu = Some(s.id);
+            }
+        } else {
+            self.io_select(s.id);
+        }
+    }
+
+    /// A finger an outside section holds moved or lifted. True if it was
+    /// one.
+    fn io_finger(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> bool {
+        let Some(at) = self.io.fingers.iter().position(|(f, _)| *f == finger) else {
+            return false;
+        };
+        let k = self.io.fingers[at].1;
+        if matches!(phase, Touch::Up | Touch::Cancel) {
+            self.io.fingers.remove(at);
+        }
+        let panel = self.io_panel(&layout(r));
+        if let Some(s) = self.io.sections.get_mut(k) {
+            if s.touch(finger, phase, x, y, panel) == IoReply::Redraw {
+                self.io_changed.push(k);
+            }
+        }
+        true
+    }
+
+    fn paint_io(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let il = io::io_layout(l.strips, self.io.sections.len() + 1);
+        self.io_per_page.set(io::rows_per_page(il.panel));
+        cx.canvas.fill_rect(l.strips, t.bg);
+        for (i, (b, name)) in il.list.iter().zip(self.io.labels()).enumerate() {
+            let on = i == self.io.sel;
+            cx.canvas
+                .fill_round_rect(*b, 10, if on { t.raised } else { t.surface });
+            if on {
+                cx.canvas
+                    .fill_round_rect(Rect::new(b.x, b.y + 10, 4, b.h - 20), 2, t.accent);
+            }
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_body,
+                b.inset_xy(16, 0),
+                Align::Left,
+                if on { t.text } else { t.text_dim },
+                &name,
+            );
+        }
+        if let Some(s) = self.io.section() {
+            s.paint(cx, il.panel);
+            return;
+        }
+        self.paint_audio(cx, il.panel);
+    }
+
+    /// The Audio section: one row per strip with an output.
+    fn paint_audio(&self, cx: &mut PaintCx, panel: Rect) {
+        let t = cx.theme.clone();
+        let head = Rect::new(panel.x, panel.y, panel.w, io::HEAD_ROW_H);
+        let hp = io::row_parts(Rect::new(head.x, head.y - 4, head.w, head.h));
+        for (r, s) in [
+            (hp.name, "Strip"),
+            (hp.output, "Output"),
+            (hp.source, "Source (inputs)"),
+            (hp.monitor, "Monitor (inputs)"),
+        ] {
+            cx.text(FontId::Sans, t.size_small, r, Align::Left, t.text_faint, s);
+        }
+        if self.state.strips.is_empty() {
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                panel,
+                Align::Center,
+                t.text_dim,
+                "No strips",
+            );
+            return;
+        }
+        for (i, row) in self.io_rows(panel) {
+            let s = &self.state.strips[i];
+            let selected = self.state.selected == Some(s.id);
+            cx.canvas.fill_round_rect(row, 10, t.surface);
+            if selected {
+                cx.canvas.stroke_round_rect(row, 10, 2, t.accent);
+            }
+            let p = io::row_parts(row);
+            let ink = if s.audible { t.text } else { t.text_faint };
+            cx.canvas.fill_round_rect(
+                Rect::new(p.name.x, p.name.y + 6, 4, p.name.h - 12),
+                2,
+                strip_color(&t, s.id),
+            );
+            cx.text(
+                if selected { FontId::Bold } else { FontId::Sans },
+                t.size_body,
+                p.name.inset_xy(14, 0),
+                Align::Left,
+                ink,
+                &s.name,
+            );
+            let open = self.picker == Some(s.id);
+            let none = s.output == output::NONE as u8;
+            cx.canvas
+                .fill_round_rect(p.output, 8, if open { t.accent } else { t.raised });
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                p.output.inset_xy(12, 0),
+                Align::Left,
+                if open {
+                    t.bg
+                } else if none {
+                    t.warn
+                } else {
+                    t.text
+                },
+                &if none {
+                    "None (silent)".to_string()
+                } else {
+                    s.output_label()
+                },
+            );
+            if let Some(inp) = s.input {
+                for (r, v) in [
+                    (p.source, choice(mx::SOURCE, inp.source)),
+                    (p.monitor, choice(mx::MONITOR, inp.monitor)),
+                ] {
+                    cx.canvas.fill_round_rect(r, 8, t.raised);
+                    cx.text(
+                        FontId::Sans,
+                        t.size_body,
+                        r.inset_xy(12, 0),
+                        Align::Left,
+                        t.text,
+                        v,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The small I/O icon beside the mixer icon (Jay's call, 2026-11-12): two
+/// arrows, in and out. A tap gives `Tab(0)`; the app opens the mixer on
+/// its I/O view, or closes it. Offered to the app thread, which places it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IoIcon {
+    /// The I/O view is showing (the icon is lit).
+    pub open: bool,
+}
+
+impl Widget for IoIcon {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let side = 44.min(r.h).min(r.w);
+        let b = Rect::new(r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side);
+        cx.canvas
+            .fill_round_rect(b, 10, if self.open { t.raised } else { t.surface });
+        if self.open {
+            cx.canvas.fill_round_rect(
+                Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3),
+                1,
+                t.accent,
+            );
+        }
+        let ink = if self.open { t.text } else { t.text_dim };
+        let (x0, x1) = (b.x + 10, b.right() - 10);
+        // In: an arrow pointing right; out: one pointing left, under it.
+        for (y, right) in [(b.y + 15, true), (b.y + b.h - 17, false)] {
+            cx.canvas.fill_rect(Rect::new(x0, y, x1 - x0, 2), ink);
+            for k in 0..5 {
+                let h = 2 + 2 * (4 - k);
+                let x = if right { x1 - 5 + k } else { x0 + 4 - k };
+                cx.canvas.fill_rect(Rect::new(x, y + 1 - h / 2, 1, h), ink);
+            }
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
+        (phase == Touch::Down).then_some(EventKind::Tab(0))
     }
 }
 
@@ -1354,6 +2194,10 @@ fn strip_meters(st: &MixState) -> MixState {
     let clear = |v: &mut StripView| {
         v.peak = [0.0; 2];
         v.cost_pct = None;
+        // A take's progress is drawn like a meter; its start and end are not.
+        if let Some(TakeView { done: Some(d), .. }) = v.take.as_mut() {
+            *d = 0.0;
+        }
         for i in &mut v.inserts {
             i.cost_pct = None;
         }
@@ -1421,7 +2265,11 @@ impl Widget for MixerView {
         if !clip.intersect(l.master).is_empty() {
             self.paint_strip(cx, &self.state.master, l.master);
         }
-        if self.state.strips.is_empty() {
+        if self.state.view == MixView::Io {
+            if !clip.intersect(l.strips).is_empty() {
+                self.paint_io(cx, &l);
+            }
+        } else if self.state.strips.is_empty() {
             let t = cx.theme.clone();
             let msg = match self.state.view {
                 MixView::Pads => "No pad channels: every pad plays in its kit's track",
@@ -1440,25 +2288,36 @@ impl Widget for MixerView {
         if let Some(s) = self.picker {
             self.paint_picker(cx, &l, s);
         }
+        if let Some(s) = self.menu {
+            self.paint_menu(cx, &l, s);
+        }
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
+        let changed_before = self.io_changed.len();
         match phase {
             Touch::Down => self.down(finger, x, y, r),
-            Touch::Move => self.drag(finger, x, y),
-            Touch::Up => self.lift(finger, false),
-            Touch::Cancel => self.lift(finger, true),
+            Touch::Move => self.drag(finger, x, y, r),
+            Touch::Up => self.lift(finger, false, x, y, r),
+            Touch::Cancel => self.lift(finger, true, x, y, r),
         }
+        self.sync_shown();
         // Paging, the picker and the copy under the finger all show at once.
         self.mark(Dirty::All);
-        (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
+        (self.actions.len() > before || changed_before < self.io_changed.len())
+            .then_some(EventKind::Select(self.actions.len()))
     }
 
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         match self.dirty.get() {
             Dirty::Clean => Some(Vec::new()),
             Dirty::Meters => Some(self.meter_parts(r)),
+            Dirty::Panel => {
+                let mut v = self.meter_parts(r);
+                v.push(self.io_panel(&layout(r)));
+                Some(v)
+            }
             Dirty::All => None,
         }
     }
@@ -1467,7 +2326,7 @@ impl Widget for MixerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{default_name, InsertView, SendView};
+    use crate::state::{default_name, InsertView, SendView, TakeView};
     use mpfree_fx::RETURNS;
     use mpfree_ui::{Fonts, SoftCanvas, Ui};
 
@@ -1766,11 +2625,140 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_strips_name_opens_its_menu_for_freeze_and_print() {
+        let mut ui = ui(state(12));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let (x, y) = mid(strip_parts(&ui, 0).name);
+        let tap = |ui: &mut Ui, x: i32, y: i32| {
+            ui.touch(1, Touch::Down, x, y);
+            ui.touch(1, Touch::Up, x, y);
+        };
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Track(0))],
+            "the first tap selects"
+        );
+        tap(&mut ui, x, y);
+        assert_eq!(
+            ui.get::<MixerView>(crate::MIXER).unwrap().menu(),
+            None,
+            "no menu until the app offers takes"
+        );
+        let mut on = state(12);
+        on.selected = Some(StripId::Track(0));
+        on.takes = true;
+        crate::update(&mut ui, on);
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert_eq!(
+            v.menu(),
+            Some(StripId::Track(0)),
+            "then the second tap opens the menu"
+        );
+        assert!(v.menu_button(r, StripMenu::Thaw).is_none());
+        let b = v.menu_button(r, StripMenu::Freeze).unwrap();
+        assert!(v.menu_button(r, StripMenu::Print).is_some());
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Freeze(StripId::Track(0))]
+        );
+        assert_eq!(ui.get::<MixerView>(crate::MIXER).unwrap().menu(), None);
+
+        // Under way: only Cancel. Frozen: Thaw and Print.
+        let mut st = state(12);
+        st.selected = Some(StripId::Track(0));
+        st.takes = true;
+        st.strips[0].take = Some(TakeView {
+            print: false,
+            done: Some(0.4),
+        });
+        crate::update(&mut ui, st.clone());
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert!(v.menu_button(r, StripMenu::Freeze).is_none());
+        let b = v.menu_button(r, StripMenu::Cancel).unwrap();
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::CancelTake(StripId::Track(0))]
+        );
+        st.strips[0].take = None;
+        st.strips[0].frozen = true;
+        crate::update(&mut ui, st);
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        let b = v.menu_button(r, StripMenu::Thaw).unwrap();
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Thaw(StripId::Track(0))]
+        );
+
+        // The master prints but does not freeze; a tap outside closes.
+        let l = layout(r);
+        let mp = parts(l.master);
+        let (mx_, my_) = mid(mp.name);
+        tap(&mut ui, mx_, my_);
+        tap(&mut ui, mx_, my_);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert_eq!(v.menu(), Some(StripId::Master));
+        assert!(v.menu_button(r, StripMenu::Freeze).is_none());
+        let b = v.menu_button(r, StripMenu::Print).unwrap();
+        let _ = b;
+        tap(&mut ui, r.x + 4, r.bottom() - 4);
+        assert_eq!(ui.get::<MixerView>(crate::MIXER).unwrap().menu(), None);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Master)]
+        );
+    }
+
+    #[test]
+    fn a_takes_progress_redraws_like_a_meter() {
+        let mut st = state(12);
+        st.strips[2].take = Some(TakeView {
+            print: true,
+            done: Some(0.1),
+        });
+        let mut ui = ui(st.clone());
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        st.strips[2].take = Some(TakeView {
+            print: true,
+            done: Some(0.6),
+        });
+        crate::update(&mut ui, st.clone());
+        let damage = ui.paint(&mut c);
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let area: i64 = damage.iter().map(|d| i64::from(d.w) * i64::from(d.h)).sum();
+        assert!(area > 0 && area < i64::from(r.w) * i64::from(r.h) / 3);
+        st.strips[2].take = None;
+        st.strips[2].frozen = true;
+        crate::update(&mut ui, st);
+        assert_eq!(
+            ui.paint(&mut c),
+            vec![r],
+            "the end of a take redraws the panel"
+        );
+    }
+
+    #[test]
     fn every_view_paints() {
         let mut st = state(16);
         st.cost_pct = Some(0.8);
         st.selected = Some(StripId::Track(1));
         st.strips[2].audible = false;
+        st.strips[3].frozen = true;
+        st.strips[4].take = Some(TakeView {
+            print: false,
+            done: None,
+        });
+        st.master.take = Some(TakeView {
+            print: true,
+            done: Some(0.5),
+        });
         st.strips[0].inserts.extend((0..5).map(|i| InsertView {
             name: format!("Fx {i}"),
             on: i % 2 == 0,
@@ -1797,5 +2785,342 @@ mod tests {
             },
         );
         ui.paint(&mut c);
+    }
+}
+
+#[cfg(test)]
+mod io_tests {
+    use super::*;
+    use crate::io::{IoInput, IoKnob, IoReply, IoSection};
+    use crate::state::default_name;
+    use mpfree_ui::{Fonts, SoftCanvas, Ui};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// What the test section saw.
+    #[derive(Default)]
+    struct Seen {
+        touches: Vec<(u64, Touch)>,
+        inputs: Vec<IoInput>,
+        shown: Vec<bool>,
+        ticks: usize,
+        detail: bool,
+        painted: Option<Rect>,
+        turns: Vec<(usize, i32)>,
+    }
+
+    struct Probe(Arc<Mutex<Seen>>);
+
+    impl IoSection for Probe {
+        fn label(&self) -> &str {
+            "MIDI"
+        }
+        fn paint(&self, _cx: &mut PaintCx, r: Rect) {
+            self.0.lock().unwrap().painted = Some(r);
+        }
+        fn touch(&mut self, finger: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> IoReply {
+            let mut s = self.0.lock().unwrap();
+            s.touches.push((finger, phase));
+            if phase == Touch::Down {
+                s.detail = true;
+            }
+            if phase == Touch::Up {
+                IoReply::Redraw
+            } else {
+                IoReply::Handled
+            }
+        }
+        fn input(&mut self, ev: IoInput) -> IoReply {
+            self.0.lock().unwrap().inputs.push(ev);
+            IoReply::Redraw
+        }
+        fn tick(&mut self, _now: Duration) -> IoReply {
+            self.0.lock().unwrap().ticks += 1;
+            IoReply::Redraw
+        }
+        fn shown(&mut self, on: bool) {
+            self.0.lock().unwrap().shown.push(on);
+        }
+        fn back(&mut self) -> bool {
+            std::mem::take(&mut self.0.lock().unwrap().detail)
+        }
+        fn hint(&self) -> Option<&str> {
+            Some("Tap a port")
+        }
+        fn qlinks(&self) -> Option<[IoKnob; 4]> {
+            Some(std::array::from_fn(|i| IoKnob {
+                label: format!("K{i}"),
+                text: String::new(),
+                pos: 0.0,
+                enabled: true,
+            }))
+        }
+        fn qlink_turn(&mut self, knob: usize, detents: i32, _fine: bool) -> IoReply {
+            self.0.lock().unwrap().turns.push((knob, detents));
+            IoReply::Redraw
+        }
+    }
+
+    /// The I/O view's strips: two inputs, 14 tracks, 8 submixes.
+    fn io_state() -> MixState {
+        let ids = (0..2)
+            .map(StripId::Input)
+            .chain((0..14).map(StripId::Track))
+            .chain((0..BUSES).map(StripId::Bus));
+        MixState {
+            view: MixView::Io,
+            strips: ids.map(|s| StripView::new(s, default_name(s))).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn ui(st: MixState) -> Ui {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        crate::add(&mut ui).unwrap();
+        crate::update(&mut ui, st);
+        ui.show(crate::MIXER_PAGE).unwrap();
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        ui
+    }
+
+    fn tap(ui: &mut Ui, (x, y): (i32, i32)) {
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Up, x, y);
+    }
+
+    fn mid(r: Rect) -> (i32, i32) {
+        (r.x + r.w / 2, r.y + r.h / 2)
+    }
+
+    fn view(ui: &Ui) -> &MixerView {
+        ui.get::<MixerView>(crate::MIXER).unwrap()
+    }
+
+    /// The layout's parts: the section list and the Audio rows.
+    fn areas(ui: &Ui, n: usize) -> (io::IoLayout, Vec<(usize, Rect)>) {
+        let l = layout(ui.rect_of(crate::MIXER).unwrap());
+        let il = io::io_layout(l.strips, n);
+        let rows = view(ui).io_rows(il.panel);
+        (il, rows)
+    }
+
+    #[test]
+    fn the_io_chip_opens_the_io_view() {
+        let mut ui = ui(MixState::default());
+        let l = layout(ui.rect_of(crate::MIXER).unwrap());
+        assert!(
+            l.chips[4].right() < l.cost.x,
+            "the chips clear the head's right side"
+        );
+        // Beside the app's Q-Link column the panel is about 1088 wide.
+        for w in [1280, 1088, 1040] {
+            let l = layout(Rect::new(0, 60, w, 714));
+            assert!(l.chips[4].right() < l.cost.x, "{w}: clear of the cost chip");
+            assert!(l.chips[3].right() < l.chips[4].x, "{w}");
+        }
+        tap(&mut ui, mid(l.chips[4]));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::View(MixView::Io)]
+        );
+    }
+
+    #[test]
+    fn audio_rows_select_pick_outputs_and_cycle_an_inputs_source() {
+        let mut ui = ui(io_state());
+        let (_, rows) = areas(&ui, 1);
+        assert_eq!(rows.len(), 13, "rows on the 800-pixel screen");
+        // A tap on a row selects its strip.
+        let p = io::row_parts(rows[3].1);
+        tap(&mut ui, mid(p.name));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Track(1))]
+        );
+        // Its output opens the picker; a choice sets it.
+        tap(&mut ui, mid(p.output));
+        assert_eq!(view(&ui).picker(), Some(StripId::Track(1)));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let b = view(&ui)
+            .picker_button(r, (output::bus(2) as u8, 0))
+            .unwrap();
+        tap(&mut ui, mid(b));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Set {
+                strip: StripId::Track(1),
+                id: mx::OUTPUT,
+                value: output::bus(2)
+            }]
+        );
+        assert_eq!(view(&ui).state().strips[3].output_label(), "Sub 3");
+        // An input's Source and Monitor cycle.
+        let p = io::row_parts(rows[0].1);
+        tap(&mut ui, mid(p.source));
+        tap(&mut ui, mid(p.monitor));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![
+                MixAction::Set {
+                    strip: StripId::Input(0),
+                    id: mx::SOURCE,
+                    value: 2.0
+                },
+                MixAction::Set {
+                    strip: StripId::Input(0),
+                    id: mx::MONITOR,
+                    value: 0.0
+                },
+            ]
+        );
+        // A track's row has no Source: the tap there selects it.
+        let p = io::row_parts(rows[5].1);
+        tap(&mut ui, mid(p.source));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Track(3))]
+        );
+    }
+
+    #[test]
+    fn the_wheel_moves_the_selection_and_minus_plus_step_its_output() {
+        let mut ui = ui(io_state());
+        assert_eq!(crate::io_input(&mut ui, IoInput::Wheel(1)), IoReply::Redraw);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Input(0))]
+        );
+        // On down the list, past the first page: the page follows.
+        crate::io_input(&mut ui, IoInput::Wheel(20));
+        assert_eq!(view(&ui).state().selected, Some(StripId::Bus(4)));
+        assert_eq!(view(&ui).io.top, 13);
+        crate::io_input(&mut ui, IoInput::Wheel(100));
+        assert_eq!(view(&ui).state().selected, Some(StripId::Bus(7)));
+        let _ = crate::take_actions(&mut ui);
+        // Sub 8's choices: Master, then None (no later submix).
+        assert_eq!(crate::io_input(&mut ui, IoInput::Step(1)), IoReply::Redraw);
+        assert_eq!(view(&ui).state().strips[23].output_label(), "None");
+        assert_eq!(crate::io_input(&mut ui, IoInput::Step(1)), IoReply::Handled);
+        crate::io_input(&mut ui, IoInput::Step(-1));
+        assert_eq!(view(&ui).state().strips[23].output_label(), "Master");
+        assert_eq!(crate::take_actions(&mut ui).len(), 2);
+        // An input steps into the tracks.
+        crate::io_input(&mut ui, IoInput::Wheel(-100));
+        let _ = crate::take_actions(&mut ui);
+        for _ in 0..9 {
+            crate::io_input(&mut ui, IoInput::Step(1));
+        }
+        assert_eq!(view(&ui).state().strips[0].output_label(), "Track 1");
+        // The page arrows.
+        crate::io_input(&mut ui, IoInput::Page(1));
+        assert_eq!(view(&ui).io.top, 13);
+        crate::io_input(&mut ui, IoInput::Page(1));
+        assert_eq!(view(&ui).io.top, 13, "no page past the end");
+        // Away from the I/O view, the wheel is not the mixer's.
+        crate::update(&mut ui, MixState::default());
+        assert_eq!(
+            crate::io_input(&mut ui, IoInput::Wheel(1)),
+            IoReply::Ignored
+        );
+    }
+
+    #[test]
+    fn an_outside_section_gets_its_area_fingers_keys_ticks_and_back() {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let mut ui = ui(io_state());
+        crate::add_io_section(&mut ui, Box::new(Probe(seen.clone())));
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let (il, _) = areas(&ui, 2);
+        assert_eq!(il.list.len(), 2);
+        // Not showing: nothing reaches it.
+        assert!(!crate::io_tick(&mut ui, Duration::ZERO));
+        assert!(crate::io_qlinks(&ui).is_none());
+        // Picked by the app (the tempo chip opens Sync), then back to Audio.
+        assert!(crate::io_select(&mut ui, 1));
+        assert_eq!(view(&ui).io_section(), 1);
+        assert_eq!(crate::io_hint(&ui).as_deref(), Some("Tap a port"));
+        assert!(crate::io_select(&mut ui, 0));
+        assert_eq!(crate::io_hint(&ui).as_deref(), Some(crate::MIXER_HINT_IO));
+        assert!(!crate::io_select(&mut ui, 2), "no such section");
+        assert_eq!(seen.lock().unwrap().shown, vec![true, false]);
+        seen.lock().unwrap().shown.clear();
+        tap(&mut ui, mid(il.list[1]));
+        assert_eq!(view(&ui).io_section(), 1);
+        assert_eq!(seen.lock().unwrap().shown, vec![true]);
+        ui.paint(&mut c);
+        assert_eq!(seen.lock().unwrap().painted, Some(il.panel));
+        // A finger down in its area comes back to it until it lifts, even
+        // over the master.
+        let (x, y) = mid(il.panel);
+        let master = layout(ui.rect_of(crate::MIXER).unwrap()).master;
+        assert!(ui.touch(7, Touch::Down, x, y).is_none());
+        ui.touch(7, Touch::Move, master.x + 20, master.y + 200);
+        assert!(ui
+            .touch(7, Touch::Up, master.x + 20, master.y + 200)
+            .is_some());
+        assert_eq!(
+            seen.lock().unwrap().touches,
+            vec![(7, Touch::Down), (7, Touch::Move), (7, Touch::Up)]
+        );
+        assert_eq!(crate::take_io_changes(&mut ui), vec![0]);
+        assert!(crate::take_actions(&mut ui).is_empty());
+        // Keys, ticks and the Q-Links.
+        crate::io_input(&mut ui, IoInput::Wheel(2));
+        let l = layout(ui.rect_of(crate::MIXER).unwrap());
+        tap(&mut ui, mid(l.next));
+        assert_eq!(
+            seen.lock().unwrap().inputs,
+            vec![IoInput::Wheel(2), IoInput::Page(1)]
+        );
+        ui.paint(&mut c);
+        assert!(crate::io_tick(&mut ui, Duration::from_millis(16)));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let parts = view(&ui).changed_parts(r).unwrap();
+        assert!(parts.contains(&il.panel), "a tick redraws only the panel");
+        assert_eq!(crate::io_qlinks(&ui).unwrap()[2].label, "K2");
+        crate::io_qlink_turn(&mut ui, 2, -3, false);
+        assert_eq!(seen.lock().unwrap().turns, vec![(2, -3)]);
+        // The wheel, the page arrow and the Q-Link each named it too.
+        assert_eq!(crate::take_io_changes(&mut ui), vec![0, 0, 0]);
+        // Back closes its detail once, then lets Back go on.
+        assert!(crate::io_back(&mut ui));
+        assert!(!crate::io_back(&mut ui));
+        // Another view hides it.
+        crate::update(&mut ui, MixState::default());
+        assert_eq!(crate::io_hint(&ui), None);
+        assert_eq!(seen.lock().unwrap().shown, vec![true, false]);
+        assert_eq!(seen.lock().unwrap().ticks, 1);
+    }
+
+    #[test]
+    fn the_io_view_paints_with_and_without_sections() {
+        let mut ui = ui(io_state());
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        crate::update(
+            &mut ui,
+            MixState {
+                view: MixView::Io,
+                ..Default::default()
+            },
+        );
+        ui.paint(&mut c);
+        crate::add_io_section(&mut ui, Box::new(Probe(Default::default())));
+        ui.get_mut::<MixerView>(crate::MIXER)
+            .unwrap()
+            .show_io_section(1);
+        ui.paint(&mut c);
+        let mut icon = IoIcon { open: true };
+        let mut cx_ui = Ui::new(Theme::dark(), Fonts::embedded(), 64, 64);
+        cx_ui.add("io", icon);
+        cx_ui.add_page("p", "col(io:*)").unwrap();
+        cx_ui.show("p").unwrap();
+        cx_ui.paint(&mut SoftCanvas::new(64, 64));
+        assert_eq!(
+            icon.touch(1, Touch::Down, 0, 0, Rect::new(0, 0, 64, 64)),
+            Some(EventKind::Tab(0))
+        );
     }
 }

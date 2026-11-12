@@ -26,12 +26,18 @@
 //!   with the same name are told apart by comparing their bytes.
 //! - **Earlier saves are kept** ([`Library::versions`]), the newest
 //!   `keep` of them, so going back is one tap.
+//! - **Sounds an engine made** (a recording in RAM, a resample) come with
+//!   the save as [`NewSample`]s, named by the engine for their content
+//!   ([`Library::save_project_with`]). Each one the project's `samples/`
+//!   doesn't have yet is written whole before any part is, so a part never
+//!   names a sound that isn't there; one it has already is left as it is.
 
 use crate::{name::valid_name, Library, Loc, Place, PROJECT_FILE};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The first line of `project.txt`.
 pub const FORMAT: &str = "mpfree-project 1";
@@ -65,6 +71,72 @@ pub fn valid_owner(s: &str) -> bool {
         && !s.starts_with('.')
         && s.bytes()
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+}
+
+/// How a sound an engine holds is written out (the sampler's WAV writer).
+pub trait SampleData: Send + Sync {
+    fn write_to(&self, out: &mut dyn Write) -> io::Result<()>;
+}
+
+/// Any `Fn(&mut dyn Write)` writes a sound: the app wraps the sampler's
+/// WAV writer in one (`move |w: &mut dyn Write| wav::write(&sound, w)`).
+impl<F> SampleData for F
+where
+    F: Fn(&mut dyn Write) -> io::Result<()> + Send + Sync,
+{
+    fn write_to(&self, out: &mut dyn Write) -> io::Result<()> {
+        self(out)
+    }
+}
+
+/// A sound to keep in a project's `samples/` with a save.
+#[derive(Clone)]
+pub struct NewSample {
+    /// Its file name there, given by the engine and the same for the same
+    /// sound (the sampler names it by the sound's id), so a file already
+    /// there is this sound and is not written again.
+    pub file: String,
+    pub data: Arc<dyn SampleData>,
+}
+
+impl NewSample {
+    pub fn new(file: impl Into<String>, data: Arc<dyn SampleData>) -> NewSample {
+        NewSample {
+            file: file.into(),
+            data,
+        }
+    }
+}
+
+impl std::fmt::Debug for NewSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NewSample({:?})", self.file)
+    }
+}
+
+impl PartialEq for NewSample {
+    fn eq(&self, o: &NewSample) -> bool {
+        self.file == o.file && std::ptr::addr_eq(Arc::as_ptr(&self.data), Arc::as_ptr(&o.data))
+    }
+}
+
+/// A file being written that may grow no bigger than [`crate::MAX_FILE`].
+struct Capped<'a> {
+    f: &'a mut File,
+    n: u64,
+}
+
+impl Write for Capped<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.n += b.len() as u64;
+        if self.n > crate::MAX_FILE {
+            return Err(bad(io::ErrorKind::InvalidInput, "sample too big"));
+        }
+        self.f.write(b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.f.flush()
+    }
 }
 
 /// What `project.txt` says.
@@ -312,7 +384,29 @@ impl Library {
     /// Saves a project: makes its folder the first time, then saves
     /// whole or not at all, keeping the newest `keep` earlier saves.
     pub fn save_project(&self, project: &Loc, snap: &Snapshot, keep: usize) -> io::Result<()> {
+        self.save_project_with(project, snap, keep, &[])
+    }
+
+    /// [`Library::save_project`], first writing each of `samples` the
+    /// project's `samples/` doesn't have yet (whole: a `.part` file,
+    /// synced, renamed). If one can't be written, nothing of the save is:
+    /// the last save stands.
+    pub fn save_project_with(
+        &self,
+        project: &Loc,
+        snap: &Snapshot,
+        keep: usize,
+        samples: &[NewSample],
+    ) -> io::Result<()> {
         let dir = self.project_dir(project)?;
+        for s in samples {
+            if !valid_name(&s.file) {
+                return Err(bad(
+                    io::ErrorKind::InvalidInput,
+                    format!("bad sample name {:?}", s.file),
+                ));
+            }
+        }
         if snap.parts.len() > MAX_PARTS {
             return Err(bad(io::ErrorKind::InvalidInput, "too many parts"));
         }
@@ -338,6 +432,8 @@ impl Library {
                 fs::create_dir(dir.join(sub))?;
             }
         }
+        // 0. The sounds the parts name that aren't there yet.
+        put_samples(&dir.join(SAMPLES), samples)?;
         // 1. The new parts, whole, in a hidden folder.
         let new = dir.join(NEW_PARTS);
         if real_dir(&new) {
@@ -543,6 +639,50 @@ impl Library {
             )),
         }
     }
+}
+
+/// Writes each of `samples` that `dir` doesn't hold yet.
+fn put_samples(dir: &Path, samples: &[NewSample]) -> io::Result<()> {
+    let tmp = dir.join(format!(".incoming-{}.part", std::process::id()));
+    let mut wrote = false;
+    for s in samples {
+        let dst = dir.join(&s.file);
+        match fs::symlink_metadata(&dst) {
+            Ok(m) if m.is_file() => continue,
+            Ok(_) => {
+                return Err(bad(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} is not a file", s.file),
+                ))
+            }
+            Err(_) => {}
+        }
+        let r = (|| {
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o644)
+                .custom_flags(0x20000) // O_NOFOLLOW
+                .open(&tmp)?;
+            {
+                let mut w = io::BufWriter::with_capacity(256 * 1024, Capped { f: &mut f, n: 0 });
+                s.data.write_to(&mut w)?;
+                w.flush()?;
+            }
+            f.sync_all()?;
+            fs::rename(&tmp, &dst)
+        })();
+        if r.is_err() {
+            let _ = fs::remove_file(&tmp);
+            return r;
+        }
+        wrote = true;
+    }
+    if wrote {
+        sync_dir(dir)?;
+    }
+    Ok(())
 }
 
 fn read_snapshot(dir: &Path) -> io::Result<Snapshot> {
@@ -799,5 +939,136 @@ mod tests {
         lib.new_folder(&Loc::top(Place::Projects), "Project 2026-11-11 21.04")
             .unwrap();
         assert_eq!(lib.new_project_name(t), "Project 2026-11-11 21.04 2");
+    }
+
+    /// A sound that writes `bytes`, counting how often it is written, or
+    /// fails partway.
+    struct Sound {
+        bytes: Vec<u8>,
+        fail: bool,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SampleData for Sound {
+        fn write_to(&self, out: &mut dyn Write) -> io::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.write_all(&self.bytes[..self.bytes.len() / 2])?;
+            if self.fail {
+                return Err(io::Error::other("the disk is full"));
+            }
+            out.write_all(&self.bytes[self.bytes.len() / 2..])
+        }
+    }
+
+    fn sound(bytes: &[u8], fail: bool) -> Arc<Sound> {
+        Arc::new(Sound {
+            bytes: bytes.to_vec(),
+            fail,
+            writes: Default::default(),
+        })
+    }
+
+    fn writes(s: &Sound) -> usize {
+        s.writes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[test]
+    fn sounds_an_engine_made_are_written_with_the_save_once() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let take = sound(b"RIFF a take", false);
+        let kick = sound(b"RIFF a kick", false);
+        let snap = |t: u64| Snapshot {
+            meta: meta("Song", t),
+            parts: vec![("sampler".into(), "pad 1 = take.wav".into())],
+        };
+        let new = |f: &str, s: &Arc<Sound>| NewSample::new(f, s.clone() as Arc<dyn SampleData>);
+        // The first save makes the folder, the sound and the part.
+        lib.save_project_with(&p, &snap(1), 10, &[new("take.wav", &take)])
+            .unwrap();
+        let path = lib.sample_path(&p, "take.wav").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"RIFF a take");
+        // Saved again with another sound: only the new one is written.
+        lib.save_project_with(
+            &p,
+            &snap(2),
+            10,
+            &[new("take.wav", &take), new("kick.wav", &kick)],
+        )
+        .unwrap();
+        assert_eq!((writes(&take), writes(&kick)), (1, 1));
+        assert_eq!(
+            fs::read(lib.sample_path(&p, "kick.wav").unwrap()).unwrap(),
+            b"RIFF a kick"
+        );
+        // Nothing half written is left about.
+        let names: Vec<String> = fs::read_dir(lib.root().join("Projects/Song/samples"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        // The worker's save job does the same.
+        let hat = sound(b"RIFF a hat", false);
+        crate::worker::run(
+            &lib,
+            crate::Job::SaveProject {
+                project: p.clone(),
+                snap: snap(3),
+                keep: 10,
+                samples: vec![new("hat.wav", &hat), new("take.wav", &take)],
+            },
+        )
+        .unwrap();
+        assert_eq!((writes(&hat), writes(&take)), (1, 1));
+        assert!(lib.sample_path(&p, "hat.wav").is_ok());
+        // A closure writes one too.
+        let bytes = b"RIFF a closure".to_vec();
+        let f = NewSample::new(
+            "closure.wav",
+            Arc::new(move |w: &mut dyn Write| w.write_all(&bytes)),
+        );
+        lib.save_project_with(&p, &snap(4), 10, &[f]).unwrap();
+        assert_eq!(
+            fs::read(lib.sample_path(&p, "closure.wav").unwrap()).unwrap(),
+            b"RIFF a closure"
+        );
+    }
+
+    #[test]
+    fn a_sound_that_cannot_be_written_leaves_the_last_save_standing() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let ok = Snapshot {
+            meta: meta("Song", 1),
+            parts: vec![("sampler".into(), "first".into())],
+        };
+        lib.save_project(&p, &ok, 10).unwrap();
+        let broken = sound(b"RIFF half of it", true);
+        let snap = Snapshot {
+            meta: meta("Song", 2),
+            parts: vec![("sampler".into(), "names broken.wav".into())],
+        };
+        let e = lib
+            .save_project_with(&p, &snap, 10, &[NewSample::new("broken.wav", broken)])
+            .unwrap_err();
+        assert!(e.to_string().contains("the disk is full"), "{e}");
+        assert_eq!(lib.open_project(&p).unwrap().part("sampler"), Some("first"));
+        assert!(lib.sample_path(&p, "broken.wav").is_err());
+        assert_eq!(
+            fs::read_dir(lib.root().join("Projects/Song/samples"))
+                .unwrap()
+                .count(),
+            0,
+            "no part file left"
+        );
+        // A name that could leave the folder is refused before anything.
+        for bad in ["../x.wav", ".hidden.wav", "a/b.wav", "x.wav.part", ""] {
+            let s = NewSample::new(bad, sound(b"x", false) as Arc<dyn SampleData>);
+            assert!(lib.save_project_with(&p, &snap, 10, &[s]).is_err(), "{bad}");
+        }
+        assert_eq!(lib.open_project(&p).unwrap().part("sampler"), Some("first"));
     }
 }

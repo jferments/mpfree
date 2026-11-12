@@ -14,24 +14,42 @@
 //!   or on the next bar line; it ends on **Stop**, on silence, or after a
 //!   number of bars (exactly on the bar line when it started on one). A
 //!   take still waiting for its start is cancelled by Stop.
+//! - After its bars a take is cut, **rings out** until it has been under
+//!   -60 dB for the Silence time (at most 20 s more: a one-shot with its
+//!   reverb), or **loops**, exactly its bars long and without a seam
+//!   (Print N bars to a pad): music already going round when it started
+//!   is cut on the bar line (its start holds the ringing of the time
+//!   before); music that started with it is let ring, and the ringing is
+//!   folded onto its start, or, if the music is still going a whole length
+//!   on, that second time round is kept. Takes of whole bars land warped
+//!   at the project tempo, so they follow it.
 //! - **Skip back** keeps what already came in: the last 5 to 60 seconds,
 //!   or the last 1 to 8 whole bars, cut on the bar lines.
 //! - Either way the sound goes onto the next empty pad from the pad picked
 //!   (or onto the pad picked, replacing its sound), as one undo step, and
 //!   the editor picks that pad.
+//! - **Flatten** resamples the pad picked as it plays: the app records the
+//!   pad's own channel, plays the pad once at the Flatten velocity, lets
+//!   go after the Flatten hold, and keeps the sound until it has been
+//!   silent (under -60 dB) for the Silence time. Its layers, envelopes,
+//!   filter, warp and pan are in the one sound; onto the next empty pad
+//!   its channel's insert effects are too (onto the pad itself they are
+//!   left out, as the channel will play them again).
 //! - **Auto-sample** opens the mode that plays the synth on the pads note
 //!   by note and makes a keygroup instrument of it ([`crate::auto_tab`]).
 //! - The **Record** list holds the settings: which channels (both, left,
 //!   right, or both mixed to mono), how a take starts and ends, the
-//!   threshold, pre-roll, length and silence, how far Skip back goes, and
-//!   which pad a take goes onto. A tap on a row picks it and its arrows
+//!   threshold, pre-roll, length, tail and silence, how far Skip back goes,
+//!   which pad a take goes onto, and how Flatten plays the pad. A tap on a row picks it and its arrows
 //!   step it; the **wheel** steps the row picked.
 //!
 //! The settings live in the tab ([`RecTab::settings`]); the app makes the
 //! [`Recording`] from them on [`RecAction::Record`], polls it, and puts the
 //! sound on the pad. The tab only reads the sampler's [`Input`].
 
-use mpfree_sampler::record::{End, Input, Pick, Progress, Recording, Start, BAR_LINES};
+use mpfree_sampler::record::{
+    End, Input, Pick, Progress, Recording, RingOut, Start, Tail, BAR_LINES,
+};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
@@ -56,11 +74,26 @@ pub const LAYOUT: &str = "col(header:60, smp-rec-bar:60, \
 pub const TAB: usize = 7;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Record, or keep what just came in with Skip back · tap a row, then the wheel changes it · UNDO \
-                        takes a take off its pad again";
+pub const HINT: &str =
+    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · tap a \
+                        row, then the wheel changes it · UNDO takes a take off its pad again";
 
-/// The third button: the Auto-sample mode.
+/// The third button: resample the pad picked.
+pub const FLATTEN_LABEL: &str = "Flatten";
+
+/// The fourth button: the Auto-sample mode.
 pub const AUTO_LABEL: &str = "Auto-sample";
+
+/// Flatten's level for silence: under it for the Silence time, the sound
+/// has ended (and a sound starts when it goes over it).
+pub const FLATTEN_SILENCE_DB: f32 = -60.0;
+
+/// A take that rings out after its bars ends under this, as a Flatten's
+/// sound does, after the Silence time.
+pub const TAIL_SILENCE_DB: f32 = FLATTEN_SILENCE_DB;
+
+/// The longest a take rings on after its bars.
+pub const TAIL_MAX_SECONDS: u32 = 20;
 
 /// What the picture says while the line input is off (and is the source).
 pub const OFF_NOTE: &str =
@@ -80,6 +113,8 @@ const THRESHOLDS_DB: [f32; 15] = [
 const PRE_ROLLS_MS: [u32; 8] = [0, 5, 10, 20, 50, 100, 200, 500];
 const LENGTHS_BARS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SILENCES_MS: [u32; 5] = [250, 500, 1000, 2000, 4000];
+const VELOCITIES: [u8; 9] = [16, 32, 48, 64, 80, 96, 110, 120, 127];
+const HOLDS_MS: [u32; 7] = [100, 250, 500, 1000, 2000, 4000, 8000];
 const SKIPS: [Skip; 9] = [
     Skip::Seconds(5),
     Skip::Seconds(10),
@@ -106,6 +141,17 @@ pub enum EndAt {
     Press,
     Silence,
     Length,
+}
+
+/// What a take of a length does after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TailAt {
+    /// It ends on the bar line.
+    Cut,
+    /// It rings out until silent: a one-shot.
+    Ring,
+    /// It is made a loop of exactly its bars, without a seam.
+    Loop,
 }
 
 /// How far Skip back goes.
@@ -147,9 +193,16 @@ pub struct RecSettings {
     pub pre_roll_ms: u32,
     pub end: EndAt,
     pub bars: u32,
+    /// After a length: cut, ring out or loop.
+    pub tail: TailAt,
     pub silence_ms: u32,
     pub skip: Skip,
     pub onto: Onto,
+    /// Flatten plays the pad at this velocity and lets it go after this
+    /// long (a gated or looping sound plays that long; a one-shot plays
+    /// out).
+    pub flatten_velocity: u8,
+    pub flatten_hold_ms: u32,
 }
 
 impl Default for RecSettings {
@@ -162,9 +215,12 @@ impl Default for RecSettings {
             pre_roll_ms: 20,
             end: EndAt::Press,
             bars: 4,
+            tail: TailAt::Cut,
             silence_ms: 1000,
             skip: Skip::Seconds(10),
             onto: Onto::NextEmpty,
+            flatten_velocity: 127,
+            flatten_hold_ms: 1000,
         }
     }
 }
@@ -207,12 +263,56 @@ impl RecSettings {
         }
     }
 
+    /// What a take does after its length: silent is under
+    /// [`TAIL_SILENCE_DB`] for the Silence time, and ringing out stops
+    /// [`TAIL_MAX_SECONDS`] on at most. Other ends have no tail.
+    pub fn tail_at(&self, rate: u32) -> Tail {
+        let level = 10f32.powf(TAIL_SILENCE_DB / 20.0);
+        let quiet = ms_frames(self.silence_ms, rate);
+        match (self.end, self.tail) {
+            (EndAt::Length, TailAt::Ring) => Tail::Ring(RingOut {
+                level,
+                quiet,
+                max: u64::from(TAIL_MAX_SECONDS) * u64::from(rate),
+            }),
+            (EndAt::Length, TailAt::Loop) => Tail::Loop { level, quiet },
+            _ => Tail::Cut,
+        }
+    }
+
+    /// Whether a take with these settings is whole bars at the tempo (it
+    /// lands warped at it).
+    pub fn in_bars(&self) -> bool {
+        self.end == EndAt::Length
+    }
+
+    /// The recording Flatten makes: from the sound's first frame over
+    /// [`FLATTEN_SILENCE_DB`] (with 2 ms before it) until it has been
+    /// under it for the Silence time, at most the hold and 20 s more.
+    pub fn flatten_recording(&self, input: &Input) -> Recording {
+        let level = 10f32.powf(FLATTEN_SILENCE_DB / 20.0);
+        let rate = input.rate;
+        Recording::new(
+            input,
+            Start::Threshold {
+                level,
+                pre_roll: ms_frames(2, rate),
+            },
+            End::Silence {
+                level,
+                frames: ms_frames(self.silence_ms, rate),
+            },
+            ms_frames(self.flatten_hold_ms + 20_000, rate),
+        )
+    }
+
     /// A recording asked for now with these settings.
     pub fn recording(&self, input: &Input, bar_frames: f64) -> Recording {
-        Recording::new(
+        Recording::with_tail(
             input,
             self.start_at(input.rate),
             self.end_at(input.rate, bar_frames),
+            self.tail_at(input.rate),
             u64::from(MAX_TAKE_SECONDS) * u64::from(input.rate),
         )
     }
@@ -228,13 +328,16 @@ pub enum Row {
     PreRoll,
     End,
     Length,
+    Tail,
     Silence,
     SkipBack,
     Onto,
+    FlattenVelocity,
+    FlattenHold,
 }
 
 impl Row {
-    pub const ALL: [Row; 10] = [
+    pub const ALL: [Row; 13] = [
         Row::Source,
         Row::Input,
         Row::Start,
@@ -242,9 +345,12 @@ impl Row {
         Row::PreRoll,
         Row::End,
         Row::Length,
+        Row::Tail,
         Row::Silence,
         Row::SkipBack,
         Row::Onto,
+        Row::FlattenVelocity,
+        Row::FlattenHold,
     ];
 
     pub fn label(self) -> &'static str {
@@ -256,9 +362,12 @@ impl Row {
             Row::PreRoll => "Pre-roll",
             Row::End => "End",
             Row::Length => "Length",
+            Row::Tail => "Tail",
             Row::Silence => "Silence for",
             Row::SkipBack => "Skip back",
             Row::Onto => "Onto",
+            Row::FlattenVelocity => "Flatten velocity",
+            Row::FlattenHold => "Flatten hold",
         }
     }
 
@@ -291,19 +400,29 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
         }
         .to_string(),
         Row::Length => Skip::Bars(s.bars).label(),
-        Row::Silence => {
-            if s.silence_ms >= 1000 {
-                format!("{} s", s.silence_ms / 1000)
-            } else {
-                format!("{} ms", s.silence_ms)
-            }
+        Row::Tail => match s.tail {
+            TailAt::Cut => "Cut",
+            TailAt::Ring => "Ring out",
+            TailAt::Loop => "Loop",
         }
+        .to_string(),
+        Row::Silence => ms_text(s.silence_ms),
+        Row::FlattenVelocity => s.flatten_velocity.to_string(),
+        Row::FlattenHold => ms_text(s.flatten_hold_ms),
         Row::SkipBack => s.skip.label(),
         Row::Onto => match s.onto {
             Onto::NextEmpty => "Next empty",
             Onto::ThisPad => "This pad",
         }
         .to_string(),
+    }
+}
+
+fn ms_text(ms: u32) -> String {
+    if ms >= 1000 && ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{ms} ms")
     }
 }
 
@@ -340,9 +459,14 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
         Row::PreRoll => s.pre_roll_ms = step_in(&PRE_ROLLS_MS, s.pre_roll_ms, delta),
         Row::End => s.end = step_in(&[EndAt::Press, EndAt::Silence, EndAt::Length], s.end, delta),
         Row::Length => s.bars = step_in(&LENGTHS_BARS, s.bars, delta),
+        Row::Tail => s.tail = step_in(&[TailAt::Cut, TailAt::Ring, TailAt::Loop], s.tail, delta),
         Row::Silence => s.silence_ms = step_in(&SILENCES_MS, s.silence_ms, delta),
         Row::SkipBack => s.skip = step_in(&SKIPS, s.skip, delta),
         Row::Onto => s.onto = step_in(&[Onto::NextEmpty, Onto::ThisPad], s.onto, delta),
+        Row::FlattenVelocity => {
+            s.flatten_velocity = step_in(&VELOCITIES, s.flatten_velocity, delta)
+        }
+        Row::FlattenHold => s.flatten_hold_ms = step_in(&HOLDS_MS, s.flatten_hold_ms, delta),
     }
     s
 }
@@ -364,6 +488,11 @@ pub struct RecState {
     pub live: bool,
     /// The last take, said in a line.
     pub last: String,
+    /// Flatten can resample the pad picked now (it has a sound that plays
+    /// on its own channel, and there is a pad to put it on).
+    pub can_flatten: bool,
+    /// A Flatten running, said in a line (the bar's title while it runs).
+    pub flattening: Option<String>,
 }
 
 /// What a touch or control on the tab asks for. The app does it.
@@ -371,7 +500,7 @@ pub struct RecState {
 pub enum RecAction {
     /// Start a take with [`RecTab::settings`].
     Record,
-    /// Stop the take (cancel one still waiting).
+    /// Stop the take (cancel one still waiting), or a Flatten.
     Stop,
     /// Keep what the settings' Skip back covers, now.
     SkipBack,
@@ -379,6 +508,8 @@ pub enum RecAction {
     Source(usize),
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
+    /// Resample the pad picked as it plays ([`RecState::can_flatten`]).
+    Flatten,
     /// Open the Auto-sample mode ([`crate::auto_tab`]).
     Auto,
 }
@@ -393,6 +524,8 @@ pub struct RecTab {
     /// A take is being recorded (or waits for its start): the first button
     /// stops it.
     recording: bool,
+    /// A Flatten is running: the first button stops it too.
+    flattening: bool,
     /// The sources' names, as last shown.
     sources: Vec<String>,
 }
@@ -411,7 +544,7 @@ impl RecTab {
         let mut list = SettingList::new("Record");
         list.selected = Row::Start.index();
         ui.add(LIST, list);
-        let mut buttons = ButtonRow::new(&["Record", "Skip back", "Auto-sample"]);
+        let mut buttons = ButtonRow::new(&["Record", "Skip back", FLATTEN_LABEL, AUTO_LABEL]);
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
         ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
@@ -421,6 +554,7 @@ impl RecTab {
             bank: None,
             settings: RecSettings::default(),
             recording: false,
+            flattening: false,
             sources: st.sources.clone(),
         };
         tab.update(ui, st);
@@ -448,11 +582,19 @@ impl RecTab {
                         && (st.pad_name.is_some() || *t == TABS[TAB] || *t == TABS[0])
                 })
                 .collect();
-            bar.title = match &target {
-                Some(p) => format!("Record onto pad {p}"),
-                None => "Record: no empty pad in this bank".to_string(),
+            bar.title = match (&st.flattening, &target) {
+                (Some(f), _) => f.clone(),
+                (None, Some(p)) => format!("Record onto pad {p}"),
+                (None, None) => "Record: no empty pad in this bank".to_string(),
             };
-            bar.subtitle = if st.last.is_empty() {
+            bar.subtitle = if st.flattening.is_some() {
+                format!(
+                    "velocity {} · held {} · until {} of silence",
+                    self.settings.flatten_velocity,
+                    ms_text(self.settings.flatten_hold_ms),
+                    ms_text(self.settings.silence_ms)
+                )
+            } else if st.last.is_empty() {
                 match (&st.pad_name, self.settings.onto) {
                     (Some(n), Onto::ThisPad) => format!("replacing {n}"),
                     _ if self.settings.source == 0 => format!(
@@ -476,7 +618,9 @@ impl RecTab {
                 value: value_text(&self.settings, *r, &st.sources),
             })
             .collect();
-        let title = if self.settings.source == 0 {
+        let title = if st.flattening.is_some() {
+            format!("Pad {} channel", pad_text(self.bank, st.pad))
+        } else if self.settings.source == 0 {
             "Line input".to_string()
         } else {
             value_text(&self.settings, Row::Source, &st.sources)
@@ -488,16 +632,23 @@ impl RecTab {
             list.rows = rows;
             list.right = target.map(|p| format!("onto {p}")).unwrap_or_default();
         }
-        let can = st.live && st.target.is_some();
-        let recording = self.recording;
+        self.flattening = st.flattening.is_some();
+        let can = st.live && st.target.is_some() && !self.flattening;
+        let recording = self.recording || self.flattening;
         let skip = self.settings.skip.label();
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels = vec![
                 if recording { "Stop" } else { "Record" }.to_string(),
                 format!("Skip back {skip}"),
+                FLATTEN_LABEL.to_string(),
                 AUTO_LABEL.to_string(),
             ];
-            b.enabled = vec![recording || can, can && !recording, !recording];
+            b.enabled = vec![
+                recording || can,
+                can && !recording,
+                st.can_flatten && !recording,
+                !recording,
+            ];
         }
         self.sources = st.sources.clone();
         self.show_wheel(ui);
@@ -611,6 +762,7 @@ impl RecTab {
                     b.enabled[0] = true;
                     b.enabled[1] = false;
                     b.enabled[2] = false;
+                    b.enabled[3] = false;
                 }
             }
         }
@@ -633,7 +785,7 @@ impl RecTab {
         }
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels[0] = "Record".to_string();
-            b.enabled = vec![false, false, true];
+            b.enabled = vec![false, false, b.enabled.get(2) == Some(&true), true];
         }
     }
 
@@ -642,13 +794,20 @@ impl RecTab {
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &RecState) -> Option<RecAction> {
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(RecAction::Tab(*i)),
-            (BUTTONS, EventKind::Tab(0)) => Some(if self.recording {
+            (BUTTONS, EventKind::Tab(0)) => Some(if self.recording || self.flattening {
                 RecAction::Stop
             } else {
                 RecAction::Record
             }),
             (BUTTONS, EventKind::Tab(1)) => Some(RecAction::SkipBack),
-            (BUTTONS, EventKind::Tab(2)) if !self.recording => Some(RecAction::Auto),
+            (BUTTONS, EventKind::Tab(2))
+                if !self.recording && !self.flattening && st.can_flatten =>
+            {
+                Some(RecAction::Flatten)
+            }
+            (BUTTONS, EventKind::Tab(3)) if !self.recording && !self.flattening => {
+                Some(RecAction::Auto)
+            }
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *Row::ALL.get(*index)?;
                 self.step(ui, st, row, *delta)
@@ -669,7 +828,7 @@ impl RecTab {
     }
 
     fn step(&mut self, ui: &mut Ui, st: &RecState, row: Row, delta: i32) -> Option<RecAction> {
-        if row == Row::Source && self.recording {
+        if row == Row::Source && (self.recording || self.flattening) {
             // A take keeps its source until it ends.
             if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
                 card.text = "Source: stop the take first".to_string();
@@ -762,6 +921,39 @@ mod tests {
             s.end_at(44_100, 88_200.0),
             End::Silence { frames: 22_050, .. }
         ));
+    }
+
+    #[test]
+    fn a_take_of_bars_is_cut_rings_out_or_loops() {
+        let names = ["Line in".to_string()];
+        let mut s = RecSettings {
+            end: EndAt::Length,
+            silence_ms: 500,
+            ..RecSettings::default()
+        };
+        assert_eq!(s.tail_at(44_100), Tail::Cut);
+        assert_eq!(value_text(&s, Row::Tail, &names), "Cut");
+        s = stepped(&s, Row::Tail, 1, 1);
+        assert_eq!(value_text(&s, Row::Tail, &names), "Ring out");
+        let Tail::Ring(ring) = s.tail_at(44_100) else {
+            panic!("rings out");
+        };
+        assert_eq!((ring.quiet, ring.max), (22_050, 882_000));
+        assert!((ring.level - 0.001).abs() < 1e-6, "-60 dB");
+        s = stepped(&s, Row::Tail, 5, 1);
+        assert_eq!(s.tail, TailAt::Loop, "stops at the end");
+        assert_eq!(
+            s.tail_at(44_100),
+            Tail::Loop {
+                level: ring.level,
+                quiet: 22_050
+            }
+        );
+        assert!(s.in_bars());
+        // A take that ends on a press or on silence has no tail.
+        s.end = EndAt::Silence;
+        assert_eq!(s.tail_at(44_100), Tail::Cut);
+        assert!(!s.in_bars());
     }
 
     #[test]

@@ -28,6 +28,9 @@
 //!   [`TrackHost::pop_retired`] to be dropped off the audio thread.
 //! - **STOP** ([`TrackHost::stop`]): every instrument fades out over
 //!   [`STOP_FADE`] frames, then is reset, so nothing rings on.
+//! - **Tuning** ([`TrackHost::set_tuning`]): each slot has its own tuning
+//!   (12-TET at A4 = 440 Hz until set). The slot keeps it, so an
+//!   instrument swapped in later plays in it too.
 //!
 //! # Real-time rules
 //!
@@ -41,7 +44,7 @@
 #![forbid(unsafe_code)]
 
 use mpfree_fx::Mixer;
-use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
+use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_prof::{Probe, Span};
 
@@ -163,6 +166,8 @@ struct Slot {
     events: Vec<Timed>,
     /// How many notes each note number has sounding (pads, clips, the arp).
     held: [u8; 128],
+    /// The slot's tuning, given to each instrument that takes the slot.
+    tuning: Tuning,
     left: Vec<f32>,
     right: Vec<f32>,
     stats: SlotStats,
@@ -193,6 +198,7 @@ impl TrackHost {
                 track: Some(i),
                 events: Vec::with_capacity(MAX_EVENTS),
                 held: [0; 128],
+                tuning: Tuning::standard(),
                 left: vec![0.0; max_block],
                 right: vec![0.0; max_block],
                 stats: SlotStats::default(),
@@ -225,9 +231,10 @@ impl TrackHost {
 
     // ------------------------------------------------------------ instruments
 
-    /// Puts `inst` in slot `slot` (None empties it). The old instrument
-    /// rings out into the same track and is retired once quiet; one still
-    /// ringing from an earlier swap is retired at once. Never allocates.
+    /// Puts `inst` in slot `slot` (None empties it), in the slot's tuning.
+    /// The old instrument rings out into the same track and is retired
+    /// once quiet; one still ringing from an earlier swap is retired at
+    /// once. Never allocates.
     pub fn swap(
         &mut self,
         slot: usize,
@@ -258,6 +265,9 @@ impl TrackHost {
         s.events.clear();
         s.held = [0; 128];
         s.inst = inst;
+        if let Some(i) = s.inst.as_mut() {
+            i.node.set_tuning(&s.tuning);
+        }
         Ok(())
     }
 
@@ -284,6 +294,29 @@ impl TrackHost {
     /// A parameter's value now (None with no instrument in the slot).
     pub fn param_value(&self, slot: usize, id: u16) -> Option<f32> {
         self.instrument(slot).map(|i| i.node.param(id))
+    }
+
+    // ------------------------------------------------------------ tuning
+
+    /// Slot `slot`'s tuning: how its instrument turns notes into pitch.
+    /// The slot keeps it, so an instrument swapped in later plays in it
+    /// too. It applies from the next block, and sounding notes move to it
+    /// (smoothed where the engine smooths pitch). A copy into the slot and
+    /// the instrument: never allocates, so it may run on the audio thread.
+    /// An instrument still ringing out after a swap keeps the old tuning.
+    pub fn set_tuning(&mut self, slot: usize, tuning: &Tuning) {
+        let Some(s) = self.slots.get_mut(slot) else {
+            return;
+        };
+        s.tuning.clone_from(tuning);
+        if let Some(i) = s.inst.as_mut() {
+            i.node.set_tuning(tuning);
+        }
+    }
+
+    /// Slot `slot`'s tuning (12-TET at A4 = 440 Hz until set).
+    pub fn tuning(&self, slot: usize) -> Option<&Tuning> {
+        self.slots.get(slot).map(|s| &s.tuning)
     }
 
     // ------------------------------------------------------------ routing
@@ -569,10 +602,14 @@ impl Sink for TrackHost {
             Event::NoteOn { note, velocity } => NodeEvent::NoteOn { note, velocity },
             Event::NoteOff { note } => NodeEvent::NoteOff { note },
             Event::AllOff => NodeEvent::AllOff,
-            // Parameter locks go to the mod resolver (`mpfree-mod`), which
-            // knows each parameter's own value to go back to on Unlock and
-            // sends the instruments their values; not straight to a node.
-            Event::Lock { .. } | Event::Unlock { .. } => return,
+            // A clip's pad pressure: the raw value, which the node's own
+            // pressure curve shapes.
+            Event::Pressure { note, value } => NodeEvent::Pressure { note, value },
+            // Parameter locks and moves go to the mod resolver
+            // (`mpfree-mod`), which knows each parameter's own value to go
+            // back to on Unlock and sends the instruments their values; not
+            // straight to a node.
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
         };
         if out.dest == ALL {
             for slot in 0..self.slots.len() {

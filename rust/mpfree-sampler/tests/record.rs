@@ -5,8 +5,8 @@ use mpfree_sampler::chop::{demo_beat, SourceAnalysis};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_sampler::record::{
-    bar_lines, input, rolling, Arm, End, Feed, Pick, Progress, RecordError, Recording, Start, Stop,
-    Take, TakeState, BAR_LINES,
+    bar_lines, input, rolling, Arm, End, Feed, Input, Looped, Pick, Progress, RecordError,
+    Recording, RingOut, Start, Stop, Tail, Take, TakeState, BAR_LINES,
 };
 
 const RATE: u32 = 44_100;
@@ -502,8 +502,11 @@ fn a_restart_hides_what_came_from_the_old_source() {
     let bar = 22_050;
     feed_periods(&mut f, 400, bar, 0);
     assert_eq!(i.held(), 51_200);
-    // The input now comes from somewhere else (resampling the master).
+    // The input now comes from somewhere else (resampling the master),
+    // and a reader can see that it has.
+    assert_eq!(i.audio.restarts(), 0);
     f.restart();
+    assert_eq!(i.audio.restarts(), 1);
     assert_eq!((i.held(), i.audio.oldest()), (0, 51_200));
     assert_eq!(i.last_frames(1_000).unwrap(), Vec::<f32>::new());
     assert_eq!(i.last_bars(1), Err(RecordError::Overwritten));
@@ -591,4 +594,254 @@ fn feed_periods_plain(f: &mut Feed, periods: u64) {
         let base = f.audio.written();
         f.audio.push(&frame_audio(base, PERIOD));
     }
+}
+
+// ------------------------------------------------------------ tails
+
+/// Periods of `sound(frame)` on both channels, with bar lines every `bar`
+/// frames from frame 0 (the transport rolling).
+fn feed_sound(f: &mut Feed, periods: u64, bar: u64, sound: &dyn Fn(u64) -> f32) {
+    for _ in 0..periods {
+        let base = f.audio.written();
+        let end = base + PERIOD as u64;
+        let mut b = base.div_ceil(bar) * bar;
+        while b < end {
+            f.bars.mark(b);
+            b += bar;
+        }
+        f.bars.set_bar(Some(bar as f64));
+        let audio: Vec<f32> = (base..end)
+            .flat_map(|i| {
+                let v = sound(i);
+                [v, v]
+            })
+            .collect();
+        f.audio.push(&audio);
+    }
+}
+
+/// Feeds `sound` ten periods at a time, polling `rec` after each, until
+/// it is done (or gives up after `most` polls).
+fn run(f: &mut Feed, i: &Input, rec: &mut Recording, bar: u64, sound: &dyn Fn(u64) -> f32) {
+    for _ in 0..400 {
+        feed_sound(f, 10, bar, sound);
+        if matches!(
+            rec.poll(i).unwrap(),
+            Progress::Done { .. } | Progress::Nothing
+        ) {
+            return;
+        }
+    }
+    panic!("never done: {:?}", rec.progress());
+}
+
+const RING: RingOut = RingOut {
+    level: 0.001,
+    quiet: 2_000,
+    max: 44_100,
+};
+
+const LOOP: Tail = Tail::Loop {
+    level: 0.001,
+    quiet: 2_000,
+};
+
+/// Silent before frame 10 000, 1.0 from there to 30 000 (two bars of
+/// 10 000), then 0.25 ringing on to `ring_to`.
+fn two_bars_ringing(ring_to: u64) -> impl Fn(u64) -> f32 {
+    move |f| match f {
+        10_000..30_000 => 1.0,
+        30_000.. if f < ring_to => 0.25,
+        _ => 0.0,
+    }
+}
+
+#[test]
+fn a_bar_take_that_rings_out_keeps_its_tail_until_it_is_silent() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let sound = two_bars_ringing(33_000);
+    feed_sound(&mut f, 50, bar, &sound);
+    let mut rec = Recording::with_tail(
+        &i,
+        Start::NextBar,
+        End::Bars(2),
+        Tail::Ring(RING),
+        RATE as u64 * 60,
+    );
+    run(&mut f, &i, &mut rec, bar, &sound);
+    assert_eq!(rec.started_at(), Some(10_000));
+    assert_eq!(rec.cut_frames(), Some(20_000), "its two bars");
+    assert_eq!(
+        rec.progress(),
+        Progress::Done { frames: 23_000 },
+        "and the ringing, to its last sound"
+    );
+    let s = rec.finish("Rung", Pick::Mono).unwrap().unwrap();
+    assert_eq!(s.frames(), 23_000);
+    assert_eq!((s.data()[19_999], s.data()[20_000]), (1.0, 0.25));
+    assert_eq!(s.data()[22_999], 0.25);
+}
+
+#[test]
+fn a_ring_out_ends_at_its_longest_and_follows_a_length_too() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let loud = |_: u64| 0.5;
+    feed_sound(&mut f, 50, bar, &loud);
+    let ring = RingOut { max: 5_000, ..RING };
+    let mut rec = Recording::with_tail(
+        &i,
+        Start::NextBar,
+        End::Bars(1),
+        Tail::Ring(ring),
+        RATE as u64 * 60,
+    );
+    run(&mut f, &i, &mut rec, bar, &loud);
+    assert_eq!(rec.progress(), Progress::Done { frames: 15_000 });
+    // Not on a bar line: a length in frames rings out the same way.
+    let mut rec = Recording::with_tail(
+        &i,
+        Start::Now,
+        End::Frames(4_000),
+        Tail::Ring(ring),
+        RATE as u64 * 60,
+    );
+    run(&mut f, &i, &mut rec, bar, &loud);
+    assert_eq!(rec.cut_frames(), Some(4_000));
+    assert_eq!(rec.progress(), Progress::Done { frames: 9_000 });
+    // The longest take still holds, ringing included.
+    let mut rec = Recording::with_tail(&i, Start::Now, End::Frames(4_000), Tail::Ring(ring), 6_000);
+    run(&mut f, &i, &mut rec, bar, &loud);
+    assert_eq!(rec.progress(), Progress::Done { frames: 6_000 });
+}
+
+#[test]
+fn a_loop_folds_its_ringing_onto_its_start_and_keeps_its_length() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let sound = two_bars_ringing(33_000);
+    feed_sound(&mut f, 50, bar, &sound);
+    let mut rec = Recording::with_tail(&i, Start::NextBar, End::Bars(2), LOOP, RATE as u64 * 60);
+    run(&mut f, &i, &mut rec, bar, &sound);
+    assert_eq!(
+        rec.looped(),
+        Some(Looped::Folded { frames: 3_000 }),
+        "it started from silence and went silent"
+    );
+    let s = rec.finish("Loop", Pick::Stereo).unwrap().unwrap();
+    assert_eq!(s.frames(), 20_000, "exactly its two bars");
+    let left: Vec<f32> = s.data().iter().step_by(2).copied().collect();
+    assert!(
+        left[..3_000].iter().all(|x| *x == 1.25),
+        "the ringing, folded"
+    );
+    assert!(left[3_000..].iter().all(|x| *x == 1.0));
+}
+
+#[test]
+fn a_loop_whose_music_went_on_keeps_its_second_time_round() {
+    // Started from silence, and the bar played again after it: the
+    // second time round has the first's ringing at its start.
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let sound = |fr: u64| match fr {
+        0..10_000 => 0.0,
+        _ if fr % 10_000 < 2_000 && fr >= 20_000 => 1.25,
+        _ => 1.0,
+    };
+    feed_sound(&mut f, 50, bar, &sound);
+    let mut rec = Recording::with_tail(&i, Start::NextBar, End::Bars(1), LOOP, RATE as u64 * 60);
+    run(&mut f, &i, &mut rec, bar, &sound);
+    assert_eq!(rec.looped(), Some(Looped::SecondTime));
+    assert_eq!(
+        rec.progress(),
+        Progress::Done { frames: 20_000 },
+        "it waited one more bar, no longer"
+    );
+    let s = rec.finish("Second", Pick::Left).unwrap().unwrap();
+    assert_eq!(s.frames(), 10_000);
+    assert!(s.data()[..2_000].iter().all(|x| *x == 1.25));
+    assert!(s.data()[2_000..].iter().all(|x| *x == 1.0));
+}
+
+#[test]
+fn a_loop_of_music_already_going_round_is_cut_not_folded() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    // The same two bars played before: their ringing is in its start.
+    let sound = |fr: u64| match fr {
+        0..10_000 => 0.25,
+        10_000..30_000 => 1.0,
+        30_000..33_000 => 0.25,
+        _ => 0.0,
+    };
+    feed_sound(&mut f, 50, bar, &sound);
+    let mut rec = Recording::with_tail(&i, Start::NextBar, End::Bars(2), LOOP, RATE as u64 * 60);
+    // It is done on the bar line: nothing to wait for after it.
+    run(&mut f, &i, &mut rec, bar, &sound);
+    assert_eq!(rec.looped(), Some(Looped::GoingRound));
+    assert_eq!(rec.progress(), Progress::Done { frames: 20_000 });
+    let s = rec.finish("Going round", Pick::Left).unwrap().unwrap();
+    assert_eq!(s.frames(), 20_000);
+    assert!(s.data().iter().all(|x| *x == 1.0), "nothing added twice");
+}
+
+#[test]
+fn a_press_ends_a_take_at_once_ringing_or_not() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let loud = |_: u64| 0.5;
+    feed_sound(&mut f, 50, bar, &loud);
+    // Before its length, cut or not.
+    for tail in [Tail::Cut, Tail::Ring(RING), LOOP] {
+        let mut rec = Recording::with_tail(&i, Start::Now, End::Bars(4), tail, RATE as u64 * 60);
+        feed_sound(&mut f, 10, bar, &loud);
+        assert!(matches!(rec.poll(&i), Ok(Progress::Recording { .. })));
+        rec.stop(&i);
+        assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 1_280 }));
+        assert_eq!(
+            rec.finish("x", Pick::Left).unwrap().unwrap().frames(),
+            1_280
+        );
+    }
+    // Pressed while it rings: it ends there.
+    let mut rec = Recording::with_tail(
+        &i,
+        Start::Now,
+        End::Frames(1_000),
+        Tail::Ring(RING),
+        RATE as u64 * 60,
+    );
+    feed_sound(&mut f, 20, bar, &loud);
+    assert!(matches!(rec.poll(&i), Ok(Progress::Recording { .. })));
+    rec.stop(&i);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 2_560 }));
+}
+
+#[test]
+fn a_poll_after_the_last_bar_line_still_keeps_the_bars() {
+    // The screen thread was held up past both bar lines: the take still
+    // starts on the first and ends on the second.
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    feed_periods(&mut f, 50, bar, 0);
+    let mut rec = Recording::new(&i, Start::NextBar, End::Bars(1), RATE as u64 * 60);
+    feed_periods(&mut f, 150, bar, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 10_000 }));
+    assert_eq!(rec.started_at(), Some(10_000));
+    let s = rec.finish("Late", Pick::Left).unwrap().unwrap();
+    assert_eq!((s.data()[0], s.data()[9_999]), (10_000.0, 19_999.0));
+    // Taking a single take by hand the same way.
+    let (mut w, r) = rolling(2, 100_000);
+    let mut t = Take::new(&r, Arm::At(500), Stop::Manual, 100_000);
+    w.push(&frame_audio(0, 2_000));
+    t.stop_at(1_500);
+    assert_eq!(
+        t.poll(&r),
+        Ok(TakeState::Done {
+            start: 500,
+            end: 1_500
+        })
+    );
 }

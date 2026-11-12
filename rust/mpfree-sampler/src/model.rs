@@ -1,7 +1,7 @@
 //! The sampler's project model: sources, regions, chop sets, layers, pads,
 //! the master effect and the undo log. Owned by the control thread; never touched by the
 //! audio thread, which gets an [`crate::engine::EngineView`] built from it.
-//! Design: `docs/project/sampler-design.md` and `sampler-architecture.md`.
+//! Design: `docs/dev/design/sampler-design.md` and `sampler-architecture.md`.
 
 use std::sync::Arc;
 
@@ -972,6 +972,78 @@ pub struct Pad {
     /// Wow and flutter, 0 to 1: the pitch wanders as on a worn tape
     /// machine (at 1, slow wow about ±25 cents and flutter about ±5).
     pub wow: f32,
+    /// As a keygroup: the notes (0 to [`MAX_KEY_FADE`]) over which it fades
+    /// in at its low key and out at its high key, equal power, so two
+    /// zones overlapping by that many notes crossfade. No fade at the ends
+    /// of the keyboard, or for a hit on the pad itself.
+    pub key_fade: u8,
+    /// The velocities (0 to [`MAX_VEL_FADE`]) over which each layer fades
+    /// in at its lowest velocity and out at its highest, equal power, so
+    /// two layers overlapping by that much crossfade. No fade at 1 or 127.
+    /// In Cycle and Random, layers with the same velocities take turns
+    /// among themselves and the overlapping ones play together.
+    pub vel_fade: u8,
+}
+
+/// The longest key fade, in notes.
+pub const MAX_KEY_FADE: u8 = 24;
+/// The longest velocity fade.
+pub const MAX_VEL_FADE: u8 = 64;
+
+/// Moves the edges where neighbouring ranges meet so each pair overlaps
+/// by `fade` steps, centred on where they met: what makes a fade a
+/// crossfade. `ranges` are distinct and sorted by their low end. A pair
+/// that doesn't meet (a gap between them) or where one holds the other (a
+/// stack) is left alone; an edge never passes its neighbour's far end.
+/// Running it again with another fade moves the same edges again.
+pub fn overlap_ranges(ranges: &mut [(u8, u8)], fade: u8) {
+    for i in 1..ranges.len() {
+        let ((a_lo, a_hi), (b_lo, b_hi)) = (ranges[i - 1], ranges[i]);
+        let (a_lo, a_hi, b_lo, b_hi) = (
+            i32::from(a_lo),
+            i32::from(a_hi),
+            i32::from(b_lo),
+            i32::from(b_hi),
+        );
+        if !(a_lo < b_lo && a_hi < b_hi) || b_lo > a_hi + 1 {
+            continue;
+        }
+        // Where they meet: the last step of the lower one before any overlap.
+        let o = a_hi + 1 - b_lo;
+        let meet = (a_hi + b_lo - 1 - o % 2) / 2;
+        let f = i32::from(fade);
+        let hi = (meet + (f + 1) / 2).clamp(a_lo, b_hi - 1);
+        let lo = (meet + 1 - f / 2).clamp(a_lo + 1, b_hi);
+        ranges[i - 1].1 = hi as u8;
+        ranges[i].0 = lo as u8;
+    }
+}
+
+/// The level, 0 to 1, of something that plays from `lo` to `hi` at `x`
+/// with a fade of `fade` steps inside each edge: it rises over the first
+/// `fade` steps from `lo` and falls over the last `fade` before `hi`, on
+/// an equal-power curve, so a neighbour overlapping by `fade` steps and
+/// fading the other way sums to the same power. An edge at `floor` or
+/// `ceil` (the end of the range) does not fade. 0 outside `lo..=hi`.
+pub fn edge_gain(x: u8, lo: u8, hi: u8, fade: u8, floor: u8, ceil: u8) -> f32 {
+    if x < lo || x > hi {
+        return 0.0;
+    }
+    if fade == 0 {
+        return 1.0;
+    }
+    let ramp = |steps_in: u8| {
+        let t = f32::from(steps_in) / (f32::from(fade) + 1.0);
+        (t * std::f32::consts::FRAC_PI_2).sin()
+    };
+    let mut g = 1.0;
+    if lo > floor && u16::from(x) < u16::from(lo) + u16::from(fade) {
+        g *= ramp(x - lo + 1);
+    }
+    if hi < ceil && u16::from(x) + u16::from(fade) > u16::from(hi) {
+        g *= ramp(hi - x + 1);
+    }
+    g
 }
 
 /// A keygroup's notes: from `lo` to `hi` (MIDI notes), its sound played
@@ -1114,6 +1186,42 @@ impl Pad {
             pressure: PressureRoute::default(),
             keys: None,
             wow: 0.0,
+            key_fade: 0,
+            vel_fade: 0,
+        }
+    }
+
+    /// The velocity fade set to `fade` (at most [`MAX_VEL_FADE`]), and the
+    /// layers that meet moved to overlap by it ([`overlap_ranges`]), so
+    /// they crossfade. Round robins (layers with the same velocities) move
+    /// together.
+    pub fn set_vel_fade(&mut self, fade: u8) {
+        let fade = fade.min(MAX_VEL_FADE);
+        let mut ranges: Vec<(u8, u8)> = self.layers.iter().map(|l| (l.vel_lo, l.vel_hi)).collect();
+        ranges.sort_unstable();
+        ranges.dedup();
+        let before = ranges.clone();
+        overlap_ranges(&mut ranges, fade);
+        for l in &mut self.layers {
+            if let Some(i) = before.iter().position(|r| *r == (l.vel_lo, l.vel_hi)) {
+                (l.vel_lo, l.vel_hi) = ranges[i];
+            }
+        }
+        self.vel_fade = fade;
+    }
+
+    /// The pad `old` with `layer` as its only layer and named `name` (its
+    /// envelopes, filter, mute group and the rest kept), or a new pad when
+    /// there was none: what [`Project::put_source`] puts.
+    pub fn replacing(name: &str, layer: Layer, old: Option<&Pad>) -> Pad {
+        match old {
+            Some(old) => Pad {
+                name: name.to_string(),
+                layers: vec![layer],
+                select: LayerSelect::All,
+                ..old.clone()
+            },
+            None => Pad::new(name, layer),
         }
     }
 }
@@ -1230,6 +1338,8 @@ impl Project {
         }
         if pad.polyphony == 0
             || !(0.0..=1.0).contains(&pad.wow)
+            || pad.key_fade > MAX_KEY_FADE
+            || pad.vel_fade > MAX_VEL_FADE
             || pad.chokes.iter().any(|&c| c >= PADS)
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
             || !depth.is_finite()
@@ -1512,19 +1622,23 @@ impl Project {
     /// keeps its other settings (level, envelopes, filter, keys) with this
     /// one layer. Returns the source's id.
     pub fn put_source(&mut self, pad: usize, s: Source) -> Result<SourceId, ModelError> {
+        self.put_source_as(pad, s, Pad::replacing)
+    }
+
+    /// [`Project::put_source`], with the pad made by `make` from the
+    /// source's name, its whole-region layer and the pad there before (if
+    /// any): one undo step. Returns the source's id.
+    pub fn put_source_as(
+        &mut self,
+        pad: usize,
+        s: Source,
+        make: impl FnOnce(&str, Layer, Option<&Pad>) -> Pad,
+    ) -> Result<SourceId, ModelError> {
         if pad >= PADS {
             return Err(ModelError::BadPad);
         }
         let layer = Layer::new(Region::whole(&s));
-        let p = match self.pad(pad) {
-            Some(old) => Pad {
-                name: s.name.clone(),
-                layers: vec![layer],
-                select: LayerSelect::All,
-                ..old.clone()
-            },
-            None => Pad::new(&s.name, layer),
-        };
+        let p = make(&s.name, layer, self.pad(pad));
         let id = s.id();
         let added = self.source(id).is_none();
         if added {
@@ -1609,6 +1723,66 @@ impl Project {
         Ok(self.chop_sets.len() - 1)
     }
 
+    /// The key fade the kit's keygroups share, None when they differ or
+    /// there are none.
+    pub fn key_fade(&self) -> Option<u8> {
+        let mut fades = self.pads.iter().flatten().filter(|p| p.keys.is_some());
+        let first = fades.next()?.key_fade;
+        fades.all(|p| p.key_fade == first).then_some(first)
+    }
+
+    /// Key fade for the whole kit: every keygroup fades over `fade` notes
+    /// (at most [`MAX_KEY_FADE`]) and the zones that meet move to overlap
+    /// by it ([`overlap_ranges`]), so they crossfade. Keygroups over the
+    /// same keys (a stack) move together. One undo step.
+    pub fn set_key_fade(&mut self, fade: u8) -> Result<(), ModelError> {
+        let fade = fade.min(MAX_KEY_FADE);
+        let keygroups: Vec<usize> = (0..PADS)
+            .filter(|&i| self.pad(i).is_some_and(|p| p.keys.is_some()))
+            .collect();
+        if keygroups.is_empty() {
+            return Err(ModelError::BadPad);
+        }
+        let zone = |p: &Pad| p.keys.map_or((0, 0), |k| (k.lo, k.hi));
+        let mut ranges: Vec<(u8, u8)> = keygroups
+            .iter()
+            .filter_map(|&i| self.pad(i).map(zone))
+            .collect();
+        ranges.sort_unstable();
+        ranges.dedup();
+        let before = ranges.clone();
+        overlap_ranges(&mut ranges, fade);
+        let mut changed = Vec::new();
+        for &i in &keygroups {
+            let Some(mut p) = self.pad(i).cloned() else {
+                continue;
+            };
+            if let Some(at) = before.iter().position(|r| *r == zone(&p)) {
+                if let Some(k) = p.keys.as_mut() {
+                    (k.lo, k.hi) = ranges[at];
+                }
+            }
+            p.key_fade = fade;
+            if self.pads[i].as_ref() != Some(&p) {
+                self.check_pad(&p)?;
+                changed.push((i, p));
+            }
+        }
+        let mut steps = Vec::with_capacity(changed.len());
+        for (i, p) in changed {
+            let before = self.pads[i].replace(p);
+            steps.push(Undo::Pad {
+                index: i,
+                before: before.map(Box::new),
+                gesture: None,
+            });
+        }
+        if !steps.is_empty() {
+            self.push_undo(Undo::Group(steps));
+        }
+        Ok(())
+    }
+
     /// Makes pad `pad` a keygroup over the whole keyboard with its sound
     /// as recorded at `root` (its detected root note, say), and the pads
     /// play notes from the C at or below the root. One undo step.
@@ -1674,6 +1848,61 @@ impl Project {
         }
         self.push_undo(Undo::Group(steps));
         Ok(())
+    }
+
+    /// Map to keys: each `(pad, root)` becomes a keygroup played as
+    /// recorded at `root` (its sound's own note, see [`crate::keymap`]),
+    /// reaching halfway to the next root below and above (the lowest and
+    /// highest to the ends of the keyboard, as [`crate::autosample::zones`]
+    /// makes them); pads with the same root share its zone and play
+    /// together. Each keeps its sounds and settings, with at least
+    /// [`KEYGROUP_POLYPHONY`] voices, and the pads then play notes from the
+    /// C at or below the lowest root. One undo step; nothing changes if a
+    /// pad is empty or refused. Returns each pad's keys, in `roots` order.
+    pub fn map_to_keys(&mut self, roots: &[(usize, u8)]) -> Result<Vec<Keys>, ModelError> {
+        if roots.is_empty() || roots.iter().any(|&(pad, root)| pad >= PADS || root > 127) {
+            return Err(ModelError::BadPad);
+        }
+        let mut notes: Vec<u8> = roots.iter().map(|&(_, r)| r).collect();
+        notes.sort_unstable();
+        notes.dedup();
+        let zones = crate::autosample::zones(&notes);
+        let keys_of = |root: u8| zones[notes.binary_search(&root).unwrap_or(0)];
+        let mut pads = Vec::with_capacity(roots.len());
+        for &(index, root) in roots {
+            let mut p = self.pad(index).cloned().ok_or(ModelError::BadPad)?;
+            if p.layers.is_empty() {
+                return Err(ModelError::BadPad);
+            }
+            p.keys = Some(keys_of(root));
+            p.polyphony = p.polyphony.max(KEYGROUP_POLYPHONY);
+            self.check_pad(&p)?;
+            pads.push((index, p));
+        }
+        let keys = pads
+            .iter()
+            .map(|(_, p)| p.keys.unwrap_or(Keys::one(0)))
+            .collect();
+        let mut steps = Vec::with_capacity(pads.len() + 1);
+        for (index, p) in pads {
+            let before = self.pads[index].replace(p);
+            steps.push(Undo::Pad {
+                index,
+                before: before.map(Box::new),
+                gesture: None,
+            });
+        }
+        let low = notes[0];
+        let play = PadsPlay::Keys {
+            from: (low - low % 12).min(127 - 15),
+        };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(keys)
     }
 
     /// The keygroups (pad indices) that play `note`, in pad order.
