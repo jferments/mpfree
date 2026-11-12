@@ -2267,7 +2267,7 @@ impl App {
         }
         // Appearance steps through these (the theme files can't be borrowed
         // while the settings are).
-        let themes: Vec<String> = match items[i] {
+        let themes: Vec<String> = match item {
             Item::Appearance => self.theme_choices().map(|t| t.0.to_string()).collect(),
             _ => Vec::new(),
         };
