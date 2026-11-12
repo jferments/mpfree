@@ -1,12 +1,16 @@
 //! The time engine's screens: what they show, worked out from the engine,
 //! and what their touches mean.
 //!
-//! - The **transport bar** sits under the header on the Play page and the
-//!   Clips page: stop, play, record, replace or overdub, bar.beat.tick,
-//!   tempo, meter, swing, loop, Undo, and the arp's chip on the right.
-//! - The **Clips page** is the launch grid (tracks across, their 16 clip
-//!   slots down), the record settings, and the takes with Capture, Undo
-//!   and Redo. Capture keeps what was just played (`mpfree-capture`).
+//! - The **transport bar** sits under the header on the Arrange page:
+//!   stop, play, record, replace or overdub, bar.beat.tick, tempo, meter,
+//!   swing, loop and Undo (status chips on the right where a layout wants
+//!   them; on Arrange the app's header carries the arp's chip).
+//! - The **Arrange page** (the Clips page until it was renamed) is the
+//!   launch grid (tracks across, their 16 clip slots down), the record
+//!   settings, and the takes with Capture, Undo and Redo. Capture keeps
+//!   what was just played (`mpfree-capture`). Play's Q-Link column runs
+//!   down its right edge (layout spec 4c, Jay's option E): the app fills
+//!   the cards and routes the knobs.
 //!
 //! The screens do not own the engine. The audio thread copies a
 //! [`TransportInfo`] after each period; the control thread builds a
@@ -35,6 +39,7 @@ use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
+use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 
@@ -45,6 +50,12 @@ pub const RECORD: &str = "record";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
+/// Play's Q-Link column, at Arrange's right edge too: the app's
+/// `QLinkColumn` (its `play_page::QLINKS`), one widget on both pages.
+pub const QLINKS: &str = "qlinks";
+/// The width of the panel beside the grid, the song or the note editor
+/// (Record or Edit over Takes), narrowed for the Q-Link column.
+pub const SIDE_W: i32 = 250;
 /// The note editor and its Edit options.
 pub const NOTES: &str = "notes";
 pub const EDIT_OPTIONS: &str = "edit-options";
@@ -52,13 +63,15 @@ pub const EDIT_OPTIONS: &str = "edit-options";
 pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
 pub const BAR_SPEC: &str = "transport:44";
-/// The Clips page: the grid over the scene morph, and beside them the record
-/// settings over the takes.
+/// The Clips view: the bar over the grid and the scene morph, and beside
+/// them the record settings over the takes; Play's Q-Link column (168 px,
+/// `mpfree_ui::qlink::COLUMN_WIDTH`) down the right edge, from under the
+/// header to the hint line, as on Play.
 pub const CLIPS_LAYOUT: &str =
-    "col(header:60, transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):430):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
-    "col(header:60, transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):430):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
 /// The hint line under the Song view.
@@ -67,19 +80,12 @@ pub const SONG_HINT: &str =
 /// The same page with the note editor (a piano roll or a list) in place
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
-    "col(header:60, transport:44, row(notes:*, col(edit-options:*, takes:240):430):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
 /// The hint line under the note editor.
 pub const EDIT_HINT: &str =
     "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
-/// The record settings, top to bottom.
-pub const RECORD_ROWS: [&str; 6] = [
-    "Armed track",
-    "Record mode",
-    "Count-in",
-    "Loop, bars",
-    "Tempo, BPM",
-    "Pad pressure",
-];
+/// The record settings, top to bottom (short, to fit the 250 px panel).
+pub const RECORD_ROWS: [&str; 6] = ["Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure"];
 /// The loop lengths the Loop row steps through, in bars from bar 1 (0 is off).
 pub const LOOP_BARS: [i64; 6] = [0, 1, 2, 4, 8, 16];
 /// Track colours, by track number.
@@ -1232,8 +1238,14 @@ pub struct TimePage {
 
 impl TimePage {
     /// Add the bar, the grid, the record settings, the takes and the Clips
-    /// page. The app's `header` and `hint` must be in `ui` already.
+    /// page. The app's `header` and `hint` must be in `ui` already. The
+    /// Q-Link column is the app's: an empty one is added only when `ui`
+    /// has none yet (the samples, the tests), so the app's is never
+    /// replaced.
     pub fn add_to(ui: &mut Ui) -> Result<TimePage, String> {
+        if ui.get::<QLinkColumn>(QLINKS).is_none() {
+            ui.add(QLINKS, QLinkColumn::new());
+        }
         ui.add(TRANSPORT, TransportBar::new());
         ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
         ui.add(RECORD, OptionList::new("Record"));
@@ -1529,6 +1541,81 @@ mod tests {
         // Three takes and the buttons.
         let takes = ui.rect_of(TAKES).unwrap();
         assert!(takes.h - 14 * 2 - 34 - 48 - 8 >= 3 * 38, "{takes:?}");
+    }
+
+    /// Jay's option E (layout spec 4c): Play's Q-Link column at Arrange's
+    /// right edge, from under the header to the hint line, in every view;
+    /// the bar ends short of it, Record (or Edit) and Takes narrow to
+    /// 250 px, and the grid, the song and the note editor keep their width.
+    #[test]
+    fn the_qlink_column_runs_down_arranges_right_edge() {
+        use mpfree_ui::geom::Rect;
+        use mpfree_ui::qlink::COLUMN_WIDTH;
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        // The app's column is there first: add_to keeps it.
+        let mut mine = QLinkColumn::new();
+        mine.title = "Q-Links · Arrange".into();
+        ui.add(QLINKS, mine);
+        TimePage::add_to(&mut ui).unwrap();
+        assert_eq!(
+            ui.get::<QLinkColumn>(QLINKS).unwrap().title,
+            "Q-Links · Arrange"
+        );
+        ui.show(CLIPS_PAGE).unwrap();
+        for (layout, body, side) in [
+            (CLIPS_LAYOUT, CLIPS, RECORD),
+            (SONG_LAYOUT, SONG, RECORD),
+            (EDIT_LAYOUT, NOTES, EDIT_OPTIONS),
+        ] {
+            ui.set_layout(CLIPS_PAGE, layout).unwrap();
+            // Where Play has it (play_page's frame test): x 1100, y 84.
+            assert_eq!(
+                ui.rect_of(QLINKS),
+                Some(Rect::new(1100, 84, COLUMN_WIDTH, 666)),
+                "{layout}"
+            );
+            assert_eq!(ui.rect_of(TRANSPORT), Some(Rect::new(12, 84, 1076, 44)));
+            let s = ui.rect_of(side).unwrap();
+            assert_eq!((s.x, s.w), (838, SIDE_W), "{layout}");
+            assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), Some((838, SIDE_W)));
+            let b = ui.rect_of(body).unwrap();
+            assert_eq!((b.x, b.right()), (12, 826), "{layout}");
+        }
+        // Without the app, the samples get an empty column.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        TimePage::add_to(&mut ui).unwrap();
+        assert!(ui.get::<QLinkColumn>(QLINKS).unwrap().cards[0].is_free());
+    }
+
+    /// Every record setting, Edit option and take button reads whole in
+    /// the narrowed panel (nothing is cut short with an ellipsis).
+    #[test]
+    fn the_narrow_panels_fit_their_words() {
+        use mpfree_ui::FontId;
+        let mut fonts = Fonts::embedded();
+        // The row is 222 px inside the panel's padding; its value box 119.
+        let (name_w, value_w) = (222 - 119 - 20, 119 - 2 * 22);
+        let px = Theme::dark().size_small + 1.0;
+        let st = state();
+        let mut values: Vec<String> = record_rows(&st).into_iter().map(|r| r.value).collect();
+        values.extend(["Overdub", "Replace", "1 bar", "16–32", "300.0"].map(String::from));
+        let keys = crate::sample::keys_clip();
+        let mut ed = crate::editor::Editor::new(0, 0, &keys);
+        values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
+        ed.sel = vec![0, 1];
+        values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
+        for name in RECORD_ROWS.iter().chain(crate::editor::EDIT_ROWS.iter()) {
+            let w = fonts.measure(FontId::Bold, px, name);
+            assert!(w <= name_w, "{name}: {w} > {name_w}");
+        }
+        for v in &values {
+            let w = fonts.measure(FontId::Bold, px, v);
+            assert!(w <= value_w, "{v}: {w} > {value_w}");
+        }
     }
 
     #[test]

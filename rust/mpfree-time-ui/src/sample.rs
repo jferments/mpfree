@@ -545,12 +545,12 @@ fn clips_sample(
     s: &Session,
     first_row: usize,
 ) -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, "Clips", CLIPS_HINT);
+    let mut ui = app_ui(fonts, "Arrange", CLIPS_HINT);
     let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.first_row = first_row;
-    let mut state = s.state();
-    state.chips = vec![arp_chip()];
+    // No chips: on Arrange the arp's chip is in the header (option E).
+    let state = s.state();
     page.update(&mut ui, &state);
     Ok(Sample {
         name,
@@ -576,7 +576,6 @@ pub fn song_state() -> Result<TimeState, String> {
     s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
     s.project.arrangement.markers[1].name = "Verse".into();
     let mut state = s.state();
-    state.chips = vec![arp_chip()];
     state.song_view = true;
     state.song_on = true;
     state.song_rec = true;
@@ -800,7 +799,7 @@ pub fn song_audio_state() -> Result<TimeState, String> {
 /// The Clips page's Song view, from [`song_state`].
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_state()?;
-    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
+    let mut ui = app_ui(fonts, "Arrange", SONG_HINT);
     let page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.update(&mut ui, &state);
@@ -869,7 +868,6 @@ pub fn notes_state(list: bool) -> Result<TimeState, String> {
     let keys = keys_clip();
     s.project.tracks[CHORDS].slots[1] = Some(keys.clone());
     let mut state = s.state();
-    state.chips = vec![arp_chip()];
     let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
     editor.sel = keys
         .notes
