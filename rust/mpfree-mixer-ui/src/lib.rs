@@ -40,8 +40,8 @@
 //! wheel, - and + and the page arrows to [`io_input`], Back to [`io_back`],
 //! each frame to [`io_tick`], and the Q-Links to [`io_qlinks`] and
 //! [`io_qlink_turn`] first (when they give nothing, the Q-Links stay on the
-//! selected strip as above). After a touch event, [`take_io_changes`] names
-//! the sections whose state to read.
+//! selected strip as above). After a touch, a key or a Q-Link,
+//! [`take_io_changes`] names the sections whose state to read.
 
 #![forbid(unsafe_code)]
 
@@ -191,8 +191,9 @@ pub fn io_qlink_turn(ui: &mut Ui, knob: usize, detents: i32, fine: bool) -> IoRe
         .map_or(IoReply::Ignored, |v| v.io_qlink_turn(knob, detents, fine))
 }
 
-/// Sections (by add order) that changed a setting on a touch since the last
-/// call: read their state.
+/// Sections (by add order) that replied [`IoReply::Redraw`] to a touch, a
+/// key ([`io_input`]) or a Q-Link ([`io_qlink_turn`]) since the last call:
+/// read their state.
 pub fn take_io_changes(ui: &mut Ui) -> Vec<usize> {
     ui.get_mut::<MixerView>(MIXER)
         .map(|v| v.take_io_changes())

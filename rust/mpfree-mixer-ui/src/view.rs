@@ -1672,8 +1672,10 @@ impl MixerView {
         true
     }
 
-    /// Outside sections (by index in add order) that changed a setting on
-    /// a touch since the last call: read their state.
+    /// Outside sections (by index in add order) that replied
+    /// [`IoReply::Redraw`] to a touch, a key ([`MixerView::io_input`]) or a
+    /// Q-Link ([`MixerView::io_qlink_turn`]) since the last call: read
+    /// their state. One place, whatever moved the setting.
     pub fn take_io_changes(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.io_changed)
     }
@@ -1685,8 +1687,13 @@ impl MixerView {
         if self.state.view != MixView::Io {
             return IoReply::Ignored;
         }
+        let outside = self.io.sel.checked_sub(1);
         let r = if let Some(s) = self.io.section_mut() {
-            s.input(ev)
+            let r = s.input(ev);
+            if r == IoReply::Redraw {
+                self.io_changed.extend(outside);
+            }
+            r
         } else {
             match ev {
                 IoInput::Wheel(d) => self.io_wheel(d),
@@ -1754,6 +1761,7 @@ impl MixerView {
             .section_mut()
             .map_or(IoReply::Ignored, |s| s.qlink_turn(knob, detents, fine));
         if r == IoReply::Redraw {
+            self.io_changed.extend(self.io.sel.checked_sub(1));
             self.mark(Dirty::Panel);
         }
         r
@@ -1812,8 +1820,11 @@ impl MixerView {
     }
 
     fn io_page(&mut self, d: i32) {
+        let outside = self.io.sel.checked_sub(1);
         if let Some(s) = self.io.section_mut() {
-            s.input(IoInput::Page(d));
+            if s.input(IoInput::Page(d)) == IoReply::Redraw {
+                self.io_changed.extend(outside);
+            }
             return;
         }
         let per = self.io_per_page.get().max(1);
@@ -3032,6 +3043,8 @@ mod io_tests {
         assert_eq!(crate::io_qlinks(&ui).unwrap()[2].label, "K2");
         crate::io_qlink_turn(&mut ui, 2, -3, false);
         assert_eq!(seen.lock().unwrap().turns, vec![(2, -3)]);
+        // The wheel, the page arrow and the Q-Link each named it too.
+        assert_eq!(crate::take_io_changes(&mut ui), vec![0, 0, 0]);
         // Back closes its detail once, then lets Back go on.
         assert!(crate::io_back(&mut ui));
         assert!(!crate::io_back(&mut ui));
