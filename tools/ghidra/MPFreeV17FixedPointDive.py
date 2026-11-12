@@ -41,8 +41,8 @@ TOKENS=("boot_targets","bootcmd","bootz","bootm","fastboot","oem","mmc","sd",
  "recovery","flash","erase","write","read","verify","update","loader","memory",
  "partition","reloc","ramdisk","rockusb")
 argv=list(getScriptArgs())
-if len(argv)!=2 or str(argv[0]) not in PINNED:
-    raise RuntimeError("Usage: p1|p3 ABSOLUTE_PRIVATE_DIRECTORY")
+if len(argv) not in (2,3) or str(argv[0]) not in PINNED:
+    raise RuntimeError("Usage: p1|p3 ABSOLUTE_PRIVATE_DIRECTORY [TEMP_PRIVATE_EXPORT]")
 role=str(argv[0]);out=Path(str(argv[1]))
 if not out.is_absolute():raise RuntimeError("Requires absolute private output directory")
 base,size,sha=PINNED[role]
@@ -64,6 +64,23 @@ for start in range(0,size,65536):
 raw=bytes(raw)
 if hashlib.sha256(raw).hexdigest()!=sha:
     raise RuntimeError("Saved Ghidra image did not match verified owner P1/P3")
+# A private verified executable page is made available to QEMU IMMEDIATELY,
+# so the VM boots and probes while the full Ghidra dataflow pass continues.
+if len(argv)==3:
+    export=Path(str(argv[2]))
+    if role!="p3" or not export.is_absolute() or export.exists() or export.is_symlink():
+        raise RuntimeError("Private code export permitted only for P3 at a new absolute temp path")
+    export.parent.mkdir(parents=True,exist_ok=True)
+    old_umask=os.umask(0o077)
+    try:
+        with export.open("xb") as f:
+            f.write(raw);f.flush();os.fsync(f.fileno())
+        os.chmod(str(export),0o600)
+        ready=export.with_name(export.name+".ready")
+        with ready.open("x") as f:
+            f.write(sha+"\n");f.flush();os.fsync(f.fileno())
+    finally:os.umask(old_umask)
+
 listing=P.getListing();fm=P.getFunctionManager();refs=P.getReferenceManager()
 functions=list(fm.getFunctions(True))
 lookup={int(f.getEntryPoint().getOffset()):f for f in functions}
