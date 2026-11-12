@@ -1,4 +1,4 @@
-//! The mpfree-hello program, run whole on the host in its one host-only mode:
+//! The mpfree-app program, run whole on the host in its one host-only mode:
 //! `--preview DIR` draws the console and every sample screen into new PNG
 //! files and opens no device. (Its other modes need the MPC.)
 //!
@@ -7,19 +7,19 @@
 //! changes on purpose gets new references in the same PR, with the reason in
 //! the commit:
 //!
-//!     MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-hello --test cli
+//!     MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// Where the program appends its STOP line on the MPC; tests that end in a
 /// STOP run only when it is absent, so they never write there.
-const REPORT_DIR: &str = "/run/mpfree-hello";
+const REPORT_DIR: &str = "/run/mpfree-app";
 
 /// Runs the program. In CI's ARMv7 step the tests run under qemu-arm (cargo's
 /// target runner), so the ARM program is started through the same runner.
 fn hello(args: &[&str]) -> Output {
-    let exe = env!("CARGO_BIN_EXE_mpfree-hello");
+    let exe = env!("CARGO_BIN_EXE_mpfree");
     let runner = std::env::var("CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER").ok();
     let mut cmd = match runner.filter(|_| cfg!(target_arch = "arm")) {
         Some(r) => {
@@ -29,12 +29,12 @@ fn hello(args: &[&str]) -> Output {
         }
         None => Command::new(exe),
     };
-    cmd.args(args).output().expect("run mpfree-hello")
+    cmd.args(args).output().expect("run mpfree")
 }
 
 fn folder(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("mpfree-hello-cli")
+        .join("mpfree-cli")
         .join(name);
     let _ = std::fs::remove_dir_all(&dir);
     dir
@@ -172,8 +172,8 @@ fn check_screens(dir: &Path, names: &[String]) {
         .collect();
     if std::env::var_os("MPFREE_GOLDEN_BLESS").is_some() {
         let mut text = String::from(
-            "# mpfree-hello --preview screens: WxH, then the mean brightness of each 20x20 cell,\n\
-             # row by row, in hex. Written by MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-hello --test cli\n\
+            "# mpfree --preview screens: WxH, then the mean brightness of each 20x20 cell,\n\
+             # row by row, in hex. Written by MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli\n\
              # Compared within 1 level per cell (tests/cli.rs).\n",
         );
         for (n, p) in &got {
@@ -221,7 +221,7 @@ fn check_screens(dir: &Path, names: &[String]) {
     assert!(
         problems.is_empty(),
         "{} of {} screens look different from golden/screens.txt (pictures in {}):\n{}\n\
-         If the change is meant, bless the new screens: MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-hello --test cli",
+         If the change is meant, bless the new screens: MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli",
         problems.len(),
         got.len(),
         dir.display(),

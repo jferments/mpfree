@@ -1,6 +1,6 @@
 # M17: the Dev tab's Touch page, measuring and tuning touch
 
-**Status:** built and tested on the workstation (`rust/mpfree-touch/src/tuning.rs`, `rust/mpfree-hello/src/touch_dev.rs`). Not yet tried on the MPC One.
+**Status:** built and tested on the workstation (`rust/mpfree-touch/src/tuning.rs`, `rust/mpfree-app/src/touch_dev.rs`). Not yet tried on the MPC One.
 
 ## Why
 
