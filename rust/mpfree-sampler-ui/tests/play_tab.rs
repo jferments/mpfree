@@ -108,8 +108,8 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     assert_eq!(bar.active, play_tab::TAB);
     assert_eq!(
         bar.enabled,
-        vec![true, true, true, true, true, false],
-        "Pads, Wave, Chop, Play and Grain are built"
+        vec![true, true, true, true, true, true, false, true],
+        "Pads, Wave, Chop, Play, Grain and Rec are built"
     );
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
@@ -214,6 +214,8 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Level, -3, "-1.5 dB"),
         (Row::Pan, -5, "L 25"),
         (Row::Tune, 7, "+7 st"),
+        (Row::Wow, 3, "30 %"),
+        (Row::Wow, -5, "Off"),
         (Row::Sustain, -8, "60 %"),
         (Row::Release, 2, "20 ms"),
         (Row::FilterEnv, 3, "+0.75 oct"),

@@ -14,7 +14,7 @@
 use crate::shm::{self, Mapping};
 use crate::wire::{self, Hello, ToChild, ToHost};
 use mpfree_clap::{ClapControl, ClapNode, Library, ParamSpec};
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -199,6 +199,16 @@ fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
             value: byte(e.b),
         },
         shm::EV_BEND => NodeEvent::Bend { value: e.value },
+        shm::EV_EXPRESSION => NodeEvent::Expression {
+            note: byte(e.a),
+            kind: match e.b {
+                0 => Expr::Slide,
+                1 => Expr::Tone,
+                2 => Expr::Release,
+                _ => return None,
+            },
+            value: e.value,
+        },
         shm::EV_ALL_OFF => NodeEvent::AllOff,
         shm::EV_PARAM => NodeEvent::Param {
             id: u16::try_from(e.a).ok()?,
@@ -363,6 +373,15 @@ mod tests {
             Some(NodeEvent::Param { id: 3, value: 0.25 })
         );
         assert_eq!(event_of(&e(shm::EV_PARAM, 70_000, 0, 0.25)), None);
+        assert_eq!(
+            event_of(&e(shm::EV_EXPRESSION, 62, 1, 0.75)),
+            Some(NodeEvent::Expression {
+                note: 62,
+                kind: Expr::Tone,
+                value: 0.75
+            })
+        );
+        assert_eq!(event_of(&e(shm::EV_EXPRESSION, 62, 9, 0.75)), None);
         assert_eq!(event_of(&e(99, 0, 0, 0.0)), None);
     }
 }

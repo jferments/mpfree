@@ -18,7 +18,9 @@ use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
 /// Events one `process` call can return; more are dropped and counted.
-pub const MAX_EVENTS: usize = 128;
+/// As many as can be pending, so a panic's 128 note-offs and the notes
+/// pressed right after it fit in one call.
+pub const MAX_EVENTS: usize = MAX_PENDING;
 /// Notes waiting to start or stop.
 const MAX_PENDING: usize = 256;
 
@@ -710,6 +712,9 @@ pub struct Engine {
     next_tick: i64,
     /// Notes that could not be queued, since the engine started.
     pub overflow: u64,
+    /// Silenced by [`Engine::hush`]: the held and latched notes stay, but
+    /// no steps play until [`Engine::resume`] or the next press.
+    hushed: bool,
 }
 
 impl Engine {
@@ -722,6 +727,7 @@ impl Engine {
             notes: Notes::new(),
             now: 0,
             running: false,
+            hushed: false,
             next_step: 0.0,
             step: 0,
             arp_counter: 0,
@@ -869,6 +875,7 @@ impl Engine {
     }
 
     pub fn press(&mut self, note: u8, velocity: u8) {
+        self.hushed = false;
         let before = self.notes.active().clone();
         self.notes.press(note, velocity.max(1));
         self.after_change(&before);
@@ -884,9 +891,56 @@ impl Engine {
         self.notes.pressure(note, value.max(1));
     }
 
+    /// Silences the arp at the start of the next period (all notes off) but
+    /// keeps what is held and latched, so [`Engine::resume`] (or the next
+    /// press) carries on with the same notes. Decision 5 of the design doc:
+    /// STOP silences a latched arp and keeps the latch.
+    pub fn hush(&mut self) {
+        self.hushed = true;
+        self.queued = 0;
+        self.running = false;
+        let at = self.now as f64;
+        for n in 0..128u8 {
+            self.queue_at(at, EventKind::Off { note: n });
+        }
+    }
+
+    /// Plays again after [`Engine::hush`]; nothing happens if not hushed.
+    pub fn resume(&mut self) {
+        if self.hushed {
+            self.hushed = false;
+            self.update_running();
+        }
+    }
+
+    /// Nothing to do: no step running, nothing held or latched, nothing
+    /// queued to start or stop. An idle engine may be passed over with
+    /// [`Engine::skip`] instead of [`Engine::sync`] and [`Engine::process`].
+    pub fn idle(&self) -> bool {
+        !self.running && self.queued == 0 && self.notes.active().is_empty()
+    }
+
+    /// Lets `frames` frames pass on an [`Engine::idle`] engine without
+    /// processing them (a host with many idle arps saves their periods).
+    /// It forgets the transport's clock, so the next [`Engine::sync`] lines
+    /// it up again as on a transport start; the next press waits for the
+    /// grid as usual. Does nothing to an engine that is not idle.
+    pub fn skip(&mut self, frames: u32) {
+        if self.idle() {
+            self.now += u64::from(frames);
+            self.sync = None;
+        }
+    }
+
+    /// Silenced by [`Engine::hush`] and not resumed yet.
+    pub fn hushed(&self) -> bool {
+        self.hushed
+    }
+
     /// Stops everything at the start of the next period: all notes off,
     /// nothing held or latched.
     pub fn panic(&mut self) {
+        self.hushed = false;
         self.queued = 0;
         self.notes.clear_all();
         self.running = false;
@@ -1082,7 +1136,8 @@ impl Engine {
     }
 
     fn update_running(&mut self) {
-        let want = self.settings.mode != Mode::Direct && !self.notes.active().is_empty();
+        let want =
+            !self.hushed && self.settings.mode != Mode::Direct && !self.notes.active().is_empty();
         if want && !self.running {
             // Free-running, the first step is on the press. With a playing
             // transport it waits for the next step, beat or bar.
@@ -1500,6 +1555,40 @@ mod tests {
         );
         e.set_latch(LatchMode::Off); // 6 is still held, so it keeps sounding
         assert!(run(&mut e, 128, 128).is_empty());
+    }
+
+    #[test]
+    fn hush_silences_a_latched_arp_and_keeps_the_latch() {
+        let mut e = engine(Mode::Repeat);
+        e.set_latch(LatchMode::Replace);
+        e.press(3, 100);
+        e.release(3);
+        assert_eq!(
+            ons(&run(&mut e, STEP * 2, 128)).len(),
+            2,
+            "latched, it repeats"
+        );
+        e.hush();
+        let got = run(&mut e, STEP * 4, 128);
+        assert!(ons(&got).is_empty(), "hushed, nothing plays");
+        assert!(
+            got.iter().any(|(_, k)| *k == EventKind::Off { note: 3 }),
+            "its note is ended"
+        );
+        assert!(e.hushed() && e.active().contains(3), "the latch is kept");
+        e.resume();
+        assert!(!e.hushed());
+        assert!(
+            !ons(&run(&mut e, STEP * 2, 128)).is_empty(),
+            "resumed, it repeats again"
+        );
+        // A press resumes too; panic clears everything.
+        e.hush();
+        e.press(5, 100);
+        assert!(!e.hushed());
+        e.hush();
+        e.panic();
+        assert!(!e.hushed() && e.active().is_empty());
     }
 
     #[test]

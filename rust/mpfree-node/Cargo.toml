@@ -6,3 +6,4 @@ publish = false
 description = "The shared audio-node interface for MPFree instruments and effects: timed events, parameter descriptions, real-time rules"
 
 [dependencies]
+mpfree-tuning = { path = "../mpfree-tuning" }
