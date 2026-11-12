@@ -50,7 +50,7 @@ Macros and the morph position are targets too, so they can be locked on a step, 
 - A target is only worked out when something moved it, and only sent when its value changed. A parameter that nothing modulates goes out exactly as it was set.
 - Nodes smooth their own parameters, so the 32-frame steps never zipper.
 - `process` never allocates, locks or panics, and nor do the changes (`add_target`, `map`, `add_row`, `remove_target`, `capture_scene` ...) while there is room: 512 targets, 64 rows, 8 targets per macro.
-- **Cost (desktop, `mpfree-bench --filter Mod`):** a busy performance set (8 macros moving 8 parameters each, 16 rows, the morph swept across 80 parameters, a lock every 16th) costs about 7 µs per 128-frame block mean, 0.5 % of the period at p99, and 70 KB. It sends about 320 parameter events per block; the nodes' cost of taking them is theirs. Counted against the `fx` budget until it has a line of its own. FM rebuilds its patch on every `set_param`, so modulating FM parameters is worth a bench on the device.
+- **Cost (desktop, `mpfree-bench --filter Mod`):** a busy performance set (8 macros moving 8 parameters each, 16 rows, the morph swept across 80 parameters, a lock every 16th) costs about 7 µs per 128-frame block mean, 0.5 % of the period at p99, and 70 KB. It sends about 320 parameter events per block; the nodes' cost of taking them is theirs. Counted against the `fx` budget until it has a line of its own. FM's `set_param` reworks only what the parameter feeds (about 0.15 µs on a desktop, ten times less than when every knob rebuilt the whole patch), but modulating FM parameters is still worth a bench on the device.
 
 ## Where each piece goes
 

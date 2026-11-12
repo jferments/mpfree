@@ -651,3 +651,56 @@ fn the_drawn_envelope_matches_the_engine() {
     println!("drawn decay {decay:.3} s; -60 dB at {at:.3} s, want {want:.3} s");
     assert!((at / want - 1.0).abs() < 0.1, "{at} vs {want}");
 }
+
+#[test]
+fn knobs_turned_one_at_a_time_play_as_a_preset_with_the_same_values() {
+    // A knob reworks only what it feeds (a pressure slot, the pressure
+    // curve, or the voice), so after any run of knob turns the engine must
+    // play exactly as one given the same values at once.
+    let mut seed = 0x2545_F491u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let mut audible = 0;
+    for preset in Fm::presets() {
+        let mut turned = Fm::new(RATE);
+        turned.load_preset(&preset);
+        let knobs: Vec<(u16, f32, f32)> = turned
+            .params()
+            .iter()
+            .filter(|p| !p.readonly)
+            .map(|p| (p.id, p.min, p.max))
+            .collect();
+        for _ in 0..60 {
+            let (id, lo, hi) = knobs[next() as usize % knobs.len()];
+            let x = (next() % 1001) as f32 / 1000.0;
+            turned.set_param(id, lo + (hi - lo) * x);
+        }
+        let values: Vec<(u16, f32)> = knobs
+            .iter()
+            .map(|&(id, ..)| (id, turned.param(id)))
+            .collect();
+        let mut loaded = Fm::new(RATE);
+        loaded.load_values(&values);
+        let press = |note, value| NodeEvent::Pressure { note, value };
+        let ev = [
+            (0, on(48, 100)),
+            (0, on(60, 90)),
+            (2_000, press(48, 40)),
+            (4_000, press(48, 127)),
+            (6_000, press(60, 80)),
+            (12_000, off(48)),
+            (16_000, off(60)),
+        ];
+        let a = render(&mut turned, 24_000, &ev, |_| 64);
+        let b = render(&mut loaded, 24_000, &ev, |_| 64);
+        assert!(a == b, "{}: turned knobs play differently", preset.name);
+        if peak(&a.0) > 1e-3 {
+            audible += 1;
+        }
+    }
+    assert!(audible >= 3, "only {audible} audible runs");
+}
