@@ -7,7 +7,7 @@
 use mpfree_library::audio::duration;
 use mpfree_library::{
     valid_name, AudioFormat, AudioInfo, Done, Entry, Job, Kind, Library, Loc, Meta, NewSample,
-    Outcome, Place, Snapshot, TrashItem, Worker,
+    Outcome, Place, Snapshot, TrashItem, Version, Worker,
 };
 use std::path::PathBuf;
 
@@ -177,6 +177,10 @@ pub struct Row {
     pub trash_id: Option<String>,
     /// For a factory kit: its index in kits.bin.
     pub factory: Option<usize>,
+    /// For an earlier save of a project (`loc` is the project): its id.
+    pub version: Option<String>,
+    /// When it last changed, seconds since 1970 (UTC), 0 if unknown.
+    pub modified: u64,
 }
 
 /// The buttons under the selected item, and the list's own.
@@ -197,6 +201,8 @@ pub enum Button {
     EmptyTrash,
     /// Closes a picker without loading.
     Cancel,
+    /// A project's earlier saves, to open one.
+    Versions,
 }
 
 impl Button {
@@ -216,6 +222,7 @@ impl Button {
             Button::Restore => "Put back",
             Button::EmptyTrash => "Empty Trash",
             Button::Cancel => "Cancel",
+            Button::Versions => "Earlier saves",
         }
     }
 }
@@ -245,6 +252,28 @@ pub enum Input {
     Key(Key),
     ConfirmYes,
     ConfirmNo,
+    /// The Search chip: type a name to look for in the whole library.
+    Search,
+    /// The order chip: by name or newest first.
+    Sort,
+}
+
+/// The order of a list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sort {
+    /// Folders first, then natural name order (what the library gives).
+    Name,
+    /// Folders first, then the newest change first.
+    Newest,
+}
+
+impl Sort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Name => "A to Z",
+            Sort::Newest => "Newest",
+        }
+    }
 }
 
 /// What the app must do (the browser does everything else itself).
@@ -323,6 +352,8 @@ pub enum Confirm {
     EmptyTrash,
     /// Open this project over unsaved changes.
     Open(Loc),
+    /// Open this earlier save of a project over unsaved changes.
+    OpenVersion(Loc, String),
 }
 
 /// What the keyboard is typing.
@@ -332,6 +363,8 @@ pub enum Purpose {
     NewFolder(Loc),
     /// A name for the project being saved.
     SaveAs,
+    /// Text to look for.
+    Search,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -392,6 +425,8 @@ pub struct Screen {
     pub filters: Vec<Filter>,
     /// The picker this is, if it is one.
     pub pick: Option<Pick>,
+    /// The list's order.
+    pub sort: Sort,
 }
 
 impl Screen {
@@ -416,6 +451,7 @@ impl Screen {
             sources: (0..SOURCES.len()).collect(),
             filters: FILTERS.to_vec(),
             pick: None,
+            sort: Sort::Name,
         }
     }
 }
@@ -429,6 +465,19 @@ pub const RECENT: usize = 20;
 pub const KEEP_VERSIONS: usize = mpfree_library::project::KEEP_VERSIONS;
 /// Overview columns asked of the worker.
 pub const OVERVIEW_COLUMNS: usize = 360;
+/// The most search results shown.
+pub const MAX_FOUND: usize = 200;
+
+/// What the list holds besides a place's folder.
+#[derive(Clone, Debug, PartialEq)]
+enum Mode {
+    /// The folder (or Recent, Favourites, Factory, Trash).
+    Folder,
+    /// A project's earlier saves, newest first.
+    Versions(Loc, Vec<Version>),
+    /// A search: the text, and what it found.
+    Found(String, Vec<(Loc, Entry)>),
+}
 
 enum Exec {
     /// Runs each job at once (previews, tests).
@@ -478,6 +527,8 @@ pub struct Browser {
     tried: bool,
     /// The work in progress changed since it was last saved or opened.
     unsaved: bool,
+    mode: Mode,
+    sort: Sort,
 }
 
 impl Browser {
@@ -524,6 +575,8 @@ impl Browser {
             before_pick: None,
             tried: false,
             unsaved: false,
+            mode: Mode::Folder,
+            sort: Sort::Name,
         };
         b.refresh();
         b
@@ -640,11 +693,55 @@ impl Browser {
                     self.close_pick(true);
                 }
             }
+            Ok(Outcome::Versions(loc, list)) => {
+                if matches!(&self.mode, Mode::Versions(l, _) if *l == loc) {
+                    self.mode = Mode::Versions(loc, list);
+                    self.rebuild();
+                }
+            }
+            Ok(Outcome::Version(loc, _id, snap)) => {
+                self.status = Some((
+                    format!(
+                        "Opened {} as saved {}. SHIFT + BROWSE saves it as the newest",
+                        loc.name(),
+                        when(snap.meta.saved)
+                    ),
+                    false,
+                ));
+                self.project = Some(loc.clone());
+                self.created = snap.meta.created;
+                // Not the newest save: saving it keeps what it replaces.
+                self.unsaved = true;
+                self.remember(loc.clone());
+                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+            }
+            Ok(Outcome::Found(query, hits)) => {
+                if matches!(&self.mode, Mode::Found(q, _) if *q == query) {
+                    self.status = Some((
+                        match hits.len() {
+                            0 => format!("Nothing called \u{201c}{query}\u{201d}"),
+                            MAX_FOUND => {
+                                format!("The first {MAX_FOUND} found: type more to narrow it")
+                            }
+                            1 => "1 found".into(),
+                            n => format!("{n} found"),
+                        },
+                        false,
+                    ));
+                    self.mode = Mode::Found(query, hits);
+                    self.rebuild();
+                }
+            }
         }
     }
 
     /// Lists the current place again.
     pub fn refresh(&mut self) {
+        match &self.mode {
+            Mode::Versions(l, _) => return self.send(Job::Versions(l.clone())),
+            Mode::Found(q, _) => return self.send(Job::Search(q.clone(), MAX_FOUND)),
+            Mode::Folder => {}
+        }
         match self.current() {
             Source::Place(Place::Trash) => self.send(Job::Trash),
             Source::Place(_) => self.send(Job::List(self.folder.clone())),
@@ -669,74 +766,125 @@ impl Browser {
                 .map(|r| r.name.clone())
         });
         let fav = |l: &Loc| self.favourites.contains(l);
-        let mut rows: Vec<Row> = match self.current() {
-            Source::Place(Place::Trash) => self
-                .trash
+        let mut rows: Vec<Row> = match (&self.mode, self.current()) {
+            (Mode::Versions(project, list), _) => list
                 .iter()
-                .map(|t| Row {
-                    name: t.name.clone(),
-                    kind: t.kind,
-                    detail: t
-                        .from
-                        .as_ref()
-                        .and_then(Loc::parent)
-                        .map(|p| format!("from {}", p.display()))
-                        .unwrap_or_default(),
+                .map(|v| Row {
+                    name: if v.saved > 0 {
+                        format!("Saved {}", when(v.saved))
+                    } else {
+                        v.id.clone()
+                    },
+                    kind: Kind::Project,
+                    detail: String::new(),
                     favourite: false,
-                    loc: None,
-                    trash_id: Some(t.id.clone()),
-                    factory: None,
-                })
-                .collect(),
-            Source::Place(_) => self
-                .entries
-                .iter()
-                .filter_map(|e| {
-                    let loc = self.folder.join(&e.name).ok()?;
-                    Some(Row {
-                        detail: entry_detail(e),
-                        favourite: fav(&loc),
-                        name: e.name.clone(),
-                        kind: e.kind,
-                        loc: Some(loc),
-                        trash_id: None,
-                        factory: None,
-                    })
-                })
-                .collect(),
-            Source::Recent | Source::Favourites => {
-                let list = if self.current() == Source::Recent {
-                    &self.recent
-                } else {
-                    &self.favourites
-                };
-                list.iter()
-                    .map(|l| Row {
-                        name: l.name().to_string(),
-                        kind: guess_kind(l),
-                        detail: l.parent().map(|p| p.display()).unwrap_or_default(),
-                        favourite: fav(l),
-                        loc: Some(l.clone()),
-                        trash_id: None,
-                        factory: None,
-                    })
-                    .collect()
-            }
-            Source::Factory => self
-                .factory
-                .iter()
-                .enumerate()
-                .map(|(i, n)| Row {
-                    name: n.clone(),
-                    kind: Kind::Kit,
-                    detail: "read only".into(),
-                    favourite: false,
-                    loc: None,
+                    loc: Some(project.clone()),
                     trash_id: None,
-                    factory: Some(i),
+                    factory: None,
+                    version: Some(v.id.clone()),
+                    modified: v.saved,
                 })
                 .collect(),
+            (Mode::Found(_, hits), _) => hits
+                .iter()
+                .map(|(l, e)| Row {
+                    name: e.name.clone(),
+                    kind: e.kind,
+                    detail: l.parent().map(|p| p.display()).unwrap_or_default(),
+                    favourite: fav(l),
+                    loc: Some(l.clone()),
+                    trash_id: None,
+                    factory: None,
+                    version: None,
+                    modified: e.modified,
+                })
+                .collect(),
+            (Mode::Folder, src) => match src {
+                Source::Place(Place::Trash) => self
+                    .trash
+                    .iter()
+                    .map(|t| Row {
+                        name: t.name.clone(),
+                        kind: t.kind,
+                        detail: t
+                            .from
+                            .as_ref()
+                            .and_then(Loc::parent)
+                            .map(|p| format!("from {}", p.display()))
+                            .unwrap_or_default(),
+                        favourite: false,
+                        loc: None,
+                        trash_id: Some(t.id.clone()),
+                        factory: None,
+                        version: None,
+                        modified: 0,
+                    })
+                    .collect(),
+                Source::Place(_) => self
+                    .entries
+                    .iter()
+                    .filter_map(|e| {
+                        let loc = self.folder.join(&e.name).ok()?;
+                        Some(Row {
+                            detail: entry_detail(e),
+                            favourite: fav(&loc),
+                            name: e.name.clone(),
+                            kind: e.kind,
+                            loc: Some(loc),
+                            trash_id: None,
+                            factory: None,
+                            version: None,
+                            modified: e.modified,
+                        })
+                    })
+                    .collect(),
+                Source::Recent | Source::Favourites => {
+                    let list = if self.current() == Source::Recent {
+                        &self.recent
+                    } else {
+                        &self.favourites
+                    };
+                    list.iter()
+                        .map(|l| Row {
+                            name: l.name().to_string(),
+                            kind: guess_kind(l),
+                            detail: l.parent().map(|p| p.display()).unwrap_or_default(),
+                            favourite: fav(l),
+                            loc: Some(l.clone()),
+                            trash_id: None,
+                            factory: None,
+                            version: None,
+                            modified: 0,
+                        })
+                        .collect()
+                }
+                Source::Factory => self
+                    .factory
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Row {
+                        name: n.clone(),
+                        kind: Kind::Kit,
+                        detail: "read only".into(),
+                        favourite: false,
+                        loc: None,
+                        trash_id: None,
+                        factory: Some(i),
+                        version: None,
+                        modified: 0,
+                    })
+                    .collect(),
+            },
         };
+        if self.sort == Sort::Newest && !matches!(self.mode, Mode::Versions(..)) {
+            // Stable: equal times keep the name order.
+            rows.sort_by(|a, b| {
+                b.kind
+                    .is_folder()
+                    .cmp(&a.kind.is_folder())
+                    .then_with(|| b.modified.cmp(&a.modified))
+            });
+        }
         rows.retain(|r| self.filter.shows(r.kind));
         if let Some(p) = &self.pick {
             rows.retain(|r| p.shows(r));
@@ -771,6 +919,9 @@ impl Browser {
         let Some(loc) = row.loc.clone() else {
             return;
         };
+        if row.version.is_some() {
+            return;
+        }
         match row.kind {
             Kind::Audio(_) if row.trash_id.is_none() => {
                 let have = self.detail_info.as_ref().is_some_and(|(l, _)| *l == loc);
@@ -878,6 +1029,7 @@ impl Browser {
             return;
         }
         self.source = i;
+        self.mode = Mode::Folder;
         if let Source::Place(p) = SOURCES[i] {
             self.folder = match &self.pick {
                 Some(pk) if pk.root().place == p => pk.root(),
@@ -901,6 +1053,7 @@ impl Browser {
             self.source = i;
         }
         self.select_name = None;
+        self.mode = Mode::Folder;
         self.folder = folder;
         self.top = 0;
         self.selected = None;
@@ -913,6 +1066,15 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
+        if let Mode::Versions(l, _) = &self.mode {
+            self.select_name = Some(l.name().to_string());
+        }
+        if self.mode != Mode::Folder {
+            self.mode = Mode::Folder;
+            self.top = 0;
+            self.status = None;
+            return self.refresh();
+        }
         if self.at_pick_root() {
             return;
         }
@@ -1104,6 +1266,24 @@ impl Browser {
             Input::Key(k) => self.key(k),
             Input::ConfirmYes => self.confirm(true),
             Input::ConfirmNo => self.confirm(false),
+            Input::Search => {
+                self.modal = Modal::Keyboard {
+                    purpose: Purpose::Search,
+                    title: "Search the library for".into(),
+                    text: match &self.mode {
+                        Mode::Found(q, _) => q.clone(),
+                        _ => String::new(),
+                    },
+                    shift: false,
+                };
+            }
+            Input::Sort => {
+                self.sort = match self.sort {
+                    Sort::Name => Sort::Newest,
+                    Sort::Newest => Sort::Name,
+                };
+                self.rebuild();
+            }
         }
     }
 
@@ -1113,8 +1293,38 @@ impl Browser {
         }
         let row = self.selected_row().cloned();
         let loc = row.as_ref().and_then(|r| r.loc.clone());
+        // An earlier save's row stands for the project's folder: only
+        // opening it means anything (never Delete, Rename ... on the project).
+        if let Some(id) = row.as_ref().and_then(|r| r.version.clone()) {
+            if let (Button::Open | Button::Load, Some(loc)) = (b, loc) {
+                if self.unsaved {
+                    self.modal = Modal::Confirm {
+                        text: format!(
+                            "Unsaved changes. Open the save of \u{201c}{}\u{201d} from {} anyway?",
+                            loc.name(),
+                            row.as_ref().map_or(String::new(), |r| when(r.modified))
+                        ),
+                        what: Confirm::OpenVersion(loc, id),
+                    };
+                } else {
+                    self.send(Job::OpenVersion(loc, id));
+                }
+            }
+            return;
+        }
         match b {
             Button::Cancel => self.cancel_picker(),
+            Button::Versions => {
+                let Some(r) = row else { return };
+                let Some(loc) = loc.filter(|_| r.kind == Kind::Project) else {
+                    return;
+                };
+                self.mode = Mode::Versions(loc.clone(), Vec::new());
+                self.top = 0;
+                self.selected = None;
+                self.rows.clear();
+                self.send(Job::Versions(loc));
+            }
             Button::Load | Button::LoadToPad => {
                 let to_pad = b == Button::LoadToPad;
                 let Some(r) = row else { return };
@@ -1240,7 +1450,7 @@ impl Browser {
                 });
             }
             Button::Paste => {
-                if !self.current_source().is_writable_place() {
+                if !self.current_source().is_writable_place() || self.mode != Mode::Folder {
                     return;
                 }
                 let to = self.folder.clone();
@@ -1315,6 +1525,7 @@ impl Browser {
                 }
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
+                Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
             }
         }
     }
@@ -1348,6 +1559,19 @@ impl Browser {
             Key::Cancel => self.modal = Modal::None,
             Key::Done => {
                 let name = text.trim().to_string();
+                if *purpose == Purpose::Search {
+                    if name.is_empty() {
+                        return;
+                    }
+                    self.modal = Modal::None;
+                    self.mode = Mode::Found(name.clone(), Vec::new());
+                    self.top = 0;
+                    self.selected = None;
+                    self.rows.clear();
+                    self.status = Some((format!("Searching for \u{201c}{name}\u{201d}"), false));
+                    self.send(Job::Search(name, MAX_FOUND));
+                    return;
+                }
                 if !valid_name(&name) {
                     self.status = Some((
                         "That name can't be used: no / \\ : * ? \" < > |, and not starting with a dot".into(),
@@ -1370,6 +1594,7 @@ impl Browser {
                             self.actions.push(BrowseAction::SaveRequested);
                         }
                     }
+                    Purpose::Search => {}
                 }
             }
         }
@@ -1457,15 +1682,18 @@ impl Browser {
         let src = self.current();
         Screen {
             source: self.source,
-            path: match src {
-                Source::Place(Place::Trash) => "Trash".into(),
-                Source::Place(_) => self.folder.display(),
-                s => s.label().into(),
+            path: match (&self.mode, src) {
+                (Mode::Versions(l, _), _) => format!("{} / Earlier saves", l.name()),
+                (Mode::Found(q, _), _) => format!("Search: \u{201c}{q}\u{201d}"),
+                (_, Source::Place(Place::Trash)) => "Trash".into(),
+                (_, Source::Place(_)) => self.folder.display(),
+                (_, s) => s.label().into(),
             },
-            can_go_back: src != Source::Place(Place::Trash)
-                && self.current_source().is_place()
-                && !self.folder.is_top()
-                && !self.at_pick_root(),
+            can_go_back: self.mode != Mode::Folder
+                || (src != Source::Place(Place::Trash)
+                    && self.current_source().is_place()
+                    && !self.folder.is_top()
+                    && !self.at_pick_root()),
             rows: self.rows.clone(),
             selected: self.selected,
             top: self.top,
@@ -1473,6 +1701,8 @@ impl Browser {
             detail: self.detail(),
             list_buttons: match src {
                 _ if self.pick.is_some() => vec![Button::Cancel],
+                // Nothing to make or paste in a search or a project's saves.
+                _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
                     // Projects are made by saving, so no New folder there.
@@ -1507,11 +1737,33 @@ impl Browser {
                 FILTERS.to_vec()
             },
             pick: self.pick.clone(),
+            sort: self.sort,
         }
     }
 
     fn detail(&self) -> Detail {
         let Some(r) = self.selected_row() else {
+            match &self.mode {
+                Mode::Versions(l, _) => {
+                    return Detail {
+                        title: l.name().into(),
+                        kind: "No earlier saves yet: each save keeps the one before".into(),
+                        ..Detail::default()
+                    }
+                }
+                Mode::Found(q, _) => {
+                    return Detail {
+                        title: format!("\u{201c}{q}\u{201d}"),
+                        kind: if self.pending > 0 {
+                            "Searching…".into()
+                        } else {
+                            "Nothing found".into()
+                        },
+                        ..Detail::default()
+                    }
+                }
+                Mode::Folder => {}
+            }
             return Detail {
                 title: self.current().label().into(),
                 kind: match self.current() {
@@ -1533,6 +1785,14 @@ impl Browser {
             d.lines
                 .push(("Was in".into(), from.trim_start_matches("from ").into()));
             d.buttons = vec![Button::Restore];
+            return d;
+        }
+        if let (Some(_), Some(l)) = (&r.version, &r.loc) {
+            d.kind = "Earlier save".into();
+            d.lines.push(("Project".into(), l.name().into()));
+            d.lines
+                .push(("Kept".into(), format!("The last {KEEP_VERSIONS} saves")));
+            d.buttons = vec![Button::Open];
             return d;
         }
         if r.factory.is_some() {
@@ -1602,6 +1862,7 @@ impl Browser {
                 }
                 d.buttons = vec![
                     Button::Open,
+                    Button::Versions,
                     Button::Favourite,
                     Button::Rename,
                     Button::Copy,
@@ -1648,8 +1909,8 @@ impl Browser {
                 d.buttons = vec![Button::Rename, Button::Copy, Button::Cut, Button::Delete];
             }
         }
-        if !self.current_source().is_writable_place() {
-            // Recent and Favourites point at things: no cut or rename there.
+        if !self.current_source().is_writable_place() || self.mode != Mode::Folder {
+            // Recent, Favourites and search results point at things: no cut or rename there.
             d.buttons
                 .retain(|b| !matches!(b, Button::Cut | Button::Rename));
         }
