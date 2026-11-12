@@ -50,6 +50,7 @@
 #![forbid(unsafe_code)]
 
 mod chain;
+mod character;
 mod cloud;
 mod comb;
 mod comp;
@@ -63,10 +64,13 @@ mod mixer;
 mod modfx;
 mod oversample;
 mod perform;
+mod presets;
+pub mod print;
 mod svf;
 mod xy;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
+pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
 pub use comb::Comb;
 pub use comp::Compressor;
@@ -77,25 +81,29 @@ pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use mixer::{
-    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, Mixer, MixerConfig,
-    MixerStats, StripId, BUSES, CAPTURES, MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS,
-    SILENT_DB,
+    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, FreezeState, Mixer,
+    MixerConfig, MixerStats, StripId, BUSES, CAPTURES, FREEZE_FADE_MS, MAX_INPUTS, MAX_PADS,
+    MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
-pub use oversample::{Down2, Up2};
+pub use oversample::{Down2, IirDown2, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
     SLOTS as PERFORM_SLOTS,
 };
+pub use presets::presets;
+pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use xy::{XyAxis, XyPad};
 
+pub use mpfree_lanes;
 pub use mpfree_node;
 
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
     pub use crate::comb::ids as comb;
     pub use crate::comp::ids as compressor;

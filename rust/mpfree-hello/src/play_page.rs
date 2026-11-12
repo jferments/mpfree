@@ -852,6 +852,9 @@ impl PlayPage {
                     s.nudge = n.clamp(-half, half - 1);
                 }
                 Change::Chance(c) => s.chance = c,
+                Change::Cond(c) if c.ok() => s.cond = c,
+                Change::Cond(_) => {}
+                Change::Ratchet(r) => s.ratchet = r.clamp(1, mpfree_seq::MAX_RATCHET),
             }
         }
     }

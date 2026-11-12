@@ -276,6 +276,15 @@ Round 7 puts the pad player on the layout the owner approved (2026-11-11, [layou
 
 **The check** has twelve read-only phases now: developer tools and Map controls; the Dev pages; kits, banks and pad levels; Grains; the synth; Note Repeat and the arp; clips, overdub, undo and Capture; the audio looper; the Sample tab; Prefs, System info and saving; the Touch lab and Calibrate touch (both now in Prefs > Touch screen); menus, console and STOP. The line input step and the benchmark step each come after their own go, and a second boot shows whether the settings came back.
 
+### Dev > Touch (#145)
+
+With the developer tools on, the Dev strip has a **Touch** page between Map controls and Console. It tests the touchscreen, measures it and tunes it ([M17](../milestones/m17-touch-tuning.md)).
+
+- **The test area** draws each finger with its trail, its untuned position and the panel's raw reading, and names the gestures the current thresholds see. Its bar has Free, Targets (nine rings over the whole page), Swipes and Clear.
+- **The tuning list** shows each value now and suggested, with the reason. The wheel picks a value and - / + changes it at once. Use suggested, Defaults and Save work with wheel and + as well, so they never need the screen.
+- **MENU** opens Calibrate touch and the Touch lab.
+- **Save** writes `settings/touch.conf` to the data partition, which is read at the next start. The shift, stretch and hold filter apply to every touch. The gesture values apply to the Touch page and the Touch lab.
+
 ### The factory drum kits
 
 [`offline-factory-kit.py`](../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):

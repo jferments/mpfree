@@ -387,6 +387,8 @@ pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> 
             sources: rec_sources(),
             live,
             last: String::new(),
+            can_flatten: project.pad(PAD).is_some(),
+            flattening: None,
         };
         let mut ui = app_ui_with(fonts(), &project, rec_tab::HINT);
         let tab = RecTab::add(&mut ui, REC_PAGE, &state, RATE)?;
@@ -447,6 +449,29 @@ pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> 
     s.tab.update(&mut s.ui, &st);
     feed_input(&mut s.feed, 25.0, 0.7, true);
     s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
+    out.push(s);
+
+    let mut s = make(
+        "rec-flatten",
+        "Flatten: the pad picked resampled from its own channel as it plays, held for 1 s, onto the next empty pad",
+        true,
+    )?;
+    let mut st = s.state.clone();
+    st.flattening = Some(format!(
+        "Flattening {} onto {}",
+        chop_tab::pad_text(None, PAD),
+        st.target
+            .map_or_else(String::new, |p| chop_tab::pad_text(None, p))
+    ));
+    s.tab.update(&mut s.ui, &st);
+    s.state = st;
+    feed_input(&mut s.feed, 3.0, 0.0, false);
+    let rec = s.tab.settings.flatten_recording(&s.input);
+    feed_input(&mut s.feed, 1.4, 0.6, false);
+    let mut rec = rec;
+    rec.poll(&s.input).map_err(|e| e.to_string())?;
+    s.tab.feed(&mut s.ui, &s.input, Some(&rec), true, 0.05);
+    s.recording = Some(rec);
     out.push(s);
 
     let mut s = make(

@@ -17,8 +17,8 @@
 
 use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
-    chorus, cloud, comb, compressor as comp, crush, delay, drive, eq, filter, flanger, lofi,
-    master, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, drive, eq, filter, flanger,
+    lofi, master, phaser,
 };
 use mpfree_fx::Cloud;
 use mpfree_synth_ui::format::value_text;
@@ -59,6 +59,7 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.compressor"
             | "mpfree.fx.cloud"
             | "mpfree.fx.master_safety"
+            | "mpfree.fx.character"
     )
 }
 
@@ -287,6 +288,7 @@ pub fn strip(
                 page,
             );
         }
+        Scratch::Character(c) => character_cards(&mut s, st, page, c, t),
         Scratch::Comb(c) => comb_cards(&mut s, st, page, c, t),
         Scratch::Delay(d) => delay_card(&mut s, st, page, d, t),
         Scratch::Chorus(c) => {
@@ -950,5 +952,79 @@ fn cloud_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
             ..Card::default()
         },
         "Tone",
+    );
+}
+
+/// Character: the curve a sample meets (Console, Tape, Iron) or, for
+/// Soften, how its steps are held; and a sine through it as it plays.
+fn character_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Character, t: &Theme) {
+    let y = |out: f32| (0.5 + out / 2.5).clamp(0.0, 1.0);
+    let soften = st.value(character::MODE) >= character::SOFTEN;
+    let unity = vec![(0.0, y(-1.0)), (1.0, y(1.0))];
+    let curve: Vec<(f32, f32)> = (0..N)
+        .map(|k| {
+            let x = k as f32 / (N - 1) as f32;
+            (x, y(c.curve(2.0 * x - 1.0)))
+        })
+        .collect();
+    s.push(
+        Card {
+            title: "Curve".into(),
+            caption: if soften {
+                format!(
+                    "{} · no curve: it holds steps, not levels",
+                    text(st, character::MODE)
+                )
+            } else {
+                format!(
+                    "{} · {} · quiet sounds pass at their level",
+                    text(st, character::MODE),
+                    text(st, character::AMOUNT)
+                )
+            },
+            traces: vec![dashed(unity, t.text_faint), line(curve, t.warn)],
+            midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+    // Soften shows a loud high sine (what it softens); the others a loud
+    // low one (what they hold).
+    let (hz, label) = if soften {
+        (6000.0, "a 6 kHz sine at -3 dB")
+    } else {
+        (100.0, "a 100 Hz sine at -3 dB")
+    };
+    let mut out = vec![0.0f32; N];
+    c.sine_through(hz, 0.7, &mut out);
+    let phase = |k: usize| k as f32 / (N - 1) as f32;
+    s.push(
+        Card {
+            title: "A sine through it".into(),
+            caption: format!("{label}, before Output and Mix"),
+            traces: vec![
+                dashed(
+                    (0..N)
+                        .map(|k| {
+                            let p = phase(k);
+                            (p, y(0.7 * (2.0 * std::f32::consts::PI * p).sin()))
+                        })
+                        .collect(),
+                    t.text_faint,
+                ),
+                line(
+                    out.iter()
+                        .enumerate()
+                        .map(|(k, &v)| (phase(k), y(v)))
+                        .collect(),
+                    t.warn,
+                ),
+            ],
+            midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
     );
 }

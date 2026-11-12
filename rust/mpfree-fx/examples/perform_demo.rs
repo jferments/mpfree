@@ -16,7 +16,8 @@
 //! - bar 9: **Trance gate 1/16** with an **HP sweep**
 //! - bar 10: **Echo throw 1/8 dotted** on the snare of beat 2, ringing out
 //! - bar 11: **LP sweep** for the bar
-//! - bar 12: **Crush** on beats 1-2, an **Echo throw 1/4** on beat 4
+//! - bar 12: **Crush** on beats 1-2, a **Wash throw** on beat 4, ringing
+//!   into bar 13
 //! - bar 13: **Noise riser** into a **Beat repeat 1/4** on beat 4
 //! - bar 14: dry, then a last hit that rings out to the end of bar 15.
 //!
@@ -246,7 +247,7 @@ fn main() {
         (9, 37.0 - 0.02, 37.3),         // bar 10: echo throw 1/8D
         (10, 40.0 - 0.03, 44.0 - 0.02), // bar 11: LP sweep
         (11, 44.0 + 0.04, 46.0),        // bar 12: crush
-        (15, 47.0 - 0.02, 47.3),        // echo throw 1/4
+        (15, 47.0 - 0.02, 47.6),        // wash throw
         (12, 48.0 - 0.02, 51.0),        // bar 13: noise riser...
         (14, 51.0 - 0.03, 52.0 - 0.01), // ...into a beat repeat 1/4
         (0, 52.0 + 0.5, 52.0 + 0.5),    // bar 14: a tap shorter than the grid: nothing
@@ -297,7 +298,7 @@ fn main() {
         "gate + HP sweep",
         "echo throw",
         "LP sweep",
-        "crush + echo",
+        "crush + wash",
         "riser + repeat",
         "dry, last hit",
         "ring out",

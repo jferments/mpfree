@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-moves"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Recorded parameter moves (automation) for clips: Perform FX pads, the XY pad, the DJ knob and knob turns as gestures in lanes, played back on a fixed tick grid, an always-on log for capturing the last phrase of moves; nothing allocates while playing or logging"
+
+[lib]
+name = "mpfree_moves"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-param = { path = "../mpfree-param" }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-transport = { path = "../mpfree-transport" }
