@@ -121,6 +121,41 @@ Before=local-fs-pre.target. Actual kernel policy enforcement was not
 tested. Generic ARM virt is running Linux 7.0.14, so its boot should
 NOT be confused with booting the vendor 6.18.44 kernel.
 
+## Additional verified static evidence: 3.10 LoadPin and bootloader digest tools
+
+The source archive also contains complete ARM objdump listings (not
+executed binaries) for two SHA-pinned 3.10 ELF utilities.
+
+**/usr/sbin/az0x-loadpin-trustpoints**
+SHA-256 fd59c2946b2f8e4bc1c143d5270881aa2168ad2851c4726748642d2f4e040239.
+The helper calls an ioctl at ARM offset 0x740 with r1 set by
+mov/movt to 0x40044C00. This is the Linux UAPI
+LOADPIN_IOC_SET_TRUSTED_VERITY_DIGESTS (type 'L', request 0,
+argument unsigned int file descriptor). The Linux LoadPin subsystem
+reads trusted verity root digests through its securityfs interface.
+The source confirms the operation is for configuring trusted verity
+digests, NOT necessarily for verifying the kernel before U-Boot boots it.
+A running kernel's configuration and enforcement policy remain unknown.
+
+Upstream kernel UAPI reference:
+https://codebrowser.dev/linux/linux/include/uapi/linux/loadpin.h.html
+
+**/usr/bin/az01-bootloader-sig**
+SHA-256 b7a82030c85ea90e31533773538abfc537d46982bdeaead6963ec9e5ea9a5861.
+The decompiled ELF assembly calls RC4_set_key with a 16-byte key
+and RC4 with a 512-byte length, together with SHA256_Init,
+SHA256_Update, SHA256_Final and a 32-byte memcmp. This is actual
+static evidence of a combined RC4/SHA256-related computation,
+not a proven RSA verification in the normal U-Boot bootz path.
+We have NOT proved which on-disk bytes are opened/compared, whether
+the OS invokes this utility at normal boot, or any immutable-ROM
+signature enforcement.
+
+These facts are now derived independently by source-only
+synthesize_310_security_utilities.py, with strict original SHA
+validation and synthetic missing-evidence tests. The next integrated
+ZIP will contain security-310-utilities.json and .md.
+
 ## New source-only work for the next private round
 
 - Fixed guest section parser to accept digits and added regression.
