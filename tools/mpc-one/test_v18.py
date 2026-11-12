@@ -10,9 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT=Path(__file__).resolve().parents[2]
-if not (ROOT/"mpc-one/run_v18.py").exists():
-    ROOT=Path(__file__).resolve().parents[3]/"tools"
+ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location(
     "mpfree_v18_test",ROOT/"mpc-one/run_v18.py")
 v18=importlib.util.module_from_spec(spec)
