@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-12 26b6821
+checked: 2026-11-12 6312050
 -->
 
 # Recording loops
@@ -15,7 +15,7 @@ You perform a loop on the Play page (the looper strip in the All view, or the bi
 The looper is part of the song, not a separate machine running beside it:
 
 - **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line; it stops after the number of bars you set. So the loop is always a whole number of bars, and always in time with your patterns.
-- **It follows the song's position.** Stop and start the transport and the loop picks up exactly where the song is. It is silent while the transport is stopped.
+- **It follows the song's position.** Stop and start the transport and the loop picks up exactly where the song is. It is silent while the transport is stopped, and its playhead stops too, at the place the song will start from again (press STOP twice and it goes back to the start of the loop, with the song).
 - **The tempo is the song's tempo.** Change the tempo and a playing loop follows it and keeps its pitch. MPFree re-makes the loop at the new tempo in the background, which takes a fraction of a second; until it is ready, the loop plays faster or slower, like tape. Overdub over a loop at its new tempo and MPFree first fits the loop to that tempo, so the new layer lines up. The fit is its own step: UNDO takes back the overdub, then the fit.
 - **There are no clicks.** The end of the loop is blended into its start, and every start, stop, punch in and out, mute and undo is faded in a few milliseconds.
 
@@ -56,7 +56,7 @@ Every loop plays at once, in time with the song, but only one records at a time:
 
 ### The editor
 
-The picked loop's waveform runs across the top, with its length, tempo and source above it. Under it is a **lane for each layer**, with its own waveform and:
+The picked loop's waveform runs across the top, with its length, tempo and source above it. While the first pass records, the waveform grows as you play, drawn against the bars you set (with a free length, against two bars, then four, and so on). Under it is a **lane for each layer**, with its own waveform and:
 
 - **the speaker** to mute that layer,
 - **S** to solo it (hear only this layer of the loop),

@@ -54,8 +54,10 @@
 //!   Commands that would cut a fade short wait for it to end (at most
 //!   [`FADE`] frames).
 //! - **Stopped:** the loops are silent while the transport is stopped or
-//!   counting in. Overdub pressed while stopped waits for the transport to
-//!   play; stopping ends an overdub (with a fade).
+//!   counting in. Once a loop has faded out, its position waits at the
+//!   song position's place, so the playhead stops with the transport and
+//!   shows where it will start again. Overdub pressed while stopped waits
+//!   for the transport to play; stopping ends an overdub (with a fade).
 //! - **Latency:** the player hears the loop late (the output buffer) and
 //!   their playing reaches the input late (the input buffer). Input that
 //!   arrives `latency` frames after a moment belongs to that moment, so it
@@ -477,6 +479,9 @@ pub struct Status {
     /// A saved loop copying in ([`Looper::load`]): how much is done, 0 to
     /// 1. The loop is empty and silent until it is all in.
     pub loading: Option<f32>,
+    /// Frames of the first pass recorded so far, while it records (0
+    /// otherwise): what [`Looper::first_pass`] reads.
+    pub recorded: usize,
 }
 
 /// The memory gauge: all the loops together.
@@ -510,6 +515,62 @@ impl LayerView<'_> {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Frames `from..from + out.len()` into `out`: the same values as
+    /// indexing gives, a block at a time where the audio plays whole and
+    /// written. For a reader of many frames at once (the screen's
+    /// waveform), which indexing frame by frame makes slow.
+    pub fn read(&self, from: usize, out: &mut [[f32; 2]]) {
+        assert!(
+            from + out.len() <= self.len,
+            "frames {from}..{} of a layer of {} frames",
+            from + out.len(),
+            self.len
+        );
+        let size = self.view.size();
+        if size == 0 {
+            out.fill([0.0; 2]);
+            return;
+        }
+        let blocks = self.store.blocks_of(self.lp, self.slot);
+        let (start, count) = self.valid;
+        let whole = self.view.is_whole();
+        if whole && count >= size {
+            let mut j = 0;
+            while j < out.len() {
+                let q = from + j;
+                let (b, o) = (q / BLOCK, q % BLOCK);
+                let n = (BLOCK - o).min(out.len() - j);
+                match blocks.get(b) {
+                    Some(&k) => {
+                        let i = 2 * (k as usize * BLOCK + o);
+                        let src = &self.store.pool[i..i + 2 * n];
+                        for (y, x) in out[j..j + n].iter_mut().zip(src.chunks_exact(2)) {
+                            *y = [x[0], x[1]];
+                        }
+                    }
+                    None => out[j..j + n].fill([0.0; 2]),
+                }
+                j += n;
+            }
+            return;
+        }
+        let mut at = Cursor::new(&self.view);
+        let pieces = self.view.pieces();
+        for (j, y) in out.iter_mut().enumerate() {
+            let q = if whole {
+                from + j
+            } else {
+                let (i, off) = at.locate(from + j);
+                self.view.frame(&pieces[i], off as i64)
+            };
+            *y = if (q + size - start) % size < count {
+                self.store.frame(blocks, q / BLOCK, q % BLOCK)
+            } else {
+                [0.0; 2]
+            };
+        }
     }
 }
 
@@ -933,6 +994,8 @@ struct Loop {
     n_undone: usize,
     // The first pass.
     start_frame: u64,
+    /// Frames of the first pass written so far, while it records.
+    written: usize,
     end_tick: Option<Tick>,
     ending: bool,
     /// Go straight into an overdub when the first pass ends.
@@ -1057,6 +1120,7 @@ impl Loop {
         undone: [NO_ACT; HISTORY],
         n_undone: 0,
         start_frame: 0,
+        written: 0,
         end_tick: None,
         ending: false,
         then_overdub: false,
@@ -1250,6 +1314,11 @@ impl Looper {
             loading: l
                 .loading
                 .then(|| l.ld_done as f32 / (l.ld_frames * l.ld_layers).max(1) as f32),
+            recorded: if l.phase == Phase::Recording {
+                l.written
+            } else {
+                0
+            },
         })
     }
 
@@ -1522,6 +1591,21 @@ impl Looper {
             len: l.len,
             valid,
             view: l.views[slot],
+        })
+    }
+
+    /// Loop `n`'s first pass as far as it has recorded, while it records
+    /// ([`Status::recorded`] frames), for a waveform that grows as it
+    /// records. None before the first frame and once the pass has ended.
+    pub fn first_pass(&self, n: usize) -> Option<LayerView<'_>> {
+        let l = self.loops.get(n)?;
+        (l.phase == Phase::Recording && l.written > 0).then_some(LayerView {
+            store: &self.store,
+            lp: n,
+            slot: 0,
+            len: l.written,
+            valid: (0, l.written),
+            view: View::whole(l.written),
         })
     }
 
@@ -1991,7 +2075,9 @@ impl Loop {
     /// Move the loop's position on a frame; `tick` is that frame's song
     /// position. While playing it is the song position's place in the
     /// loop; while not, it runs on so the sound fades out where it was
-    /// going. A jump starts a crossfade.
+    /// going, then, once silent, waits at the song position's place (where
+    /// the transport will start again), so the playhead stops with the
+    /// transport. A jump starts a crossfade.
     fn follow(&mut self, tick: f64, playing: bool, first: bool) {
         if self.len == 0 {
             return;
@@ -2017,12 +2103,15 @@ impl Loop {
                 (self.xf_pos + 1.0) % old_len
             };
         }
-        if !playing {
+        if !playing && self.gain > 0.0 {
             self.pos = (was + 1.0) % len;
             return;
         }
         let rel = rem_ticks(tick - self.origin as f64, self.len_ticks as f64);
         self.pos = (rel / self.len_ticks as f64 * len).min(len - 1e-6);
+        if !playing {
+            return;
+        }
         // Fade old: the loop came round (forwards, a frame or so on, not a
         // jump) while overdubbing.
         if self.fade_old < 1.0
@@ -2057,7 +2146,8 @@ impl Loop {
         if self.jump > 0 {
             self.pjump_pos = (self.pjump_pos + 1.0) % pf;
         }
-        self.ppos = if playing {
+        // As the loop's: on while it fades out, then at the song position.
+        self.ppos = if playing || self.gain == 0.0 {
             let rel = rem_ticks(tick - self.p_origin as f64, self.p_ticks as f64);
             (rel / self.p_ticks as f64 * pf).min(pf - 1e-6)
         } else {
@@ -2892,6 +2982,7 @@ impl Loop {
         self.ending = false;
         self.then_overdub = false;
         self.first_open = false;
+        self.written = 0;
         self.od_open = false;
         self.clearing = false;
         self.gain = 0.0;
@@ -2957,6 +3048,7 @@ impl Loop {
                 self.first_open = true;
                 self.rec_latency = if self.resample { 0 } else { self.latency };
                 self.len = 0;
+                self.written = 0;
             }
             _ => {}
         }
@@ -3033,6 +3125,7 @@ impl Loop {
             return;
         }
         store.set(me, 0, j, x);
+        self.written = self.written.max(j + 1);
     }
 
     /// The loop point: the end fades into the input from just before the

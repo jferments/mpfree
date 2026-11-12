@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 6312050
 -->
 
 # Your first loop
@@ -20,7 +20,7 @@ On the **Play** page, tap **Loop** in the view switch. The loop takes the top of
 
 1. Set the tempo you want (see [Your first beat](first-beat.md#set-the-tempo)). The loop keeps it.
 2. Press **PLAY**. The transport bar counts bars and beats.
-3. Tap **Record**. The loop waits for the start of the next bar, then records. You'll see **RECORDING**.
+3. Tap **Record**. The loop waits for the start of the next bar, then records. You'll see **RECORDING**, and the waveform of what you play grows across the loop as it records.
 4. Play the pads. A first loop is two bars long, so play a two-bar beat.
 5. After two bars the loop stops recording by itself and starts playing back what you played. You'll see **PLAYING**.
 
