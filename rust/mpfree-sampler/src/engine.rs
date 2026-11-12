@@ -555,7 +555,21 @@ pub enum Event {
         field: ProgramField,
         value: f32,
     },
+    /// Live chop on pad `pad`'s sound (`Some`), or off (`None`): while
+    /// it is on and the pad's audition plays, [`Event::Mark`] notes where
+    /// the audition is in its source ([`Engine::mark`]). Turned off, the
+    /// audition stops (fading out); it ends by itself when the audition
+    /// does ([`Engine::marking`]).
+    LiveChop {
+        pad: Option<u8>,
+    },
+    /// While live chop is on: a cut where the audition is now, to the
+    /// frame. Nothing plays.
+    Mark,
 }
+
+/// The cuts live chop keeps for reading ([`Engine::mark`]).
+pub const MAX_MARKS: usize = 64;
 
 /// A pad setting [`Event::PadLive`] changes while the pad plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -759,6 +773,8 @@ struct Voice {
     plain_step: i64,
     /// The note a keygroup voice plays ([`NO_NOTE`] for a pad hit).
     note: u8,
+    /// An audition (a slice, or the region for live chop).
+    audition: bool,
     /// How fast it plays against its step: the tape's speed with wow and
     /// flutter (1 when neither moves).
     speed: f32,
@@ -1218,6 +1234,11 @@ pub struct Engine {
     /// Split: [`Engine::stop_all`] came while the lane's share was away;
     /// it stops when it comes back.
     stop_lane: bool,
+    /// Live chop: the pad whose audition marks are taken from.
+    chop_pad: Option<u8>,
+    /// Live chop's cuts, in source frames: cut `i` at `marks[i % MAX_MARKS]`.
+    marks: [u64; MAX_MARKS],
+    marks_made: u64,
 }
 
 /// Wow and flutter at full depth: cents and cycles a second of each
@@ -1258,6 +1279,9 @@ impl Engine {
             },
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
+            chop_pad: None,
+            marks: [0; MAX_MARKS],
+            marks_made: 0,
         }
     }
 
@@ -1363,18 +1387,24 @@ impl Engine {
     /// voice playing a stretched copy, the source frame that part of the
     /// copy was made from.
     pub fn playheads(&self) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
-        self.pool.iter().filter(|(v, _)| v.active).map(|(v, g)| {
-            let at = if v.granular {
-                v.start + (f64::from(g.playhead()) * (v.end - v.start) as f64) as i64
-            } else {
-                let pos = v.pos >> 32;
-                match self.copy_map(v) {
-                    Some(map) => map.source(pos as f64).round() as i64,
-                    None => pos,
-                }
-            };
-            (v.pad, v.layer, at.max(0) as u64)
-        })
+        self.pool
+            .iter()
+            .filter(|(v, _)| v.active)
+            .map(|(v, g)| (v.pad, v.layer, self.source_frame(v, g)))
+    }
+
+    /// Where voice `v` is in its source: see [`Engine::playheads`].
+    fn source_frame(&self, v: &Voice, g: &GrainVoice) -> u64 {
+        let at = if v.granular {
+            v.start + (f64::from(g.playhead()) * (v.end - v.start) as f64) as i64
+        } else {
+            let pos = v.pos >> 32;
+            match self.copy_map(v) {
+                Some(map) => map.source(pos as f64).round() as i64,
+                None => pos,
+            }
+        };
+        at.max(0) as u64
     }
 
     /// The map of the stretched copy voice `v` plays, if it plays one.
@@ -1489,7 +1519,57 @@ impl Engine {
             } => self.audition(pad, layer, start, end, velocity),
             Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
             Event::ProgramLive { field, value } => self.program_live(field, value),
+            Event::LiveChop { pad } => {
+                if let (None, Some(was)) = (pad, self.chop_pad) {
+                    for (v, _) in self.pool.iter_mut() {
+                        if v.active && v.audition && v.pad == was {
+                            Self::kill(v);
+                        }
+                    }
+                }
+                self.chop_pad = pad;
+            }
+            Event::Mark => {
+                if let Some(at) = self.chop_pad.and_then(|p| self.audition_at(p)) {
+                    self.marks[(self.marks_made % MAX_MARKS as u64) as usize] = at;
+                    self.marks_made += 1;
+                }
+            }
         }
+    }
+
+    /// Where pad `pad`'s newest audition is in its source, if one plays.
+    fn audition_at(&self, pad: u8) -> Option<u64> {
+        let mut best: Option<(u64, u64)> = None;
+        for (v, g) in self.pool.iter() {
+            if v.active && v.audition && v.pad == pad && v.kill_left == 0 {
+                let at = self.source_frame(v, g);
+                if best.is_none_or(|(age, _)| v.age > age) {
+                    best = Some((v.age, at));
+                }
+            }
+        }
+        best.map(|(_, at)| at)
+    }
+
+    /// The pad live chop takes cuts from, while it is on and that pad's
+    /// audition plays: hits mark cuts ([`Event::Mark`]) instead of playing
+    /// then. `None` once the audition ends, even before live chop is
+    /// turned off.
+    pub fn marking(&self) -> Option<u8> {
+        self.chop_pad.filter(|&p| self.audition_at(p).is_some())
+    }
+
+    /// How many cuts live chop has made.
+    pub fn marks_made(&self) -> u64 {
+        self.marks_made
+    }
+
+    /// Cut `i` (from 0, in the order made), in source frames, while it is
+    /// among the last [`MAX_MARKS`].
+    pub fn mark(&self, i: u64) -> Option<u64> {
+        (i < self.marks_made && self.marks_made - i <= MAX_MARKS as u64)
+            .then(|| self.marks[(i % MAX_MARKS as u64) as usize])
     }
 
     /// [`Event::PadLive`]: the table, then the playing voices of the pad.
@@ -1670,6 +1750,9 @@ impl Engine {
     }
 
     fn audition(&mut self, pad: u8, layer: u8, start: u32, end: u32, velocity: u8) {
+        // A new audition ends live chop (Player::live_chop turns it on
+        // again after its own).
+        self.chop_pad = None;
         if velocity == 0 || start >= end {
             return;
         }
@@ -2088,6 +2171,7 @@ impl Engine {
             warp_bpm: l.warp_bpm,
             plain_step: plain,
             note,
+            audition: vary.slice.is_some(),
             speed: 1.0,
             base_gain_l: gain_l,
             base_gain_r: gain_r,

@@ -180,6 +180,17 @@ pub enum Editor {
     Auto,
 }
 
+/// Live chop under way: the pad whose sound plays, the cuts read so far,
+/// and whether the sound has been heard marking yet.
+struct LiveRun {
+    kit: usize,
+    pad: usize,
+    layer: usize,
+    seen: u64,
+    heard: bool,
+    kept: usize,
+}
+
 /// A take being recorded, and the pad it goes onto.
 struct Take {
     rec: Recording,
@@ -388,8 +399,13 @@ pub struct SamplePage {
     want_back: bool,
     take: Option<Take>,
     flatten: Option<Flatten>,
-    /// Hits and lifts for the audio thread (Flatten).
+    /// Hits and lifts for the audio thread (Flatten), and live chop's
+    /// stop.
     hits: Vec<FromUi>,
+    /// Live chop on the Chop tab, while it runs.
+    live: Option<LiveRun>,
+    /// The cuts the sampler has marked so far (from the playheads).
+    marks_seen: u64,
     /// Takes made, for their names.
     takes: u32,
     /// The last take, said in a line on the tab.
@@ -471,6 +487,8 @@ impl SamplePage {
             take: None,
             flatten: None,
             hits: Vec::new(),
+            live: None,
+            marks_seen: 0,
             takes: 0,
             last_take: String::new(),
             auto: None,
@@ -541,6 +559,10 @@ impl SamplePage {
     /// A pad was hit: the tab edits it (or, with the pads playing notes,
     /// the keygroup that plays its note) from now on.
     pub fn hit(&mut self, pad: usize) {
+        if self.live.is_some() {
+            // Live chop: the hit marks a cut and the pad stays.
+            return;
+        }
         if self.auditioning == Some(pad) {
             // Its own release lets it go.
             self.auditioning = None;
@@ -569,6 +591,10 @@ impl SamplePage {
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
+        if self.live.is_some() {
+            self.light(ui, self.played(pad), true);
+            return;
+        }
         if let Some(src) = self.assign.take() {
             // Load to pad: this hit picks the pad.
             let kit = self.kit;
@@ -720,6 +746,16 @@ impl SamplePage {
         self.chop_state = None;
         if self.editor == Editor::Chop {
             self.refresh_chop(ui, bank);
+        }
+        // Another tab, pad or region: live chop stops.
+        let stopped = match (self.chop.as_mut(), self.chop_state.as_ref()) {
+            (Some(tab), Some(st)) if self.editor == Editor::Chop => {
+                tab.take_stop(st).is_some() || !tab.live()
+            }
+            _ => true,
+        };
+        if stopped && self.live.is_some() {
+            self.stop_live("stopped");
         }
         self.play_state = None;
         if self.editor == Editor::Play {
@@ -1160,6 +1196,36 @@ impl SamplePage {
     fn act_chop(&mut self, ui: &mut Ui, a: ChopAction, out: &mut Vec<FromUi>) {
         match &a {
             ChopAction::Tab(i) => self.open(ui, *i),
+            &ChopAction::Live {
+                pad,
+                layer,
+                start,
+                end,
+                on: true,
+            } => {
+                let kit = self.kit;
+                self.live = Some(LiveRun {
+                    kit,
+                    pad,
+                    layer,
+                    seen: self.marks_seen,
+                    heard: false,
+                    kept: 0,
+                });
+                out.push(FromUi::SampleLiveChop {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                    on: true,
+                });
+                self.lines.push(format!(
+                    "sample: live chop on pad {}: hit pads in time to drop cuts",
+                    self.pad_text(kit, pad)
+                ));
+            }
+            ChopAction::Live { on: false, .. } => self.stop_live("stopped"),
             &ChopAction::Audition {
                 pad,
                 layer,
@@ -1835,7 +1901,39 @@ impl SamplePage {
         if let Some(pad) = self.auditioning.take() {
             out.push(FromUi::Pad { pad, down: false });
         }
+        if self.live.is_some() {
+            self.stop_live("stopped");
+        }
         self.lift();
+    }
+
+    /// Live chop ends: the sound stops (the audio thread hears of it with
+    /// the next actions) and the log says how many cuts it made.
+    fn stop_live(&mut self, why: &str) {
+        let Some(run) = self.live.take() else { return };
+        self.hits.push(FromUi::SampleLiveChop {
+            kit: run.kit,
+            pad: run.pad,
+            layer: run.layer,
+            start: 0,
+            end: 0,
+            on: false,
+        });
+        let n = run.kept;
+        self.lines.push(format!(
+            "sample: live chop {why} on pad {}: {n} cut{} made",
+            self.pad_text(run.kit, run.pad),
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Whether the Chop tab chops live (its hint says how).
+    pub fn chop_live_method(&self) -> bool {
+        self.page() == CHOP_PAGE
+            && self
+                .chop
+                .as_ref()
+                .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
     }
 
     /// UNDO (or redo) in the playing kit.
@@ -3120,6 +3218,7 @@ impl SamplePage {
 
     /// Where the playing kit's voices are; the shown pad's are drawn.
     pub fn set_playheads(&mut self, ui: &mut Ui, heads: &Playheads) {
+        self.live_heads(ui, heads);
         let frames: Vec<u64> = if usize::from(heads.kit) == self.kit && self.state.is_some() {
             heads.of(self.pad).collect()
         } else {
@@ -3149,6 +3248,36 @@ impl SamplePage {
             Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec | Editor::Auto => {}
         }
         self.shown_heads = frames;
+    }
+
+    /// Live chop's cuts and its end, from the playheads: the cuts made
+    /// since the last go onto the Chop tab; the sound over (it was heard
+    /// marking, and isn't now) ends it.
+    fn live_heads(&mut self, ui: &mut Ui, heads: &Playheads) {
+        self.marks_seen = heads.marks_made;
+        let Some(run) = self.live.as_mut() else {
+            return;
+        };
+        if usize::from(heads.kit) != run.kit {
+            return;
+        }
+        let marks: Vec<u64> = (run.seen..heads.marks_made)
+            .filter_map(|i| heads.mark(i))
+            .collect();
+        run.seen = heads.marks_made;
+        run.heard |= heads.marking;
+        let ended = run.heard && !heads.marking;
+        if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
+            if self.editor == Editor::Chop {
+                run.kept += tab.live_marks(ui, st, &marks);
+                if ended {
+                    tab.live_ended(ui, st);
+                }
+            }
+        }
+        if ended {
+            self.stop_live("over: the sound ended");
+        }
     }
 
     /// The cloud's box, naming the Grain tab's pad and layer, for the audio

@@ -2432,7 +2432,8 @@ impl time::Pads for SeqPads<'_> {
                             s.note_on(pad, v, o.offset);
                             self.hits += 1;
                         }
-                        None if self.player.hit_at(pad, v, o.offset) => self.hits += 1,
+                        // While live chop takes cuts, a hit marks one.
+                        None if self.player.live_hit_at(pad, v, o.offset) => self.hits += 1,
                         None => self.silent += 1,
                     }
                     pad
@@ -2458,7 +2459,7 @@ impl time::Pads for SeqPads<'_> {
                 // one-shot sounds ignore it.
                 match self.synth.as_mut() {
                     Some(s) => s.note_off(usize::from(note), o.offset),
-                    None => self.player.release_at(usize::from(note), o.offset),
+                    None => self.player.live_release_at(usize::from(note), o.offset),
                 }
                 Some(o.event)
             }
@@ -3132,6 +3133,17 @@ fn player_session(
                     end,
                 } => {
                     player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
+                }
+                gui::FromUi::SampleLiveChop {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                    on,
+                } => {
+                    let v = app.settings.screen_velocity;
+                    player.live_chop(kit, pad, layer, start, end, on, v);
                 }
                 gui::FromUi::SampleHit {
                     kit,
