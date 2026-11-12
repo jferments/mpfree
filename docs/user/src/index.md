@@ -8,7 +8,7 @@ checked: 2026-11-11 414faa1
 
 MPFree is free, open-source software that turns an Akai MPC One into a new instrument: a sampler, drum machine, synth, looper and sequencer built for playing live and making beats, with fewer menus than the factory software.
 
-{{shot: play | The Play page, MPFree's home screen.}}
+{{shot: play-all-loop | The Play page, MPFree's home screen, in the middle of a jam: a three-layer loop playing, a beat in the pattern, the Stutter throw held and the master meter moving.}}
 
 This manual is for musicians and producers. It assumes you have never used an MPC before. If you have, look for the boxes marked **Coming from an MPC**: they say where MPFree works differently from the factory software, and they are all collected in the appendix [Coming from an MPC](reference/coming-from-an-mpc.md).
 

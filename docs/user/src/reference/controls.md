@@ -61,7 +61,8 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **TRACK MUTE** | The pads become mute keys. | Planned |
 | **Q-LINK** | The next bank of macros on the Q-Links. | Planned |
 | **ERASE** | Live erase while recording. | Planned |
-| **COPY**, **TC**, **BROWSE**, the data wheel's push | Not assigned yet. | Planned |
+| **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
+| **COPY**, **TC**, the data wheel's push | Not assigned yet. | Planned |
 
 ## For developers
 
