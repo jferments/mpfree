@@ -28,6 +28,19 @@
 //! output. The master effect works on the mixed pair, so it only runs in
 //! [`Engine::render`]; on a mixer, a granular insert on the pads' track
 //! does its job.
+//!
+//! **Live settings.** [`Event::PadLive`] changes one of a pad's settings
+//! while it plays (its level, pan, tune, filter or envelope), as a knob, a
+//! p-lock or a modulation would, without building a new view; the value
+//! replaces the pad's own until it is cleared (NaN) or a new view comes
+//! in. [`Event::ProgramLive`] moves every pad at once by an offset on its
+//! own level, tune or cutoff. New voices start with all of them; playing
+//! voices follow the level, pan, cutoff and resonance and the program's
+//! offsets, gliding there in steps of 16 frames so nothing clicks. Both go
+//! through the event queue, so they land on their frame, and split
+//! ([`Engine::split`]) they reach both halves of the voices.
+//! [`Engine::stop_all`] is the hard stop: every voice and grain idle at
+//! once and the events waiting dropped.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -131,6 +144,20 @@ const FILTER_STEP: u32 = 16;
 /// Pressure is smoothed with this time constant, so steps between pressure
 /// messages don't zipper.
 const PRESSURE_SMOOTH_S: f32 = 0.005;
+/// How fast playing voices follow a live setting ([`Event::PadLive`],
+/// [`Event::ProgramLive`]): a one-pole glide with this time constant,
+/// stepped every [`FILTER_STEP`] frames (linear within each step for the
+/// gain).
+const LIVE_SMOOTH_S: f32 = 0.010;
+/// The filter a live cutoff gives a pad without one: a 2-pole low-pass,
+/// starting open (the filter clamps the cutoff below half the rate).
+const OPEN_FILTER: Filter = Filter {
+    kind: FilterKind::LowPass,
+    poles: 2,
+    cutoff_hz: 22_000.0,
+    resonance: 0.0,
+    env_octaves: 0.0,
+};
 const ONE: i64 = 1 << 32;
 
 /// Where [`Engine::render_routed`] puts each pad's sound: one stereo pair
@@ -179,6 +206,10 @@ pub struct ViewLayer {
     mode: PlayMode,
     gain_l: f32,
     gain_r: f32,
+    /// The region's and the layer's gain, without the pad's level and pan,
+    /// and the layer's own pan: live Level and Pan start from these.
+    unit_gain: f32,
+    pan: f32,
     /// Source frames per output frame, 32.32 fixed point.
     step: i64,
     vel_lo: u8,
@@ -217,6 +248,10 @@ pub struct ViewPad {
     pressure: PressureRoute,
     keys: Option<Keys>,
     wow: f32,
+    /// The pad's own level, pan and tune, for live settings to replace.
+    level_db: f32,
+    pan: f32,
+    tune_cents: i32,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -298,7 +333,8 @@ impl EngineView {
                         let s = project.source(l.region.source)?;
                         let r = &l.region;
                         let (pl, pr) = pan_gains(l.pan + p.pan);
-                        let g = db_to_gain(r.gain_db) * db_to_gain(l.level_db) * pad_gain;
+                        let unit_gain = db_to_gain(r.gain_db) * db_to_gain(l.level_db);
+                        let g = unit_gain * pad_gain;
                         let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
                         let mut grain = r.grain;
@@ -324,6 +360,8 @@ impl EngineView {
                             mode: r.mode,
                             gain_l: g * pl,
                             gain_r: g * pr,
+                            unit_gain,
+                            pan: l.pan,
                             step: ((ratio * ONE as f64).round() as i64).max(1),
                             vel_lo: l.vel_lo,
                             vel_hi: l.vel_hi,
@@ -398,6 +436,9 @@ impl EngineView {
                     pressure: p.pressure,
                     keys: p.keys,
                     wow: p.wow.clamp(0.0, 1.0),
+                    level_db: p.level_db,
+                    pan: p.pan,
+                    tune_cents: p.tune_cents,
                 }
             }));
         }
@@ -410,7 +451,7 @@ impl EngineView {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     NoteOn {
         pad: u8,
@@ -464,6 +505,163 @@ pub enum Event {
         end: u32,
         velocity: u8,
     },
+    /// Changes one of pad `pad`'s settings while it plays, as a knob, a
+    /// p-lock or a modulation does: `value` replaces the pad's own until
+    /// the next change (NaN gives the pad's own back) or a new view
+    /// ([`Engine::set_view`]). New voices start with it; playing voices
+    /// follow the fields [`PadField::follows`] says, gliding there. Values
+    /// out of range are clamped to it ([`PadField::clamp`]).
+    PadLive {
+        pad: u8,
+        field: PadField,
+        value: f32,
+    },
+    /// Moves every pad at once by an offset on its own setting (or on its
+    /// live one): see [`ProgramField`]. 0 or NaN is no offset. New voices
+    /// start with it and playing voices follow every field. It stays when
+    /// a new view comes in.
+    ProgramLive {
+        field: ProgramField,
+        value: f32,
+    },
+}
+
+/// A pad setting [`Event::PadLive`] changes while the pad plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PadField {
+    /// The pad's level, in dB (-120 to +24): replaces its own Level.
+    Level = 0,
+    /// The pad's pan, -1 (left) to +1 (right); each layer's own pan adds
+    /// to it, as it does to the pad's own.
+    Pan = 1,
+    /// The pad's tune in cents (-4800 to +4800), for new voices. A warped
+    /// layer keeps its pitch (its tune is in its stretched copy).
+    Tune = 2,
+    /// The filter's cutoff in Hz (10 to 22 000). A pad whose filter is off
+    /// gets a 2-pole low-pass. It also takes the place of 16 Levels'
+    /// cutoff.
+    Cutoff = 3,
+    /// The filter's resonance, 0 to 1 (only where there is a filter).
+    Resonance = 4,
+    /// The amp envelope's attack, decay and release in ms (0 to 60 000),
+    /// for new voices.
+    Attack = 5,
+    Decay = 6,
+    Release = 7,
+}
+
+impl PadField {
+    pub const COUNT: usize = 8;
+    pub const ALL: [PadField; PadField::COUNT] = [
+        PadField::Level,
+        PadField::Pan,
+        PadField::Tune,
+        PadField::Cutoff,
+        PadField::Resonance,
+        PadField::Attack,
+        PadField::Decay,
+        PadField::Release,
+    ];
+
+    /// Whether playing voices follow it (Level, Pan, Cutoff, Resonance);
+    /// the others reach new voices only.
+    pub fn follows(self) -> bool {
+        matches!(
+            self,
+            PadField::Level | PadField::Pan | PadField::Cutoff | PadField::Resonance
+        )
+    }
+
+    /// `x` within the field's range (NaN stays NaN).
+    pub fn clamp(self, x: f32) -> f32 {
+        let (lo, hi) = match self {
+            PadField::Level => (-120.0, 24.0),
+            PadField::Pan => (-1.0, 1.0),
+            PadField::Tune => (-4800.0, 4800.0),
+            PadField::Cutoff => (10.0, 22_000.0),
+            PadField::Resonance => (0.0, 1.0),
+            PadField::Attack | PadField::Decay | PadField::Release => (0.0, 60_000.0),
+        };
+        x.clamp(lo, hi)
+    }
+}
+
+/// An offset on every pad's own setting, from [`Event::ProgramLive`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProgramField {
+    /// dB added to every pad's level (-120 to +24).
+    Level = 0,
+    /// Cents added to every pad's tune (-4800 to +4800); playing voices
+    /// glide there too. Warped layers keep their pitch.
+    Tune = 1,
+    /// Octaves the cutoff of every filter moves (-10 to +10). Below 0, a
+    /// pad without a filter gets a 2-pole low-pass, so the whole kit
+    /// darkens.
+    Cutoff = 2,
+}
+
+impl ProgramField {
+    pub const COUNT: usize = 3;
+    pub const ALL: [ProgramField; ProgramField::COUNT] = [
+        ProgramField::Level,
+        ProgramField::Tune,
+        ProgramField::Cutoff,
+    ];
+
+    /// `x` within the field's range, NaN as 0 (no offset).
+    pub fn clamp(self, x: f32) -> f32 {
+        if x.is_nan() {
+            return 0.0;
+        }
+        let (lo, hi) = match self {
+            ProgramField::Level => (-120.0, 24.0),
+            ProgramField::Tune => (-4800.0, 4800.0),
+            ProgramField::Cutoff => (-10.0, 10.0),
+        };
+        x.clamp(lo, hi)
+    }
+}
+
+/// The live settings: each pad's [`PadField`]s (NaN where the pad's own
+/// applies), and the program's offsets.
+#[derive(Clone, Copy, Debug)]
+struct Live {
+    pads: [[f32; PadField::COUNT]; PADS],
+    program: [f32; ProgramField::COUNT],
+}
+
+impl Live {
+    const OWN: [[f32; PadField::COUNT]; PADS] = [[f32::NAN; PadField::COUNT]; PADS];
+}
+
+/// What a playing voice follows of the live settings: where its gain,
+/// filter and tune are going, the steps it takes there, and the pad's own
+/// settings from when it started (a voice finishes as it started, whatever
+/// view comes in).
+#[derive(Clone, Copy, Debug, Default)]
+struct Follow {
+    /// Still gliding to a target.
+    moving: bool,
+    /// Frames into the current step of [`FILTER_STEP`] frames.
+    count: u32,
+    /// The gain (left, right, before the tape's fade) it is going to, and
+    /// the step a frame.
+    gain_to: [f32; 2],
+    gain_inc: [f32; 2],
+    /// The cutoff (Hz) and resonance its filter is going to.
+    fc_to: f32,
+    res_to: f32,
+    /// The program's tune in cents: in use, and where it is going.
+    cents: f32,
+    cents_to: f32,
+    /// The one-pole step per [`FILTER_STEP`] frames.
+    k: f32,
+    /// The pad's own level, pan, cutoff and resonance when it started (the
+    /// cutoff of 16 Levels if it set one; an open filter's if none).
+    own_db: f32,
+    own_pan: f32,
+    own_fc: f32,
+    own_res: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -539,6 +737,16 @@ struct Voice {
     /// Wow and flutter, 0 to 1, and where its three wobbles are (cycles).
     wow: f32,
     wow_phase: [f32; 3],
+    /// Its gain before the pad's level and pan (region, layer and
+    /// velocity), its layer's own pan, and the tape's fade on its gain:
+    /// live Level and Pan work from these.
+    unit_gain: f32,
+    layer_pan: f32,
+    tape_gain: f32,
+    /// The live settings it follows.
+    follow: Follow,
+    /// The program tune (cents) its grains were last set for.
+    grain_cents: f32,
 }
 
 impl Voice {
@@ -970,6 +1178,14 @@ pub struct Engine {
     tape_rate: f32,
     /// Whether the voices still have to follow a tape that moved.
     tape_moved: bool,
+    /// Live settings ([`Event::PadLive`], [`Event::ProgramLive`]).
+    live: Live,
+    /// The one-pole step playing voices follow them with, per
+    /// [`FILTER_STEP`] frames.
+    live_k: f32,
+    /// Split: [`Engine::stop_all`] came while the lane's share was away;
+    /// it stops when it comes back.
+    stop_lane: bool,
 }
 
 /// Wow and flutter at full depth: cents and cycles a second of each
@@ -1004,6 +1220,12 @@ impl Engine {
             tape_target: 1.0,
             tape_rate: 0.0,
             tape_moved: false,
+            live: Live {
+                pads: Live::OWN,
+                program: [0.0; ProgramField::COUNT],
+            },
+            live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
+            stop_lane: false,
         }
     }
 
@@ -1076,8 +1298,11 @@ impl Engine {
     /// Swaps in a new view at once and hands back the old one, so the caller
     /// frees it off the audio thread. Playing voices keep their own handle to
     /// their audio and finish normally. The master effect takes the new
-    /// view's settings (a new mix glides there over 10 ms).
+    /// view's settings (a new mix glides there over 10 ms). The pads' live
+    /// settings ([`Event::PadLive`]) go back to the pads' own; the
+    /// program's offsets stay.
     pub fn set_view(&mut self, view: EngineView) -> EngineView {
+        self.live.pads = Live::OWN;
         let old = std::mem::replace(&mut self.view, view);
         self.apply_master();
         old
@@ -1230,6 +1455,65 @@ impl Engine {
                 end,
                 velocity,
             } => self.audition(pad, layer, start, end, velocity),
+            Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
+            Event::ProgramLive { field, value } => self.program_live(field, value),
+        }
+    }
+
+    /// [`Event::PadLive`]: the table, then the playing voices of the pad.
+    fn pad_live(&mut self, pad: u8, field: PadField, value: f32) {
+        let Some(row) = self.live.pads.get_mut(usize::from(pad)) else {
+            return;
+        };
+        row[field as usize] = field.clamp(value);
+        if field.follows() {
+            let (live, program) = (*row, self.live.program);
+            for (v, _) in self.pool.iter_mut() {
+                if v.active && v.pad == pad {
+                    retarget(v, &live, &program);
+                }
+            }
+        }
+    }
+
+    /// [`Event::ProgramLive`]: the offset, then every playing voice.
+    fn program_live(&mut self, field: ProgramField, value: f32) {
+        self.live.program[field as usize] = field.clamp(value);
+        let program = self.live.program;
+        let pads = &self.live.pads;
+        for (v, _) in self.pool.iter_mut() {
+            if let Some(live) = pads.get(usize::from(v.pad)).filter(|_| v.active) {
+                retarget(v, live, &program);
+            }
+        }
+    }
+
+    /// Pad `pad`'s live `field`, or `None` where the pad's own applies.
+    pub fn pad_live_value(&self, pad: u8, field: PadField) -> Option<f32> {
+        let x = self.live.pads.get(usize::from(pad))?[field as usize];
+        (!x.is_nan()).then_some(x)
+    }
+
+    /// The program's offset on `field` (0 when none).
+    pub fn program_live_value(&self, field: ProgramField) -> f32 {
+        self.live.program[field as usize]
+    }
+
+    /// The hard stop: every voice and its grains go idle at once, without a
+    /// fade, the master effect's grains stop and forget what they hold, and
+    /// the events waiting are dropped. [`Event::AllOff`] releases instead;
+    /// this is for a reset or a panic, where a click is fine. The live
+    /// settings, the tape and the view stay. Never allocates. Split, a share
+    /// still away on the lane (late) stops as it comes back.
+    pub fn stop_all(&mut self) {
+        self.events.clear();
+        silence(&mut self.pool.a);
+        match self.pool.b.as_deref_mut() {
+            Some(b) => silence(b),
+            None => self.stop_lane = self.pool.split,
+        }
+        if let Some(fx) = &mut self.master {
+            fx.reset(&mut self.pool.a.budget);
         }
     }
 
@@ -1272,6 +1556,7 @@ impl Engine {
                 } else {
                     (cents / 1200.0).exp2()
                 };
+            v.tape_gain = gain;
             v.gain_l = v.base_gain_l * gain;
             v.gain_r = v.base_gain_r * gain;
             retime(v);
@@ -1579,7 +1864,20 @@ impl Engine {
                 (l.fade_out.frames > 0).then_some(l.fade_out),
             )
         };
+        // The pad's live settings, where set, in place of its own.
+        let live = self.live.pads[p];
+        let program = self.live.program;
+        let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let mut amp = vp.amp;
+        if let Some(ms) = set(PadField::Attack) {
+            amp.attack_ms = ms;
+        }
+        if let Some(ms) = set(PadField::Decay) {
+            amp.decay_ms = ms;
+        }
+        if let Some(ms) = set(PadField::Release) {
+            amp.release_ms = ms;
+        }
         if let Some(ms) = vary.decay_ms {
             (amp.decay_ms, amp.sustain) = (ms, 0.0);
         }
@@ -1597,16 +1895,67 @@ impl Engine {
             }),
             None => (vp.filter.kind != FilterKind::Off).then_some(vp.filter),
         };
+        let own_fc = filter.map_or(OPEN_FILTER.cutoff_hz, |f| f.cutoff_hz);
+        let own_res = filter.map_or(0.0, |f| f.resonance);
+        let filter = live_filter(
+            filter,
+            set(PadField::Cutoff),
+            set(PadField::Resonance),
+            program[ProgramField::Cutoff as usize],
+        );
+        // A live tune in place of the pad's own, and the program's tune
+        // (which playing voices follow). A warped layer keeps its pitch.
+        let warped = l.warp_bpm > 0.0;
+        let (tune, cents) = if warped {
+            (0.0, 0.0)
+        } else {
+            (
+                set(PadField::Tune).map_or(0.0, |c| c - vp.tune_cents as f32),
+                program[ProgramField::Tune as usize],
+            )
+        };
         let mut grain = l.grain;
         grain.pitch += semis as f32;
+        if tune != 0.0 {
+            grain.pitch += tune / 100.0;
+        }
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
         }
         // A keygroup a few semitones from its root reads that much faster.
-        let plain = if semis == 0 {
+        let plain = if semis == 0 && tune == 0.0 {
             l.step
         } else {
-            ((l.step as f64 * (f64::from(semis) / 12.0).exp2()).round() as i64).max(1)
+            let octaves = f64::from(semis) / 12.0 + f64::from(tune) / 1200.0;
+            ((l.step as f64 * octaves.exp2()).round() as i64).max(1)
+        };
+        // The gain: the view's, unless a live level or pan or the
+        // program's level moves it.
+        let unit_gain = l.unit_gain * level;
+        let (live_db, live_pan) = (set(PadField::Level), set(PadField::Pan));
+        let program_db = program[ProgramField::Level as usize];
+        let (gain_l, gain_r) = if live_db.is_none() && live_pan.is_none() && program_db == 0.0 {
+            (l.gain_l * level, l.gain_r * level)
+        } else {
+            live_gains(
+                unit_gain,
+                l.pan,
+                live_db.unwrap_or(vp.level_db) + program_db,
+                live_pan.unwrap_or(vp.pan),
+            )
+        };
+        let follow = Follow {
+            gain_to: [gain_l, gain_r],
+            fc_to: filter.map_or(0.0, |f| f.cutoff_hz),
+            res_to: filter.map_or(0.0, |f| f.resonance),
+            cents,
+            cents_to: cents,
+            k: self.live_k,
+            own_db: vp.level_db,
+            own_pan: vp.pan,
+            own_fc,
+            own_res,
+            ..Follow::default()
         };
         let step = if l.warp_bpm > 0.0 {
             warped_step(plain, self.tempo, l.warp_bpm)
@@ -1641,8 +1990,8 @@ impl Engine {
                 && matches!(mode, PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate),
             fade_in,
             fade_out,
-            gain_l: l.gain_l * level,
-            gain_r: l.gain_r * level,
+            gain_l,
+            gain_r,
             mode: Some(mode),
             held: true,
             age: self.clock,
@@ -1674,8 +2023,8 @@ impl Engine {
             plain_step: plain,
             note,
             speed: 1.0,
-            base_gain_l: l.gain_l * level,
-            base_gain_r: l.gain_r * level,
+            base_gain_l: gain_l,
+            base_gain_r: gain_r,
             wow: vp.wow,
             // Each voice wobbles from its own place, so a chord doesn't
             // wander in step.
@@ -1684,16 +2033,24 @@ impl Engine {
                 (self.clock as f32 * 0.414_214).fract(),
                 (self.clock as f32 * 0.732_051).fract(),
             ],
+            unit_gain,
+            layer_pan: l.pan,
+            tape_gain: 1.0,
+            follow,
+            grain_cents: cents,
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
             v.speed = self.tape;
             let gain = (self.tape / TAPE_FADE).min(1.0);
+            v.tape_gain = gain;
             (v.gain_l, v.gain_r) = (v.base_gain_l * gain, v.base_gain_r * gain);
+            retime(v);
+        } else if cents != 0.0 {
             retime(v);
         }
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
-            g.set_params(grain);
+            g.set_params(tuned_grain(grain, cents));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -1810,6 +2167,11 @@ impl Engine {
             return;
         };
         self.pool.b = Some(b);
+        if std::mem::take(&mut self.stop_lane) {
+            if let Some(b) = self.pool.b.as_deref_mut() {
+                silence(b);
+            }
+        }
         let tempo = self.tempo;
         for (v, _) in self.pool.iter_mut() {
             if v.active && v.warp_bpm > 0.0 {
@@ -1975,8 +2337,13 @@ fn render_granular(
         let (bl, br) = (&mut sl[..n], &mut sr[..n]);
         bl.fill(0.0);
         br.fill(0.0);
-        if v.route.target != PressureTarget::Off {
-            g.set_params(pressed_grain(v.grain_base, v.route, v.press));
+        if v.route.target != PressureTarget::Off || v.grain_cents != v.follow.cents {
+            let cents = v.follow.cents;
+            g.set_params(tuned_grain(
+                pressed_grain(v.grain_base, v.route, v.press),
+                cents,
+            ));
+            v.grain_cents = cents;
         }
         g.render(&clip, budget, frame + at as u64, bl, br);
         for k in 0..n {
@@ -1990,6 +2357,174 @@ fn render_granular(
         at += n;
     }
     if !v.active {
+        v.data = None;
+    }
+}
+
+/// Grain settings `cents` higher (the program's tune).
+fn tuned_grain(mut g: GrainParams, cents: f32) -> GrainParams {
+    if cents != 0.0 {
+        g.pitch += cents / 100.0;
+    }
+    g
+}
+
+/// A voice's filter with the live settings on it: `cutoff` and `resonance`
+/// in place of its own, then the program's offset `octaves` on the cutoff.
+/// A voice without a filter gets an open 2-pole low-pass when a cutoff is
+/// set or the offset darkens.
+fn live_filter(
+    f: Option<Filter>,
+    cutoff: Option<f32>,
+    resonance: Option<f32>,
+    octaves: f32,
+) -> Option<Filter> {
+    let mut f = match f {
+        Some(f) => f,
+        None if cutoff.is_some() || octaves < 0.0 => OPEN_FILTER,
+        None => return None,
+    };
+    if let Some(hz) = cutoff {
+        f.cutoff_hz = hz;
+    }
+    if let Some(r) = resonance {
+        f.resonance = r;
+    }
+    if octaves != 0.0 {
+        f.cutoff_hz *= octaves.exp2();
+    }
+    Some(f)
+}
+
+/// The gain (left, right) of a voice whose gain before the pad's level
+/// and pan is `unit`, at `db` and pan `pan` (its layer's pan adds to it).
+fn live_gains(unit: f32, layer_pan: f32, db: f32, pan: f32) -> (f32, f32) {
+    let (pl, pr) = pan_gains(layer_pan + pan);
+    let g = unit * db_to_gain(db);
+    (g * pl, g * pr)
+}
+
+/// Points playing voice `v` at the live settings (`live`, its pad's row)
+/// and the program's offsets: it glides there from where it is. A voice
+/// fading out (choked, stolen) is left alone.
+fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; ProgramField::COUNT]) {
+    if !v.active || v.kill_left > 0 {
+        return;
+    }
+    let get = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
+    let f = &mut v.follow;
+    let db = get(PadField::Level).unwrap_or(f.own_db) + program[ProgramField::Level as usize];
+    let pan = get(PadField::Pan).unwrap_or(f.own_pan);
+    let (l, r) = live_gains(v.unit_gain, v.layer_pan, db, pan);
+    f.gain_to = [l, r];
+    let cutoff = get(PadField::Cutoff);
+    let octaves = program[ProgramField::Cutoff as usize];
+    if v.filter.is_none() && (cutoff.is_some() || octaves < 0.0) {
+        // From open, so it comes in without a click.
+        v.filter = Some(OPEN_FILTER);
+        v.fenv = Some(Envelope::idle());
+        v.svf = [Svf::default(); 2];
+        v.filter_key = None;
+        f.own_fc = OPEN_FILTER.cutoff_hz;
+    }
+    if v.filter.is_some() {
+        f.fc_to = cutoff.unwrap_or(f.own_fc) * octaves.exp2();
+        f.res_to = get(PadField::Resonance).unwrap_or(f.own_res);
+    }
+    f.cents_to = if v.warp_bpm > 0.0 {
+        0.0
+    } else {
+        program[ProgramField::Tune as usize]
+    };
+    f.moving = true;
+}
+
+/// One frame of following the live settings: the gain's step, and every
+/// [`FILTER_STEP`] frames the next steps ([`live_step`]).
+#[inline(always)]
+fn follow_live(v: &mut Voice) {
+    if v.follow.count == 0 {
+        live_step(v);
+    }
+    v.follow.count = (v.follow.count + 1) % FILTER_STEP;
+    v.base_gain_l += v.follow.gain_inc[0];
+    v.base_gain_r += v.follow.gain_inc[1];
+    v.gain_l = v.base_gain_l * v.tape_gain;
+    v.gain_r = v.base_gain_r * v.tape_gain;
+}
+
+/// [`follow_live`]'s step every [`FILTER_STEP`] frames: each value moves
+/// `k` of the way to its target (the cutoff in octaves), the gain linearly
+/// across the step; one close enough lands. The voice stops following when
+/// all have landed.
+#[inline(never)]
+fn live_step(v: &mut Voice) {
+    let f = &mut v.follow;
+    let k = f.k;
+    let mut moving = false;
+    let mut glide = |at: &mut f32, to: f32, inc: &mut f32| {
+        let d = to - *at;
+        if d.abs() <= 1e-5 * to.abs().max(at.abs()) + 1e-9 {
+            *at = to;
+            *inc = 0.0;
+        } else {
+            *inc = d * k / FILTER_STEP as f32;
+            moving = true;
+        }
+    };
+    glide(&mut v.base_gain_l, f.gain_to[0], &mut f.gain_inc[0]);
+    glide(&mut v.base_gain_r, f.gain_to[1], &mut f.gain_inc[1]);
+    if let Some(flt) = v.filter.as_mut().filter(|_| f.fc_to > 0.0) {
+        let (fc, res) = (flt.cutoff_hz, flt.resonance);
+        let ratio = f.fc_to / fc;
+        if (ratio - 1.0).abs() <= 1e-4 {
+            flt.cutoff_hz = f.fc_to;
+        } else {
+            flt.cutoff_hz = fc * ratio.powf(k);
+            moving = true;
+        }
+        let d = f.res_to - res;
+        if d.abs() <= 1e-4 {
+            flt.resonance = f.res_to;
+        } else {
+            flt.resonance = res + d * k;
+            moving = true;
+        }
+        if flt.cutoff_hz != fc || flt.resonance != res {
+            v.filter_key = None;
+        }
+    }
+    let d = f.cents_to - f.cents;
+    if d != 0.0 {
+        if d.abs() <= 0.01 {
+            f.cents = f.cents_to;
+        } else {
+            f.cents += d * k;
+            moving = true;
+        }
+        retime(v);
+    }
+    v.follow.moving = moving;
+}
+
+/// Every voice of `pool` idle at once, its grains handed back.
+fn silence(pool: &mut Pool) {
+    let Pool {
+        voices,
+        grains,
+        budget,
+        ..
+    } = pool;
+    for (v, g) in voices.iter_mut().zip(grains.iter_mut()) {
+        if v.granular {
+            g.kill(budget);
+        }
+        v.active = false;
+        v.granular = false;
+        v.held = false;
+        v.kill_left = 0;
+        v.tail_left = 0;
+        v.follow.moving = false;
         v.data = None;
     }
 }
@@ -2040,9 +2575,9 @@ fn pressure_step(v: &mut Voice) {
     }
 }
 
-/// The voice's step from its base step, its pitch pressure and its speed
-/// (the tape's, with wow and flutter). A granular voice's grains keep their
-/// own pitch.
+/// The voice's step from its base step, its pitch pressure, its speed
+/// (the tape's, with wow and flutter) and the program's tune. A granular
+/// voice's grains keep their own pitch.
 fn retime(v: &mut Voice) {
     if v.granular {
         return;
@@ -2053,6 +2588,9 @@ fn retime(v: &mut Voice) {
     }
     if v.speed != 1.0 {
         step *= f64::from(v.speed);
+    }
+    if v.follow.cents != 0.0 {
+        step *= f64::from(v.follow.cents / 1200.0).exp2();
     }
     v.step = step.round().max(1.0) as i64;
 }
@@ -2081,6 +2619,9 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
 /// envelope ends.
 #[inline(always)]
 fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32, f32) {
+    if v.follow.moving {
+        follow_live(v);
+    }
     if v.route.target != PressureTarget::Off {
         follow_pressure(v);
         g *= v.press_gain;
