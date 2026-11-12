@@ -20,7 +20,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path,PurePosixPath
 import shutil
 import stat
 import subprocess
@@ -70,7 +70,50 @@ def selected_cases():
     assert not (set(cases)&set(V17.tested_cases()))
     return cases
 def verified_prior(path):
-    items=V17.load_zip(regular(path))
+    # V18's repaired P3 High P-code report is ~80 MB. The old V17 archive
+    # reader rejects files >64 MB; verify this full V18 archive STREAMING,
+    # without loading 80 MB of existing pseudocode into memory again.
+    path=regular(path)
+    required={
+        "V18-STAGE-MANIFEST.json",
+        "deep-p1/V17-p1-SUMMARY.json",
+        "deep-p3/V17-p3-SUMMARY.json",
+        "V18-REPAIRED-DATAFLOW-AND-85-QUESTIONS.json",
+        "V18-ACTUAL-VENDOR-ARM-CASES.json"
+    }
+    items={}
+    with zipfile.ZipFile(path) as archive:
+        if archive.testzip():
+            raise ValueError("V18 owner-private archive CRC failed")
+        index=json.loads(archive.read("ZIP_INDEX.json"))
+        seen=set()
+        total=0
+        for item in index["files"]:
+            name=item["name"]
+            posix=PurePosixPath(name)
+            if posix.is_absolute() or ".." in posix.parts or name in seen:
+                raise ValueError("Unsafe or duplicate V18 archive member: "+str(name))
+            seen.add(name)
+            info=archive.getinfo(name)
+            if info.file_size!=item["bytes"] or info.file_size>192*1024*1024:
+                raise ValueError("Unexpected V18 archive member size: "+name)
+            total+=info.file_size
+            if total>512*1024*1024:
+                raise ValueError("V18 archive exceeds 512MB evidence cap")
+            h=hashlib.sha256()
+            collected=[]
+            with archive.open(name) as handle:
+                while True:
+                    chunk=handle.read(1024*1024)
+                    if not chunk:break
+                    h.update(chunk)
+                    if name in required:collected.append(chunk)
+            if h.hexdigest()!=item["sha256"]:
+                raise ValueError("V18 SHA verification failed: "+name)
+            if name in required:
+                items[name]=b"".join(collected)
+    if required-set(items):
+        raise ValueError("Incomplete SHA-indexed V18 archive: "+str(sorted(required-set(items))))
     for name in ("V18-STAGE-MANIFEST.json",
                  "deep-p1/V17-p1-SUMMARY.json",
                  "deep-p3/V17-p3-SUMMARY.json",
