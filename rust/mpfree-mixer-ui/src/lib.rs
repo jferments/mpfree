@@ -157,6 +157,18 @@ pub fn add_io_section(ui: &mut Ui, s: Box<dyn IoSection>) {
     }
 }
 
+/// Shows section `section` of the I/O view: 0 is Audio, then the added
+/// sections in add order from 1 (a tap on the tempo chip opens Sync this
+/// way). As a tap on the list: the old section's detail closes, and once
+/// the mixer shows [`MixView::Io`] the section is told it shows. The view
+/// itself is the app's to pick ([`update`] with [`MixView::Io`]); the
+/// section stays picked until another is. False if there is no such
+/// section.
+pub fn io_select(ui: &mut Ui, section: usize) -> bool {
+    ui.get_mut::<MixerView>(MIXER)
+        .is_some_and(|v| v.show_io_section(section))
+}
+
 /// The data wheel, - and +, or the page arrows while the I/O view shows.
 /// On Audio, actions may follow ([`take_actions`]); [`IoReply::Ignored`]
 /// when the I/O view is not showing.

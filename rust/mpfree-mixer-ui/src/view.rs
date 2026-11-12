@@ -3007,6 +3007,13 @@ mod io_tests {
         // Not showing: nothing reaches it.
         assert!(!crate::io_tick(&mut ui, Duration::ZERO));
         assert!(crate::io_qlinks(&ui).is_none());
+        // Picked by the app (the tempo chip opens Sync), then back to Audio.
+        assert!(crate::io_select(&mut ui, 1));
+        assert_eq!(view(&ui).io_section(), 1);
+        assert!(crate::io_select(&mut ui, 0));
+        assert!(!crate::io_select(&mut ui, 2), "no such section");
+        assert_eq!(seen.lock().unwrap().shown, vec![true, false]);
+        seen.lock().unwrap().shown.clear();
         tap(&mut ui, mid(il.list[1]));
         assert_eq!(view(&ui).io_section(), 1);
         assert_eq!(seen.lock().unwrap().shown, vec![true]);
