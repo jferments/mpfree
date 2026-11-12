@@ -559,9 +559,9 @@ pub struct Player {
     screen_row: String,
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
-    /// The Sample page's Play tab showed its keyboard (its hint says how
-    /// to play it).
-    sample_keys: bool,
+    /// The Sample page's Play tab showed its keyboard, and a row that pad
+    /// hits edit (each changes its hint).
+    sample_keys: (bool, bool),
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -742,7 +742,7 @@ impl Player {
             },
             screen_row: "-".to_string(),
             timed,
-            sample_keys: false,
+            sample_keys: (false, false),
             ready: false,
             view: View::Play,
             status,
@@ -1413,6 +1413,10 @@ impl Player {
                     "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
                      Wheel: the row picked   ·   UNDO: undo".to_string()
                 }
+                View::Sample if self.sample.play_takes_pads(&self.ui) => {
+                    "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
+                     tap another row when done   ·   UNDO: undo".to_string()
+                }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     "Press keys to hear the kit   ·   drag the pad's zone edges and root   ·   tap a zone: its pad   ·   \
                      Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   Wheel: the row picked   ·   UNDO: undo".to_string()
@@ -1669,8 +1673,8 @@ impl Player {
                 }
                 // The Sample page edits the pad hit last, and the Play
                 // page's Tune and Decay turn it.
-                self.sample.hit(pad);
-                self.sample.hit_velocity(&mut self.ui, pad, velocity);
+                let shown = self.view == View::Sample;
+                self.sample.press(&mut self.ui, pad, velocity, shown);
                 self.sample_changed();
                 if self.play.last_pad != pad {
                     self.play.last_pad = pad;
@@ -2213,8 +2217,12 @@ impl Player {
         if self.sample.page() != before {
             self.sample_changed();
         }
-        // The keyboard came or went on the Play tab: its hint with it.
-        let keys = self.sample.play_keys_shown();
+        // The keyboard came or went on the Play tab, or a row that pad hits
+        // edit was picked: its hint with it.
+        let keys = (
+            self.sample.play_keys_shown(),
+            self.sample.play_takes_pads(&self.ui),
+        );
         if keys != self.sample_keys {
             self.sample_keys = keys;
             if self.view == View::Sample {
@@ -5105,6 +5113,41 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         faded.take_actions();
         out.push(("sample-keys-crossfade", faded));
     }
+    // The Play tab with Also plays picked: hits on A1 and A3 added them,
+    // and the pad latches.
+    {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut links = sample_sampler(fonts());
+        links.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(play_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, step) in [(Row::Latch, 1), (Row::Links, 0)] {
+            if let Some(list) = links.ui.get_mut::<SettingList>(LIST) {
+                list.selected = index(row);
+            }
+            let kind = if step == 0 {
+                EventKind::Select(index(row))
+            } else {
+                EventKind::Step {
+                    index: index(row),
+                    delta: step,
+                }
+            };
+            links.on_event(UiEvent {
+                widget: LIST.into(),
+                kind,
+            });
+        }
+        for pad in [0, 2] {
+            links.apply(ToUi::PadDown { pad, velocity: 100 });
+            links.apply(ToUi::PadUp(pad));
+        }
+        links.take_actions();
+        out.push(("sample-play-links", links));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
@@ -7246,6 +7289,92 @@ mod tests {
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(settings(&p).key_fade, 0);
         assert!(settings(&p).keys.is_some());
+    }
+
+    #[test]
+    fn hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row() {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(play_tab::TAB),
+        );
+        let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // A tap on a row picks it, as the list does.
+        let pick = |p: &mut Player, row: Row| {
+            p.ui.get_mut::<SettingList>(LIST).unwrap().selected = index(row);
+            ev(p, LIST, EventKind::Select(index(row)));
+        };
+        assert!(
+            hint(&p).starts_with("Hit a pad: its velocity"),
+            "{}",
+            hint(&p)
+        );
+        // Also plays picked: the hint says pad hits edit it.
+        pick(&mut p, Row::Links);
+        assert!(hint(&p).starts_with("Hit pads to add them"), "{}", hint(&p));
+        for k in [0, 2, pad] {
+            p.apply(ToUi::PadDown {
+                pad: k,
+                velocity: 100,
+            });
+            p.apply(ToUi::PadUp(k));
+        }
+        assert_eq!(settings(&p).links, [0, 2], "the pad itself is not added");
+        assert_eq!(p.sample.play().unwrap().1.pad, pad, "the pad shown stays");
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: also plays A1 -> A1 A3"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1, "the kit sounds with its links");
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // UNDO takes one hit back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).links, [0]);
+        // Stops takes pads the same way; Latch is a row.
+        pick(&mut p, Row::Chokes);
+        p.apply(ToUi::PadDown {
+            pad: 7,
+            velocity: 100,
+        });
+        assert_eq!(settings(&p).chokes, [7]);
+        pick(&mut p, Row::Latch);
+        ev(
+            &mut p,
+            LIST,
+            EventKind::Step {
+                index: index(Row::Latch),
+                delta: 1,
+            },
+        );
+        assert!(settings(&p).latch);
+        assert!(
+            hint(&p).starts_with("Hit a pad: its velocity"),
+            "{}",
+            hint(&p)
+        );
+        // Another row picked: hits pick the pad shown again.
+        p.apply(ToUi::PadDown {
+            pad: 0,
+            velocity: 100,
+        });
+        assert_eq!(settings(&p).chokes, [7]);
+        assert_eq!(p.page(), sample_page::PADS_PAGE, "A1 has no sound yet");
     }
 
     #[test]
