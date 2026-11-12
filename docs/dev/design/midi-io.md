@@ -1,4 +1,4 @@
-# MIDI I/O, sync, MIDI Learn and CV/gate (`rust/mpfree-midi`)
+# MIDI I/O, sync, MIDI Learn and CV/gate (`rust/mpfree-midi`, `rust/mpfree-midi-ui`)
 
 The plan for MPFree's external MIDI and CV, and the contract of the host-first crate `mpfree-midi`. Scope:
 
@@ -148,9 +148,17 @@ Built 2026-11-12 in `rust/mpfree-app/src/midi_in.rs` and the app's `main.rs`. Re
 
 Not yet: CCs, pitch bend and program change wait for MIDI Learn (M5) and the track settings; clock-follow waits for M4; keys that don't land on a pad aren't recorded; only the first rawmidi input of a USB card is read. Not yet tried on the MPC: the read-only device round comes with the app thread's next live test.
 
+## A project's settings and the I/O view's sections
+
+Built 2026-11-12, not yet wired into the app (that waits on the app thread, which owns `gui.rs`):
+
+- **`mpfree_midi::setup::MidiSetup`**: a project's MIDI, sync and CV settings. Ports are named, not numbered (`DIN_NAME`, "MIDI", for the 5-pin jacks), so a project names "Digitakt" and the app finds it when it is plugged in. Each track has one output setting, `TrackOut` (port and channel together, with program and bank). Each port has its input (Plays tracks, Learn only, Both; Both by default), clock out (Off, While playing, Always; Off by default) and thru (off by default). The tempo is MPFree's own or a port's clock, with follow start/stop and follow position. Each of the 8 CV outputs has a `CvAssign`. The text is `key = value` lines after `mpfree-midi 1`, only what differs from the defaults; a line that can't be read is skipped and named in a warning, never dropped silently.
+- **`rust/mpfree-midi-ui`**: the MIDI, Sync and CV sections of the mixer's I/O view, through `mpfree_mixer_ui::IoSection`. They share an `IoModel`: the setup, `Live` facts the app fills in (ports plugged in and when each last received something, track names, clock arriving, CV volts) and `Built`, which says which parts of MIDI this build has. A setting whose part isn't built yet is kept and says so on its own row ("sends nothing yet: no MIDI out"), as does one for a device that isn't plugged in, following the owner's rule. A tap on a setting changes it (a choice steps, "Plays on" opens a picker with the port and the channel on one page); the wheel selects a row, - and + step the selected setting, and the Q-Links take the row's settings. `MidiPart` is the project's `midi` part (`parts/midi.txt`); lines it couldn't read are counted on the MIDI section and named in the log.
+- **Previews**: `cargo run -p mpfree-midi-ui --bin mpfree-midi-preview -- --out DIR` draws the three sections inside the mixer's real I/O view, before and after the parts of MIDI are built.
+
 ## The screens (proposed, 2026-11-12)
 
-No MIDI settings screen is built yet. The app's Dev tab has the MIDI log (see M2 above); everything else below is a proposal, drawn at 1280 × 800 in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ).
+The MIDI, Sync and CV sections above are built; the rest below is a proposal, drawn at 1280 × 800 in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ).
 
 Where they live (the owner, 2026-11-12): MIDI and sync are **project** settings, not Prefs, since they change from project to project. A project's routing (audio, MIDI, sync and CV) is an I/O view inside the mixer, opened by a new icon beside the mixer icon. The FX thread owns the mixer and plans I/O as a fifth mixer view beside Tracks, Pads, Inputs and Submixes, with a section list (Audio, MIDI, Sync, CV); the [layout spec](layout-spec.md) names it the I/O icon, just left of the mixer icon at the top bar's right edge, and a tap on the tempo chip opens the same view at Sync (docs PR #221). The MIDI, Sync and CV sections are panels built against a small section interface that the mixer provides, so neither side edits the other's code. Facts about the rig rather than the project (CV tuning, port names, port delays) stay in Prefs. The mockups were drawn before this choice and still show a Prefs row.
 

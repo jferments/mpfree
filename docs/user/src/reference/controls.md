@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-12 b4f1d46
+checked: 2026-11-12 ae9c39c
 -->
 
 # Buttons and controls

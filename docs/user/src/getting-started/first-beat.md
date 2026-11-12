@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/kit.rs rust/mpfree-app/src/app.rs rust/mpfree-seq rust/mpfree-transport
-checked: 2026-11-12 1a6eb01
+checked: 2026-11-12 ae9c39c
 -->
 
 # Your first beat

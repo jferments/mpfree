@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq rust/mpfree-play rust/mpfree-capture rust/mpfree-time-ui rust/mpfree-transport
-checked: 2026-11-12 b4f1d46
+checked: 2026-11-12 ae9c39c
 -->
 
 # Clips and patterns
