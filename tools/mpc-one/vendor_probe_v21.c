@@ -94,7 +94,7 @@ static int v21_registry(const char *name){
         return result(name,false,"cannot-initialize-guest-list-head");
     unsigned requested=(variant==0)?11u:(variant==1)?27u:
                        (variant==2)?44u:(variant==3)?11u:27u;
-    volatile uint32_t(*lookup)(unsigned)=(uint32_t(*)(unsigned))V21_LOOKUP;
+    uint32_t(*lookup)(unsigned)=(uint32_t(*)(unsigned))V21_LOOKUP;
     volatile uint32_t observed=lookup(requested);
     uintptr_t expected=(variant==0)?V21_BACKEND_A:
                        (variant==1||variant==4)?V21_BACKEND_B:0u;
@@ -128,7 +128,7 @@ static int v21_transfer(const char *name){
        !intercept(0x0012ee08u,16u,&align) ||
        !intercept(0x0010d14cu,0,&done) ||
        !intercept(0x0012e96au,0,&logger) ||
-       !intercept(0x0012ccd0u,variant==1?0u:16u,&callback))
+       !intercept(0x0012ccd0u,variant==1?0u:(variant==4?32u:16u),&callback))
         return 4;
     memset((void*)V21_BACKEND_C,0,0x600);
     put32(V21_BACKEND_C+0x6cu,0x200u);
@@ -174,7 +174,7 @@ static int v21_transfer(const char *name){
              calls(ready)==1 && calls(load)==1 && calls(extent)==1);
     /* Successful callback returning expected transfer length => status 0;
        different return => status 1. */
-    int want_rc=(variant==1)?1:0;
+    int want_rc=(variant==1||variant==4)?1:0;
     ok=ok&&(rc==want_rc);
     printf("{\"trace\":\"v21-storage-indirect-transfer\","
            "\"test\":\"%s\",\"real_wrapper_return\":%d,"
