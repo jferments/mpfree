@@ -24,7 +24,7 @@
 use mpfree_capture::{keep, Capture, Now, Pending};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::{Clip, Project, Track};
+use mpfree_seq::{Clip, Project, Track, SLOTS};
 use mpfree_time_ui::view::{bars_label, clips_after, TimeAction, TimeState, TransportInfo};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -246,7 +246,18 @@ pub struct TimeHost {
     n_hits: usize,
     /// The steps changed since [`TimeHost::take_steps_changed`].
     steps_changed: bool,
+    /// The clips' parameter locks this period, for the mixer's mod engine
+    /// ([`TimeHost::locks`]).
+    locks: Vec<LockOut>,
+    locks_dropped: u64,
 }
+
+/// A step's parameter lock (`value`) or its end (`None`), `offset` frames
+/// into the period.
+pub type LockOut = (u32, mpfree_play::mpfree_param::ParamAddr, Option<f32>);
+
+/// Locks kept for the mixer in one period (more are dropped).
+const MAX_LOCKS: usize = 256;
 
 impl TimeHost {
     /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
@@ -293,6 +304,8 @@ impl TimeHost {
             hits: [HitInfo::default(); MAX_HITS],
             n_hits: 0,
             steps_changed: true,
+            locks: Vec::with_capacity(MAX_LOCKS),
+            locks_dropped: 0,
         };
         host.compile()?;
         Ok(host)
@@ -452,6 +465,31 @@ impl TimeHost {
         self.n_hits = 0;
     }
 
+    /// The parameter locks of the last period, for `MixHost::lock` (the
+    /// next period starts a new list; [`TimeHost::clear_locks`] after
+    /// handing them on).
+    pub fn locks(&self) -> &[LockOut] {
+        &self.locks
+    }
+
+    pub fn clear_locks(&mut self) {
+        self.locks.clear();
+    }
+
+    fn lock_out(
+        locks: &mut Vec<LockOut>,
+        dropped: &mut u64,
+        offset: u32,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+    ) {
+        if locks.len() < locks.capacity() {
+            locks.push((offset, addr, value));
+        } else {
+            *dropped += 1;
+        }
+    }
+
     /// A transport command, from the next period on.
     pub fn command(&mut self, cmd: Command) -> bool {
         let at = self.transport.frame();
@@ -595,6 +633,29 @@ impl TimeHost {
         ))
     }
 
+    /// A clip made elsewhere (the Sample page's chop to a phrase) into the
+    /// first empty slot of the armed track (track 1 if none is armed), as
+    /// a take that UNDO on the Clips page takes away again. It isn't
+    /// launched: a tap on the Clips page plays it like any clip. Returns a
+    /// line for the log.
+    pub fn put_clip(&mut self, clip: Clip) -> Result<String, String> {
+        let track = self.armed.unwrap_or(0);
+        let t = self.project.tracks.get(track).ok_or("no such track")?;
+        let name = t.name.clone();
+        let slot = (0..SLOTS)
+            .find(|&s| t.slots[s].is_none())
+            .ok_or_else(|| format!("{name} has no empty slot for the phrase"))?;
+        let notes = clip.notes.len();
+        self.takes
+            .capture_clip(&mut self.project, track, slot, clip)
+            .map_err(|e| format!("phrase refused: {e:?}"))?;
+        self.compile()?;
+        Ok(format!(
+            "phrase: {notes} notes in slot {} of {name}",
+            slot + 1
+        ))
+    }
+
     /// A pad note played in the coming period, at `offset`: recorded into
     /// the armed track while the transport records, and kept in the
     /// capture history always.
@@ -622,6 +683,17 @@ impl TimeHost {
             };
             self.n_hits += 1;
         }
+    }
+
+    /// A knob moved in the coming period, at `offset`: parameter `addr` is
+    /// now `value`. While the transport records and `addr` is on the armed
+    /// track, it becomes a parameter lock on the step it belongs to (see
+    /// `mpfree_play::Recorder`).
+    // No knob is mapped to a parameter in the pad player yet (that needs
+    // the mod resolver); the Q-Links call this once one is.
+    #[allow(dead_code)]
+    pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
+        self.recorder.input(offset, Event::Lock { addr, value });
     }
 
     /// Run the transport for the coming period, before the app's process,
@@ -697,6 +769,7 @@ impl TimeHost {
             self.changed = true;
         }
         self.sink.n = 0;
+        self.locks.clear();
         self.player
             .process(&self.view, &self.block, &mut *self.sink);
         for o in &self.sink.out[..self.sink.n] {
@@ -706,6 +779,22 @@ impl TimeHost {
                 }
                 Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
                 Event::AllOff => pads.stop_all(),
+                // Parameter locks go to the mod engine in the mixer
+                // (`MixHost::lock`), which the audio loop hands them to.
+                Event::Lock { addr, value } => Self::lock_out(
+                    &mut self.locks,
+                    &mut self.locks_dropped,
+                    o.offset,
+                    addr,
+                    Some(value),
+                ),
+                Event::Unlock { addr } => Self::lock_out(
+                    &mut self.locks,
+                    &mut self.locks_dropped,
+                    o.offset,
+                    addr,
+                    None,
+                ),
             }
         }
         self.recorder.process(&self.view, &self.block);
@@ -719,12 +808,20 @@ impl TimeHost {
             let e = self.player.erased()[i];
             edited |= self.takes.erase(&mut self.project, &e);
         }
+        for i in 0..self.player.erased_locks().len() {
+            let e = self.player.erased_locks()[i];
+            edited |= self.takes.erase_lock(&mut self.project, &e);
+        }
         for i in 0..self.recorder.taken().len() {
             let k = self.recorder.taken()[i];
             edited |= self.takes.add(&mut self.project, &k).is_ok();
         }
+        for i in 0..self.recorder.taken_locks().len() {
+            let k = self.recorder.taken_locks()[i];
+            edited |= self.takes.add_lock(&mut self.project, &k).is_ok();
+        }
         if edited {
-            // The clips only gained or lost notes, and cues became
+            // The clips only gained or lost notes and locks, and cues became
             // launches of clips they had compiled with, so this compiles.
             let _ = self.compile();
         }
@@ -779,19 +876,20 @@ impl TimeHost {
         st
     }
 
-    /// Notes lost because a table was full (should stay 0).
+    /// Notes and locks lost because a table was full (should stay 0).
     pub fn dropped(&self) -> u64 {
         self.sink.dropped
             + self.recorder.dropped()
             + self.player.stats().dropped
             + self.capture.dropped()
+            + self.locks_dropped
     }
 
     /// The time engine's part of the status line.
     pub fn describe(&self) -> String {
         let t = &self.transport;
         format!(
-            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes lost to full tables",
+            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes or locks lost to full tables",
             t.state(),
             t.meter().position(t.position()),
             t.bpm(),
@@ -813,6 +911,38 @@ fn take_name(row: Option<(bool, u32)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_put_from_elsewhere_lands_in_the_first_empty_slot_and_undo_takes_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut clip = Clip::new("Break phrase", 4 * 960);
+        for k in 0..4u8 {
+            clip.add_note(mpfree_seq::Note::new(i64::from(k) * 960, 480, k, 127))
+                .unwrap();
+        }
+        // Slot 1 of track 1 is taken: the phrase goes in slot 2.
+        h.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
+        let line = h.put_clip(clip.clone()).unwrap();
+        assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
+        assert_eq!(h.project.clip(0, 1), Some(&clip));
+        assert!(h.launches.is_empty(), "not launched");
+        // The armed track takes it.
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        assert!(h
+            .put_clip(clip.clone())
+            .unwrap()
+            .ends_with("slot 1 of Track 3"));
+        // UNDO on the Clips page takes the last one away, then the first.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(2, 0).is_none());
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(0, 1).is_none());
+        // A full track says so.
+        for s in 0..SLOTS {
+            h.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
+        }
+        assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
+    }
 
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;
@@ -979,6 +1109,48 @@ mod tests {
         run(&mut h, &mut pads, 8 * BAR, &[]);
         assert_eq!(pads.hits.len(), 2, "redo brings both back");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// A knob turned while a pad is held and the track records becomes a
+    /// parameter lock on that pad's note, and goes with its take.
+    #[test]
+    fn a_knob_turned_while_recording_locks_the_held_pads_note() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let press = [(1000, 4, 100, 2000)];
+        run(&mut h, &mut pads, 1536, &press);
+        let cutoff = RelAddr::new(OnTrack::Inst, 1);
+        h.knob(0, cutoff.on(2), 0.25);
+        h.knob(64, cutoff.on(2), 0.6);
+        // Another track's knob is not recorded here.
+        h.knob(100, cutoff.on(5), 0.9);
+        run(&mut h, &mut pads, BAR, &press);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert_eq!(clip.notes.len(), 1);
+        let locks: Vec<_> = clip
+            .locks
+            .iter()
+            .map(|l| (l.tick, l.sound, l.addr, l.value))
+            .collect();
+        assert_eq!(locks, vec![(clip.notes[0].tick, None, cutoff, 0.6)]);
+        // Played back, the lock goes out for the mixer's mod engine on its
+        // note's frame (the clip's only note is locked, so it never ends).
+        let mut out = Vec::new();
+        for _ in 0..2 * BAR / u64::from(PERIOD) {
+            h.period(PERIOD, &mut pads);
+            out.extend_from_slice(h.locks());
+        }
+        assert!(
+            out.iter()
+                .any(|&(_, a, v)| a == cutoff.on(2) && v == Some(0.6)),
+            "{out:?}"
+        );
+        assert_eq!(h.dropped(), 0);
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
 
     /// A clip launched while the music plays waits for the next bar line,

@@ -2,7 +2,9 @@
 //! kept by take, so the last take can be undone and redone as a whole.
 //!
 //! The control thread hands each period's [`Player::erased`] and
-//! [`Recorder::taken`] notes to [`Takes::erase`] and [`Takes::add`], which
+//! [`Recorder::taken`] notes to [`Takes::erase`] and [`Takes::add`] (and
+//! the locks, [`Player::erased_locks`] and [`Recorder::taken_locks`], to
+//! [`Takes::erase_lock`] and [`Takes::add_lock`]), which
 //! change the clips and remember what changed. [`Takes::undo`] puts the
 //! erased notes back and takes the recorded ones out; [`Takes::redo`] does
 //! the take again. Notes are named by value, as the clips store them, so
@@ -22,18 +24,27 @@
 //! An edit of a clip's notes, such as a step tapped on or a step's velocity
 //! changed ([`Takes::edit`] with an `mpfree_seq::steps::Edit`), is a take
 //! too, numbered on its own. Turning a Q-Link through many values can join
-//! one edit, so one UNDO takes the whole turn back.
+//! one edit, so one UNDO takes the whole turn back. An edit's parameter
+//! locks (a lock set on a step, a step's locks going with it) undo and
+//! redo with its notes.
+//!
+//! Knob moves recorded as locks ([`Recorder::taken_locks`]) go in with
+//! [`Takes::add_lock`], with the take they were recorded in: each replaces
+//! a lock of the same parameter on the same tick and row, and a turn that
+//! spans many periods stays one lock in the take.
 //!
 //! This allocates; it never runs on the audio thread.
 //!
 //! [`Player::erased`]: crate::Player::erased
+//! [`Player::erased_locks`]: crate::Player::erased_locks
 //! [`Recorder::taken`]: crate::Recorder::taken
+//! [`Recorder::taken_locks`]: crate::Recorder::taken_locks
 
 use mpfree_seq::steps::Edit;
-use mpfree_seq::{Clip, ModelError, Note, Project};
+use mpfree_seq::{Clip, Lock, ModelError, Note, Project};
 use mpfree_transport::time::Tick;
 
-use crate::{Erased, Taken};
+use crate::{Erased, ErasedLock, Taken, TakenLock};
 
 /// Takes kept for undo when no limit is given.
 pub const DEFAULT_LIMIT: usize = 32;
@@ -57,6 +68,9 @@ pub struct Take {
     /// Clips the take made longer or shorter, as (track, slot, from, to)
     /// in ticks (a page added or taken off).
     pub resized: Vec<(usize, usize, Tick, Tick)>,
+    /// Parameter locks an edit put in and took out, as (track, slot, lock).
+    pub locks_added: Vec<(usize, usize, Lock)>,
+    pub locks_erased: Vec<(usize, usize, Lock)>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -100,6 +114,48 @@ impl Takes {
         Ok(())
     }
 
+    /// Put a recorded lock in its clip, in place of a lock of the same
+    /// parameter on the same tick and row, and remember it with its take.
+    /// A later value of a lock this take recorded replaces it in the take
+    /// too, so undo puts back what was there before the take. `BadSlot` if
+    /// the clip is gone; the clip's own refusals as they are; nothing
+    /// changes on an error.
+    pub fn add_lock(&mut self, project: &mut Project, k: &TakenLock) -> Result<(), ModelError> {
+        let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
+        let new = k.lock;
+        let key = |x: &Lock| (x.tick, x.sound, x.addr) == (new.tick, new.sound, new.addr);
+        let i = c.locks.iter().position(key);
+        let old = i.map(|i| c.locks.remove(i));
+        if let Err(e) = c.add_lock(new) {
+            if let (Some(i), Some(o)) = (i, old) {
+                c.locks.insert(i, o);
+            }
+            return Err(e);
+        }
+        // In the old one's place, so the clip's order does not depend on
+        // how a turn was split into periods.
+        if let Some(i) = i {
+            let l = c.locks.pop().expect("just added");
+            c.locks.insert(i, l);
+        }
+        let at = (k.track, k.slot);
+        let take = self.entry(k.take);
+        let ours = old.and_then(|o| {
+            take.locks_added
+                .iter()
+                .rposition(|&(tr, sl, x)| (tr, sl) == at && x == o)
+        });
+        match (ours, old) {
+            (Some(j), _) => take.locks_added[j].2 = new,
+            (None, Some(o)) => {
+                take.locks_erased.push((k.track, k.slot, o));
+                take.locks_added.push((k.track, k.slot, new));
+            }
+            (None, None) => take.locks_added.push((k.track, k.slot, new)),
+        }
+        Ok(())
+    }
+
     /// Remove an erased note from its clip and remember it with its take.
     /// False if the clip does not hold it (it was edited meanwhile); then
     /// nothing is remembered.
@@ -111,6 +167,22 @@ impl Takes {
             return false;
         }
         self.entry(e.take).erased.push((e.track, e.slot, e.note));
+        true
+    }
+
+    /// Remove a lock replace recording erased from its clip and remember
+    /// it with its take. False if the clip does not hold it (it was edited
+    /// meanwhile); then nothing is remembered.
+    pub fn erase_lock(&mut self, project: &mut Project, e: &ErasedLock) -> bool {
+        let Some(clip) = clip(project, e.track, e.slot) else {
+            return false;
+        };
+        if !clip.remove_lock(&e.lock) {
+            return false;
+        }
+        self.entry(e.take)
+            .locks_erased
+            .push((e.track, e.slot, e.lock));
         true
     }
 
@@ -191,6 +263,10 @@ impl Takes {
                 .iter()
                 .chain(&t.erased)
                 .all(|&(tr, sl, _)| (tr, sl) == (track, slot))
+                && t.locks_added
+                    .iter()
+                    .chain(&t.locks_erased)
+                    .all(|&(tr, sl, _)| (tr, sl) == (track, slot))
         };
         let joins = join.is_some()
             && edit.length.is_none()
@@ -213,6 +289,10 @@ impl Takes {
                 .extend(edit.add.iter().map(|&n| (track, slot, n)));
             take.resized
                 .extend(edit.length.map(|(from, to)| (track, slot, from, to)));
+            take.locks_erased
+                .extend(edit.erase_locks.iter().map(|&l| (track, slot, l)));
+            take.locks_added
+                .extend(edit.add_locks.iter().map(|&l| (track, slot, l)));
             return Ok(number);
         }
         let take = self.done.last_mut().expect("checked");
@@ -242,6 +322,27 @@ impl Takes {
                 None => take.added.push((track, slot, n)),
             }
         }
+        // The same for locks: a lock turned through many values is one.
+        for &l in &edit.erase_locks {
+            match take.locks_added.iter().position(|&x| x == (track, slot, l)) {
+                Some(i) => {
+                    take.locks_added.remove(i);
+                }
+                None => take.locks_erased.push((track, slot, l)),
+            }
+        }
+        for &l in &edit.add_locks {
+            match take
+                .locks_erased
+                .iter()
+                .position(|&x| x == (track, slot, l))
+            {
+                Some(i) => {
+                    take.locks_erased.remove(i);
+                }
+                None => take.locks_added.push((track, slot, l)),
+            }
+        }
         Ok(take.number)
     }
 
@@ -256,12 +357,22 @@ impl Takes {
                 c.remove_note(note);
             }
         }
+        for (track, slot, lock) in take.locks_added.iter().rev() {
+            if let Some(c) = clip(project, *track, *slot) {
+                c.remove_lock(lock);
+            }
+        }
         for &(track, slot, from, to) in take.resized.iter().rev() {
             resize(project, track, slot, to, from);
         }
         for (track, slot, note) in take.erased.iter().rev() {
             if let Some(c) = clip(project, *track, *slot) {
                 let _ = c.add_note(*note);
+            }
+        }
+        for (track, slot, lock) in take.locks_erased.iter().rev() {
+            if let Some(c) = clip(project, *track, *slot) {
+                let _ = c.add_lock(*lock);
             }
         }
         for (track, slot, made) in take.made.iter_mut().rev() {
@@ -289,12 +400,22 @@ impl Takes {
                 c.remove_note(note);
             }
         }
+        for (track, slot, lock) in &take.locks_erased {
+            if let Some(c) = clip(project, *track, *slot) {
+                c.remove_lock(lock);
+            }
+        }
         for &(track, slot, from, to) in &take.resized {
             resize(project, track, slot, from, to);
         }
         for (track, slot, note) in &take.added {
             if let Some(c) = clip(project, *track, *slot) {
                 let _ = c.add_note(*note);
+            }
+        }
+        for (track, slot, lock) in &take.locks_added {
+            if let Some(c) = clip(project, *track, *slot) {
+                let _ = c.add_lock(*lock);
             }
         }
         let n = take.number;
@@ -718,5 +839,52 @@ mod tests {
         let e = g.add_page(&c(&p), false);
         let n = t.edits();
         assert_eq!(t.edit(&mut p, 0, 0, &e, Some(1)), Ok(n + 1));
+    }
+
+    #[test]
+    fn locks_undo_and_redo_with_their_steps() {
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::{lock_key, Grid};
+        let cut = RelAddr::new(OnTrack::Inst, 3);
+        let mut p = project();
+        let mut t = Takes::default();
+        let g = Grid::new(240).unwrap();
+        let c = |p: &Project| p.tracks[0].slots[0].clone().unwrap();
+        let tap = g.toggle(&c(&p), 36, 2, 100);
+        t.edit(&mut p, 0, 0, &tap, None).unwrap();
+        // A Q-Link turned on held step 2: one undo for the whole turn.
+        let key = Some(lock_key(Some(36), 2, cut));
+        for v in [0.2, 0.4, 0.6] {
+            let e = g.lock(&c(&p), Some(36), 2, cut, v);
+            assert_eq!(t.edit(&mut p, 0, 0, &e, key), Ok(2));
+        }
+        let last = t.done().last().unwrap();
+        assert_eq!((last.locks_erased.len(), last.locks_added.len()), (0, 1));
+        assert_eq!(c(&p).locks.len(), 1);
+        assert_eq!(c(&p).locks[0].value, 0.6);
+        // Tapping the step off takes its lock; undo brings both back.
+        let off = g.toggle(&c(&p), 36, 2, 100);
+        t.edit(&mut p, 0, 0, &off, None).unwrap();
+        assert!(c(&p).locks.is_empty());
+        assert_eq!(t.undo(&mut p), Some(3));
+        assert_eq!(
+            (c(&p).locks.len(), g.row(&c(&p), 36)[2].is_some()),
+            (1, true)
+        );
+        // Undo the turn, then redo it.
+        assert_eq!(t.undo(&mut p), Some(2));
+        assert!(c(&p).locks.is_empty());
+        assert_eq!(t.redo(&mut p), Some(2));
+        assert_eq!(c(&p).locks[0].value, 0.6);
+        // A page with a lock taken off and put back.
+        let two = g.add_page(&c(&p), true);
+        t.edit(&mut p, 0, 0, &two, None).unwrap();
+        assert_eq!(c(&p).locks.len(), 2);
+        let one = g.remove_page(&c(&p));
+        t.edit(&mut p, 0, 0, &one, None).unwrap();
+        assert_eq!(c(&p).locks.len(), 1);
+        t.undo(&mut p).unwrap();
+        assert_eq!(c(&p).locks.len(), 2, "the lock on step 18 comes back");
+        assert_eq!(g.locks(&c(&p), Some(36), 18).len(), 1);
     }
 }

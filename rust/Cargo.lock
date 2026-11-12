@@ -383,6 +383,7 @@ dependencies = [
  "mpfree-arp",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
  "mpfree-node",
@@ -394,6 +395,14 @@ dependencies = [
  "mpfree-synth",
  "mpfree-track",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-browser-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-library",
+ "mpfree-ui",
 ]
 
 [[package]]
@@ -411,6 +420,7 @@ name = "mpfree-chain-ui"
 version = "0.1.0"
 dependencies = [
  "mpfree-fx",
+ "mpfree-fx-ui",
  "mpfree-mod",
  "mpfree-param",
  "mpfree-sampler-ui",
@@ -465,6 +475,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-fx-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-synth-ui",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
 dependencies = [
@@ -498,11 +518,14 @@ dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
  "mpfree-capture",
+ "mpfree-chain-ui",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-fx",
+ "mpfree-fx-ui",
  "mpfree-looper",
  "mpfree-mixer-ui",
+ "mpfree-mod",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
@@ -519,6 +542,18 @@ dependencies = [
  "mpfree-transport",
  "mpfree-ui",
 ]
+
+[[package]]
+name = "mpfree-lanes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-prof",
+]
+
+[[package]]
+name = "mpfree-library"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-looper"
@@ -554,6 +589,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-node"
 version = "0.1.0"
+dependencies = [
+ "mpfree-tuning",
+]
 
 [[package]]
 name = "mpfree-param"
@@ -564,6 +602,7 @@ name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-param",
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-transport",
@@ -602,8 +641,10 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-node",
  "mpfree-prof",
  "mpfree-stretch",
+ "mpfree-synth",
 ]
 
 [[package]]
@@ -627,6 +668,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-param",
  "mpfree-transport",
 ]
 
@@ -674,6 +716,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-node",
+ "mpfree-tuning",
 ]
 
 [[package]]
@@ -724,6 +767,10 @@ version = "0.1.0"
 dependencies = [
  "mpfree-core",
 ]
+
+[[package]]
+name = "mpfree-tuning"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-ui"
