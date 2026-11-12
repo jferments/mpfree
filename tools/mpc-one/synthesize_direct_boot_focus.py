@@ -154,6 +154,29 @@ def build(read):
         bool(body("0x00122cf8"))
         and "mpf_fastboot_permission()" not in body("0x00122cf8")
     )
+    recovered_adc_error_messages = {
+        "Recovery button ADC not found": "0x001010aa",
+        "Failed to start recovery button ADC channel": "0x001010f0",
+        "Failed to read recovery button ADC channel": "0x00101100",
+    }
+    actual_string_rows = d["p3"].get("strings", [])
+    checks["stock_recovery_adc_diagnostic_xrefs"] = all(
+        any(x.get("text") == message and
+            any("0x%08x" % int(v.get("from"),16) == address
+                for v in x.get("xrefs", []))
+            for x in actual_string_rows)
+        for message, address in recovered_adc_error_messages.items())
+    arm_by_address = {
+        "0x%08x" % int(ins["address"],16): ins["text"]
+        for ins in funcs.get("0x00100fe4",{}).get(
+            "machine_instruction_evidence", [])
+    }
+    checks["stock_recovery_adc_unsigned_le99_original_arm"] = all(
+        arm_by_address.get(where) == expected
+        for where, expected in (
+            ("0x0010110c","cmp r3,#0x63"),
+            ("0x0010110e","ittt ls"),
+            ("0x00101114","strb.ls r2,[r3,#0x0]")))
     reboot_code = body("0x00100fe4")
     checks["reboot_mode_clear_and_one_nine_branch"] = (
         "(*DAT_0010114c & 0xffffff00) == DAT_00101150" in reboot_code
@@ -273,10 +296,16 @@ def build(read):
       yes(checks["reboot_mode_clear_and_one_nine_branch"]),
       "At 0x100FE4 U-Boot tests the low byte of a recognized reboot-mode word, sets a recovery variable for values 1/9 and clears the register. This is reboot-mode handling, not a proven warm-reboot counter.",
       "Resolve the stored register constant and identify reset/recovery and ROM behavior separately.")
-    q("Boot counter","Is an additional threshold-dependent recovery branch present?",
-      yes(checks["separate_boot_threshold_below_100_observed"]),
-      "After processing reboot-mode values, U-Boot reads an independent numeric value through FUN_001147f0/FUN_00115f30 and sets the same recovery flag if the result is below 100. Its meaning is NOT established.",
-      "Identify the source and units of the value and whether it is persistence, boot count, storage health or unrelated board data.")
+    q("Recovery button","Is the second recovery trigger a low ADC button reading?",
+      yes(checks["separate_boot_threshold_below_100_observed"] and
+          checks["stock_recovery_adc_diagnostic_xrefs"] and
+          checks["stock_recovery_adc_unsigned_le99_original_arm"]),
+      "Original ARM unsigned <=99 and three recovery-button ADC diagnostics establish channel-1 button detection, not a JC11S boot counter.",
+      "Resolve the board-to-ADC hardware pin mapping and flag export without device writes.")
+    q("Recovery button","Does the board startup export the recovery flag into dorecovery?",
+      "static-candidate-pointer-pending",
+      "Original 0x1011E0 checks the board recovery flag and sets environment variable dorecovery. The exact equality with the ADC writer must be proved by literal-pool dereferencing.",
+      "Require ADC writer and board environment reader pointers to resolve to the same global.")
     q("Boot counter","Can synthetic B001 counter stand in for MPC tests?","related-board-only","B001 format reported on JC11S, not validated MPC threshold.","Keep board hypothesis distinct from device proof.")
     q("3.10 policy","Does 3.10 add a bootloader signature utility?",yes(checks["az01_bootloader_sig_present_3_10"]),"az01-bootloader-sig added in 3.10.","Trace whether updater/boot scripts call it.")
     q("3.10 policy","Does 3.10 add an early LoadPin service?",yes(checks["loadpin_oneshot_present_3_10"]),"az0x-loadpin-trustpoints systemd oneshot exists.","Trace kernel enforcement and service dependency.")
