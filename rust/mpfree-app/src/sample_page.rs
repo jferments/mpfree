@@ -70,6 +70,7 @@ use std::time::{Duration, Instant};
 use mpfree_node::Node;
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::EngineView;
+use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
@@ -459,11 +460,15 @@ pub struct SamplePage {
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
     /// A file being read for the browser's Load (true: Load to pad).
-    loading: Option<(Receiver<Loaded>, bool)>,
+    loading: Option<(Receiver<LoadedPad>, bool)>,
     /// A sound Load to pad put on the next pad hit.
-    assign: Option<Source>,
+    assign: Option<LoadedSound>,
     /// Send to pad: the kit and pad whose copy goes on the next pad hit.
     sending: Option<(usize, usize)>,
+    /// The app can write files (Put on Files on the Chop tab).
+    files: bool,
+    /// Pads exported, for the app to write.
+    exports: Vec<export::Export>,
     /// The kit an opened project was playing, for the app to switch to.
     wanted_kit: Option<usize>,
 }
@@ -554,6 +559,8 @@ impl SamplePage {
             loading: None,
             assign: None,
             sending: None,
+            files: false,
+            exports: Vec::new(),
             wanted_kit: None,
         };
         p.show_empty(ui);
@@ -683,10 +690,10 @@ impl SamplePage {
             self.light(ui, self.played(pad), true);
             return;
         }
-        if let Some(src) = self.assign.take() {
+        if let Some(l) = self.assign.take() {
             // Load to pad: this hit picks the pad.
             let kit = self.kit;
-            self.keep(ui, kit, pad, src, "loaded");
+            self.keep_loaded(ui, kit, pad, l);
         }
         if let Some((kit, from)) = self.sending.take() {
             // Send to pad: this hit picks the pad the copy goes on.
@@ -926,6 +933,9 @@ impl SamplePage {
             return;
         };
         self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
+        if let Some(cs) = self.chop_state.as_mut() {
+            cs.files = self.files;
+        }
         let Some(cs) = self.chop_state.as_ref() else {
             return;
         };
@@ -1529,6 +1539,54 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
+            ChopAction::Export { pad, layer, cuts } => self.export(*pad, *layer, cuts),
+        }
+    }
+
+    /// Pad `pad` of the kit shown as files ([`export::pad`]), for the app
+    /// to write ([`Self::take_exports`]); the log says what they are.
+    fn export(&mut self, pad: usize, layer: usize, cuts: &[u64]) {
+        let kit = self.kit;
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let at = self.pad_text(kit, pad);
+        match export::pad(project, pad, layer, cuts) {
+            Ok(e) => {
+                let name = &e.name;
+                let slices = match e.slices {
+                    0 => String::new(),
+                    n => format!(" and {n} slices ({name} 01.wav to {name} {n:02}.wav)"),
+                };
+                self.lines.push(format!(
+                    "sample: pad {at} exported as {} files: {name}.wav with its settings ({name}.{}){slices}",
+                    e.files.len(),
+                    export::SIDECAR
+                ));
+                self.exports.push(e);
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: pad {at} not exported ({e})")),
+        }
+    }
+
+    /// Pads exported since the last call, each a folder's worth of files
+    /// (named in the files; [`export::Export::name`] names the folder).
+    /// The app writes them together, each in a folder of its own, since a
+    /// sidecar names its sounds by file name.
+    #[allow(dead_code)] // the app's library wiring calls it
+    pub fn take_exports(&mut self) -> Vec<export::Export> {
+        std::mem::take(&mut self.exports)
+    }
+
+    /// The app can write files: the Chop tab offers Put on Files. Off until
+    /// it says so, so nothing is exported that would go nowhere.
+    #[allow(dead_code)] // the app's library wiring calls it
+    pub fn set_files(&mut self, ui: &mut Ui, on: bool) {
+        if self.files != on {
+            self.files = on;
+            self.refresh(ui);
         }
     }
 
@@ -2561,7 +2619,7 @@ impl SamplePage {
     /// A sound Load to pad is holding for the next pad hit.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn assigning(&self) -> Option<&str> {
-        self.assign.as_ref().map(|s| s.name.as_str())
+        self.assign.as_ref().map(|l| l.src.name.as_str())
     }
 
     fn poll_open(&mut self, ui: &mut Ui) {
@@ -2630,20 +2688,83 @@ impl SamplePage {
             Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
         };
         self.loading = None;
-        if let Ok((src, Some(note))) = &r {
+        if let Ok(LoadedSound {
+            src,
+            note: Some(note),
+            ..
+        }) = &r
+        {
             self.lines.push(format!("sample: {}: {note}", src.name));
         }
-        match r.map(|(src, _)| src) {
-            Ok(src) if to_pad => {
+        match r {
+            Ok(l) if to_pad => {
                 self.lines
-                    .push(format!("sample: hit a pad to put {} on it", src.name));
-                self.assign = Some(src);
+                    .push(format!("sample: hit a pad to put {} on it", l.src.name));
+                self.assign = Some(l);
             }
-            Ok(src) => {
+            Ok(l) => {
                 let (kit, pad) = (self.kit, self.pad);
-                self.keep(ui, kit, pad, src, "loaded");
+                self.keep_loaded(ui, kit, pad, l);
             }
             Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
+        }
+    }
+
+    /// A loaded sound onto pad `pad` of kit `kit`: with its sidecar, the
+    /// pad as it was exported (its sounds, settings and slices, one undo
+    /// step); without, or if the sidecar can't be used (the log says
+    /// why), the sound alone.
+    fn keep_loaded(&mut self, ui: &mut Ui, kit: usize, pad: usize, l: LoadedSound) {
+        let o = match l.sidecar {
+            None => return self.keep(ui, kit, pad, l.src, "loaded"),
+            Some(Err(e)) => {
+                self.lines.push(format!(
+                    "sample: {}: its settings ({}) not used ({e}); the sound alone is loaded",
+                    l.src.name, l.sidecar_name
+                ));
+                return self.keep(ui, kit, pad, l.src, "loaded");
+            }
+            Some(Ok(o)) => o,
+        };
+        for n in &o.notes {
+            self.lines.push(format!("sample: {}: {n}", l.sidecar_name));
+        }
+        let at = self.pad_text(kit, pad);
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        let (name, chops) = (o.pad.name.clone(), o.chops.len());
+        match project.put_pad_with(pad, o.sources, o.pad, o.chops) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                self.mark_renamed(kit);
+                let chops = match chops {
+                    0 => String::new(),
+                    1 => " and its slices".to_string(),
+                    n => format!(" and {n} chops"),
+                };
+                self.lines.push(format!(
+                    "sample: loaded: {name} on pad {at}, with its settings{chops} from {}",
+                    l.sidecar_name
+                ));
+                self.last_take = name;
+                if kit == self.kit {
+                    self.lift();
+                    self.pad = pad;
+                    self.velocity = None;
+                }
+                self.refresh(ui);
+            }
+            Err(e) => {
+                self.lines.push(format!(
+                    "sample: {}: its settings ({}) not used ({e:?}); the sound alone is loaded",
+                    l.src.name, l.sidecar_name
+                ));
+                self.keep(ui, kit, pad, l.src, "loaded");
+            }
         }
     }
 
@@ -3777,14 +3898,23 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
     Ok(clip)
 }
 
-/// A sound read for Load, with a note when something was left out.
 /// A sound file read and decoded (and a note about it), or why not.
 pub type Loaded = Result<(Source, Option<String>), String>;
 
-/// A sound file for the browser's Load: WAV, AIFF or FLAC, known by what
-/// it holds, no bigger than the sampler holds in memory; and a note when
-/// something was left out (a file cut short).
-#[allow(dead_code)] // reached through load_file
+/// A sound read for the browser's Load, a note when something was left
+/// out of it (a file cut short), and the pad its sidecar describes when
+/// one is beside it ([`export`]).
+struct LoadedSound {
+    src: Source,
+    note: Option<String>,
+    sidecar: Option<Result<export::Opened, String>>,
+    /// The sidecar's file name, for the log.
+    sidecar_name: String,
+}
+
+/// A Load's sound with its sidecar, or why not.
+type LoadedPad = Result<LoadedSound, String>;
+
 /// Reads and decodes `path` on a thread of its own; the answer comes on
 /// the channel (the browser's preview).
 pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
@@ -3792,12 +3922,48 @@ pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
     std::thread::Builder::new()
         .name("preview-load".into())
         .spawn(move || {
-            let _ = tx.send(read_sound(&path));
+            let _ = tx.send(read_one(&path));
         })?;
     Ok(rx)
 }
 
-fn read_sound(path: &Path) -> Loaded {
+/// A sound file for the browser's Load: WAV, AIFF or FLAC, known by what
+/// it holds, no bigger than the sampler holds in memory; with its sidecar
+/// (`Break 92.mpfree` beside `Break 92.wav`) read too, and the other
+/// sounds it names beside it.
+#[allow(dead_code)] // reached through load_file
+fn read_sound(path: &Path) -> LoadedPad {
+    let (src, note) = read_one(path)?;
+    let side = path.with_extension(export::SIDECAR);
+    let sidecar_name = side
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let sidecar = side.is_file().then(|| {
+        let text = std::fs::read_to_string(&side).map_err(|e| e.to_string())?;
+        let own = path.file_name().map(|s| s.to_string_lossy().into_owned());
+        let dir = path.parent().unwrap_or(Path::new("."));
+        export::read_sidecar(&text, &mut |name| {
+            if own.as_deref() == Some(name) {
+                return Ok(src.clone());
+            }
+            // Only sounds beside it.
+            if name.is_empty() || name.contains(['/', '\\']) || name == ".." {
+                return Err("not beside it".to_string());
+            }
+            read_one(&dir.join(name)).map(|(s, _)| s)
+        })
+    });
+    Ok(LoadedSound {
+        src,
+        note,
+        sidecar,
+        sidecar_name,
+    })
+}
+
+/// One sound file, no bigger than the sampler holds in memory.
+fn read_one(path: &Path) -> Loaded {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());

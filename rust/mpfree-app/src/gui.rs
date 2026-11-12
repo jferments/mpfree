@@ -7044,6 +7044,96 @@ mod tests {
     }
 
     #[test]
+    fn an_exported_pad_loads_back_with_its_settings_and_slices() {
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let put_on = |p: &mut Player, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == Row::Put).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(chop_tab::TAB),
+        });
+        // Files is offered only once the app can write them.
+        put_on(&mut p, -1);
+        assert_ne!(p.sample.chop().unwrap().0.put_text(), "Files");
+        put_on(&mut p, 1);
+        p.sample.set_files(&mut p.ui, true);
+        put_on(&mut p, -1);
+        assert_eq!(p.sample.chop().unwrap().0.put_text(), "Files");
+        let n = p.sample.chop().unwrap().0.slices();
+        p.on_event(UiEvent {
+            widget: chop_tab::BUTTONS.into(),
+            kind: EventKind::Tab(2),
+        });
+        let exports = p.sample.take_exports();
+        assert_eq!(exports.len(), 1);
+        let e = &exports[0];
+        assert_eq!((e.name.as_str(), e.slices), ("Break 92", n));
+        assert_eq!(e.files.len(), 2 + n, "the sound, its settings, the slices");
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == &format!(
+                    "sample: pad A5 exported as {} files: Break 92.wav with its settings \
+                     (Break 92.mpfree) and {n} slices (Break 92 01.wav to Break 92 {n:02}.wav)",
+                    2 + n
+                )),
+            "{:?}",
+            events_log(&p)
+        );
+        assert!(views(p.take_actions()).0.is_empty(), "the kit is as it was");
+        // Written into a folder of their own, Load to pad brings the pad
+        // back on another pad, slices and all, as one undo step.
+        let dir = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, bytes) in &e.files {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        let chops = p.sample.project(0).unwrap().chop_sets.len();
+        p.sample.load_file(dir.join("Break 92.wav"), true);
+        tick_until(&mut p, |p| p.sample.assigning().is_some());
+        p.apply(ToUi::PadDown {
+            pad: 9,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(9));
+        p.tick(0.033);
+        let kit = p.sample.project(0).unwrap();
+        assert_eq!(kit.pad(9), kit.pad(pad), "the pad as it was");
+        assert_eq!(kit.chop_sets.len(), chops + 1);
+        assert_eq!(kit.chop_sets.last().unwrap().slices(), n);
+        assert_eq!(p.kits[0].pads[9].as_deref(), Some("Break 92"));
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: loaded: Break 92 on pad A10, with its settings and its slices from Break 92.mpfree"));
+        p.apply(ToUi::SampleUndo(false));
+        let kit = p.sample.project(0).unwrap();
+        assert!(kit.pad(9).is_none());
+        assert_eq!(kit.chop_sets.len(), chops);
+        // A slice loads as a sound of its own; settings that can't be
+        // read leave the sound alone, and say so.
+        p.sample.load_file(dir.join("Break 92 02.wav"), false);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l.starts_with("sample: loaded: Break 92 02, "))
+        });
+        std::fs::write(dir.join("Break 92.mpfree"), "junk").unwrap();
+        p.sample.load_file(dir.join("Break 92.wav"), false);
+        tick_until(&mut p, |p| {
+            events_log(p).iter().any(|l| {
+                l == "sample: Break 92: its settings (Break 92.mpfree) not used \
+                      (not an mpfree-sampler 1 part); the sound alone is loaded"
+            })
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn load_puts_a_sound_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
         use mpfree_sampler::model::Source;
         use mpfree_sampler::wav;
