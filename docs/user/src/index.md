@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: README.md
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 ae9c39c
 -->
 
 # Welcome
