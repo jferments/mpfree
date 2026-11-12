@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use mpfree_lanes::Config;
 use mpfree_prof::alloc::{self, CountingAlloc};
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
+use mpfree_sampler::engine::{Engine, EngineView, Event, PadField, PadOut, ProgramField};
 use mpfree_sampler::model::*;
 
 #[global_allocator]
@@ -214,6 +214,36 @@ fn a_split_engine_allocates_nothing_on_either_core() {
                 value: (block * 37 % 128) as u8,
             },
         );
+        // Live settings: knobs turned, p-locks on hits, cleared again, and
+        // the program's offsets.
+        e.schedule(
+            block * 13 % 128,
+            Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block % 8) as usize],
+                value: live_value(block),
+            },
+        );
+        if block % 9 == 4 {
+            e.schedule(
+                block % 128,
+                Event::ProgramLive {
+                    field: ProgramField::ALL[(block % 3) as usize],
+                    value: (block % 7) as f32 - 3.0,
+                },
+            );
+        }
+        if block % 11 == 5 {
+            e.apply(Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block / 11 % 8) as usize],
+                value: f32::NAN,
+            });
+        }
+        // The hard stop, once right after a late part (the lane's share away).
+        if block % 400 == 44 || block % 500 == 377 {
+            e.stop_all();
+        }
         if block % 300 == 299 {
             e.apply(Event::AllOff);
         }
@@ -274,4 +304,10 @@ fn a_split_engine_allocates_nothing_on_either_core() {
     );
     assert!(st.steals > 0, "no voice was stolen: {st:?}");
     assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+}
+
+/// A value for a live setting: in range for some fields, out of range
+/// (clamped) for others, the way a careless caller might send it.
+fn live_value(block: u32) -> f32 {
+    (block * 37 % 2000) as f32 - 500.0
 }
