@@ -41,7 +41,7 @@
 //! kit.
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
-use mpfree_perform::{Perform, When};
+use mpfree_perform::{Perform, SceneMorph, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
@@ -292,10 +292,10 @@ pub struct TimeHost {
     /// Scenes and follow actions: cues the rows and chains clips and
     /// scenes on their bar lines.
     perform: Perform,
-    /// The morph bar's rows. The morph itself runs on the mod engine
-    /// (`mpfree_perform::SceneMorph`), which the pad player does not run
-    /// yet.
+    /// The morph bar, and the morph on the mixer's mod engine
+    /// ([`TimeHost::morph`]).
     morph: MorphInfo,
+    scene_morph: SceneMorph,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -386,6 +386,7 @@ impl TimeHost {
             cues: Vec::new(),
             perform: Perform::default(),
             morph: MorphInfo::default(),
+            scene_morph: SceneMorph::default(),
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -786,9 +787,91 @@ impl TimeHost {
             | TimeAction::SnapBack
             | TimeAction::KeepMorph
             | TimeAction::SaveScene(_) => {
-                Err("morph: the mod engine is not in the pad player yet".into())
+                Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
         }
+    }
+
+    /// The morph bar on the mixer's mod engine (`modu`): the rows, the
+    /// crossfader (which loads the rows on its first move), snap back,
+    /// keep and saving a row. A line for the log.
+    pub fn morph(
+        &mut self,
+        a: TimeAction,
+        modu: &mut crate::modmix::ModMix,
+        mixer: &mpfree_fx::Mixer,
+    ) -> Result<String, String> {
+        let (ra, rb) = (self.morph.a, self.morph.b);
+        let line = match a {
+            TimeAction::MorphRows { .. } if !self.morph.on => return self.act(a),
+            TimeAction::MorphRows { a, b } => {
+                // Morphing: the new rows go on A and B at once, from the
+                // same sound before.
+                let (a, b) = (a.min(SLOTS - 1), b.min(SLOTS - 1));
+                let l = modu
+                    .morph_load(mixer, &mut self.scene_morph, &mut self.project, a, b)
+                    .map_err(|e| format!("morph: {e:?}"))?;
+                modu.morph_to(self.morph.pos);
+                (self.morph.a, self.morph.b, self.morph.params) = (a, b, l.morphing);
+                format!(
+                    "morph: rows {} and {}, {} parameters",
+                    a + 1,
+                    b + 1,
+                    l.morphing
+                )
+            }
+            TimeAction::Morph(x) => {
+                let x = if x.is_finite() {
+                    x.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let mut line = String::new();
+                if !self.morph.on {
+                    let l = modu
+                        .morph_load(mixer, &mut self.scene_morph, &mut self.project, ra, rb)
+                        .map_err(|e| format!("morph: {e:?}"))?;
+                    self.morph.on = true;
+                    self.morph.params = l.morphing;
+                    line = format!(
+                        "morph: rows {} and {}, {} parameters{}",
+                        ra + 1,
+                        rb + 1,
+                        l.morphing,
+                        if l.unknown > 0 {
+                            format!(" ({} not on the mixer, left out)", l.unknown)
+                        } else {
+                            String::new()
+                        }
+                    );
+                }
+                modu.morph_to(x);
+                self.morph.pos = x;
+                line
+            }
+            TimeAction::SnapBack | TimeAction::KeepMorph if !self.morph.on => {
+                return Ok(String::new())
+            }
+            TimeAction::SnapBack | TimeAction::KeepMorph => {
+                let keep = a == TimeAction::KeepMorph;
+                modu.morph_end(&mut self.scene_morph, &mut self.project, keep);
+                self.morph.on = false;
+                self.morph.pos = 0.0;
+                self.morph.params = 0;
+                if keep {
+                    "morph: kept where it was".into()
+                } else {
+                    "morph: snapped back".into()
+                }
+            }
+            TimeAction::SaveScene(row) => match modu.save_scene(&mut self.project, row) {
+                Some(n) => format!("morph: row {} stores {n} values", row + 1),
+                None => return Err(format!("morph: row {} cannot store them", row + 1)),
+            },
+            other => return self.act(other),
+        };
+        self.changed = true;
+        Ok(line)
     }
 
     /// CAPTURE: keep the last phrase in the armed track (track 1 if none
@@ -1317,6 +1400,76 @@ fn take_name(row: Option<(bool, u32)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_morph_bar_runs_the_scene_morph_on_the_mixers_mod_engine() {
+        use mpfree_fx::{ids::mixer as mx, StripId};
+        use mpfree_seq::mpfree_param::{Owner, ParamAddr, Strip};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = crate::mixing::MixHost::new(RATE, 0.0, 6.0);
+        let lp = crate::mixing::LOOP;
+        let vol = ParamAddr::new(Owner::Strip(Strip::Track(lp as u8)), mx::VOLUME);
+        let was = mix.mixer.param(StripId::Track(lp), mx::VOLUME);
+        h.project
+            .scene_mut(0)
+            .unwrap()
+            .set_value(vol, -24.0)
+            .unwrap();
+        h.project
+            .scene_mut(1)
+            .unwrap()
+            .set_value(vol, -2.0)
+            .unwrap();
+        let run = |mix: &mut crate::mixing::MixHost, from: u64| {
+            let z = [0f32; crate::PERIOD];
+            let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
+            for i in from..from + 40 {
+                let ctx = mpfree_fx::mpfree_node::Ctx::new(RATE, i * crate::PERIOD as u64);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            }
+        };
+        // The crossfader's first move loads rows 1 and 2.
+        let line = h
+            .morph(TimeAction::Morph(1.0), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        assert_eq!(line, "morph: rows 1 and 2, 1 parameters");
+        assert!(h.state().morph.on);
+        run(&mut mix, 0);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) + 2.0).abs() < 0.05);
+        // Other rows while morphing: on A and B at once.
+        h.project
+            .scene_mut(3)
+            .unwrap()
+            .set_value(vol, -12.0)
+            .unwrap();
+        h.morph(
+            TimeAction::MorphRows { a: 0, b: 3 },
+            &mut mix.modu,
+            &mix.mixer,
+        )
+        .unwrap();
+        run(&mut mix, 40);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) + 12.0).abs() < 0.05);
+        assert_eq!(
+            h.morph(TimeAction::SnapBack, &mut mix.modu, &mix.mixer)
+                .unwrap(),
+            "morph: snapped back"
+        );
+        run(&mut mix, 80);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) - was).abs() < 0.05);
+        assert!(!h.state().morph.on);
+        // Save: row 6 stores the mixer as it is.
+        let line = h
+            .morph(TimeAction::SaveScene(5), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        assert!(line.starts_with("morph: row 6 stores"), "{line}");
+        // Snap back with nothing loaded does nothing.
+        assert_eq!(
+            h.morph(TimeAction::SnapBack, &mut mix.modu, &mix.mixer)
+                .unwrap(),
+            ""
+        );
+    }
 
     #[test]
     fn a_clip_put_from_elsewhere_lands_in_the_first_empty_slot_and_undo_takes_it() {

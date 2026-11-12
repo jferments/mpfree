@@ -2135,12 +2135,22 @@ fn time_action(
     out: &mut Out,
     time: &mut time::TimeHost,
     app: &mut app::App,
+    mix: &mut mixing::MixHost,
     a: TimeAction,
 ) -> Vec<app::Effect> {
     if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
         return app.set_tempo(bpm);
     }
-    match time.act(a) {
+    let r = match a {
+        // The scene morph runs on the mixer's mod engine.
+        TimeAction::MorphRows { .. }
+        | TimeAction::Morph(_)
+        | TimeAction::SnapBack
+        | TimeAction::KeepMorph
+        | TimeAction::SaveScene(_) => time.morph(a, &mut mix.modu, &mix.mixer),
+        _ => time.act(a),
+    };
+    match r {
         Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
         Ok(_) => {}
         Err(e) => out.note(&format!("time: {e}")),
@@ -2561,7 +2571,9 @@ fn player_session(
                 gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
                 gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
-                gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
+                gui::FromUi::Time(a) => {
+                    fx.extend(time_action(out, &mut time, &mut app, &mut mix, a))
+                }
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
@@ -2965,7 +2977,9 @@ fn player_session(
                 }
                 // What it gives back (the tempo's status line and note) is
                 // handled with the next period's effects.
-                app::Effect::Time(a) => later.extend(time_action(out, &mut time, &mut app, a)),
+                app::Effect::Time(a) => {
+                    later.extend(time_action(out, &mut time, &mut app, &mut mix, a))
+                }
                 app::Effect::Looper(a) => {
                     later.extend(looper_action(out, &mut looper, &mut app, audio, a))
                 }
