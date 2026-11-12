@@ -5,8 +5,10 @@
 //!
 //! - a placement: `Select(index)` (its index in the arrangement); empty
 //!   space: `Select(usize::MAX)`, nothing selected;
-//! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`.
+//! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`;
+//! - Rec song, at the right of the title line: `Tab(REC)`.
 
+use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_transport::time::Tick;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 
@@ -21,6 +23,8 @@ pub const SONG_BUTTONS: [&str; 6] = [
 ];
 /// What Select reports for a tap on empty space.
 pub const NONE: usize = usize::MAX;
+/// What Tab reports for Rec song.
+pub const REC: usize = SONG_BUTTONS.len();
 
 /// A placement as the Song view shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +57,8 @@ pub struct SongLanes {
     pub selected: Option<usize>,
     /// Song mode: the song plays.
     pub on: bool,
+    /// Live to song armed.
+    pub rec: bool,
 }
 
 const NAME_W: i32 = 96;
@@ -75,6 +81,7 @@ impl Default for SongLanes {
             playhead: None,
             selected: None,
             on: false,
+            rec: false,
         }
     }
 }
@@ -130,6 +137,12 @@ impl SongLanes {
             .then(|| Rect::new(x0, y + 2, x1 - x0 - 2, g.lane_h - 4))
     }
 
+    /// Where Rec song is: the right end of the title line.
+    pub fn rec_rect(&self, r: Rect) -> Rect {
+        let head = r.inset(14).take_top(26).0;
+        Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
+    }
+
     /// The buttons along the bottom.
     pub fn button_rects(&self, r: Rect) -> [Rect; 6] {
         let g = self.geo(r);
@@ -147,7 +160,19 @@ impl SongLanes {
 impl Widget for SongLanes {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.legend);
+        cx.titled_panel(r, &self.title, "");
+        // The legend, then Rec song.
+        let rec = self.rec_rect(r);
+        let head = r.inset(14).take_top(26).0;
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
+            Align::Right,
+            t.text_dim,
+            &self.legend,
+        );
+        rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
         let step = if self.bars > 16 { 4 } else { 1 };
@@ -276,6 +301,9 @@ impl Widget for SongLanes {
         if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(k));
         }
+        if self.rec_rect(r).contains(x, y) {
+            return Some(EventKind::Tab(REC));
+        }
         if let Some(b) = self
             .blocks
             .iter()
@@ -351,5 +379,11 @@ mod tests {
                 Some(EventKind::Tab(k))
             );
         }
+        let rec = s.rec_rect(r);
+        assert!(rec.right() <= r.right() - 14 && rec.y >= r.y, "{rec:?}");
+        assert_eq!(
+            s.touch(1, Touch::Down, rec.x + 3, rec.y + 3, r),
+            Some(EventKind::Tab(REC))
+        );
     }
 }

@@ -1695,6 +1695,61 @@ impl Project {
         Ok(())
     }
 
+    /// Map to keys: each `(pad, root)` becomes a keygroup played as
+    /// recorded at `root` (its sound's own note, see [`crate::keymap`]),
+    /// reaching halfway to the next root below and above (the lowest and
+    /// highest to the ends of the keyboard, as [`crate::autosample::zones`]
+    /// makes them); pads with the same root share its zone and play
+    /// together. Each keeps its sounds and settings, with at least
+    /// [`KEYGROUP_POLYPHONY`] voices, and the pads then play notes from the
+    /// C at or below the lowest root. One undo step; nothing changes if a
+    /// pad is empty or refused. Returns each pad's keys, in `roots` order.
+    pub fn map_to_keys(&mut self, roots: &[(usize, u8)]) -> Result<Vec<Keys>, ModelError> {
+        if roots.is_empty() || roots.iter().any(|&(pad, root)| pad >= PADS || root > 127) {
+            return Err(ModelError::BadPad);
+        }
+        let mut notes: Vec<u8> = roots.iter().map(|&(_, r)| r).collect();
+        notes.sort_unstable();
+        notes.dedup();
+        let zones = crate::autosample::zones(&notes);
+        let keys_of = |root: u8| zones[notes.binary_search(&root).unwrap_or(0)];
+        let mut pads = Vec::with_capacity(roots.len());
+        for &(index, root) in roots {
+            let mut p = self.pad(index).cloned().ok_or(ModelError::BadPad)?;
+            if p.layers.is_empty() {
+                return Err(ModelError::BadPad);
+            }
+            p.keys = Some(keys_of(root));
+            p.polyphony = p.polyphony.max(KEYGROUP_POLYPHONY);
+            self.check_pad(&p)?;
+            pads.push((index, p));
+        }
+        let keys = pads
+            .iter()
+            .map(|(_, p)| p.keys.unwrap_or(Keys::one(0)))
+            .collect();
+        let mut steps = Vec::with_capacity(pads.len() + 1);
+        for (index, p) in pads {
+            let before = self.pads[index].replace(p);
+            steps.push(Undo::Pad {
+                index,
+                before: before.map(Box::new),
+                gesture: None,
+            });
+        }
+        let low = notes[0];
+        let play = PadsPlay::Keys {
+            from: (low - low % 12).min(127 - 15),
+        };
+        if self.pads_play != play {
+            steps.push(Undo::PadsPlay {
+                before: std::mem::replace(&mut self.pads_play, play),
+            });
+        }
+        self.push_undo(Undo::Group(steps));
+        Ok(keys)
+    }
+
     /// The keygroups (pad indices) that play `note`, in pad order.
     pub fn keygroups_for(&self, note: u8) -> Vec<usize> {
         (0..PADS)
