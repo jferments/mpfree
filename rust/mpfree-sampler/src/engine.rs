@@ -56,8 +56,8 @@ use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
 };
 use crate::model::{
-    ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx, PadsPlay,
-    PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
+    PadsPlay, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -122,6 +122,10 @@ impl Vary {
 
 /// A voice's note when its pad was hit, not played as a keygroup.
 const NO_NOTE: u8 = 255;
+
+/// Cycle's turns count to this and start again: every set size from 1 to
+/// 16 layers divides it, so each set keeps its order across the wrap.
+const TURNS: u32 = 720_720;
 /// A 16 Levels voice's note: this plus the pad (0 to 15) that played it.
 const LEVEL_NOTE: u8 = 128;
 /// Grains alive at once across every granular voice. Past it, new grains
@@ -248,6 +252,8 @@ pub struct ViewPad {
     pressure: PressureRoute,
     keys: Option<Keys>,
     wow: f32,
+    key_fade: u8,
+    vel_fade: u8,
     /// The pad's own level, pan and tune, for live settings to replace.
     level_db: f32,
     pan: f32,
@@ -459,6 +465,8 @@ impl EngineView {
                     pressure: p.pressure,
                     keys: p.keys,
                     wow: p.wow.clamp(0.0, 1.0),
+                    key_fade: p.key_fade.min(crate::model::MAX_KEY_FADE),
+                    vel_fade: p.vel_fade.min(crate::model::MAX_VEL_FADE),
                     level_db: p.level_db,
                     pan: p.pan,
                     tune_cents: p.tune_cents,
@@ -1184,7 +1192,8 @@ pub struct Engine {
     /// Split: the second share of the voices renders here, on another core.
     lane: Option<Lane<Carrier>>,
     events: Vec<(u32, Event)>,
-    cycle: Vec<u8>,
+    /// Each pad's turn for Cycle (see [`TURNS`]).
+    cycle: Vec<u32>,
     rng: Rng,
     clock: u64,
     fixed_velocity: Option<u8>,
@@ -1750,16 +1759,38 @@ impl Engine {
         if n_match == 0 {
             return;
         }
+        // With a velocity fade, layers with the same velocities are a set:
+        // Cycle and Random take turns within each set, and overlapping sets
+        // play together, crossfaded.
+        let sets = vp.vel_fade > 0 && vp.select != LayerSelect::All;
         match vp.select {
             LayerSelect::All => {
                 for (i, c) in chosen.iter_mut().enumerate().take(count) {
                     *c = matching(i);
                 }
             }
+            LayerSelect::Cycle | LayerSelect::Random if sets => {
+                let k = if vp.select == LayerSelect::Cycle {
+                    let k = self.cycle[p] % TURNS;
+                    self.cycle[p] = (k + 1) % TURNS;
+                    k as usize
+                } else {
+                    self.rng.below(TURNS) as usize
+                };
+                let same = |i: usize, j: usize| {
+                    let (a, b) = (&vp.layers[i], &vp.layers[j]);
+                    matching(j) && a.vel_lo == b.vel_lo && a.vel_hi == b.vel_hi
+                };
+                for i in (0..count).filter(|&i| matching(i)) {
+                    let before = (0..i).filter(|&j| same(i, j)).count();
+                    let size = (0..count).filter(|&j| same(i, j)).count();
+                    chosen[i] = before == k % size;
+                }
+            }
             LayerSelect::Cycle | LayerSelect::Random => {
                 let k = if vp.select == LayerSelect::Cycle {
-                    let k = usize::from(self.cycle[p]) % n_match;
-                    self.cycle[p] = ((k + 1) % n_match) as u8;
+                    let k = self.cycle[p] as usize % n_match;
+                    self.cycle[p] = ((k + 1) % n_match) as u32;
                     k
                 } else {
                     self.rng.below(n_match as u32) as usize
@@ -1772,6 +1803,18 @@ impl Engine {
 
         let vel = f32::from(velocity) / 127.0;
         let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
+        // Key and velocity fades: a level for each layer, set at the start.
+        let key_gain = match vp.keys {
+            Some(k) if note != NO_NOTE && k.contains(note) => {
+                edge_gain(note, k.lo, k.hi, vp.key_fade, 0, 127)
+            }
+            _ => 1.0,
+        };
+        let mut gains = [key_gain; crate::model::MAX_LAYERS];
+        for (li, g) in gains.iter_mut().enumerate().take(count) {
+            let l = &vp.layers[li];
+            *g *= edge_gain(velocity, l.vel_lo, l.vel_hi, vp.vel_fade, 1, 127);
+        }
         let polyphony = usize::from(vp.polyphony);
         for li in 0..count {
             if !chosen[li] {
@@ -1797,7 +1840,7 @@ impl Engine {
                     None => break,
                 }
             }
-            self.start_voice(p, li, level, vel, note, vary);
+            self.start_voice(p, li, level * gains[li], vel, note, vary);
         }
     }
 
