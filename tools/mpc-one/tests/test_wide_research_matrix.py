@@ -86,9 +86,9 @@ def build(data):
     return M.build(lambda name: json.dumps(data[paths[name]]).encode())
 
 class BroadMatrixTests(unittest.TestCase):
-    def test_all_seven_tracks_and_forty_questions(self):
+    def test_all_seven_tracks_and_at_least_forty_two_questions(self):
         report = build(fixture())
-        self.assertGreaterEqual(len(report["questions"]), 40)
+        self.assertGreaterEqual(len(report["questions"]), 42)
         self.assertEqual(len({x["track"] for x in report["questions"]}), 7)
         self.assertEqual(report["schema"], M.SCHEMA)
         self.assertFalse(report["vendor_code_executed"])
