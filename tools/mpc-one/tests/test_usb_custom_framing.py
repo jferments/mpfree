@@ -43,6 +43,11 @@ int FUN_0001a314(void) {
         "uStack_30 = 0xa55a0101; uStack_30 = 0xa55a0202;"
     )
     funcs["0x0001aabc"]["pseudocode"] = "void FUN_0001aabc(void) {}"
+    funcs["0x0001a314"]["machine_instruction_evidence"] = [
+        {"address": "0001a314", "mnemonic": "CMP", "text": "cmp r0,#0x18"},
+        {"address": "0001a318", "mnemonic": "BL", "text": "bl FUN_0001d644"},
+    ]
+    funcs["0x0001a314"]["instruction_capture_limited"] = False
     return {
         "schema": "mpfree-v11-backend-selector-and-boot-recovery-static",
         "role": "libaz01-prog",
@@ -105,6 +110,17 @@ class FramingTests(unittest.TestCase):
         self.assertIn("Constructed outgoing value (NOT equality-tested): 0xa55a0101", md)
         self.assertIn("completion_flag_bit0_required: True", md)
         self.assertNotIn("synthetic placeholder", md)
+
+    def test_machine_instruction_evidence_and_callsite_summary(self):
+        report = FRAMING.validated_report(fake_ghidra(), "source-hash")
+        parser = next(x for x in report["focused_function_evidence"]
+                      if x["address"] == "0x0001a314")
+        ins = parser["instruction_evidence"]
+        self.assertEqual(ins["captured"], 2)
+        self.assertEqual(len(ins["call_sites"]), 1)
+        self.assertEqual(ins["call_sites"][0]["address"], "0001a318")
+        self.assertEqual(len(ins["sha256"]), 64)
+        self.assertIn("ARM callsite evidence", FRAMING.render_markdown(report))
 
     def test_rejects_bad_source_or_table_or_role(self):
         base = fake_ghidra()
