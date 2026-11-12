@@ -20,6 +20,7 @@
 - [Clips and patterns](making-music/clips.md)
 - [Arranging a song](making-music/arranging.md)
 - [Mixing and effects](making-music/mixing-and-effects.md)
+- [Playing other gear: MIDI, sync and CV](making-music/midi-and-cv.md)
 - [Saving your work](making-music/saving.md)
 
 # Reference

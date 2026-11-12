@@ -10,6 +10,8 @@ The plan for MPFree's external MIDI and CV, and the contract of the host-first c
 
 The MPC's own pads, knobs and buttons are not part of this. They come through the controller protocol (`mpfree-controller`) and the app's mapper.
 
+The owner-facing design and architecture doc, with the research below in full and the open decisions, is [MPFree MIDI, sync and CV/gate: design and architecture](https://claude.ai/artifact/RxdZ76ve5hE5VptdkU3JMo); the proposed screens are drawn in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ). This page stays the source of truth for the hardware facts and the crate.
+
 Device safety (rule zero) applies to every step below that touches the MPC. Each such step is labelled read-only or state-changing, and waits for the owner's go.
 
 ## What we know about the hardware
@@ -96,7 +98,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 | Step | What | Touches the MPC | Waits on |
 |---|---|---|---|
 | M0 | The read-only `midi-cv`, `cv-scale` and `midi-out` captures above (all done 2026-11-12) | read-only (passive usbmon, stock 3.6) | done |
-| M1 | `mpfree-midi`, host only | no | the owner's go to merge (code PR) |
+| M1 | `mpfree-midi`, host only | no | done: PR #177, merged 2026-11-12 (train 14, main `7ecb7e4`) |
 | M2 | App wiring for input. The app opens the DIN In cable (from M0) and USB keyboards **for reading**, routes them to the selected track, and shows a MIDI monitor on the Dev page and a MIDI page in Prefs (ports, input mode, clock source). The layout goes through the app thread | a device round on the test boot: opens MIDI inputs for reading | M0, the owner's go, the app thread |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and cable 2 out written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit, aiming under Akai's 5 to 8 ms) | **state-changing, RAM only**: sends note bytes on cable 2 to the MIDI Out jack. Undo: power-cycle. No SysEx is ever sent there | the owner's go |
 | M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | the time engine thread, the owner's go |
@@ -116,3 +118,37 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 ## A rule for the MIDI screens (the owner, 2026-11-12)
 
 Akai's MIDI track has two settings with nearly the same name on the same screen, "MIDI Output Ch" and a "MIDI Out" routing, and both have to be set before a note leaves the jack. MPFree does not do that. Each track has **one** MIDI output setting, port and channel together, and no two settings on a screen share a name or look alike while doing different things. If a track would send nothing (no port, or a port that is unplugged), the field says so in place.
+
+## What musicians ask for, and where Akai's MPC falls short (2026-11-12)
+
+Forum posts are owners' reports, not tests. Each was read on 2026-11-12.
+
+| Complaint about Akai's MPC | What owners report | MPFree's answer |
+|---|---|---|
+| The same note on two channels chokes | one channel's note cuts the other's; note-offs reach every channel ([MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1860854)) | notes tracked per port, channel and note, in and out; a note-off goes only where its note-on went |
+| Program changes get lost | external program changes not passed on or recorded; a track's own only sends after nudging the dial ([MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1808235)) | program and bank are a track setting, sent at every start and every change, and an event that records and passes through |
+| Clock while following | about 15 ms jitter, drift as leader, clock only while playing, no looper or audio recording while following ([MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1737157), [Elektronauts](https://www.elektronauts.com/t/clock-sync-latency-and-jitter/256632?page=2)) | a follower that smooths tempo with every recorder still working; clock out per port, which can run while stopped; jitter measured and shown |
+| No clock from the CV jacks | [MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1782631), [Elektronauts](https://stage2.elektronauts.com/t/mimicking-clock-with-cv-mpc-one/127896) | any CV output can be clock (any PPQN), run or reset |
+| MIDI Learn without ranges | a slider's top gives +6 dB, no mappings outside a project, mappings break when tracks move ([MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1898047)) | a range and takeover per mapping with musical defaults; global and project mappings; a mapping follows its sound, not a track position |
+| Learn that fails silently, and MIDI that breaks between updates | [MPC-Forums](https://www.mpc-forums.com/viewtopic.php?p=1890369) | Learn always shows what it caught and where it went; every routing case is a host test in CI; a MIDI log on the Dev tab |
+| Two look-alike settings, both needed | the owner's own run (third capture above) | one output setting per track (see the rule above) |
+
+The CV range is set by Akai's hardware (5 V at most, if the forum report holds). MPFree can show it, calibrate each output and offer Hz/V, but cannot raise it.
+
+What musicians praise in other sequencers: clock they can trust as leader and follower, measured per port ([Elektronauts](https://www.elektronauts.com/t/clock-sync-latency-and-jitter/256632?page=2)); many ports with each lane routed freely, automation lanes to CC, pitch bend, aftertouch or CV, MIDI effects per track and MPE input ([Perfect Circuit, Hapax](https://www.perfectcircuit.com/signal/squarp-hapax-review)); CV outputs that can be LFOs or envelopes ([Perfect Circuit, OXI One](https://perfectcircuit.com/signal/oxi-one-sequencer-review)); USB host for several devices, CC lanes and microtuning through pitch bend ([Elektronauts](https://stage2.elektronauts.com/t/how-would-your-dream-sequencer-look-like/138255)).
+
+## The screens (proposed, 2026-11-12)
+
+No MIDI screen is built yet. The app's Dev tab has a MIDI log of the controller's own messages; everything else below is a proposal, drawn at 1280 × 800 in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ). A new Prefs row, a track field and the tempo chip change the shared layout, so they go to the app thread and need the owner's approval in the [layout spec](layout-spec.md) before they land.
+
+| Screen | Where it would open | What is on it |
+|---|---|---|
+| MIDI and sync | a Prefs row (SHIFT + MENU) | tempo source, follow start/stop/position, what keys play, links to ports, Learn mappings and CV outputs, every note off |
+| A port | MIDI and sync › Ports | what its input does, clock out (off, while playing, always), start/stop out, offset, thru, ignored kinds, name; a device keeps its settings by name while unplugged |
+| CV outputs | MIDI and sync › CV outputs | the 8 outputs with job, source, scale and a live value; tuning each output waits for M6 |
+| A track's output | Arrange, the track's settings | one "Plays on" field (port and channel together), program, bank, what pad pressure sends, delay; "Sends nothing: no port" under the track name when true |
+| MIDI Learn | a value on any page | Learn, range, direction, takeover, where it is kept; a strip while waiting; STOP cancels |
+| Learn mappings | MIDI and sync › MIDI Learn mappings | every mapping with control, target, range and scope; greyed when the device is unplugged |
+| MIDI log | the Dev tab's MIDI page | in and out per port, filters by port and kind, clock timing and counts |
+
+The open decisions (where the settings live, clock out per port, Learn scopes, port input names, live note timing, thru default) are in the design doc's "Decisions for Jay" table.
