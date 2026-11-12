@@ -771,6 +771,43 @@ class Lab:
             self.stages["ff617a-framing-evidence"] = {
                 "success": False, "error": "V11 library report unavailable",
             }
+        # Analyze captured real ARM instruction evidence for callsite/return
+        # contracts. The source Ghidra JSON stays owner-private in this ZIP.
+        if library_report.is_file():
+            try:
+                arm_module = load_module(
+                    "tools/mpc-one/analyze_arm_return_contracts.py",
+                    "mpfree_private_arm_contracts",
+                )
+                arm_report = arm_module.summarize(
+                    json.loads(library_report.read_text()),
+                    {"indexed_members_verified": None,
+                     "crc_passed": None,
+                     "note": "Directly verified current private Ghidra JSON; ZIP hash index is built at packaging"},
+                    frame_report if "frame_report" in locals() else None,
+                )
+                (self.out / "arm-return-contracts.json").write_text(
+                    json.dumps(arm_report, indent=2) + "\n")
+                (self.out / "arm-return-contracts.md").write_text(
+                    arm_module.to_markdown(arm_report))
+                r0_checked = sum(
+                    len(entry["callers_immediately_comparing_r0"])
+                    for entry in arm_report["functions"])
+                self.stages["arm-return-contract-evidence"] = {
+                    "success": r0_checked >= 2,
+                    "captured_checked_callsites": r0_checked,
+                    "functions": len(arm_report["functions"]),
+                }
+                record["arm_return_contract_evidence"] = {
+                    "report": "arm-return-contracts.json",
+                    "checked_callsites": r0_checked,
+                    "safety": "Read-only static-derived facts, no vendor execution",
+                }
+            except Exception as exc:
+                self.stages["arm-return-contract-evidence"] = {
+                    "success": False, "error": str(exc)}
+                record["arm_return_contract_evidence_error"] = str(exc)
+                self.notes.append("ARM return contracts: " + str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -803,6 +840,12 @@ class Lab:
             summary.append("- Linux usbdevfs async URB constants present: " + str(framing["ioctls_verified"]))
             summary.append("- See usb-ff617a-framing.json for detailed provenance and type-inference warnings.")
             summary.append("- Protocol identity UNKNOWN; no original vendor code executed.")
+        summary += ["", "## ARM return-register evidence"]
+        arm = record.get("arm_return_contract_evidence")
+        if arm:
+            summary.append("- Direct BL callsites with immediate r0 comparisons: " +
+                           str(arm["checked_callsites"]))
+            summary.append("- See arm-return-contracts.json and .md for addresses and caveats.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
