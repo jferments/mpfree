@@ -1,0 +1,17 @@
+[package]
+name = "mpfree-midi-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The MIDI, Sync and CV sections of the mixer's I/O view: a project's MIDI ports and track outputs, tempo source and clock, and the CV/gate outputs"
+
+[dependencies]
+mpfree-library = { path = "../mpfree-library" }
+mpfree-midi = { path = "../mpfree-midi" }
+mpfree-mixer-ui = { path = "../mpfree-mixer-ui" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-midi-preview"
+path = "src/bin/preview.rs"
