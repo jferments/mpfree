@@ -799,6 +799,7 @@ dependencies = [
 name = "mpfree-time-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-audiotracks",
  "mpfree-capture",
  "mpfree-play",
  "mpfree-seq",
