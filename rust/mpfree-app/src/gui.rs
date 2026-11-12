@@ -481,8 +481,12 @@ pub enum FromUi {
     },
     /// The Looper tab: pick loop `n` for the controls.
     LoopPick(usize),
-    /// The Looper tab: the picked loop's level, 0 to 2 (Q-Link 3).
-    LoopLevel(f32),
+    /// The Looper tab: a command for the picked loop (an edit tool, Fade
+    /// old, the seam fade, After recording).
+    LoopCommand(mpfree_looper::Command),
+    /// Use the loop's Resample: pick loop `n` (empty) and record the
+    /// other loops into it, as heard.
+    LoopResample(usize),
     /// The Looper tab's Recording and input panel: a setting stepped (the
     /// same settings as the looper's options menu).
     LooperSetting(crate::app::Item, i32),
@@ -1086,17 +1090,14 @@ impl Player {
     }
 
     /// A Q-Link on the Play page (no arp): what it turns there.
-    /// The Looper tab and the Play strip from the last looper view; Q-Link
-    /// 4's card is the Play page's line level.
+    /// The Looper tab and the Play strip from the last looper view.
     fn refresh_looper(&mut self) {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
-        let card = self.play.card(Knob::LineLevel, None);
-        self.looper_page.set_line_card(&mut self.ui, card);
     }
 
-    /// A Q-Link on the Looper tab: the picked layer's level and pan, the
-    /// loop's level, the line input's level.
+    /// A Q-Link on the Looper tab: the picked layer's level and pan, how
+    /// much each overdub fades the old layers, the seam fade.
     fn looper_qlink(&mut self, k: usize, ticks: i32) {
         use crate::looper_page::LoopTurn;
         let fine = self.status.shift;
@@ -1109,13 +1110,14 @@ impl Player {
                     });
                 }
             }
-            Some(LoopTurn::Level(v)) => self.outbox.push(FromUi::LoopLevel(v)),
-            Some(LoopTurn::Line(t)) => {
-                if let Some(Turn::Fx(fx)) = self.play.turn_knob(Knob::LineLevel, t, fine) {
-                    self.outbox.push(FromUi::PlayFx(fx));
-                }
-                let card = self.play.card(Knob::LineLevel, None);
-                self.looper_page.set_line_card(&mut self.ui, card);
+            Some(LoopTurn::FadeOld(k)) => self
+                .outbox
+                .push(FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(k))),
+            Some(LoopTurn::Seam(f)) => {
+                self.outbox
+                    .push(FromUi::LoopCommand(mpfree_looper::Command::Edit(
+                        mpfree_looper::Edit::SeamFade(f),
+                    )))
             }
             None => {}
         }
@@ -1141,13 +1143,28 @@ impl Player {
                     }
                 }
                 LoopAct::Setting(i, d) => {
-                    if let Some((item, d)) = crate::looper_page::setting_item(i, d, &self.settings)
+                    if let Some(c) = crate::looper_page::setting_command(i, &self.looper.status) {
+                        out.push(FromUi::LoopCommand(c));
+                    } else if let Some((item, d)) =
+                        crate::looper_page::setting_item(i, d, &self.settings)
                     {
                         out.push(FromUi::LooperSetting(item, d));
                     }
                 }
-                // The looper's edits and bounce come with its next part.
-                LoopAct::Tool(_) | LoopAct::Use(_) => {}
+                LoopAct::Tool(i) => {
+                    let rate = self.looper.rate;
+                    if let Some(c) = crate::looper_page::tool_command(i, &self.looper.status, rate)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Use(crate::looper_page::USE_RESAMPLE) => {
+                    if let Some(n) = self.looper_page.first_empty() {
+                        out.push(FromUi::LoopResample(n));
+                    }
+                }
+                // The bounce to a pad, a clip or a file comes next.
+                LoopAct::Use(_) => {}
             }
         }
         let mut it = out.into_iter();
@@ -1314,8 +1331,8 @@ impl Player {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange => CLIPS_HINT.to_string(),
-                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
-                                         line   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
+                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
+                                         seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
                                          {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   MENU: engine, scale   ·   {stop}",
@@ -5218,10 +5235,11 @@ mod tests {
             ),
             "{acts:?}"
         );
-        p.apply(ToUi::LooperQLink(2, 1));
+        // Q3 sets how much each overdub fades the old layers.
+        p.apply(ToUi::LooperQLink(2, -1));
         assert!(matches!(
             p.take_actions().as_slice(),
-            [FromUi::LoopLevel(_)]
+            [FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(_))]
         ));
         // Line input, right half: on.
         let r = p.ui.rect_of(RECORDING).unwrap();

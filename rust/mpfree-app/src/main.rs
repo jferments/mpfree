@@ -2139,6 +2139,10 @@ fn looper_action(
             out.note(&looper.command(c));
             Vec::new()
         }
+        looping::LoopAction::Resample(n) => {
+            out.note(&looper.resample_into(n));
+            Vec::new()
+        }
         looping::LoopAction::Source(s) => {
             looper.source = s;
             out.note(&format!("looper: records from {}", s.name().to_lowercase()));
@@ -2687,10 +2691,13 @@ fn player_session(
                 gui::FromUi::LoopPick(n) => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
                 }
-                gui::FromUi::LoopLevel(v) => fx.push(app::Effect::Looper(
-                    looping::LoopAction::Command(mpfree_looper::Command::SetLevel(v)),
-                )),
                 gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
+                gui::FromUi::LoopCommand(c) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
+                }
+                gui::FromUi::LoopResample(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
+                }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {

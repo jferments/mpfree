@@ -248,7 +248,8 @@ pub struct LayerRow {
     pub recording: bool,
 }
 
-/// The editor's tools, in order (they work once the looper has them).
+/// The editor's tools, in order (they work while the loop plays; Undo
+/// history is still to come).
 pub const TOOLS: [&str; 8] = [
     "½ length",
     "× 2",
