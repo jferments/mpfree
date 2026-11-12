@@ -4,7 +4,7 @@
 //! one WAV file.
 //!
 //! ```text
-//! cargo run --release -p mpfree-play --example render -- [--period N] [--out FILE]
+//! cargo run --release -p mpfree-play --example play_render -- [--period N] [--out FILE]
 //! ```
 //!
 //! The beat: 84 BPM, heavy 1/16 swing, a four-bar loop played three times,

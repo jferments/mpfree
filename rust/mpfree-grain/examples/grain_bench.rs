@@ -1,6 +1,6 @@
 //! Worst-case cost of the grain engine on this machine: one voice with all
 //! 64 grains playing, on a stereo clip and on a live buffer.
-//! Run: cargo run --release -p mpfree-grain --example bench
+//! Run: cargo run --release -p mpfree-grain --example grain_bench
 use std::time::Instant;
 
 use mpfree_grain::*;

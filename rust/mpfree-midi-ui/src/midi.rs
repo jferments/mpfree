@@ -115,8 +115,8 @@ impl Form for Midi {
             ));
         }
         (!m.live.built.notes_out).then(|| {
-            "MIDI out isn't in this build yet: tracks still play inside MPFree, \
-             and what you set here is kept with the project."
+            "MIDI out is off: tracks still play inside MPFree, and what you set \
+             here is kept with the project."
                 .to_string()
         })
     }
@@ -148,9 +148,7 @@ impl Form for Midi {
                 );
             row = match live {
                 None => row.note("not plugged in: its settings are kept", Tone::Warn),
-                Some(_) if p.thru && !built.notes_out => {
-                    row.note("thru does nothing yet: no MIDI out", Tone::Warn)
-                }
+                Some(_) if p.thru && !built.thru => row.note("thru does nothing yet", Tone::Warn),
                 Some(l) => row.note(l.kind.clone(), Tone::Normal),
             };
             if let Some(l) = live.filter(|l| l.has_in) {
@@ -179,7 +177,12 @@ impl Form for Midi {
                             Tone::Warn,
                         )
                     } else if !built.notes_out {
-                        row.note("sends nothing yet: no MIDI out", Tone::Warn)
+                        row.note("sends nothing: MIDI out is off", Tone::Warn)
+                    } else if !m.live.port(&o.port).is_some_and(|l| l.has_out) {
+                        row.note(
+                            format!("sends nothing: no output to {} yet", o.port),
+                            Tone::Warn,
+                        )
                     } else {
                         row.note(format!("plays out of {}", o.port), Tone::Normal)
                     };
@@ -420,10 +423,10 @@ mod tests {
         // The port it names is listed, unplugged.
         let p = row(&r, "port:Digitone");
         assert_eq!(p.note, "not plugged in: its settings are kept");
-        // Plugged in but not built yet: still says so.
+        // Plugged in while MIDI out is off: still says so.
         s.lock().unwrap().setup.tracks[2] = Some(TrackOut::new(DIN_NAME, 3));
         let r = rows(&s);
-        assert_eq!(row(&r, "track:2").note, "sends nothing yet: no MIDI out");
+        assert_eq!(row(&r, "track:2").note, "sends nothing: MIDI out is off");
         s.lock().unwrap().live.built = Built {
             notes_out: true,
             ..Built::default()
@@ -431,6 +434,32 @@ mod tests {
         let r = rows(&s);
         assert_eq!(row(&r, "track:2").note, "plays out of MIDI");
         assert!(Midi.banner(&s.lock().unwrap()).is_none());
+    }
+
+    /// A port the app can't send to yet (a USB device, for now) says so on
+    /// the track that names it, and thru says when it does nothing.
+    #[test]
+    fn a_port_with_no_output_yet_and_thru_say_so() {
+        let s = model();
+        {
+            let mut m = s.lock().unwrap();
+            m.live.built = Built {
+                notes_out: true,
+                ..Built::default()
+            };
+            m.live.ports[1].has_out = false;
+            m.setup.tracks[0] = Some(TrackOut::new("Keystep 37", 0));
+            m.setup.set_port(DIN_NAME, |p| p.thru = true);
+        }
+        let r = rows(&s);
+        assert_eq!(
+            row(&r, "track:0").note,
+            "sends nothing: no output to Keystep 37 yet"
+        );
+        assert_eq!(row(&r, "port:MIDI").note, "thru does nothing yet");
+        s.lock().unwrap().live.built.thru = true;
+        let r = rows(&s);
+        assert_eq!(row(&r, "port:MIDI").note, "5-pin jacks");
     }
 
     #[test]

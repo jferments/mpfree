@@ -6,7 +6,7 @@ checked: 2026-11-12 ae9c39c
 
 # Prefs
 
-**Prefs** holds MPFree's settings. Press **SHIFT + MENU** to open it, and **MENU** to close it. Turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. The panel on the right explains the row you picked.
+**Prefs** holds MPFree's settings. Press **SHIFT + MENU** to open it, and **MENU** to close it. Turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or press the data wheel down: the row's value box lights, and turning the wheel changes the value. Press the wheel again to set it, and the wheel goes back to picking rows. On a row that opens something, such as System info or Touch screen, pressing the wheel opens it. The panel on the right explains the row you picked.
 
 {{shot: prefs | Prefs, with Pad velocity curve picked.}}
 
