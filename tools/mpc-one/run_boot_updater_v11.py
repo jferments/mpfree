@@ -108,6 +108,29 @@ def main():
                 evidence[role]=candidate
                 file=out/('v11-raw-backend-tables-'+role+'.json')
                 file.write_text(json.dumps(candidate,indent=2)+'\n')
+                # GNU readelf is invoked as a static DATA parser only.
+                # The owner bytes were already SHA-verified by verify_source.
+                # This does not run the updater or dynamically load the .so.
+                try:
+                    linkage=load(
+                        "tools/mpc-one/offline_elf_linkage_audit.py",
+                        "mpfree_owner_elf_linkage_static"
+                    ).inspect(blob,SHA[role],role)
+                    path=out/('v11-elf-linkage-'+role+'.json')
+                    path.write_text(json.dumps(linkage,indent=2)+'\n')
+                    manifest['stages']['elf-linkage-'+role]={
+                        'success':True,
+                        'imports':len(linkage['az01_import_symbols']),
+                        'exports':len(linkage['az01_export_symbols']),
+                        'az01_relocations':len(linkage['az01_relocations']),
+                        'vendor_executable_executed':False,
+                    }
+                except Exception as exc:
+                    manifest['stages']['elf-linkage-'+role]={
+                        'success':False,'error':str(exc)}
+                    manifest['warnings'].append(
+                        'Static ELF relocation parsing unavailable for '+
+                        role+': '+str(exc))
             run=V8.get_ghidra()
             if not run:
                 manifest['stages']['ghidra']={'success':False,
