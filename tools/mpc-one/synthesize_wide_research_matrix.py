@@ -163,11 +163,42 @@ def build(read):
         "FUN_001147f0(10,0,&local_20)",
         "FUN_00115f30(local_20,1,local_1c)",
         "if (local_1c[0] < 100)"))
-    row("U-Boot","Is there a separate below-100 recovery condition?",
-        confirmed(threshold),
-        "The same U-Boot routine sets the recovery flag if a helper-supplied value is below 100. Its identity is not established as a boot counter.",
-        "Trace source helpers and persistence before labeling this a boot-failure counter.",
+    adc_messages={
+        "Recovery button ADC not found":"001010aa",
+        "Failed to start recovery button ADC channel":"001010f0",
+        "Failed to read recovery button ADC channel":"00101100",
+    }
+    adc_xrefs=all(any(
+        row.get("text")==message and
+        any(ref.get("from","").lower()==callsite
+            for ref in row.get("xrefs",[]))
+        for row in d["p3"].get("strings",[]))
+        for message,callsite in adc_messages.items())
+    arm={str(x.get("address","")).lower():x.get("text")
+         for x in functions.get("0x00100fe4",{}).get(
+             "machine_instruction_evidence",[])}
+    adc_conditional=(arm.get("0010110c")=="cmp r3,#0x63" and
+                     arm.get("0010110e")=="ittt ls" and
+                     arm.get("00101114")=="strb.ls r2,[r3,#0x0]")
+    row("U-Boot","Is the below-100 recovery trigger the stock recovery-button ADC?",
+        confirmed(threshold and adc_xrefs and adc_conditional),
+        "Yes: three diagnostics explicitly identify the recovery-button ADC; original ARM compares unsigned <=99 then stores 1 into the recovery flag. Not a boot-counter observation.",
+        "Resolve the recovery flag shared pointer and external physical button-to-ADC mapping.",
+        "static/v11/v11-ghidra-uboot.json + static/wide/p3-uboot-ghidra.json")
+    row("U-Boot","Does Fastboot getvar use the same ADC class with a separate channel?",
+        confirmed(all(word in functions.get("0x00100ef0",{}).get("pseudocode","")
+                      for word in (
+                          "FUN_001147f0(10,0,&local_24)",
+                          "FUN_00115ef4(local_24,0)",
+                          "FUN_00115f30(local_24,0,&local_20)"))),
+        "Yes: the getvar fallback path selects device class 10, sequence 0, ADC channel 0; recovery-button path uses channel 1.",
+        "Decode getvar request key and status text, but do not interpret channel-0 voltage without source evidence.",
         "static/v11/v11-ghidra-uboot.json")
+    row("U-Boot","Does the recovery flag reach dorecovery and Fastboot?",
+        "static-partial",
+        "Board setup checks a recovery flag and sets environment dorecovery; the saved bootcmd tests it and invokes fastboot 0. Address equality to the ADC writer needs byte-level confirmation.",
+        "Dereference board setup PTR_DAT_001013ac versus ADC DAT_00101154 in the next Ghidra run.",
+        "static/v11/v11-ghidra-uboot.json + static/wide/storage-env-boot-dtb.json")
     row("U-Boot","Are extlinux and external script fallback configured?","static-supported",
         "Saved U-Boot environment scans extlinux.conf and boot.scr.uimg/boot.scr in mmc targets.",
         "Check which device can actually provide a verified reversible boot path.","static/wide/storage-env-boot-dtb.json")
