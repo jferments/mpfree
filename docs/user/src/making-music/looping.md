@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-12 b9b7477
+checked: 2026-11-12 26b6821
 -->
 
 # Recording loops
@@ -69,8 +69,8 @@ Tap a lane to pick that layer for the Q-Links:
 |---|---|
 | 1 | The picked layer's level |
 | 2 | The picked layer's pan |
-| 3 | The whole loop's level |
-| 4 | The line input's level |
+| 3 | **Fade old**: turns older layers down a little each time the loop goes round, from 50 % to 100 % kept per pass, so a loop can evolve as you keep overdubbing. A faded layer says how far it has gone ("faded to 77 %"). |
+| 4 | The seam fade (see below) |
 
 ### Recording and input
 
@@ -85,9 +85,31 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 | **Monitor** | Hear the line input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
 | **Latency** | How late your playing reaches the looper (see below). |
 
-**Start** (next bar line) and **After recording** (play) show how the looper works today; they can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
+**After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 
 Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB).
+
+### Editing a loop
+
+Pick a loop, then use the tools along the top of the editor while it plays (not while it records):
+
+- **½ length** keeps the first half; **× 2** doubles it, so you can overdub a longer phrase on top.
+- **Reverse** plays the loop backwards.
+- The two **nudge** buttons (**← 1/16** and **1/16 →**) move the loop a sixteenth earlier or later against the beat.
+- **Seam fade** smooths the join where the loop starts again. Each tap steps through a hard cut, 10 ms, 50 ms and the longest fade.
+- **Merge layers** turns all the layers into one, which frees memory for more layers. It shows its progress while it works, and UNDO takes it back like any other step.
+
+**Trim:** while a loop can be edited, a handle sits at each end of its wave. Drag one in to cut the loop shorter; it moves in sixteenth notes, the part cut off is dimmed, and a label says how much you keep ("keep 12 of 16 beats"). Let go to trim.
+
+### The undo history
+
+**Undo history** opens a list of everything you did to the picked loop, oldest first: Start (the first pass), then each overdub, deleted layer, edit and merge. The step you are on is outlined, and steps you undid are faint below it. Tap any step to go back (or forward) to just after it. Drag to scroll the list. Picking another loop closes it.
+
+{{shot: looper-history | The undo history open on a loop with two overdubs.}}
+
+### Using a loop
+
+**Resample**, in the Use the loop panel, records all the loops, as you hear them, into the first empty loop, starting at the next bar line. Press REC to end it. It's the way to bounce several loops down into one and start layering again.
 
 ## Recording an instrument
 
@@ -107,10 +129,9 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 ## Coming next
 
-The buttons along the top of the editor and the **Use the loop** panel are drawn but not working yet. They arrive in the next version:
-
-- **Edits:** half length, double, reverse, nudge by a 1/16 either way, a softer seam at the loop point, merging layers, and the undo history.
-- **Using a loop:** send it **to a pad** as a sample on the Sample tab, **to a clip** on the Arrange tab, **save** it on the stick with its layers, or **resample** it through its effects.
+- **To a pad**: send a loop to a pad as a sample on the Sample tab.
+- **To a clip**: send it to the Arrange tab as an audio clip.
+- **Save loop**: keep it on the stick with its layers. Loops will also be saved with your project once projects arrive (see [Saving your work](saving.md)).
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport and start when the input passes a threshold. MPFree has up to eight loops with a mixable lane per layer. Its loops always follow the song's bars and tempo, can record MPFree's own pads and synth as well as the inputs, and make up for the input's latency so overdubs land in time.

@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/mixing.rs rust/mpfree-app/src/perform.rs
-checked: 2026-11-12 a24dbc5
+covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
+checked: 2026-11-12 26b6821
 -->
 
 # Mixing and effects
@@ -71,8 +71,21 @@ These effects can go on any strip:
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
 
-> [!NOTE]
-> In the current test build the mixer shows each strip's effects, but tapping **+ Insert** to add one is not connected yet. The effect chain editor, where you add, reorder and bypass effects and turn their knobs, comes in the next version. Until then the Play page's own effects (below) are ready to use.
+## The chain editor
+
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor you can reorder, bypass and remove effects, and turn the selected effect's knobs.
+
+The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
+
+{{shot: chain | The chain editor on the drum bus, with Drive selected.}}
+
+## Macros
+
+**Macros** are knobs that move several settings at once (Wash, Grit and so on). There are eight. The **Q-LINK** button steps the Q-Links through **Macros 1-4**, **Macros 5-8** and back to the page's own knobs, on the Play page and in the chain editor.
+
+Hold a finger still on a macro's card for half a second to open the **macros panel**, where you can see all of them and set up what each one moves. Back returns to the page you were on.
+
+{{shot: macros | The macros panel on Macros 1-4.}}
 
 ## The Play page's effects
 
@@ -86,9 +99,8 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
-- **The chain editor**: add effects to any strip, reorder and bypass them, and edit them on a page of their own.
-- **Macros**: one Q-Link that moves several controls at once, across effects and synths, set up from a macros panel.
 - **Automation**: knob moves recorded into clips.
+- **Perform FX on pads**: effects played from the pads.
 
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time.
