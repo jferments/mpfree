@@ -43,6 +43,9 @@ pub struct Gpu {
     _gles: Option<libloading::Library>,
 }
 
+/// The `Gpu`s alive in this process (see `Gpu::surfaceless_es`).
+static LIVE: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
 /// Mesa's surfaceless platform (EGL_MESA_platform_surfaceless).
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 
@@ -108,6 +111,58 @@ impl Gpu {
         }
         // SAFETY: a display EGL just returned.
         let display = unsafe { egl::Display::from_ptr(raw) };
+        // EGL gives every Gpu in the process this same display, and
+        // eglTerminate ends it for all of them: count the live ones, under a
+        // lock, so the last to go ends it and none ends it while another
+        // is being set up.
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        let (context, egl_version) = match Gpu::context(&egl, display, major, minor) {
+            Ok(made) => made,
+            Err(e) => {
+                if *live == 0 {
+                    let _ = egl.terminate(display);
+                }
+                return Err(e);
+            }
+        };
+        *live += 1;
+        drop(live);
+        // SAFETY: loading the system's GLES library runs its initialisers, as
+        // any program linked against it would.
+        let gles = unsafe { libloading::Library::new("libGLESv2.so.2") }.ok();
+        // SAFETY: the context is current on this thread; each name is looked
+        // up in libGLESv2 (as the 9 Nov tests did), or else through EGL.
+        let gl = unsafe {
+            glow::Context::from_loader_function(|name| {
+                let from_lib = gles.as_ref().and_then(|lib| {
+                    let mut sym = name.as_bytes().to_vec();
+                    sym.push(0);
+                    lib.get::<*const c_void>(&sym).ok().map(|s| *s)
+                });
+                from_lib
+                    .filter(|p| !p.is_null())
+                    .or_else(|| egl.get_proc_address(name).map(|f| f as *const c_void))
+                    .unwrap_or(std::ptr::null())
+            })
+        };
+        Ok(Gpu {
+            egl,
+            display,
+            context,
+            egl_version,
+            gl,
+            _gles: gles,
+        })
+    }
+
+    /// Initialises `display` and makes an OpenGL ES `major`.`minor`
+    /// context current on this thread; also EGL's version and vendor.
+    fn context(
+        egl: &egl::DynamicInstance<egl::EGL1_4>,
+        display: egl::Display,
+        major: i32,
+        minor: i32,
+    ) -> Result<(egl::Context, String), String> {
         let (egl_major, egl_minor) = egl
             .initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
@@ -157,34 +212,11 @@ impl Gpu {
         let context = egl
             .create_context(display, config, None, &attrs)
             .map_err(|e| format!("eglCreateContext (OpenGL ES {major}.{minor}): {e}"))?;
-        egl.make_current(display, None, None, Some(context))
-            .map_err(|e| format!("eglMakeCurrent with no surface: {e}"))?;
-        // SAFETY: loading the system's GLES library runs its initialisers, as
-        // any program linked against it would.
-        let gles = unsafe { libloading::Library::new("libGLESv2.so.2") }.ok();
-        // SAFETY: the context is current on this thread; each name is looked
-        // up in libGLESv2 (as the 9 Nov tests did), or else through EGL.
-        let gl = unsafe {
-            glow::Context::from_loader_function(|name| {
-                let from_lib = gles.as_ref().and_then(|lib| {
-                    let mut sym = name.as_bytes().to_vec();
-                    sym.push(0);
-                    lib.get::<*const c_void>(&sym).ok().map(|s| *s)
-                });
-                from_lib
-                    .filter(|p| !p.is_null())
-                    .or_else(|| egl.get_proc_address(name).map(|f| f as *const c_void))
-                    .unwrap_or(std::ptr::null())
-            })
-        };
-        Ok(Gpu {
-            egl,
-            display,
-            context,
-            egl_version,
-            gl,
-            _gles: gles,
-        })
+        if let Err(e) = egl.make_current(display, None, None, Some(context)) {
+            let _ = egl.destroy_context(display, context);
+            return Err(format!("eglMakeCurrent with no surface: {e}"));
+        }
+        Ok((context, egl_version))
     }
 
     /// The driver's name for the GPU (GL_RENDERER), its GL version and EGL's.
@@ -203,9 +235,13 @@ impl Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
         let _ = self.egl.make_current(self.display, None, None, None);
         let _ = self.egl.destroy_context(self.display, self.context);
-        let _ = self.egl.terminate(self.display);
+        *live = live.saturating_sub(1);
+        if *live == 0 {
+            let _ = self.egl.terminate(self.display);
+        }
     }
 }
 

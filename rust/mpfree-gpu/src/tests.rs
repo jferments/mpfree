@@ -283,6 +283,30 @@ fn a_dropped_mask_is_uploaded_again_when_it_comes_back() {
 }
 
 #[test]
+fn gpus_on_several_threads_do_not_end_each_others_display() {
+    // EGL gives them all one display; one going must not end it for the
+    // others (it did, now and then, when tests ran side by side).
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..12 {
+                    let gpu = gpu();
+                    let mut r = Renderer::new(&gpu, 64, 48, Rotation::Deg0).unwrap();
+                    let mut rec = Recorder::new(64, 48);
+                    rec.begin_frame();
+                    rec.fill_rect(Rect::new(0, 0, 64, 48), Color::rgb(0x336699));
+                    r.play(&gpu, rec.ops(), rec.store(), &[]);
+                    assert!(r.read_native(&gpu).iter().all(|&p| p == 0x336699));
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("a thread's GPU failed");
+    }
+}
+
+#[test]
 fn a_compute_job_comes_back_with_the_cpus_answer() {
     let gpu = Gpu::surfaceless_es(3, 1).unwrap_or_else(|e| panic!("no OpenGL ES 3.1: {e}"));
     for (frames, taps) in [(128, 64), (37, 5)] {
