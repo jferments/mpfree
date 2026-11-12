@@ -108,6 +108,9 @@ pub const MAX_HITS: usize = 256;
 const MAX_FILL_CHANGES: usize = 8;
 /// `dest` and `track` of an event meant for every destination.
 pub const ALL: u16 = u16::MAX;
+/// The track number of the song's own lanes' events (the morph's, in song
+/// mode): past every track.
+pub const SONG_TRACK: u16 = MAX_TRACKS as u16;
 
 /// A parameter lock replace recording erased: remove it from clip `slot`
 /// of `track`, as for [`Erased`].
@@ -407,7 +410,10 @@ pub struct Player {
     /// Where each track's moves played up to, to tell a clip that goes on
     /// from one that starts, jumps or comes back (which first chases its
     /// moves' state).
-    moves_pos: [Option<MovesPos>; MAX_TRACKS],
+    moves_pos: [Option<MovesPos>; MAX_TRACKS + 1],
+    /// The song's own lanes played last span: when they stop (song mode
+    /// off), their parameters are let go.
+    song_lanes: bool,
 }
 
 const NO_ERASED_LOCK: ErasedLock = ErasedLock {
@@ -480,7 +486,8 @@ impl Player {
             fill_changes: [(0, false); MAX_FILL_CHANGES],
             n_fill_changes: 0,
             left_out: false,
-            moves_pos: [None; MAX_TRACKS],
+            moves_pos: [None; MAX_TRACKS + 1],
+            song_lanes: false,
         }
     }
 
@@ -598,7 +605,7 @@ impl Player {
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => {
                 self.end_all(m.offset, m.frame, out);
                 self.unlock_where(m.offset, m.frame, out, false, |_| true);
-                self.moves_pos = [None; MAX_TRACKS];
+                self.moves_pos = [None; MAX_TRACKS + 1];
                 // A loop jump keeps the last results, so a PRE chain
                 // carries round the loop.
                 if !matches!(m.mark, Mark::Looped { .. }) {
@@ -608,7 +615,7 @@ impl Player {
             Mark::Panic => {
                 self.end_all(m.offset, m.frame, out);
                 self.unlock_where(m.offset, m.frame, out, false, |_| true);
-                self.moves_pos = [None; MAX_TRACKS];
+                self.moves_pos = [None; MAX_TRACKS + 1];
                 out.send(Out {
                     offset: m.offset,
                     frame: m.frame,
@@ -761,6 +768,25 @@ impl Player {
                 // Stopped: the track goes back to the song.
                 self.collect_song(track, i, &(at..ticks.end), None, span.swing);
             }
+        }
+        // The song's own lanes, after every track's.
+        let song = SONG_TRACK as usize;
+        match view.song_lanes.as_ref().filter(|_| view.song) {
+            Some(lanes) => {
+                self.collect_moves(lanes, 0, song, ALL, &ticks);
+                self.song_lanes = true;
+            }
+            None if self.song_lanes => {
+                self.song_lanes = false;
+                if self.held[..self.n_held]
+                    .iter()
+                    .any(|h| h.track == SONG_TRACK)
+                {
+                    self.end_locks(ticks.start, SONG_TRACK, ALL);
+                }
+                self.forget_moves(song);
+            }
+            None => {}
         }
         // In tick order; equal ticks keep track order, then note order. An
         // insertion sort: stable, in place (no allocation), and fast here

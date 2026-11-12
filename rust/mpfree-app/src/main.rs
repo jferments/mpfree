@@ -2314,8 +2314,14 @@ fn synth_pads_note(synth: &synth::Synth) -> String {
     let pad1 = synth
         .root(0)
         .map_or("no note".to_string(), synth::note_name);
+    let tuning = synth.settings().tuning;
+    let tuning = if tuning == synth::TuningPick::default() {
+        String::new()
+    } else {
+        format!(", tuned {}", tuning.label())
+    };
     format!(
-        "pads: {} synth, {layout}{} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)",
+        "pads: {} synth, {layout}{}{tuning} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)",
         synth.engine().name(),
         synth.range_text()
     )
@@ -2799,6 +2805,19 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleHit { .. } => {}
+                gui::FromUi::SampleKey {
+                    kit,
+                    note,
+                    velocity,
+                    down,
+                } if kit == player.kit() => {
+                    if down {
+                        player.key_at(note, velocity, 0);
+                    } else {
+                        player.key_off_at(note, 0);
+                    }
+                }
+                gui::FromUi::SampleKey { .. } => {}
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
@@ -3397,6 +3416,9 @@ fn player_session(
                 }
             }
             heads_at = Instant::now();
+        }
+        if let Some(line) = time.take_song_note() {
+            out.note(&format!("time: {line}"));
         }
         if time.take_changed() {
             out.show(gui::ToUi::Time(Box::new(time.state())));

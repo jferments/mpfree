@@ -50,6 +50,7 @@ pub mod auto_widgets;
 pub mod chop_tab;
 pub mod grain_tab;
 pub mod grain_widgets;
+pub mod keys_widgets;
 pub mod pads_tab;
 pub mod play_tab;
 pub mod play_widgets;

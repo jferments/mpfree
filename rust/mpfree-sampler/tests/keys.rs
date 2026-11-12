@@ -187,3 +187,84 @@ fn bad_keys_are_refused() {
     assert!(p.undo());
     assert_eq!(p.pads_play(), PadsPlay::Pads);
 }
+
+/// Pads 0, 1, 2 and 5 holding sines at A3, A4, C5 and A4 again, as a
+/// folder of samples would land on a kit, and pad 3 left empty.
+fn four_notes() -> Project {
+    let mut p = Project::new();
+    for (pad, hz) in [(0usize, 220.0), (1, 440.0), (2, 523.25), (5, 440.0)] {
+        let mut s = sine(0.5, hz);
+        s.name = format!("tone {pad}");
+        p.add_source(s.clone());
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Gate;
+        p.set_pad(pad, Some(Pad::new(&s.name, Layer::new(r))), None)
+            .unwrap();
+    }
+    p
+}
+
+#[test]
+fn map_to_keys_spreads_the_pads_halfway_to_each_other_and_one_undo_takes_it_back() {
+    let mut p = four_notes();
+    let before: Vec<Option<Pad>> = (0..6).map(|k| p.pad(k).cloned()).collect();
+    let keys = p
+        .map_to_keys(&[(0, 57), (1, 69), (2, 72), (5, 69)])
+        .unwrap();
+    // A3 reaches down to the bottom and halfway up to A4; A4 halfway to
+    // C5; C5 to the top. Pad 5 shares A4's zone.
+    let a3 = Keys {
+        lo: 0,
+        hi: 62,
+        root: 57,
+    };
+    let a4 = Keys {
+        lo: 63,
+        hi: 70,
+        root: 69,
+    };
+    let c5 = Keys {
+        lo: 71,
+        hi: 127,
+        root: 72,
+    };
+    assert_eq!(keys, [a3, a4, c5, a4]);
+    for (pad, k) in [(0, a3), (1, a4), (2, c5), (5, a4)] {
+        let pad = p.pad(pad).unwrap();
+        assert_eq!(pad.keys, Some(k));
+        assert_eq!(pad.polyphony, KEYGROUP_POLYPHONY);
+        assert_eq!(pad.layers.len(), 1);
+    }
+    assert_eq!(p.pads_play(), PadsPlay::Keys { from: 48 });
+    assert_eq!(p.keygroups_for(69), [1, 5]);
+    // Each note plays at its own pitch from the nearest root below or above.
+    for (note, hz) in [(57u8, 220.0f32), (62, 293.66), (64, 329.63), (74, 587.33)] {
+        let mut e = engine(&p);
+        e.apply(Event::Key {
+            note,
+            velocity: 127,
+        });
+        let out = render(&mut e, 12_000);
+        assert!(
+            (pitch(&out) - hz).abs() < hz * 0.003,
+            "note {note}: {}",
+            pitch(&out)
+        );
+    }
+    // One undo puts every pad and the pads' notes back.
+    assert!(p.undo());
+    let after: Vec<Option<Pad>> = (0..6).map(|k| p.pad(k).cloned()).collect();
+    assert_eq!(after, before);
+    assert_eq!(p.pads_play(), PadsPlay::Pads);
+}
+
+#[test]
+fn map_to_keys_refuses_an_empty_pad_and_changes_nothing() {
+    let mut p = four_notes();
+    let rev = p.revision();
+    assert_eq!(p.map_to_keys(&[(0, 57), (3, 60)]), Err(ModelError::BadPad));
+    assert_eq!(p.map_to_keys(&[]), Err(ModelError::BadPad));
+    assert_eq!(p.map_to_keys(&[(PADS, 60)]), Err(ModelError::BadPad));
+    assert_eq!(p.revision(), rev);
+    assert_eq!(p.pad(0).unwrap().keys, None);
+}

@@ -7,7 +7,9 @@ license = "MIT"
 description = "The Synth tab for the MPC One: instrument pages built from a node's parameters, with Poly's drawn visuals, presets and Q-Links, on mpfree-ui"
 
 [dependencies]
+mpfree-mod = { path = "../mpfree-mod" }
 mpfree-node = { path = "../mpfree-node" }
+mpfree-param = { path = "../mpfree-param" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-ui = { path = "../mpfree-ui" }
 

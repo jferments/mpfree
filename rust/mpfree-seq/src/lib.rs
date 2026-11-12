@@ -42,7 +42,7 @@ pub mod arrange;
 pub mod scenes;
 pub mod steps;
 
-pub use arrange::{Arrangement, Marker, Placement, Source};
+pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
 pub use scenes::{Follow, FollowAction, Scene, SCENES};
 
 pub use mpfree_moves;
