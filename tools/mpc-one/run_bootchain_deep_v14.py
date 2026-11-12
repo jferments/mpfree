@@ -316,10 +316,16 @@ def analyze(dst,stages,prior_questions,prior_zip):
     if prior_zip:
         try:
             archive_files=verified_archive(prior_zip)
+            prior_folder=dst/"verified-prior-v13"
+            prior_folder.mkdir(exist_ok=True)
             if "V13-EXACT-FINDINGS.json" in archive_files:
                 prior_exact=json.loads(archive_files["V13-EXACT-FINDINGS.json"])
+                (prior_folder/"V13-EXACT-FINDINGS.json").write_bytes(
+                    archive_files["V13-EXACT-FINDINGS.json"])
             if "ghidra-p3-v13.json" in archive_files:
                 prior_p3=json.loads(archive_files["ghidra-p3-v13.json"])
+                (prior_folder/"ghidra-p3-v13.json").write_bytes(
+                    archive_files["ghidra-p3-v13.json"])
             if prior_p3 and prior_p3.get("source_sha256") != "b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a":
                 raise ValueError("V13 owner P3 source SHA mismatch")
         except Exception:
@@ -396,7 +402,7 @@ def analyze(dst,stages,prior_questions,prior_zip):
             pointer=prior_p3.get("pointer_cells",{}).get("unlock_command_text_pointer",{})
             if pointer.get("static_string_target") == "<REDACTED_VENDOR_AUTH_STRING>":
                 item["classification"]="ANSWERED_STATIC"
-                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                item["evidence"].append({"source":"verified-prior-v13/ghidra-p3-v13.json",
                     "fact":"Verified SHA-pinned P3 pointer resolves to OEM auth string (text redacted)"})
         if key=="FASTBOOT-02":
             entries=prior_exact.get("eight_slot_fastboot_dispatch",{}).get("entries",[])
@@ -404,7 +410,7 @@ def analyze(dst,stages,prior_questions,prior_zip):
             if (any(x.get("name")=="oem" and x.get("handler")=="0x00122855" for x in entries)
                 and "0x25" in handler.get("pseudocode","")):
                 item["classification"]="ANSWERED_STATIC"
-                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                item["evidence"].append({"source":"verified-prior-v13/ghidra-p3-v13.json",
                     "fact":"OEM dispatcher and 0x25-byte authorization comparison in handler"})
         if key=="FASTBOOT_RUNTIME-10":
             bootdone=prior_p3.get("function_details",{}).get("0x001226b4",{}).get("pseudocode","")
@@ -412,7 +418,7 @@ def analyze(dst,stages,prior_questions,prior_zip):
                 "mpf_reset_cpu_candidate(" in bootdone and
                 bootdone.index("mpf_bootm_command(")<bootdone.index("mpf_reset_cpu_candidate(")):
                 item["classification"]="ANSWERED_STATIC"
-                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                item["evidence"].append({"source":"verified-prior-v13/ghidra-p3-v13.json",
                     "fact":"Fastboot boot-done calls bootm and then CPU reset on return"})
         if key=="RECOVERY_SECURITY-05" and facts.get("update_loader_mode_equal",{}).get("status")=="ANSWERED_STATIC":
             item["classification"]="ANSWERED_STATIC"
@@ -439,7 +445,7 @@ def analyze(dst,stages,prior_questions,prior_zip):
             item["classification"]="ANSWERED_OUTPUT_INTEGRITY"
         if key in ("FASTBOOT-03","FASTBOOT-04","FASTBOOT_RUNTIME-06"):
             item["classification"]="PARTIAL_STATIC_NEEDS_FURTHER_PROOF"
-            item["evidence"].append({"source":"V13-EXACT-FINDINGS.json",
+            item["evidence"].append({"source":"verified-prior-v13/V13-EXACT-FINDINGS.json",
                                      "fact":"V13 established permission pointer alias and handler call relationships"})
         if key in ("VM_VALIDATION-04","VM_VALIDATION-05","VM_VALIDATION-06",
                    "VM_VALIDATION-07","VM_VALIDATION-08","VM_VALIDATION-09"):
@@ -453,7 +459,7 @@ def analyze(dst,stages,prior_questions,prior_zip):
 
     if prior_exact:
         add("v13_permission_alias","VERIFIED_STATIC_PRIOR",
-            ["V13-EXACT-FINDINGS.json","ghidra-p3-v13.json"],
+            ["verified-prior-v13/V13-EXACT-FINDINGS.json","verified-prior-v13/ghidra-p3-v13.json"],
             {"gate":prior_exact.get("oem_unlock_permission_pointer_alias",{}).get("gate"),
              "writer":prior_exact.get("oem_unlock_permission_pointer_alias",{}).get("writer")})
     if all(reboot_modes.get(x,{}).get("mode-loader")==["0x5242c301"] and
