@@ -41,13 +41,15 @@
 //! kit.
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
-use mpfree_perform::{Perform, SceneMorph, When};
+use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
+use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::{Clip, Project, Track, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
+use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
+    bars_label, clips_after, EditInfo, MorphInfo, TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -295,7 +297,21 @@ pub struct TimeHost {
     /// The morph bar, and the morph on the mixer's mod engine
     /// ([`TimeHost::morph`]).
     morph: MorphInfo,
+    /// Song mode: the arrangement plays on the tracks with no clip
+    /// launched.
+    song: bool,
+    /// The Arrange page shows the Song view, and the placement selected
+    /// on it.
+    song_view: bool,
+    selected: Option<usize>,
+    /// Live to song: records what the grid plays into the song.
+    song_rec: SongRecorder,
+    /// What happened to the last recording when the transport stopped,
+    /// for the log ([`TimeHost::take_song_note`]).
+    song_note: Option<String>,
     scene_morph: SceneMorph,
+    /// The note editor on the Arrange page, while it is open.
+    editor: Option<Editor>,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -386,7 +402,13 @@ impl TimeHost {
             cues: Vec::new(),
             perform: Perform::default(),
             morph: MorphInfo::default(),
+            song: false,
+            song_view: false,
+            selected: None,
+            song_rec: SongRecorder::default(),
+            song_note: None,
             scene_morph: SceneMorph::default(),
+            editor: None,
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -420,6 +442,8 @@ impl TimeHost {
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
+        v.set_song(&self.project, self.song)
+            .map_err(|e| format!("song: {e:?}"))?;
         // A scene's mutes switch with its cues.
         self.perform.dress(&mut v);
         // Room to record into the armed track's clips without allocating.
@@ -653,6 +677,56 @@ impl TimeHost {
         }
     }
 
+    /// A touch on the note editor. Open takes the clip the Play page's
+    /// steps show (the armed track's); an edit is one undoable take (a
+    /// row turned or the velocity lane dragged joins one).
+    fn edit(&mut self, a: EditAction) -> Result<String, String> {
+        if a == EditAction::Open {
+            let (track, slot) = self.step_focus();
+            let name = self
+                .project
+                .tracks
+                .get(track)
+                .map_or_else(String::new, |t| t.name.clone());
+            let slot = slot.ok_or_else(|| format!("edit: {name} has no clip"))?;
+            let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
+            let line = format!("edit: {} on {name}", clip.name);
+            self.editor = Some(Editor::new(track, slot, clip));
+            self.changed = true;
+            return Ok(line);
+        }
+        let Some(mut ed) = self.editor.take() else {
+            return Ok(String::new());
+        };
+        let Some(clip) = self.project.clip(ed.track, ed.slot) else {
+            self.changed = true;
+            return Err("edit: the clip is gone".into());
+        };
+        let done = ed.act(a, clip);
+        self.changed = true;
+        if done.close {
+            return Ok(done.line);
+        }
+        if !done.edit.is_empty() {
+            let applied = self
+                .takes
+                .edit(&mut self.project, ed.track, ed.slot, &done.edit, done.join)
+                .map_err(|e| format!("edit: {e:?}"));
+            if let Err(e) = applied {
+                self.editor = Some(ed);
+                return Err(e);
+            }
+            if let Some(clip) = self.project.clip(ed.track, ed.slot) {
+                ed.applied(clip, &done);
+            }
+            self.editor = Some(ed);
+            self.compile()?;
+        } else {
+            self.editor = Some(ed);
+        }
+        Ok(done.line)
+    }
+
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
@@ -777,11 +851,22 @@ impl TimeHost {
                 self.morph.a = a.min(SLOTS - 1);
                 self.morph.b = b.min(SLOTS - 1);
                 self.changed = true;
+                self.song_morph();
                 Ok(format!(
                     "morph: rows {} and {}",
                     self.morph.a + 1,
                     self.morph.b + 1
                 ))
+            }
+            TimeAction::RecSong(on) => {
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec
+                    .arm(on, &self.project, &self.launches, self.morph.pos, rows);
+                self.changed = true;
+                if on {
+                    return Ok("rec song: what the grid plays goes into the song".into());
+                }
+                self.keep_song().map(|line| format!("rec song off: {line}"))
             }
             TimeAction::Morph(_)
             | TimeAction::SnapBack
@@ -789,6 +874,136 @@ impl TimeHost {
             | TimeAction::SaveScene(_) => {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
+            TimeAction::Edit(e) => self.edit(e),
+            TimeAction::SongView(on) => {
+                self.song_view = on;
+                self.changed = true;
+                Ok(if on { "song view" } else { "clips view" }.into())
+            }
+            TimeAction::SongMode(on) => {
+                self.song = on;
+                if let Err(e) = self.compile() {
+                    self.song = !on;
+                    return Err(e);
+                }
+                Ok(if on { "song on" } else { "song off" }.into())
+            }
+            TimeAction::SelectPlacement(i) => {
+                self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
+                self.changed = true;
+                Ok(String::new())
+            }
+            TimeAction::ScenesToSong
+            | TimeAction::SongToScenes
+            | TimeAction::MakeUnique(_)
+            | TimeAction::DeletePlacement(_) => {
+                let bar = info.meter.bar_ticks();
+                let before = self.project.clone();
+                let line = match self.edit_song(a, bar) {
+                    Ok(line) => line,
+                    Err(e) => {
+                        self.project = before;
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = self.compile() {
+                    self.project = before;
+                    self.compile()?;
+                    return Err(e);
+                }
+                Ok(line)
+            }
+        }
+    }
+
+    /// What live to song put into the song when the transport stopped
+    /// (or why it could not: the recording is then kept, and goes in when
+    /// Rec song is turned off), once, for the log.
+    pub fn take_song_note(&mut self) -> Option<String> {
+        self.song_note.take()
+    }
+
+    /// Live to song: the passes recorded so far into the song, compiled
+    /// in. A line for the log.
+    fn keep_song(&mut self) -> Result<String, String> {
+        if !self.song_rec.waiting() {
+            return Ok("nothing recorded".into());
+        }
+        let before = self.project.arrangement.clone();
+        let r = self
+            .song_rec
+            .finish(&mut self.project)
+            .map_err(|e| format!("rec song: {e:?}"))?;
+        // New placements shift the indices.
+        self.selected = None;
+        if let Err(e) = self.compile() {
+            self.project.arrangement = before;
+            self.compile()?;
+            return Err(e);
+        }
+        Ok(format!(
+            "{} placements and {} morph points into the song",
+            r.placements, r.morph_points
+        ))
+    }
+
+    /// The Song view's edits of the arrangement (and, for Song → scenes,
+    /// the rows). A line for the log.
+    fn edit_song(&mut self, a: TimeAction, bar: Tick) -> Result<String, String> {
+        let song = &mut self.project.arrangement;
+        match a {
+            TimeAction::ScenesToSong => {
+                // Every row with a clip, in order, after the song's end.
+                let rows: Vec<(usize, Tick)> = (0..SLOTS)
+                    .filter(|&r| self.project.row_filled(r))
+                    .map(|r| (r, scene_length(&self.project, r, bar)))
+                    .collect();
+                if rows.is_empty() {
+                    return Err("scenes → song: no row has a clip".into());
+                }
+                let end = self.project.arrangement.end();
+                let at = (end + bar - 1) / bar.max(1) * bar;
+                let add = scenes_to_song(&self.project, &rows, at)
+                    .map_err(|e| format!("scenes → song: {e:?}"))?;
+                // New placements shift the indices.
+                self.selected = None;
+                let song = &mut self.project.arrangement;
+                for p in add.placements {
+                    song.place(p).map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                for m in add.markers {
+                    song.mark(m.at, &m.name)
+                        .map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                Ok(format!(
+                    "scenes → song: {} rows from bar {}",
+                    rows.len(),
+                    at / bar.max(1) + 1
+                ))
+            }
+            TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
+                Ok(rows) if rows.is_empty() => Ok("song → scenes: the song is empty".into()),
+                Ok(rows) => Ok(format!(
+                    "song → scenes: rows {} to {}",
+                    rows[0] + 1,
+                    rows[rows.len() - 1] + 1
+                )),
+                Err(ModelError::NoRoom) => {
+                    Err("song → scenes: not enough empty rows in a run".into())
+                }
+                Err(e) => Err(format!("song → scenes: {e:?}")),
+            },
+            TimeAction::MakeUnique(i) => {
+                song.make_unique(&self.project.tracks, i)
+                    .map_err(|e| format!("make unique: {e:?}"))?;
+                Ok(format!("placement {} is its own copy", i + 1))
+            }
+            TimeAction::DeletePlacement(i) => {
+                song.remove(i).ok_or("delete: no such placement")?;
+                self.selected = None;
+                Ok(format!("placement {} deleted", i + 1))
+            }
+            _ => Ok(String::new()),
         }
     }
 
@@ -813,6 +1028,7 @@ impl TimeHost {
                     .map_err(|e| format!("morph: {e:?}"))?;
                 modu.morph_to(self.morph.pos);
                 (self.morph.a, self.morph.b, self.morph.params) = (a, b, l.morphing);
+                self.song_morph();
                 format!(
                     "morph: rows {} and {}, {} parameters",
                     a + 1,
@@ -847,6 +1063,7 @@ impl TimeHost {
                 }
                 modu.morph_to(x);
                 self.morph.pos = x;
+                self.song_morph();
                 line
             }
             TimeAction::SnapBack | TimeAction::KeepMorph if !self.morph.on => {
@@ -872,6 +1089,14 @@ impl TimeHost {
         };
         self.changed = true;
         Ok(line)
+    }
+
+    /// Live to song: the crossfader's position and the rows it morphs
+    /// between, which go into the song's morph lane while Rec song records.
+    fn song_morph(&mut self) {
+        let at = self.info().position;
+        let rows = (self.morph.a, self.morph.b);
+        self.song_rec.morph(at, self.morph.pos, rows);
     }
 
     /// CAPTURE: keep the last phrase in the armed track (track 1 if none
@@ -1060,12 +1285,42 @@ impl TimeHost {
 
     /// FILL on or off from `offset` in the coming period: notes with the
     /// FILL and !FILL trig conditions follow it from that frame on. For
-    /// the FILL button (hold for a fill, double-press to latch).
-    // No button is mapped to FILL yet: the pad player picks one under the
-    // layout rules.
-    #[allow(dead_code)]
+    /// the FILL button (hold for a fill, double-press to latch): PLAY
+    /// while the transport plays (control map decision 9).
     pub fn set_fill(&mut self, on: bool, offset: u32) {
         self.player.set_fill(on, offset);
+    }
+
+    /// TRACK MUTE's keys (control map decision 5): mute track `t` now, or
+    /// let it play again. Its clip keeps its place, so it comes back in
+    /// time; a scene's mutes set it again when the scene starts.
+    pub fn toggle_mute(&mut self, t: usize) -> Result<String, String> {
+        let Some(track) = self.project.tracks.get_mut(t) else {
+            return Err(format!("no track {}", t + 1));
+        };
+        track.mute = !track.mute;
+        if let Err(e) = self.compile() {
+            self.project.tracks[t].mute ^= true;
+            return Err(e);
+        }
+        let track = &self.project.tracks[t];
+        Ok(format!(
+            "track mute: {} {}",
+            track.name,
+            if track.mute { "muted" } else { "plays" }
+        ))
+    }
+
+    /// Whether track `t` is muted (None: no such track), for TRACK MUTE's
+    /// pad lights.
+    pub fn muted(&self, t: usize) -> Option<bool> {
+        self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// Whether track `t` has a clip launched (playing, or waiting for the
+    /// transport), for TRACK MUTE's pad lights.
+    pub fn launched(&self, t: usize) -> bool {
+        self.launches.iter().any(|l| l.track == t)
     }
 
     /// FILL, as of the last period, for the button's light.
@@ -1234,6 +1489,9 @@ impl TimeHost {
             self.changed = true;
         }
         self.recorder.process(&self.view, &self.block);
+        // Live to song follows the transport and the cues that started.
+        let song_was = self.song_rec.recording();
+        self.song_rec.period(&self.block, self.player.started());
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
         let mut compile = false;
@@ -1296,6 +1554,14 @@ impl TimeHost {
                     .view
                     .put_move(k.track, k.slot, k.target, k.map, points, k.len);
             }
+        }
+        // The transport stopped: what live to song recorded goes into the
+        // song (it compiles).
+        if song_was && !self.song_rec.recording() && self.song_rec.waiting() {
+            self.song_note = Some(match self.keep_song() {
+                Ok(line) => format!("rec song: {line}"),
+                Err(e) => e,
+            });
         }
         if compile {
             // The clips only gained or lost notes and locks, and cues became
@@ -1362,6 +1628,22 @@ impl TimeHost {
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
         st.morph = self.morph;
+        st.song_view = self.song_view;
+        st.song_on = self.song;
+        st.selected = self.selected;
+        st.song_rec = self.song_rec.armed();
+        st.edit = self.editor.as_ref().and_then(|ed| {
+            let clip = self.project.clip(ed.track, ed.slot)?;
+            let bar = clip
+                .speed
+                .to_clip(self.transport.meter().bar_ticks() as f64);
+            Some(Box::new(EditInfo {
+                editor: ed.clone(),
+                clip: clip.clone(),
+                track_name: self.project.tracks[ed.track].name.clone(),
+                bar: bar.round() as Tick,
+            }))
+        });
         st
     }
 
@@ -2145,6 +2427,280 @@ mod tests {
         assert!(h.state().launches.is_empty());
         assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// TRACK MUTE's keys: track 2 muted halfway through bar 1 goes quiet
+    /// from there, and unmuted in bar 3 it plays on in time.
+    #[test]
+    fn a_track_mute_key_silences_the_track_and_lets_it_back_in_time() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let beats = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = (0..4)
+                .map(|b| mpfree_seq::Note::new(b * 960, 100, note, 100))
+                .collect();
+            c
+        };
+        for (t, note) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(beats(note));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2 - 1000, &[]);
+        assert_eq!(h.toggle_mute(1).unwrap(), "track mute: Track 2 muted");
+        assert_eq!(
+            (h.muted(1), h.muted(0), h.muted(TRACKS)),
+            (Some(true), Some(false), None)
+        );
+        assert!(h.launched(1) && !h.launched(2));
+        assert!(h.state().tracks[1].mute);
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(h.toggle_mute(1).unwrap(), "track mute: Track 2 plays");
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        let at = |pad: usize| {
+            pads.hits
+                .iter()
+                .filter(|&&(_, p, _)| p == pad)
+                .map(|&(f, _, _)| (f + BAR / 8) / (BAR / 4))
+                .collect::<Vec<u64>>()
+        };
+        // Track 1 on every beat; track 2 on beats 1 and 2, then bar 3.
+        assert_eq!(at(4), (0..12).collect::<Vec<u64>>());
+        assert_eq!(at(30), [0, 1, 8, 9, 10, 11]);
+        assert!(h.toggle_mute(TRACKS).is_err());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Two one-bar rows become a song (Scenes → song), which plays in song
+    /// mode; a clip launched on track 1 takes it over, and the song plays
+    /// on there after it stops. The song goes back into rows (Song →
+    /// scenes), and a placement is made unique and deleted.
+    #[test]
+    fn rows_become_a_song_that_plays_and_goes_back_into_rows() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.project.tracks[0].slots[5] = Some(one_bar(9));
+        h.project.scene_mut(1).unwrap().name = "Drop".into();
+        // Row 6 has a clip too: three rows, bars 1, 2 and 3.
+        assert_eq!(
+            h.act(TimeAction::ScenesToSong).unwrap(),
+            "scenes → song: 3 rows from bar 1"
+        );
+        let st = h.state();
+        assert_eq!(st.placements.len(), 5);
+        let names: Vec<&str> = st.markers.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names, ["Scene 1", "Drop", "Scene 6"]);
+        assert!(!st.song_on);
+        h.act(TimeAction::SongMode(true)).unwrap();
+        assert!(h.state().song_on);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        // Track 1 plays row 1's clip in place of the song in bar 2, to its
+        // stop on bar 3, where the song plays on (row 6).
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.act(TimeAction::StopClip(0)).unwrap();
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [(0, 4), (0, 30), (BAR, 4), (BAR, 31), (2 * BAR, 9)];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        // Back into rows: the first run of three empty rows is 3 to 5.
+        assert_eq!(
+            h.act(TimeAction::SongToScenes).unwrap(),
+            "song → scenes: rows 3 to 5"
+        );
+        let p = &h.project;
+        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
+        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
+        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        assert_eq!(p.scene(3).unwrap().name, "Drop");
+        // A placement made unique keeps its clip when the slot changes.
+        h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
+        assert_eq!(h.state().selected, Some(0));
+        h.act(TimeAction::MakeUnique(0)).unwrap();
+        assert!(h.state().placements[0].unique);
+        h.act(TimeAction::DeletePlacement(4)).unwrap();
+        let st = h.state();
+        assert_eq!((st.placements.len(), st.selected), (4, None));
+        assert!(h.act(TimeAction::DeletePlacement(9)).is_err());
+        assert_eq!(h.state().placements.len(), 4);
+        h.act(TimeAction::SongView(true)).unwrap();
+        assert!(h.state().song_view);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
+    /// holds what was played, and plays it back the same in song mode.
+    #[test]
+    fn rec_song_records_the_grid_into_the_song() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert!(h.state().song_rec);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        let note = h.take_song_note().unwrap();
+        assert_eq!(
+            note,
+            "rec song: 4 placements and 0 morph points into the song"
+        );
+        let st = h.state();
+        let placed: Vec<(usize, Tick, Tick)> = st
+            .placements
+            .iter()
+            .map(|p| (p.track, p.start, p.start + p.length))
+            .collect();
+        // Bar 1 row 1, bars 2 and 3 row 2, to where it stopped.
+        let end = st.placements[1].start + st.placements[1].length;
+        assert!((2 * 3840 + 3000..3 * 3840).contains(&end), "{placed:?}");
+        assert_eq!(
+            placed,
+            [(0, 0, 3840), (0, 3840, end), (1, 0, 3840), (1, 3840, end)]
+        );
+        let heard = std::mem::take(&mut pads.hits);
+        // Back to the top with nothing launched, in song mode.
+        h.act(TimeAction::RecSong(false)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Locate(0));
+        h.command(Command::Play);
+        let from = pads.frame;
+        run(&mut h, &mut pads, from + 3 * BAR - 1000, &[]);
+        let again: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f - from, p)).collect();
+        let heard: Vec<(u64, usize)> = heard.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(again.len(), heard.len(), "{again:?} {heard:?}");
+        for (a, b) in again.iter().zip(&heard) {
+            assert!(
+                a.0.abs_diff(b.0) <= 128 && a.1 == b.1,
+                "{again:?} {heard:?}"
+            );
+        }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Rec song keeps the morph bar's moves made on the mixer's mod engine:
+    /// the crossfader's positions, and the rows they morph between, go into
+    /// the song's morph lane when the transport stops.
+    #[test]
+    fn rec_song_keeps_the_morph_bar_moves_made_on_the_mixer() {
+        use mpfree_seq::arrange::MORPH_LANE;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = crate::mixing::MixHost::new(RATE, 0.0, 6.0);
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.morph(TimeAction::Morph(0.5), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.morph(
+            TimeAction::MorphRows { a: 0, b: 2 },
+            &mut mix.modu,
+            &mix.mixer,
+        )
+        .unwrap();
+        h.morph(TimeAction::Morph(1.0), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let note = h.take_song_note().unwrap();
+        assert!(note.starts_with("rec song: 1 placements and "), "{note}");
+        let song = &h.project.arrangement;
+        let rows: Vec<(usize, usize)> = song.morphs.iter().map(|m| (m.a, m.b)).collect();
+        assert_eq!(rows, [(0, 1), (0, 2)]);
+        // Held half way from the first move, all the way after the second.
+        let lane = song.lanes.lane(MORPH_LANE).unwrap();
+        let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
+        assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
+        assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
+    }
+
+    /// The note editor on the focused clip: Edit opens it; Timing Correct
+    /// with nothing selected moves every note to the 1/16 grid; a tap
+    /// selects a note and Delete takes it out; each is one take that Undo
+    /// puts back; ‹ Clips closes it.
+    #[test]
+    fn the_note_editor_edits_the_focused_clip_through_the_take_history() {
+        use mpfree_seq::Note;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap_err(),
+            "edit: Track 1 has no clip"
+        );
+        let mut c = Clip::new("Beat", 3840);
+        c.notes = vec![
+            Note::new(10, 100, 0, 100),
+            Note::new(970, 100, 1, 90),
+            Note::new(1930, 100, 0, 110),
+        ];
+        h.project.tracks[0].slots[0] = Some(c.clone());
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Beat on Track 1"
+        );
+        assert!(h.state().edit.is_some());
+        // The clip's notes in time order (an undo may put them back in
+        // another order, which plays the same).
+        let sorted = |h: &TimeHost| -> Vec<Note> {
+            let mut n = h.project.clip(0, 0).unwrap().notes.clone();
+            n.sort_by_key(|n| (n.tick, n.note));
+            n
+        };
+        let ticks = |h: &TimeHost| -> Vec<Tick> { sorted(h).iter().map(|n| n.tick).collect() };
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(7))).unwrap(),
+            "edit: timing correct moved 3 notes"
+        );
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Edit(E::Note(1))).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(6))).unwrap(),
+            "edit: 1 notes deleted"
+        );
+        assert_eq!(ticks(&h), [0, 1920]);
+        // Each edit is a take of its own.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes);
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(0))).unwrap(),
+            "edit: closed"
+        );
+        assert!(h.state().edit.is_none());
     }
 
     /// Pads played over bars 2 and 3 without recording; Capture keeps them

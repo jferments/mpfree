@@ -98,6 +98,13 @@ returns stay too, since they need every send first. The Hello thread turns
 it on in the app (core 2, SCHED_FIFO 69, a wait of about a period) once the
 device round has measured the handoff.
 
+`Mixer::set_pipelined_returns` is the returns' turn, as a prototype for Jay's
+call: the returns' inserts run on a lane one block behind, during the next
+block's pad channels, tracks and submixes, so the reverb leaves the audio
+core at the cost of a block of timing on every return. Its output is the
+reference a block late, bit for bit. It has its own lane; with both on, put
+the two lanes on different cores or expect them to queue.
+
 ## Measuring it: `mpfree-bench --lanes`
 
 ```text
@@ -107,7 +114,7 @@ cargo run --release -p mpfree-bench -- --lanes [--lane-cores A,B] [--quick]
 Runs only the lane cases: the handoff alone (an empty job, the worker
 sleeping or spinning), the sampler case as one engine, as two engines of 12
 voices on one core, and as two engines on two cores, the bench song's mixer
-with every insert on one core and with its track inserts split over two,
+with every insert on one core, with its track inserts split over two, and with its returns a block late on a second core (Full and Eco reverb),
 and the sampler with Poly Init's 8-voice chords on one core and on two. On the MPC,
 `--lane-cores 3,2` pins the bench's own thread to core 3 and the workers to
 core 2. A test checks that the two-core cases make exactly the same sound as

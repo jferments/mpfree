@@ -31,12 +31,22 @@
 //! together, with mutes, follow actions and stored values for the morph.
 //! A clip can have a follow action too ([`Clip::follow`]).
 //!
-//! Audio clips and the arrangement come in later roadmap steps.
+//! The **arrangement** ([`arrange`]) puts clips on a timeline, linked to
+//! their slots until made unique; scenes and the arrangement convert both
+//! ways.
+//!
+//! The note editors (the Grid View and List Edit) make their edits with
+//! [`notes`], Timing Correct among them.
+//!
+//! Audio clips come in a later roadmap step.
 #![forbid(unsafe_code)]
 
+pub mod arrange;
+pub mod notes;
 pub mod scenes;
 pub mod steps;
 
+pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
 pub use scenes::{Follow, FollowAction, Scene, SCENES};
 
 pub use mpfree_moves;
@@ -347,6 +357,11 @@ pub enum ModelError {
     BadFollow,
     /// A scene's mutes, values or count are out of range.
     BadScene,
+    /// A placement is empty, out of range, overlaps another on its track,
+    /// or names an empty slot; or the arrangement is out of order.
+    BadPlacement,
+    /// No room for it (song to scenes: no run of empty rows long enough).
+    NoRoom,
 }
 
 impl Clip {
@@ -516,6 +531,8 @@ pub struct Project {
     /// Scene `k` holds what row `k` of the slots has besides its clips;
     /// rows past the end are plain (see [`Project::scene`]).
     pub scenes: Vec<Scene>,
+    /// The song: clips on a timeline ([`arrange`]).
+    pub arrangement: Arrangement,
 }
 
 impl Project {
@@ -544,7 +561,7 @@ impl Project {
         for s in &self.scenes {
             s.check()?;
         }
-        Ok(())
+        self.arrangement.check(&self.tracks)
     }
 
     /// Scene `row`, or `None` when the project keeps nothing for it (a

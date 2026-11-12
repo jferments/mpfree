@@ -22,9 +22,15 @@
 use std::ops::Range;
 
 use mpfree_param::RelAddr;
+use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
-use mpfree_seq::{DestId, Lock, ModelError, Note, Project, Quantise, Speed, MAX_TRACKS, SLOTS};
+use mpfree_seq::{
+    Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, MAX_TRACKS, SLOTS,
+};
 use mpfree_transport::time::{ceil_to, Swing, Tick};
+
+/// The slot number the song's own lanes go by, past any placement's.
+pub(crate) const SONG_SLOT: usize = usize::MAX;
 
 /// A clip playing on a track: which slot, and the song tick where its first
 /// pass starts. Before `origin` the clip is silent; from it on, it loops.
@@ -291,12 +297,30 @@ pub(crate) struct CueView {
     pub mute: Option<bool>,
 }
 
+/// A placement of the song, compiled: its clip (from `clip.start`, with
+/// its origin) until `end`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RegionView {
+    pub end: Tick,
+    pub clip: ClipView,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrackView {
     pub dest: DestId,
     pub mute: bool,
     pub clip: Option<ClipView>,
     pub cue: Option<CueView>,
+    /// The track's placements, in order, in song mode (else none).
+    pub regions: Vec<RegionView>,
+}
+
+impl TrackView {
+    /// The region playing at `tick`.
+    pub fn region_at(&self, tick: Tick) -> Option<&RegionView> {
+        let k = self.regions.partition_point(|r| r.end <= tick);
+        self.regions.get(k).filter(|r| r.clip.start <= tick)
+    }
 }
 
 /// The project compiled for playback. Build it on the control thread; the
@@ -305,6 +329,10 @@ pub(crate) struct TrackView {
 pub struct PlayView {
     pub(crate) tracks: Vec<TrackView>,
     pub(crate) armed: Option<usize>,
+    /// Song mode: a track with no clip launched plays its placements.
+    pub(crate) song: bool,
+    /// The song's own lanes (the morph), played in song mode.
+    pub(crate) song_lanes: Option<ClipView>,
 }
 
 impl PlayView {
@@ -334,6 +362,7 @@ impl PlayView {
                 mute: t.mute,
                 clip: None,
                 cue: None,
+                regions: Vec::new(),
             })
             .collect();
         for l in launches {
@@ -361,7 +390,71 @@ impl PlayView {
         Ok(PlayView {
             tracks,
             armed: None,
+            song: false,
+            song_lanes: None,
         })
+    }
+
+    /// Song mode on (the arrangement's placements compiled in: a track
+    /// with no clip launched plays them on their ticks, and the song's own
+    /// lanes play as [`crate::SONG_TRACK`]'s) or off. Call it on the
+    /// control thread after compiling, with the same project.
+    pub fn set_song(&mut self, project: &Project, on: bool) -> Result<(), CompileError> {
+        for t in &mut self.tracks {
+            t.regions.clear();
+        }
+        self.song = on;
+        self.song_lanes = None;
+        if !on {
+            return Ok(());
+        }
+        let lanes = &project.arrangement.lanes;
+        if !lanes.is_empty() {
+            // One long pass from tick 0 that never loops.
+            let len = Tick::from(SONG_LANE_LEN);
+            self.song_lanes = Some(ClipView {
+                slot: SONG_SLOT,
+                origin: 0,
+                start: 0,
+                length: len,
+                speed: Speed::NORMAL,
+                quantise: None,
+                song_len: len as f64,
+                swing: None,
+                notes: Vec::new(),
+                locks: Vec::new(),
+                moves: lanes.clone(),
+            });
+        }
+        for (i, p) in project.arrangement.placements.iter().enumerate() {
+            let track = project
+                .tracks
+                .get(p.track)
+                .ok_or(CompileError::NoTrack(p.track))?;
+            // Linked to a slot emptied since: silent until it has a clip.
+            let Some(clip) = p.clip(&project.tracks) else {
+                continue;
+            };
+            // A placement's own clip is named by a number past the slots,
+            // for the player's keys.
+            let slot = match p.source {
+                Source::Slot(s) => s,
+                Source::Own(_) => SLOTS + i,
+            };
+            let view = view_of(clip, track.swing, slot, p.origin(clip), p.start);
+            if let Some(t) = self.tracks.get_mut(p.track) {
+                t.regions.push(RegionView {
+                    end: p.end(),
+                    clip: view,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether song mode is on.
+    pub fn song(&self) -> bool {
+        self.song
     }
 
     /// Arm `track` for recording, or none. The recorder records into its
@@ -542,6 +635,17 @@ fn clip_view(
         .and_then(Option::as_ref)
         .filter(|_| slot < SLOTS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
+    Ok(view_of(clip, t.swing, slot, origin, start))
+}
+
+/// `clip` compiled, named `slot`, on a track whose swing is `track_swing`.
+fn view_of(
+    clip: &Clip,
+    track_swing: Option<Swing>,
+    slot: usize,
+    origin: Tick,
+    start: Tick,
+) -> ClipView {
     let mut view = ClipView {
         slot,
         origin,
@@ -550,7 +654,7 @@ fn clip_view(
         speed: clip.speed,
         quantise: clip.quantise,
         song_len: clip.speed.to_song(clip.length as f64),
-        swing: clip.swing.or(t.swing),
+        swing: clip.swing.or(track_swing),
         notes: Vec::new(),
         locks: Vec::new(),
         moves: clip.moves.clone(),
@@ -559,7 +663,7 @@ fn clip_view(
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.locks = clip.locks.iter().map(|l| view.lock_view(l)).collect();
     view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
-    Ok(view)
+    view
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.

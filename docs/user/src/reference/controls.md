@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 b9b7477
 -->
 
 # Buttons and controls
@@ -23,6 +23,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **STOP** | Stops playback; sounds ring out and latched pads keep going. Press again to silence everything and go back to bar 1. | Works |
 | **SHIFT + STOP** | Stops, silences everything and goes back to the start of bar 1. | Next build |
 | **PLAY** | Starts playback from where it stopped. | Works |
+| **PLAY** while playing | Hold for a fill; press twice to keep the fill on, and again (or STOP) to end it. See [Playing live](../making-music/playing-live.md#fills). | Next build |
 | **PLAY START** | Starts playback from the beginning. | Works |
 | **REC** | On the Looper tab, records a loop. Everywhere else, records a clip. | Works |
 | **OVERDUB** | Records on top of what is already there (a clip or a loop). | Works |
@@ -46,6 +47,13 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **NOTE REPEAT** twice, or **SHIFT + NOTE REPEAT** | Latch: repeat keeps going after you let go. Press again to stop. | Works |
 | **NOTE REPEAT + MENU** | Opens the Arp panel. | Works |
 
+## Arrange tab
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
+| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll or list. | Works |
+
 ## Mode buttons
 
 The mode buttons along the top of the MPC go to the MPFree page that does the same job.
@@ -58,10 +66,11 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Next build |
 | **SAMPLE EDIT** | The Sample tab's Wave page. | Next build |
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Sample tab's Pads page. | Next build |
-| **TRACK MUTE** | The pads become mute keys. | Planned |
-| **Q-LINK** | The next bank of macros on the Q-Links. | Planned |
+| **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
+| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
 | **ERASE** | Live erase while recording. | Planned |
-| **COPY**, **TC**, **BROWSE**, the data wheel's push | Not assigned yet. | Planned |
+| **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
+| **COPY**, **TC**, the data wheel's push | Not assigned yet. | Planned |
 
 ## For developers
 

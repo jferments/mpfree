@@ -48,6 +48,11 @@ pub enum LoopAct {
     Setting(usize, i32),
     /// One of the editor's tools ([`LoopEditor::tools`]).
     Tool(usize),
+    /// Go to row `r` of the undo history ([`HistoryList::rows`]): back or
+    /// forward to just after that step.
+    Step(usize),
+    /// Keep ticks `from..to` of the picked loop: its trim handles.
+    Trim(i64, i64),
     /// One of Use the loop's rows.
     Use(usize),
 }
@@ -248,7 +253,8 @@ pub struct LayerRow {
     pub recording: bool,
 }
 
-/// The editor's tools, in order (they work once the looper has them).
+/// The editor's tools, in order (they work while the loop plays; Undo
+/// history is still to come).
 pub const TOOLS: [&str; 8] = [
     "½ length",
     "× 2",
@@ -288,9 +294,20 @@ pub fn level_text(level: f32) -> String {
     }
 }
 
+/// The undo history as the editor lists it: "Start" (the first pass),
+/// then each step, oldest first, and the row that is now. The rows after
+/// it are the steps Redo would bring back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HistoryList {
+    pub rows: Vec<String>,
+    pub now: usize,
+}
+
 /// The picked loop: its tools, its wave with the bar lines and the
 /// playhead, and a row per layer with its speaker, solo, level, wave and
-/// delete. A tap on a row shows that layer on the Q-Links.
+/// delete. A tap on a row shows that layer on the Q-Links. With the undo
+/// history open, the history is listed in the layers' place: a tap on a
+/// step goes back (or forward) to it, and a drag scrolls the list.
 #[derive(Default)]
 pub struct LoopEditor {
     /// "Loop 1 · Editor".
@@ -308,6 +325,22 @@ pub struct LoopEditor {
     pub picked: usize,
     /// Shown in the wave's place while the loop is empty.
     pub note: String,
+    /// The tool drawn lit (the undo history while it is open).
+    pub lit: Option<usize>,
+    /// The loop's length in ticks while it can be trimmed: the wave has a
+    /// handle at each end, to drag in by 1/16 notes.
+    pub trim_ticks: Option<i64>,
+    /// A finger on a trim handle (true: the end), and the range kept so
+    /// far.
+    trimming: Option<(u64, bool, i64, i64)>,
+    /// The undo history, in the layers' place while it is open.
+    history: Option<HistoryList>,
+    /// The history's first row shown, once a drag has scrolled it; until
+    /// then the list follows now.
+    history_top: Option<usize>,
+    /// A finger on the history: where it went down, the first row shown
+    /// then, and whether it has moved enough to be a drag.
+    history_press: Option<(u64, i32, usize, bool)>,
     /// The first row shown, when there are more layers than fit.
     top: usize,
     /// A finger on a level bar: its layer.
@@ -331,6 +364,10 @@ struct EditorLook {
     picked: usize,
     top: usize,
     note: String,
+    lit: Option<usize>,
+    history: Option<(HistoryList, usize)>,
+    trim: Option<i64>,
+    trimming: Option<(i64, i64)>,
 }
 
 /// Where a layer row's parts are.
@@ -345,6 +382,76 @@ pub(crate) struct RowParts {
 impl LoopEditor {
     const ROW_H: i32 = 72;
     const ROW_GAP: i32 = 8;
+    /// The undo history's rows.
+    const STEP_H: i32 = 30;
+    const STEP_GAP: i32 = 4;
+
+    /// Open the undo history on `h`, or close it (None). The list follows
+    /// now again when now moves.
+    pub fn set_history(&mut self, h: Option<HistoryList>) {
+        if h.as_ref().map(|h| h.now) != self.history.as_ref().map(|h| h.now) {
+            self.history_top = None;
+        }
+        self.history = h;
+    }
+
+    pub fn history(&self) -> Option<&HistoryList> {
+        self.history.as_ref()
+    }
+
+    /// A 1/16 note in ticks: the trim handles' step.
+    const SIXTEENTH: i64 = mpfree_transport::time::PPQ as i64 / 4;
+
+    /// The trim handles' grips on the wave `w` (inside the wave's box):
+    /// the start's and the end's.
+    pub(crate) fn trim_grips(w: Rect) -> (Rect, Rect) {
+        let h = (w.h / 3).max(20);
+        let y = w.y + (w.h - h) / 2;
+        (
+            Rect::new(w.x - 6, y, 12, h),
+            Rect::new(w.right() - 6, y, 12, h),
+        )
+    }
+
+    /// The tick a finger at `x` on the wave `w` points to, to the nearest
+    /// 1/16 note.
+    fn tick_at(w: Rect, x: i32, ticks: i64) -> i64 {
+        let f = ((x - w.x) as f64 / w.w.max(1) as f64).clamp(0.0, 1.0);
+        let t = (f * ticks as f64 / Self::SIXTEENTH as f64).round() as i64 * Self::SIXTEENTH;
+        t.clamp(0, ticks)
+    }
+
+    /// How many history rows fit in `rows`.
+    fn steps_fit(rows: Rect) -> usize {
+        ((rows.h + Self::STEP_GAP) / (Self::STEP_H + Self::STEP_GAP)).max(1) as usize
+    }
+
+    /// The history's first row shown: where a drag left it, or with now
+    /// and up to two steps after it in view.
+    fn history_top(&self, rows: Rect) -> usize {
+        let Some(h) = &self.history else { return 0 };
+        let fit = LoopEditor::steps_fit(rows);
+        let last = h.rows.len().saturating_sub(fit);
+        self.history_top
+            .unwrap_or_else(|| (h.now + 3).saturating_sub(fit))
+            .min(last)
+    }
+
+    /// The history rows shown: (row, its rectangle).
+    pub(crate) fn step_rects(&self, rows: Rect) -> Vec<(usize, Rect)> {
+        let Some(h) = &self.history else {
+            return Vec::new();
+        };
+        let top = self.history_top(rows);
+        let fit = LoopEditor::steps_fit(rows);
+        (top..h.rows.len().min(top + fit))
+            .enumerate()
+            .map(|(i, k)| {
+                let y = rows.y + i as i32 * (Self::STEP_H + Self::STEP_GAP);
+                (k, Rect::new(rows.x, y, rows.w, Self::STEP_H))
+            })
+            .collect()
+    }
 
     /// The tools' row, the wave and the layer rows' area.
     pub(crate) fn parts(r: Rect) -> (Rect, Rect, Rect) {
@@ -428,6 +535,13 @@ impl LoopEditor {
             picked: self.picked,
             top: self.top,
             note: self.note.clone(),
+            lit: self.lit,
+            history: self
+                .history
+                .clone()
+                .map(|h| (h, self.history_top.unwrap_or(usize::MAX))),
+            trim: self.trim_ticks,
+            trimming: self.trimming.map(|t| (t.2, t.3)),
         }
     }
 }
@@ -445,14 +559,25 @@ impl Widget for LoopEditor {
             .map(|(l, _)| cx.measure(FontId::Bold, 13.0, l) + 26)
             .collect();
         *self.tool_widths.borrow_mut() = widths;
-        for (tr, (label, on)) in self.tool_rects(tool_row).iter().zip(&self.tools) {
-            cx.canvas.fill_round_rect(*tr, 8, t.raised);
+        for (i, (tr, (label, on))) in self
+            .tool_rects(tool_row)
+            .iter()
+            .zip(&self.tools)
+            .enumerate()
+        {
+            let lit = self.lit == Some(i);
+            cx.canvas
+                .fill_round_rect(*tr, 8, if lit { t.accent } else { t.raised });
             cx.text(
                 FontId::Bold,
                 13.0,
                 *tr,
                 Align::Center,
-                if *on { t.text } else { t.text_faint },
+                match (lit, *on) {
+                    (true, _) => t.bg,
+                    (false, true) => t.text,
+                    (false, false) => t.text_faint,
+                },
                 label,
             );
         }
@@ -474,6 +599,9 @@ impl Widget for LoopEditor {
                     cx.canvas
                         .fill_rect(Rect::new(px - 1, wave_r.y + 2, 2, wave_r.h - 4), t.text);
                 }
+                if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
+                    paint_trim(cx, wave_r, w, ticks, self.trimming.map(|t| (t.2, t.3)));
+                }
             }
             None => {
                 cx.text(
@@ -485,6 +613,11 @@ impl Widget for LoopEditor {
                     &self.note,
                 );
             }
+        }
+        if let Some(h) = &self.history {
+            paint_history(cx, rows, h, &self.step_rects(rows));
+            *self.drawn.borrow_mut() = Some((r, self.look(), play.unwrap_or(-1)));
+            return;
         }
         // The layers.
         for (k, rr) in self.row_rects(rows) {
@@ -639,6 +772,24 @@ impl Widget for LoopEditor {
                     }
                     return None;
                 }
+                let (_, wave_r, _) = LoopEditor::parts(r);
+                let w = wave_r.inset_xy(10, 6);
+                if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
+                    let (start, end) = LoopEditor::trim_grips(w);
+                    let near = |g: Rect| g.inset_xy(-14, -12).contains(x, y);
+                    if near(start) || near(end) {
+                        // The nearer end, when both are in reach.
+                        let is_end = near(end) && (!near(start) || x > w.x + w.w / 2);
+                        self.trimming = Some((finger, is_end, 0, ticks));
+                        return None;
+                    }
+                }
+                if self.history.is_some() {
+                    if rows.contains(x, y) {
+                        self.history_press = Some((finger, y, self.history_top(rows), false));
+                    }
+                    return None;
+                }
                 let (k, rr) = self
                     .row_rects(rows)
                     .into_iter()
@@ -668,6 +819,33 @@ impl Widget for LoopEditor {
                 self.acts.push(act);
                 Some(EventKind::Select(k))
             }
+            Touch::Move if self.trimming.is_some_and(|t| t.0 == finger) => {
+                let (f, is_end, from, to) = self.trimming?;
+                let ticks = self.trim_ticks.filter(|&t| t > 0)?;
+                let (_, wave_r, _) = LoopEditor::parts(r);
+                let t = LoopEditor::tick_at(wave_r.inset_xy(10, 6), x, ticks);
+                let (from, to) = if is_end {
+                    (from, t.max(from + Self::SIXTEENTH))
+                } else {
+                    (t.min(to - Self::SIXTEENTH), to)
+                };
+                self.trimming = Some((f, is_end, from, to));
+                None
+            }
+            Touch::Move if self.history_press.is_some_and(|p| p.0 == finger) => {
+                let (f, y0, top0, moved) = self.history_press?;
+                let dy = y - y0;
+                if !moved && dy.abs() < mpfree_ui::qlink::DRAG_DETENT {
+                    return None;
+                }
+                let step = Self::STEP_H + Self::STEP_GAP;
+                let top = (top0 as i32 - dy / step).max(0) as usize;
+                self.history_press = Some((f, y0, top0, true));
+                self.history_top = Some(top);
+                let top = self.history_top(rows);
+                self.history_top = Some(top);
+                None
+            }
             Touch::Move => {
                 let (f, k) = self.dragging?;
                 if f != finger {
@@ -687,9 +865,132 @@ impl Widget for LoopEditor {
                 if self.dragging.is_some_and(|(f, _)| f == finger) {
                     self.dragging = None;
                 }
-                None
+                if let Some((f, _, from, to)) = self.trimming.filter(|t| t.0 == finger) {
+                    self.trimming = None;
+                    let whole = self.trim_ticks.is_some_and(|t| from == 0 && to == t);
+                    if phase == Touch::Cancel || whole || f != finger {
+                        return None;
+                    }
+                    self.acts.push(LoopAct::Trim(from, to));
+                    return Some(EventKind::Value(0.0));
+                }
+                let (f, _, _, moved) = self.history_press?;
+                if f != finger {
+                    return None;
+                }
+                self.history_press = None;
+                if moved || phase == Touch::Cancel {
+                    return None;
+                }
+                let (k, _) = self
+                    .step_rects(rows)
+                    .into_iter()
+                    .find(|(_, sr)| sr.contains(x, y))?;
+                if self.history.as_ref().is_some_and(|h| h.now == k) {
+                    return None;
+                }
+                self.acts.push(LoopAct::Step(k));
+                Some(EventKind::Select(k))
             }
         }
+    }
+}
+
+/// The trim handles on the wave `w` (in the box `wave_r`) of a loop
+/// `ticks` long; while one is dragged, the parts it cuts off are dimmed,
+/// with what stays as a label.
+fn paint_trim(cx: &mut PaintCx, wave_r: Rect, w: Rect, ticks: i64, kept: Option<(i64, i64)>) {
+    let t = cx.theme.clone();
+    let x_of = |tick: i64| w.x + (tick as f64 / ticks as f64 * w.w as f64) as i32;
+    let (from, to) = kept.unwrap_or((0, ticks));
+    let (a, b) = (x_of(from), x_of(to));
+    if kept.is_some() {
+        let shade = t.bg.mix(t.surface, 0.15);
+        if a > wave_r.x {
+            cx.canvas
+                .fill_rect(Rect::new(wave_r.x, wave_r.y, a - wave_r.x, wave_r.h), shade);
+        }
+        if b < wave_r.right() {
+            cx.canvas
+                .fill_rect(Rect::new(b, wave_r.y, wave_r.right() - b, wave_r.h), shade);
+        }
+        let beats = |tk: i64| {
+            let b = tk as f64 / mpfree_transport::time::PPQ as f64;
+            format!("{b:.2}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string()
+        };
+        let label = format!("keep {} of {} beats", beats(to - from), beats(ticks));
+        cx.text(
+            FontId::Bold,
+            12.5,
+            Rect::new(wave_r.x + 12, wave_r.y + 4, wave_r.w - 24, 16),
+            Align::Center,
+            t.text,
+            &label,
+        );
+    }
+    let (start, end) = LoopEditor::trim_grips(w);
+    let start = Rect::new(a - 6, start.y, start.w, start.h);
+    let end = Rect::new(b - 6, end.y, end.w, end.h);
+    for g in [start, end] {
+        cx.canvas.fill_round_rect(g, 4, t.text_dim);
+        cx.canvas
+            .fill_rect(Rect::new(g.x + g.w / 2 - 1, g.y + 6, 2, g.h - 12), t.bg);
+    }
+}
+
+/// The undo history in `rows`: each step shown in `shown`, now outlined,
+/// the steps Redo would bring back faint, and how many more there are.
+fn paint_history(cx: &mut PaintCx, rows: Rect, h: &HistoryList, shown: &[(usize, Rect)]) {
+    let t = cx.theme.clone();
+    for &(k, sr) in shown {
+        let now = k == h.now;
+        let after = k > h.now;
+        cx.canvas.fill_round_rect(
+            sr,
+            8,
+            if now {
+                t.raised
+            } else {
+                t.bg.mix(t.surface, 0.6)
+            },
+        );
+        if now {
+            cx.canvas.stroke_round_rect(sr, 8, 2, draw::KNOB[0]);
+        }
+        let ink = if after { t.text_faint } else { t.text };
+        let label = Rect::new(sr.x + 14, sr.y, sr.w - 120, sr.h);
+        cx.text(FontId::Bold, 13.0, label, Align::Left, ink, &h.rows[k]);
+        let tag = if now {
+            "now"
+        } else if after {
+            "redo"
+        } else {
+            ""
+        };
+        cx.text(
+            FontId::Sans,
+            12.0,
+            Rect::new(sr.right() - 100, sr.y, 86, sr.h),
+            Align::Right,
+            if now { t.text_dim } else { t.text_faint },
+            tag,
+        );
+    }
+    let first = shown.first().map_or(0, |s| s.0);
+    let last = shown.last().map_or(0, |s| s.0 + 1);
+    if first > 0 || last < h.rows.len() {
+        let more = format!("steps {} to {} of {}", first + 1, last, h.rows.len());
+        cx.text(
+            FontId::Sans,
+            11.5,
+            Rect::new(rows.x, rows.bottom() - 2, rows.w, 14),
+            Align::Right,
+            t.text_faint,
+            &more,
+        );
     }
 }
 
@@ -1040,6 +1341,96 @@ mod tests {
             Some(EventKind::Tab(2))
         );
         assert_eq!(take_actions(&mut ui), [LoopAct::Tool(2)]);
+    }
+
+    #[test]
+    fn the_undo_history_takes_the_layers_place_and_a_tap_goes_to_a_step() {
+        let mut e = editor(3);
+        let rows: Vec<String> = std::iter::once("Start: the first pass".to_string())
+            .chain((1..40).map(|k| format!("Step {k}")))
+            .collect();
+        e.set_history(Some(HistoryList { rows, now: 30 }));
+        let mut ui = page_of(EDITOR, e);
+        let r = ui.rect_of(EDITOR).unwrap();
+        let rows_r = LoopEditor::parts(r).2;
+        let shown = ui.get::<LoopEditor>(EDITOR).unwrap().step_rects(rows_r);
+        assert_eq!(shown.len(), LoopEditor::steps_fit(rows_r));
+        assert_eq!(shown.last().unwrap().0, 32, "now and two steps after it");
+        // A tap on a step goes to it as the finger lifts; on now, nothing;
+        // no layer answers.
+        let lift = |ui: &mut Ui, x: i32, y: i32| {
+            assert_eq!(ui.touch(1, Touch::Down, x, y).map(|e| e.kind), None);
+            ui.touch(1, Touch::Up, x, y).map(|e| e.kind)
+        };
+        let (k, sr) = shown[0];
+        assert_eq!(
+            lift(&mut ui, sr.x + 20, sr.y + 10),
+            Some(EventKind::Select(k))
+        );
+        assert_eq!(take_actions(&mut ui), [LoopAct::Step(k)]);
+        let now = shown.iter().find(|s| s.0 == 30).unwrap().1;
+        assert_eq!(lift(&mut ui, now.x + 20, now.y + 10), None);
+        assert!(take_actions(&mut ui).is_empty());
+        // A drag down shows earlier steps, and is no tap.
+        let (x, y) = (sr.x + 20, sr.y + 10);
+        let step = LoopEditor::STEP_H + LoopEditor::STEP_GAP;
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, x, y + 3 * step);
+        assert!(ui.touch(1, Touch::Up, x, y + 3 * step).is_none());
+        assert!(take_actions(&mut ui).is_empty());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.step_rects(rows_r)[0].0, k - 3);
+        // When now moves, the list follows it again.
+        let mut h = e.history().unwrap().clone();
+        h.now = 12;
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.set_history(Some(h));
+        let shown = e.step_rects(rows_r);
+        assert!(shown.iter().any(|s| s.0 == 12), "{shown:?}");
+        ui.paint(&mut SoftCanvas::new(W, H));
+        // Closed, the layers are back.
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().set_history(None);
+        assert_eq!(
+            ui.get::<LoopEditor>(EDITOR)
+                .unwrap()
+                .row_rects(rows_r)
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_trim_handles_keep_a_range_by_sixteenths() {
+        let mut e = editor(1);
+        e.trim_ticks = Some(16 * 240);
+        let mut ui = page_of(EDITOR, e);
+        let r = ui.rect_of(EDITOR).unwrap();
+        let w = LoopEditor::parts(r).1.inset_xy(10, 6);
+        let (start, end) = LoopEditor::trim_grips(w);
+        // The start dragged a quarter in: four 1/16 notes.
+        let (x, y) = (start.x + 6, start.y + 4);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, w.x + w.w / 4, y);
+        ui.paint(&mut SoftCanvas::new(W, H));
+        let up = ui.touch(1, Touch::Up, w.x + w.w / 4, y).map(|e| e.kind);
+        assert_eq!(up, Some(EventKind::Value(0.0)));
+        assert_eq!(take_actions(&mut ui), [LoopAct::Trim(960, 3840)]);
+        // The end can't pass the start: a 1/16 note stays.
+        let (x, y) = (end.x + 6, end.y + 4);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, w.x - 50, y);
+        ui.touch(1, Touch::Up, w.x - 50, y);
+        assert_eq!(take_actions(&mut ui), [LoopAct::Trim(0, 240)]);
+        // Let go where it started: nothing to trim.
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Up, x, y);
+        assert!(take_actions(&mut ui).is_empty());
+        // While the loop can't be edited, the ends don't answer.
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().trim_ticks = None;
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, w.x, y);
+        ui.touch(1, Touch::Up, w.x, y);
+        assert!(take_actions(&mut ui).is_empty());
     }
 
     #[test]

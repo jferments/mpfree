@@ -9,11 +9,12 @@
 
 use crate::view::{
     bars_label, clips_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
-    CLIPS_HINT, CLIPS_PAGE, TRANSPORT,
+    CLIPS_HINT, CLIPS_PAGE, SONG_HINT, TRANSPORT,
 };
 use crate::widgets::TransportBar;
 use mpfree_capture::{keep, Capture, Kept, Now};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
+use mpfree_seq::arrange::{scene_length, scenes_to_song};
 use mpfree_seq::{Clip, Note, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
@@ -558,6 +559,104 @@ fn clips_sample(
     })
 }
 
+/// The Song view's state: rows 1 to 5 made into a song, the third placement
+/// on the drums made unique and selected, song mode on and Rec song armed,
+/// playing at 5.3. The app's `--preview` draws it too, for the manual.
+pub fn song_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    let mut song = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    song.make_unique(&s.project.tracks, 2)
+        .map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = song;
+    s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
+    s.project.arrangement.markers[1].name = "Verse".into();
+    let mut state = s.state();
+    state.chips = vec![arp_chip()];
+    state.song_view = true;
+    state.song_on = true;
+    state.song_rec = true;
+    state.selected = Some(2);
+    Ok(state)
+}
+
+/// The Clips page's Song view, from [`song_state`].
+fn song_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_state()?;
+    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
+    let page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song",
+        about: "Clips page, Song view: rows 1 to 5 as a song, a drum placement made unique \
+                and selected, song mode on at 5.3, Rec song armed",
+        ui,
+        state,
+    })
+}
+
+/// "Keys": two bars of chords in C minor under a short melody, played in
+/// by hand, so some notes sit a little off the 1/16 grid.
+pub fn keys_clip() -> Clip {
+    let mut c = Clip::new("Keys", 2 * BAR);
+    // (tick, length, note, velocity)
+    let chords: [(Tick, Tick, [u8; 3]); 4] = [
+        (0, 2 * BEAT - 40, [60, 63, 67]),
+        (2 * BEAT + 12, 2 * BEAT - 60, [56, 60, 63]),
+        (BAR - 8, 2 * BEAT, [58, 62, 65]),
+        (BAR + 2 * BEAT + 20, 2 * BEAT - 80, [55, 58, 62]),
+    ];
+    for (tick, len, notes) in chords {
+        for (k, n) in notes.into_iter().enumerate() {
+            c.add_note(Note::new(tick + 6 * k as Tick, len, n, 84 - 6 * k as u8))
+                .ok();
+        }
+    }
+    let melody: [(Tick, Tick, u8, u8); 6] = [
+        (BEAT + 14, 220, 75, 104),
+        (BEAT + 3 * SIXTEENTH - 10, 240, 74, 92),
+        (3 * BEAT + 5, 460, 72, 110),
+        (BAR + BEAT - 18, 240, 70, 96),
+        (BAR + 2 * BEAT + 2 * SIXTEENTH + 9, 230, 72, 100),
+        (BAR + 3 * BEAT + 16, 700, 67, 118),
+    ];
+    for (tick, len, n, v) in melody {
+        c.add_note(Note::new(tick, len, n, v)).ok();
+    }
+    c
+}
+
+/// The note editor on "Keys" (Chords, slot 2) over the playing session,
+/// the melody selected: the piano roll, or the list with `list`. The app's
+/// `--preview` draws it for the manual.
+pub fn notes_state(list: bool) -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let keys = keys_clip();
+    s.project.tracks[CHORDS].slots[1] = Some(keys.clone());
+    let mut state = s.state();
+    state.chips = vec![arp_chip()];
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.sel = keys
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.note >= 67 && n.len < BEAT)
+        .map(|(i, _)| i)
+        .collect();
+    editor.list = list;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys,
+        track_name: "Chords".into(),
+        bar: BAR,
+    }));
+    Ok(state)
+}
+
 /// The pad player's Play page with the bar under the header.
 fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     let mut ui = app_ui(fonts, "Play", PLAY_HINT);
@@ -694,6 +793,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             &captured()?,
             0,
         )?,
+        song_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -731,7 +831,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 9);
+        assert_eq!(samples.len(), 10);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -740,6 +840,21 @@ mod tests {
             let surface = Theme::dark().surface;
             assert!((0..h).any(|y| c.pixel(w / 2, y) == surface), "{}", s.name);
         }
+    }
+
+    #[test]
+    fn the_song_sample_shows_rows_as_a_song() {
+        let s = samples(Fonts::embedded).unwrap();
+        let song = s.iter().find(|s| s.name == "clips-song").unwrap();
+        let st = &song.state;
+        assert!(st.song_view && st.song_on);
+        let names: Vec<&str> = st.markers.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names[..2], ["Scene 1", "Verse"]);
+        assert!(st.placements[2].unique);
+        assert_eq!(
+            song.ui.layout_of(CLIPS_PAGE),
+            Some(crate::view::SONG_LAYOUT)
+        );
     }
 
     #[test]
