@@ -235,6 +235,44 @@ The step goes in a Hello MPC test round's runbook, rehearsed against Jay's
 paths, and runs only on Jay's go. Its results become
 `docs/dev/perf/mpc-one-calibration.txt` and the first per-engine device table.
 
+### GPU benchmark (step G2)
+
+Jay asked (12 Nov) for the screen to be drawn on the GPU, and for GPU compute
+where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
+([rust/mpfree-gpu](../../../rust/mpfree-gpu/README.md)) measures it on the MPC:
+
+- `screens`: every sample page, recorded by `mpfree --display-lists`, played
+  on the GPU and in software at the panel's size (800 × 1280, turned 270
+  degrees): the first frame with its uploads, the whole page again (what a
+  page change costs), the redraw a tick later, reading the frame back, the
+  software path's times for the same lists and its copy to the panel, and how
+  far the GPU's picture is from the software one.
+- `compute`: an FIR filter over a stereo block as an OpenGL ES 3.1 compute
+  shader, uploaded, run and read back, against the same job on one CPU core:
+  one period with 64 and with 1024 taps, and 32 periods with 1024 taps. It
+  answers whether GPU work can come back inside a period (2.902 ms) at all,
+  and from what size the GPU beats a core.
+
+`tools/mpc-one/host_gpu_mpc.py` runs it on the kexec test build. **RAM only,
+offscreen:** like host_bench_mpc.py it talks only to the test build's own host
+key. It checks the ARM build on the workstation (loader
+`/lib/ld-linux-armhf.so.3`, only `libc.so.6` and `libgcc_s.so.1` linked,
+nothing newer than glibc 2.34), makes the pages with the workstation's build
+of the app, checks on the MPC (read-only) that the GPU's render node and
+`libEGL.so.1` and `libGLESv2.so.2` are there and who holds `/dev/dri`, copies
+the program and the pages to `/run/mpfree-gpu`, stops our pad player and log
+display for a clean run (started again at the end, whatever happens), and
+runs `describe`, `compute --iterations 500` and `screens pages --frames 30`.
+The program draws through Mesa's surfaceless EGL on the render node, as the
+9 Nov offscreen tests did: no display, no DRM master, no display setting
+changed. It stops after `describe` if Mesa answers with its software renderer
+instead of the Mali, since the numbers would not be the GPU's. It needs
+`MPFREE_ACCEPT_GPU_BENCH=YES` and a terminal; each step waits for Enter. Its
+tests (`tests/test_host_gpu_mpc.py`) run it against a fake test build under
+BusyBox; on 2026-11-12 it also ran end to end against that fake build with the
+real ARM program under qemu-arm and Ubuntu's ARM Mesa. Like every device step
+it goes in a test round's runbook and runs only on Jay's go.
+
 ## Dev tools pages
 
 Jay asked (2026-11-11) for tools in the Dev tools menu to see which

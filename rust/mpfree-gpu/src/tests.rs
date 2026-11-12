@@ -67,32 +67,6 @@ fn scene(c: &mut dyn Canvas, fonts: &mut Fonts, k: u32) {
     );
 }
 
-struct Diff {
-    max: u32,
-    over_1: usize,
-    differ: usize,
-}
-
-fn diff(a: &[u32], b: &[u32]) -> Diff {
-    assert_eq!(a.len(), b.len());
-    let mut d = Diff {
-        max: 0,
-        over_1: 0,
-        differ: 0,
-    };
-    for (x, y) in a.iter().zip(b) {
-        let m = [16, 8, 0]
-            .iter()
-            .map(|s| ((x >> s) & 0xFF).abs_diff((y >> s) & 0xFF))
-            .max()
-            .unwrap();
-        d.max = d.max.max(m);
-        d.differ += (m > 0) as usize;
-        d.over_1 += (m > 1) as usize;
-    }
-    d
-}
-
 /// The software path's frame for `rotation`, as `fb.rs` sends it.
 fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Recorder) {
     let layout = FbLayout {
@@ -131,7 +105,7 @@ fn the_gpu_draws_the_mpc_screen_as_the_software_path_does() {
     assert_eq!(r.logical_size(), (1280, 800));
     let stats = r.play(&gpu, rec.ops(), rec.store(), &[]);
     let got = r.read_native(&gpu);
-    let d = diff(&want, &got);
+    let d = compare(&want, &got);
     eprintln!(
         "{} ops in {} draws, {} uploads; {} of {} pixels differ, {} by more than 1, at most {}",
         rec.ops().len(),
@@ -162,7 +136,7 @@ fn every_turn_lands_each_pixel_where_the_software_path_puts_it() {
         let (want, rec) = software(600, 520, rotation, 0x123456);
         let mut r = Renderer::new(&gpu, 600, 520, rotation).unwrap();
         r.play(&gpu, rec.ops(), rec.store(), &[]);
-        let d = diff(&want, &r.read_native(&gpu));
+        let d = compare(&want, &r.read_native(&gpu));
         assert!(d.max <= 3, "{rotation:?}: a channel differs by {}", d.max);
         assert!(
             d.over_1 * 1000 < want.len(),
@@ -188,4 +162,22 @@ fn a_frame_keeps_the_last_one_where_it_draws_nothing() {
     let after = r.read_native(&gpu);
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
     assert!(changed > 0 && changed <= 100, "{changed} pixels changed");
+}
+
+#[test]
+fn a_compute_job_comes_back_with_the_cpus_answer() {
+    let gpu = Gpu::surfaceless_es(3, 1).unwrap_or_else(|e| panic!("no OpenGL ES 3.1: {e}"));
+    for (frames, taps) in [(128, 64), (37, 5)] {
+        let r = compute::fir_round_trip(&gpu, frames, taps, 20).unwrap();
+        eprintln!(
+            "FIR {frames} frames x {taps} taps: GPU round trip p50 {:.0} us, CPU {:.0} us, error {:.1e}",
+            r.gpu_p50_us, r.cpu_p50_us, r.max_error
+        );
+        assert!(
+            r.max_error < 1e-4,
+            "the GPU's answer is {} off",
+            r.max_error
+        );
+        assert!(r.gpu_p50_us > 0.0 && r.gpu_p99_us >= r.gpu_p50_us);
+    }
 }
