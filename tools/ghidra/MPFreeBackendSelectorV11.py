@@ -39,8 +39,8 @@ PINNED={
           0x101bb4,0x10228c,0x1018fc,0x1021a8,0x10a6a4,
           0x10b74c,0x10cc64,0x10d14c,0x10d588,0x10e000,0x10e02a,
           0x10f188,0x10f388,0x10f45c,0x10f728,
-          0x1100c8,0x110270,0x110484,0x112228,0x11622a,
-          0x12247c,0x1226b4,0x122734,0x122780,
+          0x110084,0x1100c8,0x110270,0x110484,0x112228,0x11622a,
+          0x10fde8,0x12247c,0x1226b4,0x122734,0x122780,
           0x122834,0x122854,0x122980,0x122bd0,0x122bf8,0x122c5c]
 }
 OFFSETS={'open':0x08,'write_bootloader':0x18,'write_partition':0x1c,
@@ -201,7 +201,7 @@ def mpfree_v11_entrypoint():
             if fm.getFunctionContaining(A(near)):selected.add(near)
     priority=sorted(selected,key=lambda va:(va not in original, va))
     # Expanded direction: ROM entry, loader handoff, fastboot auth and update flow.
-    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':100}[role]
+    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':140}[role]
     if not priority:raise RuntimeError('No functions selected for analysis')
     decoder=DecompInterface();decoder.toggleCCode(True)
     if not decoder.openProgram(prog):raise RuntimeError('Decompiler unavailable')
@@ -221,7 +221,7 @@ def mpfree_v11_entrypoint():
             capture_by_role={
                 'libaz01-prog':('0x0001a314','0x0001a674','0x0001a8d0','0x0001aabc','0x0001d644','0x0001a178','0x0001b35c','0x0001afd4'),
                 'spl':('0xff704004','0xff7041a8','0xff705310','0xff705316','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
-                'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122834','0x00122854','0x00122980','0x00122bf8','0x00122c5c'),
+                'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8'),
                 'az01-update':('0x0001091c','0x00010be4')
             }
             if key in capture_by_role.get(role,()):
