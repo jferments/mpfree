@@ -433,7 +433,6 @@ class Lab:
                 "for p in /boot/boot.scr.uimg /boot/zImage /boot/rk3288-az01-acva.dtb /boot/rk3288-az01-acva-c.dtb; do if test -f \"$p\"; then sha256sum \"$p\" 2>&1; else echo MISSING_BOOT_ASSET:\"$p\"; fi; done",
                 "echo MPFREE_VM_SECTION_kernel_modules",
                 "ls -la /lib/modules /lib/firmware 2>&1",
-                "ls -1 /lib/modules 2>&1",
                 "echo MPFREE_VM_SECTION_310_trustpoint_unit",
                 "cat /usr/lib/systemd/system/az0x-loadpin-trustpoints.service 2>&1 || true",
                 "echo MPFREE_VM_SECTION_310_policy_assets",
@@ -930,240 +929,33 @@ class Lab:
                 "success":False,"error":str(exc)
             }
             self.notes.append("Direct-boot focus synthesis: " + str(exc))
-        # Direct-boot P6 compatibility cross-check: only guest shell
-        # read-only metadata + independently verified offline boot script.
-        # Generic virt does NOT prove MPC hardware compatibility.
+        # SHA-backed P6 boot-layout observations from guest file metadata.
+        # Generic ARM virt does NOT validate the real MPC One board.
         layout_path = self.out / "qemu-guest-direct_boot_rootfs.txt"
         modules_path = self.out / "qemu-guest-kernel_modules.txt"
         trust_path = self.out / "qemu-guest-310_trustpoint_unit.txt"
         if layout_path.is_file() and modules_path.is_file():
             try:
-                boot_comparison = json.loads((
+                compared = json.loads((
                     self.out / "static" / "wide" /
                     "firmware-3.10-bootchain-v4-compare.json"
                 ).read_text())
                 layout = layout_path.read_text(errors="replace")
                 module_text = modules_path.read_text(errors="replace")
-                checksums = dict((path, digest.lower()) for digest, path
-                                 in re.findall(
-                                    r'(?m)^([0-9a-f]{64})\\s+(/boot/\\S+)\\s*
-        summary = [
-            "# MPFree integrated bootchain run",
-            "",
-            "This report is automatically derived from a single offline static/QEMU session.",
-            "All findings are private and firmware-derived; DO NOT commit this ZIP to GitHub.",
-            "",
-            "## Status",
-        ]
-        for name, stage in self.stages.items():
-            summary.append("- " + name + ": " +
-                           ("PASS" if stage.get("success") else "INCOMPLETE/FAIL") +
-                           (" (" + str(stage.get("error") or stage.get("reason")) + ")"
-                            if stage.get("error") or stage.get("reason") else ""))
-        summary += ["", "## USB protocol identity (offline static + upstream)"]
-        for entry in record.get("usb_protocol_evidence", {}).get("identifications", []):
-            desc = entry["descriptor"]
-            summary.append("- " + "/".join(desc[k] for k in ("class", "subclass", "protocol"))
-                           + ": " + entry["family"]
-                           + " (constructor-xref=" + str(entry["constructor_confirmed"]) + ")")
-        summary.append("- Physical target runtime stage, ROM state and write authorization unproven.")
-        summary += ["", "## FF/61/7A custom-framed USB backend"]
-        framing = record.get("ff617a_framing_evidence")
-        if framing:
-            summary.append("- Equality-compared message IDs: " + str(framing["compared_message_identifiers"]))
-            summary.append("- Outgoing constructed control words: " + str(framing["constructed_outgoing_values"]))
-            summary.append("- Range bound (not a command): " + str(framing["range_bound_values"]))
-            summary.append("- ARM instructions captured in Ghidra: " + str(framing["machine_instructions_captured"]))
-            summary.append("- Response predicates verified: " + str(framing["all_response_checks_observed"]))
-            summary.append("- Linux usbdevfs async URB constants present: " + str(framing["ioctls_verified"]))
-            summary.append("- See usb-ff617a-framing.json for detailed provenance and type-inference warnings.")
-            summary.append("- Protocol identity UNKNOWN; no original vendor code executed.")
-        summary += ["", "## ARM return-register evidence"]
-        arm = record.get("arm_return_contract_evidence")
-        if arm:
-            summary.append("- Direct BL callsites immediately testing r0: " +
-                           str(arm["status_test_callsites"]))
-            summary.append("- CMP/other explicit comparisons: " + str(arm["explicit_cmp_callsites"]) +
-                           "; SUBS-zero flag tests: " + str(arm["subs_zero_test_callsites"]))
-            summary.append("- BL callsites copying r0 into r4: " +
-                           str(arm["r0_copy_callsites"]))
-            summary.append("- Of those, r4 restored into r0 at normal return: " +
-                           str(arm["r4_copy_status_return_passthroughs"]))
-            summary.append("- Normal fallthrough paths returning the callee r0 unchanged: " +
-                           str(arm["normal_fallthrough_r0_passthroughs"]))
-            summary.append("- Return passthrough proves only the normal fallthrough, not all branches.")
-            summary.append("- See arm-return-contracts.json and .md for addresses and caveats.")
-        summary += ["", "## Broad ROM / SPL / U-Boot / Update / USB / Recovery question matrix"]
-        wide = record.get("wide_research_matrix")
-        if wide:
-            summary.append("- Questions tracked: " + str(wide["questions"]) +
-                           "; tracks: " + str(wide["tracks"]))
-            for label, count in wide["counts"].items():
-                summary.append("- " + label + ": " + str(count))
-            summary.append("- See wide-research-matrix.md for findings, evidence and next actions.")
-            summary.append("- Physical MaskROM, fuse policy and independent restore remain unproven.")
-        summary += ["", "## Direct boot from existing vendor U-Boot"]
-        direct = record.get("direct_boot_focus")
-        if direct:
-            summary.append("- Focused questions: " + str(direct["questions"]) +
-                           " across " + str(direct["topics"]) + " topics.")
-            summary.append("- Existing OEM grant, download gate, flash/erase, bootm/bootz evidence: " +
-                           str(direct["required_owner_evidence"]))
-            summary.append("- Exact U-Boot OEM token and shared permission pointer proof: " +
-                           str(direct["literal_pointer_and_token_proven"]))
-            summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
-            summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
-        summary += ["", "## ARM guest P6 kernel/DTB/module boot compatibility"]
-        compat = record.get("qemu_directboot_rootfs_compat")
-        if compat:
-            summary.append("- Required stock boot assets found: " +
-                           str(sum(compat["required_boot_assets"].values())) +
-                           "/" + str(len(compat["required_boot_assets"])))
-            summary.append("- Guest boot script SHA matches verified 3.10 script: " +
-                           str(compat["boot_script_matches_offline_3_10"]))
-            summary.append("- Guest module inventory has 6.18.44: " +
-                           str(compat["observed_modules_kernel_6_18_44"]))
-            summary.append("- Owner vendor P6 checked only, not yet an independent MPFree rootfs.")
-        summary += ["", "## Guest/static image consistency"]
-        if record["match_tests"]:
-            for entry in record["match_tests"]:
-                summary.append("- " + entry["role"] + ": " +
-                               ("MATCH" if entry["match"] is True else
-                                "MISMATCH" if entry["match"] is False else
-                                "NOT ESTABLISHED"))
-        else:
-            summary.append("- Not established; see cross-evidence.json.")
-        summary += [
-            "",
-            "## Research scope",
-            "- Broad Ghidra: SPL entry, DDR/FDT, ROM/boot choice, U-Boot/Fastboot, permission, RAM, recovery.",
-            "- V11 Ghidra: updater verification states, function-pointer backend selectors, RockUSB framing.",
-            "- QEMU: real ARMv7 Linux/userspace boot, virtual hardware boundary, loader dependencies and passive file inventory.",
-            "- QEMU synthetic USB models: independent ARM executables test interface selection (13 cases) and endpoint discovery (21 cases) on a read-only guest fixture disk, not vendor code.",
-            "",
-            "## Still not proven",
-            "- Silicon MaskROM entry, unsigned owner-SPL execution, eMMC hardware restoration.",
-            "- Real RK3288 peripheral behavior, U-Boot Fastboot runtime authorization or safe physical flash writes.",
-            "- Live original updater state transitions: the guest did not execute vendor updater code.",
-            "",
-            "Use cross-evidence.json, session-summary.json, stage console logs and Ghidra JSON for the next analysis.",
-            "",
-        ]
-        (self.out / "RESEARCH-SUMMARY.md").write_text("\n".join(summary))
-        self.say("Cross-evidence synthesis complete: RESEARCH-SUMMARY.md / cross-evidence.json")
-
-    def package(self):
-        self.manifest["duration_seconds"] = round(time.time() - self.start, 1)
-        self.manifest["source_archives_imported"] = self.new_archives
-        self.manifest["safety_limitations"] = [
-            "No claimed silicon MaskROM proof, eMMC restore or original SPL execution.",
-            "Guest commands never invoke vendor maintenance or update executables.",
-            "Do not commit private Ghidra pseudocode or derived evidence to public GitHub.",
-            "QEMU TCG alone is not a hardened sandbox for unknown vendor binaries.",
-        ]
-        (self.out / "session-summary.json").write_text(
-            json.dumps(self.manifest, indent=2) + "\n")
-        rows = []
-        size = 0
-        for p in sorted(self.out.rglob("*")):
-            if p.is_symlink():
-                raise ValueError("Refusing symlink in output tree: " + str(p))
-            if p.is_dir():
-                continue
-            if not stat.S_ISREG(p.lstat().st_mode) or p.suffix.lower() not in ALLOWED:
-                raise ValueError("Unexpected artifact: " + str(p))
-            n = p.stat().st_size
-            size += n
-            if n > MAX_FILE or size > MAX_TOTAL:
-                raise ValueError("Large output, review report folder: " + str(p))
-            rows.append({
-                "name": p.relative_to(self.out).as_posix(),
-                "bytes": n,
-                "sha256": sha256(p),
-            })
-        index = {
-            "schema": "mpfree-bootchain-integrated-zip-index-v1",
-            "private": True, "files": rows,
-        }
-        path = self.out.with_suffix(".zip")
-        if path.exists():
-            raise FileExistsError("Refusing to overwrite: " + str(path))
-        with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=6, allowZip64=False) as z:
-            z.writestr("ZIP_INDEX.json", json.dumps(index, indent=2) + "\n")
-            for row in rows:
-                z.write(self.out / row["name"], arcname=row["name"])
-        with zipfile.ZipFile(path) as z:
-            if z.testzip():
-                raise RuntimeError("Final ZIP CRC verification failed")
-            if set(z.namelist()) != {r["name"] for r in rows} | {"ZIP_INDEX.json"}:
-                raise RuntimeError("Unexpected ZIP members")
-        (path.with_suffix(".zip.sha256")).write_text(
-            sha256(path) + "  " + path.name + "\n")
-        self.say("\n" + "=" * 75)
-        self.say("ONE ZIP TO UPLOAD: " + str(path))
-        self.say("SHA256: " + sha256(path))
-        self.say("Reports/log files: " + str(len(rows)))
-        self.say("Stages: " + json.dumps(self.stages, indent=2))
-        self.say("All results remain PRIVATE. Do not push this ZIP to the repository.")
-        self.say("=" * 75)
-        return path
-
-
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--prior-v10", type=Path, help="Optional known V10 SHA-indexed private ZIP")
-    p.add_argument("--qemu-boot-timeout", type=int, default=240)
-    p.add_argument("--qemu-probe-timeout", type=int, default=90)
-    args = p.parse_args()
-    if args.qemu_boot_timeout < 30 or args.qemu_probe_timeout < 15:
-        p.error("QEMU timeouts too small")
-    os.umask(0o077)
-    lab = Lab(args)
-    try:
-        lab.say("MPFree single-run research lab: offline Ghidra + ephemeral ARM QEMU")
-        lab.say("Source tree: " + str(ROOT))
-        lab.say("Output directory: " + str(lab.out))
-        lab.say("No actual MPC device, USB interface or updater executable will be used.")
-        try:
-            lab.static()
-        except Exception:
-            lab.say("STATIC ERROR: " + traceback.format_exc())
-            lab.notes.append("Static stage exception; subsequent QEMU and packaging continue.")
-        try:
-            lab.qemu()
-        except Exception:
-            lab.say("QEMU ERROR: " + traceback.format_exc())
-            lab.notes.append("QEMU stage exception; package available Ghidra data.")
-        try:
-            lab.synthesize()
-        except Exception:
-            lab.say("CROSS-EVIDENCE ERROR: " + traceback.format_exc())
-            lab.notes.append("Cross-evidence synthesis failed; source reports still packaged.")
-    finally:
-        try:
-            lab.full_file.flush()
-            lab.full_file.close()
-            lab.package()
-        except Exception:
-            print("PACKAGE ERROR: " + traceback.format_exc(), file=sys.stderr)
-            print("Unpacked output remains at: " + str(lab.out), file=sys.stderr)
-            raise
-
-
-if __name__ == "__main__":
-    main()
-,
-                                    layout))
-                required_assets = (
-                    "/boot/boot.scr.uimg",
-                    "/boot/zImage",
+                checksums = {}
+                for line in layout.splitlines():
+                    parts = line.strip().split()
+                    if (len(parts) >= 2 and len(parts[0]) == 64 and
+                            all(c in "0123456789abcdefABCDEF" for c in parts[0]) and
+                            parts[1].startswith("/boot/")):
+                        checksums[parts[1]] = parts[0].lower()
+                required = (
+                    "/boot/boot.scr.uimg", "/boot/zImage",
                     "/boot/rk3288-az01-acva.dtb",
                     "/boot/rk3288-az01-acva-c.dtb",
                 )
-                expected_script_sha = boot_comparison["boot_script"][
-                    "firmware310"]["sha256"]
-                script_sha = checksums.get("/boot/boot.scr.uimg")
+                expected = compared["boot_script"]["firmware310"]["sha256"]
+                actual = checksums.get("/boot/boot.scr.uimg")
                 info = {
                     "schema": "mpfree-qemu-directboot-rootfs-compat-v1",
                     "guest_rootfs": "cloned 3.10 P6 under generic ARM virt",
@@ -1172,18 +964,15 @@ if __name__ == "__main__":
                     "no_vendor_code_executed": True,
                     "boot_asset_sha256": checksums,
                     "required_boot_assets": {
-                        path: path in checksums for path in required_assets
-                    },
+                        path: path in checksums for path in required},
                     "boot_script_matches_offline_3_10": (
-                        script_sha == expected_script_sha if script_sha else None
-                    ),
-                    "source_310_boot_script_sha256": expected_script_sha,
-                    "observed_modules_kernel_6_18_44": (
-                        "6.18.44" in module_text),
+                        actual == expected if actual else None),
+                    "source_310_boot_script_sha256": expected,
+                    "observed_modules_kernel_6_18_44": "6.18.44" in module_text,
                     "trustpoint_unit_captured": trust_path.is_file(),
                     "limitations": [
-                        "Successful generic virt shell and read-only files do not validate MPC board drivers.",
-                        "A future MPFree rootfs needs its own QEMU boot and reversible kexec hardware qualification.",
+                        "QEMU virt boot does not prove MPC hardware compatibility.",
+                        "An independent MPFree rootfs must be separately tested.",
                     ],
                 }
                 (self.out / "qemu-directboot-rootfs-compat.json").write_text(
@@ -1192,20 +981,19 @@ if __name__ == "__main__":
                 self.stages["qemu-directboot-rootfs-compat"] = {
                     "success": (
                         info["boot_script_matches_offline_3_10"] is True
-                        and all(info["required_boot_assets"].values())
-                    ),
+                        and all(info["required_boot_assets"].values())),
                     "assets_found": sum(info["required_boot_assets"].values()),
-                    "assets_expected": len(required_assets),
+                    "assets_expected": len(required),
                     "boot_script_sha_match": info["boot_script_matches_offline_3_10"],
                 }
             except Exception as exc:
                 self.stages["qemu-directboot-rootfs-compat"] = {
-                    "success": False,"error":str(exc)}
-                self.notes.append("QEMU rootfs boot assets: "+str(exc))
+                    "success": False, "error": str(exc)}
+                self.notes.append("QEMU boot asset audit: " + str(exc))
         else:
             self.stages["qemu-directboot-rootfs-compat"] = {
                 "success": False,
-                "error": "Guest direct-boot inventory unavailable",
+                "error": "Guest boot layout files unavailable",
             }
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
@@ -1274,6 +1062,17 @@ if __name__ == "__main__":
                            str(direct["literal_pointer_and_token_proven"]))
             summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
             summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
+        summary += ["", "## ARM guest P6 boot/kernel/module compatibility"]
+        compat = record.get("qemu_directboot_rootfs_compat")
+        if compat:
+            summary.append("- Required stock boot assets: " +
+                           str(sum(compat["required_boot_assets"].values())) +
+                           "/" + str(len(compat["required_boot_assets"])))
+            summary.append("- Guest boot script SHA matches verified 3.10: " +
+                           str(compat["boot_script_matches_offline_3_10"]))
+            summary.append("- Modules inventory includes 6.18.44: " +
+                           str(compat["observed_modules_kernel_6_18_44"]))
+            summary.append("- Vendor P6 inspected only; no independent MPFree image tested.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
