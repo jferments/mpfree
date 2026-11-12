@@ -32,7 +32,10 @@ use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, Strip
 use mpfree_mod::{
     Change, ModEngine, ModError, ModEvent, ModTimed, DEFAULT_TICK, FOLLOWERS, MACROS,
 };
+use mpfree_perform::morph::Loaded;
+use mpfree_perform::{save_scene, SceneMorph};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+use mpfree_seq::Project;
 
 /// Events one period can carry (locks, unlocks, the host's turns).
 const EVENTS: usize = 256;
@@ -265,6 +268,75 @@ impl ModMix {
         self.engine.load(&rest, &|a| describe(mixer, a))
     }
 
+    /// The scene morph (`mpfree_perform::SceneMorph`): put rows `a` and
+    /// `b` of `project` on the engine's scenes A and B. Every mixer
+    /// parameter either row stores becomes a target first, with the value
+    /// the mixer has now; a pad's sound or an instrument's is counted
+    /// unknown (as a lock on one is unrouted). While morphing, turns made
+    /// so far go back into the rows on A and B first, and the sound from
+    /// before the morph stays the one Snap back goes to.
+    pub fn morph_load(
+        &mut self,
+        mixer: &Mixer,
+        morph: &mut SceneMorph,
+        project: &mut Project,
+        a: usize,
+        b: usize,
+    ) -> Result<Loaded, ModError> {
+        morph.store(&self.engine, project);
+        for row in [a, b] {
+            if let Some(s) = project.scene(row) {
+                for &(addr, _) in &s.values {
+                    if !matches!(
+                        addr.owner,
+                        Owner::Macro(_) | Owner::Morph(_) | Owner::Mod(_)
+                    ) {
+                        self.hold(mixer, addr);
+                    }
+                }
+            }
+        }
+        morph.load(&mut self.engine, project, a, b)
+    }
+
+    /// The morph's crossfader, 0 (A) to 1 (B), from the next period.
+    pub fn morph_to(&mut self, pos: f32) {
+        self.queue(
+            0,
+            ModEvent::Set {
+                addr: ParamAddr::morph_pos(0),
+                value: pos.clamp(0.0, 1.0),
+            },
+        );
+    }
+
+    /// Let the morph go: back to the sound from before it (`keep` false),
+    /// or staying where it has the parameters. Turns made while morphing
+    /// are written back into the rows first. Returns the values sent.
+    pub fn morph_end(
+        &mut self,
+        morph: &mut SceneMorph,
+        project: &mut Project,
+        keep: bool,
+    ) -> usize {
+        morph.store(&self.engine, project);
+        let values = if keep {
+            morph.keep(&mut self.engine)
+        } else {
+            morph.snap_back(&mut self.engine)
+        };
+        for &(addr, value) in &values {
+            self.queue(0, ModEvent::Set { addr, value });
+        }
+        values.len()
+    }
+
+    /// Row `row` stores every parameter's own value now and the macros'
+    /// positions. How many it holds, or None (past the last row, too many).
+    pub fn save_scene(&self, project: &mut Project, row: usize) -> Option<usize> {
+        save_scene(&self.engine, project, row)
+    }
+
     /// A turn of a mixer control by the host. Returns false when the engine
     /// doesn't hold it: then the host sets the mixer itself.
     pub fn set(&mut self, addr: ParamAddr, value: f32) -> bool {
@@ -339,6 +411,60 @@ mod tests {
 
     fn vol(t: usize) -> ParamAddr {
         ParamAddr::new(Owner::Strip(Strip::Track(t as u8)), mx::VOLUME)
+    }
+
+    #[test]
+    fn the_scene_morph_moves_the_mixer_between_two_rows_and_snaps_back() {
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let level = |h: &MixHost, t: usize| h.mixer.param(StripId::Track(t), mx::VOLUME);
+        let (loop_was, drums_was) = (level(&h, LOOP), level(&h, DRUMS));
+        let mut p = Project::new();
+        p.scene_mut(0).unwrap().set_value(vol(LOOP), -20.0).unwrap();
+        p.scene_mut(2).unwrap().set_value(vol(LOOP), -4.0).unwrap();
+        // Only row 3 holds the drums: the morph moves them from where they are.
+        p.scene_mut(2)
+            .unwrap()
+            .set_value(vol(DRUMS), -30.0)
+            .unwrap();
+        let mut m = SceneMorph::default();
+        let l = h.modu.morph_load(&h.mixer, &mut m, &mut p, 0, 2).unwrap();
+        assert_eq!((l.morphing, l.unknown), (2, 0));
+        h.modu.morph_to(0.0);
+        run(&mut h, 40, 0);
+        assert!((level(&h, LOOP) + 20.0).abs() < 0.05, "{}", level(&h, LOOP));
+        assert!((level(&h, DRUMS) - drums_was).abs() < 0.05);
+        h.modu.morph_to(1.0);
+        run(&mut h, 40, 40);
+        assert!((level(&h, LOOP) + 4.0).abs() < 0.05, "{}", level(&h, LOOP));
+        assert!(
+            (level(&h, DRUMS) + 30.0).abs() < 0.05,
+            "{}",
+            level(&h, DRUMS)
+        );
+        h.modu.morph_to(0.5);
+        run(&mut h, 40, 80);
+        let mid = level(&h, LOOP);
+        assert!(mid > -20.0 && mid < -4.0, "{mid}");
+        // Snap back: the sound from before the morph.
+        assert_eq!(h.modu.morph_end(&mut m, &mut p, false), 3);
+        run(&mut h, 40, 120);
+        assert!(
+            (level(&h, LOOP) - loop_was).abs() < 0.05,
+            "{}",
+            level(&h, LOOP)
+        );
+        assert!((level(&h, DRUMS) - drums_was).abs() < 0.05);
+        // Keep: where the morph had them stays.
+        h.modu.morph_load(&h.mixer, &mut m, &mut p, 0, 2).unwrap();
+        h.modu.morph_to(1.0);
+        run(&mut h, 40, 160);
+        h.modu.morph_end(&mut m, &mut p, true);
+        run(&mut h, 40, 200);
+        assert!((level(&h, LOOP) + 4.0).abs() < 0.05, "{}", level(&h, LOOP));
+        // A row stores the mixer as it is now.
+        assert!(h.modu.save_scene(&mut p, 5).is_some_and(|n| n >= 2));
+        let v = p.scene(5).unwrap().value(vol(LOOP)).unwrap();
+        assert!((v + 4.0).abs() < 0.05, "{v}");
     }
 
     #[test]
