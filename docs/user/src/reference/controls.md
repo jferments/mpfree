@@ -69,7 +69,8 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
 | **ERASE** | Live erase while recording. | Planned |
-| **COPY**, **TC**, **BROWSE**, the data wheel's push | Not assigned yet. | Planned |
+| **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
+| **COPY**, **TC**, the data wheel's push | Not assigned yet. | Planned |
 
 ## For developers
 
