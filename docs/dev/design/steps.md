@@ -1,6 +1,6 @@
 # The step sequencer: a grid over a clip
 
-**Status:** roadmap step T7, the model only, 2026-11-11. The code is [`rust/mpfree-seq/src/steps.rs`](../../../rust/mpfree-seq/src/steps.rs) (the grid), chance in [`rust/mpfree-play`](../../../rust/mpfree-play)'s player, and step edits as takes in `Takes::edit`. It is host-only and tested. There is no screen for it yet: where step editing goes (the Play page) waits for Jay's pick of a mockup, through the layout owner. Nothing here has run on the MPC.
+**Status:** roadmap step T7, the model only, 2026-11-11. The code is [`rust/mpfree-seq/src/steps.rs`](../../../rust/mpfree-seq/src/steps.rs) (the grid), chance in [`rust/mpfree-play`](../../../rust/mpfree-play)'s player, and step edits as takes in `Takes::edit`. It is tested on the host. Its screens are the Play page's step grid (the app thread's, in `rust/mpfree-app/src/play_page.rs`) and the note editor's tracker lens and Euclidean fill ([note-editor.md](note-editor.md)). Nothing here has run on the MPC yet.
 
 This builds on [playback](playback.md): clips, the player and take undo.
 
@@ -148,7 +148,7 @@ It prints the grid, checks where every note was heard on every pass, checks on a
 
 ## Next
 
-- The step screen, once Jay picks where it goes: pads or a lane per sound, 16 steps a page with page buttons, Q-Links for velocity, length, nudge, chance, condition and ratchet, and a FILL button.
-- Parameter locks reach the sound once the mod thread's resolver (`mpfree-mod`, #102) takes the player's `Event::Lock` and `Event::Unlock`. The pad player ignores them until then. The step screen shows them as dots (`lock_row`) and edits a held step's locks on the Q-Links.
+- On the Play page's step grid (the app thread's): Q-Links for a held step's velocity, length, nudge, chance, condition and ratchet, and a FILL button.
+- Parameter locks reach the mixer's strips and inserts through the pad player's mod engine (`rust/mpfree-app/src/modmix.rs`). A lock on a pad's sound or an instrument is counted and dropped until those engines take parameter events. The step grid can show locks as dots (`lock_row`) and edit a held step's locks on the Q-Links.
 - A velocity ramp for ratchets (Elektron's retrig velocity curve), as a second setting.
 - Ties: a held key in step entry stretching a note over the next steps.

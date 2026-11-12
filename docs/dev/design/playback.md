@@ -1,6 +1,6 @@
 # Playback: clips on the transport
 
-**Status:** roadmap step T2 (merged in #47), a track through the arp (#51), the clip recorder (T3, #55), replace recording (#56) and take undo, 2026-11-11; pad pressure in clips, 2026-11-12. The code is [`rust/mpfree-seq`](../../../rust/mpfree-seq) (the model) and [`rust/mpfree-play`](../../../rust/mpfree-play) (the playback engine). Both are host-only and tested. They are not yet wired to the audio thread or the pads. Nothing here has run on the MPC.
+**Status:** roadmap step T2 (merged in #47), a track through the arp (#51), the clip recorder (T3, #55), replace recording (#56) and take undo, 2026-11-11; pad pressure in clips, 2026-11-12. The code is [`rust/mpfree-seq`](../../../rust/mpfree-seq) (the model) and [`rust/mpfree-play`](../../../rust/mpfree-play) (the playback engine). Both are tested on the host. The pad player runs them in `TimeHost` (`rust/mpfree-app/src/time.rs`): the player and the recorder on the audio half, the project and every compile on the control half ([time-threads.md](time-threads.md)). The app's first live test on the MPC (12 Nov, main c8ef977) skipped most of its phases, so clips, recording and everything newer are still to be tried there.
 
 This builds on the [transport](transport.md). The full plan is the time engine design document. Its mockups and skill tree are in the mpfree-claude notes (`sequencer/`).
 
@@ -320,9 +320,10 @@ Cues that start become launches right after the period they started in (`Started
 
 ## Next
 
-- Try the time engine on the MPC (round 6), with REC, OVERDUB, UNDO and PLAY START learned by the button guide.
+- Try clips, recording, CAPTURE, scenes, the Song view, the note editor and pad pressure on the MPC, in the app thread's next live test round.
 - Run the control half (launches, arming, undo, capture, the screen's state) on the control thread: [time-threads.md](time-threads.md) step 3.
 - CAPTURE (keep what was just played, even without recording) is built: see [capture.md](capture.md).
 - Launching on the bar line (cues), scenes and follow actions are built ([scenes.md](scenes.md)). Still to come for T9: a launch quantise setting (1 beat to 8 bars, or none), an editor for scene names and follow actions, and a new clip that waits for its bar line without stopping the track's clip first.
-- The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). Its screen waits for the Play page layout.
-- The looper (T4).
+- The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). The Play page's step grid edits it (the app's `play_page.rs`), and the note editor's tracker lens shows it as rows ([note-editor.md](note-editor.md)).
+- Pad pressure: editing it in the note editor, and showing it in the list and the tracker ([note-editor.md](note-editor.md)). Buttons for half and double speed, which stretch the pressure with the notes.
+- The looper (T4) is built: [looper.md](looper.md).
