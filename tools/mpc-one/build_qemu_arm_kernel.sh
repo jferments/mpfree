@@ -39,7 +39,12 @@ make -s -C "$SRC" O="$OBJ" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_
   -e EXT4_FS -e DEVTMPFS -e DEVTMPFS_MOUNT \
   -e BINFMT_ELF -e AEABI -e BLK_DEV -e TMPFS -e PROC_FS -e SYSFS \
   -e PCI -e PCI_HOST_GENERIC \
-  -e UNIX -e INET
+  -e UNIX -e INET \
+  -d KEYSTONE_NAVIGATOR_QMSS -d KEYSTONE_NAVIGATOR_DMA \
+  -d ARCH_KEYSTONE -d SOC_TI
+# Linux 7.0 Ubuntu's multi_v7_defconfig selects TI Keystone QMSS,
+# whose source currently fails to compile (knav_qdev undeclared).
+# This driver is irrelevant to QEMU virt; disable it in the guest config.
 make -s -C "$SRC" O="$OBJ" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
 # Critical drivers must be built in: Akai rootfs doesn't include matching module tree.
 python3 - "$OBJ/.config" <<'PY'
@@ -49,6 +54,9 @@ s=Path(sys.argv[1]).read_text()
 keys=['ARCH_VIRT','SERIAL_AMBA_PL011','SERIAL_AMBA_PL011_CONSOLE',
       'VIRTIO_MMIO','VIRTIO_BLK','EXT4_FS','DEVTMPFS','BINFMT_ELF']
 missing=[k for k in keys if 'CONFIG_'+k+'=y' not in s]
+unwanted=['KEYSTONE_NAVIGATOR_QMSS','KEYSTONE_NAVIGATOR_DMA','ARCH_KEYSTONE']
+still_enabled=[k for k in unwanted if 'CONFIG_'+k+'=y' in s]
+if still_enabled:raise SystemExit('Unexpected non-QEMU Keystone drivers: '+', '.join(still_enabled))
 if missing:raise SystemExit('Kernel config missing built-in drivers: '+', '.join(missing))
 print('Verified core virt/PL011/virtio/ext4 drivers built in')
 PY
