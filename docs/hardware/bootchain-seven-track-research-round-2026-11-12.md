@@ -41,9 +41,22 @@ flowchart includes eMMC ahead of SDMMC.
 
 The MPC's **saved** U-Boot environment, at the later stage, has
 boot_targets="mmc0 mmc1" and bootdelay="0"; its compiled-default candidate
-matched all 28 saved variables. This does not map mmc0/mmc1 to specific
-physical ports, does not prove runtime state, and does NOT guarantee
-that inserting an SD card overrides the eMMC-hosted first-stage loader.
+matched all 28 saved variables.
+
+**Additional discovery from the owner-verified embedded U-Boot FDT:**
+`mmc0` aliases `dwmmc@ff0f0000`, an active 8-bit, non-removable
+controller characteristic of eMMC. `mmc1` aliases
+`dwmmc@ff0c0000`, but that controller is explicitly
+`status = "disabled"` in the embedded U-Boot FDT.
+Thus U-Boot's configured fallback target is not obviously usable,
+even though `mmc1` appears in boot_targets. This is static evidence:
+runtime board code or overlays might alter the device state.
+
+The SoC BootROM itself also searches eMMC before SDMMC (per RK3288 TRM).
+Inserting an SD card therefore cannot be assumed to bypass the stock
+first-stage loader. Before relying on SD-card recovery, prove whether
+stock U-Boot can dynamically initialize mmc1 and whether ROM can boot
+external storage without first selecting eMMC.
 
 Upstream RK3288 source/board information:
 - https://www.phytec.de/documents/?title=phycore-rk3288-manual
@@ -133,7 +146,7 @@ and no accessible writable firmware storage are in place.
   verification, updater entrypoints.
 - Capture bounded ARM machine-code evidence for more SPL and U-Boot
   targets, not only FF/61/7A functions.
-- Create private wide-research-matrix.json and .md with **41 or more**
+- Create private wide-research-matrix.json and .md with **42 or more**
   specific research questions spanning all seven tracks.
 - Include bounded per-role Ghidra decompilation/ARM instruction counts,
   direct and computed call information. New facts must be distinguished
